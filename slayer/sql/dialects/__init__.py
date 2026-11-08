@@ -1,18 +1,8 @@
-"""DEV-1542: SLayer SQL dialect registry.
-
-Strategy-pattern dispatch: every dialect-specific SQL-generation quirk
-lives on a subclass of ``SqlDialect`` (one file per Tier-1 dialect under
-this package, Tier-2 dialects together in ``_tier2.py``). The registry
-exposes two lookup functions:
-
-* ``get_dialect(sqlglot_name)`` — strict, raises ``KeyError`` on unknown
-  (preserves today's ``_build_explain_sql`` ``ValueError`` semantics).
-* ``dialect_for_ds_type(ds_type)`` — lenient, falls back to
-  ``PostgresDialect`` (preserves today's
-  ``_DIALECT_MAP.get(ds_type or "", "postgres")`` semantics).
-"""
+"""SqlDialect registry: strict lookup by sqlglot name, lenient lookups by datasource type and SQLAlchemy backend."""
 
 from __future__ import annotations
+
+from collections.abc import Iterable
 
 from slayer.sql.dialects._tier2 import (
     DatabricksDialect,
@@ -20,17 +10,19 @@ from slayer.sql.dialects._tier2 import (
     PrestoDialect,
     RedshiftDialect,
     SparkDialect,
-    TrinoDialect,
 )
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.dialects.bigquery import BigqueryDialect
 from slayer.sql.dialects.clickhouse import ClickhouseDialect
 from slayer.sql.dialects.duckdb import DuckdbDialect
-from slayer.sql.dialects.mysql import MysqlDialect
+from slayer.sql.dialects.mysql import MariadbDialect, MysqlDialect
 from slayer.sql.dialects.postgres import PostgresDialect
+from slayer.sql.dialects.reflection import ReflectedColumn, ReflectedForeignKey, TableKeys
 from slayer.sql.dialects.snowflake import SnowflakeDialect
 from slayer.sql.dialects.sqlite import SqliteDialect
+from slayer.sql.dialects.trino import TrinoDialect
 from slayer.sql.dialects.tsql import TsqlDialect
+from slayer.sql.reserved_keywords import install_reserved_keywords
 
 
 __all__ = [
@@ -39,6 +31,7 @@ __all__ = [
     "PostgresDialect",
     "DuckdbDialect",
     "MysqlDialect",
+    "MariadbDialect",
     "ClickhouseDialect",
     "TsqlDialect",
     "SnowflakeDialect",
@@ -49,8 +42,14 @@ __all__ = [
     "DatabricksDialect",
     "SparkDialect",
     "OracleDialect",
+    "ReflectedColumn",
+    "ReflectedForeignKey",
+    "TableKeys",
+    "SQLGLOT_NAMES",
     "get_dialect",
     "dialect_for_ds_type",
+    "build_sa_backend_registry",
+    "dialect_for_sa_backend",
 ]
 
 
@@ -76,39 +75,50 @@ _BY_SQLGLOT_NAME: dict[str, SqlDialect] = {
     d.sqlglot_name: d for d in _ALL_DIALECTS
 }
 
+SQLGLOT_NAMES: tuple[str, ...] = tuple(_BY_SQLGLOT_NAME)
+
+
+# Reached by ds-type only: they share a sqlglot name with a dialect above.
+_DS_TYPE_ONLY_DIALECTS: tuple[SqlDialect, ...] = (MariadbDialect(),)
 
 _BY_DS_TYPE: dict[str, SqlDialect] = {
-    alias: d for d in _ALL_DIALECTS for alias in d.ds_type_aliases
+    alias: d for d in (*_ALL_DIALECTS, *_DS_TYPE_ONLY_DIALECTS) for alias in d.ds_type_aliases
 }
 
 
-def get_dialect(sqlglot_name: str) -> SqlDialect:
-    """Strict lookup by sqlglot name. Raises ``KeyError`` on unknown.
+def build_sa_backend_registry(dialects: Iterable[SqlDialect]) -> dict[str, SqlDialect]:
+    """``{backend: dialect}`` over each dialect's ``sa_backend_names``; a backend declared twice raises."""
+    registry: dict[str, SqlDialect] = {}
+    for dialect in dialects:
+        for backend in dialect.sa_backend_names:
+            prior = registry.get(backend)
+            if prior is not None:
+                raise ValueError(
+                    f"SQLAlchemy backend {backend!r} is declared by both "
+                    f"{type(prior).__name__} and {type(dialect).__name__}"
+                )
+            registry[backend] = dialect
+    return registry
 
-    Preserves today's ``_build_explain_sql`` semantics at
-    ``query_engine.py:132`` — an unrecognised dialect string raises
-    rather than silently falling back. Internal callers resolve via
-    ``dialect_for_ds_type`` first, so this branch is unreachable in
-    normal flow but the strict error is preserved as defence in depth.
-    """
+
+_BY_SA_BACKEND = build_sa_backend_registry((*_ALL_DIALECTS, *_DS_TYPE_ONLY_DIALECTS))
+_UNDECLARED_BACKEND_DIALECT = SqlDialect()
+
+
+def get_dialect(sqlglot_name: str) -> SqlDialect:
+    """Strict lookup by sqlglot name; raises ``KeyError`` on unknown."""
     return _BY_SQLGLOT_NAME[sqlglot_name]
 
 
 def dialect_for_ds_type(ds_type: str | None) -> SqlDialect:
-    """Lenient lookup by datasource-config ``type`` string.
-
-    Falls back to ``PostgresDialect`` for ``None``, empty, OR unknown
-    ds-types. Matches today's
-    ``_DIALECT_MAP.get(ds_type or "", "postgres")`` semantics exactly.
-    """
+    """Lenient lookup by datasource type; ``None``, empty and unknown types get Postgres."""
     return _BY_DS_TYPE.get(ds_type or "", _BY_SQLGLOT_NAME["postgres"])
 
 
-# DEV-1686: quote reserved-word identifiers. Union the curated reserved-word set
-# into every dialect generator's RESERVED_KEYWORDS as soon as the registry is
-# built, so any ``.sql(dialect=...)`` emission quotes reserved aliases /
-# qualifiers / physical names. Imported here (after ``_ALL_DIALECTS`` is defined)
-# so the installer runs before any SQL is generated; idempotent.
-from slayer.sql.reserved_keywords import install_reserved_keywords  # noqa: E402
+def dialect_for_sa_backend(backend: str | None) -> SqlDialect:
+    """The dialect declaring SQLAlchemy ``backend``; an undeclared one gets the Postgres-shaped base."""
+    return _BY_SA_BACKEND.get(backend or "", _UNDECLARED_BACKEND_DIALECT)
 
-install_reserved_keywords()
+
+# Quote reserved-word identifiers in every dialect's emission; runs at import, idempotent.
+install_reserved_keywords(SQLGLOT_NAMES)

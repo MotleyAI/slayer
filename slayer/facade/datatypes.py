@@ -21,6 +21,8 @@ _DATATYPE_TO_JDBC: dict[DataType, str] = {
     # Opaque columns travel as text over the wire — the value is whatever the
     # driver stringified, and no client-side type claim would be honest.
     DataType.UNKNOWN: "VARCHAR",
+    # Lists travel as their JSON array text.
+    DataType.ARRAY: "VARCHAR",
 }
 
 

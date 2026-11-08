@@ -11,6 +11,7 @@ import contextlib
 import io
 import json
 import os
+import sys
 import tempfile
 from types import SimpleNamespace
 from typing import AsyncIterator, Iterator
@@ -19,6 +20,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
+from slayer.cli import _run_inspect, main
+from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
@@ -27,6 +30,7 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
+from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -76,16 +80,12 @@ async def mcp_storage() -> AsyncIterator[YAMLStorage]:
 
 class TestMcpSurface:
     async def test_inspect_tool_registered(self, mcp_storage: YAMLStorage) -> None:
-        from slayer.mcp.server import create_mcp_server
-
         server = create_mcp_server(storage=mcp_storage)
         tools = await server.list_tools()
         names = {t.name for t in tools}
         assert "inspect" in names
 
     async def test_inspect_tool_column(self, mcp_storage: YAMLStorage) -> None:
-        from slayer.mcp.server import create_mcp_server
-
         server = create_mcp_server(storage=mcp_storage)
         out = await _call_tool(
             server, name="inspect",
@@ -100,8 +100,6 @@ class TestMcpSurface:
     async def test_inspect_model_passthrough_still_works(
         self, mcp_storage: YAMLStorage
     ) -> None:
-        from slayer.mcp.server import create_mcp_server
-
         server = create_mcp_server(storage=mcp_storage)
         out = await _call_tool(
             server, name="inspect_model",
@@ -112,8 +110,6 @@ class TestMcpSurface:
     async def test_inspect_model_marked_deprecated(
         self, mcp_storage: YAMLStorage
     ) -> None:
-        from slayer.mcp.server import create_mcp_server
-
         server = create_mcp_server(storage=mcp_storage)
         tools = {t.name: t for t in await server.list_tools()}
         assert "inspect_model" in tools
@@ -220,8 +216,6 @@ class TestCliSurface:
     def test_run_inspect_prints_render(
         self, cli_storage: YAMLStorage
     ) -> None:
-        from slayer.cli import _run_inspect
-
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             _run_inspect(args=_inspect_args(), storage=cli_storage)
@@ -230,8 +224,6 @@ class TestCliSurface:
     def test_run_inspect_not_found_prints_string(
         self, cli_storage: YAMLStorage
     ) -> None:
-        from slayer.cli import _run_inspect
-
         # A not-found lookup is a descriptive string result (exit 0), not a
         # raised error — consistent with the inspect_model precedent.
         buf = io.StringIO()
@@ -242,20 +234,13 @@ class TestCliSurface:
             )
         assert "nope" in buf.getvalue()
 
-    def test_run_inspect_invalid_arg_exits_nonzero(
+    def test_run_inspect_invalid_arg_raises(
         self, cli_storage: YAMLStorage
     ) -> None:
-        from slayer.cli import _run_inspect
-
-        # Invalid args raise ValueError → _exit_with_error → sys.exit(1).
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf), pytest.raises(SystemExit) as exc:
-            _run_inspect(
-                args=_inspect_args(entity_type="banana"),
-                storage=cli_storage,
-            )
-        assert exc.value.code == 1
-        assert "entity_type" in buf.getvalue()
+        # Invalid args raise ValueError; main()'s error door renders it.
+        args = _inspect_args(entity_type="banana")
+        with pytest.raises(ValueError, match="entity_type"):
+            _run_inspect(args=args, storage=cli_storage)
 
 
 # ---------------------------------------------------------------------------
@@ -273,8 +258,6 @@ def client_storage() -> Iterator[YAMLStorage]:
 
 class TestSlayerClientSurface:
     async def test_inspect_async_local(self, client_storage: YAMLStorage) -> None:
-        from slayer.client.slayer_client import SlayerClient
-
         client = SlayerClient(storage=client_storage)
         out = await client.inspect(
             reference="mydb.orders.amount", entity_type="column", compact=False,
@@ -282,8 +265,6 @@ class TestSlayerClientSurface:
         assert "Column: mydb.orders.amount" in out
 
     def test_inspect_sync_local(self, client_storage: YAMLStorage) -> None:
-        from slayer.client.slayer_client import SlayerClient
-
         client = SlayerClient(storage=client_storage)
         out = client.inspect_sync(
             reference="mydb.orders.amount", entity_type="column", compact=False,
@@ -293,8 +274,6 @@ class TestSlayerClientSurface:
     def test_inspect_sync_remote_posts_body(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from slayer.client.slayer_client import SlayerClient
-
         client = SlayerClient(url="http://localhost:5143")
         assert client._engine is None  # remote mode
         captured: dict = {}
@@ -324,8 +303,6 @@ class TestMcpBatch:
     async def test_inspect_tool_list_markdown(
         self, mcp_storage: YAMLStorage
     ) -> None:
-        from slayer.mcp.server import create_mcp_server
-
         server = create_mcp_server(storage=mcp_storage)
         out = await _call_tool(
             server, name="inspect",
@@ -342,8 +319,6 @@ class TestMcpBatch:
     async def test_inspect_tool_list_json(
         self, mcp_storage: YAMLStorage
     ) -> None:
-        from slayer.mcp.server import create_mcp_server
-
         server = create_mcp_server(storage=mcp_storage)
         out = await _call_tool(
             server, name="inspect",
@@ -365,8 +340,6 @@ class TestMcpBatch:
     ) -> None:
         # The widened tool advertises ``reference`` as accepting a list too,
         # and the docstring mentions the batch/list behavior.
-        from slayer.mcp.server import create_mcp_server
-
         server = create_mcp_server(storage=mcp_storage)
         tool = {t.name: t for t in await server.list_tools()}["inspect"]
         ref_schema = tool.inputSchema["properties"]["reference"]
@@ -385,8 +358,6 @@ class TestMcpBatch:
     async def test_inspect_tool_list_one_bad_id(
         self, mcp_storage: YAMLStorage
     ) -> None:
-        from slayer.mcp.server import create_mcp_server
-
         server = create_mcp_server(storage=mcp_storage)
         out = await _call_tool(
             server, name="inspect",
@@ -479,8 +450,6 @@ class TestCliBatch:
     ) -> None:
         # argparse nargs="+" always yields a list; the CLI adapter maps a
         # one-element list back to a bare str → byte-for-byte single output.
-        from slayer.cli import _run_inspect
-
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             _run_inspect(
@@ -494,8 +463,6 @@ class TestCliBatch:
     def test_run_inspect_multi_positional_is_batch(
         self, cli_storage: YAMLStorage
     ) -> None:
-        from slayer.cli import _run_inspect
-
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             _run_inspect(
@@ -513,10 +480,6 @@ class TestCliBatch:
     ) -> None:
         # End-to-end: ``slayer inspect c1 c2 --type column`` must parse two
         # positionals (nargs="+") and batch them.
-        import sys
-
-        from slayer.cli import main
-
         storage_dir = os.path.join(str(tmp_path), "store")
         os.makedirs(storage_dir, exist_ok=True)
         _seed_sync(YAMLStorage(base_dir=storage_dir))
@@ -539,8 +502,6 @@ class TestSlayerClientBatch:
     async def test_inspect_async_local_list(
         self, client_storage: YAMLStorage
     ) -> None:
-        from slayer.client.slayer_client import SlayerClient
-
         client = SlayerClient(storage=client_storage)
         out = await client.inspect(
             reference=["mydb.orders.amount", "mydb.orders.customer_id"],
@@ -552,8 +513,6 @@ class TestSlayerClientBatch:
     def test_inspect_sync_local_list(
         self, client_storage: YAMLStorage
     ) -> None:
-        from slayer.client.slayer_client import SlayerClient
-
         client = SlayerClient(storage=client_storage)
         out = client.inspect_sync(
             reference=["mydb.orders.amount", "mydb.orders.customer_id"],
@@ -565,8 +524,6 @@ class TestSlayerClientBatch:
     def test_inspect_sync_remote_posts_list_body(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from slayer.client.slayer_client import SlayerClient
-
         client = SlayerClient(url="http://localhost:5143")
         assert client._engine is None  # remote mode
         captured: dict = {}
@@ -589,8 +546,6 @@ class TestSlayerClientBatch:
     async def test_inspect_async_remote_posts_list_body(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from slayer.client.slayer_client import SlayerClient
-
         client = SlayerClient(url="http://localhost:5143")
         assert client._engine is None  # remote mode
         captured: dict = {}

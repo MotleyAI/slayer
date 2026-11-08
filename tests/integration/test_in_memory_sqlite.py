@@ -15,21 +15,13 @@ import pytest
 import sqlalchemy as sa
 
 from slayer.core.models import DatasourceConfig
-from slayer.sql import client as sql_client
+from slayer.sql import engine_factory
 from slayer.sql.client import SlayerSQLClient
 
 
 def _setup(client: SlayerSQLClient, statements: Iterable[str]) -> None:
-    """Run DDL/DML on whichever engine the client would use.
-
-    Mirrors the helper in ``tests/test_sql_client_in_memory_async.py``.
-    For file-backed SQLite the per-client accessor returns ``None`` and
-    the helper falls back to the module-level engine cache.
-    """
-    getter = getattr(client, "_get_sync_engine_for_client", None)
-    engine = getter() if getter is not None else None
-    if engine is None:
-        engine = sql_client._get_sync_engine(client.datasource.get_connection_string())
+    """Run DDL/DML on the client's per-client engine (file-backed → factory engine)."""
+    engine = client._get_sync_engine_for_client()
     with engine.begin() as conn:
         for stmt in statements:
             conn.execute(sa.text(stmt))
@@ -54,27 +46,14 @@ async def test_file_backed_sqlite_still_shares_state_across_async_calls(
             "INSERT INTO t VALUES (1), (2), (3)",
         ],
     )
-    rows = await client.execute("SELECT x FROM t ORDER BY x")
+    rows = (await client.execute("SELECT x FROM t ORDER BY x")).rows
     assert rows == [{"x": 1}, {"x": 2}, {"x": 3}]
 
 
 @pytest.mark.integration
 async def test_file_backed_sqlite_engine_cached_in_module(tmp_path: Path) -> None:
     """White-box: file-backed SQLite routes through ``engine_factory``'s
-    shared cache (DEV-1551).
-
-    Pre-DEV-1551, ``SlayerSQLClient._get_sync_engine_for_client`` returned
-    ``None`` for file-backed SQLite and the engine lived in the
-    ``slayer.sql.client._sync_engines`` module dict. Post-migration, every
-    non-in-memory datasource goes through
-    ``engine_factory.get_engine(datasource)`` so dialect runtime hooks
-    (Snowflake's ``creator=`` bridge, SQLite UDF registration) fire
-    uniformly. The conceptual invariant — file-backed SQLite is cached
-    once and reused across clients on the same connection_string — is
-    preserved; the cache key just lives on ``engine_factory._engine_cache``
-    now.
-    """
-    from slayer.sql import engine_factory
+    shared cache, cached once and reused across clients on the same connection string."""
     db_path = tmp_path / "cached.db"
     conn_str = f"sqlite:///{db_path}"
     ds = DatasourceConfig(

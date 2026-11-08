@@ -9,6 +9,7 @@ so cosine similarity is predictable.
 
 from __future__ import annotations
 
+import logging
 import tempfile
 from collections.abc import Iterator
 
@@ -69,20 +70,28 @@ async def _seed_basic_corpus(storage: YAMLStorage) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_question_only_warns_when_extra_missing(
-    storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch,
+async def test_question_only_degrades_quietly_when_extra_missing(
+    storage: YAMLStorage,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """If the extra isn't installed (or no API key is configured), the
-    embedding channel emits a warning and the search still returns
-    whatever tantivy + BM25 found. The session-wide autouse fixture
-    already stubs ``is_available`` to ``False`` — this test relies on
-    that default rather than re-patching it."""
+    embedding channel is skipped and the search still returns whatever
+    tantivy + BM25 found. That is a deployment gap the caller cannot act
+    on, so it reaches the operator log rather than the response. The
+    session-wide autouse fixture already stubs ``is_available`` to
+    ``False`` — this test relies on that default rather than re-patching
+    it."""
     await _seed_basic_corpus(storage)
     service = SearchService(storage=storage)
-    response = await service.search(question="how do I look up purchases?")
-    assert any(
+    with caplog.at_level(
+        logging.WARNING, logger="slayer.search.retrievers.embeddings"
+    ):
+        response = await service.search(question="how do I look up purchases?")
+    assert not any(
         "advanced_search" in w for w in response.warnings
     ), response.warnings
+    assert "advanced_search" in caplog.text
 
 
 async def test_question_only_warns_when_no_embeddings_persisted(

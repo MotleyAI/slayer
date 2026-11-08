@@ -1,0 +1,26 @@
+version: 10
+name: dr_slashed
+source_queries:
+- version: 4
+  source_model: orders
+  measures:
+  - formula: amount:sum
+    name: rev
+  time_dimensions:
+  - dimension:
+      name: ordered_at
+    granularity: month
+    date_range:
+    - 2024/01/01
+    - 2024/06/29
+  whole_periods_only: false
+  distinct_dimension_values: true
+  to_many_handling: broadcast
+query_variables: {}
+data_source: shop
+columns: []
+measures: []
+aggregations: []
+joins: []
+filters: []
+hidden: false

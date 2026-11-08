@@ -8,10 +8,16 @@ import pytest
 from fastapi.testclient import TestClient
 
 from slayer.api.server import QueryRequest, create_app
+from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.errors import SchemaDriftError
+from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.sql.client import SlayerSQLClient
 from slayer.core.query import SlayerQuery
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._saved_query_refinement_fixtures import BY_REGION_MONTH, month, populate_refine_storage, seed_sqlite
 
 
 # `create_app` builds an MCP server (~2 s of FastMCP/pydantic schema gen)
@@ -279,14 +285,31 @@ class TestQuery:
         assert resp.status_code == 400
 
     def test_query_missing_datasource(self, client: TestClient, storage: YAMLStorage) -> None:
-        storage.save_model(SlayerModel(
+        run_sync(storage.save_model(SlayerModel(
             name="orders",
             sql_table="t",
             data_source="missing_ds",
             columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
-        ))
+        )))
         resp = client.post("/query", json={"source_model": "orders", "measures": [{"formula": "revenue:sum"}]})
         assert resp.status_code == 400
+
+    def test_query_schema_drift_returns_422(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """SchemaDriftError subclasses SlayerError (a ValueError); the 422
+        drift contract must not be swallowed by the generic 400 handler."""
+        async def _raise_drift(self, *args, **kwargs):
+            raise SchemaDriftError(
+                models=["orders"], to_delete=[], original=RuntimeError("boom"),
+            )
+
+        monkeypatch.setattr(SlayerQueryEngine, "execute", _raise_drift)
+        resp = client.post("/query", json={
+            "source_model": "orders", "measures": [{"formula": "*:count"}],
+        })
+        assert resp.status_code == 422
+        assert resp.json()["detail"]["error"] == "schema_drift"
 
     def test_request_measures_payload_reaches_slayer_query(self) -> None:
         """v2 `measures` key must be declared on QueryRequest so FastAPI keeps it."""
@@ -331,8 +354,6 @@ class TestQueryBackedModelsAPI:
         self, client: TestClient, storage: YAMLStorage
     ) -> None:
         # Set up upstream + a datasource so cache refresh succeeds at save time.
-        from slayer.core.models import DatasourceConfig
-        from slayer.async_utils import run_sync
         run_sync(
             storage.save_datasource(DatasourceConfig(
                 name="ds", type="sqlite", database=":memory:"
@@ -365,8 +386,6 @@ class TestQueryBackedModelsAPI:
     def test_post_models_rejects_user_columns_on_query_backed(
         self, client: TestClient, storage: YAMLStorage
     ) -> None:
-        from slayer.core.models import DatasourceConfig
-        from slayer.async_utils import run_sync
         run_sync(
             storage.save_datasource(DatasourceConfig(
                 name="ds", type="sqlite", database=":memory:"
@@ -399,7 +418,7 @@ class TestQueryBackedModelsAPI:
             "source_model": "other",
         })
         assert resp.status_code == 400
-        assert "no other query fields" in resp.text or "may not be set" in resp.text
+        assert "put query clauses in 'refine'" in resp.text
 
     def test_post_query_run_by_name_rejects_whole_periods_only(
         self, client: TestClient
@@ -412,7 +431,19 @@ class TestQueryBackedModelsAPI:
             "whole_periods_only": True,
         })
         assert resp.status_code == 400
-        assert "no other query fields" in resp.text or "may not be set" in resp.text
+        assert "put query clauses in 'refine'" in resp.text
+
+    def test_post_query_run_by_name_rejects_strict(
+        self, client: TestClient
+    ) -> None:
+        # Run-by-name executes the stored backing query, which never sees a
+        # request-level ``strict`` — rejecting beats silently dropping it.
+        resp = client.post("/query", json={
+            "name": "some_model",
+            "strict": True,
+        })
+        assert resp.status_code == 400
+        assert "put query clauses in 'refine'" in resp.text
 
     def test_post_query_run_by_name_requires_model(
         self, client: TestClient
@@ -427,11 +458,75 @@ class TestQueryBackedModelsAPI:
         assert resp.status_code == 400
 
 
+class TestRunByNameRefine:
+    """``POST /query`` with ``refine`` next to ``name`` (spec: queries/saved-query-refinement)."""
+
+    @pytest.fixture
+    def seeded(self, storage: YAMLStorage, tmp_path) -> YAMLStorage:
+        db_path = str(tmp_path / "seed.db")
+        seed_sqlite(db_path)
+        run_sync(populate_refine_storage(storage, db_path=db_path))
+        return storage
+
+    def test_refine_with_name(self, client: TestClient, seeded: YAMLStorage) -> None:
+        resp = client.post("/query", json={"name": "monthly_revenue", "refine": {"dimensions": ["region"]}})
+        assert resp.status_code == 200, resp.text
+        data = resp.json()["data"]
+        assert {(r["orders.region"], month(r["orders.ordered_at"])): r["orders.revenue"] for r in data} == BY_REGION_MONTH
+
+    def test_refine_with_variables(self, client: TestClient, seeded: YAMLStorage) -> None:
+        resp = client.post("/query", json={
+            "name": "revenue_by_status", "refine": {"measures": ["count(*)"]}, "variables": {"status": "refunded"},
+        })
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["data"] == [{"orders.region": "US", "orders.revenue": 40.0, "orders._count": 1}]
+
+    def test_empty_refine_is_plain_run(self, client: TestClient, seeded: YAMLStorage) -> None:
+        plain = client.post("/query", json={"name": "monthly_revenue", "dry_run": True})
+        refined = client.post("/query", json={"name": "monthly_revenue", "refine": {}, "dry_run": True})
+        assert refined.status_code == plain.status_code == 200
+        assert refined.json()["sql"] == plain.json()["sql"]
+
+    def test_refine_without_name(self, client: TestClient, seeded: YAMLStorage) -> None:
+        resp = client.post("/query", json={"source_model": "orders", "refine": {"dimensions": ["region"]}})
+        assert resp.status_code == 400
+        assert "'refine' requires 'name'" in resp.text
+
+    def test_null_refine_without_name(self, client: TestClient, seeded: YAMLStorage) -> None:
+        resp = client.post("/query", json={"source_model": "orders", "measures": ["count(*)"], "refine": None})
+        assert resp.status_code == 400
+        assert "'refine' requires 'name'" in resp.text
+
+    @pytest.mark.parametrize("flat", [{"dimensions": ["region"]}, {"limit": None}, {"source_model": None}])
+    def test_flat_fields_next_to_name(self, client: TestClient, seeded: YAMLStorage, flat: dict) -> None:
+        resp = client.post("/query", json={"name": "monthly_revenue", **flat})
+        assert resp.status_code == 400
+        assert "put query clauses in 'refine'" in resp.text
+
+    def test_conflict_is_400(self, client: TestClient, seeded: YAMLStorage) -> None:
+        resp = client.post("/query", json={
+            "name": "monthly_revenue", "refine": {"measures": [{"formula": "count(*)", "name": "revenue"}]},
+        })
+        assert resp.status_code == 400
+        assert "revenue" in resp.text
+
+    @pytest.mark.parametrize("refine", [{"bogus": 1}, {"source_model": "orders"}, {"limit": "many"}])
+    def test_malformed_refine_is_422(self, client: TestClient, seeded: YAMLStorage, refine: dict) -> None:
+        resp = client.post("/query", json={"name": "monthly_revenue", "refine": refine})
+        assert resp.status_code == 422
+
+    def test_openapi_shows_query_refinement(self, client: TestClient) -> None:
+        schemas = client.get("/openapi.json").json()["components"]["schemas"]
+        assert "QueryRefinement" in schemas
+        assert {"dimensions", "measures", "filters", "limit"} <= set(schemas["QueryRefinement"]["properties"])
+        assert "source_model" not in schemas["QueryRefinement"]["properties"]
+
+
 class TestQueryListBody:
     """POST /query accepts a multi-stage DAG via ``{"queries": [...]}``.
 
-    Mirrors ``engine.execute(query=[...])`` and the MCP ``query_nested``
-    tool: earlier entries are named sub-queries, the last entry is the
+    Mirrors ``engine.execute(query=[...])`` and the MCP ``query`` tool's
+    list form: earlier entries are named sub-queries, the last entry is the
     DAG root, order doesn't matter (engine auto-sorts), cycles and
     self-references are rejected with 400.
     """
@@ -628,14 +723,25 @@ class TestOpenAPI400Documentation:
         responses = spec["paths"]["/datasources/priority"]["put"]["responses"]
         assert "400" in responses
 
+    @pytest.mark.parametrize(
+        ("path", "method"),
+        [
+            ("/models/{name}", "get"),
+            ("/models/{name}", "delete"),
+            ("/datasources/{name}", "get"),
+            ("/datasources/{name}", "delete"),
+        ],
+    )
+    def test_not_found_routes_document_404(self, client: TestClient, path: str, method: str) -> None:
+        spec = client.get("/openapi.json").json()
+        assert "404" in spec["paths"][path][method]["responses"]
+
     def test_post_query_run_by_name_dry_run_returns_sql_without_executing(
-        self, client: TestClient, storage: YAMLStorage
+        self, client: TestClient, storage: YAMLStorage, monkeypatch
     ) -> None:
         """``{"name": "m", "dry_run": true}`` must populate ``sql`` in the response
         without ever calling the SQL client.
         """
-        from slayer.core.models import DatasourceConfig
-        from slayer.async_utils import run_sync
         run_sync(storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=":memory:")
         ))
@@ -654,7 +760,6 @@ class TestOpenAPI400Documentation:
         })
         assert setup_resp.status_code == 200, setup_resp.text
 
-        from slayer.sql.client import SlayerSQLClient
         execute_calls = 0
         real_execute = SlayerSQLClient.execute
 
@@ -663,13 +768,68 @@ class TestOpenAPI400Documentation:
             execute_calls += 1
             return await real_execute(self, *a, **kw)
 
-        SlayerSQLClient.execute = counting_execute  # type: ignore[method-assign]
-        try:
-            resp = client.post("/query", json={"name": "qb_dryrun", "dry_run": True})
-        finally:
-            SlayerSQLClient.execute = real_execute  # type: ignore[method-assign]
+        monkeypatch.setattr(SlayerSQLClient, "execute", counting_execute)
+        resp = client.post("/query", json={"name": "qb_dryrun", "dry_run": True})
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body.get("sql") is not None
         assert "amount" in body["sql"].lower()
         assert execute_calls == 0, "dry_run=True must not execute SQL"
+
+
+class TestSaveTimeSqlValidation:
+    """DEV-1843 — ``POST /models`` trial-executes a raw-``sql`` model against a
+    reachable datasource; a rejection surfaces as HTTP 400 (ValueError→400)."""
+
+    def _register_live_ds(self, client: TestClient, tmp_path) -> None:
+        db_path = str(tmp_path / "live.db")
+        with transaction(db_path) as conn:
+            conn.executescript(
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL);"
+                "INSERT INTO orders VALUES (1, 100.0);"
+            )
+        resp = client.post(
+            "/datasources",
+            json={"name": "livedb", "type": "sqlite", "database": db_path},
+        )
+        assert resp.status_code == 200
+
+    def test_valid_sql_model_created_and_persisted(
+        self, client: TestClient, tmp_path
+    ) -> None:
+        self._register_live_ds(client, tmp_path)
+        resp = client.post("/models", json={
+            "name": "good_model", "sql": "SELECT id FROM orders",
+            "data_source": "livedb",
+            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+        })
+        assert resp.status_code == 200
+        # Acknowledged AND retrievable — not a no-op 200.
+        assert client.get("/models/good_model").status_code == 200
+
+    def test_invalid_sql_model_returns_400(self, client: TestClient, tmp_path) -> None:
+        self._register_live_ds(client, tmp_path)
+        resp = client.post("/models", json={
+            "name": "bad_model", "sql": "SELECT nope FROM ghosts",
+            "data_source": "livedb",
+            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+        })
+        assert resp.status_code == 400
+        assert client.get("/models/bad_model").status_code == 404
+
+    def test_invalid_sql_update_returns_400_and_original_intact(
+        self, client: TestClient, tmp_path
+    ) -> None:
+        self._register_live_ds(client, tmp_path)
+        assert client.post("/models", json={
+            "name": "upd", "sql": "SELECT id FROM orders",
+            "data_source": "livedb",
+            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+        }).status_code == 200
+        resp = client.put("/models/upd", json={
+            "name": "upd", "sql": "SELECT nope FROM ghosts",
+            "data_source": "livedb",
+            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+        })
+        assert resp.status_code == 400
+        assert client.get("/models/upd").json()["sql"] == "SELECT id FROM orders"

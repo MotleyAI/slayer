@@ -9,15 +9,16 @@ import os
 
 import pytest
 
-duckdb = pytest.importorskip("duckdb")
-
 from slayer.core.models import DatasourceConfig
 from slayer.core.query import SlayerQuery, extract_model_variables
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.js_parser import parse_cube_js
 from slayer.cube.models import CubeProject
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import SlayerQueryEngine, run_over_caller_engine
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._engine_helpers import disposable_engine
+
+duckdb = pytest.importorskip("duckdb")
 
 _FIXTURE = os.path.join(
     os.path.dirname(__file__), "fixtures", "cube_js", "rr_drivers.js"
@@ -62,10 +63,13 @@ async def _import_and_engine(tmp_path):
     parsed = parse_cube_js(source)
     assert not [i for i in parsed.issues if i.severity == "error"], \
         [i.message for i in parsed.issues]
-    result = CubeToSlayerConverter(
+    converter = CubeToSlayerConverter(
         project=CubeProject(cubes=parsed.cubes, views=parsed.views),
         data_source="rr_ds", parse_issues=parsed.issues,
-    ).convert()
+    )
+    with disposable_engine(f"duckdb:///{db_path}") as sa_engine:
+        run_over_caller_engine(sa_engine, data_source="rr_ds", work=lambda c: converter.collect_metadata(client=c))
+    result = converter.convert()
     assert not result.report.has_errors, [i.message for i in result.report.issues if i.severity == "error"]
     model = next(m for m in result.models if m.name == "RrDrivers")
     await storage.save_model(model)

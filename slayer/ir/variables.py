@@ -1,0 +1,232 @@
+"""Variable substitution — ``{var}`` placeholder handling for the pipeline.
+
+- :func:`merge_query_variables` collapses the four variable layers into the
+  effective dict (runtime > stage > outer > model_defaults).
+- :func:`apply_variables_to_query` binds ``{var}`` as literals into a query's
+  filters, measure formulas, computed- and time-dimension expressions and
+  order expressions, and substitutes its ``date_range`` bounds.
+- :func:`substitute_model_sql_surfaces` substitutes a model's four Mode-A
+  surfaces (SQL regime) and binds its saved measure formulas.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Any, Dict, Optional
+
+from slayer.core.models import ModelMeasure, SlayerModel
+from slayer.core.syntax import bind_variables, has_bindings, variable_names
+from slayer.core.query import (
+    ComputedDimension,
+    OrderItem,
+    SlayerQuery,
+    TimeDimension,
+    _contains_block_delimiter,
+    coerce_declared_list_variables,
+    declares_variables,
+    extract_placeholder_names,
+    extract_variable_refs,
+    list_valued_variable_names,
+    substitute_variables,
+)
+
+
+def merge_query_variables(
+    *,
+    runtime: Optional[Dict[str, Any]],
+    stage: Optional[Dict[str, Any]],
+    outer: Optional[Dict[str, Any]],
+    model_defaults: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Collapse the four variable layers into the effective dict.
+
+    Precedence (highest wins): runtime > stage > outer > model_defaults.
+    ``None`` and empty-dict layers are identities.
+    """
+    return {
+        **(model_defaults or {}),
+        **(outer or {}),
+        **(stage or {}),
+        **(runtime or {}),
+    }
+
+
+def _substituted_measure(m: ModelMeasure, variables: Dict[str, Any]) -> ModelMeasure:
+    if not has_bindings(m.formula):
+        return m
+    return m.substituted(bind_variables(m.formula, variables), variables=variables)
+
+
+def _substituted_dimension(d: Any, variables: Dict[str, Any]) -> Any:
+    if not isinstance(d, ComputedDimension):
+        return d
+    text = bind_variables(d.expression, variables)
+    if text == d.expression:
+        return d
+    bound = d.model_copy(update={"expression": text})
+    bound._template = d.template
+    return bound
+
+
+def _substituted_order(o: OrderItem, variables: Dict[str, Any]) -> OrderItem:
+    if not o.raw_formula:
+        return o
+    text = bind_variables(o.raw_formula, variables)
+    return o if text == o.raw_formula else o.model_copy(update={"raw_formula": text})
+
+
+_BOUND_VARIABLE_RE = re.compile(r"\{([A-Za-z_]\w*)\}", re.ASCII)
+
+
+def _date_range_bound(text: str, variables: Dict[str, Any]) -> str:
+    """A ``date_range`` bound with each ``{name}`` replaced by its value's text (a string or a whole number);
+    the result is then checked as a time point."""
+    def _value(match: "re.Match[str]") -> str:
+        name = match.group(1)
+        if name not in variables:
+            raise ValueError(
+                f"Undefined variable '{name}' in date_range bound {text!r}. Available variables: {sorted(variables)}"
+            )
+        value = variables[name]
+        if isinstance(value, bool) or not isinstance(value, (str, int)):
+            raise ValueError(f"Variable '{name}' in a date_range bound must be a string or an integer year.")
+        return str(value)
+
+    return _BOUND_VARIABLE_RE.sub(_value, text)
+
+
+def _substituted_time_dimension(td: TimeDimension, variables: Dict[str, Any]) -> TimeDimension:
+    dimension = bind_variables(td.dimension, variables)
+    bounds = td.date_range and [None if b is None else _date_range_bound(b, variables) for b in td.date_range]
+    if dimension == td.dimension and bounds == td.date_range:
+        return td
+    # Revalidated so a substituted bound is shape-checked like a literal one.
+    bound = TimeDimension.model_validate({
+        "dimension": dimension, "granularity": td.granularity, "date_range": bounds, "name": td.name,
+        "label": td.label,
+    })
+    bound._template = td.template
+    return bound
+
+
+def apply_variables_to_query(
+    *,
+    query: SlayerQuery,
+    variables: Optional[Dict[str, Any]] = None,
+) -> SlayerQuery:
+    """A fresh copy of ``query`` with ``{var}`` substituted on every Mode-B surface.
+
+    Changed measures and computed dimensions keep their template in ``_template``;
+    the query is rebuilt so construction validators re-run on the substituted text.
+    """
+    effective: Dict[str, Any] = dict(variables or {})
+    changed: Dict[str, Any] = {}
+    if query.filters is not None:
+        changed["filters"] = [bind_variables(f, effective) for f in query.filters]
+    surfaces = (
+        ("measures", lambda m: _substituted_measure(m, effective)),
+        ("dimensions", lambda d: _substituted_dimension(d, effective)),
+        ("order", lambda o: _substituted_order(o, effective)),
+        ("time_dimensions", lambda td: _substituted_time_dimension(td, effective)),
+    )
+    for field, substitute in surfaces:
+        entries = getattr(query, field)
+        if entries:
+            new = [substitute(e) for e in entries]
+            if any(n is not o for n, o in zip(new, entries)):
+                changed[field] = new
+    if not changed:
+        return _carrying(query.model_copy(), effective)
+    # ``name`` may already be a minted stage identity the user-name validator refuses.
+    data = {f: getattr(query, f) for f in query.model_fields_set | {"version"} if f != "name"}
+    rebuilt = SlayerQuery.model_validate(data | changed)
+    rebuilt = rebuilt.model_copy(update={"name": query.name}) if "name" in query.model_fields_set else rebuilt
+    return _carrying(rebuilt, effective)
+
+
+def _carrying(query: SlayerQuery, variables: Dict[str, Any]) -> SlayerQuery:
+    """``query`` carrying ``variables`` when a whole-``IN`` placeholder stays unwritten in it."""
+    texts = [
+        *(query.filters or []), *(m.formula for m in query.measures or [] if isinstance(m, ModelMeasure)),
+        *(d.expression for d in query.dimensions or [] if isinstance(d, ComputedDimension)),
+        *(o.raw_formula for o in query.order or [] if o.raw_formula),
+    ]
+    if any(variable_names(t) for t in texts):
+        query._bound_variables = variables
+    return query
+
+
+def _mode_a_surfaces(model: SlayerModel) -> list:
+    return [model.sql, *(model.filters or []), *(t for c in model.columns for t in (c.sql, c.filter))]
+
+
+def _measure_needs_pass(measure: ModelMeasure) -> bool:
+    return has_bindings(measure.formula)
+
+
+def model_needs_substitution_pass(model: SlayerModel) -> bool:
+    """True if substitution must run with no variables (a Mode-A ``{? ?}`` block, declared
+    variables, or any ``{...}`` token in a saved measure formula)."""
+    return (
+        any(s and _contains_block_delimiter(s) for s in _mode_a_surfaces(model))
+        or declares_variables(model)
+        or any(_measure_needs_pass(m) for m in model.measures)
+    )
+
+
+def model_placeholder_names(model: SlayerModel) -> set:
+    """Every ``{var}`` a model's Mode-A surfaces and saved measure formulas read."""
+    out: set = {name for m in model.measures for name in variable_names(m.formula)}
+    for text in _mode_a_surfaces(model):
+        if text:
+            bare, blocked = extract_variable_refs(text)
+            out |= bare | blocked
+    return out
+
+
+def substitute_model_sql_surfaces(
+    *, model: SlayerModel, variables: Dict[str, Any], backslash_escapes: bool,
+) -> SlayerModel:
+    """Copy of ``model`` with ``{var}`` substituted into its four Mode-A surfaces
+    and bound into its saved measure formulas; no-op when unneeded."""
+    if not variables and not model_needs_substitution_pass(model):
+        return model
+    variables = coerce_declared_list_variables(
+        variables, list_valued=list_valued_variable_names(model)
+    )
+
+    def _sub(text: str) -> str:
+        return substitute_variables(
+            filter_str=text, variables=variables, backslash_escapes=backslash_escapes,
+        )
+
+    columns = []
+    for col in model.columns:
+        updates: Dict[str, Any] = {}
+        if col.sql is not None:
+            updates["sql"] = _sub(col.sql)
+        if col.filter is not None:
+            updates["filter"] = _sub(col.filter)
+        columns.append(col.model_copy(update=updates) if updates else col)
+    update: Dict[str, Any] = {"columns": columns}
+    if model.sql is not None:
+        update["sql"] = _sub(model.sql)
+    if model.filters:
+        update["filters"] = [_sub(f) for f in model.filters]
+    if model.measures:
+        update["measures"] = [
+            m.substituted(bind_variables(m.formula, variables), variables=variables) if _measure_needs_pass(m) else m
+            for m in model.measures
+        ]
+    return model.model_copy(update=update)
+
+
+__all__ = [
+    "apply_variables_to_query",
+    "model_needs_substitution_pass",
+    "model_placeholder_names",
+    "substitute_model_sql_surfaces",
+    "extract_placeholder_names",
+    "merge_query_variables",
+    "substitute_variables",
+]

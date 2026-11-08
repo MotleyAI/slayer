@@ -1,26 +1,32 @@
-"""Flight SQL command handlers (DEV-1390 §4.2, §6.4).
+"""Flight SQL command handlers.
 
 Decodes incoming Flight SQL commands from ``descriptor.cmd``, ``action.body``
 and ticket bytes; dispatches to per-command logic; serialises responses.
 
 All public methods are synchronous because pyarrow's ``FlightServerBase``
-dispatches each RPC on its own gRPC thread. SLayer's storage / engine
-are async; we bridge through :func:`slayer.async_utils.run_sync`.
+dispatches each RPC on its own gRPC thread. Storage and engine work bridges
+through ``engine.run_sync``, one workflow at a time.
 """
 
 from __future__ import annotations
 
 import decimal
 import logging
-from collections import defaultdict
+import threading
+from collections.abc import Coroutine
+from typing import Any, TypeVar
 
 import pyarrow as pa
+import slayer as _slayer
 import pyarrow.flight as fl
 from google.protobuf.any_pb2 import Any as PbAny
 
-from slayer.async_utils import run_sync
+from slayer import usage_reporting
+from slayer.core.enums import DataType
+from slayer.core.format import encode_text
 from slayer.core.models import SlayerModel
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.core.query import SlayerQuery
+from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.flight import _flight_sql_pb2 as fsql_pb
 from slayer.flight.catalog import (
     CATALOG_NAME,
@@ -35,9 +41,10 @@ from slayer.flight.translator import (
     translate,
 )
 from slayer.flight.types import datatype_to_arrow
-from slayer.storage.base import StorageBackend
+from slayer.storage.document_loading import DocumentLoadFailures
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 
 # Type URL prefix that Flight SQL uses for its ``Any``-wrapped commands.
@@ -89,6 +96,19 @@ def _pack_any(msg: object, type_url_suffix: str) -> bytes:
 
 
 # --- result-set shapes for the catalog commands ------------------------------
+
+
+def _arrow_cell(value: object, dt: DataType | None) -> object:
+    """An engine value fitted to its column's Arrow type; utf8 columns carry the codec's text form."""
+    if value is None:
+        return None
+    if dt is None or datatype_to_arrow(dt) == pa.utf8():
+        return encode_text(value)
+    if dt == DataType.DOUBLE and isinstance(value, decimal.Decimal):
+        return float(value)
+    if dt == DataType.INT and isinstance(value, decimal.Decimal):
+        return int(value)
+    return value
 
 
 def _empty_table(schema: pa.Schema) -> pa.Table:
@@ -169,14 +189,10 @@ class FlightHandlers:
     ``FlightCatalog`` per call (§7.2 — no caching).
     """
 
-    def __init__(
-        self,
-        *,
-        engine: SlayerQueryEngine,
-        storage: StorageBackend,
-    ) -> None:
+    def __init__(self, *, engine: SlayerQueryEngine) -> None:
         self._engine = engine
-        self._storage = storage
+        # Each RPC's workflow releases the shared clients on its own loop, so run one at a time.
+        self._engine_lock = threading.Lock()
 
     # ----- helpers ----------------------------------------------------------
 
@@ -186,17 +202,15 @@ class FlightHandlers:
 
     def _fetch_models_by_datasource(self) -> dict[str, list[SlayerModel]]:
         async def fetch() -> dict[str, list[SlayerModel]]:
-            datasources = await self._storage.list_datasources()
-            out: dict[str, list[SlayerModel]] = defaultdict(list)
-            for ds in datasources:
-                model_names = await self._storage.list_models(data_source=ds)
-                for name in model_names:
-                    model = await self._storage.get_model(name=name, data_source=ds)
-                    if model is not None:
-                        out[ds].append(model)
-            return dict(out)
+            failures = DocumentLoadFailures()
+            out: dict[str, list[SlayerModel]] = {}
+            storage = self._engine.storage  # the engine's view refines stored models through its clients
+            for ds in await storage.list_datasources():
+                if models := failures.skip(await storage.load_models(data_source=ds)):
+                    out[ds] = models
+            return out
 
-        return run_sync(fetch())
+        return self._run(fetch())
 
     # ----- catalog commands -------------------------------------------------
 
@@ -262,7 +276,6 @@ class FlightHandlers:
         return pa.Table.from_pylist(rows, schema=_SCHEMA_GET_XDBC_TYPE_INFO)
 
     def handle_get_sql_info(self) -> pa.Table:
-        import slayer as _slayer
         # SqlInfo enum values come straight from the FlightSql.proto spec.
         # We expose the minimum the spec recommends.
         rows = [
@@ -303,9 +316,8 @@ class FlightHandlers:
     def do_get_for_sql(self, sql: str) -> fl.FlightDataStream:
         """Execute ``sql`` and return the record-batch stream."""
         result = self._translate(sql)
-        if isinstance(result, ProbeResult):
-            return _table_to_record_batch_stream(result.table)
-        if isinstance(result, InfoSchemaResult):
+        if isinstance(result, (ProbeResult, InfoSchemaResult)):
+            usage_reporting.record(surface="flight", token="probe")
             return _table_to_record_batch_stream(result.table)
         if isinstance(result, NoOpResult):
             return _table_to_record_batch_stream(pa.Table.from_pylist([]))
@@ -348,6 +360,13 @@ class FlightHandlers:
 
     # ----- private helpers --------------------------------------------------
 
+    def _run(self, workflow: Coroutine[Any, Any, _T]) -> _T:
+        with self._engine_lock:
+            return self._engine.run_sync(workflow)
+
+    def _execute(self, query: SlayerQuery) -> SlayerResponse:
+        return self._run(self._engine.execute(query=query))
+
     def _translate(self, sql: str):
         catalog = self._build_catalog()
         return translate(sql, catalog)
@@ -366,23 +385,19 @@ class FlightHandlers:
         # (caught here rather than at do_get for a clearer error path).
         zero_query = result.query.model_copy(update={"limit": 0})
 
-        async def execute_zero():
-            return await self._engine.execute(query=zero_query)
-
-        run_sync(execute_zero())  # only the side-effect; ignore the empty rows.
+        self._execute(zero_query)  # only the side-effect; ignore the empty rows.
         return self._build_schema(result)
 
     def _execute_full(self, result: "QueryResult") -> pa.Table:
         """Run the full query, coerce rows, return a pa.Table matching the
         catalog projection's column names."""
-
-        async def execute_full():
-            return await self._engine.execute(query=result.query)
-
-        response = run_sync(execute_full())
+        usage_reporting.observe_query(result.query)
+        with usage_reporting.counting(surface="flight", token="query"):
+            response = self._execute(result.query)
+        usage_reporting.observe_executed(response)
         schema = self._build_schema(result)
         rows = [
-            self._rewrite_row(row, result.column_name_mapping)
+            self._rewrite_row(row, result.column_name_mapping, result.projection_types)
             for row in response.data
         ]
         return pa.Table.from_pylist(rows, schema=schema)
@@ -400,16 +415,13 @@ class FlightHandlers:
 
     @staticmethod
     def _rewrite_row(
-        row: dict, mapping: list[tuple[str, str]],
+        row: dict, mapping: list[tuple[str, str]], types: "list[DataType | None]",
     ) -> dict:
-        """Rewrite an engine row's keys into projected names + coerce Decimals."""
-        out: dict = {}
-        for engine_alias, projected_name in mapping:
-            value = row.get(engine_alias)
-            if isinstance(value, decimal.Decimal):
-                value = float(value)
-            out[projected_name] = value
-        return out
+        """Rewrite an engine row's keys into projected names, each cell fitted to its Arrow column."""
+        return {
+            projected_name: _arrow_cell(row.get(engine_alias), dt)
+            for (engine_alias, projected_name), dt in zip(mapping, types)
+        }
 
     @staticmethod
     def _serialise_schema(schema: pa.Schema) -> bytes:

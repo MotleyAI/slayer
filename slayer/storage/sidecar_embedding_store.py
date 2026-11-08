@@ -1,4 +1,4 @@
-"""SQLite-backed sidecar for embedding rows (DEV-1405).
+"""SQLite-backed sidecar for embedding rows.
 
 Owns a single ``embeddings`` table inside the SQLite file at ``db_path``
 and exposes the four CRUD methods + two batched variants that the
@@ -8,10 +8,11 @@ embedding sidecar contract requires. Both :class:`SQLiteStorage` and
 two backends differ only in where their ``db_path`` points (the main
 storage DB for SQLite; ``<base_dir>/embeddings.db`` for YAML).
 
-Connection lifecycle: ``sqlite3.connect(self.db_path)`` per call.
-Matches the pattern in :mod:`slayer.storage.sqlite_storage`; no pool.
+Connection lifecycle: one ``sqlite_conn.transaction(self.db_path)`` per call —
+the one sqlite door, which always closes. Matches the pattern in
+:mod:`slayer.storage.sqlite_storage`; no pool.
 
-Cascade semantics for :meth:`delete_for_canonical` (DEV-1405 fix):
+Cascade semantics for :meth:`delete_for_canonical`:
 matches the supplied prefix exactly **or** as a strict dotted-path
 descendant (``prefix + "." + …``). Never a character prefix —
 ``"orders"`` does not match ``"orders_archive"``, ``"memory:4"`` does
@@ -22,9 +23,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
+
+from sqlglot import exp
 
 from slayer.embeddings.models import Embedding
+from slayer.storage.sqlite_conn import transaction
+
+_COLUMNS = ("canonical_id", "embedding_model_name", "entity_kind", "content_hash", "embedding", "created_at")
 
 
 class SidecarEmbeddingStore:
@@ -39,7 +44,7 @@ class SidecarEmbeddingStore:
     # ------------------------------------------------------------------
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS embeddings (
                     canonical_id TEXT NOT NULL,
@@ -83,7 +88,7 @@ class SidecarEmbeddingStore:
         })
 
     def _save_sync(self, row: Embedding) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO embeddings "
                 "(canonical_id, embedding_model_name, entity_kind, "
@@ -93,7 +98,7 @@ class SidecarEmbeddingStore:
             )
 
     def _save_many_sync(self, rows: list[Embedding]) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             conn.executemany(
                 "INSERT OR REPLACE INTO embeddings "
                 "(canonical_id, embedding_model_name, entity_kind, "
@@ -105,7 +110,7 @@ class SidecarEmbeddingStore:
     def _get_sync(
         self, canonical_id: str, embedding_model_name: str,
     ) -> tuple[str, str, str, str, str, str] | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             row = conn.execute(
                 "SELECT canonical_id, embedding_model_name, entity_kind, "
                 "content_hash, embedding, created_at "
@@ -128,23 +133,21 @@ class SidecarEmbeddingStore:
         embedding_model_name: str,
     ) -> list[tuple[str, str, str, str, str, str]]:
         rows: list[tuple[str, str, str, str, str, str]] = []
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             for start in range(0, len(canonical_ids), self._GET_MANY_CHUNK_SIZE):
                 chunk = canonical_ids[start : start + self._GET_MANY_CHUNK_SIZE]
-                placeholders = ",".join("?" * len(chunk))
-                rows.extend(conn.execute(
-                    "SELECT canonical_id, embedding_model_name, entity_kind, "
-                    "content_hash, embedding, created_at "
-                    "FROM embeddings "
-                    f"WHERE embedding_model_name = ? AND canonical_id IN ({placeholders})",
-                    (embedding_model_name, *chunk),
-                ).fetchall())
+                select = (
+                    exp.select(*_COLUMNS).from_("embeddings")
+                    .where(exp.column("embedding_model_name").eq(exp.Placeholder()))
+                    .where(exp.column("canonical_id").isin(*(exp.Placeholder() for _ in chunk)))
+                )
+                rows.extend(conn.execute(select.sql(dialect="sqlite"), (embedding_model_name, *chunk)).fetchall())
         return rows
 
     def _list_sync(
         self, embedding_model_name: str,
     ) -> list[tuple[str, str, str, str, str, str]]:
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT canonical_id, embedding_model_name, entity_kind, "
                 "content_hash, embedding, created_at "
@@ -165,7 +168,7 @@ class SidecarEmbeddingStore:
             .replace("_", "\\_")
             + ".%"
         )
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             cursor = conn.execute(
                 "DELETE FROM embeddings "
                 "WHERE canonical_id = ? OR canonical_id LIKE ? ESCAPE '\\'",

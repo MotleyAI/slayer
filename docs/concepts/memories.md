@@ -11,18 +11,20 @@ canonical entity matches via tantivy full-text — see the search docs).
 
 A memory has two flavours:
 
-- **Learning** — a memory with no attached query. Surfaces in
-  `inspect_model` and as a `kind="memory"` hit in `search` with
+- **Learning** — a memory with no attached query. Surfaces in a model
+  `inspect` and as a `kind="memory"` hit in `search` with
   `hit.query is None`.
 - **Query-bearing** — a memory whose `query` field carries a
   `SlayerQuery`. Surfaces only via `search`, as a `kind="memory"` hit
-  with `hit.query is not None`. Not rendered in `inspect_model`.
+  with `hit.query is not None`. Not rendered in a model `inspect`.
 
-Both flavours land in the same flat `SearchResponse.results` list
-(DEV-1532); callers split on `hit.query` rather than on separate
+Both flavours land in the same flat `SearchResponse.results` list;
+callers split on `hit.query` rather than on separate
 buckets. The split is implicit at save time: pass an entity list to
 `save_memory` to record a learning; pass a `SlayerQuery` and the
 memory carries that query.
+
+SLayer also seeds its conceptual help as memories (`help.intro`, `help.models`, `help.workflow`, `help.aggregations`, `help.transforms`, `help.time`, `help.joins`, `help.queries`), which `compact` never shortens in `inspect` (`descriptions_max_chars` still does).
 
 ## The canonical entity form
 
@@ -36,11 +38,11 @@ Every persisted entity is exactly one of:
 
 Inputs that aren't already in this shape are normalised at save time:
 
-- **Aggregation suffixes are stripped.** `revenue:sum`,
-  `revenue:weighted_avg(weight=qty)`, and `revenue:corr(other=qty)` all
+- **Aggregation suffixes are stripped.** `sum(revenue)`,
+  `weighted_avg(revenue, weight=qty)`, and `corr(revenue, other=qty)` all
   canonicalise to `<ds>.<model>.revenue`. The aggregation itself is
   not an independent entity.
-- **`*:count` collapses to the source model.** It's "count of all rows
+- **`count(*)` collapses to the source model.** It's "count of all rows
   on this model," so the entity is the model.
 - **Multi-hop dotted paths keep only the leaf.** A query referencing
   `orders.customers.regions.name` produces `{mydb.orders,
@@ -51,7 +53,7 @@ Inputs that aren't already in this shape are normalised at save time:
   `aov` formula and tag every column it references.
 
 Equality is plain string equality on the canonical form, so two
-callers using `revenue:sum` and `mydb.orders.revenue` reach the same
+callers using `sum(revenue)` and `mydb.orders.revenue` reach the same
 record.
 
 ## The two write-side MCP tools
@@ -60,7 +62,7 @@ Memory retrieval is part of [`search`](search.md) (one tool covers
 both memories and canonical entity discovery). This page covers only
 the write side.
 
-### `save_memory(learning, linked_entities, id=None, description=None)`
+### `save_memory(learning, linked_entities, id?, description?)`
 
 Persist a memory. `linked_entities` accepts either form:
 
@@ -83,7 +85,7 @@ only by letter case from an existing one (`X` vs `x`) raises
 on macOS / Windows.
 
 `description` is optional (≤ 500 chars). When set, `search(compact=True)`
-and `inspect_model(compact=True)` surface this short preview instead of
+and `inspect(entity_type="model", compact=True)` surface this short preview instead of
 the full `learning` body — the token-saving counterpart of the verbose
 body. Empty / whitespace-only `description` is normalized to `None` at
 save time. When unset, compact rendering falls back to the first
@@ -116,7 +118,7 @@ Query-bearing form:
   "learning": "Total paid revenue",
   "linked_entities": {
     "source_model": "orders",
-    "measures": [{"formula": "amount:sum"}],
+    "measures": [{"formula": "sum(amount)"}],
     "filters": ["status = 'paid'"]
   }
 }
@@ -149,9 +151,9 @@ list (exact-match only — `memory:42` never strips `memory:421`).
    (encoding, NULL semantics, business rule), call `save_memory`
    with the entities involved so the next agent benefits.
 
-## `inspect_model` integration
+## `inspect` integration
 
-`inspect_model` automatically renders a `Learnings` section listing
+A model `inspect` (`compact=False`) automatically renders a `Learnings` section listing
 every memory **whose `query` is `None`** and whose stored entity set
 overlaps the model's own entity set (the model itself, every column,
 every named measure, every custom aggregation). Query-bearing memories
@@ -184,7 +186,7 @@ A legacy flat `memories.yaml` is migrated into per-file `.md` on first
 open (and then deleted). SQLite uses a `memories` table plus a
 `memory_entities` index table for the entity-overlap filter.
 
-IDs are non-empty strings (DEV-1428). The auto-allocator walks
+IDs are non-empty strings. The auto-allocator walks
 `max(int-shaped id) + 1` over the existing corpus where "int-shaped"
 means pure-digit, no-leading-zero (`"42"` counts; `"001"` and
 `"42abc"` do not). User-supplied ids share the namespace; duplicates

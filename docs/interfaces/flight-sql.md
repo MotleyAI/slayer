@@ -10,7 +10,7 @@ The endpoint is **read-only**: catalog introspection plus a constrained SQL subs
 translates to a `SlayerQuery` and executes against the engine. SQL `INSERT` / `UPDATE` /
 `DELETE` / `CREATE` / `ALTER` / `DROP` are refused with a `read-only` error.
 
-> Prefer a no-Java option? The [Postgres facade](pg-facade.md) (`slayer pg-serve`) exposes
+> Prefer a no-Java option? The [SQL API](pg-facade.md) (`slayer pg-serve`) exposes
 > the same query surface over the Postgres wire protocol, so any Postgres-connector BI
 > tool — or `psql` / `asyncpg` — can connect without a JDBC/Arrow driver.
 
@@ -80,7 +80,7 @@ table carries two fan-outs:
 
 * **Metrics** — derived from each model's `columns` × eligible aggregations, plus saved
   `ModelMeasure` formulas, plus custom aggregations on the model, plus a synthetic
-  `row_count` metric (`*:count`).
+  `row_count` metric (`count(*)`).
 * **Dimensions** — every non-hidden column of the model, plus reachable join targets
   walked up to depth 3.
 
@@ -89,7 +89,7 @@ multi-hop dimension on `orders` when `orders → customers → regions`. The sam
 form is used in `INFORMATION_SCHEMA.*`, in the BI-tool projection list, in `WHERE`, and
 in the SLayer DSL.
 
-`*:count` is exposed as a column literally named `row_count`. If a user-defined column
+`count(*)` is exposed as a column literally named `row_count`. If a user-defined column
 is also named `row_count`, SLayer renames the synthetic to `_row_count` and logs a
 warning at catalog-build time.
 
@@ -101,12 +101,20 @@ SLayer accepts a single-`FROM` `SELECT` that translates to a `SlayerQuery`:
 |---|---|
 | `SELECT <metric> [, ...]` | Each item must be a metric, dimension, or time-grain expression on the resolved table. |
 | `month(<col>)`, `quarter(...)`, etc. | Time-grain wrappers on time-typed columns. Equivalent to `date_trunc('month', <col>)`. |
-| `WHERE <col> BETWEEN '...' AND '...'` | On time-typed columns, lifts to `time_dimensions[*].date_range`. |
-| `WHERE <col> >= '...'` / `<=` / `>` / `<` | Same lift for time bounds. |
+| `WHERE <col> BETWEEN '...' AND '...'` | On time-typed columns, lifts to `time_dimensions[*].date_range`, a date-only bound carried as its midnight instant so SQL's meaning is kept. |
+| `WHERE <col> >= '...'` / `<=` / `>` / `<` | Passed verbatim into `SlayerQuery.filters` (a date-only literal on a DATE / TIMESTAMP column carried as its midnight instant); comparators are never lifted. |
 | `WHERE ...` (everything else) | Passed verbatim into `SlayerQuery.filters`. |
 | `GROUP BY` | Strict on extras, lenient on omissions. User items must be in the derived dimension set; missing ones are silently filled in from the projection. |
 | `ORDER BY <col> [DESC \| ASC]` | Resolved against projected names. |
 | `LIMIT N OFFSET M` | Integer literals only. |
+
+A projection with no aggregate, metric, `GROUP BY`, `HAVING` or `DISTINCT` (and no metric in `WHERE`) returns
+one row per record, as in SQL; `DISTINCT` or `GROUP BY` returns one row per distinct combination.
+
+List columns travel as their JSON array text in a UTF-8 column (a NULL list as NULL), and JSON values as their
+JSON text; grouping on a list groups by its element set (`["go","sql"]` for `['sql', 'go', 'sql']`), and ordering by one is refused. Every other text-typed
+value follows SLayer's one encoding: a UUID as its string, bytes as `\x` followed by lowercase hex, an interval
+as an ISO-8601 duration (`P1DT2H`).
 
 **`SELECT *` is rejected** on Flight tables; the error includes a pointer to
 `SELECT * FROM INFORMATION_SCHEMA.METRICS WHERE table_name=...` for discovery. `SELECT *`

@@ -1,0 +1,14 @@
+name: orders_flat
+data_source: probe
+sql_table: orders_flat
+columns:
+  - {name: id, type: number, primary_key: true}
+  - {name: customer_id, type: number}
+  - {name: amount, type: number}
+  - {name: status, type: string}
+  - {name: order_date, type: date}
+  - {name: region, type: string}
+  - {name: city, type: string}
+  - {name: tier, type: string}
+  - {name: credit, type: number}
+  - {name: discount, type: number}

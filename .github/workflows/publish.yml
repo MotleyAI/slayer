@@ -5,40 +5,79 @@ on:
     types: [published]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/poetry-env
+        with:
+          python-version: "3.12"
+          install-args: "--no-interaction"
+
+      - name: Check release tag matches package version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version="$(poetry version -s)"
+          if [ "${TAG#v}" != "$version" ]; then
+            echo "::error::Release tag '$TAG' does not match pyproject.toml version '$version' at ${GITHUB_SHA::8}. Merge the version bump first, then point the tag at that commit and re-publish the release."
+            exit 1
+          fi
+
+      - name: Build package
+        run: poetry build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # No id-token here: the unlocked install and the gated code must not be able to mint an upload token.
+  gate:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/poetry-env
+        with:
+          python-version: "3.12"
+          install-args: "--no-interaction"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Gate the built wheel
+        uses: ./.github/actions/wheel-gate
+        timeout-minutes: 30
+        with:
+          python-version: "3.12"
+
   publish:
+    needs: [build, gate]
     runs-on: ubuntu-latest
     permissions:
       id-token: write  # Trusted publishing (OIDC)
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        id: setup-python
-        uses: actions/setup-python@v5
+      - uses: actions/download-artifact@v4
         with:
-          python-version: "3.12"
-
-      - name: Install Poetry
-        run: pip install -U poetry
-
-      - name: Load cached venv
-        uses: actions/cache@v4
-        with:
-          path: .venv
-          key: venv-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/poetry.lock') }}
-
-      - name: Install dependencies
-        run: |
-          poetry config virtualenvs.create true
-          poetry config virtualenvs.in-project true
-          poetry install --no-interaction
-
-      - name: Build package
-        run: poetry build
+          name: dist
+          path: dist/
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

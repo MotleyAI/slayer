@@ -1,0 +1,7 @@
+name: mf_probe
+version: 1.0.0
+config-version: 2
+profile: mf_probe
+model-paths: ["models"]
+flags:
+  send_anonymous_usage_stats: false

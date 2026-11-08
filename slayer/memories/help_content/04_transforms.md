@@ -1,187 +1,54 @@
 # Transforms
 
-Transforms are functions applied to aggregated measures, producing computed
-measures: `cumsum(revenue:sum)`, `change(revenue:sum)`, etc. Each transform
-becomes an extra CTE in the generated SQL.
+A transform wraps an aggregated value and computes across result rows. Transforms
+work in measures, filters and order, and nest in either order
+(`cumsum(change(sum(amount)))`, `change(cumsum(sum(amount)))`).
 
-## The transform family
+## Catalogue
 
-| Transform | Purpose | SQL strategy |
-|-----------|---------|--------------|
-| `cumsum(x)` | Running total over time | Window: `SUM(x) OVER (PARTITION BY dims ORDER BY time)` |
-| `time_shift(x, n)` | Value N time buckets back/ahead (calendar-aware) | Self-join CTE with INTERVAL offset |
-| `time_shift(x, n, 'year')` | Value at a different granularity offset (e.g. YoY) | Self-join CTE with INTERVAL offset |
-| `change(x)` | Period-over-period difference (partition-safe, resets per group) | Desugars to `x − time_shift(x, -1)` |
-| `change_pct(x)` | Period-over-period % change, e.g. month-over-month growth (partition-safe; NULL when the prior period's value is 0 or missing) | Desugars to `CASE WHEN ts != 0 THEN (x − ts) / ts END` where `ts = time_shift(x, -1)` |
-| `lag(x, n)` / `lead(x, n)` | N rows back / ahead | `LAG` / `LEAD` window fn, partitioned by dimensions |
-| `consecutive_periods(predicate)` | Current trailing run length where predicate is true | Staged window CTEs with reset groups |
-| `rank(x[, partition_by=...])` | Rank by x, descending; ties skip ranks | `RANK() OVER ([PARTITION BY ...] ORDER BY x DESC)` |
-| `percent_rank(x[, partition_by=...])` | Relative rank in `[0, 1]`, descending | `PERCENT_RANK() OVER ([PARTITION BY ...] ORDER BY x DESC)` |
-| `dense_rank(x[, partition_by=...])` | Rank by x, descending; ties don't skip ranks | `DENSE_RANK() OVER ([PARTITION BY ...] ORDER BY x DESC)` |
-| `ntile(x, n=N[, partition_by=...])` | Bucket rows into N equal groups, descending | `NTILE(N) OVER ([PARTITION BY ...] ORDER BY x DESC)` |
-| `first(x)` | Broadcast earliest bucket's value to every row | Window |
-| `last(x)` | Broadcast latest bucket's value to every row | Window |
+| Transform | Result |
+|---|---|
+| `cumsum(x)` | running total, starting at the first returned bucket |
+| `change(x)` | `x` minus the previous bucket's value |
+| `change_pct(x)` | `(x - previous) / previous`; NULL when the previous value is 0 or missing |
+| `time_shift(x, n[, 'year'])` | the value `n` buckets (or another granularity's periods) away |
+| `lag(x, n)` / `lead(x, n)` | the value `n` result rows back / ahead |
+| `first(x)` / `last(x)` | the earliest / latest bucket's value, repeated on every row |
+| `consecutive_periods(predicate)` | length of the current trailing run where the predicate holds |
+| `rank(x, direction=...)` | rank, ties share a rank, gaps after ties |
+| `dense_rank(x, direction=...)` | rank without gaps |
+| `percent_rank(x)` | relative rank in [0, 1], lowest value 0 |
+| `ntile(x, n=N)` | bucket 1..N, bucket 1 holds the lowest values |
 
-## Self-join vs window-function — important trade-off
+## Time axis
 
-`time_shift` (and `change`/`change_pct` which desugar into it) uses a
-**self-join CTE** with an INTERVAL-shifted time column. The shifted sub-query
-applies the time offset to every occurrence of the time dimension (WHERE,
-GROUP BY, SELECT), so it can reach outside the current result set to fetch
-the previous/next value. Consequences:
+Every transform except the rank family (`rank`, `dense_rank`, `percent_rank`, `ntile`)
+needs a time dimension. With several, set `main_time_dimension`. Time-ordered
+transforms run separately for every combination of the other dimensions: grouped by
+store, `cumsum` gives one running total per store and `change` never compares one
+store with another.
 
-- No NULLs at the first / last rows when the database actually has the data.
-- Handles **gaps** in the time series correctly — shifts by calendar, not by row.
-- **Partition-safe**: the join matches on all non-time dimensions as well as the
-  shifted time column (`ON base.month = shifted.month AND base.store =
-  shifted.store`), so each group's series is compared only against itself and
-  resets cleanly per group.
-- Slightly heavier SQL.
+`change`, `change_pct` and `time_shift` match buckets by calendar, so a missing
+month gives NULL rather than comparing with an older one, and they read the bucket
+before the query's date range. `lag` / `lead` shift by result row: NULL at the edges
+and blind to gaps. Prefer `change_pct` for growth and `time_shift` for custom
+arithmetic or a different grain (`time_shift(x, -1, 'year')` on months is
+year-over-year).
 
-`lag` and `lead` use SQL `LAG` / `LEAD`:
+`consecutive_periods` takes a predicate (`sum(amount) > 0`) or a value (true when
+non-NULL and non-zero); a false or missing bucket resets the run to 0.
 
-- NULLs at the first / last N rows (the window can't see beyond the result set).
-- Shift by **row position**, not by period — skips produce wrong "previous".
-- Faster, simpler SQL.
+## Ranking
 
-Use `time_shift`, `change`, `change_pct` unless you have a specific reason to
-prefer `lag` / `lead`.
+`rank` and `dense_rank` require `direction='desc'` (highest is 1) or `'asc'`.
+`partition_by=` ranks within groups; its keys must be query dimensions. A NULL value
+ranks NULL, so a rank filter drops it. Top N per group is a filter:
+`rank(sum(amount), partition_by=region, direction='desc') <= 3`. Never write raw
+`OVER (...)` SQL.
 
-**Intent recipes:**
+## Limits
 
-- Month-over-month / period-over-period growth → `change_pct(revenue:sum)`
-  with a `time_dimensions` entry at the desired granularity. Prefer this over
-  hand-building the ratio from `time_shift` — same partition-safe self-join,
-  cleaner SQL.
-- Absolute period-over-period delta → `change(revenue:sum)`.
-- Comparing against a *different* grain than the query's (e.g. year-over-year
-  on a monthly series), or using the shifted value as a term in custom
-  arithmetic → `time_shift(revenue:sum, -1, 'year')`.
-
-## Time dimension requirement
-
-All time-ordered transforms (`cumsum`, `time_shift`, `change`, `change_pct`,
-`first`, `last`, `lag`, `lead`, `consecutive_periods`) require an explicit
-`time_dimensions` entry in the query. With a single entry it's used
-automatically; with 2+ entries, `main_time_dimension` disambiguates (or
-`default_time_dimension` if among query's time dims). The rank-family
-transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) do **not** need a
-time dimension.
-
-Time-ordered window transforms partition by the query's non-time dimensions.
-A `cumsum(revenue:sum)` grouped by `status` computes one running total per
-status. The rank-family transforms default to **no `PARTITION BY`** — they
-rank across the entire result set unless `partition_by=` is passed.
-
-## consecutive_periods
-
-`consecutive_periods(predicate)` returns an integer count of how many
-consecutive output periods, ending at the current row, have `predicate` true.
-False or NULL breaks the run and returns 0 for that row.
-
-```json
-{
-  "source_model": "orders",
-  "measures": [
-    {"formula": "consecutive_periods(revenue:sum > 0)", "name": "positive_run"},
-    {"formula": "consecutive_periods(revenue:sum > 0) >= 3", "name": "positive_3_periods"}
-  ],
-  "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
-}
-```
-
-## Nesting
-
-Window transforms can wrap self-join transforms: `cumsum(change(x))` works
-(the identity `cumsum(change(x)) == x − x[0]` holds for rows after the first).
-Self-join transforms cannot wrap other self-join or change transforms.
-
-```json
-{
-  "source_model": "orders",
-  "measures": [
-    "revenue:sum",
-    {"formula": "cumsum(change(revenue:sum))", "name": "cumsum_delta"}
-  ],
-  "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
-}
-```
-
-## Rank-family transforms
-
-`rank`, `percent_rank`, `dense_rank`, and `ntile` are all timeless ranking
-transforms. They order rows by the inner measure descending and emit a per-row
-rank value. By default they do **not** partition — every row is ranked against
-every other row in the result set:
-
-```json
-{
-  "source_model": "orders",
-  "dimensions": ["customer_name"],
-  "measures": [
-    "revenue:sum",
-    {"formula": "rank(revenue:sum)", "name": "rnk"}
-  ],
-  "filters": ["rank(revenue:sum) <= 10"]
-}
-```
-
-Choosing the right one:
-
-- `rank` — standard SQL `RANK`; ties share a rank, skip the next (`1, 1, 3`).
-- `dense_rank` — ties share a rank, no gaps (`1, 1, 2`). Use for "top N tiers".
-- `percent_rank` — relative rank in `[0, 1]`. Use for cross-query-comparable rankings.
-- `ntile(x, n=N)` — required `n=` kwarg, must be a positive integer; bucket all rows into `N` equal-sized groups (`1` is the top bucket).
-
-To rank within partitions, pass `partition_by=` referencing one or more query
-dimensions or time dimensions. Columns must already be grouped on — partitioning
-by a non-dimension column errors at enrichment time:
-
-```json
-{
-  "source_model": "orders",
-  "dimensions": ["region", "customer_name"],
-  "measures": [
-    "revenue:sum",
-    {"formula": "dense_rank(revenue:sum, partition_by=region)", "name": "rnk_in_region"},
-    {"formula": "ntile(revenue:sum, n=4, partition_by=region)", "name": "quartile_in_region"}
-  ]
-}
-```
-
-Multiple partition columns: `partition_by=[region, channel]`. Cross-model
-dotted paths work too: `partition_by=customers.region`.
-
-Raw `OVER (...)` SQL inside a `ModelMeasure.formula` or filter string is
-rejected with an actionable error pointing at the rank-family / `first()` /
-`last()` / `lag()` / `lead()` transforms. As an advanced escape hatch for a
-non-standard window expression, define a `Column` whose `sql` is that window
-expression and filter on the column — {{product}} auto-promotes the predicate to a
-post-aggregation outer `WHERE`. This is the one documented exception to the
-row-level `Column.sql` rule (see `memory:help.models`); prefer the built-in
-transforms whenever they cover the need.
-
-## first() and last() — broadcast transforms
-
-`first(x)` projects the **earliest** bucket's aggregated value onto every row.
-`last(x)` projects the **most recent** bucket's aggregated value onto every row.
-
-```json
-{
-  "source_model": "orders",
-  "measures": [
-    "revenue:sum",
-    {"formula": "first(revenue:sum)", "name": "initial_revenue"},
-    {"formula": "last(revenue:sum)", "name": "latest_revenue"}
-  ],
-  "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
-}
-```
-
-Useful for filtering on trend: `"filters": ["last(change(revenue:sum)) < 0"]`.
-
-## See also
-
-- `memory:help.time` — granularity, whole_periods_only, main_time_dimension.
-- `memory:help.filters` — filtering on transform outputs.
-- `memory:help.aggregations` — `:first`/`:last` aggregation vs `first()`/`last()` transform.
+`partition_by=` is accepted on the rank family only; other transforms partition by
+the query's dimensions. A row-level column that is not a query dimension cannot be
+mixed into a transform's input. Whether a filter needs a stage around a transform:
+the query object's `name` field.

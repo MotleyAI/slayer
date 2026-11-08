@@ -1,0 +1,38 @@
+version: 10
+name: status_rank
+source_queries:
+- version: 4
+  name: by_status
+  source_model: orders
+  measures:
+  - formula: amount:sum
+    name: rev
+  dimensions:
+  - name: status
+  whole_periods_only: false
+  distinct_dimension_values: true
+  to_many_handling: broadcast
+- version: 4
+  source_model: by_status
+  measures:
+  - formula: rev:sum
+    name: total
+  dimensions:
+  - name: status
+  order:
+  - column:
+      name: _funcstyle_pending
+    direction: asc
+    raw_formula: rank(rev:sum)
+  limit: 2
+  whole_periods_only: false
+  distinct_dimension_values: true
+  to_many_handling: broadcast
+query_variables: {}
+data_source: shop
+columns: []
+measures: []
+aggregations: []
+joins: []
+filters: []
+hidden: false

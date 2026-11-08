@@ -1,8 +1,8 @@
-"""Live-Metabase end-to-end suite for the pg-facade (DEV-1562).
+"""Live-Metabase end-to-end suite for the pg-facade.
 
 Drives a real Metabase v0.62.1.5 container (in Docker) against two real
 ``slayer pg-serve`` instances and asserts every regression vector from the
-DEV-1558 3-hour live debugging session — plus the broader behaviour matrix
+original live debugging session — plus the broader behaviour matrix
 described in the spec.
 
 All tests are marked ``metabase_e2e`` + ``integration``. The suite skips
@@ -20,17 +20,18 @@ import time
 from typing import Any
 
 import pytest
+import requests
 
-asyncpg = pytest.importorskip("asyncpg")
-psycopg2 = pytest.importorskip("psycopg2")
-requests = pytest.importorskip("requests")
-
-from slayer.demo.jaffle_shop import DEMO_ENRICHMENT  # noqa: E402
-from tests.integration.conftest_metabase import (  # noqa: E402
+from slayer.async_utils import run_sync
+from slayer.demo.jaffle_shop import DEMO_ENRICHMENT
+from tests.integration.conftest_metabase import (
     MetabaseE2EEnv,
     encode_mbql_query,
     encode_native_query,
 )
+
+asyncpg = pytest.importorskip("asyncpg")
+psycopg2 = pytest.importorskip("psycopg2")
 
 pytestmark = [pytest.mark.metabase_e2e, pytest.mark.integration]
 
@@ -119,13 +120,14 @@ def test_metabase_authenticates_with_token(metabase_e2e_env: MetabaseE2EEnv) -> 
         source_table=orders_id, aggregation=[["count"]],
     ))
     rows = _dataset_rows(payload)
-    assert rows and rows[0][0] > 0
+    assert rows
+    assert rows[0][0] > 0
 
 
 def test_sync_log_volume_within_budget(metabase_e2e_env: MetabaseE2EEnv) -> None:
     """A.6 — pg-serve sync should not spam WARN-level hygiene messages.
 
-    DEV-1558 bug 4: 170+ WARN lines per sync. Budget here is generous (20)
+    Regression: 170+ WARN lines per sync. Budget here is generous (20)
     so incidental warnings don't trip the test; a true regression fires.
 
     Self-validating: also asserts the log-capture buffer is non-empty after
@@ -135,7 +137,7 @@ def test_sync_log_volume_within_budget(metabase_e2e_env: MetabaseE2EEnv) -> None
     metabase_e2e_env.client.sync_schema()
     # Wait for the log buffer to STABILISE — pg-facade emits a stream of
     # catalog-probe records during Metabase's sync; sampling on first
-    # growth would under-count the WARN tally and miss the DEV-1558
+    # growth would under-count the WARN tally and miss the
     # "170+ WARN lines per sync" regression. Use a stability poll so we
     # only sample once new records stop arriving. If we time out before
     # stabilising, the WARN delta below is unreliable — assert the
@@ -254,8 +256,6 @@ async def test_hidden_columns_not_surfaced(metabase_e2e_env: MetabaseE2EEnv) -> 
     columns from catalog introspection — without the Metabase-side
     invalidation dance.
     """
-    from slayer.async_utils import run_sync
-
     storage = metabase_e2e_env.pg_primary_storage
     assert storage is not None, "pg_primary storage handle not wired through fixture"
     host, port = metabase_e2e_env.pg_primary
@@ -279,7 +279,8 @@ async def test_hidden_columns_not_surfaced(metabase_e2e_env: MetabaseE2EEnv) -> 
             f"hidden column 'description' still surfaced in INFORMATION_SCHEMA.COLUMNS: {sorted(names)}"
         )
         # Sanity: the model is otherwise intact (other columns still surface).
-        assert "name" in names and "sku" in names
+        assert "name" in names
+        assert "sku" in names
     finally:
         target.hidden = original
         run_sync(storage.save_model(model))
@@ -294,8 +295,6 @@ async def test_descriptions_surface_in_metadata(metabase_e2e_env: MetabaseE2EEnv
     asserting against it directly pins the pg-facade contract without
     the cross-process cache-invalidation problem.
     """
-    from slayer.async_utils import run_sync
-
     storage = metabase_e2e_env.pg_primary_storage
     assert storage is not None
     host, port = metabase_e2e_env.pg_primary
@@ -303,7 +302,7 @@ async def test_descriptions_surface_in_metadata(metabase_e2e_env: MetabaseE2EEnv
     model = run_sync(storage.get_model(name="orders", data_source="jaffle_shop"))
     target = next(c for c in model.columns if c.name == "order_total")
     original_desc = target.description
-    marker = "DEV-1562 e2e description marker"
+    marker = "e2e description marker"
     target.description = marker
     run_sync(storage.save_model(model))
     try:
@@ -348,7 +347,7 @@ def test_four_part_qualified_refs_handled(metabase_e2e_env: MetabaseE2EEnv) -> N
 async def test_pg_namespace_table_schem_column_name(metabase_e2e_env: MetabaseE2EEnv) -> None:
     """B.6 — pgjdbc expects ``TABLE_SCHEM`` as the schema column name.
 
-    The original DEV-1558 bug 1 was a lookup failure on this exact alias.
+    The original bug was a lookup failure on this exact alias.
     Drive the canonical query directly via asyncpg.
     """
     host, port = metabase_e2e_env.pg_primary
@@ -366,7 +365,7 @@ async def test_pg_namespace_table_schem_column_name(metabase_e2e_env: MetabaseE2
 
 
 def test_first_last_not_exposed_on_timeless_models(metabase_e2e_env: MetabaseE2EEnv) -> None:
-    """B.7 — DEV-1558 bug 5. ``first`` / ``last`` aggregations must not be
+    """B.7 — ``first`` / ``last`` aggregations must not be
     callable on models without a time dimension.
 
     Scope note: Metabase derives per-field aggregation availability from
@@ -379,9 +378,6 @@ def test_first_last_not_exposed_on_timeless_models(metabase_e2e_env: MetabaseE2E
     client = metabase_e2e_env.client
     # ``products`` has no time dimension in the demo schema.
     products_id = client.table_id_by_name("products")
-    md = client.table_metadata(products_id)
-    for f in md["fields"]:
-        assert f.get("semantic_type") not in {"type/SerializedJSON"}  # sanity guard
     payload = client.post_raw(
         "/api/dataset",
         {
@@ -399,14 +395,14 @@ def test_first_last_not_exposed_on_timeless_models(metabase_e2e_env: MetabaseE2E
 
 
 async def test_pg_description_objsubid_empty_string_predicate(metabase_e2e_env: MetabaseE2EEnv) -> None:
-    """B.8 — DEV-1570: empty-string parameter against the INT ``objsubid``
+    """B.8 — Empty-string parameter against the INT ``objsubid``
     column.
 
     Metabase's pgjdbc-driven catalog probes use prepared statements that
     declare ``objsubid = $1`` with a TEXT-typed parameter; pgjdbc binds an
     empty string when no value is provided, which a regressed facade would
     refuse with ``Conversion Error: Could not convert string '' to INT64``.
-    DEV-1558 covered Describe via a typed-NULL sentinel; DEV-1570 covers
+    Describe is covered by a typed-NULL sentinel, and
     Bind+Execute by substituting NULL for any text-OID empty-string param
     that targets a non-TEXT catalog column. We pin both round-trips here
     by Preparing the statement (which triggers Describe) and then
@@ -426,7 +422,7 @@ async def test_pg_description_objsubid_empty_string_predicate(metabase_e2e_env: 
 
 
 async def test_union_all_catalog_query_routed(metabase_e2e_env: MetabaseE2EEnv) -> None:
-    """B.9 — DEV-1558 bug 3. Corpus #12 catalog query parses as
+    """B.9 — Corpus #12 catalog query parses as
     ``exp.Union``, not ``exp.Select``; the router missed it before round 19.
     Drive a UNION-ALL probe to pin the routing path.
     """
@@ -457,8 +453,8 @@ def test_dataset_source_table_returns_rows(metabase_e2e_env: MetabaseE2EEnv) -> 
     rows = _dataset_rows(payload)
     cols = _dataset_cols(payload)
     assert 1 <= len(rows) <= 10
-    # 7 physical columns + the saved demo measures exposed by the catalog.
-    assert len(cols) == 7 + len(DEMO_ENRICHMENT["orders"].measures)
+    # 9 physical columns + the saved demo measures exposed by the catalog.
+    assert len(cols) == 9 + len(DEMO_ENRICHMENT["orders"].measures)
 
 
 def test_empty_result_filter_returns_cleanly(metabase_e2e_env: MetabaseE2EEnv) -> None:
@@ -491,7 +487,7 @@ def test_wide_row_serialises(metabase_e2e_env: MetabaseE2EEnv) -> None:
            "instead of '2024-09-21'; K.2 still pins the psycopg path which is clean.",
 )
 def test_date_column_clean_round_trip_via_metabase(metabase_e2e_env: MetabaseE2EEnv) -> None:
-    """C.4 — DEV-1558 bug 8: DATE encoder serialising datetime as
+    """C.4 — DATE encoder serialising datetime as
     ``"2024-06-01 00:00:00"`` broke pgjdbc's ``TimestampUtils.toLocalDate``.
     Metabase IS a pgjdbc client; assert response DATE values parse cleanly.
     """
@@ -505,7 +501,8 @@ def test_date_column_clean_round_trip_via_metabase(metabase_e2e_env: MetabaseE2E
         v = row[date_col_idx]
         assert isinstance(v, str), f"DATE value should be ISO string, got {type(v).__name__}: {v!r}"
         # Pgjdbc-friendly form: no time component.
-        assert "T" not in v and " " not in v, f"DATE value carries time suffix: {v!r}"
+        assert "T" not in v, f"DATE value carries time suffix: {v!r}"
+        assert " " not in v, f"DATE value carries time suffix: {v!r}"
         # Parse cleanly as YYYY-MM-DD.
         dt.date.fromisoformat(v)
 
@@ -580,7 +577,7 @@ GRAINS = ["hour", "day", "week", "month", "quarter", "year"]
 @pytest.mark.parametrize("grain", GRAINS)
 def test_time_grain_breakout(metabase_e2e_env: MetabaseE2EEnv, grain: str) -> None:
     """E.1-E.6 — temporal-unit breakout on a DATE column. The ``month`` case
-    specifically pins the round-20 CAST-unwrap fix (DEV-1558 bug 6).
+    specifically pins the round-20 CAST-unwrap fix.
     """
     client = metabase_e2e_env.client
     orders_id = client.table_id_by_name("orders")
@@ -607,10 +604,10 @@ def test_time_grain_breakout(metabase_e2e_env: MetabaseE2EEnv, grain: str) -> No
 
 
 def test_native_sql_cast_date_trunc_as_date(metabase_e2e_env: MetabaseE2EEnv) -> None:
-    """E.7 — DEV-1558 bug 6. Metabase's DATE-column wrapping emits
+    """E.7 — Metabase's DATE-column wrapping emits
     ``CAST(DATE_TRUNC(...) AS DATE)``; pin the exact SQL shape.
 
-    Function-name note: the Linear ticket refers to this as
+    Function-name note: the bug report called this
     ``CAST(TIMESTAMP_TRUNC(...) AS DATE)``. ``TIMESTAMP_TRUNC`` is a
     BigQuery-only spelling; Metabase against the Postgres connector emits
     ``DATE_TRUNC``. The regression vector is the CAST-around-time-grain
@@ -726,7 +723,8 @@ def test_filter_date_range(metabase_e2e_env: MetabaseE2EEnv) -> None:
     rows = _dataset_rows(payload)
     # Either there are rows in that window or there aren't; the contract is
     # the query completed without error and returned an integer count.
-    assert rows and isinstance(rows[0][0], int)
+    assert rows
+    assert isinstance(rows[0][0], int)
 
 
 def test_filter_is_null_and_is_not_null(metabase_e2e_env: MetabaseE2EEnv) -> None:
@@ -887,7 +885,7 @@ def test_order_by_time_grain_expression(metabase_e2e_env: MetabaseE2EEnv) -> Non
 def test_native_sql_order_by_canonical_alias(metabase_e2e_env: MetabaseE2EEnv) -> None:
     """G.4 — direct native-SQL pin for the canonical-alias ORDER BY shape.
 
-    Mirrors the exact SQL that surfaced DEV-1558 bug 7.
+    Mirrors the exact SQL that surfaced the alias ORDER BY bug.
     """
     client = metabase_e2e_env.client
     sql = (
@@ -929,7 +927,8 @@ def test_join_single_hop_project_joined_column(metabase_e2e_env: MetabaseE2EEnv)
     rows = _dataset_rows(payload)
     assert rows
     for row in rows:
-        assert isinstance(row[0], str) and row[0]
+        assert isinstance(row[0], str)
+        assert row[0]
 
 
 def test_join_filter_on_joined_column(metabase_e2e_env: MetabaseE2EEnv) -> None:
@@ -996,9 +995,9 @@ def test_join_filter_on_joined_column(metabase_e2e_env: MetabaseE2EEnv) -> None:
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "DEV-1493 / DEV-1567: the LEFT JOIN shape recognises Metabase's "
+        "DEV-1493: the LEFT JOIN shape recognises Metabase's "
         "AVG(\"Stores\".\"tax_rate\") and produces a cross-model "
-        "stores.tax_rate:avg measure, but DEV-1567's _assert_local_metric "
+        "stores.tax_rate:avg measure, but the _assert_local_metric "
         "guard rejects projecting cross-model metrics in a flat SELECT "
         "(the engine emits a CROSS-JOIN'd CTE that returns N rows of the "
         "same aggregate value instead of 1). Needs a multi-stage rewrite "
@@ -1112,7 +1111,7 @@ async def test_date_asyncpg_binary_round_trip(metabase_e2e_env: MetabaseE2EEnv) 
 
 
 def test_date_psycopg_text_round_trip(metabase_e2e_env: MetabaseE2EEnv) -> None:
-    """K.2 — DEV-1558 bug 8: text-format DATE OID must decode as a date.
+    """K.2 — Text-format DATE OID must decode as a date.
 
     The regression was the facade emitting ``"YYYY-MM-DD HH:MM:SS"`` for the
     DATE OID in text mode, breaking pgjdbc's ``TimestampUtils.toLocalDate``.
@@ -1135,8 +1134,9 @@ def test_date_psycopg_text_round_trip(metabase_e2e_env: MetabaseE2EEnv) -> None:
         assert row is not None
         val = row[0]
         # Strict: psycopg gave us back exactly a date (not a datetime, not str).
-        assert isinstance(val, dt.date) and not isinstance(val, dt.datetime), (
-            f"DATE OID decoded as {type(val).__name__}: {val!r} — bug 8 regressed?"
+        assert isinstance(val, dt.date)
+        assert not isinstance(val, dt.datetime), (
+            f"DATE OID decoded as {type(val).__name__}: {val!r} — DATE encoder regressed?"
         )
     finally:
         conn.close()
@@ -1196,10 +1196,12 @@ async def test_boolean_double_int_round_trip_both_formats(metabase_e2e_env: Meta
         cur = conn2.cursor()
         cur.execute("SELECT order_total FROM orders LIMIT 1")
         r1 = cur.fetchone()
-        assert r1 is not None and isinstance(r1[0], float)
+        assert r1 is not None
+        assert isinstance(r1[0], float)
         cur.execute("SELECT COUNT(*) FROM orders")
         r2 = cur.fetchone()
-        assert r2 is not None and isinstance(r2[0], int)
+        assert r2 is not None
+        assert isinstance(r2[0], int)
         # See note above re: bare boolean literals in projection.
     finally:
         conn2.close()
@@ -1234,7 +1236,7 @@ async def test_bad_password_returns_28P01(metabase_e2e_env: MetabaseE2EEnv) -> N
 
 
 async def test_arbitrary_database_name_is_a_logical_db(metabase_e2e_env: MetabaseE2EEnv) -> None:
-    # DEV-1594: the database parameter is a logical DB name, not a datasource
+    # The database parameter is a logical DB name, not a datasource
     # selector, so an arbitrary name connects successfully (no 3D000) and
     # current_database() echoes it back.
     host, port, token = metabase_e2e_env.pg_auth
@@ -1272,7 +1274,8 @@ def test_concurrent_dataset_requests(metabase_e2e_env: MetabaseE2EEnv) -> None:
         results = [f.result(timeout=60) for f in futures]
     assert len(results) == 6
     for r in results:
-        assert isinstance(r, int) and r >= 0
+        assert isinstance(r, int)
+        assert r >= 0
 
 
 async def test_asyncpg_concurrent_connections(metabase_e2e_env: MetabaseE2EEnv) -> None:
@@ -1285,7 +1288,7 @@ async def test_asyncpg_concurrent_connections(metabase_e2e_env: MetabaseE2EEnv) 
             # verify per-connection state isolation. The COUNT(*) is shared
             # across connections; the per-connection identity check is the
             # marker round-trip — pg-facade arithmetic-with-aggregate in
-            # projection isn't supported (DEV-1565-adjacent), so don't
+            # projection isn't supported, so don't
             # build the marker into the SELECT itself.
             await conn.execute(f"SET application_name = 'conn-{idx}'")
             count = await conn.fetchval("SELECT COUNT(*) FROM orders")

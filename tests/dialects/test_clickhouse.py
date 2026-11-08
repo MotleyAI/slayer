@@ -1,21 +1,16 @@
-"""DEV-1542: tests for ClickhouseDialect.
-
-ClickHouse uses native ``median(x)`` (not PERCENTILE_CONT) and the
-parametric ``quantile(p)(x)`` form for percentile. CORR / COVAR_SAMP /
-COVAR_POP are native; log10 is native, log2 is also native.
-"""
+"""Tests for ClickhouseDialect."""
 
 from __future__ import annotations
 
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.enums import TimeGranularity
+from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.sql.dialects.clickhouse import ClickhouseDialect
 
-
-def _parse_ch(sql: str) -> exp.Expression:
-    return sqlglot.parse_one(sql, dialect="clickhouse")
+from tests._engine_helpers import _engine_generate
 
 
 def test_clickhouse_sqlglot_name() -> None:
@@ -32,18 +27,14 @@ def test_clickhouse_log_native_flags() -> None:
     assert d.should_use_native_log(2) is True
 
 
-# ---------------------------------------------------------------------------
 # Median / percentile — ClickHouse native forms
-# ---------------------------------------------------------------------------
 
 
 def test_clickhouse_build_median_emits_quantile_05_form() -> None:
-    """``build_median`` parses ``median(x)`` into ``exp.Median``; sqlglot's
-    ClickHouse generator transpiles that to ``quantile(0.5)(x)`` —
-    parametric aggregate syntax."""
+    """``median(x)`` transpiles to ClickHouse's parametric ``quantile(0.5)(x)``."""
     d = ClickhouseDialect()
     inner = sqlglot.parse_one("amount", dialect="clickhouse")
-    out = d.build_median(inner, parse=_parse_ch)
+    out = d.build_median(inner)
     sql = out.sql(dialect="clickhouse")
     assert "quantile(0.5)" in sql.lower()
     assert "PERCENTILE_CONT" not in sql.upper()
@@ -53,7 +44,7 @@ def test_clickhouse_build_median_emits_quantile_05_form() -> None:
 def test_clickhouse_build_percentile_uses_parametric_quantile() -> None:
     """ClickHouse uses ``quantile(p)(x)`` — parametric aggregate syntax."""
     d = ClickhouseDialect()
-    out = d.build_percentile("0.9", "amount", parse=_parse_ch)
+    out = d.build_percentile(p=exp.Literal.number("0.9"), col_expr=exp.column("amount"))
     sql = out.sql(dialect="clickhouse")
     assert "quantile(" in sql.lower()
     assert "0.9" in sql
@@ -63,70 +54,87 @@ def test_clickhouse_build_percentile_uses_parametric_quantile() -> None:
 
 def test_clickhouse_build_percentile_preserves_literal() -> None:
     d = ClickhouseDialect()
-    out = d.build_percentile("0.50", "amount", parse=_parse_ch)
+    out = d.build_percentile(p=exp.Literal.number("0.50"), col_expr=exp.column("amount"))
     assert "0.50" in out.sql(dialect="clickhouse")
 
 
-# ---------------------------------------------------------------------------
 # Stat aggs — native
-# ---------------------------------------------------------------------------
 
 
 def test_clickhouse_build_covar_2arg_corr_native() -> None:
     d = ClickhouseDialect()
-    out = d.build_covar_2arg("corr", "amount", "quantity", parse=_parse_ch)
+    out = d.build_covar_2arg(agg_name="corr", col_expr=exp.column("amount"), other_expr=exp.column("quantity"))
     sql = out.sql(dialect="clickhouse").upper()
     assert "CORR" in sql
 
 
 def test_clickhouse_build_covar_2arg_covar_samp_native() -> None:
     d = ClickhouseDialect()
-    out = d.build_covar_2arg("covar_samp", "amount", "quantity", parse=_parse_ch)
+    out = d.build_covar_2arg(agg_name="covar_samp", col_expr=exp.column("amount"), other_expr=exp.column("quantity"))
     sql = out.sql(dialect="clickhouse").upper()
     assert "COVAR_SAMP" in sql or "COVAR" in sql
 
 
 def test_clickhouse_build_stat_agg_1arg_stddev_samp() -> None:
     d = ClickhouseDialect()
-    out = d.build_stat_agg_1arg("stddev_samp", "amount", parse=_parse_ch)
+    out = d.build_stat_agg_1arg(agg_name="stddev_samp", col_expr=exp.column("amount"))
     sql = out.sql(dialect="clickhouse").upper()
     assert "STDDEV" in sql
 
 
-# ---------------------------------------------------------------------------
 # Time arithmetic — INTERVAL-based (sqlglot transpiles to ClickHouse syntax)
-# ---------------------------------------------------------------------------
 
 
-def test_clickhouse_build_time_offset_expr_day() -> None:
+def test_clickhouse_build_date_add_day() -> None:
     d = ClickhouseDialect()
-    col = sqlglot.parse_one("created_at", dialect="clickhouse")
-    out = d.build_time_offset_expr(col, offset=3, granularity="day")
-    sql = out.sql(dialect="clickhouse").upper()
-    assert "INTERVAL" in sql
-    assert "DAY" in sql
+    col = exp.column("created_at")
+    out = d.build_date_add(
+        expr=col, count=exp.Literal.number(3), unit=TimeGranularity.DAY, operand=DataType.TIMESTAMP,
+    )
+    assert out.sql(dialect="clickhouse") == "addDays(created_at, 3)"
 
 
 def test_clickhouse_build_date_trunc_month() -> None:
     d = ClickhouseDialect()
     col = sqlglot.parse_one("created_at", dialect="clickhouse")
-    out = d.build_date_trunc(col, TimeGranularity.MONTH, parse=_parse_ch)
+    out = d.build_date_trunc(col, TimeGranularity.MONTH)
     sql = out.sql(dialect="clickhouse").upper()
     # sqlglot transpiles to ClickHouse-appropriate date function
     assert "MONTH" in sql or "DATE_TRUNC" in sql
 
 
 def test_clickhouse_build_date_trunc_week_sunday_shift() -> None:
-    """DEV-1572: WEEK_SUNDAY reuses ClickHouse's native (Monday) week
-    truncation with the +1d / -1d shift."""
+    """WEEK_SUNDAY reuses ClickHouse's native (Monday) week truncation with the +1d / -1d shift."""
     d = ClickhouseDialect()
     col = sqlglot.parse_one("ordered_at", dialect="clickhouse")
-    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY, parse=_parse_ch)
+    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY)
     up = out.sql(dialect="clickhouse").upper()
     # sqlglot emits the canonical ClickHouse spelling ``dateTrunc``
     # (upper-cased here to ``DATETRUNC``). ClickHouse accepts both
     # ``DATE_TRUNC`` and ``dateTrunc`` so either is correct on the wire,
     # but sqlglot only emits one form — pin it.
     assert "DATETRUNC('WEEK'" in up
-    assert "+ INTERVAL 1 DAY" in up
-    assert "- INTERVAL 1 DAY" in up
+    assert "ADDDAYS(ORDERED_AT, 1)" in up
+    assert up.endswith(", -1)")
+
+
+async def test_clickhouse_orders_by_the_projection_not_its_dotted_alias() -> None:
+    """ClickHouse resolves the dotted alias ``orders.created_at`` to the source column, not the bucket."""
+    model = SlayerModel(
+        name="orders", sql_table="orders", data_source="test",
+        columns=[Column(name="id", type=DataType.INT, primary_key=True),
+                 Column(name="created_at", type=DataType.TIMESTAMP)],
+    )
+    query = SlayerQuery(
+        source_model="orders",
+        time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
+        measures=[ModelMeasure(formula="*:count")],
+    )
+    sql = await _engine_generate(query=query, model=model, dialect="clickhouse")
+    assert sql[sql.rindex("ORDER BY"):].split("\n", 1)[1].strip() == "dateTrunc('MONTH', orders.created_at) ASC"
+
+
+def test_clickhouse_windowed_projection_keeps_its_alias() -> None:
+    window = exp.Window(this=exp.func("SUM", exp.column("x")), order=exp.Order(expressions=[exp.column("x")]))
+    statement = exp.select(window.as_("w")).from_("t").order_by(exp.column("w", quoted=True))
+    assert ClickhouseDialect().rewrite_statement(statement).sql(dialect="clickhouse").endswith('ORDER BY "w"')

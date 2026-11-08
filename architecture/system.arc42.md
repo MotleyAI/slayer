@@ -1,0 +1,247 @@
+# SLayer — system architecture
+
+## 1. Purpose & context
+
+SLayer is a semantic layer for AI agents: agents describe measures, dimensions,
+and filters; SLayer generates and executes the SQL. This file is the root of the
+living-architecture layer — present-tense structure and principles, updated in
+place. Behaviour lives in `openspec/specs/`; decision history lives in
+`openspec/changes/archive/` and git (there is no ADR log).
+
+## 2. Building blocks
+
+The `landscape` view ([views.c4](views.c4), model in
+[model.c4](model.c4)):
+
+<!-- likec4:landscape -->
+```mermaid
+flowchart TD
+  %% landscape: SLayer landscape
+  core["Core domain models"]
+  sql["SQL generation"]
+  engine["Query engine"]
+  ir["Intermediate representation"]
+  storage["Storage backends"]
+  importers("Importers")
+  search("Search & embeddings")
+  memories("Agent memories")
+  protocols("BI wire protocols")
+  usage_reporting["Usage reporting"]
+  surfaces("User-facing surfaces")
+  core -.-> sql
+  core -.-> storage
+  engine --> core
+  engine --> ir
+  engine --> memories
+  engine --> search
+  engine --> sql
+  engine --> storage
+  importers --> core
+  importers --> engine
+  importers --> sql
+  ir --> core
+  memories --> core
+  memories --> engine
+  memories --> search
+  memories --> storage
+  protocols --> core
+  protocols --> engine
+  protocols --> storage
+  search --> core
+  search --> engine
+  search --> memories
+  search --> storage
+  sql --> core
+  sql --> ir
+  storage --> core
+  storage --> engine
+  storage --> memories
+  storage --> search
+  storage --> sql
+  surfaces --> core
+  surfaces --> engine
+  surfaces --> importers
+  surfaces --> memories
+  surfaces --> protocols
+  surfaces --> search
+  surfaces --> sql
+  surfaces --> storage
+  protocols --> usage_reporting
+  surfaces --> usage_reporting
+  usage_reporting --> core
+  usage_reporting --> sql
+```
+*Dashed arrows: legacy edges slated to die.*
+<!-- /likec4:landscape -->
+
+Eleven nodes: precise `core`, `sql`, `ir`,
+`engine`, `storage` around the query pipeline, and `usage_reporting`; virtual buckets `importers`,
+`search`, `memories`, `protocols`, `surfaces` for the rest. Package claims and
+spec mapping are node metadata in [model.c4](model.c4); the
+legacy-arrow baseline is in [index.yaml](index.yaml).
+
+## 3. Principles
+
+All code, old and new, MUST obey these.
+
+1. **Target layering**: `engine` → `sql` → `ir` → `core`. The grandfathered
+   crossings (declared `#legacy` child arrows, count = the `legacy_arrows`
+   baseline in index.yaml) are dying, never growing.
+   [enforced: arch_check:model-truth]
+2. **`core` imports no other SLayer node.** The remaining crossings are the
+   grandfathered child-level `#legacy` doors (`core.query`/`core.models` →
+   `sql.*`, `storage.migrations`), slated to die.
+   [enforced: arch_check:model-truth]
+3. **Every top-level `slayer.*` package/module belongs to exactly one node.**
+   A new top-level package must be claimed in a node's model metadata in the same change.
+   [enforced: arch_check:claims-exactly-once]
+4. **Model truth**: the LikeC4 relation set covers the AST-measured runtime
+   import edges at every declared granularity — each module attributes to its
+   finest declared child else its node, every edge is licensed by its
+   most-specific arrow, and TYPE_CHECKING-guarded imports are excluded. The
+   model describes the code as it IS; `#legacy` marks edges slated to die.
+   [enforced: arch_check:model-truth]
+5. **Ratchet**: `#legacy` arrows are only ever removed; their count equals the
+   `legacy_arrows` baseline in index.yaml, so deleting one lowers the baseline
+   in the same commit. The count check is a stateless backstop — review of the
+   paired `.c4` + index diff owns monotonicity. Adding a legacy arrow means the
+   architecture is changing: do it deliberately, with explicit user OK.
+   [enforced: arch_check:baseline-ratchet]
+6. **SQL is built as sqlglot AST**, never by string concatenation of fragments.
+   [review] [enforced: test:tests/test_law_sql_built_as_ast.py]
+7. **Async-first**: engine and storage methods are async; sync entry points
+   bridge via `execute_sync` / `run_sync`. [review]
+8. **The query algebra** lives in `semantics.arc42.md`; its observable face:
+   adding a measure never changes result cardinality or other fields'
+   values. [enforced: test:tests/test_dev1837_dimension_measure_matrix.py]
+9. **Dotted-canonical references**: dots denote join paths in queries and model
+   SQL; the legacy `__` split-alias input form is a hard error; `__` survives
+   only as an internal generated-SQL join alias (`__slayer_` prefix reserved).
+   A resolved path is **canonical**: each hop spelled by its edge name, else its
+   target model — a query stage by its name in its own query list, which precedes
+   a same-named model (`customers.regions ≡ customers.hr` for an edge named `hr`); a leading
+   **root qualifier** — the root's own name, read before any hop — drops out (`r.x ≡ x` from
+   root `r`); keys, join aliases and result names carry only canonical paths.
+   [enforced: test:tests/test_dev1743_resolution.py]
+   [enforced: test:tests/test_dev1954_canonical_paths.py]
+   [enforced: test:tests/test_dev2187_root_qualifier.py]
+10. **Two expression layers**: Mode A free SQL (`Column.sql`, model `filters`)
+    vs Mode B, a SQL-compatible grammar (formulas, query fields) — one
+    canonical function library, extended never forked. [review]
+    - **10.1** Every Mode B construct means the same on every dialect.
+      [enforced: test:tests/test_dev2120_library_matrix.py]
+    - **10.2** A dialect without its own translation of a Mode B construct
+      refuses it with a typed error; a base-class default is never another
+      dialect's SQL. [enforced: test:tests/test_dev2169_dialect_library_support.py]
+11. **Versioned persistence**: models, queries, datasource configs and memories
+    carry `version`; migrations run automatically on load. [review]
+    - **11.1** A load never writes; an upgraded document is persisted only by a
+      save. [target: DEV-1844]
+    - **11.2** Library growth never invalidates a stored artefact: a newly
+      reserved name yields to a model's own definition of it inside that model;
+      any other collision ships with a migration.
+      [enforced: test:tests/test_library_growth.py]
+12. **Pydantic v2 for all models; never dataclasses.** [review]
+13. **One key kind per meaning**: a construct with an existing kind's shape and
+    meaning reuses it; anything else is a new kind, never a reserved name
+    bending an existing kind's contract. Every kind dispatch fails closed on a
+    kind it does not handle. [review]
+14. **Ingestion is idempotent and additive-only**: user metadata is never
+    overwritten by a re-ingest (documented exceptions: the `source_kind`
+    refresh, and a non-list column re-typed to the list its live column is). [review]
+15. **Row-level security fails closed**: anything a session policy cannot
+    confirm is rejected, never passed through unscoped. [review]
+16. **Logical names, physical once**: every model-level column reference —
+    query fields, `join_pairs`, unique-key sets — names a column by
+    `Column.name`; the physical spelling (`Column.physical_name`: a base
+    column's bare `sql`, else its name) is applied once, where a reference
+    becomes SQL or meets the live schema, and is never the key two references
+    are matched on.
+    [enforced: test:tests/test_dev1902_join_key_spelling.py]
+17. **Honest wire catalogs**: every column a BI wire protocol advertises is
+    selectable as advertised. [enforced: test:tests/test_dev2172_honest_catalogs.py]
+18. **One reader of Mode B**: Mode B text is parsed only by `core.syntax`; no
+    consumer re-tokenises it. [enforced: test:tests/test_dev2172_one_mode_b_reader.py]
+    [enforced: test:tests/test_dev2187_one_reader_law.py]
+19. **One writer of result values**: every output path encodes result values
+    with one codec in `core.format`; none encodes a value itself.
+    [enforced: test:tests/test_dev2172_value_codec.py]
+20. **One treatment per model source**: an `sql`-mode model is typed,
+    re-typed, validated and drift-checked exactly like a `sql_table` model
+    wherever the live database can tell the same about both; any difference
+    is a documented exception. [review]
+21. **Importers preserve meaning**: an importer emits a construct only when
+    SLayer reads it with the source's meaning, up to SLayer's documented NULL
+    conventions; anything else is dropped with a report.
+    [enforced: test:tests/test_dev2171_importers_preserve_meaning.py]
+22. **One typing**: a value's type is derived from its key in one place; every
+    check, coercion and metadata lift reads that derivation. [target: DEV-2180]
+23. **One database door**: every live database access — statement or metadata —
+    goes through a client owned by a query engine.
+    [enforced: test:tests/test_law_database_door.py]
+18. **Fail at save time**: a stored definition guaranteed to fail every query that reads it is refused when saved, wherever the check is affordable; query time keeps the same check as a fail-closed backstop for definitions stored without it. [review]
+
+## 4. Enforcement
+
+The enforcement bundle — `la-arch-check` (the one import law, from
+MotleyAI/living-architecture; pinned in pyproject.toml) runs in CI; the full bundle
+runs at the pr-review gate and the arch-slice move gate:
+
+```bash
+la-arch-check                                # also runs in CI
+npx -y likec4@1.47.0 validate architecture   # pinned; run from the repo root
+poetry run basedpyright                      # gate = no new errors vs baseline
+```
+
+`arch_check`'s `diagrams-fresh` goes red when a mapped doc's embedded mermaid
+drifts from the model or views — the one fix is `la-arch-diagrams`.
+
+Every numbered principle item in an arc42 file carries at least one
+square-bracketed status tag (all three kinds validated by arch_check, per
+clause where clauses differ):
+
+- an `enforced:` tag — an automatic check trips on violation; its id names an
+  arch_check check (`arch_check:<check-id>`) or a test (`test:<pytest path>`,
+  taken on trust). Several may accumulate; tag the strongest available
+  (structural > static > generative > example matrix) and upgrade over time.
+- `[review]` — true today, unenforced; a standing candidate for a fitness
+  function (the DEV-1869 law harness for the semantics laws).
+- a `target:` tag naming a `DEV-<number>` issue — envisioned, not yet true;
+  that issue flips the tag in its own PR.
+
+## 5. Model & diagram authoring convention
+
+`likec4 validate` owns syntax; living-architecture's `arch_diagrams` is the one
+parser of the constrained convention `arch_check` enforces (`model-identity`, `model-truth`,
+`diagrams-fresh`):
+
+- every element declared as `<id> = <kind> '<title>'`, one per line; children
+  nest inside the parent's `{ }` body and are addressed by dotted FQN
+  (`core.query`) everywhere else; every node is a child of the one language
+  root `python`, and findings print ids qualified with it (`python.core.query`);
+- all relations flat in the `python` root body, one `<src> -> <dst>` per line
+  (dotted endpoints relative to the root allowed), never inside node bodies,
+  never `this`/`it`; `#legacy`
+  on the same line. `from pkg import name` measures both the `pkg` and the
+  `pkg.name` edge — a re-exported attribute sharing a child's name attributes to
+  that child (accepted fuzz);
+- each node declares its mapping in one `metadata { }` block (`package` and
+  `claims` for precise nodes, `packages` for buckets, plus `arc42`/`specs`);
+  nested elements map to `<package>.<id>` by convention and carry no metadata.
+  The one law measures imports at the finest modelled granularity, so an arrow
+  is required between any two modelled children;
+- every view is `view <id> of python`; includes support only `include *`, listed top-level ids, and the
+  focus predicates `x -> *` / `* -> x`; a per-view `view_depth:` in index.yaml
+  (default 3) sets how many levels each view expands — deeper elements collapse
+  into their cutoff ancestor with edges rolled up, and shown children render as
+  nested mermaid subgraphs;
+- each mapped doc (the `diagrams:` block in [index.yaml](index.yaml)) carries a
+  `<!-- likec4:<view_id> -->` … `<!-- /likec4:<view_id> -->` marker pair placed
+  once by hand, and `la-arch-diagrams` fills the mermaid
+  between the markers.
+
+## 6. Rationale
+
+The wedge is focused on the query pipeline because that is where boundary
+violations accumulate (see `python.sql.arc42.md`); buckets stay coarse until real work
+touches them.

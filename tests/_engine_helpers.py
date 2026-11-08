@@ -1,0 +1,372 @@
+"""Shared test helpers for engine-driven SQL-shape assertions.
+
+Used by tests migrated off the legacy ``slayer.engine.enrichment`` pipeline.
+Naming intentionally underscored so pytest skips it
+during test discovery while still allowing ``from tests._engine_helpers
+import ...`` from individual test modules.
+
+Helpers:
+
+* :func:`_assert_valid_sql` — verifies generated SQL parses with sqlglot
+  and contains no nested ``WITH`` clause. Lifted from the legacy
+  ``test_sql_generator.py`` ``_validating_generate`` wrapper.
+* :func:`_engine_generate` — builds a fresh ephemeral ``YAMLStorage`` +
+  ``SlayerQueryEngine`` for a single ``SlayerModel``, runs the supplied
+  ``SlayerQuery`` with ``dry_run=True``, and returns the emitted SQL.
+  Mirrors the legacy ``_generate(query, model)`` semantics on the
+  typed pipeline.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import tempfile
+from collections.abc import AsyncGenerator, Callable, Generator, Mapping
+from contextlib import asynccontextmanager, contextmanager
+from datetime import datetime
+from typing import Any, Optional
+
+import pytest
+import sqlalchemy as sa
+import sqlglot
+from sqlglot import exp
+
+from slayer.core.enums import DataType
+from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.query import SlayerQuery
+from slayer.engine.bind_inputs import bind_query_inputs
+from slayer.engine.compile import stages
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.ir.source_bundle import ResolvedSourceBundle, resolve_scope
+from slayer.sql import client as sql_client
+from slayer.sql import engine_factory
+from slayer.sql.dialects import SQLGLOT_NAMES, dialect_for_ds_type
+from slayer.storage.yaml_storage import YAMLStorage
+
+# Dialect → file extension for a seeded on-disk database (cosmetic; the
+# datasource ``type`` is what selects the SQL dialect).
+_DIALECT_DB_EXT = {"sqlite": ".db", "duckdb": ".duckdb"}
+
+
+@contextmanager
+def disposable_engine(url: str, **kwargs) -> Generator[sa.Engine]:
+    """A ``create_engine`` that always disposes (the one test-side engine door).
+
+    The resource-ownership ratchet allows bare ``create_engine`` only here, in
+    the factory, and in the dialects' build hooks — so test fixtures that need a
+    raw engine go through this and never leak a pool.
+    """
+    engine = sa.create_engine(url, **kwargs)
+    try:
+        yield engine
+    finally:
+        engine.dispose()
+
+
+def plant_async_engine(monkeypatch: pytest.MonkeyPatch, client: sql_client.SlayerSQLClient, fake: Any) -> None:
+    """Make ``fake`` the async engine ``client`` builds for the running loop."""
+    monkeypatch.setattr(sql_client, "create_async_engine", lambda *_a, **_k: fake)
+    assert client._get_async_engine() is fake
+
+
+async def build_exec_engine(
+    db_path: str,
+    *,
+    dialect: str,
+    models: list[SlayerModel],
+    datasource: str = "test",
+    validate: bool = False,
+    clock: Optional[Callable[[], datetime]] = None,
+    datasource_fields: Optional[Mapping[str, Any]] = None,
+) -> SlayerQueryEngine:
+    """Storage + query engine over an ALREADY-seeded ``db_path`` (the caller owns
+    the file). The single builder the per-DEV fixture roots used to each copy;
+    ``seeded_exec_engine`` is the disposing full-lifecycle wrapper around it. Use
+    this directly only when you manage the tempdir / db yourself. ``datasource_fields``
+    adds extra ``DatasourceConfig`` fields."""
+    storage = YAMLStorage(base_dir=os.path.join(os.path.dirname(db_path), "store"))
+    await storage.save_datasource(DatasourceConfig.model_validate(
+        {"name": datasource, "type": dialect, "database": db_path, **(datasource_fields or {})},
+    ))
+    for model in models:
+        await storage.save_model(model, _validate=validate)
+    if clock is None:
+        return SlayerQueryEngine(storage=storage)
+    return SlayerQueryEngine(storage=storage, clock=clock)
+
+
+@asynccontextmanager
+async def seeded_exec_engine(
+    *,
+    dialect: str,
+    seed: Callable[[str], None],
+    models: list[SlayerModel],
+    datasource: str = "test",
+    validate: bool = False,
+    clock: Optional[Callable[[], datetime]] = None,
+    datasource_fields: Optional[Mapping[str, Any]] = None,
+) -> AsyncGenerator[tuple[SlayerQueryEngine, str]]:
+    """The one seeded executing-engine context.
+
+    Seeds a temp db (``seed(db_path)``), registers ``models`` against a
+    ``dialect``-typed datasource, and yields ``(engine, db_path)``. On exit it
+    closes the query engine and invalidates the datasource's factory engine — in
+    ``finally``, before the temp dir is removed — so no engine outlives its file.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = os.path.join(tmp, f"seed{_DIALECT_DB_EXT.get(dialect, '.db')}")
+        seed(db_path)
+        ds_config = DatasourceConfig(name=datasource, type=dialect, database=db_path)
+        engine = await build_exec_engine(
+            db_path, dialect=dialect, models=models,
+            datasource=datasource, validate=validate, clock=clock,
+            datasource_fields=datasource_fields,
+        )
+        try:
+            yield engine, db_path
+        finally:
+            engine.close()
+            engine_factory.invalidate_engine(ds_config)
+
+
+async def make_seeded_sqlite_engine(
+    *, base_dir: str, db_path: str, models: list[SlayerModel], datasource: str = "test"
+) -> SlayerQueryEngine:
+    """Storage + engine bound to a seeded SQLite file.
+
+    Consolidates the byte-identical ``make_sqlite_engine`` helpers previously
+    duplicated across the per-DEV fixture modules; they now delegate here.
+    """
+    for model in models:
+        if model.data_source != datasource:
+            raise ValueError(
+                f"Model {model.name!r} uses datasource {model.data_source!r}, "
+                f"expected {datasource!r}"
+            )
+    storage = YAMLStorage(base_dir=base_dir)
+    await storage.save_datasource(
+        DatasourceConfig(name=datasource, type="sqlite", database=db_path),
+    )
+    for model in models:
+        await storage.save_model(model)
+    return SlayerQueryEngine(storage=storage)
+
+
+def models_bundle(models_by_name: dict[str, SlayerModel], *, dialect: str = "postgres") -> ResolvedSourceBundle:
+    """A rootless bundle over a model map, for unit tests over plain keys."""
+    return ResolvedSourceBundle(dialect=dialect, referenced_models=list(models_by_name.values()))
+
+
+def _assert_valid_sql(sql: str, dialect: str = "postgres") -> None:
+    """Assert generated SQL is structurally valid (parses, no nested WITH).
+
+    The BigQuery ``TypeError`` carve-out is gone: finalised BigQuery
+    naming/mangling no longer emits the dotted-alias shapes sqlglot choked on,
+    so a ``TypeError`` here is now a real failure for every dialect.
+    """
+    try:
+        statements = sqlglot.parse(sql, dialect=dialect)
+        assert statements, f"SQL failed to parse:\n{sql}"
+        assert len(statements) == 1, (
+            f"Expected 1 SQL statement, got {len(statements)}:\n{sql}"
+        )
+    except TypeError as exc:
+        raise AssertionError(
+            f"sqlglot TypeError while validating {dialect} SQL:\n{sql}"
+        ) from exc
+    with_lines = [
+        line for line in sql.split("\n")
+        if line.strip().upper().startswith("WITH ")
+    ]
+    assert len(with_lines) <= 1, f"Nested WITH clauses detected:\n{sql}"
+
+
+async def _engine_generate(
+    *,
+    query: SlayerQuery | list[SlayerQuery | dict],
+    model: SlayerModel,
+    dialect: str = "postgres",
+    extra_models: Optional[list] = None,
+    validate: bool = True,
+    clock: Optional[Callable[[], datetime]] = None,
+    datasource_fields: Optional[Mapping[str, Any]] = None,
+) -> str:
+    """Build a fresh ``YAMLStorage`` + ``SlayerQueryEngine`` for ``model``,
+    run ``query`` with ``dry_run=True``, and return the emitted SQL.
+
+    Each call creates and tears down its own temporary directory so callers
+    can freely compare two model variants (with vs without a saved measure,
+    etc.) without storage cross-talk. ``extra_models`` is an optional list
+    of additional ``SlayerModel`` instances to register in the same store
+    (e.g. join targets sharing ``model.data_source``).
+
+    ``validate=False`` skips save-time derived-column cycle
+    detection for the few migrated tests that feed intentionally-shaped
+    models the cycle validator would otherwise reject. ``datasource_fields``
+    adds extra ``DatasourceConfig`` fields.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        storage = YAMLStorage(base_dir=d)
+        await storage.save_datasource(DatasourceConfig.model_validate(
+            {"name": model.data_source, "type": dialect, **(datasource_fields or {})},
+        ))
+        await storage.save_model(model, _validate=validate)
+        for extra in extra_models or []:
+            await storage.save_model(extra, _validate=validate)
+        engine = SlayerQueryEngine(storage=storage) if clock is None else SlayerQueryEngine(storage=storage, clock=clock)
+        response = await engine.execute(query, dry_run=True)
+        sql = response.sql
+        assert sql is not None, "engine.execute(dry_run=True) returned no SQL"
+        # A datasource type that is not a sqlglot name (``mariadb``) parses as its dialect's.
+        parse_dialect = dialect if dialect in SQLGLOT_NAMES else dialect_for_ds_type(dialect).sqlglot_name
+        _assert_valid_sql(sql, dialect=parse_dialect)
+        return sql
+
+
+def _outer_select(sql: str, *, dialect: str = "postgres") -> exp.Select:
+    """Parse ``sql`` and return its outermost ``SELECT`` expression.
+
+    Skips a leading ``WITH`` by descending into the CTE chain's final
+    ``SELECT`` — the typed pipeline emits a single top-level statement, so
+    this is the projection-and-filter-bearing query body.
+    """
+    parsed = sqlglot.parse_one(sql, dialect=dialect)
+    select = parsed.find(exp.Select)
+    assert select is not None, f"no SELECT found in SQL:\n{sql}"
+    return select
+
+
+def _where_text(sql: str, *, dialect: str = "postgres") -> str:
+    """Rendered text of the outermost SELECT's WHERE predicate ('' if none)."""
+    where = _outer_select(sql, dialect=dialect).args.get("where")
+    return where.this.sql(dialect=dialect) if where is not None else ""
+
+
+def _dataset_where_text(sql: str, *, dialect: str = "postgres") -> str:
+    """Rendered WHERE of the outermost SELECT's FROM when it is a model's filtered dataset ('' if none)."""
+    source = _outer_select(sql, dialect=dialect).args["from_"].this
+    where = source.this.args.get("where") if isinstance(source, exp.Subquery) else None
+    return where.this.sql(dialect=dialect) if where is not None else ""
+
+
+def _having_text(sql: str, *, dialect: str = "postgres") -> str:
+    """Rendered text of the outermost SELECT's HAVING predicate ('' if none)."""
+    having = _outer_select(sql, dialect=dialect).args.get("having")
+    return having.this.sql(dialect=dialect) if having is not None else ""
+
+
+def _norm(s: str) -> str:
+    """Collapse all runs of whitespace to single spaces."""
+    return " ".join(s.split())
+
+
+def _join_aliases(sql: str, *, dialect: str = "postgres") -> set[str]:
+    """The set of joined-table aliases in ``sql``.
+
+    Walks every ``JOIN`` node and collects the joined table's alias (or
+    bare name when unaliased) — e.g. ``LEFT JOIN customers AS customers``
+    yields ``customers``; ``LEFT JOIN regions AS customers__regions``
+    yields ``customers__regions``.
+
+    Shared out of ``tests/test_sql_generator.py`` so the
+    frame-bound tests assert against real JOIN nodes rather than alias
+    substrings in predicate text.
+    """
+    tree = sqlglot.parse_one(sql, dialect=dialect)
+    aliases: set[str] = set()
+    for join in tree.find_all(exp.Join):
+        target = join.this
+        if isinstance(target, exp.Table):
+            aliases.add(target.alias_or_name)
+    return aliases
+
+
+def _extract_src_body(sql: str) -> str:
+    """Pull out the ``_src`` subquery body from a generated window-measure SQL.
+
+    Resilient when the outer query also contains other LEFT JOIN (...) blocks
+    (e.g. cross-model measure subqueries): anchors on the ``\\n) AS _src`` suffix
+    and reverse-searches for the matching ``LEFT JOIN (\\n`` before it. Multiple
+    windowed measures emit SIBLING ``) AS _src`` closes (never nested); anchor on
+    the LAST so the reverse search pairs it with the last measure's opening.
+
+    The missing-anchor assertion is not reachable with today's generator output
+    (CodeRabbit): without it the helper silently returns a slice from an
+    arbitrary offset, so a future change to the join keyword or its formatting
+    would surface as a confusing assertion against the wrong text rather than a
+    clear failure here.
+    """
+    closes = list(re.finditer(r"\n[ \t]*\) AS _src", sql))
+    assert closes, f"No `) AS _src` closing the _src subquery in:\n{sql}"
+    end = closes[-1].start()
+    opens = list(re.finditer(r"LEFT JOIN \(\n", sql[:end]))
+    assert opens, f"No `LEFT JOIN (` opening the _src subquery in:\n{sql}"
+    return sql[opens[-1].end():end]
+
+
+def _extract_cte_body(sql: str, cte_name_pattern: str) -> str:
+    """Extract one CTE body by matching ``<cte_name> AS (`` and walking balanced
+    parentheses to its closing ``)``.
+
+    Robust against nested subqueries inside the CTE body (e.g. the ranked
+    ``FROM (SELECT ... ROW_NUMBER() …) AS …`` that first/last isolated CTEs
+    contain). ``cte_name_pattern`` is a regex matched against the CTE name —
+    typical use: ``r"_cm_\\w*loss_payment_amt\\w*"``. Raises ``AssertionError``
+    if no matching CTE is found.
+    """
+    name_match = re.search(rf"({cte_name_pattern})\s+AS\s*\(", sql)
+    assert name_match, f"No CTE matching {cte_name_pattern!r} in:\n{sql}"
+    # Position just after the opening paren of ``<name> AS (``.
+    body_start = sql.index("(", name_match.start()) + 1
+    depth = 1
+    i = body_start
+    while i < len(sql) and depth > 0:
+        ch = sql[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return sql[body_start:i]
+        i += 1
+    raise AssertionError(
+        f"Unbalanced parens — no closing ) for CTE {name_match.group(1)!r}:\n{sql}"
+    )
+
+
+def plan_as_producer(*, query: SlayerQuery, bundle):
+    """Compile ``query`` through the producer entry (``compile_synthesized``), with no
+    inherited population."""
+    scope = resolve_scope(query=query, bundle=bundle, stage_schemas={})
+    prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope, stage_schemas={})
+    return stages.compile_synthesized(
+        prebound, source_model=query.source_model if isinstance(query.source_model, str) else None,
+        bundle=bundle, scope=scope, stage_schemas={},
+        population=stages.NoInheritedPopulation(reason="compiled as a producer by a test"),
+    )
+
+
+async def orders_agg_sql(
+    formula: str, *, dialect: str = "postgres",
+    aggregations: Optional[list[Aggregation]] = None,
+) -> str:
+    """Whitespace-normalised SQL for one ``formula`` measure over a flat ``orders`` model
+    (``amount``, ``quantity``, ``status`` and the masked ``completed_amount``)."""
+    model = SlayerModel(
+        name="orders", sql_table="orders", data_source="test",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="amount", type=DataType.DOUBLE),
+            Column(name="quantity", type=DataType.DOUBLE),
+            Column(name="status", type=DataType.TEXT),
+            Column(name="completed_amount", type=DataType.DOUBLE, sql="amount",
+                   filter="status = 'completed'"),
+        ],
+        aggregations=aggregations or [],
+    )
+    sql = await _engine_generate(
+        query=SlayerQuery(source_model="orders", measures=[ModelMeasure(formula=formula)]),
+        model=model, dialect=dialect,
+    )
+    return " ".join(sql.split())

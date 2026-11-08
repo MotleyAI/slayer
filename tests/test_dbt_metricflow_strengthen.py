@@ -1,4 +1,4 @@
-"""DEV-1595: strengthen MetricFlow ingestion.
+"""Strengthen MetricFlow ingestion.
 
 Covers the importer-side behaviors of the plan:
   Part 1  correctness fixes (percentile p=, ratio nullif guard)
@@ -18,9 +18,13 @@ ImportError at collection time.
 
 from __future__ import annotations
 
+import re
+from decimal import Decimal
+
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.syntax import Literal, TransformCall, parse_expr
 from slayer.dbt.converter import ConversionResult, DbtToSlayerConverter
 from slayer.dbt.models import (
     DbtDimension,
@@ -51,9 +55,10 @@ def _measure(result: ConversionResult, name: str, model: str = "orders"):
 
 
 def _column_for(result: ConversionResult, formula: str, model: str = "orders"):
-    """The Column referenced by the leading ``<col>:<agg>`` in a formula."""
-    col_name = formula.split(":", 1)[0].strip()
-    return next(c for c in _model(result, model).columns if c.name == col_name)
+    """The Column referenced by the leading ``<agg>(<col>, ...)`` in a formula."""
+    match = re.match(r"\s*\w+\(\s*(\w+)\s*[,)]", formula)
+    assert match is not None, f"formula not in <agg>(<col>...) form: {formula!r}"
+    return next(c for c in _model(result, model).columns if c.name == match.group(1))
 
 
 def _all_report_entries(result: ConversionResult):
@@ -82,7 +87,7 @@ def test_percentile_emits_p_value() -> None:
     )
     result = _convert(project)
     m = _measure(result, "p95_latency")
-    assert m.formula == "latency:percentile(p=0.95)"
+    assert m.formula == "percentile(latency, p=0.95)"
 
 
 def test_percentile_without_value_clean_fails() -> None:
@@ -164,11 +169,12 @@ def test_sum_boolean_wraps_case_when() -> None:
     )
     result = _convert(project)
     m = _measure(result, "paid_orders")
-    assert m.formula.endswith(":sum")
+    assert re.fullmatch(r"sum\(\w+\)", m.formula)
     col = _column_for(result, m.formula)
     assert col.sql is not None
     norm = col.sql.upper().replace(" ", "")
-    assert "CASEWHEN" in norm and "THEN1ELSE0END" in norm
+    assert "CASEWHEN" in norm
+    assert "THEN1ELSE0END" in norm
     assert "IS_PAID" in col.sql.upper()
     assert col.type == DataType.INT
 
@@ -187,7 +193,7 @@ def test_offset_window_maps_to_time_shift() -> None:
         ],
         metrics=[
             DbtMetric(name="revenue_metric", type="simple",
-                      type_params=DbtMetricTypeParams(measure="revenue")),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"})),
             DbtMetric(
                 name="revenue_growth",
                 type="derived",
@@ -206,7 +212,32 @@ def test_offset_window_maps_to_time_shift() -> None:
     growth = _measure(result, "revenue_growth")
     norm = growth.formula.replace(" ", "")
     assert "time_shift(" in growth.formula
-    assert "-1" in norm and "month" in norm.lower()
+    assert "-1" in norm
+    assert "month" in norm.lower()
+
+
+def test_negative_offset_window_shifts_forward() -> None:
+    project = DbtProject(
+        semantic_models=[
+            DbtSemanticModel(name="orders", model="orders",
+                             measures=[DbtMeasure(name="revenue", agg="sum", expr="amount")]),
+        ],
+        metrics=[
+            DbtMetric(name="revenue_metric", type="simple",
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"})),
+            DbtMetric(
+                name="revenue_lead",
+                type="derived",
+                type_params=DbtMetricTypeParams(
+                    expr="revenue_next",
+                    metrics=[DbtMetricInput(name="revenue_metric", alias="revenue_next", offset_window="-1 month")],
+                ),
+            ),
+        ],
+    )
+    shifted = parse_expr(_measure(_convert(project), "revenue_lead").formula)
+    assert isinstance(shifted, TransformCall)
+    assert shifted.args[0] == Literal(value=Decimal(1))
 
 
 def test_offset_to_grain_clean_fails() -> None:
@@ -220,7 +251,7 @@ def test_offset_to_grain_clean_fails() -> None:
         ],
         metrics=[
             DbtMetric(name="revenue_metric", type="simple",
-                      type_params=DbtMetricTypeParams(measure="revenue")),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"})),
             DbtMetric(
                 name="rev_vs_month_start",
                 type="derived",
@@ -257,7 +288,7 @@ def test_metric_level_filter_pushes_into_leaf_column() -> None:
             DbtMetric(
                 name="us_revenue",
                 type="simple",
-                type_params=DbtMetricTypeParams(measure="revenue"),
+                type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}),
                 filter="{{ Dimension('orders__region') }} = 'US'",
             ),
         ],
@@ -266,7 +297,8 @@ def test_metric_level_filter_pushes_into_leaf_column() -> None:
     m = _measure(result, "us_revenue")
     col = _column_for(result, m.formula)
     assert col.filter is not None
-    assert "region" in col.filter and "US" in col.filter
+    assert "region" in col.filter
+    assert "US" in col.filter
 
 
 def test_ratio_per_input_filters_push_down_independently() -> None:
@@ -328,7 +360,8 @@ def test_filter_accepts_list_intersection() -> None:
     m = _measure(result, "scoped_revenue")
     col = _column_for(result, m.formula)
     assert col.filter is not None
-    assert "region" in col.filter and "status" in col.filter
+    assert "region" in col.filter
+    assert "status" in col.filter
     assert " AND " in col.filter.upper() or "AND" in col.filter.upper()
 
 
@@ -487,7 +520,7 @@ def test_unbounded_cumulative_still_cumsum() -> None:
                              measures=[DbtMeasure(name="revenue", agg="sum", expr="amount")]),
         ],
         metrics=[DbtMetric(name="running_revenue", type="cumulative",
-                           type_params=DbtMetricTypeParams(measure="revenue"))],
+                           type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}))],
     )
     result = _convert(project)
     assert _measure(result, "running_revenue").formula == "cumsum(revenue)"
@@ -586,10 +619,10 @@ def test_render_report_groups_by_category() -> None:
     result = _convert(project)
     report = result.render_report()
     assert isinstance(report, str)
-    assert "conv" in report and "weird" in report
+    assert "conv" in report
+    assert "weird" in report
     # Grouped by category: each failing entry's category appears as a heading.
-    cats = {getattr(e, "category", None) for e in _all_report_entries(result)}
-    cats.discard(None)
+    cats = {e.category for e in _all_report_entries(result) if e.category}
     assert cats, "entries must carry categories"
     for cat in cats:
         assert cat in report
@@ -606,7 +639,7 @@ def test_offset_window_plural_granularity_normalized() -> None:
         ],
         metrics=[
             DbtMetric(name="revenue_metric", type="simple",
-                      type_params=DbtMetricTypeParams(measure="revenue")),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"})),
             DbtMetric(
                 name="rev_2w",
                 type="derived",
@@ -624,7 +657,9 @@ def test_offset_window_plural_granularity_normalized() -> None:
     result = _convert(project)
     f = _measure(result, "rev_2w").formula.replace(" ", "").lower()
     assert "time_shift(" in _measure(result, "rev_2w").formula
-    assert "-2" in f and "week" in f and "weeks" not in f
+    assert "-2" in f
+    assert "week" in f
+    assert "weeks" not in f
 
 
 def test_offset_window_custom_granularity_clean_fails() -> None:
@@ -635,7 +670,7 @@ def test_offset_window_custom_granularity_clean_fails() -> None:
         ],
         metrics=[
             DbtMetric(name="revenue_metric", type="simple",
-                      type_params=DbtMetricTypeParams(measure="revenue")),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"})),
             DbtMetric(
                 name="rev_fortnight",
                 type="derived",
@@ -667,10 +702,10 @@ def test_same_measure_different_filters_make_distinct_columns() -> None:
         ],
         metrics=[
             DbtMetric(name="us_rev", type="simple",
-                      type_params=DbtMetricTypeParams(measure="revenue"),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}),
                       filter="{{ Dimension('orders__region') }} = 'US'"),
             DbtMetric(name="eu_rev", type="simple",
-                      type_params=DbtMetricTypeParams(measure="revenue"),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}),
                       filter="{{ Dimension('orders__region') }} = 'EU'"),
         ],
     )
@@ -678,7 +713,8 @@ def test_same_measure_different_filters_make_distinct_columns() -> None:
     us_col = _column_for(result, _measure(result, "us_rev").formula)
     eu_col = _column_for(result, _measure(result, "eu_rev").formula)
     assert us_col.name != eu_col.name
-    assert "US" in (us_col.filter or "") and "EU" in (eu_col.filter or "")
+    assert "US" in (us_col.filter or "")
+    assert "EU" in (eu_col.filter or "")
 
 
 def test_same_measure_same_filter_reuses_one_column() -> None:
@@ -689,10 +725,10 @@ def test_same_measure_same_filter_reuses_one_column() -> None:
         ],
         metrics=[
             DbtMetric(name="us_rev_a", type="simple",
-                      type_params=DbtMetricTypeParams(measure="revenue"),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}),
                       filter="{{ Dimension('orders__region') }} = 'US'"),
             DbtMetric(name="us_rev_b", type="simple",
-                      type_params=DbtMetricTypeParams(measure="revenue"),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}),
                       filter="{{ Dimension('orders__region') }} = 'US'"),
         ],
     )
@@ -730,14 +766,15 @@ def test_cross_model_filter_pushes_down_when_join_reachable() -> None:
     metric = DbtMetric(
         name="us_revenue",
         type="simple",
-        type_params=DbtMetricTypeParams(measure="revenue"),
+        type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}),
         filter="{{ Dimension('customer__region') }} = 'US'",
     )
     result = _convert(_orders_customers_project(metric))
     m = _measure(result, "us_revenue", model="orders")
     col = _column_for(result, m.formula, model="orders")
     assert col.filter is not None
-    assert "region" in col.filter and "US" in col.filter
+    assert "region" in col.filter
+    assert "US" in col.filter
 
 
 def test_cross_model_filter_unreachable_clean_fails() -> None:
@@ -745,7 +782,7 @@ def test_cross_model_filter_unreachable_clean_fails() -> None:
     metric = DbtMetric(
         name="zone_revenue",
         type="simple",
-        type_params=DbtMetricTypeParams(measure="revenue"),
+        type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}),
         filter="{{ Dimension('warehouse__zone') }} = 'A'",
     )
     result = _convert(_orders_customers_project(metric))
@@ -787,7 +824,7 @@ def test_cross_model_filter_multi_hop_clean_fails() -> None:
             DbtMetric(
                 name="zone_a_revenue",
                 type="simple",
-                type_params=DbtMetricTypeParams(measure="revenue"),
+                type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}),
                 filter="{{ Dimension('region__zone') }} = 'A'",
             ),
         ],
@@ -817,7 +854,7 @@ def test_cross_model_filter_foreign_entity_without_owner_clean_fails() -> None:
             DbtMetric(
                 name="vendor_x_revenue",
                 type="simple",
-                type_params=DbtMetricTypeParams(measure="revenue"),
+                type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}),
                 filter="{{ Dimension('vendor__tier') }} = 'X'",
             ),
         ],
@@ -861,7 +898,8 @@ def test_derived_ref_to_measure_filtered_simple_metric_keeps_filter() -> None:
     # And web_revenue itself materialized with a channel filter.
     web = _measure(result, "web_revenue")
     col = _column_for(result, web.formula)
-    assert col.filter is not None and "channel" in col.filter
+    assert col.filter is not None
+    assert "channel" in col.filter
 
 
 def test_filtered_simple_metric_over_non_additive_measure_clean_fails() -> None:
@@ -879,7 +917,7 @@ def test_filtered_simple_metric_over_non_additive_measure_clean_fails() -> None:
         metrics=[
             DbtMetric(
                 name="us_balance", type="simple",
-                type_params=DbtMetricTypeParams(measure="balance"),
+                type_params=DbtMetricTypeParams.model_validate({"measure": "balance"}),
                 filter="{{ Dimension('orders__region') }} = 'US'",
             ),
         ],
@@ -890,9 +928,8 @@ def test_filtered_simple_metric_over_non_additive_measure_clean_fails() -> None:
                for e in _all_report_entries(result))
 
 
-def test_derived_input_filter_over_timespine_metric_clean_fails() -> None:
-    """A per-input filter over a time-spine (unsupported) simple metric must
-    clean-fail in the push-down, not resurrect it as a plain aggregate."""
+def test_derived_input_filter_over_fill_nulls_metric_converts() -> None:
+    """A per-input filter over a ``fill_nulls_with`` metric pushes into the aggregate the fill wraps."""
     project = DbtProject(
         semantic_models=[
             DbtSemanticModel(name="orders", model="orders",
@@ -917,9 +954,38 @@ def test_derived_input_filter_over_timespine_metric_clean_fails() -> None:
         ],
     )
     result = _convert(project)
-    assert all(m.name != "us_gap_rev" for m in _model(result).measures)
-    assert any("us_gap_rev" in (e.metric_name or e.message)
-               for e in _all_report_entries(result))
+    measure = next(m for m in _model(result).measures if m.name == "us_gap_rev")
+    assert measure.formula.replace(" ", "").startswith("coalesce(")
+    assert any(c.filter and "region" in c.filter and "US" in c.filter for c in _model(result).columns)
+
+
+def test_ratio_input_filter_over_fill_nulls_metric_keeps_the_fill() -> None:
+    project = DbtProject(
+        semantic_models=[
+            DbtSemanticModel(name="orders", model="orders",
+                             measures=[DbtMeasure(name="revenue", agg="sum", expr="amount"),
+                                       DbtMeasure(name="order_count", agg="count", expr="id")]),
+        ],
+        metrics=[
+            DbtMetric.model_validate({
+                "name": "gap_filled_rev", "type": "simple",
+                "type_params": {"measure": {"name": "revenue", "fill_nulls_with": 0}},
+            }),
+            DbtMetric(name="orders_n", type="simple",
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "order_count"})),
+            DbtMetric(
+                name="us_rev_per_order",
+                type="ratio",
+                type_params=DbtMetricTypeParams(
+                    numerator=DbtMetricInput(name="gap_filled_rev", filter="{{ Dimension('orders__region') }} = 'US'"),
+                    denominator=DbtMetricInput(name="orders_n"),
+                ),
+            ),
+        ],
+    )
+    result = _convert(project)
+    measure = next(m for m in _model(result).measures if m.name == "us_rev_per_order")
+    assert "coalesce(" in measure.formula.replace(" ", "")
 
 
 def test_input_filter_intersects_referenced_metric_filter() -> None:
@@ -937,7 +1003,7 @@ def test_input_filter_intersects_referenced_metric_filter() -> None:
         metrics=[
             DbtMetric(
                 name="us_revenue", type="simple",
-                type_params=DbtMetricTypeParams(measure="revenue"),
+                type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}),
                 filter="{{ Dimension('orders__region') }} = 'US'",
             ),
             DbtMetric(
@@ -957,8 +1023,10 @@ def test_input_filter_intersects_referenced_metric_filter() -> None:
     m = _measure(result, "us_web_revenue")
     col = _column_for(result, m.formula)
     assert col.filter is not None
-    assert "region" in col.filter and "US" in col.filter
-    assert "channel" in col.filter and "web" in col.filter
+    assert "region" in col.filter
+    assert "US" in col.filter
+    assert "channel" in col.filter
+    assert "web" in col.filter
 
 
 def test_cross_model_filter_ambiguous_multi_owner_entity_clean_fails() -> None:
@@ -991,7 +1059,7 @@ def test_cross_model_filter_ambiguous_multi_owner_entity_clean_fails() -> None:
             DbtMetric(
                 name="tier_x_revenue",
                 type="simple",
-                type_params=DbtMetricTypeParams(measure="revenue"),
+                type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}),
                 filter="{{ Dimension('party__tier') }} = 'X'",
             ),
         ],
@@ -1011,18 +1079,18 @@ def test_derived_input_referencing_unsupported_simple_clean_fails() -> None:
                              measures=[DbtMeasure(name="revenue", agg="sum", expr="amount")]),
         ],
         metrics=[
-            # Unsupported: time-spine gap fill → not materialized.
+            # Unsupported: measure-less simple metric → not materialized.
             DbtMetric.model_validate({
-                "name": "gap_filled_rev",
+                "name": "agg_only",
                 "type": "simple",
-                "type_params": {"measure": {"name": "revenue", "fill_nulls_with": 0}},
+                "type_params": {"metric_aggregation_params": {"semantic_model": "orders", "agg": "sum"}},
             }),
             DbtMetric(
                 name="rev_minus_gap",
                 type="derived",
                 type_params=DbtMetricTypeParams(
-                    expr="gap_filled_rev - 1",
-                    metrics=[DbtMetricInput(name="gap_filled_rev")],
+                    expr="agg_only - 1",
+                    metrics=[DbtMetricInput(name="agg_only")],
                 ),
             ),
         ],
@@ -1033,7 +1101,7 @@ def test_derived_input_referencing_unsupported_simple_clean_fails() -> None:
                for e in _all_report_entries(result))
 
 
-# ───────────────── Part 4 — measure-less / timespine clean-fails ─────────────────
+# ───────────────── Part 4 — measure-less clean-fails ─────────────────
 
 
 def test_measure_less_simple_metric_clean_fails() -> None:
@@ -1056,26 +1124,6 @@ def test_measure_less_simple_metric_clean_fails() -> None:
                for e in _all_report_entries(result))
 
 
-@pytest.mark.parametrize("field,value", [("join_to_timespine", True), ("fill_nulls_with", 0)])
-def test_timespine_gap_fill_clean_fails(field: str, value) -> None:
-    metric = DbtMetric.model_validate({
-        "name": "gap_filled_rev",
-        "type": "simple",
-        "type_params": {"measure": {"name": "revenue", field: value}},
-    })
-    project = DbtProject(
-        semantic_models=[
-            DbtSemanticModel(name="orders", model="orders",
-                             measures=[DbtMeasure(name="revenue", agg="sum", expr="amount")]),
-        ],
-        metrics=[metric],
-    )
-    result = _convert(project)
-    assert all(m.name != "gap_filled_rev" for m in _model(result).measures)
-    assert any("gap_filled_rev" in (e.metric_name or e.message)
-               for e in _all_report_entries(result))
-
-
 # ───────────────── Part 2 — count_distinct_approx importer mapping ─────────────────
 
 
@@ -1088,7 +1136,7 @@ def test_importer_maps_count_distinct_approx_measure() -> None:
         ],
     )
     result = _convert(project)
-    assert _measure(result, "uniq_cust").formula == "customer_id:count_distinct_approx"
+    assert _measure(result, "uniq_cust").formula == "count_distinct_approx(customer_id)"
 
 
 # ───────────────── Part 3.3 — offset on multi-aggregate input clean-fails ─────────────────
@@ -1161,7 +1209,8 @@ def test_metric_filter_and_input_filter_intersect() -> None:
     cols = [c for c in _model(result).columns if c.filter]
     # numerator leaf: BOTH the metric-level (region) and input-level (channel) filters
     num = [c for c in cols if "channel" in (c.filter or "")]
-    assert num and "region" in (num[0].filter or "")
+    assert num
+    assert "region" in (num[0].filter or "")
     # denominator leaf: only the metric-level filter
     den = [c for c in cols if "region" in (c.filter or "") and "channel" not in (c.filter or "")]
     assert den
@@ -1198,7 +1247,7 @@ def test_semantic_model_label_preserved_in_meta() -> None:
 
 
 @pytest.mark.parametrize("dialect", ["mysql", "tsql"])
-def test_percentile_on_unsupported_dialect_emits_caveat(dialect: str) -> None:
+def test_percentile_on_unsupported_dialect_is_dropped(dialect: str) -> None:
     project = DbtProject(
         semantic_models=[
             DbtSemanticModel(
@@ -1211,14 +1260,11 @@ def test_percentile_on_unsupported_dialect_emits_caveat(dialect: str) -> None:
     result = DbtToSlayerConverter(
         project=project, data_source="test", target_dialect=dialect
     ).convert()
-    # The measure still imports (formula valid), but a report caveat warns it
-    # won't execute on this dialect.
-    assert _measure(result, "p95").formula == "latency:percentile(p=0.95)"
-    assert any("percentile" in e.message.lower() or "percentile" in (getattr(e, "category", "") or "").lower()
-               for e in _all_report_entries(result))
+    assert all(m.name != "p95" for model in result.models for m in model.measures)
+    assert any("p95" in e.message and "not supported" in e.message for e in _all_report_entries(result))
 
 
-# ───────── DEV-1595 review follow-ups: filtered special aggs / derived input filters ─────────
+# ───────── Filtered special aggs / derived input filters ─────────
 
 
 def test_filtered_percentile_metric_preserves_p() -> None:
@@ -1233,15 +1279,33 @@ def test_filtered_percentile_metric_preserves_p() -> None:
         ],
         metrics=[
             DbtMetric(name="us_latency_p95", type="simple",
-                      type_params=DbtMetricTypeParams(measure="latency_p95"),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "latency_p95"}),
                       filter="{{ Dimension('orders__region') }} = 'US'"),
         ],
     )
     result = _convert(project)
     m = _measure(result, "us_latency_p95")
-    assert m.formula.endswith(":percentile(p=0.95)")
+    assert re.fullmatch(r"percentile\(\w+, p=0\.95\)", m.formula)
     col = _column_for(result, m.formula)
-    assert col.filter is not None and "region" in col.filter
+    assert col.filter is not None
+    assert "region" in col.filter
+
+
+@pytest.mark.parametrize("agg", ["percentile", "median"])
+def test_filtered_metric_the_dialect_refuses_is_dropped(agg: str) -> None:
+    params = DbtMeasureAggParams(percentile=0.95) if agg == "percentile" else None
+    project = DbtProject(
+        semantic_models=[DbtSemanticModel(name="orders", model="orders", measures=[
+            DbtMeasure(name="latency_agg", agg=agg, expr="latency", agg_params=params)])],
+        metrics=[DbtMetric(name="us_latency", type="simple",
+                           type_params=DbtMetricTypeParams.model_validate({"measure": "latency_agg"}),
+                           filter="{{ Dimension('orders__region') }} = 'US'")],
+    )
+    result = DbtToSlayerConverter(project=project, data_source="test", target_dialect="mysql").convert()
+    assert all(m.name not in ("latency_agg", "us_latency") for model in result.models for m in model.measures)
+    messages = [e.message for e in _all_report_entries(result)]
+    assert any("latency_agg" in msg and "not supported" in msg for msg in messages), messages
+    assert any("us_latency" in msg and "was dropped" in msg for msg in messages), messages
 
 
 def test_filtered_sum_boolean_metric_builds_case_int_column() -> None:
@@ -1256,23 +1320,25 @@ def test_filtered_sum_boolean_metric_builds_case_int_column() -> None:
         ],
         metrics=[
             DbtMetric(name="us_paid_orders", type="simple",
-                      type_params=DbtMetricTypeParams(measure="paid_orders"),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "paid_orders"}),
                       filter="{{ Dimension('orders__region') }} = 'US'"),
         ],
     )
     result = _convert(project)
     m = _measure(result, "us_paid_orders")
-    assert m.formula.endswith(":sum")
+    assert re.fullmatch(r"sum\(\w+\)", m.formula)
     col = _column_for(result, m.formula)
     assert col.type == DataType.INT
     norm = (col.sql or "").upper().replace(" ", "")
-    assert "CASEWHEN" in norm and "THEN1ELSE0END" in norm
-    assert col.filter is not None and "region" in col.filter
+    assert "CASEWHEN" in norm
+    assert "THEN1ELSE0END" in norm
+    assert col.filter is not None
+    assert "region" in col.filter
 
 
 def test_derived_input_filter_pushes_down() -> None:
     """A per-input filter on a derived metric's single-aggregate input pushes
-    into that input's leaf column (DEV-1595 Part 3.5)."""
+    into that input's leaf column."""
     project = DbtProject(
         semantic_models=[
             DbtSemanticModel(
@@ -1285,9 +1351,9 @@ def test_derived_input_filter_pushes_down() -> None:
         ],
         metrics=[
             DbtMetric(name="rev_metric", type="simple",
-                      type_params=DbtMetricTypeParams(measure="revenue")),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"})),
             DbtMetric(name="cost_metric", type="simple",
-                      type_params=DbtMetricTypeParams(measure="cost")),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "cost"})),
             DbtMetric(
                 name="us_rev_minus_cost",
                 type="derived",
@@ -1351,7 +1417,7 @@ def test_offset_window_object_form_parses() -> None:
         ],
         metrics=[
             DbtMetric(name="revenue_metric", type="simple",
-                      type_params=DbtMetricTypeParams(measure="revenue")),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"})),
             DbtMetric(
                 name="rev_obj_offset",
                 type="derived",
@@ -1370,4 +1436,6 @@ def test_offset_window_object_form_parses() -> None:
     )
     result = _convert(project)
     f = _measure(result, "rev_obj_offset").formula.replace(" ", "").lower()
-    assert "time_shift(" in f and "-1" in f and "month" in f
+    assert "time_shift(" in f
+    assert "-1" in f
+    assert "month" in f

@@ -1,0 +1,8 @@
+# Model-declared workaround: a 1 = 1 join from an extended customers cube to the unrelated events cube.
+cubes:
+  - name: customers_x
+    extends: customers
+    joins:
+      - name: events
+        sql: "1 = 1"
+        relationship: one_to_many

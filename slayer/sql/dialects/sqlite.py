@@ -1,54 +1,118 @@
-"""DEV-1542: SqliteDialect + the SQLite-specific helpers it depends on.
-
-This module folds in the content previously in ``slayer/sql/sqlite_dialect.py``
-(the ``rewrite_sqlite_json_extract`` AST rewrite) and
-``slayer/sql/sqlite_udfs.py`` (the Python aggregate/scalar UDFs registered
-on every fresh SQLite connection).
-
-The helpers are module-level — ``rewrite_sqlite_json_extract`` and
-``register_sqlite_udfs`` and the ``_*Agg`` classes are directly
-importable (used by ``tests/test_sqlite_json_extract.py`` and
-``tests/test_sqlite_udfs.py``). ``SqliteDialect`` is a thin wrapper that
-delegates to them through the ``SqlDialect`` interface.
-"""
+"""SqliteDialect plus its JSON-extract rewrite and Python UDFs."""
 
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+import re
+from calendar import monthrange
+from datetime import date, datetime, timedelta
+from functools import lru_cache
 
+from collections.abc import Callable, Sequence
+from typing import Any, ClassVar, Optional
+
+from pydantic import BaseModel
 from sqlglot import exp
+from sqlglot.expressions.datatypes import DType
+from sqlglot.expressions.core import Expr, Expression
 
-from slayer.core.enums import TimeGranularity
-from slayer.sql.dialects.base import SqlDialect
+from slayer.core.enums import DataType, DatePart, TimeGranularity
+from slayer.core.json_path import JsonPath
+from slayer.core.like_pattern import LikePattern, LikeWildcard, parse_like
+from slayer.core.regex_pattern import RegexGroupRef, RegexPattern, RegexReplacement, parse_replacement
+from slayer.core.time_points import parse_temporal_value
+from slayer.sql.dialects.base import (
+    LegacyTypeCategories,
+    COMPARISON_NODES,
+    FALSE_WORDS,
+    INTEGER_TEXT_PATTERN,
+    NARROW_INTEGER_BOUNDS,
+    PORTABLE_LIBRARY,
+    TRUE_WORDS,
+    VENDOR_ONLY_CAST_TYPES,
+    ExtremumFn,
+    MathFn,
+    SqlDialect,
+    TemporalComparisonOp,
+    TextFn,
+    anon,
+    as_text,
+    case,
+    iso_text,
+    lit,
+    slayer_type_of,
+)
+from slayer.sql.dialects.patterns import PYTHON, RegexFlavour, like_text
+from slayer.sql.dialects.reflection import ResultColumnType
+
+# Rows sampled to certify integers; a sample of ``PROBE_SCAN_CAP + 1`` rows is saturated.
+PROBE_SCAN_CAP: int = 100_000
 
 
-# ===========================================================================
-# JSON-extract AST rewrite (DEV-1331; was slayer/sql/sqlite_dialect.py)
-# ===========================================================================
+class StorageCensus(BaseModel):
+    """One column's stored value kinds over a sample of ``n_rows`` rows."""
+
+    n_rows: int
+    n_non_null: int
+    n_real: int
+    n_text: int
+    n_blob: int
+    n_non_integral: int
+
+    @classmethod
+    def of(cls, *, n_rows: Any, counts: Sequence[Any]) -> StorageCensus:
+        """From ``COUNT(*)`` and :func:`census_counts`' values (an empty sample sums to NULL)."""
+        non_null, real, text, blob, non_integral = (int(v or 0) for v in counts)
+        return cls(
+            n_rows=int(n_rows or 0), n_non_null=non_null, n_real=real, n_text=text, n_blob=blob,
+            n_non_integral=non_integral,
+        )
+
+    def numeric_verdict(self, *, cap: int) -> DataType | None:
+        """With no text or blob stored: DOUBLE on a real or fractional value, INT when an unsaturated sample
+        holds integers only, else ``None`` (saturated, or no non-NULL value)."""
+        if self.n_real or self.n_non_integral:
+            return DataType.DOUBLE
+        if self.n_rows > cap or not self.n_non_null:
+            return None
+        return DataType.INT
 
 
-def rewrite_sqlite_json_extract(node: exp.Expression) -> exp.Expression:
-    """Rewrite every ``exp.JSONExtract`` in the tree rooted at ``node`` to the
-    function-call form.
+def _count_where(condition: Expr) -> Expression:
+    return exp.Sum(this=exp.Case(
+        ifs=[exp.If(this=condition, true=exp.Literal.number(1))], default=exp.Literal.number(0),
+    ))
 
-    sqlglot's default SQLite generator emits ``exp.JSONExtract`` as
-    ``col -> '$.path'``. In SQLite the ``->`` operator returns the
-    JSON-typed form (e.g. ``'"Owned"'`` with literal quotes), whereas
-    ``json_extract`` and ``->>`` (``exp.JSONExtractScalar``) return the
-    unquoted scalar. The mismatch silently breaks ``CASE WHEN`` /
-    equality matches against bare-string literals.
 
-    Returns the (possibly new) root node — callers must use the return
-    value because ``node`` itself may be a ``JSONExtract`` (e.g. when
-    parsing a ``Column.sql`` whose entire expression is
-    ``json_extract(col, path)``), in which case ``Expression.replace``
-    is a no-op and a fresh root must be returned. Non-root rewrites
-    happen in place.
+def census_counts(value: Expression) -> list[Expression]:
+    """``value``'s non-NULL, real, text, blob and fractional counts, in :class:`StorageCensus` order."""
+    typeof = exp.Anonymous(this="typeof", expressions=[value.copy()])
 
-    Loops to a fixed point so nested forms like
-    ``json_extract(json_extract(j, '$.outer'), '$.inner')`` get
-    rewritten at every level.
+    def _is(kind: str) -> Expression:
+        return exp.EQ(this=typeof.copy(), expression=exp.Literal.string(kind))
+
+    numeric = exp.In(this=typeof.copy(), expressions=[exp.Literal.string("integer"), exp.Literal.string("real")])
+    fractional = exp.NEQ(this=exp.Round(this=value.copy()), expression=value.copy())
+    return [
+        _count_where(exp.NEQ(this=typeof.copy(), expression=exp.Literal.string("null"))),
+        _count_where(_is("real")),
+        _count_where(_is("text")),
+        _count_where(_is("blob")),
+        _count_where(exp.and_(exp.Not(this=exp.Is(this=value.copy(), expression=exp.Null())), numeric, fractional)),
+    ]
+
+
+def _census_verdict(census: StorageCensus) -> DataType:
+    """A result column's type: stored text or blob, or no value, is TEXT; a saturated integer sample DOUBLE."""
+    if census.n_text or census.n_blob or not census.n_non_null:
+        return DataType.TEXT
+    return census.numeric_verdict(cap=PROBE_SCAN_CAP) or DataType.DOUBLE
+
+
+def rewrite_sqlite_json_extract(node: Expression) -> Expression:
+    """Rewrite every ``exp.JSONExtract`` to ``json_extract(...)``; returns the possibly new root.
+
+    SQLite's ``->`` returns JSON-quoted text (``'"Owned"'``), breaking equality with bare strings.
     """
     while True:
         if isinstance(node, exp.JSONExtract):
@@ -60,25 +124,38 @@ def rewrite_sqlite_json_extract(node: exp.Expression) -> exp.Expression:
         je.replace(_to_anonymous(je))
 
 
+def _strftime(fmt: str, col_expr: Expression) -> exp.Anonymous:
+    return exp.Anonymous(this="STRFTIME", expressions=[exp.Literal.string(fmt), col_expr.copy()])
+
+
+def _normalised_timestamp(expr: Expression) -> Expression:
+    """``expr`` as ``YYYY-MM-DD HH:MM:SS.SSS`` text, whatever ISO spelling it is stored in."""
+    return exp.Anonymous(this="STRFTIME", expressions=[exp.Literal.string("%Y-%m-%d %H:%M:%f"), expr])
+
+
+def _strftime_int(fmt: str, col_expr: Expression) -> Expression:
+    return exp.Cast(this=_strftime(fmt, col_expr), to=exp.DataType.build("INTEGER"))
+
+
+def _days_since_monday(col_expr: Expression) -> Expression:
+    """0 for Monday … 6 for Sunday (``%w`` counts from Sunday)."""
+    return exp.Mod(
+        this=exp.Paren(this=exp.Add(this=_strftime_int("%w", col_expr), expression=exp.Literal.number(6))),
+        expression=exp.Literal.number(7),
+    )
+
+
+_STRFTIME_PARTS = {
+    DatePart.YEAR: "%Y", DatePart.MONTH: "%m", DatePart.DAY: "%d", DatePart.DAY_OF_YEAR: "%j",
+    DatePart.HOUR: "%H", DatePart.MINUTE: "%M", DatePart.SECOND: "%S",
+}
+
+
 def _to_anonymous(je: exp.JSONExtract) -> exp.Anonymous:
     return exp.Anonymous(
         this="JSON_EXTRACT",
         expressions=[je.this, je.expression],
     )
-
-
-# ===========================================================================
-# Python aggregate / scalar UDFs (DEV-1317 / DEV-1337; was sqlite_udfs.py)
-# ===========================================================================
-# SQLite has a much smaller built-in math/stat catalog than Postgres,
-# DuckDB, MySQL, or ClickHouse. To bring SQLite to per-row and
-# per-aggregate parity, this section registers Python implementations
-# on every new SQLite connection via SQLAlchemy's ``connect`` event.
-
-
-# ---------------------------------------------------------------------------
-# Median / percentile (existing — unchanged from sqlite_udfs.py)
-# ---------------------------------------------------------------------------
 
 
 class _MedianAgg:
@@ -152,27 +229,13 @@ class _PercentileDiscAgg:
             return None
         s = sorted(self._vals)
         n = len(s)
-        # cume_dist of element at index k (0-based) is (k+1)/n.
-        # Smallest k with (k+1)/n >= p  =>  k = ceil(p*n) - 1.
+        # Smallest k with cume_dist (k+1)/n >= p.
         k = max(0, math.ceil(self._p * n) - 1)
         return s[k]
 
 
-# ---------------------------------------------------------------------------
-# Statistical aggregates (DEV-1317): Welford's online algorithm
-# ---------------------------------------------------------------------------
-
-
 class _OneVarWelford:
-    """Shared online-stats state for the four 1-arg stat aggregates.
-
-    Maintains ``(n, mean, M2)`` where ``M2 = sum((x_i - mean)^2)``.
-    Subclasses pick how to turn it into stddev_samp / stddev_pop /
-    var_samp / var_pop in ``finalize()``.
-
-    NULL inputs are skipped (don't contribute to ``n``), matching
-    Postgres semantics for the whole stat-aggregate family.
-    """
+    """Welford ``(n, mean, M2)`` state for the 1-arg stat aggregates; NULLs skipped."""
 
     def __init__(self) -> None:
         self._n: int = 0
@@ -253,8 +316,7 @@ class _PairAgg:
 
 
 class _CorrAgg(_PairAgg):
-    """Pearson correlation. NULL when fewer than 2 non-null pairs OR
-    when either side has zero variance (matches Postgres CORR)."""
+    """Pearson correlation. NULL when N < 2 or either side has zero variance."""
 
     def finalize(self) -> float | None:
         if self._n < 2:
@@ -284,91 +346,265 @@ class _CovarPopAgg(_PairAgg):
         return self._c / self._n
 
 
-# ---------------------------------------------------------------------------
-# Scalar wrappers (DEV-1317)
-# ---------------------------------------------------------------------------
+def _in_domain(fn):
+    """``fn`` NULL-propagating, and NULL for an argument outside its domain; overflow still raises."""
+    def wrapped(*args):
+        if any(a is None for a in args):
+            return None
+        try:
+            return fn(*args)
+        except (ValueError, ZeroDivisionError):
+            return None
+    return wrapped
 
 
-def _ln(x):
+_ln = _in_domain(math.log)
+_log10 = _in_domain(math.log10)
+# Overrides SQLite >=3.35's built-ins, so every database reads the same domain.
+_log2 = _in_domain(math.log2)
+# ``log(B, X)`` returns log_B(X): base first, value second.
+_log_base_x = _in_domain(lambda b, x: math.log(x, b))
+_exp = _in_domain(math.exp)
+_sqrt = _in_domain(math.sqrt)
+# ``math.pow``, not ``**``: a negative base's fractional power is a domain error, never a complex number.
+_pow = _in_domain(math.pow)
+
+
+_SUB_DAY_DELTAS = {"second": "seconds", "minute": "minutes", "hour": "hours"}
+_MONTH_STEPS = {"month": 1, "quarter": 3, "year": 12}
+_DAY_STEPS = {"day": 1, "week": 7, "week_sunday": 7}
+
+
+_SQLITE_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_SQLITE_TIME_RE = re.compile(r"[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?")
+
+
+def _is_sqlite_temporal_text(value: str) -> bool:
+    if not _SQLITE_DATE_RE.fullmatch(value, 0, 10):
+        return False
+    return len(value) == 10 or _SQLITE_TIME_RE.fullmatch(value, 10) is not None
+
+
+def _parse_sqlite_temporal(value) -> Optional[datetime]:
+    """Stored SQLite date text as a datetime; ``None`` when it is not ISO date/timestamp text."""
+    if not isinstance(value, str) or not _is_sqlite_temporal_text(value):
+        return None
+    try:
+        return datetime.fromisoformat(value) if len(value) > 10 else datetime.fromisoformat(value + " 00:00:00")
+    except ValueError:
+        return None
+
+
+def _slayer_date_add(ts, n, unit):
+    """``ts`` moved by ``n`` ``unit``s, month-based moves clamped at month-end; NULL on NULL / malformed input."""
+    moment = _parse_sqlite_temporal(ts)
+    if moment is None or not isinstance(n, (int, float)) or int(n) != n:
+        return None
+    count = int(n)
+    try:
+        if unit in _SUB_DAY_DELTAS:
+            moved = moment + timedelta(**{_SUB_DAY_DELTAS[unit]: count})
+        elif unit in _DAY_STEPS:
+            moved = moment + timedelta(days=count * _DAY_STEPS[unit])
+        else:
+            total = moment.month - 1 + count * _MONTH_STEPS[unit]
+            year, month = moment.year + total // 12, total % 12 + 1
+            moved = moment.replace(year=year, month=month, day=min(moment.day, monthrange(year, month)[1]))
+    except (OverflowError, ValueError):
+        return None
+    if len(ts) == 10 and unit not in _SUB_DAY_DELTAS:
+        return moved.date().isoformat()
+    return moved.isoformat(sep=" ")
+
+
+_NUMBER_TEXT_RE = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
+
+
+_INTEGER_TEXT_RE = re.compile(INTEGER_TEXT_PATTERN)
+_INT64_MIN, _INT64_MAX = -(2 ** 63), 2 ** 63 - 1
+
+
+def _try_double(text: str):
+    stripped = text.strip()
+    if not _NUMBER_TEXT_RE.fullmatch(stripped):
+        return None
+    number = float(stripped)
+    return number if math.isfinite(number) else None
+
+
+def _slayer_try_integer(value, low, high):
+    """``TRY_CAST`` to an integer type in ``[low, high]``: integer text or an integral number, else NULL."""
+    if isinstance(value, str):
+        number = int(value) if _INTEGER_TEXT_RE.fullmatch(value) else None
+    elif isinstance(value, float):
+        number = int(value) if value.is_integer() else None
+    else:
+        number = value if isinstance(value, int) else None
+    return number if number is not None and low <= number <= high else None
+
+
+def _try_boolean(text: str):
+    word = text.strip().lower()
+    if word in TRUE_WORDS:
+        return 1
+    if word in FALSE_WORDS:
+        return 0
+    return None
+
+
+def _try_temporal(text: str, kind: DataType):
+    moment = parse_temporal_value(text.strip())
+    if moment is None:
+        return None
+    if kind is DataType.DATE:
+        return (moment.date() if isinstance(moment, datetime) else moment).isoformat()
+    stamp = moment if isinstance(moment, datetime) else datetime(moment.year, moment.month, moment.day)
+    return stamp.isoformat(sep=" ")
+
+
+def _slayer_try_cast(text, target):
+    """``TRY_CAST`` of ``text`` to the SLayer type named ``target``: the converted value, or NULL where it cannot convert."""
+    if text is None:
+        return None
+    kind = DataType(target)
+    if kind is DataType.INT:
+        return _slayer_try_integer(text, _INT64_MIN, _INT64_MAX)
+    if kind is DataType.DOUBLE:
+        return _try_double(text)
+    if kind is DataType.BOOLEAN:
+        return _try_boolean(text)
+    if kind in (DataType.DATE, DataType.TIMESTAMP):
+        return _try_temporal(text, kind)
+    return text
+
+
+def _nulls(fn: Callable) -> Callable:
+    def wrapped(*args):
+        return None if any(a is None for a in args) else fn(*args)
+    return wrapped
+
+
+@lru_cache(maxsize=1024)
+def _compiled(pattern: str, flags: str) -> "re.Pattern[str]":
+    return re.compile(pattern, re.DOTALL | (re.IGNORECASE if "i" in flags else 0))
+
+
+def _regexp_like(value, pattern, flags):
+    if value is None or pattern is None:
+        return None
+    return int(_compiled(pattern, flags or "").search(str(value)) is not None)
+
+
+def _regexp_extract(value, pattern, group):
+    if value is None or pattern is None or group is None:
+        return None
+    match = _compiled(pattern, "").search(str(value))
+    return None if match is None else match.group(int(group)) or ""
+
+
+def _regexp_replace(value, pattern, replacement, flags):
+    """``replacement`` is portable text: ``\\1``-``\\9`` insert a group, ``\\\\`` a backslash."""
+    if value is None or pattern is None or replacement is None:
+        return None
+    compiled = _compiled(pattern, flags or "")
+    parts = parse_replacement(replacement, groups=compiled.groups).parts
+
+    def substitute(match: "re.Match[str]") -> str:
+        return "".join(p if isinstance(p, str) else (match.group(p.index) or "") for p in parts)
+    return compiled.sub(substitute, str(value))
+
+
+_GLOB_SPECIALS = {"*": "[*]", "?": "[?]", "[": "[[]"}
+
+
+def like_to_glob(pattern: Optional[str]) -> Optional[str]:
+    """A LIKE pattern as the GLOB pattern with its meaning (case-sensitive, collation-free)."""
+    if pattern is None:
+        return None
+    out = []
+    for part in parse_like(pattern).parts:
+        if isinstance(part, LikeWildcard):
+            out.append("*" if part.kind == "any" else "?")
+        else:
+            out.append("".join(_GLOB_SPECIALS.get(ch, ch) for ch in part))
+    return "".join(out)
+
+
+def _pad(s: str, n, fill: str, *, left: bool) -> str:
+    n = int(n)
+    if n <= 0:
+        return ""
+    if len(s) >= n or not fill:
+        return s[:n]
+    padding = (fill * n)[:n - len(s)]
+    return padding + s if left else s + padding
+
+
+def _split_part(s: str, delimiter: str, index) -> str:
+    fields = s.split(delimiter) if delimiter else [s]
+    index = int(index)
+    if index > 0:
+        return fields[index - 1] if index <= len(fields) else ""
+    return fields[index] if -index <= len(fields) else ""
+
+
+def _fmod(a, b):
+    if a is None or b is None or b == 0:
+        return None
+    return math.fmod(a, b) if isinstance(a, float) or isinstance(b, float) else int(math.fmod(a, b))
+
+
+def _trunc(x):
     if x is None:
         return None
-    return math.log(x)
+    return math.trunc(x) if isinstance(x, int) else float(math.trunc(x))
 
 
-def _log10(x):
-    if x is None:
-        return None
-    return math.log10(x)
-
-
-def _log2(x):
-    # DEV-1337: overrides SQLite >=3.35's built-in to give strict
-    # "errors propagate" semantics matching Postgres.
-    if x is None:
-        return None
-    return math.log2(x)
-
-
-def _log_base_x(b, x):
-    """``log(B, X)`` returns log_B(X). Base first, value second."""
-    if b is None or x is None:
-        return None
-    return math.log(x, b)
-
-
-def _exp(x):
-    if x is None:
-        return None
-    return math.exp(x)
-
-
-def _sqrt(x):
-    if x is None:
-        return None
-    return math.sqrt(x)
-
-
-def _pow(x, n):
-    """``pow(x, n)`` / ``power(x, n)`` — uses ``math.pow`` rather than ``**``.
-
-    ``math.pow`` raises on negative-base-non-integer-exponent (clean
-    OperationalError at the SQLite boundary) and overflows into IEEE-754
-    ``inf`` rather than building an unbounded big-int.
-    """
-    if x is None or n is None:
-        return None
-    return math.pow(x, n)
+_TEXT_UDFS: dict = {
+    "slayer_lpad": (3, _nulls(lambda s, n, f: _pad(str(s), n, str(f), left=True))),
+    "slayer_rpad": (3, _nulls(lambda s, n, f: _pad(str(s), n, str(f), left=False))),
+    "slayer_reverse": (1, _nulls(lambda s: str(s)[::-1])),
+    "slayer_repeat": (2, _nulls(lambda s, n: str(s) * max(int(n), 0))),
+    "slayer_split_part": (3, _nulls(lambda s, d, k: _split_part(str(s), str(d), k))),
+    "slayer_concat_ws": (-1, lambda sep, *args: None if sep is None else str(sep).join(
+        str(a) for a in args if a is not None)),
+    "slayer_like_glob": (1, like_to_glob),
+    "slayer_regexp_like": (3, _regexp_like),
+    "slayer_regexp_extract": (3, _regexp_extract),
+    "slayer_regexp_replace": (4, _regexp_replace),
+    # SQLAlchemy's pysqlite registers ``floor`` as ``math.floor``, which fails on NULL.
+    "floor": (1, _nulls(lambda x: float(math.floor(x)) if isinstance(x, float) else math.floor(x))),
+    "slayer_fmod": (2, _fmod),
+    "slayer_trunc": (1, _trunc),
+    "slayer_pi": (0, lambda: math.pi),
+    "slayer_cbrt": (1, _nulls(math.cbrt)),  # exact on perfect cubes, unlike abs(x) ** (1 / 3)
+    "slayer_atan2": (2, _nulls(math.atan2)),
+    **{f"slayer_{name}": (1, _nulls(getattr(math, name))) for name in ("sin", "cos", "tan", "asin", "acos", "atan")},
+}
 
 
 def register_sqlite_udfs(dbapi_connection) -> None:
-    """Register all SLayer SQLite UDFs on a freshly-opened DBAPI connection.
-
-    Wired in via SQLAlchemy's ``connect`` event in ``slayer.sql.client``,
-    so this is called once per new connection and again on pool refresh.
-    Idempotent: re-registering a UDF on the same connection replaces the
-    previous one (sqlite3 default behaviour).
-    """
-    # --- Scalar UDFs ------------------------------------------------------
+    """Register all SLayer SQLite UDFs on a fresh DBAPI connection (idempotent)."""
+    for name, (narg, fn) in _TEXT_UDFS.items():
+        dbapi_connection.create_function(name, narg, fn, deterministic=True)
     dbapi_connection.create_function("ln", 1, _ln)
     dbapi_connection.create_function("log10", 1, _log10)
     dbapi_connection.create_function("log2", 1, _log2)
-    # SQLite >=3.35 ships a built-in ``log(B, X)`` that silently returns
-    # NULL on math-domain inputs. The UDF overrides that with strict
-    # error-propagating semantics matching Postgres.
+    # SQLite >=3.35's built-in ``log(B, X)`` silently returns NULL on domain errors.
     dbapi_connection.create_function("log", 2, _log_base_x)
     dbapi_connection.create_function("exp", 1, _exp)
     dbapi_connection.create_function("sqrt", 1, _sqrt)
     dbapi_connection.create_function("pow", 2, _pow)
     dbapi_connection.create_function("power", 2, _pow)
+    dbapi_connection.create_function("slayer_date_add", 3, _slayer_date_add)
+    dbapi_connection.create_function("slayer_try_cast", 2, _slayer_try_cast)
+    dbapi_connection.create_function("slayer_try_cast", 3, _slayer_try_integer)
 
-    # --- Aggregate UDFs ---------------------------------------------------
     dbapi_connection.create_aggregate("median", 1, _MedianAgg)
     dbapi_connection.create_aggregate("percentile_cont", 2, _PercentileContAgg)
     dbapi_connection.create_aggregate("percentile_disc", 2, _PercentileDiscAgg)
 
-    # Statistical aggregates. Register each under its canonical Postgres-
-    # style name AND under the name sqlglot rewrites it to on SQLite, so
-    # generator output that goes through sqlglot still resolves at runtime.
+    # Also under the names sqlglot rewrites them to on SQLite.
     dbapi_connection.create_aggregate("stddev_samp", 1, _StddevSampAgg)
     dbapi_connection.create_aggregate("stddev_pop", 1, _StddevPopAgg)
     dbapi_connection.create_aggregate("var_samp", 1, _VarSampAgg)
@@ -380,178 +616,302 @@ def register_sqlite_udfs(dbapi_connection) -> None:
     dbapi_connection.create_aggregate("covar_pop", 2, _CovarPopAgg)
 
 
-# ===========================================================================
-# SqliteDialect — overrides for STRFTIME date_trunc, DATETIME-modifier
-# time arithmetic, percentile UDF call shape, JSON rewrite, UDF registration.
-# ===========================================================================
-
-
-# DATETIME-modifier unit names (SQLite has no INTERVAL syntax). ``week``
-# is folded into ``days`` because SQLite has no week unit either.
-_WINDOW_UNIT_SQLITE = {
-    "y": "years",
-    "m": "months",
-    "w": "days",
-    "d": "days",
-    "h": "hours",
-    "min": "minutes",
-    "s": "seconds",
-}
+def _like_source(pattern: LikePattern) -> str:
+    """``pattern`` back as LIKE text (the GLOB conversion runs in ``slayer_like_glob``)."""
+    return like_text(pattern)
 
 
 class SqliteDialect(SqlDialect):
     sqlglot_name: str = "sqlite"
+    database_name: ClassVar[str] = "SQLite"
+    type_probe_rows: ClassVar[int] = 1
+    # Any type name is a column affinity on SQLite.
+    vendor_cast_types: ClassVar[frozenset[DType]] = VENDOR_ONLY_CAST_TYPES
     ds_type_aliases: frozenset[str] = frozenset({"sqlite"})
+    sa_backend_names: frozenset[str] = frozenset({"sqlite"})
+    probes_integer_affinity: bool = True
+    temporal_text_compatible: bool = True
+    cursor_reports_types: bool = False
+    # The cursor names no types: every column takes its SLayer type's category.
+    legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories()
+    primary_key_inspector_only: bool = True
     explain_prefix: str | None = "EXPLAIN QUERY PLAN"
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
+    # Numeric affinity stores INTEGER/REAL — nothing exact to preserve.
+    exact_decimal_native: bool = False
     max_identifier_bytes: int | None = None  # unbounded
+    url_scheme: str | None = "sqlite"
+    result_census_rows: int | None = PROBE_SCAN_CAP + 1
+
+    def result_census_select(self, columns: Sequence[str]) -> list[Expression]:
+        """``COUNT(*)``, then each column's :func:`census_counts`."""
+        counts = [c for name in columns for c in census_counts(exp.column(exp.to_identifier(name, quoted=True)))]
+        return [exp.Count(this=exp.Star()), *counts]
+
+    def result_census_types(
+        self, *, columns: Sequence[str], row: Sequence[Any] | None,
+    ) -> dict[str, ResultColumnType]:
+        values = list(row) if row else [0] * (1 + 5 * len(columns))
+        return {
+            name: ResultColumnType(type=_census_verdict(
+                StorageCensus.of(n_rows=values[0], counts=values[1 + 5 * i: 6 + 5 * i]),
+            ))
+            for i, name in enumerate(columns)
+        }
+
+    regex_flavour: ClassVar[Optional[RegexFlavour]] = PYTHON
+    json_db_types: ClassVar[frozenset[str]] = frozenset()
+    library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+
+    def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
+        """SQLite lacks the padding, reversing, repeating and separator functions: registered ones stand in."""
+        if fn in ("lpad", "rpad"):
+            return anon(f"slayer_{fn}", *args, *([] if len(args) > 2 else [lit(" ")]))
+        if fn in ("reverse", "repeat", "concat_ws"):
+            return anon(f"slayer_{fn}", *args)
+        return super().build_text_call(fn, args)
+
+    def code_point_char(self, n: Expression) -> Expression:
+        return anon("CHAR", n)
+
+    def first_code_point(self, s: Expression) -> Expression:
+        return case((exp.EQ(this=s.copy(), expression=lit("")), lit(0)), default=anon("UNICODE", s))
+
+    def build_split_part(self, value: Expression, delimiter: Expression, index: int) -> Expression:
+        return anon("slayer_split_part", value, delimiter, lit(index))
+
+    def build_math_call(self, fn: MathFn, args: tuple[Expression, ...]) -> Expression:
+        """Math functions are registered (SQLite builds may lack them); the domain guards stay."""
+        if fn in ("asin", "acos"):
+            inside = exp.Between(this=args[0].copy(), low=lit(-1), high=lit(1))
+            return case((inside, anon(f"slayer_{fn}", args[0])))
+        if fn == "div":
+            return super().build_math_call(fn, args)
+        return anon(f"slayer_{fn}", *args)
+
+    def truncate(self, value: Expression) -> Expression:
+        return anon("slayer_trunc", value)
+
+    def build_extremum(self, fn: ExtremumFn, args: tuple[Expression, ...]) -> Expression:
+        """Scalar ``MAX`` / ``MIN`` propagate NULL: each term coalesces to a present argument."""
+        return self.coalesced_extremum(fn, args, spelling="min_max")
+
+    def build_modulo(self, left: Expression, right: Expression, integer: bool) -> Expression:
+        """``%`` truncates real operands to integers first; non-integers use ``fmod``."""
+        if integer:
+            return super().build_modulo(left, right, integer)
+        return anon("slayer_fmod", left, right)
+
+    def build_regexp_like(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        return anon("slayer_regexp_like", value, self.regex_text(pattern), lit("i" if case_insensitive else ""))
+
+    def build_regexp_extract(
+        self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
+    ) -> Expression:
+        return anon("slayer_regexp_extract", value, self.regex_text(pattern), lit(group))
+
+    def build_regexp_replace(
+        self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,
+    ) -> Expression:
+        portable = "".join(
+            f"\\{p.index}" if isinstance(p, RegexGroupRef) else p.replace("\\", "\\\\") for p in replacement.parts
+        )
+        return anon("slayer_regexp_replace", value, self.regex_text(pattern), lit(portable),
+                    lit("i" if case_insensitive else ""))
+
+    def build_like(
+        self, value: Expression, pattern: LikePattern | Expression, case_insensitive: bool,
+    ) -> Expression:
+        """``LIKE`` is ``GLOB`` over the converted pattern (case-sensitive whatever the collation);
+        ``ILIKE`` is SQLite's own case-insensitive ``LIKE``."""
+        if case_insensitive:
+            return super().build_like(value, pattern, case_insensitive)
+        text = lit(_like_source(pattern)) if isinstance(pattern, LikePattern) else pattern.copy()
+        return exp.Glob(this=value.copy(), expression=anon("slayer_like_glob", text))
+
+    def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
+        kind, read = self._json_parts(value, path)
+        text = case(
+            (exp.In(this=kind, expressions=[lit("true"), lit("false")]), kind.copy()),
+            (exp.In(this=kind.copy(), expressions=[lit("text"), lit("integer"), lit("real")]),
+             exp.Cast(this=read, to=exp.DataType.build("TEXT"))),
+        )
+        return case((anon("JSON_VALID", value), text))
+
+    def build_json_value_as(
+        self, value: Expression, path: JsonPath, native: bool, to: exp.DataType, target: DataType,
+    ) -> Expression:
+        """A JSON number or boolean converts directly (never through its text); a JSON string by ``TRY_CAST``."""
+        kind, read = self._json_parts(value, path)
+        from_text = (exp.EQ(this=kind.copy(), expression=lit("text")), self.build_try_cast(read.copy(), to))
+        direct: list = []
+        if target is DataType.INT:
+            from_text = (from_text[0], self.build_integer_try_cast(read.copy(), to, source=None))
+            direct = [(exp.EQ(this=kind.copy(), expression=lit("integer")),
+                       self.build_integer_try_cast(read.copy(), to, source=DataType.INT))]
+        elif target is DataType.DOUBLE:
+            direct = [(exp.In(this=kind.copy(), expressions=[lit("integer"), lit("real")]),
+                       exp.Cast(this=read.copy(), to=exp.DataType.build("REAL")))]
+        elif target is DataType.BOOLEAN:
+            direct = [(exp.EQ(this=kind.copy(), expression=lit("true")), lit(1)),
+                      (exp.EQ(this=kind.copy(), expression=lit("false")), lit(0))]
+        elif target is DataType.TEXT:
+            return self.build_json_value(value, path, native)
+        return case((anon("JSON_VALID", value), case(*direct, from_text)))
+
+    def _json_parts(self, value: Expression, path: JsonPath) -> tuple[Expression, Expression]:
+        text = lit(path.text)
+        return anon("JSON_TYPE", value, text), anon("JSON_EXTRACT", value, text)
+
+    def declared_cast_type(self, dt: Optional[DataType]) -> Optional[DataType]:
+        """No DATE / TIMESTAMP cast: under numeric affinity it collapses a text date to its year."""
+        if dt in (DataType.DATE, DataType.TIMESTAMP):
+            return None
+        return dt
+
+    def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        return exp.Anonymous(this="slayer_try_cast", expressions=[
+            as_text(value), exp.Literal.string(slayer_type_of(to)[0].value),
+        ])
+
+    def build_integer_try_cast(self, value: Expression, to: exp.DataType, *, source: Optional[DataType]) -> Expression:
+        """Every integer is 64-bit here: a narrower type's range is checked; a number is read as itself."""
+        low, high = NARROW_INTEGER_BOUNDS.get(to.this, (_INT64_MIN, _INT64_MAX))
+        return anon("slayer_try_cast", as_text(value) if source is None else value, lit(low), lit(high))
+
+    def build_null_safe_eq(
+        self, left: Expression, right: Expression,
+    ) -> Expression:
+        """Bare ``IS``: ``IS NOT DISTINCT FROM`` needs SQLite ≥ 3.39."""
+        return exp.Is(this=left, expression=right)
 
     def build_date_trunc(
         self,
-        col_expr: exp.Expression,
+        col_expr: Expression,
         granularity: TimeGranularity,
-        *,
-        parse: Callable[[str], exp.Expression],
-    ) -> exp.Expression:
-        """SQLite has no DATE_TRUNC — use STRFTIME (with CASE WHEN for
-        quarter, weekday-modifier for week)."""
+    ) -> Expression:
+        """SQLite has no DATE_TRUNC: STRFTIME, a CASE for quarter, a weekday modifier for week."""
         if granularity == TimeGranularity.WEEK_SUNDAY:
-            # DEV-1572: delegate to the base generic shift, which composes
-            # SQLite's own day-offset (DATE(col, 'N days')) around SQLite's
-            # Monday-week truncation — yielding the Sunday-anchored bucket.
             return super().build_date_trunc(
-                col_expr=col_expr, granularity=granularity, parse=parse,
+                col_expr=col_expr, granularity=granularity,
             )
-        gran_str = granularity.value
+        if granularity == TimeGranularity.WEEK:
+            # weekday 0 = Sunday; back up to the preceding Monday.
+            return exp.Anonymous(this="DATE", expressions=[
+                col_expr.copy(), exp.Literal.string("weekday 0"), exp.Literal.string("-6 days"),
+            ])
+        if granularity == TimeGranularity.QUARTER:
+            return exp.DPipe(this=_strftime("%Y-", col_expr), expression=exp.Case(
+                ifs=[
+                    exp.If(
+                        this=exp.LTE(
+                            this=exp.Cast(this=_strftime("%m", col_expr), to=exp.DataType.build("INTEGER")),
+                            expression=exp.Literal.number(last_month),
+                        ),
+                        true=exp.Literal.string(start),
+                    )
+                    for last_month, start in ((3, "01-01"), (6, "04-01"), (9, "07-01"))
+                ],
+                default=exp.Literal.string("10-01"),
+            ))
         fmt_map = {
-            "year": "%Y-01-01",
-            "month": "%Y-%m-01",
-            "day": "%Y-%m-%d",
-            "hour": "%Y-%m-%d %H:00:00",
-            "minute": "%Y-%m-%d %H:%M:00",
-            "second": "%Y-%m-%d %H:%M:%S",
+            TimeGranularity.YEAR: "%Y-01-01",
+            TimeGranularity.MONTH: "%Y-%m-01",
+            TimeGranularity.DAY: "%Y-%m-%d",
+            TimeGranularity.HOUR: "%Y-%m-%d %H:00:00",
+            TimeGranularity.MINUTE: "%Y-%m-%d %H:%M:00",
+            TimeGranularity.SECOND: "%Y-%m-%d %H:%M:%S",
         }
-        if gran_str == "week":
-            # SQLite weekday 0=Sunday; use date() with weekday modifier
-            # to back up to the preceding Monday-equivalent start.
-            return parse(
-                f"DATE({col_expr.sql(dialect='sqlite')}, 'weekday 0', '-6 days')"
-            )
-        if gran_str == "quarter":
-            col_sql = col_expr.sql(dialect="sqlite")
-            return parse(
-                f"STRFTIME('%Y-', {col_sql}) || CASE "
-                f"WHEN CAST(STRFTIME('%m', {col_sql}) AS INTEGER) <= 3 THEN '01-01' "
-                f"WHEN CAST(STRFTIME('%m', {col_sql}) AS INTEGER) <= 6 THEN '04-01' "
-                f"WHEN CAST(STRFTIME('%m', {col_sql}) AS INTEGER) <= 9 THEN '07-01' "
-                f"ELSE '10-01' END"
-            )
-        fmt = fmt_map.get(gran_str, "%Y-%m-%d")
-        return exp.Anonymous(
-            this="STRFTIME",
-            expressions=[exp.Literal.string(fmt), col_expr],
+        return _strftime(fmt_map[granularity], col_expr)
+
+    def promote_to_timestamp(self, expr: Expression) -> Expression:
+        return exp.Anonymous(this="DATETIME", expressions=[expr.copy()])
+
+    def build_temporal_literal(self, *, value: date, dt: DataType) -> Expression:
+        """SQLite stores dates as text: a plain ISO literal compares and parses like a stored value."""
+        return exp.Literal.string(iso_text(value))
+
+    def build_current_timestamp(self) -> Expression:
+        return exp.CurrentTimestamp()
+
+    def build_temporal_comparison(
+        self, *, op: TemporalComparisonOp, operand: Expression, value: date,
+    ) -> Expression:
+        """A midnight ``>=`` / ``<`` bound compares as date text (sargable); anything else
+        normalises both sides to millisecond ISO text, independent of the stored spelling."""
+        day = value.date() if isinstance(value, datetime) else value
+        midnight = value == day or value == datetime(day.year, day.month, day.day)
+        if op in (">=", "<") and midnight:
+            return COMPARISON_NODES[op](this=operand, expression=exp.Literal.string(day.isoformat()))
+        return COMPARISON_NODES[op](
+            this=_normalised_timestamp(operand),
+            expression=_normalised_timestamp(exp.Literal.string(iso_text(value))),
         )
 
-    def build_time_offset_expr(
-        self,
-        col_expr: exp.Expression,
-        offset: int,
-        granularity: str,
-    ) -> exp.Expression:
-        """SQLite uses ``DATE(col, 'N units')`` — no INTERVAL syntax.
-
-        Granularity normalization: ``quarter`` → ``val * 3`` of ``months``;
-        ``week`` → ``val * 7`` of ``days`` (SQLite has no week unit).
-        """
-        sqlite_units = {
-            "year": "years", "month": "months", "day": "days",
-            "quarter": "months", "week": "days", "week_sunday": "days",
-            "hour": "hours", "minute": "minutes", "second": "seconds",
-        }
-        sqlite_unit = sqlite_units.get(granularity, granularity.lower() + "s")
-        val = offset * 3 if granularity == "quarter" else offset
-        sqlite_val = val * 7 if granularity in ("week", "week_sunday") else val
-        return exp.Anonymous(
-            this="DATE",
-            expressions=[
-                col_expr,
-                exp.Literal.string(f"{sqlite_val} {sqlite_unit}"),
-            ],
-        )
-
-    def duration_interval_exprs(
-        self,
-        parts: list[tuple[int, str]],
-        sign: int = 1,
-    ) -> list[exp.Expression]:
-        """SQLite uses DATETIME-modifier string literals with sign baked in.
-        Week is converted to ``N*7 days`` (no native week unit)."""
-        prefix = "+" if sign >= 0 else "-"
-        return [
-            exp.Literal.string(
-                f"{prefix}{(amount * 7 if unit == 'w' else amount)} "
-                f"{_WINDOW_UNIT_SQLITE[unit]}"
+    def _date_part(self, part: DatePart, expr: Expression) -> Expression:
+        """STRFTIME components; ISO week/year via the week's Thursday (no ``%V``/``%G`` before 3.46)."""
+        if part is DatePart.QUARTER:
+            return exp.IntDiv(this=exp.Paren(this=exp.Add(
+                this=_strftime_int("%m", expr), expression=exp.Literal.number(2),
+            )), expression=exp.Literal.number(3))
+        if part is DatePart.DAY_OF_WEEK:
+            return exp.Add(this=exp.Paren(this=_days_since_monday(expr)), expression=exp.Literal.number(1))
+        if part in (DatePart.WEEK, DatePart.ISO_YEAR):
+            # Thursday of the ISO week: its year is the ISO year, its day-of-year fixes the week.
+            thursday = exp.Anonymous(this="DATE", expressions=[expr, exp.DPipe(
+                this=exp.Paren(this=exp.Sub(
+                    this=exp.Literal.number(3), expression=exp.Paren(this=_days_since_monday(expr)),
+                )),
+                expression=exp.Literal.string(" days"),
+            )])
+            if part is DatePart.ISO_YEAR:
+                return _strftime_int("%Y", thursday)
+            return exp.Add(
+                this=exp.IntDiv(this=exp.Paren(this=exp.Sub(
+                    this=_strftime_int("%j", thursday), expression=exp.Literal.number(1),
+                )), expression=exp.Literal.number(7)),
+                expression=exp.Literal.number(1),
             )
-            for amount, unit in parts
-        ]
+        return _strftime_int(_STRFTIME_PARTS[part], expr)
 
-    def add_intervals_expr(
-        self,
-        expr: exp.Expression,
-        intervals: list[exp.Expression],
-        sign: int = 1,
-    ) -> exp.Expression:
-        """SQLite wraps as ``DATETIME(expr, mod1, mod2, ...)``.
+    def _day_gap(self, *, start: Expression, end: Expression) -> Expression:
+        def julian(e: Expression) -> Expression:
+            return exp.Anonymous(this="JULIANDAY", expressions=[exp.Anonymous(this="DATE", expressions=[e])])
+        return exp.Cast(this=exp.Sub(this=julian(end), expression=julian(start)), to=exp.DataType.build("INTEGER"))
 
-        The sign is already baked into each modifier by
-        ``duration_interval_exprs`` — the ``sign`` arg is intentionally
-        ignored here.
-        """
-        return exp.Anonymous(this="DATETIME", expressions=[expr, *intervals])
+    def _second_gap(self, *, start: Expression, end: Expression) -> Expression:
+        return exp.Sub(this=_strftime_int("%s", end), expression=_strftime_int("%s", start))
 
-    def build_median(
-        self,
-        inner: exp.Expression,
-        *,
-        parse: Callable[[str], exp.Expression],
-    ) -> exp.Expression:
-        """SQLite: parses ``median(inner)`` — registered UDF.
+    def build_date_add(
+        self, *, expr: Expression, count: Expression, unit: TimeGranularity, operand: DataType,
+    ) -> Expression:
+        """The ``slayer_date_add`` UDF: SQLite's own modifiers overflow past month-end."""
+        return exp.Anonymous(this="slayer_date_add", expressions=[
+            expr.copy(), count.copy(), exp.Literal.string(unit.value),
+        ])
 
-        sqlglot's SQLite generator transpiles ``exp.Median`` to
-        ``PERCENTILE_CONT(x, 0.5)`` at emission, matching the pair-form
-        ``percentile_cont`` UDF signature.
-        """
-        inner_sql = inner.sql(dialect="sqlite")
-        return parse(f"median({inner_sql})")
+    def frame_time_operand(self, expr: Expression) -> Expression:
+        """DATETIME-wrap: a bare-date text sorts before the same day's DATETIME frame bound."""
+        return exp.Anonymous(this="DATETIME", expressions=[expr])
+
+    def build_median(self, inner: Expression) -> Expression:
+        """SQLite: ``exp.Median``, emitted as the registered ``PERCENTILE_CONT(x, 0.5)`` UDF."""
+        return exp.Median(this=inner.copy())
 
     def build_percentile(
-        self,
-        p_str: str,
-        col_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
-    ) -> exp.Expression:
-        """SQLite: ``percentile_cont(value, p)`` — registered UDF.
+        self, p: Expression, col_expr: Expression,
+    ) -> Expression:
+        """SQLite: ``percentile_cont(value, p)`` — registered UDF."""
+        return exp.PercentileCont(this=col_expr.copy(), expression=p.copy())
 
-        ``p_str`` is the original user-supplied string, preserved verbatim
-        (no float normalization).
-        """
-        return parse(f"percentile_cont({col_sql}, {p_str})")
-
-    def rewrite_parsed_ast(self, tree: exp.Expression) -> exp.Expression:
-        """SQLite override: rewrites every ``exp.JSONExtract`` to
-        ``Anonymous(this='JSON_EXTRACT', ...)`` so the emission is the
-        function-call form (DEV-1331)."""
+    def rewrite_parsed_ast(self, tree: Expression) -> Expression:
+        """Emit JSON extraction in the ``json_extract(...)`` function-call form."""
         return rewrite_sqlite_json_extract(tree)
 
     def register_udfs(self, dbapi_connection) -> None:
-        """Register the Python aggregate / scalar UDFs on the connection.
-
-        Idempotent — re-registering on the same connection replaces the
-        previous one (sqlite3 default behaviour).
-        """
+        """Register the Python aggregate / scalar UDFs on the connection."""
         register_sqlite_udfs(dbapi_connection)
 
 

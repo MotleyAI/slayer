@@ -1,4 +1,4 @@
-"""DEV-1756 against a live Postgres, which truncates identifiers past 63 bytes with
+"""Identifier-length fitting against a live Postgres, which truncates identifiers past 63 bytes with
 only a NOTICE, so emission tests pass while the server mis-answers. Covers two modes:
 sibling aliases collapsing at a shared 63-byte prefix, and a lone over-limit alias
 vanishing with no error (the more dangerous case).
@@ -6,13 +6,9 @@ vanishing with no error (the more dangerous case).
 
 import re
 import uuid
+from typing import cast
 
 import pytest
-
-pytest.importorskip("pytest_postgresql")
-
-import psycopg
-from pytest_postgresql import factories
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
@@ -20,6 +16,9 @@ from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
+
+factories = pytest.importorskip("pytest_postgresql.factories")
+psycopg = pytest.importorskip("psycopg")
 
 postgresql_proc = factories.postgresql_proc(port=None)
 
@@ -129,7 +128,7 @@ def _chain_storage(postgresql_proc, tmp_path_factory):
 
 
 @pytest.fixture
-def chain_env(_chain_storage):
+def chain_env(_chain_storage: YAMLStorage) -> SlayerQueryEngine:
     """Per-test engine — the async SQLAlchemy engine binds to the event loop."""
     return SlayerQueryEngine(storage=_chain_storage)
 
@@ -139,19 +138,18 @@ DEEP = "SandboxSubscription.SandboxCustomer.SandboxConsumer"
 
 @pytest.mark.integration
 class TestPostgresIdentifierLength:
-    async def test_server_truncates_at_63_bytes(self, chain_env) -> None:
+    async def test_server_truncates_at_63_bytes(self, chain_env: SlayerQueryEngine) -> None:
         """Pin the 63-byte truncation premise against the live server."""
-        client = chain_env._get_client(
+        client = chain_env.client_for(
             await chain_env._resolve_datasource(
-                model=await chain_env.storage.get_model("SandboxInvoiceV2", data_source=DS),
+                model=cast(SlayerModel, await chain_env.storage.get_model("SandboxInvoiceV2", data_source=DS)),
             ),
-            ("probe", "probe"),
         )
-        rows = await client.execute(sql=f'SELECT 1 AS "{LONG_EMAIL}"')
+        rows = (await client.execute(sql=f'SELECT 1 AS "{LONG_EMAIL}"')).rows
         assert list(rows[0])[0] != LONG_EMAIL, "server did not truncate; premise broken"
         assert len(list(rows[0])[0].encode()) == 63
 
-    async def test_collapse_with_outer_wrap(self, chain_env) -> None:
+    async def test_collapse_with_outer_wrap(self, chain_env: SlayerQueryEngine) -> None:
         """Two over-limit siblings + ORDER BY outer wrap; raised AmbiguousColumnError before the fix."""
         query = SlayerQuery(
             source_model="SandboxInvoiceV2",
@@ -176,7 +174,7 @@ class TestPostgresIdentifierLength:
             ("Bob", "bob@example.io", "paid"): (200.0, 1),
         }
 
-    async def test_collapse_without_outer_wrap(self, chain_env) -> None:
+    async def test_collapse_without_outer_wrap(self, chain_env: SlayerQueryEngine) -> None:
         """No outer wrap: the two siblings would silently collapse into one result key."""
         query = SlayerQuery(
             source_model="SandboxInvoiceV2",
@@ -193,7 +191,7 @@ class TestPostgresIdentifierLength:
         assert names == {"Ann", "Bob"}
         assert emails == {"ann@example.io", "bob@example.io"}
 
-    async def test_silent_loss_single_over_limit_alias(self, chain_env) -> None:
+    async def test_silent_loss_single_over_limit_alias(self, chain_env: SlayerQueryEngine) -> None:
         """One over-limit alias, no sibling: Postgres keys the row by the truncated name and it vanishes."""
         query = SlayerQuery(
             source_model="SandboxInvoiceV2",
@@ -208,7 +206,7 @@ class TestPostgresIdentifierLength:
             )
             assert row[LONG_EMAIL] in {"ann@example.io", "bob@example.io"}
 
-    async def test_values_are_correct_not_merely_present(self, chain_env) -> None:
+    async def test_values_are_correct_not_merely_present(self, chain_env: SlayerQueryEngine) -> None:
         """Pin the aggregate; a wrong-column fitted alias would still be present."""
         query = SlayerQuery(
             source_model="SandboxInvoiceV2",
@@ -219,7 +217,7 @@ class TestPostgresIdentifierLength:
         totals = {row[LONG_EMAIL]: float(row["SandboxInvoiceV2.totalAmount_sum"]) for row in result.data}
         assert totals == {"ann@example.io": 150.0, "bob@example.io": 200.0}
 
-    async def test_response_columns_are_canonical(self, chain_env) -> None:
+    async def test_response_columns_are_canonical(self, chain_env: SlayerQueryEngine) -> None:
         """Response exposes canonical keys while the emitted SQL carries the fitted form."""
         query = SlayerQuery(
             source_model="SandboxInvoiceV2",
@@ -228,9 +226,9 @@ class TestPostgresIdentifierLength:
         )
         result = await chain_env.execute(query=query)
         assert set(result.data[0]) >= {LONG_NAME, LONG_EMAIL}
-        assert LONG_EMAIL not in result.sql
+        assert LONG_EMAIL not in cast(str, result.sql)
 
-    async def test_cached_execution_round_trip(self, chain_env) -> None:
+    async def test_cached_execution_round_trip(self, chain_env: SlayerQueryEngine) -> None:
         """A cache hit returns canonical keys too, proving decode runs before storage."""
         query = SlayerQuery(
             source_model="SandboxInvoiceV2",
@@ -243,7 +241,7 @@ class TestPostgresIdentifierLength:
         assert LONG_EMAIL in second.data[0]
         assert first.data == second.data
 
-    async def test_deep_cross_model_measure_executes(self, chain_env) -> None:
+    async def test_deep_cross_model_measure_executes(self, chain_env: SlayerQueryEngine) -> None:
         """Surface 3: the `_cm_` cross-model CTE name also crosses 63 bytes on this chain."""
         query = SlayerQuery(
             source_model="SandboxInvoiceV2",
@@ -251,14 +249,14 @@ class TestPostgresIdentifierLength:
             measures=[{"formula": f"{DEEP}.lifetimeValue:sum"}],
         )
         result = await chain_env.execute(query=query)
-        assert "_cm_" in result.sql, "no cross-model CTE generated; test is vacuous"
-        for name in re.findall(r"\b_cm_\w+", result.sql):
+        assert "_cm_" in cast(str, result.sql), "no cross-model CTE generated; test is vacuous"
+        for name in re.findall(r"\b_cm_\w+", cast(str, result.sql)):
             assert len(name.encode()) <= 63, f"{name!r} exceeds the Postgres limit"
         alias = f"SandboxInvoiceV2.{DEEP}.lifetimeValue_sum"
         assert len(result.data) == 1
         assert float(result.data[0][alias]) == 30.0
 
-    async def test_nested_query_backed_model_executes(self, chain_env) -> None:
+    async def test_nested_query_backed_model_executes(self, chain_env: SlayerQueryEngine) -> None:
         """Surface 4: virtual-model short names as output aliases; mixed-case exercises case-folding."""
         stage1 = SlayerQuery(
             name="stage1",

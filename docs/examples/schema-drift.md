@@ -40,8 +40,8 @@ directly onto an `edit_model` or `delete_model` call.
 slayer query '{"source_model": "products", "dimensions": ["sku"]}'
 ```
 
-The engine catches the DBAPI error, runs `validate_models` against the
-touched models, and surfaces a `SchemaDriftError` with the structured
+The engine catches the DBAPI error, checks the models the failed query
+read for drift, and surfaces a `SchemaDriftError` with the structured
 delete payload. Compared to a raw "column not found" trace, you get a
 direct pointer to the diff and the suggested next step:
 

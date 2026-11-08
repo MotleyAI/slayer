@@ -2,6 +2,7 @@
 
 SLayer uses [sqlglot](https://github.com/tobymao/sqlglot) for dialect-aware
 SQL generation. Databases are supported at two tiers.
+The extra each type needs is listed under [Datasources](configuration/datasources.md#database-drivers).
 
 ## Tier 1 — fully tested
 
@@ -18,29 +19,91 @@ against the live service in CI when they are.
 | **MySQL** | `tests/integration/test_integration_mysql.py` (`testcontainers[mysql]`) | `examples/mysql/` |
 | **ClickHouse** | `tests/integration/test_integration_clickhouse.py` (`testcontainers[clickhouse]`) | `examples/clickhouse/` |
 | **SQL Server** | `tests/integration/test_integration_sqlserver.py` (`testcontainers`, `msodbcsql18` + `unixodbc-dev` on the runner) | `examples/sqlserver/` |
+| **Trino** | `tests/integration/test_integration_trino.py` (`testcontainers[trino]`, `memory` catalog) | `examples/trino/` |
 | **Snowflake** | `tests/integration/test_integration_snowflake.py` (skips without `~/.snowflake/connections.toml`; profile name overridable via `$SLAYER_SNOWFLAKE_CONNECTION`) | `examples/snowflake/` (no Docker) |
-| **BigQuery** | `examples/bigquery/verify.py` driven by CI against `bigquery-public-data.thelook_ecommerce` (gated on `GCP_PROJECT_ID` / `GCP_SA_KEY_B64` repo secrets) | `examples/bigquery/` (no Docker — managed service) |
+| **BigQuery** | `tests/integration/test_integration_bigquery.py` (live ingestion against a temp dataset in the billing project; skips without `GCP_PROJECT_ID` + ADC) plus `examples/bigquery/verify.py` driven by CI against `bigquery-public-data.thelook_ecommerce` (gated on `GCP_PROJECT_ID` / `GCP_SA_KEY_B64` repo secrets) | `examples/bigquery/` (no Docker — managed service) |
 
-BigQuery does not yet have a pytest-style integration suite; its CI coverage
-runs the example's `verify.py` directly via `.github/workflows/ci.yml`. That
-exercises auto-ingestion, basic projection, joins, time-grain dimensions, and
-the cardinality / sum-of-grouped-equals-total invariants — enough to catch
-emitted-SQL regressions, but the verify-script tier is shallower than the
-testcontainers suites.
+A filter whose predicate can hold on a null-extended related row (`tier = 'gold'
+or orders.status = 'ok'`) renders its semi-join from a one-row derived table
+carrying the outer keys — supported on Postgres, SQLite, DuckDB and MySQL 8.0.14+;
+ClickHouse, BigQuery and older MySQL reject it with the engine's own error.
+
+On a Postgres datasource whose URL names `asyncpg`, a column-type probe gets no exact-numeric scale from the driver, so a `NUMERIC` result column is typed DOUBLE (named `numeric`), even at scale 0.
+
+BigQuery CI coverage has two layers, both in the `bigquery-example` job of
+`.github/workflows/ci.yml`: the example's `verify.py` exercises query
+execution against the public dataset (basic projection, joins, time-grain
+dimensions, and the cardinality / sum-of-grouped-equals-total invariants),
+and `test_integration_bigquery.py` exercises live schema ingestion — creating
+a temporary dataset with table/column/dataset descriptions in the billing
+project, asserting comment import and idempotent re-ingest semantics, then
+deleting it. The service account therefore needs dataset create/delete rights
+in the billing project (e.g. `roles/bigquery.user`), not just `jobUser`.
+
+[List columns](concepts/queries.md#list-columns), the list functions and `collect` run on Postgres, DuckDB, BigQuery, Snowflake, ClickHouse, Trino and Presto, and fail at plan time on SQLite, MySQL, MariaDB, SQL Server, Redshift, Databricks, Spark and Oracle.
+On ClickHouse, an element filter on a list reached through a join, like any filter across a to-many hop, needs server 25.4 or later, while a list column of the query's own model filters on every version. A filter across a to-many hop in a query that also reads a list's elements needs 25.8 or later. A model filter that reads a joined model across a hop not proven to-one also needs 25.4 or later.
 
 ## Tier 2 — code-covered
 
 Unit tests for SQL generation; no live-instance verification.
 
-Redshift, Trino/Presto (Athena uses the Presto dialect), Databricks/Spark,
-Oracle.
+Redshift, Presto (Athena uses the Presto dialect), Databricks/Spark, Oracle.
+
+Presto translates the portable library as Trino does; Redshift, Databricks, Spark and Oracle translate only `LIKE` / `ILIKE`, `trim` / `ltrim` / `rtrim`, `replace`, `strpos` / `instr`, `greatest` and `least` (see [below](#portable-library-support)), and on Oracle an empty string is NULL, so these functions read `''` as NULL there.
+
+## Portable library support
+
+Each database runs a [portable library function](concepts/references.md) only where SLayer translates it for that database; anywhere else the query fails at plan time naming the function and the database (express the computation in `Column.sql` instead). `TRY_CAST` also covers comparing or computing text with numbers, which reads through it, and the regex and JSON operators (`~`, `->>`, …) share their function's row.
+
+| Function | Postgres | DuckDB | SQLite | MySQL | MariaDB | ClickHouse | SQL Server | Trino | Presto | Snowflake | BigQuery | Redshift | Databricks | Spark | Oracle |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `acos` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `ascii` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `asin` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `atan` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `atan2` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `cbrt` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `chr` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `concat_ws` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `contains` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `cos` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `div` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `ends_with` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `greatest` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `ilike` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `instr` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `json_value` | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `least` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `left` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `like` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `lpad` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `ltrim` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `pi` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `regexp_extract` | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `regexp_like` | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `regexp_replace` | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `repeat` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `replace` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `reverse` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `right` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `rpad` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `rtrim` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `sin` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `split_part` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `starts_with` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `strpos` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `tan` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `trim` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `try_cast` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 
 ## Identifier length limits
 
 Some databases cap identifier length (Postgres is the tightest at 63 bytes, and
 truncates over-limit names *silently*). SLayer's join-path aliases like
 `orders.customers.regions.name` can exceed that on a deep chain, so any
-over-limit alias is trimmed at emission to `<head>_<hash>_<tail>`. This does
+over-limit alias is trimmed at emission to `<head>_<hash>_<tail>`. The same
+trimming applies to internal query-generated identifiers (e.g. CTE column
+aliases), while identifiers you write yourself pass through untouched. This does
 **not** affect output column names — `response.data` / `response.columns` keep
 the canonical dotted alias — but `response.sql` (and `dry_run` / `EXPLAIN`)
 shows the trimmed form, so account for it if you introspect the SQL.
@@ -57,16 +120,17 @@ back to an exact `COUNT(DISTINCT)` where there's no native function.
 (`corr`, `covar_samp`, `covar_pop`) need dialect-specific handling
 because no standard syntax works everywhere:
 
-| Engine | `median` | `percentile(p=...)` | `stddev_*` / `var_*` | `corr` / `covar_*` (`other=...`) | How |
-|---|---|---|---|---|---|
-| Postgres | yes | yes | yes | yes | Native `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)`, native `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. |
-| DuckDB | yes | yes | yes | yes | sqlglot rewrites ordered-set percentiles to `QUANTILE_CONT`. Native `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*` (sqlglot may emit `VARIANCE` for `var_samp`). |
-| SQLite | yes | yes | yes | yes | Python aggregate UDFs registered on every connection — see "SQLite caveats" below. |
-| ClickHouse | yes | yes | yes | yes | Native `median(x)`, parametric `quantile(p)(x)`, native `stddev_*`/`var_*`/`corr`/`covar*` (camelCase variants emitted by sqlglot for `var_samp`). |
-| Snowflake | yes | yes | yes | yes | Native `MEDIAN`, `PERCENTILE_CONT(p) WITHIN GROUP`, `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. `LOG10` native; no native `LOG2` (falls through to `LOG(2, x)`). |
-| MySQL | **no** | **no** | yes | **no** | No native `MEDIAN`/`PERCENTILE_CONT`/`CORR`/`COVAR_*` and no Python-UDF mechanism — SLayer raises `NotImplementedError` for those. `STDDEV_SAMP`/`STDDEV_POP`/`VAR_SAMP`/`VAR_POP` are native on MySQL. Use MariaDB or compute the unsupported aggregations client-side. |
-| SQL Server (T-SQL) | **no** | **no** | yes | yes (decomposed) | `MEDIAN` doesn't exist and T-SQL's `PERCENTILE_CONT` is window-only (no `WITHIN GROUP` aggregate form) — SLayer raises `NotImplementedError`. Native `STDEV`/`STDEVP`/`VAR`/`VARP` (slayer renames the canonical `STDDEV_*`/`VAR_*` names at emit time). `CORR`/`COVAR_*` use the same variance-decomposition formula as MySQL (`cov(x,y) = (var(x+y) − var(x) − var(y)) / 2`, `corr = cov / (stddev(x) · stddev(y))`). |
-| BigQuery | **no** | **no** | yes | yes | BigQuery has no `MEDIAN` aggregate, and its `PERCENTILE_CONT` is analytic-only (no `WITHIN GROUP` syntax) — the base class emit `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` fails at runtime. If you need percentile on BigQuery, define a custom `Aggregation` using `APPROX_QUANTILES(x, 100)[OFFSET(N)]`. Native `STDDEV_SAMP`/`STDDEV_POP`/`VAR_SAMP`/`VAR_POP`/`CORR`/`COVAR_SAMP`/`COVAR_POP` (sqlglot may emit `VARIANCE` for `var_samp`). |
+| Engine | `median` | `percentile(p=...)` | `stddev_*` / `var_*` | `corr` / `covar_*` (`other=...`) | `collect` | How |
+|---|---|---|---|---|---|---|
+| Postgres | yes | yes | yes | yes | yes | Native `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)`, native `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. |
+| DuckDB | yes | yes | yes | yes | yes | sqlglot rewrites ordered-set percentiles to `QUANTILE_CONT`. Native `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*` (sqlglot may emit `VARIANCE` for `var_samp`). |
+| SQLite | yes | yes | yes | yes | **no** | Python aggregate UDFs registered on every connection — see "SQLite caveats" below. |
+| ClickHouse | yes | yes | yes | yes | yes | Native `median(x)`, parametric `quantile(p)(x)`, native `stddev_*`/`var_*`/`corr`/`covar*` (camelCase variants emitted by sqlglot for `var_samp`). |
+| Snowflake | yes | yes | yes | yes | yes | Native `MEDIAN`, `PERCENTILE_CONT(p) WITHIN GROUP`, `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. No native `LOG10` or `LOG2`; both render as `LOG(base, x)`. |
+| MySQL | **no** | **no** | yes | **no** | **no** | No native `MEDIAN`/`PERCENTILE_CONT`/`CORR`/`COVAR_*` and no Python-UDF mechanism — SLayer raises `NotImplementedError` for those. `STDDEV_SAMP`/`STDDEV_POP`/`VAR_SAMP`/`VAR_POP` are native on MySQL. Use MariaDB or compute the unsupported aggregations client-side. |
+| SQL Server (T-SQL) | **no** | **no** | yes | yes (decomposed) | **no** | `MEDIAN` doesn't exist and T-SQL's `PERCENTILE_CONT` is window-only (no `WITHIN GROUP` aggregate form) — SLayer raises `NotImplementedError`. Native `STDEV`/`STDEVP`/`VAR`/`VARP` (slayer renames the canonical `STDDEV_*`/`VAR_*` names at emit time). `CORR`/`COVAR_*` use the same variance-decomposition formula as MySQL (`cov(x,y) = (var(x+y) − var(x) − var(y)) / 2`, `corr = cov / (stddev(x) · stddev(y))`). |
+| Trino | yes (approximate) | yes (approximate) | yes | yes | yes | sqlglot emits `APPROX_PERCENTILE(x, p)` — see "Trino caveats" below. Native `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. |
+| BigQuery | **no** | **no** | yes | yes | yes | BigQuery has no `MEDIAN` aggregate, and its `PERCENTILE_CONT` is analytic-only (no `WITHIN GROUP` syntax) — the base class emit `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` fails at runtime. If you need percentile on BigQuery, define a custom `Aggregation` using `APPROX_QUANTILES(x, 100)[OFFSET(N)]`. Native `STDDEV_SAMP`/`STDDEV_POP`/`VAR_SAMP`/`VAR_POP`/`CORR`/`COVAR_SAMP`/`COVAR_POP` (sqlglot may emit `VARIANCE` for `var_samp`). |
 
 ### `count_distinct_approx` by dialect
 
@@ -87,10 +151,15 @@ mapping lives in `SqlDialect.build_approx_count_distinct`.
 
 ### SQLite caveats
 
+SQLite has no table or column comments, so ingestion imports no descriptions
+there (every other Tier 1 database's comments are imported — see
+[Ingestion — Comments and descriptions](concepts/ingestion.md#comments-and-descriptions)).
+
 SQLite has a much smaller built-in math/stat catalog than the other supported
 engines. SLayer registers Python aggregate and scalar UDFs on every new SQLite
 connection via SQLAlchemy's `connect` event (see
-`slayer/sql/dialects/sqlite.py`).
+`slayer/sql/dialects/sqlite.py`). An asynchronous SQLite driver cannot take them, so a
+`sqlite+aiosqlite://` URL is refused with an `UnsupportedDriverError`; use `sqlite://`.
 
 **Aggregate UDFs:**
 
@@ -111,15 +180,15 @@ connection via SQLAlchemy's `connect` event (see
 
 **Scalar UDFs:**
 
-- `ln(x)`, `log10(x)`, `log2(x)`, `exp(x)`, `sqrt(x)` — single-arg. `log2(x)` is registered on **every** SQLite version (overriding ≥3.35's silent-NULL built-in) for the same strict-error reason as `log(B, X)` below.
-- `log(B, X)` — base-first 2-arg logarithm. Returns log_B(X). Registered on **every** SQLite version, including ≥3.35 where it overrides the built-in (the built-in silently returns NULL on math-domain inputs; the UDF raises, matching the strict-Postgres semantics SLayer promises). Same B-first arg order as SQLite ≥3.35's built-in and Postgres's `LOG(b, x)`.
+- `ln(x)`, `log10(x)`, `log2(x)`, `exp(x)`, `sqrt(x)` — single-arg, registered on **every** SQLite version (overriding ≥3.35's built-ins).
+- `log(B, X)` — base-first 2-arg logarithm (log_B(X)), registered on **every** SQLite version, in the same argument order as SQLite ≥3.35's built-in and Postgres's `LOG(b, x)`.
 - `pow(x, n)` and `power(x, n)` — both spellings registered (sqlglot may emit
   either).
+- The portable library's own `slayer_*` functions: `slayer_like_glob`, `slayer_regexp_like` / `_extract` / `_replace`, `slayer_try_cast`, `slayer_date_add`, `slayer_lpad` / `_rpad` / `_reverse` / `_repeat` / `_split_part` / `_concat_ws`, `slayer_trunc`, `slayer_fmod`, `slayer_pi`, `slayer_cbrt` and the trigonometric `slayer_sin` … `slayer_atan2`.
 
-NULL inputs return NULL on every UDF (matching cross-dialect SQL semantics).
-Math-domain errors (`ln(0)`, `sqrt(-1)`, `pow(0, -1)`) propagate as
-`sqlite3.OperationalError` — matching Postgres's strict error semantics rather
-than SQLite ≥3.35's silent-NULL built-in `log()`.
+NULL inputs return NULL on every UDF, and so do math-domain inputs (`ln(0)`,
+`sqrt(-1)`, `pow(0, -1)`), as on every database (overflow still raises).
+A Mode-B `LIKE` renders as `GLOB slayer_like_glob(…)` and `ILIKE` as SQLite's own case-insensitive `LIKE`, so dry-run SQL that uses the library runs only on a connection with these functions registered, not on a plain `sqlite3` one.
 
 These are registered automatically as long as connections go through
 `SlayerSQLClient` (which uses the cached SQLAlchemy engine). If you open a
@@ -156,6 +225,10 @@ treats backslash as an ordinary char; SLayer's entire sqlglot-based MySQL
 emission — not just variable substitution — assumes that mode is off, so
 backslash-bearing string values are not supported on such servers.
 
+**Version gates.** SLayer reads `VERSION()` when a query needs it: the regex functions and `~` operators, and `TRY_CAST` to a number (so comparing or computing text with numbers), need MySQL 8.0, and `json_value` 8.0.21; an older server fails at plan time, and an unreadable version emits the SQL and lets the server decide.
+
+**MariaDB** renders as MySQL, except that the portable library's regex functions and `~` operators, `TRY_CAST` to a number (and so comparing or computing text with numbers) and `json_value` with its spellings are refused at plan time.
+
 ### SQL Server (T-SQL) caveats
 
 T-SQL has `STDEV`/`STDEVP`/`VAR`/`VARP` (not `STDDEV_SAMP`/`STDDEV_POP`/
@@ -183,9 +256,19 @@ Other T-SQL specifics surfaced by the dialect:
   `INTERVAL` literal.
 - Bracketed `[ident]` quoting — `<model>.<column>` SLayer aliases get
   mangled to `<model>___<column>` at emit and decoded back on result-row
-  keys (mirror of the BigQuery `___` mangling; see DEV-1571).
+  keys (mirror of the BigQuery `___` mangling).
 - Native `LOG10`, no native `LOG2` (`log2(x)` falls through to the
   canonical 2-arg `LOG(2, x)` form).
+- **Version gates.** `greatest` / `least` need SQL Server 2022 and the regex functions 2025; SLayer reads `SERVERPROPERTY('ProductMajorVersion')`, fails an older server at plan time, and emits the SQL when the version is unknown.
+- **`json_value`.** On 2022 or later (and an unknown version) a scalar over 4,000 characters fails the query with SQL Server's truncation error; before 2022 it reads as NULL, and so does a document that is itself a scalar (`"x"`).
+
+### Postgres caveats
+
+`TRY_CAST`'s NULL for an unconvertible value, the text-to-number coercion that reads through it, and `json_value`'s NULL for malformed JSON need Postgres 16 (`pg_input_is_valid`); on an older or unknown server they are a plain cast, so one bad row fails the query.
+
+### ClickHouse caveats
+
+`JSON` and `Object` columns are read natively by `json_value` through their ingested `db_type` (from `system.columns`), so models ingested before that need a re-ingest.
 
 ### Snowflake caveats
 
@@ -208,9 +291,31 @@ Snowflake](configuration/datasources.md#snowflake) for connection setup.
 - **Declarative FK constraints are surfaced.** Unlike ClickHouse / BigQuery,
   Snowflake exposes its (non-enforced) FK metadata via the Inspector. Auto-
   ingestion discovers joins like Postgres / MySQL / SQLite.
-- **No native LOG2.** `log2(x)` in a `Column.sql` falls through to the
-  canonical 2-arg `LOG(2, x)` form. `LOG10` and the rest of the math /
-  statistical functions are native.
+- **Untyped `ARRAY` columns.** Ingestion infers their element type from a sample of each column's `TYPEOF`s, one query per untyped `ARRAY` column, and `json_value` reads a `VARIANT`, `OBJECT` or `ARRAY` column natively.
+- **No native LOG10 or LOG2.** `log10(x)` and `log2(x)` in a `Column.sql` fall
+  through to the canonical 2-arg `LOG(10, x)` / `LOG(2, x)` form; the rest of
+  the math / statistical functions are native.
+
+### Trino caveats
+
+The live suite runs against the `memory` catalog in a `trinodb/trino` container.
+Set `database: <catalog>/<schema>` (e.g. `memory/default`) on the datasource.
+
+- **Approximate `median` / `percentile`.** Both emit `APPROX_PERCENTILE(x, p)`,
+  so results are approximate; define a custom `Aggregation` if you need an exact value.
+- **No FK introspection.** Trino connectors expose no foreign keys, so
+  auto-ingestion discovers no joins; hand-declare `ModelJoin`s. Table and column
+  comments are imported.
+- **Statement timeout.** SLayer sends the timeout as the `query_max_run_time`
+  session property with the query itself and restores your own value afterwards.
+- **`timestamp with time zone`** ingests as `TIMESTAMP`, and truncation follows the
+  client session's time zone.
+- **HTTPS.** SLayer connects over HTTPS whenever the URL carries credentials
+  (a password, `access_token`, `cert` + `key`, or `externalAuthentication`);
+  `?http_scheme=http` or `?http_scheme=https` overrides. The HTTPS path is
+  unit-tested only — the live suite runs without TLS.
+- **Cross-catalog joins.** Models on one Trino datasource may join tables from
+  different catalogs by catalog-qualifying `sql_table` (e.g. `postgresql.public.customers`).
 
 ### BigQuery caveats
 
@@ -220,17 +325,22 @@ gated on `GCP_PROJECT_ID` and `GCP_SA_KEY_B64` repo secrets (forks without
 them skip cleanly). Auth via Google Application Default Credentials
 (`$GOOGLE_APPLICATION_CREDENTIALS` pointing at a service-account JSON key,
 plus `$GCP_PROJECT_ID` for billing). The `bigquery://` driver requires the
-`sqlalchemy-bigquery` extra.
+`motley-slayer[bigquery]` extra.
 
 - **No FK introspection.** BigQuery exposes no foreign-key metadata via
   `INFORMATION_SCHEMA`, so auto-ingestion cannot discover joins. Hand-declare
   `ModelJoin`s on the model.
+- **Descriptions ARE imported.** Auto-ingestion maps BigQuery column
+  descriptions → `Column.description`, table descriptions →
+  `SlayerModel.description`, and the dataset description → the datasource's
+  `description` (fill-if-empty; see
+  [Ingestion — Comments and descriptions](concepts/ingestion.md#comments-and-descriptions)).
 - **Dotted alias mangling.** BigQuery rejects column names containing `.`
   (output schema names must match `[A-Za-z_][A-Za-z0-9_]*`), so SLayer
   rewrites `<model>.<column>` aliases (`orders._count`,
   `orders.products.category`) to `<model>___<column>` at emit time and
   reverses the mapping on result rows. The triple-underscore separator is
-  distinct from `__` (used by `_query_as_model` for cross-model leaf
+  distinct from `__` (used by the query-backed virtual-model wrap for cross-model leaf
   flattening), so the two encodings never collide. In `Column.sql`,
   fully-qualified table paths must be backticked per-segment
   (`` `project`.`dataset`.`table` ``) — a single backticked dotted path of
@@ -241,6 +351,8 @@ plus `$GCP_PROJECT_ID` for billing). The `bigquery://` driver requires the
   `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` to BigQuery's analytic
   form). Use a custom `Aggregation` with `APPROX_QUANTILES(x, 100)[OFFSET(N)]`
   when you need it.
+- **SLayer timestamps are `DATETIME`.** `now()`, timestamp literals, `TRY_CAST(… AS TIMESTAMP)`, `json_value(… RETURNING TIMESTAMP)` and the date functions produce naive `DATETIME` values (UTC wall clock), and a zoned `TIMESTAMP` column, which ingestion marks with `db_type: TIMESTAMP` (re-ingest older models), reads as its UTC wall clock everywhere except as a direct comparison operand, where it stays bare (keeping partition pruning) and the other side is cast to `TIMESTAMP`.
+- **A NULL list is an empty list.** BigQuery stores a `NULL` `REPEATED` value as `[]`, so `length` returns 0, `IS NULL` is false and `count(list)` counts it where other databases see `NULL`.
 - **No native EXPLAIN.** BigQuery has no SQL-level `EXPLAIN`. The
   `BigqueryDialect.explain_prefix` is `None`, so `engine.execute(...,
   explain=True)` returns the dry-run SQL unchanged rather than an execution
@@ -248,11 +360,10 @@ plus `$GCP_PROJECT_ID` for billing). The `bigquery://` driver requires the
 
 ## Adding a new dialect
 
-1. Add the mapping to `slayer/engine/query_engine.py:_dialect_for_type()`.
-2. If the dialect doesn't accept Postgres-style `INTERVAL` for date arithmetic,
-   add a branch in `_build_time_offset_expr` in `slayer/sql/generator.py`.
-3. Add parameterized tests in `TestMultiDialectGeneration` in
-   `tests/test_sql_generator.py`.
-4. For median/percentile, decide whether the native syntax already works
-   (sqlglot may handle it) or whether a branch in `_build_median` /
-   `_build_percentile` is needed.
+1. Subclass `SqlDialect` (`slayer/sql/dialects/base.py`), setting `sqlglot_name` and
+   `ds_type_aliases`.
+2. Import the subclass in `slayer/sql/dialects/__init__.py`.
+3. Register it in `_ALL_DIALECTS`, or in `_DS_TYPE_ONLY_DIALECTS` when it shares another
+   dialect's `sqlglot_name` (as MariaDB does). Otherwise it silently overwrites that
+   dialect's entry in `_BY_SQLGLOT_NAME`.
+4. Add tests to `tests/dialects/test_multi_dialect_generation.py`.

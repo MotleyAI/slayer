@@ -1,22 +1,33 @@
 """Integration tests using a real PostgreSQL database via pytest-postgresql."""
 
+import math as _math
+import statistics
 import tempfile
 import uuid
+from typing import Any, LiteralString, cast
 
 import pytest
 
-pytest.importorskip("pytest_postgresql")
-
-import psycopg
-from pytest_postgresql import factories
-
+from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.ingestion import ingest_datasource
+from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
+from slayer.engine import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
-from slayer.async_utils import run_sync
+from tests._reserved_alias_probe import keyword_universe, unquoted_alias_failures
+from tests.integration._consecutive_periods_calendar import (
+    CALENDAR_CASES,
+    assert_calendar_streak,
+    seed_statements,
+    streak_model,
+)
+
+pytest.importorskip("pytest_postgresql")
+
+import psycopg  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
+from pytest_postgresql import factories  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
 
 # Spawn a temporary Postgres process (random port)
 postgresql_proc = factories.postgresql_proc(port=None)
@@ -101,6 +112,8 @@ def _pg_env_storage(postgresql_proc, tmp_path_factory):
                 (6, "pending", 300, 3, "2024-03-10 16:00:00"),
             ],
         )
+        for stmt in seed_statements():
+            cur.execute(cast(LiteralString, stmt))
         conn.commit()
 
         tmpdir = str(tmp_path_factory.mktemp("pg_env"))
@@ -129,7 +142,7 @@ def _pg_env_storage(postgresql_proc, tmp_path_factory):
 
                 Column(name="total", sql="amount", type=DataType.DOUBLE),
                 Column(name="avg_amount", sql="amount", type=DataType.DOUBLE),
-                # DEV-1576: a genuine DOUBLE PRECISION expression column.
+                # A genuine DOUBLE PRECISION expression column.
                 # ``amount`` is NUMERIC, so ``round(amount:sum, 2)`` works on
                 # Postgres natively; the non-bare DOUBLE-typed sql gets wrapped
                 # in CAST(... AS DOUBLE PRECISION), so SUM yields double and
@@ -151,6 +164,7 @@ def _pg_env_storage(postgresql_proc, tmp_path_factory):
         )
         run_sync(storage.save_model(orders_model))
         run_sync(storage.save_model(customers_model))
+        run_sync(storage.save_model(streak_model("testpg")))
 
         yield storage
     finally:
@@ -178,6 +192,15 @@ class TestPostgresQueries:
         query = SlayerQuery(source_model="orders", measures=[{"formula": "total:sum"}])
         result = await pg_env.execute(query=query)
         assert float(result.data[0]["orders.total_sum"]) == 875.0
+
+    async def test_functional_aggregation_parity(self, pg_env: SlayerQueryEngine) -> None:
+        colon = await pg_env.execute(
+            query=SlayerQuery(source_model="orders", measures=[{"formula": "total:sum"}])
+        )
+        func = await pg_env.execute(
+            query=SlayerQuery(source_model="orders", measures=[{"formula": "sum(total)"}])
+        )
+        assert float(func.data[0]["orders.total_sum"]) == float(colon.data[0]["orders.total_sum"])
 
     async def test_avg_measure(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", measures=[{"formula": "avg_amount:avg"}])
@@ -210,7 +233,7 @@ class TestPostgresQueries:
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "*:count"}],
-            # DEV-1369: filter references must resolve to a defined Column;
+            # Filter references must resolve to a defined Column;
             # use ``total`` (the SLayer Column whose sql is ``amount``)
             # rather than the bare underlying-table column name.
             filters=["total > 100"],
@@ -290,7 +313,7 @@ class TestPostgresQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[
@@ -316,7 +339,7 @@ class TestPostgresQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[
                 ModelMeasure(formula="total:sum"),
@@ -329,12 +352,18 @@ class TestPostgresQueries:
         # Mar=375 (>200, true). Trailing run lengths: 1, 0, 1.
         assert [r["orders.positive_run"] for r in result.data] == [1, 0, 1]
 
+    @pytest.mark.parametrize("column,granularity", CALENDAR_CASES)
+    async def test_consecutive_periods_breaks_on_calendar_gap(
+        self, pg_env: SlayerQueryEngine, column: str, granularity: str,
+    ) -> None:
+        await assert_calendar_streak(pg_env, column=column, granularity=granularity)
+
     async def test_change_with_date_range(self, pg_env: SlayerQueryEngine) -> None:
         """change() with date_range should fetch previous period from outside the filtered range."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[
@@ -353,7 +382,7 @@ class TestPostgresQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[
@@ -373,7 +402,7 @@ class TestPostgresQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-02-01", "2024-02-29"],
             )],
             measures=[
@@ -436,7 +465,6 @@ async def pg_cross_model_env(postgresql):
         host=info.host, port=info.port, database=info.dbname,
         username=info.user, password="",
     ))
-    from slayer.core.models import ModelJoin
     run_sync(storage.save_model(SlayerModel(
         name="orders", sql_table="orders", data_source="testpg",
         default_time_dimension="created_at",
@@ -470,7 +498,7 @@ class TestCrossModelAndMultistage:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="customers.avg_score:avg")],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
@@ -490,7 +518,7 @@ class TestCrossModelAndMultistage:
         inner = SlayerQuery(
             name="monthly", source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total:sum")],
         )
@@ -503,7 +531,7 @@ class TestCrossModelAndMultistage:
         source = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total:sum")],
         )
@@ -516,12 +544,11 @@ class TestCrossModelAndMultistage:
 
     async def test_sql_dimension(self, pg_cross_model_env: SlayerQueryEngine) -> None:
         """SQL expression dimension via ModelExtension with Postgres."""
-        from slayer.core.query import ModelExtension
         query = SlayerQuery(
-            source_model=ModelExtension(
-                source_name="orders",
-                columns=[{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
-            ),
+            source_model=ModelExtension.model_validate({
+                "source_name": "orders",
+                "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
+            }),
             dimensions=[ColumnRef(name="tier")],
             measures=[ModelMeasure(formula="*:count")],
         )
@@ -530,6 +557,15 @@ class TestCrossModelAndMultistage:
         # high: 200, 150, 300 = 3; low: 100, 50, 25 = 3
         assert by_tier["high"] == 3
         assert by_tier["low"] == 3
+
+
+async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
+    client = SlayerSQLClient(datasource=ds)
+    try:
+        return await ingestion.ingest_datasource_async(ds, client=client, **kwargs)
+    finally:
+        await client.aclose()
+        client.close()
 
 
 @pytest.fixture(scope="module")
@@ -563,6 +599,8 @@ def pg_ingest_env(postgresql_proc):
                 customer_id INTEGER REFERENCES customers(id)
             )
         """)
+        cur.execute("COMMENT ON TABLE orders IS 'All orders'")
+        cur.execute("COMMENT ON COLUMN orders.amount IS 'Order amount'")
         cur.executemany("INSERT INTO regions VALUES (%s, %s)", [(1, "US"), (2, "EU")])
         cur.executemany(
             "INSERT INTO customers VALUES (%s, %s, %s)",
@@ -585,7 +623,7 @@ def pg_ingest_env(postgresql_proc):
             password="",
         )
 
-        models = ingest_datasource(datasource=ds, schema="public")
+        models = run_sync(_ingest(ds, schema="public"))
         yield models, ds, conn
     finally:
         conn.close()
@@ -881,14 +919,13 @@ class TestPostgresMedianPercentile:
 
 @pytest.mark.integration
 class TestPostgresStatAggregations:
-    """DEV-1317 cross-dialect smoke: the new statistical aggregations
+    """Cross-dialect smoke: the new statistical aggregations
     (stddev_samp, stddev_pop, var_samp, var_pop, corr) must produce the
     same numeric results on Postgres native functions as the SQLite UDF
     path produces. Within rel=1e-9.
     """
 
     async def test_stddev_samp_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:stddev_samp"}],
@@ -900,7 +937,6 @@ class TestPostgresStatAggregations:
         )
 
     async def test_stddev_pop_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:stddev_pop"}],
@@ -912,7 +948,6 @@ class TestPostgresStatAggregations:
         )
 
     async def test_var_samp_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:var_samp"}],
@@ -924,7 +959,6 @@ class TestPostgresStatAggregations:
         )
 
     async def test_var_pop_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:var_pop"}],
@@ -943,7 +977,6 @@ class TestPostgresStatAggregations:
         )
         result = await pg_env.execute(query=query)
         # Compute expected via Python's statistics.correlation.
-        import statistics
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         ys = [1.0, 1.0, 2.0, 2.0, 3.0, 3.0]
         expected = statistics.correlation(xs, ys)
@@ -982,14 +1015,12 @@ class TestPostgresStatAggregations:
         ) == pytest.approx(expected, rel=1e-9)
 
     async def test_log10_round_trip_postgres(self, pg_env: SlayerQueryEngine) -> None:
-        """DEV-1337: a `log10(amount)` formula must execute correctly on
+        """A `log10(amount)` formula must execute correctly on
         Postgres (native single-arg LOG10) and the emitted SQL must contain
         `log10(...)` rather than the canonicalised `LOG(10, ...)`."""
         # Add a Column.sql with log10 to the existing orders model. The
         # fixture's storage already has the table populated, so we just save
         # the model with the extra column.
-        from slayer.core.models import SlayerModel
-
         existing = await pg_env.storage.get_model("orders")
         assert existing is not None
         cols = list(existing.columns) + [
@@ -1008,7 +1039,6 @@ class TestPostgresStatAggregations:
             SlayerQuery(source_model="orders", measures=[{"formula": "log_amount:max"}])
         )
         # max(amount) = 300, log10(300) ≈ 2.4771
-        import math as _math
         assert float(result.data[0]["orders.log_amount_max"]) == pytest.approx(
             _math.log10(300.0), rel=1e-9
         )
@@ -1029,7 +1059,7 @@ class TestPostgresStatAggregations:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1336 — window functions in filters, Postgres parity
+# window functions in filters, Postgres parity
 # ---------------------------------------------------------------------------
 
 
@@ -1096,7 +1126,7 @@ async def planets_pg_env(postgresql):
 
 @pytest.mark.integration
 async def test_filter_on_windowed_column_postgres_raises(planets_pg_env):
-    """Postgres parity for DEV-1369: filtering a windowed Column.sql
+    """Postgres parity: filtering a windowed Column.sql
     raises (use rank-family transforms instead)."""
     engine = planets_pg_env
     query = SlayerQuery(
@@ -1108,7 +1138,7 @@ async def test_filter_on_windowed_column_postgres_raises(planets_pg_env):
         await engine.execute(query)
 
 # ---------------------------------------------------------------------------
-# DEV-1333: cross-model derived ``Column.sql`` chaining (Postgres)
+# Cross-model derived ``Column.sql`` chaining (Postgres)
 # ---------------------------------------------------------------------------
 
 
@@ -1137,7 +1167,6 @@ async def pg_derived_chain_env(postgresql):
             username=info.user, password="",
         )
     )
-    from slayer.core.models import ModelJoin
     await storage.save_model(
         SlayerModel(
             name="b_tbl",
@@ -1193,7 +1222,7 @@ async def test_integration_postgres_cross_model_derived_columnsql(
 
 @pytest.mark.integration
 class TestPostgresDev1576Heals:
-    """DEV-1576 — round()/abs() execution (incl. the double-precision cast
+    """round()/abs() execution (incl. the double-precision cast
     path) and aggregation-alias healing against a real Postgres."""
 
     async def test_round_two_args_over_double_executes(
@@ -1248,7 +1277,7 @@ class TestPostgresDev1576Heals:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1645: compiler must emit valid Postgres SQL.
+# Compiler must emit valid Postgres SQL.
 #   Flavor A — ORDER BY on an unprojected/renamed column.
 #   Flavor B — mixed-case identifiers (Column.sql, filters, JOIN ON) must be
 #              double-quoted so Postgres does not fold them to lowercase.
@@ -1379,16 +1408,62 @@ class TestDev1645ValidPostgres:
         result = await pg_dev1645.execute(query=query)
         assert result.row_count == 3
 
+    async def test_grouped_row_column_order_max_wrap_executes(
+        self, pg_dev1645: SlayerQueryEngine,
+    ) -> None:
+        """Phase 1: a GROUPED query ordering by an unprojected LOCAL
+        row column materialises a hidden ``created_at:max`` wrap. Verified on
+        real Postgres — the shape must both execute and sort correctly.
+
+        Latest created_at per acct_form: Human 2024-03-01, Bot 2024-01-15 —
+        so descending puts Human first. The grain must stay one row per
+        acct_form, and the wrap must not surface in the response.
+        """
+        query = SlayerQuery(
+            source_model="accounts",
+            dimensions=[ColumnRef(name="acct_form")],
+            measures=[{"formula": "*:count", "name": "cnt"}],
+            order=[OrderItem(column=ColumnRef(name="created_at"), direction="desc")],
+        )
+        result = await pg_dev1645.execute(query=query)
+        assert [r["accounts.acct_form"] for r in result.data] == ["Human", "Bot"]
+        assert result.row_count == 2
+        assert all("created_at" not in c for c in result.columns), result.columns
+
+    async def test_ungrouped_joined_column_order_executes(
+        self, pg_dev1645: SlayerQueryEngine,
+    ) -> None:
+        """Phase 1: a RAW-ROWS query ordering by a JOINED column pulls
+        the join (Law 1) and split-emits ``clusters.score``. Verified on real
+        Postgres — the split reference must bind, which is exactly what the
+        composite ``"clusters.score"`` form failed to do.
+
+        scores: account 1 -> 1.5, 2 -> 2.5, 3 -> 1.5; ascending by score then
+        id gives 1, 3, 2.
+        """
+        query = SlayerQuery(
+            source_model="accounts",
+            dimensions=[ColumnRef(name="id")],
+            distinct_dimension_values=False,
+            order=[
+                OrderItem(column=ColumnRef(name="score", model="clusters"), direction="asc"),
+                OrderItem(column=ColumnRef(name="id"), direction="asc"),
+            ],
+        )
+        result = await pg_dev1645.execute(query=query)
+        assert [r["accounts.id"] for r in result.data] == [1, 3, 2]
+        assert all("score" not in c for c in result.columns), result.columns
+
 
 # ---------------------------------------------------------------------------
-# DEV-1686: reserved-word model name executes live against Postgres.
+# Reserved-word model name executes live against Postgres.
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")
 def _pg_reserved_storage(postgresql_proc, tmp_path_factory):
     """Module-scoped Postgres DB with a reserved-word ("Grant") table joined to
     "Merchant", plus a YAMLStorage with a `grant` model (reserved name) that
-    joins to `merchant`. Exercises DEV-1686 alias/qualifier + join_cond quoting
+    joins to `merchant`. Exercises alias/qualifier + join_cond quoting
     end-to-end."""
     conn, db_name = _create_module_db(postgresql_proc)
     try:
@@ -1482,7 +1557,7 @@ def pg_reserved(_pg_reserved_storage):
 @pytest.mark.integration
 class TestPostgresReservedWordModel:
     async def test_standalone_grant_dims_count_executes(self, pg_reserved: SlayerQueryEngine) -> None:
-        """The exact DEV-1686 repro: a dims + *:count query on the `grant`
+        """The exact repro: a dims + *:count query on the `grant`
         model must execute (previously: syntax error at or near "grant")."""
         query = SlayerQuery(
             source_model="grant", dimensions=["namespace"], measures=["*:count"],
@@ -1512,7 +1587,7 @@ class TestPostgresReservedWordModel:
     async def test_query_backed_model_with_reserved_short_executes(
         self, pg_reserved: SlayerQueryEngine,
     ) -> None:
-        """DEV-1686 query_engine._query_as_model fix: a cross-model measure
+        """``query_engine._query_as_model`` fix: a cross-model measure
         renamed to a reserved word (``order``) becomes a virtual-model column
         exposed via ``... AS "order"`` in the wrapped SQL; it must quote and
         execute."""
@@ -1520,10 +1595,12 @@ class TestPostgresReservedWordModel:
             source_model="grant", dimensions=["namespace"],
             measures=[{"formula": "merchant.id:count_distinct", "name": "order"}],
         )
-        model = await pg_reserved.create_model_from_query(
+        await pg_reserved.create_model_from_query(
             query=query, name="grants_vm", save=True,
         )
-        assert '"order"' in model.backing_query_sql, model.backing_query_sql
+        over_model = {"source_model": "grants_vm", "dimensions": ["namespace", "order"]}
+        sql = (await pg_reserved.execute(query=over_model, dry_run=True)).sql or ""
+        assert '"order"' in sql, sql
         # Executing the stored backing query (which contains ``AS "order"``)
         # must not raise a Postgres syntax error — that is the regression.
         result = await pg_reserved.execute(query="grants_vm")
@@ -1535,7 +1612,7 @@ class TestPostgresReservedWordModel:
     async def test_derived_column_referencing_reserved_join_executes(
         self, pg_reserved: SlayerQueryEngine,
     ) -> None:
-        """DEV-1686 (Codex review): a derived column on a non-reserved root that
+        """A derived column on a non-reserved root that
         references a reserved joined model (`grant.amount + 1`) must both DISCOVER
         the join and execute — previously the join was silently dropped."""
         query = SlayerQuery(source_model="usage", dimensions=["bumped"], measures=["*:count"])
@@ -1543,3 +1620,44 @@ class TestPostgresReservedWordModel:
         # grant amounts 100 (usage 1) and 50 (usage 3) → bumped 101 and 51
         by_bumped = {float(r["usage.bumped"]): r["usage._count"] for r in result.data}
         assert by_bumped == {101.0: 2, 51.0: 1}
+
+
+@pytest.mark.integration
+class TestPostgresIngestComments:
+    def test_table_and_column_comments_imported(self, pg_ingest_env) -> None:
+        models, _, _ = pg_ingest_env
+        orders = next(m for m in models if m.name == "orders")
+        assert orders.description == "All orders"
+        by_name = {c.name: c for c in orders.columns}
+        assert by_name["amount"].description == "Order amount"
+        assert by_name["id"].description is None
+
+    def test_uncommented_table_has_no_description(self, pg_ingest_env) -> None:
+        models, _, _ = pg_ingest_env
+        regions = next(m for m in models if m.name == "regions")
+        assert regions.description is None
+
+
+@pytest.mark.integration
+def test_every_postgres_alias_failure_is_quoted(postgresql_proc) -> None:
+    conn, db_name = _create_module_db(postgresql_proc)
+    try:
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE kw_probe (a INTEGER)")
+        cur.execute("SELECT word FROM pg_get_keywords()")
+        words = keyword_universe(row[0] for row in cur.fetchall())
+
+        def fails(sql: str) -> bool:
+            try:
+                cur.execute(cast(LiteralString, sql))
+            except psycopg.Error:
+                return True
+            return False
+
+        assert unquoted_alias_failures(
+            dialect="postgres", words=words, table="kw_probe", column="a", fails=fails,
+        ) == []
+    finally:
+        conn.close()
+        _drop_module_db(postgresql_proc, db_name)

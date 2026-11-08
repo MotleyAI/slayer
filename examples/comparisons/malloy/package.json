@@ -1,0 +1,15 @@
+{
+  "name": "slayer-malloy-probes",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Malloy side of the SLayer-vs-Malloy probe suite",
+  "type": "module",
+  "scripts": {
+    "probe": "node run_malloy.mjs"
+  },
+  "dependencies": {
+    "@malloydata/db-duckdb": "0.0.434",
+    "@malloydata/malloy": "0.0.434",
+    "yaml": "2.9.1"
+  }
+}

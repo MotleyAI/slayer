@@ -5,9 +5,10 @@ from __future__ import annotations
 import pathlib
 import sys
 import tomllib
-from importlib.metadata import PackageNotFoundError
+from importlib.metadata import PackageNotFoundError, version
 
 import pytest
+from mcp.server.fastmcp import FastMCP
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
@@ -21,7 +22,7 @@ VERIFIED_1X = "1.29.0"
 FIRST_BREAKING_MAJOR = "2.0.0"
 
 # Every branch of the import error must offer the same remedy.
-REMEDY = "mcp>=1.0,<2"
+REMEDY = "mcp>=1.19,<2"
 # The old text, which sent users round the loop that reproduced the failure.
 OBSOLETE_REMEDY = "Reinstall SLayer"
 
@@ -48,14 +49,14 @@ class TestMcpDependencyPin:
         assert Version(FIRST_BREAKING_MAJOR) not in _mcp_specifier(), (
             f"`mcp = {_mcp_constraint()!r}` admits {FIRST_BREAKING_MAJOR}, which "
             f"removed `mcp.server.fastmcp` and breaks `slayer mcp` on every "
-            f"fresh install (DEV-1757)."
+            f"fresh install."
         )
 
     def test_mcp_constraint_admits_1_x(self) -> None:
         """The cap must not be 'fixed' by over-tightening onto one release."""
         assert Version(VERIFIED_1X) in _mcp_specifier(), (
             f"`mcp = {_mcp_constraint()!r}` excludes {VERIFIED_1X}, the 1.x "
-            f"verified against a live datasource in DEV-1757."
+            f"verified against a live datasource."
         )
 
     def test_mcp_constraint_is_pep440(self) -> None:
@@ -63,8 +64,6 @@ class TestMcpDependencyPin:
 
     def test_installed_mcp_is_1_x(self) -> None:
         """The resolved environment, not just the declaration, is on 1.x."""
-        from importlib.metadata import version
-
         installed = Version(version("mcp"))
         assert installed.major == 1
         assert installed in _mcp_specifier()
@@ -82,8 +81,6 @@ class TestFastMcpImportError:
         monkeypatch.setattr("slayer.mcp.server._pkg_version", lambda _name: version)
 
     def test_returns_fastmcp_when_available(self) -> None:
-        from mcp.server.fastmcp import FastMCP
-
         assert _import_fastmcp() is FastMCP
 
     def test_wrong_major_message_names_version_and_remedy(

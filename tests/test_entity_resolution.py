@@ -357,6 +357,14 @@ class TestResolveEntityDotted:
         )
         assert result.canonical_forms == ["mydb.regions.name"]
 
+    async def test_reverse_hop_join(self, storage: StorageBackend) -> None:
+        # customers.orders.amount — orders declares the only edge; the
+        # reverse hop resolves without a declared reverse join (DEV-1853).
+        result = await resolve_entity(
+            "customers.orders.amount", storage=storage
+        )
+        assert result.canonical_forms == ["mydb.orders.amount"]
+
     async def test_dot_terminating_at_join_target(
         self, storage: StorageBackend
     ) -> None:
@@ -457,7 +465,7 @@ class TestResolveEntityStarCount:
     ) -> None:
         with pytest.raises(EntityResolutionError) as exc_info:
             await resolve_entity("*:count", storage=storage)
-        assert "*:count" in str(exc_info.value)
+        assert "count(*)" in str(exc_info.value)
 
     async def test_star_count_with_source_model_uses_it(
         self, storage: StorageBackend
@@ -585,7 +593,7 @@ class TestExtractEntitiesFromQuery:
             source_model="orders",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="ordered_at"),
+                    dimension="ordered_at",
                     granularity=TimeGranularity.DAY,
                 )
             ],
@@ -657,6 +665,54 @@ class TestExtractEntitiesFromQuery:
         )
         with pytest.raises(EntityResolutionError):
             await extract_entities_from_query(q, storage=storage)
+
+    async def test_funcstyle_joined_custom_agg_extracts_joined_column(
+        self,
+    ) -> None:
+        # DEV-1500 → DEV-1826: a functional custom aggregation defined on a
+        # joined model (``rolling_avg(customers.score)`` where ``rolling_avg``
+        # lives on ``customers``) parses natively to an AggCall candidate, so
+        # the joined column (``customers.score``) ends up tagged — no
+        # custom-aggregation registry walk involved.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = YAMLStorage(base_dir=tmpdir)
+            await s.save_datasource(
+                DatasourceConfig(name="dev1500", type="postgres", host="x")
+            )
+            await s.save_model(SlayerModel(
+                name="customers",
+                data_source="dev1500",
+                sql_table="customers",
+                columns=[
+                    Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                    Column(name="score", sql="score", type=DataType.DOUBLE),
+                ],
+                aggregations=[
+                    Aggregation(name="rolling_avg", formula="AVG({value})"),
+                ],
+            ))
+            await s.save_model(SlayerModel(
+                name="orders",
+                data_source="dev1500",
+                sql_table="orders",
+                columns=[
+                    Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                    Column(name="customer_id", sql="customer_id", type=DataType.INT),
+                ],
+                joins=[
+                    ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+                ],
+            ))
+            q = SlayerQuery(
+                source_model="orders",
+                measures=[ModelMeasure(formula="rolling_avg(customers.score)")],
+            )
+            result = await extract_entities_from_query(q, storage=s)
+            # The joined column inside the transform surfaces as an entity
+            # (parsed natively — no funcstyle rewrite).
+            assert "dev1500.customers.score" in result.canonical_forms, (
+                result.canonical_forms
+            )
 
 
 class TestResolveEntityAmbiguousModel:

@@ -1,6 +1,7 @@
-version: 7
+version: 18
 name: stores
 sql_table: stores
+source_kind: table
 query_variables: {}
 data_source: jaffle_shop
 columns:
@@ -8,12 +9,14 @@ columns:
   sql: id
   type: TEXT
   primary_key: true
+  unique: false
   label: Store ID
   hidden: false
 - name: name
   sql: name
   type: TEXT
   primary_key: false
+  unique: false
   description: Store name.
   label: Store
   hidden: false
@@ -21,6 +24,7 @@ columns:
   sql: opened_at
   type: DATE
   primary_key: false
+  unique: false
   description: When the store opened.
   label: Opened
   hidden: false
@@ -28,20 +32,36 @@ columns:
   sql: tax_rate
   type: DOUBLE
   primary_key: false
+  unique: false
   description: Local sales-tax rate.
   label: Tax Rate
   hidden: false
   format:
     type: percent
     precision: 1
+- name: region_id
+  sql: region_id
+  type: TEXT
+  primary_key: false
+  unique: false
+  description: Region the store belongs to.
+  label: Region ID
+  hidden: false
 measures:
-- formula: id:count_distinct
+- formula: count_distinct(id)
   name: store_count
   label: Stores
   description: Number of stores.
   type: INT
 aggregations: []
-joins: []
+joins:
+- target_model: regions
+  join_pairs:
+  - - region_id
+    - id
+  join_type: left
+  cardinality: many_to_one
 filters: []
 description: Physical Jaffle Shop locations.
 hidden: false
+access_tags: []

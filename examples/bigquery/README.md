@@ -86,7 +86,7 @@ curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
   -d '{
         "source_model": "order_items",
-        "measures": ["*:count", "sale_price:sum"],
+        "measures": ["count(*)", "sum(sale_price)"],
         "dimensions": ["products.category"],
         "order": [{"column": "count", "direction": "desc"}],
         "limit": 5

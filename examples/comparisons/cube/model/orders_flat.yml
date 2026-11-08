@@ -1,0 +1,19 @@
+cubes:
+  - name: orders_flat
+    sql_table: orders_flat
+    dimensions:
+      - {name: id, sql: id, type: number, primary_key: true, public: true}
+      - {name: customer_id, sql: customer_id, type: number}
+      - {name: amount, sql: amount, type: number}
+      - {name: status, sql: status, type: string}
+      - {name: order_date, sql: order_date, type: time}
+      - {name: region, sql: region, type: string}
+      - {name: city, sql: city, type: string}
+      - {name: tier, sql: tier, type: string}
+      - {name: credit, sql: credit, type: number}
+      - {name: discount, sql: discount, type: number}
+    measures:
+      - {name: count, type: count}
+      - {name: revenue, sql: amount, type: sum}
+      - {name: avg_amount, sql: amount, type: avg}
+      - {name: customer_count, sql: customer_id, type: count_distinct}

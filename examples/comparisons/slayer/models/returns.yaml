@@ -1,0 +1,11 @@
+name: returns
+data_source: probe
+sql_table: returns
+default_time_dimension: return_date
+columns:
+  - {name: id, type: number, primary_key: true}
+  - {name: customer_id, type: number}
+  - {name: amount, type: number}
+  - {name: return_date, type: date}
+joins:
+  - {target_model: customers, join_pairs: [[customer_id, id]], cardinality: many_to_one}

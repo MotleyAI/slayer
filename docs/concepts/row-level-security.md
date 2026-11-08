@@ -4,7 +4,7 @@ SLayer can scope every query a session runs to a single tenant, so an agent
 only ever sees that tenant's rows — across joins, CTEs, sql-mode sub-queries,
 query-backed stages, and profiling/sample data. The scoping is **immutable
 engine state**: the agent cannot read it, override it, or disable it through
-any query field.
+any query field. Under a policy, column samples are profiled and cached per engine, never read from or written to shared model storage.
 
 A policy carries exactly one **ruleset**, one of two kinds:
 
@@ -22,7 +22,7 @@ For a runnable walkthrough on the Jaffle Shop demo, see the
 
 ## Configuring a policy
 
-A policy is set once, at engine (or local-engine client) construction:
+A policy is set once, at engine (or local-engine client) construction; `engine.policy` is read-only afterwards:
 
 ```python
 from slayer.core.policy import SessionPolicy, ColumnFilterRuleset
@@ -43,7 +43,7 @@ changes:
 ```python
 resp = await engine.execute({
     "source_model": "orders",
-    "measures": [{"formula": "*:count"}],
+    "measures": [{"formula": "count(*)"}],
 })
 # -> count of THIS org's orders only; a join to customers/regions is
 #    org-scoped on every side too.
@@ -55,7 +55,7 @@ The same `policy=` argument works on the local-engine client:
 from slayer.client import SlayerClient
 
 client = SlayerClient(storage=storage, policy=policy)
-df = client.query_df({"source_model": "orders", "measures": [{"formula": "*:count"}]})
+df = client.query_df({"source_model": "orders", "measures": [{"formula": "count(*)"}]})
 ```
 
 `ruleset` is **required** — the "no filtering" case is simply `policy=None`
@@ -201,18 +201,18 @@ against the database. So:
 
 ### ClickHouse
 
-Correlated subqueries are experimental on ClickHouse and require **server
-≥ 25.4**. When a join target is scoped on ClickHouse, SLayer probes the server
-version once per datasource, attaches
-`SETTINGS allow_experimental_correlated_subqueries = 1`, and logs a warning.
-An older (or undeterminable) server version **fails closed** — the query is
-blocked rather than run unscoped.
+On ClickHouse a join target is scoped by a non-correlated semi-join instead —
+`WHERE _rls_src.customer_id GLOBAL IN (SELECT toNullable(_rls_j0.id) FROM customers AS
+_rls_j0 WHERE _rls_j0.id IS NOT NULL AND _rls_j0.organization_uuid = '7ef3...')` — which
+needs no server setting, so join rules work on every server version, for `readonly = 1`
+users, and over sharded `Distributed` tables.
 
 ## How it works
 
 The filter is applied at the final-SQL layer: each physical-table reference is
 wrapped in place (a filtered sub-query for a column filter / the anchor, or a
-correlated-`EXISTS` sub-query for a join target), preserving its alias.
+semi-join sub-query — `EXISTS`, or `IN` on ClickHouse — for a join target),
+preserving its alias.
 
 ```sql
 -- before

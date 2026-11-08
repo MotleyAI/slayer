@@ -1,0 +1,7 @@
+# Query-backed model: revenue per status and month (order_date is month-bucketed).
+name: monthly_rev
+source_queries:
+  - source_model: orders
+    dimensions: [status]
+    time_dimensions: [{dimension: order_date, granularity: month}]
+    measures: [{formula: "sum(amount)", name: rev}]

@@ -1,0 +1,853 @@
+"""One naming authority: CTE-name allocation + alias-derivation consolidation.
+
+Pins: (1) every CTE name routes through the collision-aware allocator (``_cm_``
+did not), dedup keyed on the full typed ``AggregateKey`` not the lossy alias;
+(2) four drifted alias-derivation copies collapse into one profiled
+``naming.canonical_aggregate_alias``; (3) the naming constants get one owner.
+"""
+
+from __future__ import annotations
+
+import inspect
+import os
+import pathlib
+import re
+from slayer.storage.sqlite_conn import transaction
+from collections import Counter
+from decimal import Decimal
+from typing import List
+
+import pytest
+import sqlglot
+from sqlglot import exp
+
+import tests.test_parity_guards as guard_module
+from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.keys import (
+    AggregateKey,
+    ColumnKey,
+    ColumnSqlKey,
+    StarKey,
+)
+from slayer.core.models import (
+    Column,
+    DatasourceConfig,
+    ModelJoin,
+    ModelMeasure,
+    SlayerModel,
+)
+from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.engine.compile.projection import _canonical_name
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine import bind_inputs
+from slayer.engine.bind_inputs import _canonical_alias_for_formula
+from slayer.sql import generator as generator_module
+from slayer.sql import naming
+from slayer.sql import stage_wrapper as sw_module
+from slayer.sql.generator import SQLGenerator
+from slayer.sql.naming import AliasAllocator
+from slayer.storage.yaml_storage import YAMLStorage
+from slayer.ir.bound import BoundExpr
+from slayer.engine.compile import projection, stages
+
+
+# Fixtures — a seeded store whose model contains the colliding name shapes.
+
+
+async def _build_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQueryEngine:
+    """orders -> customers, seeded, with collision-bait columns: ``Rev``/``rev``
+    (case-only pair over revx/revy) and ``customers__revenue`` (a filtered-local
+    isolated aggregate colliding with the cross-model ``customers.revenue_sum``)."""
+    d = base_dir
+    db_path = os.path.join(d, "b4.db")
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
+            "revenue REAL, revx REAL, revy REAL)"
+        )
+        cur.executemany(
+            "INSERT INTO customers VALUES (?,?,?,?,?)",
+            [
+                (1, 1, 100.0, 7.0, 70.0),
+                (2, 2, 200.0, 8.0, 80.0),
+                (3, 1, 300.0, 9.0, 90.0),
+            ],
+        )
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
+            "status TEXT, amount REAL, created_at TEXT)"
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?,?,?,?,?)",
+            [
+                (1, 1, "a", 10.0, "2024-01-01"),
+                (2, 2, "a", 20.0, "2024-02-01"),
+                (3, 3, "a", 30.0, "2024-03-01"),
+            ],
+        )
+
+    storage = YAMLStorage(base_dir=os.path.join(d, "store"))
+    await storage.save_datasource(
+        DatasourceConfig(name="prod", type=dialect, database=db_path)
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="customers",
+            sql_table="customers",
+            data_source="prod",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="region_id", type=DataType.INT),
+                Column(name="revenue", type=DataType.DOUBLE),
+                # Case-only pair over two DIFFERENT physical columns.
+                Column(name="Rev", sql="revx", type=DataType.DOUBLE),
+                Column(name="rev", sql="revy", type=DataType.DOUBLE),
+            ],
+        )
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="prod",
+            default_time_dimension="created_at",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="customer_id", type=DataType.INT),
+                Column(name="status", type=DataType.TEXT),
+                Column(name="amount", type=DataType.DOUBLE),
+                Column(name="created_at", type=DataType.TIMESTAMP),
+                # __-name carve-out + join-crossing filter => filtered-local
+                # isolation (its own _cm_ CTE).
+                Column(
+                    name="customers__revenue",
+                    sql="amount",
+                    type=DataType.DOUBLE,
+                    filter="customers.region_id = 1",
+                ),
+            ],
+            joins=[
+                ModelJoin(
+                    target_model="customers", join_pairs=[["customer_id", "id"]],
+                ),
+            ],
+        )
+    )
+    return SlayerQueryEngine(storage=storage)
+
+
+@pytest.fixture
+async def engine(tmp_path) -> SlayerQueryEngine:
+    return await _build_engine(base_dir=str(tmp_path))
+
+
+def _cte_names_by_scope(sql: str, *, dialect: str = "sqlite") -> List[List[str]]:
+    """CTE names grouped per ``WITH`` scope — SQL requires uniqueness only within one."""
+    parsed = sqlglot.parse_one(sql=sql, dialect=dialect)
+    return [
+        [cte.alias_or_name for cte in with_node.expressions]
+        for with_node in parsed.find_all(exp.With)
+    ]
+
+
+def _cte_names(sql: str, *, dialect: str = "sqlite") -> List[str]:
+    """Every CTE name in ``sql``, flattened — for counting a prefix family."""
+    return [n for scope in _cte_names_by_scope(sql, dialect=dialect) for n in scope]
+
+
+async def _isolated_then_combined(
+    engine: SlayerQueryEngine,
+    *,
+    measures: List[ModelMeasure],
+    dimension: str = "status",
+) -> None:
+    """Self-calibrating: each measure alone, then together must reproduce every isolated value."""
+    isolated: dict = {}
+    for m in measures:
+        resp = await engine.execute(
+            SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name=dimension)],
+                measures=[m],
+            )
+        )
+        assert len(resp.data) == 1, resp.data
+        # The single non-dimension key is this measure's value.
+        row = resp.data[0]
+        keys = [k for k in row if not k.endswith(f".{dimension}")]
+        assert len(keys) == 1, (m.formula, list(row))
+        isolated[keys[0]] = row[keys[0]]
+
+    resp = await engine.execute(
+        SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name=dimension)],
+            measures=measures,
+        )
+    )
+    assert len(resp.data) == 1, resp.data
+    combined = resp.data[0]
+    for key, value in isolated.items():
+        assert key in combined, (
+            f"measure {key!r} vanished when rendered alongside the others: "
+            f"{list(combined)}"
+        )
+        assert combined[key] == value, (
+            f"measure {key!r} changed value when rendered alongside the "
+            f"others: alone={value!r}, together={combined[key]!r} — the "
+            f"hallmark of two slots collapsing onto one CTE."
+        )
+
+
+# B4 — cross-model CTE names through the allocator.
+
+
+class TestCrossModelCteNameAllocation:
+    async def test_case_only_aliases_get_distinct_cte_names(
+        self, engine,
+    ) -> None:
+        await _isolated_then_combined(
+            engine,
+            measures=[
+                ModelMeasure(formula="customers.Rev:sum", name="upper"),
+                ModelMeasure(formula="customers.rev:sum", name="lower"),
+            ],
+        )
+
+    async def test_case_only_cte_names_do_not_fold_together(
+        self, engine,
+    ) -> None:
+        resp = await engine.execute(
+            SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                measures=[
+                    ModelMeasure(formula="customers.Rev:sum", name="upper"),
+                    ModelMeasure(formula="customers.rev:sum", name="lower"),
+                ],
+            ),
+            dry_run=True,
+        )
+        for scope_names in _cte_names_by_scope(resp.sql):
+            folded = [n.lower() for n in scope_names]
+            assert len(folded) == len(set(folded)), (
+                f"CTE names fold together within one WITH scope on a "
+                f"case-folding dialect: {scope_names}"
+            )
+        # Two cross-model aggregates => two _cm_ CTEs, not one shared.
+        names = _cte_names(resp.sql)
+        assert len([n for n in names if n.startswith("_cm_")]) == 2, names
+
+    async def test_sanitisation_collision_keeps_both_plans(
+        self, engine,
+    ) -> None:
+        """seen_cm collision-as-identity: a cross-model and a filtered-local
+        aggregate sanitise to one ``_cm_`` name; both must survive with own values."""
+        await _isolated_then_combined(
+            engine,
+            measures=[
+                ModelMeasure(formula="customers.revenue:sum", name="xmodel"),
+                ModelMeasure(formula="customers__revenue:sum", name="local"),
+            ],
+        )
+
+    async def test_filtered_local_and_plain_aggregate_coexist(
+        self, engine,
+    ) -> None:
+        await _isolated_then_combined(
+            engine,
+            measures=[
+                ModelMeasure(formula="amount:sum", name="unfiltered"),
+                ModelMeasure(formula="customers__revenue:sum", name="filtered"),
+            ],
+        )
+
+    async def test_unrenamed_cross_model_measures_keep_their_own_aliases(
+        self, engine,
+    ) -> None:
+        resp = await engine.execute(
+            SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                measures=[
+                    ModelMeasure(formula="customers.revenue:sum"),
+                    ModelMeasure(formula="customers.Rev:sum"),
+                ],
+            )
+        )
+        assert "orders.customers.revenue_sum" in resp.columns, resp.columns
+        assert "orders.customers.Rev_sum" in resp.columns, resp.columns
+        row = resp.data[0]
+        # revenue -> 600, Rev (revx) -> 24; equal values would mean a shared CTE column.
+        assert row["orders.customers.revenue_sum"] != row["orders.customers.Rev_sum"]
+
+    async def test_hidden_cross_model_agg_under_a_transform_keeps_its_alias(
+        self, engine,
+    ) -> None:
+        """A hidden cross-model aggregate feeding a transform must project under its
+        own canonical alias — a stale value emits the alias twice in one SELECT."""
+        resp = await engine.execute(
+            SlayerQuery(
+                source_model="orders",
+                time_dimensions=[
+                    TimeDimension(
+                        dimension="created_at",
+                        granularity=TimeGranularity.MONTH,
+                    ),
+                ],
+                measures=[
+                    # Hidden CMA feeding a transform.
+                    ModelMeasure(
+                        formula="cumsum(customers.revenue:sum)", name="run",
+                    ),
+                    # A second cross-model aggregate, so a leaked alias differs.
+                    ModelMeasure(formula="customers.Rev:sum", name="rv"),
+                ],
+            ),
+            dry_run=True,
+        )
+        assert resp.sql is not None
+        # The leaked-alias bug is a WITHIN-scope duplicate (two projections in
+        # one SELECT claim the same name); the cross-scope repeat is benign.
+        parsed = sqlglot.parse_one(sql=resp.sql, read="sqlite")
+        for select in parsed.find_all(exp.Select):
+            names = [
+                proj.alias for proj in select.expressions
+                if isinstance(proj, exp.Alias) and proj.alias
+            ]
+            dups = {a: n for a, n in Counter(names).items() if n > 1}
+            assert not dups, (
+                f"an output alias is emitted more than once in one SELECT — a "
+                f"cross-model aggregate was projected under another measure's "
+                f"name: {dups}\n{resp.sql}"
+            )
+        # …and the hidden aggregate still carries its own canonical alias.
+        all_aliases = Counter(re.findall(r'AS "([^"]+)"', resp.sql))
+        assert "customers.revenue_sum" in all_aliases, all_aliases
+
+    async def test_same_key_slots_still_share_one_cte(self, engine) -> None:
+        resp = await engine.execute(
+            SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                measures=[
+                    ModelMeasure(formula="customers.revenue:sum", name="a"),
+                    ModelMeasure(formula="customers.revenue:sum", name="b"),
+                ],
+            ),
+            dry_run=True,
+        )
+        cm = [n for n in _cte_names(resp.sql) if n.startswith("_cm_")]
+        assert len(cm) == 1, f"same-key slots must share one CTE, got {cm}"
+
+    async def test_same_key_slots_both_surface_with_equal_values(
+        self, engine,
+    ) -> None:
+        resp = await engine.execute(
+            SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                measures=[
+                    ModelMeasure(formula="customers.revenue:sum", name="a"),
+                    ModelMeasure(formula="customers.revenue:sum", name="b"),
+                ],
+            )
+        )
+        row = resp.data[0]
+        assert "orders.a" in row, list(row)
+        assert "orders.b" in row, list(row)
+        assert row["orders.a"] == row["orders.b"]
+
+
+class TestDedupIdentityIsStructural:
+    """The allocator hands out a fresh CTE name each call; collapsing two distinct
+    identities that happen to share a canonical alias is the caller's decision."""
+
+    def test_one_alias_two_identities_get_two_cte_names(self) -> None:
+        """The allocator hands out a fresh name each call; dedup is the caller's decision."""
+        alloc = AliasAllocator(folds_case=True)
+        alias = "orders.revenue_sum"
+        first = naming.cte_name_from_alias(prefix="_cm_", alias=alias, allocator=alloc)
+        second = naming.cte_name_from_alias(prefix="_cm_", alias=alias, allocator=alloc)
+        assert first != second, (
+            "the naming primitive collapsed two distinct identities that "
+            "happen to share a canonical alias"
+        )
+
+
+# B4 — the allocator is generation-scoped, and every CTE family shares it.
+
+
+class TestAllocatorRouting:
+    def test_cte_name_from_alias_requires_an_allocator(self) -> None:
+        alloc = AliasAllocator(folds_case=True)
+        first = naming.cte_name_from_alias(
+            prefix="_cm_", alias="orders.customers.revenue_sum", allocator=alloc,
+        )
+        assert first == "_cm_orders__customers__revenue_sum"
+        # A different alias that sanitises to the same string gets its own name.
+        second = naming.cte_name_from_alias(
+            prefix="_cm_", alias="orders.customers__revenue_sum", allocator=alloc,
+        )
+        assert second != first, (first, second)
+        assert second.startswith("_cm_orders__customers__revenue_sum")
+
+    def test_cte_name_from_alias_folds_case_with_the_allocator(self) -> None:
+        alloc = AliasAllocator(folds_case=True)
+        a = naming.cte_name_from_alias(prefix="_cm_", alias="orders.Rev_sum", allocator=alloc)
+        b = naming.cte_name_from_alias(prefix="_cm_", alias="orders.rev_sum", allocator=alloc)
+        assert a.lower() != b.lower(), (a, b)
+
+    def test_cte_name_from_alias_is_exact_on_non_folding_dialects(self) -> None:
+        """Case-sensitive dialect: the case-only pair keeps both spellings, no ``_2``."""
+        alloc = AliasAllocator(folds_case=False)
+        a = naming.cte_name_from_alias(prefix="_cm_", alias="orders.Rev_sum", allocator=alloc)
+        b = naming.cte_name_from_alias(prefix="_cm_", alias="orders.rev_sum", allocator=alloc)
+        assert a == "_cm_orders__Rev_sum"
+        assert b == "_cm_orders__rev_sum"
+
+    async def test_windowed_cte_names_use_the_shared_helper(
+        self, tmp_path,
+    ) -> None:
+        """Windowed producers render as ``_cm_`` CTEs through the shared allocator (Wm/wm)."""
+        engine = await _hostile_engine(
+            column="revx2", base_dir=str(tmp_path),
+        )
+        resp = await engine.execute(
+            SlayerQuery(
+                source_model="orders",
+                time_dimensions=[
+                    TimeDimension(
+                        dimension="created_at",
+                        granularity=TimeGranularity.MONTH,
+                    ),
+                ],
+                measures=[
+                    ModelMeasure(formula="amount:sum(window='90d')", name="Wm"),
+                    ModelMeasure(formula="amount:sum(window='30d')", name="wm"),
+                ],
+            ),
+            dry_run=True,
+        )
+        for scope_names in _cte_names_by_scope(resp.sql):
+            folded = [n.lower() for n in scope_names]
+            assert len(folded) == len(set(folded)), scope_names
+        wm_names = [n for n in _cte_names(resp.sql) if n.startswith("_cm_")]
+        assert len(wm_names) == 2, wm_names
+
+    def test_no_raw_step_cte_names_in_the_generator(self) -> None:
+        """Every ``f"step{...}"`` mint site must go through the allocator."""
+        src = inspect.getsource(generator_module)
+        raw = [
+            line.strip()
+            for line in src.splitlines()
+            if re.search(r'=\s*f"step\{', line)
+            and "allocate_cte" not in line
+        ]
+        assert not raw, (
+            "step CTE names minted without the allocator:\n  "
+            + "\n  ".join(raw)
+        )
+
+    def test_generation_allocator_is_shared_across_cte_families(self) -> None:
+        """One allocator per generation makes cross-family collisions impossible."""
+        alloc = AliasAllocator(folds_case=True)
+        alloc.reserve("base", "_base", "_combined")
+        # A user-shaped CTE name that folds onto a reserved literal must walk.
+        assert alloc.allocate_cte("Base") != "Base"
+        # And a _cm_ name minted earlier blocks an identical step name later.
+        cm = naming.cte_name_from_alias(prefix="_cm_", alias="step1", allocator=alloc)
+        assert alloc.allocate_cte(cm) != cm
+
+
+# C7 — the bespoke name families, exercised against hostile user columns.
+
+
+# Internal minted names C7 moves onto the allocator. All are legal user column
+# names, so each is a reachable collision.
+_INTERNAL_NAMES = [
+    "_placeholder",   # empty-base grain projection
+    "_td_0",          # ranked-subquery time-dimension alias
+    "_dim_0",         # ranked-subquery dimension alias
+    "_w_dim_0",       # windowed _src dimension alias
+    "_w_td_0",        # windowed _src time-dimension alias
+    "_w_time",        # windowed _src time column
+    "_w_value",       # windowed _src value column
+    "_having_agg",    # synthetic HAVING aggregate slot
+    "_outer",         # outer-wrap subquery alias
+    "_stage_inner",   # stage-schema flat-rename wrapper alias
+    "base",           # the transform chain's base CTE
+    "step1",          # transform-chain step CTE
+    "_val_0",         # Law-2 materialisation alias
+]
+
+
+async def _hostile_engine(*, column: str, base_dir: str) -> SlayerQueryEngine:
+    """A store whose ``orders`` model carries a user column named like an internal alias."""
+    d = base_dir
+    db_path = os.path.join(d, "hostile.db")
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute(
+            'CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT, '
+            'amount REAL, created_at TEXT, "hostile" REAL)'
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?,?,?,?,?)",
+            [
+                (1, "a", 10.0, "2024-01-01", 1.0),
+                (2, "a", 20.0, "2024-02-01", 2.0),
+                (3, "b", 30.0, "2024-01-15", 3.0),
+            ],
+        )
+
+    storage = YAMLStorage(base_dir=os.path.join(d, "store"))
+    await storage.save_datasource(
+        DatasourceConfig(name="prod", type="sqlite", database=db_path)
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="prod",
+            default_time_dimension="created_at",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="status", type=DataType.TEXT),
+                Column(name="amount", type=DataType.DOUBLE),
+                Column(name="created_at", type=DataType.TIMESTAMP),
+                Column(name=column, sql="hostile", type=DataType.DOUBLE),
+            ],
+        )
+    )
+    return SlayerQueryEngine(storage=storage)
+
+
+class TestInternalNamesDoNotCollideWithUserColumns:
+    """Every internal name must survive a user column of that name: the query runs
+    and the user's column returns its values. Parity guards, all pass today."""
+
+    @pytest.mark.parametrize("column", _INTERNAL_NAMES)
+    async def test_user_column_named_like_an_internal_alias(
+        self, column, tmp_path,
+    ) -> None:
+        engine = await _hostile_engine(
+            column=column, base_dir=str(tmp_path),
+        )
+        resp = await engine.execute(
+            SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                measures=[
+                    ModelMeasure(formula=f"{column}:sum", name="hostile_sum"),
+                    ModelMeasure(formula="amount:sum", name="amt"),
+                ],
+            )
+        )
+        by_status = {
+            r["orders.status"]: (r["orders.hostile_sum"], r["orders.amt"])
+            for r in resp.data
+        }
+        # Column seeded 1/2/3 vs amounts 10/20/30; a shadowing bug makes the two agree.
+        assert by_status == {"a": (3.0, 30.0), "b": (3.0, 30.0)}
+
+    @pytest.mark.parametrize("column", _INTERNAL_NAMES)
+    async def test_user_column_named_like_an_internal_alias_as_dimension(
+        self, column, tmp_path,
+    ) -> None:
+        """The same names as a GROUP BY dimension (projection-aliasing path)."""
+        engine = await _hostile_engine(
+            column=column, base_dir=str(tmp_path),
+        )
+        resp = await engine.execute(
+            SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name=column)],
+                measures=[ModelMeasure(formula="amount:sum", name="amt")],
+            )
+        )
+        assert {r[f"orders.{column}"] for r in resp.data} == {1.0, 2.0, 3.0}
+
+    @pytest.mark.parametrize("column", ["_td_0", "_dim_0", "_val_0"])
+    async def test_ranked_subquery_families_survive_the_name(
+        self, column, tmp_path,
+    ) -> None:
+        """first/last builds the ranked subquery; last amount: a -> 20, b -> 30."""
+        engine = await _hostile_engine(
+            column=column, base_dir=str(tmp_path),
+        )
+        resp = await engine.execute(
+            SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                measures=[ModelMeasure(formula="amount:last", name="lastamt")],
+            )
+        )
+        by_status = {r["orders.status"]: r["orders.lastamt"] for r in resp.data}
+        assert by_status == {"a": 20.0, "b": 30.0}
+
+    @pytest.mark.parametrize(
+        "column", ["_w_dim_0", "_w_td_0", "_w_time", "_w_value"],
+    )
+    async def test_windowed_families_survive_the_name(self, column, tmp_path) -> None:
+        """A duration-windowed measure is the only shape that builds the ``_w_*`` aliases."""
+        engine = await _hostile_engine(
+            column=column, base_dir=str(tmp_path),
+        )
+        resp = await engine.execute(
+            SlayerQuery(
+                source_model="orders",
+                time_dimensions=[
+                    TimeDimension(
+                        dimension="created_at",
+                        granularity=TimeGranularity.MONTH,
+                    ),
+                ],
+                measures=[
+                    ModelMeasure(formula="amount:sum(window='90d')", name="w"),
+                ],
+            )
+        )
+        assert resp.data, "windowed query returned no rows"
+        assert all(r["orders.w"] is not None for r in resp.data), resp.data
+
+
+# Naming constants — one owner for the structural aliases.
+
+
+class TestNamingConstants:
+    """Structural aliases are constants owned by naming.py."""
+    def test_constants_exist_and_match_the_current_literals(self) -> None:
+        assert naming.OUTER_WRAP_ALIAS == "_outer"
+        assert naming.STAGE_INNER_ALIAS == "_stage_inner"
+
+    def test_stage_wrapper_imports_the_shared_constant(self) -> None:
+
+        assert hasattr(sw_module, "STAGE_INNER_ALIAS"), (
+            "stage_wrapper.py does not import naming.STAGE_INNER_ALIAS"
+        )
+        assert sw_module.STAGE_INNER_ALIAS is naming.STAGE_INNER_ALIAS
+
+
+class TestParityGuardRepair:
+    """test_parity_guards.py's docstring still names a deleted xfail-registry module; repaired here."""
+    def test_docstring_no_longer_references_the_deleted_module(self) -> None:
+
+        doc = guard_module.__doc__ or ""
+        assert "parity_xfails" not in doc, (
+            "test_parity_guards.py still documents the deleted "
+            "tests/parity_xfails.py as part of its gate"
+        )
+
+    def test_the_deleted_module_really_is_gone(self) -> None:
+        """Guard the premise: the deleted file must not come back."""
+        tests_dir = pathlib.Path(__file__).parent
+        assert not (tests_dir / "parity_xfails.py").exists()
+
+    def test_the_guard_itself_still_works(self) -> None:
+        """The repair is docstring-only, so the guard must still pass."""
+        assert hasattr(guard_module, "APPROVED_GUARDS")
+
+
+# The canonical-aggregate-alias consolidation.
+
+
+def _key(source, agg: str, *, args=(), kwargs=()) -> AggregateKey:
+    return AggregateKey(source=source, agg=agg, args=args, kwargs=kwargs)
+
+
+# Axis matrix; each profile's value is frozen from its legacy body. Columns A/B/C/D
+# = cross_model_cte(source_relation="orders") / cte_schema / declared_name / stage_formula.
+_MATRIX: List[tuple] = [
+    # (case, key, A, B, C, D)
+    (
+        "columnkey_local",
+        _key(ColumnKey(leaf="revenue"), "sum"),
+        "orders.revenue_sum", "revenue_sum", "revenue_sum", "revenue_sum",
+    ),
+    (
+        "columnkey_path",
+        _key(ColumnKey(path=("customers",), leaf="revenue"), "sum"),
+        "orders.customers.revenue_sum", "revenue_sum", "revenue_sum",
+        "customers.revenue_sum",
+    ),
+    (
+        "columnkey_two_hop",
+        _key(ColumnKey(path=("customers", "regions"), leaf="pop"), "max"),
+        "orders.customers.regions.pop_max", "pop_max", "pop_max",
+        "customers.regions.pop_max",
+    ),
+    (
+        "columnsqlkey_local",
+        _key(ColumnSqlKey(model="orders", column_name="net"), "sum"),
+        "orders.net_sum", "net_sum", "net_sum", "net_sum",
+    ),
+    (
+        "columnsqlkey_path",
+        _key(
+            ColumnSqlKey(path=("customers",), model="customers", column_name="net"),
+            "sum",
+        ),
+        "orders.customers.net_sum", "net_sum", "net_sum", "customers.net_sum",
+    ),
+    (
+        "starkey_local",
+        _key(StarKey(), "count"),
+        "orders._count", "_count", "_count", "_count",
+    ),
+    (
+        "starkey_path",
+        _key(StarKey(path=("customers",)), "count"),
+        "orders.customers._count", "_count", "_count", "customers._count",
+    ),
+    (
+        "kwargs",
+        _key(ColumnKey(leaf="revenue"), "percentile", kwargs=(("p", Decimal("0.5")),)),
+        "orders.revenue_percentile_p_0_5", "revenue_percentile_p_0_5",
+        "revenue_percentile_p_0_5", "revenue_percentile_p_0_5",
+    ),
+    (
+        "positional_args",
+        _key(ColumnKey(leaf="revenue"), "last", args=(ColumnKey(leaf="created_at"),)),
+        "orders.revenue_last_created_at", "revenue_last_created_at",
+        "revenue_last_created_at", "revenue_last_created_at",
+    ),
+    (
+        "args_and_kwargs",
+        _key(
+            ColumnKey(leaf="revenue"), "wavg",
+            args=(Decimal(2),), kwargs=(("w", ColumnKey(leaf="qty")),),
+        ),
+        "orders.revenue_wavg_2_w_qty", "revenue_wavg_2_w_qty",
+        "revenue_wavg_2_w_qty", "revenue_wavg_2_w_qty",
+    ),
+]
+
+# Kept out of the matrix because profile D returns None here: a re-aggregation
+# source derives no leaf.
+_MISSING_LEAF_KEY = AggregateKey(
+    source=AggregateKey(source=ColumnKey(leaf="x"), agg="sum"), agg="sum",
+)
+
+
+class TestCanonicalAggregateAlias:
+    """One function, four named profiles, matching the four legacy bodies."""
+
+    @pytest.mark.parametrize(
+        "case,key,expected_a,expected_b,expected_c,expected_d",
+        _MATRIX,
+        ids=[m[0] for m in _MATRIX],
+    )
+    def test_profiles_reproduce_the_legacy_values(
+        self, case, key, expected_a, expected_b, expected_c, expected_d,
+    ) -> None:
+        assert naming.canonical_aggregate_alias(
+            key, profile="cross_model_cte", source_relation="orders",
+        ) == expected_a
+        assert naming.canonical_aggregate_alias(
+            key, profile="cte_schema",
+        ) == expected_b
+        assert naming.canonical_aggregate_alias(
+            key, profile="declared_name",
+        ) == expected_c
+        assert naming.canonical_aggregate_alias(
+            key, profile="stage_formula",
+        ) == expected_d
+
+    def test_missing_leaf_edge_keeps_each_profiles_escape_hatch(self) -> None:
+        """The one edge where the four disagree: star form / ``_agg_`` / None."""
+        assert naming.canonical_aggregate_alias(
+            _MISSING_LEAF_KEY, profile="cross_model_cte",
+            source_relation="orders",
+        ) == "orders._sum"
+        assert naming.canonical_aggregate_alias(
+            _MISSING_LEAF_KEY, profile="cte_schema",
+        ) == "_sum"
+        assert naming.canonical_aggregate_alias(
+            _MISSING_LEAF_KEY, profile="declared_name",
+        ) == "_agg_sum"
+        assert naming.canonical_aggregate_alias(
+            _MISSING_LEAF_KEY, profile="stage_formula",
+        ) is None
+
+    def test_source_relation_is_required_by_the_cross_model_profile(
+        self,
+    ) -> None:
+        """Profile validation makes impossible combinations unrepresentable."""
+        key = _key(ColumnKey(leaf="revenue"), "sum")
+        with pytest.raises(ValueError):
+            naming.canonical_aggregate_alias(key, profile="cross_model_cte")
+
+    def test_source_relation_is_rejected_by_the_other_profiles(self) -> None:
+        key = _key(ColumnKey(leaf="revenue"), "sum")
+        for profile in ("cte_schema", "declared_name", "stage_formula"):
+            with pytest.raises(ValueError):
+                naming.canonical_aggregate_alias(
+                    key, profile=profile, source_relation="orders",
+                )
+
+    def test_unknown_profile_is_rejected(self) -> None:
+        key = _key(ColumnKey(leaf="revenue"), "sum")
+        with pytest.raises(ValueError):
+            naming.canonical_aggregate_alias(key, profile="nonsense")
+
+
+class TestProductionCallersDelegate:
+    """The production functions keep their signatures but must agree with the naming module."""
+
+    @pytest.mark.parametrize(
+        "case,key,expected_a,expected_b,expected_c,expected_d",
+        _MATRIX,
+        ids=[m[0] for m in _MATRIX],
+    )
+    def test_all_four_agree_with_the_naming_module(
+        self, case, key, expected_a, expected_b, expected_c, expected_d,
+    ) -> None:
+
+        gen = SQLGenerator(dialect="postgres")
+        assert gen._canonical_cross_model_alias(
+            source_relation="orders", key=key,
+        ) == expected_a
+        assert _canonical_name(key) == expected_c
+        assert _canonical_alias_for_formula(
+            "IGNORED_TEXT", bound=BoundExpr(value_key=key),
+        ) == expected_d
+
+    def test_each_caller_actually_delegates_with_its_profile(
+        self, monkeypatch,
+    ) -> None:
+        """Spy on the naming module and assert each caller forwards with its profile."""
+        key = _key(ColumnKey(path=("customers",), leaf="revenue"), "sum")
+        calls: List[dict] = []
+        real = naming.canonical_aggregate_alias
+
+        def _spy(k, **kw):
+            calls.append(kw)
+            return real(k, **kw)
+
+        # Callers import by name, so patch the binding in each caller's namespace.
+        for module in (
+            naming, generator_module, projection, stages, bind_inputs,
+        ):
+            if getattr(module, "canonical_aggregate_alias", None) is not None:
+                monkeypatch.setattr(
+                    module, "canonical_aggregate_alias", _spy, raising=False,
+                )
+
+        SQLGenerator(dialect="postgres")._canonical_cross_model_alias(
+            source_relation="orders", key=key,
+        )
+        assert calls, "the generator did not delegate to the naming module"
+        assert calls[-1].get("profile") == "cross_model_cte"
+        assert calls[-1].get("source_relation") == "orders"
+
+        projection._canonical_name(key)
+        assert calls[-1].get("profile") == "declared_name"
+
+        bind_inputs._canonical_alias_for_formula(
+            "IGNORED_TEXT", bound=BoundExpr(value_key=key),
+        )
+        assert calls[-1].get("profile") == "stage_formula"
+
+

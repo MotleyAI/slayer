@@ -1,0 +1,79 @@
+# Current-spec (flat) Ossie document over tests/_osi_helpers.py SHOP_DDL.
+version: "0.2.0.dev0"
+name: shop
+description: Retail shop semantic model
+ai_context:
+  instructions: "Use for order and customer analytics."
+  synonyms: ["store"]
+
+datasets:
+  - name: orders
+    source: orders
+    primary_key: [order_id]
+    description: One row per order
+    fields:
+      - name: order_id
+        expression: {sql: o_orderkey}
+        datatype: Integer
+      - name: customer_id
+        expression:
+          dialects:
+            - {dialect: OSSIE_SQL_2026, expression: o_custkey}
+        datatype: Integer
+      - name: amount
+        expression: {sql: o_totalprice}
+        datatype: Decimal
+      - name: quantity
+        expression:
+          sql: quantity
+          dialects:
+            - {dialect: SNOWFLAKE, expression: "quantity::INTEGER"}
+        datatype: Integer
+      - name: status
+        expression: {sql: status}
+        datatype: String
+      - name: ordered_on
+        expression: {sql: ordered_on}
+        datatype: Date
+      - name: tip_or_zero
+        expression: {sql: "ZEROIFNULL(tip)"}
+        datatype: Float
+    metrics:
+      - name: total_amount
+        expression: {sql: "SUM(amount)"}
+        datatype: Decimal
+      - name: completed_amount
+        expression: {sql: "SUM(amount) FILTER (WHERE status = 'completed')"}
+        datatype: Decimal
+      - name: order_count
+        expression: {sql: "COUNT(*)"}
+        datatype: Integer
+
+  - name: customers
+    source: customers
+    primary_key: [id]
+    fields:
+      - name: id
+        expression: {sql: c_custkey}
+        datatype: Integer
+      - name: segment
+        expression: {sql: segment}
+        datatype: String
+      - name: discount
+        expression: {sql: discount}
+        datatype: Float
+
+relationships:
+  - name: orders_to_customers
+    from: orders
+    to: customers
+    from_columns: [customer_id]
+    to_columns: [id]
+
+metrics:
+  - name: net_amount
+    expression: {sql: "SUM(orders.amount - customers.discount)"}
+    datatype: Float
+  - name: amount_per_customer
+    expression: {sql: "SUM(orders.amount) / COUNT(DISTINCT customers.id)"}
+    datatype: Float

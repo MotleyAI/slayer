@@ -221,12 +221,12 @@ class TestSqliteAllowsCaseVariants:
 
 
 # ---------------------------------------------------------------------------
-# The production wrapper (resolve_storage → JoinSyncStorage) over YAML
+# The production factory path (resolve_storage) over YAML
 # ---------------------------------------------------------------------------
 
 
-class TestJoinSyncWrapped:
-    async def test_collisions_raise_through_wrapper(self) -> None:
+class TestFactoryStorage:
+    async def test_collisions_raise_through_factory_storage(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = resolve_storage(tmpdir)
             await storage.save_datasource(_ds("db"))

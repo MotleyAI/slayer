@@ -1,19 +1,13 @@
-"""DEV-1615: the search post-fusion column-hit hook now back-fills
-genuinely-unsampled NUMERIC/temporal columns too (not just categorical).
+"""The search post-fusion column-hit hook back-fills genuinely-unsampled
+NUMERIC/temporal columns too (not just categorical), against a REAL sqlite
+table so the end-to-end profile + persist is proven.
 
-Removing ``ensure_column_sample_fresh``'s categorical-only early-return is a
-deliberate, shared behavior change: both ``inspect`` and ``search`` fill
-ranges on read. These tests pin the search side against a REAL sqlite table
-(no monkeypatch of the helper) so the end-to-end profile + persist is proven.
-
-The hits are surfaced deterministically via ``entities=[<canonical>]`` (the
-BM25 implicit self-reference, DEV-1513) so the numeric column is reliably a
-column hit regardless of ranking.
+Hits are surfaced deterministically via ``entities=[<canonical>]`` so the
+numeric column is reliably a column hit regardless of ranking.
 """
 
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import AsyncIterator
 
 import pytest
@@ -24,6 +18,7 @@ from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.search.service import SearchService
 from slayer.storage.base import resolve_storage
+from slayer.storage.sqlite_conn import transaction
 
 
 @pytest_asyncio.fixture
@@ -31,16 +26,14 @@ async def search_setup(tmp_path) -> AsyncIterator[tuple[SearchService, object]]:
     """Real sqlite ``orders`` table; the numeric ``amount`` column is saved
     uncached so the post-fusion hook has something to back-fill."""
     db_file = str(tmp_path / "data.db")
-    conn = sqlite3.connect(db_file)
-    conn.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL, status TEXT)"
-    )
-    conn.executemany(
-        "INSERT INTO orders VALUES (?, ?, ?)",
-        [(1, 10.0, "paid"), (2, 5.5, "refunded"), (3, 99.9, "paid")],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(db_file) as conn:
+        conn.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL, status TEXT)"
+        )
+        conn.executemany(
+            "INSERT INTO orders VALUES (?, ?, ?)",
+            [(1, 10.0, "paid"), (2, 5.5, "refunded"), (3, 99.9, "paid")],
+        )
 
     storage = resolve_storage(str(tmp_path / "storage"))
     await storage.save_datasource(

@@ -1,0 +1,60 @@
+# Model-declared extras, layered on ../model by the runner: multi-stage measures and rolling windows.
+cubes:
+  - name: orders_ms
+    extends: orders_flat
+    measures:
+      - name: region_total
+        multi_stage: true
+        sql: "{revenue}"
+        type: sum
+        grain:
+          keep_only: [region]
+      - name: share_of_region
+        multi_stage: true
+        sql: "{revenue} / NULLIF({region_total}, 0)"
+        type: number
+      - name: avg_city_revenue
+        multi_stage: true
+        sql: "{revenue}"
+        type: avg
+        grain:
+          include: [city]
+      - name: revenue_prior_year
+        multi_stage: true
+        sql: "{revenue}"
+        type: number
+        time_shift:
+          - interval: 1 year
+            type: prior
+      - name: revenue_90d
+        sql: amount
+        type: sum
+        rolling_window:
+          trailing: 90 day
+      - name: customers_90d
+        sql: customer_id
+        type: count_distinct
+        rolling_window:
+          trailing: 90 day
+      - name: revenue_rank
+        multi_stage: true
+        type: rank
+        order_by:
+          - sql: "{revenue}"
+            dir: desc
+        reduce_by: [city]
+      # number_agg: a multi-stage member may only read other members, and a dimension it reads must be in its grain.
+      - name: max_amount_agg
+        multi_stage: true
+        sql: "MAX({CUBE}.amount)"
+        type: number_agg
+      - name: median_amount_agg
+        multi_stage: true
+        sql: "MEDIAN({amount})"
+        type: number_agg
+      - name: median_amount_by_id
+        multi_stage: true
+        sql: "MEDIAN({amount})"
+        type: number_agg
+        grain:
+          include: [id, amount]

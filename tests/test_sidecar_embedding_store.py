@@ -10,7 +10,6 @@ verify wiring.
 from __future__ import annotations
 
 import os
-import sqlite3
 import tempfile
 from datetime import datetime, timezone
 from collections.abc import Iterator
@@ -18,7 +17,9 @@ from collections.abc import Iterator
 import pytest
 
 from slayer.embeddings.models import Embedding, EntityKind
+from slayer.storage import sidecar_embedding_store as _mod
 from slayer.storage.sidecar_embedding_store import SidecarEmbeddingStore
+from slayer.storage.sqlite_conn import transaction
 
 
 @pytest.fixture
@@ -57,7 +58,7 @@ def _embed(
 
 def test_init_creates_table_and_index(db_path: str) -> None:
     SidecarEmbeddingStore(db_path=db_path)
-    with sqlite3.connect(db_path) as conn:
+    with transaction(db_path) as conn:
         tables = {
             r[0] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
@@ -163,16 +164,14 @@ async def test_save_many_empty_is_noop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Empty input must not connect to SQLite, must not raise."""
-    from slayer.storage import sidecar_embedding_store as _mod
-
-    real_connect = _mod.sqlite3.connect
+    real_transaction = _mod.transaction
     connect_calls: list[tuple] = []
 
     def _spy(*args, **kwargs):
         connect_calls.append(args)
-        return real_connect(*args, **kwargs)
+        return real_transaction(*args, **kwargs)
 
-    monkeypatch.setattr(_mod.sqlite3, "connect", _spy)
+    monkeypatch.setattr(_mod, "transaction", _spy)
     await store.save_many([])
     # Short-circuit: no connection opened.
     assert connect_calls == []
@@ -263,16 +262,14 @@ async def test_get_many_empty_input_returns_empty(
 ) -> None:
     """``canonical_ids=[]`` must short-circuit without hitting SQLite."""
     await store.save(_embed(canonical_id="x"))
-    from slayer.storage import sidecar_embedding_store as _mod
-
-    real_connect = _mod.sqlite3.connect
+    real_transaction = _mod.transaction
     connect_calls: list[tuple] = []
 
     def _spy(*args, **kwargs):
         connect_calls.append(args)
-        return real_connect(*args, **kwargs)
+        return real_transaction(*args, **kwargs)
 
-    monkeypatch.setattr(_mod.sqlite3, "connect", _spy)
+    monkeypatch.setattr(_mod, "transaction", _spy)
     out = await store.get_many(
         canonical_ids=[],
         embedding_model_name="openai/test-embedding",

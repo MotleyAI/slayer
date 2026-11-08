@@ -1,4 +1,4 @@
-"""DEV-1667: shared renderers for the ``inspect`` collection views.
+"""Shared renderers for the ``inspect`` collection views.
 
 A null/omitted ``reference`` on ``inspect`` renders the *collection* at an
 ``entity_type``. These pure renderers are the single code path shared by the
@@ -14,15 +14,18 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from slayer.core.models import SlayerModel
+from slayer.core.join_walker import addressable_token, neighbors
+from slayer.core.models import SlayerModel, column_type_text
+from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine
 from slayer.inspect.model_render import (
     _markdown_table,
     _truncate_description,
     model_skeleton_fields,
+    saved_queries_index,
 )
 
 # markdown rule separating per-datasource blocks in compact=False collections
-# (same rule the DEV-1612 batch view uses between per-id blocks).
+# (same rule the batch view uses between per-id blocks).
 BLOCK_SEP = "\n\n---\n\n"
 
 _NO_DATASOURCES = (
@@ -35,8 +38,27 @@ def _visible_column_count(model: SlayerModel) -> int:
     return sum(1 for c in model.columns if not c.hidden)
 
 
-def _join_targets(model: SlayerModel) -> list[str]:
-    return sorted({j.target_model for j in model.joins})
+def _join_targets(
+    model: SlayerModel, all_models: list[SlayerModel] | None = None
+) -> list[str]:
+    """The hop token of every one-hop neighbour, in either direction, and each unaddressable neighbour
+    marked ambiguous; with ``all_models`` reverse-reachable neighbours are included, else only declared
+    forward targets. The spine's virtual edges are left out (its description names its wiring)."""
+    if is_spine(model):
+        return []
+    models_by_name = {m.name: m for m in (all_models or [model])}
+    models_by_name.setdefault(model.name, model)
+    tokens: set[str] = set()
+    ambiguous: set[str] = set()
+    for hop in neighbors(model=model, models_by_name=models_by_name):
+        if hop.target_model == TIME_SPINE_MODEL:
+            continue
+        token = addressable_token(current=model, edge=hop, models_by_name=models_by_name)
+        if token is None:
+            ambiguous.add(hop.target_model)
+        else:
+            tokens.add(token)
+    return sorted(tokens) + [f"{t} (ambiguous: name the edges)" for t in sorted(ambiguous)]
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +117,7 @@ def _models_summary_json(
                 "description": desc(m.description),
                 "column_count": _visible_column_count(m),
                 "measure_names": [mm.name for mm in m.measures],
-                "joins_to": _join_targets(m),
+                "joins_to": _join_targets(m, models),
             }
             for m in models
         ]
@@ -108,6 +130,7 @@ def _models_summary_json(
                     {
                         "name": c.name,
                         "type": str(c.type),
+                        **({"element_type": str(c.element_type)} if c.element_type is not None else {}),
                         "description": desc(c.description),
                     }
                     for c in m.columns if not c.hidden
@@ -120,7 +143,7 @@ def _models_summary_json(
                     }
                     for mm in m.measures
                 ],
-                "joins_to": _join_targets(m),
+                "joins_to": _join_targets(m, models),
             }
             for m in models
         ]
@@ -145,19 +168,27 @@ def _models_summary_markdown(
         if m.description:
             model_lines.append(desc(m.description) or "")
         if compact:
-            _append_compact_model_lines(model_lines=model_lines, m=m)
+            _append_compact_model_lines(
+                model_lines=model_lines, m=m, all_models=models,
+            )
         else:
-            _append_verbose_model_lines(model_lines=model_lines, m=m, desc=desc)
+            _append_verbose_model_lines(
+                model_lines=model_lines, m=m, desc=desc, all_models=models,
+            )
         sections.append("\n".join(model_lines))
     return "\n\n".join(sections)
 
 
-def _append_compact_model_lines(*, model_lines: list[str], m: SlayerModel) -> None:
+def _append_compact_model_lines(
+    *, model_lines: list[str], m: SlayerModel,
+    all_models: list[SlayerModel] | None = None,
+) -> None:
     model_lines.append(f"Columns: {_visible_column_count(m)}")
     measure_names = ", ".join(mm.name for mm in m.measures if mm.name is not None)
     model_lines.append(f"Measures: {measure_names}")
-    if m.joins:
-        rendered = ", ".join(f"`{t}`" for t in _join_targets(m))
+    targets = _join_targets(m, all_models)
+    if targets:
+        rendered = ", ".join(f"`{t}`" for t in targets)
         model_lines.append(f"Joins to: {rendered}")
     else:
         model_lines.append("Joins to: _(none)_")
@@ -165,9 +196,10 @@ def _append_compact_model_lines(*, model_lines: list[str], m: SlayerModel) -> No
 
 def _append_verbose_model_lines(
     *, model_lines: list[str], m: SlayerModel, desc,
+    all_models: list[SlayerModel] | None = None,
 ) -> None:
     col_rows = [
-        {"name": c.name, "type": str(c.type), "description": desc(c.description)}
+        {"name": c.name, "type": column_type_text(c), "description": desc(c.description)}
         for c in m.columns if not c.hidden
     ]
     model_lines.append(f"**Columns ({len(col_rows)}):**")
@@ -188,8 +220,9 @@ def _append_verbose_model_lines(
     )
     model_lines.append("")
 
-    if m.joins:
-        rendered = ", ".join(f"`{t}`" for t in _join_targets(m))
+    targets = _join_targets(m, all_models)
+    if targets:
+        rendered = ", ".join(f"`{t}`" for t in targets)
         model_lines.append(f"**Joins to:** {rendered}")
     else:
         model_lines.append("**Joins to:** _(none)_")
@@ -235,7 +268,7 @@ def _oneliner_index_json(
                 {
                     "name": m.name,
                     "column_count": _visible_column_count(m),
-                    "joins_to": _join_targets(m),
+                    "joins_to": _join_targets(m, models),
                 }
                 for m in models
             ],
@@ -258,7 +291,7 @@ def _oneliner_index_markdown(
             continue
         lines = [f"# Datasource: `{ds}` — {len(models)} model(s)"]
         for m in models:
-            joins = _join_targets(m)
+            joins = _join_targets(m, models)
             joins_str = (
                 ", ".join(f"`{t}`" for t in joins) if joins else "_(none)_"
             )
@@ -324,11 +357,14 @@ def datasource_skeleton_fields(
 ) -> dict[str, Any]:
     """The datasource compact=False JSON per-DS element: name + description +
     per-model skeletons."""
+    saved = saved_queries_index(models, max_chars=descriptions_max_chars)
     return {
         "name": name,
         "description": _truncate_description(description, descriptions_max_chars),
         "models": [
-            model_skeleton_fields(model=m, max_chars=descriptions_max_chars)
+            model_skeleton_fields(
+                model=m, max_chars=descriptions_max_chars, saved_queries=saved.get(m.name),
+            )
             for m in models
         ],
     }

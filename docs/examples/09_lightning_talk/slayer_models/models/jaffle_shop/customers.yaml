@@ -1,6 +1,7 @@
-version: 7
+version: 18
 name: customers
 sql_table: customers
+source_kind: table
 query_variables: {}
 data_source: jaffle_shop
 columns:
@@ -8,17 +9,19 @@ columns:
   sql: id
   type: TEXT
   primary_key: true
+  unique: false
   label: Customer ID
   hidden: false
 - name: name
   sql: name
   type: TEXT
   primary_key: false
+  unique: false
   description: Customer name.
   label: Customer
   hidden: false
 measures:
-- formula: id:count_distinct
+- formula: count_distinct(id)
   name: customer_count
   label: Customers
   description: Number of distinct customers.
@@ -28,3 +31,4 @@ joins: []
 filters: []
 description: "Customers of the Jaffle Shop \u2014 one row per person."
 hidden: false
+access_tags: []

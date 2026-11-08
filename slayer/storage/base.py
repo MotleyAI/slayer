@@ -1,20 +1,43 @@
 """Abstract storage protocol and factory."""
 
 import asyncio
+import contextlib
+import logging
 import os
 import sys
+import uuid
+import warnings
 from abc import ABC, abstractmethod
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Hashable, Iterable
 
+from slayer.core.deprecation import warn_deprecated
+from slayer.core.enums import DataType, JoinCardinality, TimeGranularity, invert_cardinality
+from slayer.core.granularity import resolve_granularity, unknown_granularity_message
+from slayer.core.time_spine import TIME_SPINE_MODEL, spine_model
 from slayer.core.errors import (
     AmbiguousModelError,
     IdCollisionError,
     MemoryNotFoundError,
+    DefaultTimeDimensionTypeError,
+    ReservedModelNameError,
+    StoredDocumentLoadError,
+    UnknownGranularityError,
 )
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.engine.column_dependency import check_model_filters, validate_derived_columns, warn_broken_dependents
+from slayer.core.join_walker import edges_between
+from slayer.core.models import (
+    DatasourceConfig,
+    SlayerModel,
+    _validate_column_name,
+    is_base_column_sql,
+    physical_column_sql,
+    shadows_library_function,
+)
 from slayer.core.query import SlayerQuery
+from slayer.core.warnings import LibraryNameShadowWarning, SlayerLibraryNameShadowWarning, caller_announces
 from slayer.embeddings.models import Embedding
 from slayer.memories.models import (
     MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX,
@@ -22,11 +45,307 @@ from slayer.memories.models import (
     _validate_memory_id_charset,
 )
 from slayer.storage import migrations as _mig
+from slayer.storage.document_loading import DocumentLoadFailures, Loaded, stored_document_boundary
+from slayer.storage.granularity_rename import (
+    Renames,
+    granularity_renames,
+    memory_source_model,
+    rename_in_memory,
+    rename_in_model,
+    renamed_datasource,
+)
+from slayer.storage.legacy_backends import adapt_legacy_hooks
+from slayer.storage.legacy_time_literals import legacy_literal_sites, repaired_filter
+from slayer.storage.legacy_alias_rewrite import (
+    apply_dunder_rewrite_to_model_dict,
+    extract_dunder_chains,
+    mode_a_surface_texts,
+)
+from slayer.sql.client import SqlClient
+from slayer.sql.dialects import dialect_for_ds_type
+from slayer.sql.sql_template import check_aggregation_definition
 from slayer.storage.type_refinement import (
     has_refineable_columns,
     has_sqlite_widenable_columns,
     refine_dict_with_live_schema,
 )
+
+#: Supplies the loading query engine's client for a datasource.
+ClientSource = Callable[[DatasourceConfig], SqlClient]
+
+
+
+_TO_ONE_CARDINALITIES = {"many_to_one", "one_to_one"}
+# v8 is the first version written only by ingest that refined both DOUBLE and SQLite INT
+# columns; older documents are refined against the live schema on load.
+_LIVE_REFINEMENT_BELOW_VERSION = 8
+_MODEL_LOAD_CONCURRENCY = 8
+_MEMORY_FILTER_REPAIR_BELOW_VERSION = 4
+# Raw document reads of the enclosing ``load_models`` pass, by ``(backend, data_source, name)``.
+_RAW_PASS: ContextVar[dict[tuple[object, str, str], asyncio.Future[dict | None]] | None] = ContextVar(
+    "_RAW_PASS", default=None)
+# Inside the one-time granularity settle, whose own loads must not wait on it.
+_SETTLING: ContextVar[bool] = ContextVar("_SETTLING", default=False)
+# The loading query engine's client source, set by its storage view around each call it delegates.
+CLIENT_SOURCE: ContextVar[ClientSource | None] = ContextVar("CLIENT_SOURCE", default=None)
+
+
+def _is_exact_inverse_join(a: dict, b: dict) -> bool:
+    """True iff join dicts on opposite models mirror each other: swapped pair set, same join type, equal ``name``, and inversion-consistent cardinalities (unset counts as consistent)."""
+    if (a.get("name") or None) != (b.get("name") or None):
+        return False
+    try:
+        a_pairs = {(str(x), str(y)) for x, y in a.get("join_pairs") or []}
+        b_pairs = {(str(y), str(x)) for x, y in b.get("join_pairs") or []}
+    except (TypeError, ValueError):
+        return False
+    if not a_pairs or a_pairs != b_pairs:
+        return False
+    if str(a.get("join_type") or "left") != str(b.get("join_type") or "left"):
+        return False
+    ca, cb = a.get("cardinality"), b.get("cardinality")
+    if ca is None or cb is None:
+        return True
+    try:
+        return invert_cardinality(JoinCardinality(ca)) == JoinCardinality(cb)
+    except ValueError:
+        return False
+
+
+def _inverse_survivor(
+    *, model_a: str, join_a: dict, model_b: str, join_b: dict,
+) -> str:
+    """Which model keeps its half of an exact-inverse pair: to-one side, else cardinality-carrying side, else lexicographic — a pure function of both halves, so load orders agree."""
+    a_card, b_card = join_a.get("cardinality"), join_b.get("cardinality")
+    a_to_one = a_card in _TO_ONE_CARDINALITIES
+    b_to_one = b_card in _TO_ONE_CARDINALITIES
+    if a_to_one != b_to_one:
+        return model_a if a_to_one else model_b
+    if (a_card is None) != (b_card is None):
+        return model_a if a_card is not None else model_b
+    return min((model_a, model_b), (model_b, model_a))[0]
+
+
+def _canonical_key(*, key: Any, columns: Any) -> Any:
+    """``key`` unless it names no declared column but is exactly one base column's physical rename."""
+    if not isinstance(key, str) or not isinstance(columns, list):
+        return key
+    cols = [c for c in columns if isinstance(c, dict) and isinstance(c.get("name"), str)]
+    if any(c["name"] == key for c in cols):
+        return key
+    renames = [
+        c["name"] for c in cols
+        if isinstance(c.get("sql"), str) and is_base_column_sql(c["sql"])
+        and physical_column_sql(sql=c["sql"], name=c["name"]) == key
+    ]
+    return renames[0] if len(renames) == 1 else key
+
+
+def canonical_join_pairs(*, pairs: Any, source_columns: Any, target_columns: Any) -> Any:
+    """Raw ``join_pairs`` with stored physical spellings rewritten to ``Column.name``."""
+    if not isinstance(pairs, list):
+        return pairs
+    return [
+        [_canonical_key(key=p[0], columns=source_columns), _canonical_key(key=p[1], columns=target_columns)]
+        if isinstance(p, list) and len(p) == 2 else p
+        for p in pairs
+    ]
+
+
+def _undeclared_key(*, key: Any, columns: list) -> bool:
+    """A valid column name that no column of ``columns`` declares or spells physically."""
+    if not isinstance(key, str):
+        return False
+    try:
+        _validate_column_name(key, "join key")
+    except ValueError:
+        return False
+    return not any(
+        isinstance(c, dict) and isinstance(c.get("name"), str) and (
+            c["name"] == key
+            or (is_base_column_sql(c.get("sql")) and physical_column_sql(sql=c.get("sql"), name=c["name"]) == key)
+        )
+        for c in columns
+    )
+
+
+def _stored_type(*, key: Any, columns: Any) -> str | None:
+    """The stored ``type`` of the column named ``key`` when it is a valid ``DataType``."""
+    if not isinstance(columns, list):
+        return None
+    col = next((c for c in columns if isinstance(c, dict) and c.get("name") == key), None)
+    try:
+        return DataType(col["type"]).value if col is not None and "type" in col else None
+    except ValueError:
+        return None
+
+
+def _key_pairs(join: Any) -> list[tuple[Any, Any]]:
+    pairs = join.get("join_pairs") if isinstance(join, dict) else None
+    return [(p[0], p[1]) for p in pairs if isinstance(p, list) and len(p) == 2] if isinstance(pairs, list) else []
+
+
+def _incoming_keys(*, sibling: dict, target: str, target_columns: list) -> list[tuple[Any, str | None]]:
+    """``target``-side keys of ``sibling``'s joins into ``target``, each typed like its source key."""
+    joins = sibling.get("joins")
+    out: list[tuple[Any, str | None]] = []
+    for join in joins if isinstance(joins, list) else []:
+        if not isinstance(join, dict) or join.get("target_model") != target:
+            continue
+        canonical = {**join, "join_pairs": canonical_join_pairs(
+            pairs=join.get("join_pairs"), source_columns=sibling.get("columns"), target_columns=target_columns,
+        )}
+        out.extend((tgt, _stored_type(key=src, columns=sibling.get("columns"))) for src, tgt in _key_pairs(canonical))
+    return out
+
+
+def _stored_counterpart(*, join: dict, name: str, peer: dict | None, columns: Any):
+    """The exact-inverse of ``join`` in ``peer``'s raw joins (canonicalised against ``columns``, this document's), or ``None``."""
+    peer_joins = peer.get("joins") if isinstance(peer, dict) else None
+    if not isinstance(peer, dict) or not isinstance(peer_joins, list):
+        return None
+    return next(
+        (
+            j for j in peer_joins
+            if isinstance(j, dict) and j.get("target_model") == name
+            and _is_exact_inverse_join(join, {**j, "join_pairs": canonical_join_pairs(
+                pairs=j.get("join_pairs"), source_columns=peer.get("columns"),
+                target_columns=columns,
+            )})
+        ),
+        None,
+    )
+
+
+def _checked_join_names(model: SlayerModel) -> list[str]:
+    """Names of ``model``'s named edges; raises on duplicates."""
+    names = [j.name for j in model.joins if j.name]
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    if dupes:
+        raise ValueError(
+            f"Model '{model.name}': duplicate join names {dupes}. Each "
+            f"edge name incident to a model must be unique."
+        )
+    return names
+
+
+def _checked_join_name_namespace(
+    *, model: SlayerModel, names: list[str],
+    identities: Iterable[tuple[str, str]],
+) -> set[str]:
+    """Datasource model-name namespace; raises when an edge name collides."""
+    ds_model_names = {
+        n for ds, n in identities if ds == model.data_source
+    } | {model.name}
+    for n in names:
+        if n in ds_model_names:
+            raise ValueError(
+                f"Model '{model.name}': join name '{n}' collides with "
+                f"model '{n}' in datasource '{model.data_source}'. Edge "
+                f"names and model names share the path-segment namespace."
+            )
+    return ds_model_names
+
+
+def _check_edges_against_peers(
+    *, model: SlayerModel, peers: dict[str, SlayerModel],
+) -> None:
+    """Reject edge-name reuse across incident edges and exact-inverse twins."""
+    incident_to_self = {
+        j.name for p in peers.values() for j in p.joins
+        if j.target_model == model.name and j.name
+    }
+    for join in model.joins:
+        target = peers.get(join.target_model)
+        if join.name:
+            _check_edge_name_free(
+                model=model, join=join, target=target, peers=peers,
+                incident_to_self=incident_to_self,
+            )
+        if target is not None:
+            _check_not_exact_inverse(model=model, join=join, target=target)
+
+
+def _check_edge_name_free(
+    *, model: SlayerModel, join, target: SlayerModel | None,
+    peers: dict[str, SlayerModel], incident_to_self: set,
+) -> None:
+    target_incident = set(incident_to_self)
+    if target is not None:
+        target_incident |= {j2.name for j2 in target.joins if j2.name}
+        target_incident |= {
+            j3.name for p in peers.values() for j3 in p.joins
+            if j3.target_model == join.target_model and j3.name
+        }
+    if join.name in target_incident:
+        raise ValueError(
+            f"Model '{model.name}': join name '{join.name}' is "
+            f"already used by another edge incident to "
+            f"'{model.name}' or '{join.target_model}'."
+        )
+
+
+def _check_not_exact_inverse(
+    *, model: SlayerModel, join, target: SlayerModel,
+) -> None:
+    raw = join.model_dump(mode="json")
+    for j2 in target.joins:
+        if j2.target_model != model.name:
+            continue
+        if _is_exact_inverse_join(raw, j2.model_dump(mode="json")):
+            raise ValueError(
+                f"Model '{model.name}': join to '{target.name}' is "
+                f"the exact inverse of the edge already declared on "
+                f"'{target.name}' — reverse traversal is automatic; "
+                f"remove this declaration."
+            )
+
+
+def _check_list_hop_collisions(*, model: SlayerModel, peers: dict[str, SlayerModel]) -> None:
+    """A list column ``L`` is the hop ``L`` to its elements, so no other hop from its model may share the name — checked
+    on this model's list columns and on the peers its new edges reach (design D12)."""
+    incident = [(j.name or j.target_model, j.target_model) for j in model.joins] + [
+        (j.name or p.name, p.name) for p in peers.values() for j in p.joins if j.target_model == model.name
+    ]
+    for column in model.columns:
+        hop = next((target for token, target in incident if token == column.name), None)
+        if column.type is DataType.ARRAY and hop is not None:
+            raise ValueError(
+                f"Model '{model.name}': list column '{column.name}' has the name of its hop to '{hop}'; the list's "
+                f"elements are reached as '{column.name}.value', so rename the column or name the edge."
+            )
+    for join in model.joins:
+        peer = peers.get(join.target_model)
+        token = join.name or model.name
+        column = peer.get_column(token) if peer is not None else None
+        if column is not None and column.type is DataType.ARRAY:
+            raise ValueError(
+                f"Model '{model.name}': its join to '{join.target_model}' is the hop '{token}' from "
+                f"'{join.target_model}', which collides with the list column '{join.target_model}.{token}'; "
+                "name the edge differently."
+            )
+
+
+def _warn_unnamed_parallel_edges(
+    *, model: SlayerModel, peers: dict[str, SlayerModel],
+) -> None:
+    for peer_name in {j.target_model for j in model.joins}:
+        target = peers.get(peer_name)
+        if target is None:
+            continue
+        edges = edges_between(source=model, target=target)
+        unnamed = [e for e in edges if e.name is None]
+        # An unnamed edge in a parallel set is unaddressable (bare token ambiguous).
+        if len(edges) >= 2 and unnamed:
+            warnings.warn(
+                f"Model '{model.name}': {len(edges)} parallel edges connect "
+                f"'{model.name}' and '{peer_name}' and {len(unnamed)} of "
+                f"them are unnamed — the bare path token is ambiguous and "
+                f"an unnamed edge has no token of its own. Name the edges "
+                f"to make them addressable.",
+                UserWarning,
+                stacklevel=2,
+            )
 
 
 def _write_sample_fields(
@@ -36,14 +355,7 @@ def _write_sample_fields(
     sampled_values: list[str] | None,
     distinct_count: int | None,
 ) -> None:
-    """Apply the DEV-1375 + DEV-1480 sample-field write convention to a
-    column dict in place: ``None`` pops the corresponding key, non-None
-    writes it.
-
-    Lives on the ABC module so every backend's ``update_column_sampled``
-    implementation can route through the same write logic (see
-    ``feedback_backend_agnostic.md``).
-    """
+    """Write ``sampled``/``sampled_values``/``distinct_count`` into a column dict in place (``None`` pops the key, non-None writes it); shared by every backend's ``update_column_sampled``."""
     if sampled is None:
         col.pop("sampled", None)
     else:
@@ -58,41 +370,50 @@ def _write_sample_fields(
         col["distinct_count"] = distinct_count
 
 
-def storage_base_dir(path: str) -> str:
-    """Return the on-disk directory associated with a storage path.
+def warn_library_shadows(model: SlayerModel) -> None:
+    """One warning per aggregation of ``model`` that shadows a library function."""
+    for agg in model.aggregations:
+        if shadows_library_function(agg):
+            warnings.warn(SlayerLibraryNameShadowWarning(LibraryNameShadowWarning(
+                model=model.name, aggregation=agg.name, function=agg.name,
+            )), stacklevel=3)
 
-    For a SQLite file (``foo.db``/``.sqlite``/``.sqlite3``), returns its parent
-    directory; otherwise the path is itself a directory. Used by callers that
-    need to colocate auxiliary files (demo databases, etc.) next to the storage.
-    """
+
+def without_none(value: Any) -> Any:
+    """``value`` with every ``None`` mapping entry dropped, recursively: an unset field is never persisted."""
+    if isinstance(value, dict):
+        return {k: without_none(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [without_none(v) for v in value]
+    return value
+
+
+def storage_base_dir(path: str) -> str:
+    """The on-disk directory for a storage path: a SQLite file's parent, else the path itself (callers colocate auxiliary files beside storage)."""
     if path.endswith((".db", ".sqlite", ".sqlite3")):
         return os.path.dirname(path) or "."
     return path
 
 
 def default_storage_path() -> str:
-    """Return the platform-appropriate default storage directory.
-
-    Resolution order:
-    1. $SLAYER_STORAGE environment variable (if set)
-    2. $SLAYER_MODELS_DIR environment variable (legacy, if set)
-    3. Platform default:
-       - Linux: $XDG_DATA_HOME/slayer (defaults to ~/.local/share/slayer)
-       - macOS: ~/Library/Application Support/slayer (ignores $XDG_DATA_HOME)
-       - Windows: %LOCALAPPDATA%/slayer
-    """
-    env = os.environ.get("SLAYER_STORAGE") or os.environ.get("SLAYER_MODELS_DIR")
-    if env:
-        return env
+    """Default storage dir: $SLAYER_STORAGE, else deprecated $SLAYER_MODELS_DIR, else the platform data dir (XDG on Linux, Application Support on macOS, LOCALAPPDATA on Windows)."""
+    current = os.environ.get("SLAYER_STORAGE")
+    if current:
+        return current
+    legacy = os.environ.get("SLAYER_MODELS_DIR")
+    if legacy:
+        warn_deprecated(
+            "The SLAYER_MODELS_DIR environment variable is deprecated; set SLAYER_STORAGE instead. "
+            "It is read until SLayer 2.0.",
+            removal="2.0",
+        )
+        return legacy
 
     if os.name == "nt":
-        # Windows
         base = Path(os.getenv("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     elif sys.platform == "darwin":
-        # macOS
         base = Path.home() / "Library" / "Application Support"
     else:
-        # Linux, etc.
         base = Path(os.getenv("XDG_DATA_HOME", Path.home() / ".local" / "share"))
 
     return str(base / "slayer")
@@ -104,12 +425,7 @@ _PATH_COMPONENT_DISALLOWED = ("/", "\\", "\x00", ".")
 def _entity_matches_cascade(
     *, entry: str, canonical_id: str, is_memory_ref: bool,
 ) -> bool:
-    """Match predicate for ``strip_dangling_entities_from_memories``.
-
-    Split per the plan: ``memory:<id>`` refs are exact-match only;
-    ``<ds>[.<model>[.<leaf>]]`` refs match exactly OR as strict
-    dotted-path descendants.
-    """
+    """Cascade match: ``memory:<id>`` refs exact-only; ``<ds>[.<model>[.<leaf>]]`` refs exact or strict dotted descendant."""
     if is_memory_ref:
         return entry == canonical_id
     if entry == canonical_id:
@@ -125,11 +441,7 @@ def _fs_equivalence_key(value: str) -> str:
 def _find_case_colliding_id(
     candidate: str, existing: Iterable[str],
 ) -> str | None:
-    """Return an existing id that casefold-equals ``candidate`` but is
-    spelled differently, or ``None``. An exact match never counts
-    (upserts); a collider is reported even alongside an exact match so a
-    legacy store holding both spellings surfaces the pair.
-    """
+    """An existing id that casefold-equals ``candidate`` but is spelled differently, else ``None`` (exact matches are upserts, never collisions)."""
     key = _fs_equivalence_key(candidate)
     for entry in existing:
         if entry != candidate and _fs_equivalence_key(entry) == key:
@@ -138,25 +450,11 @@ def _find_case_colliding_id(
 
 
 def _validate_path_component(value: str, *, kind: str) -> None:
-    """Reject strings that could traverse out of the storage tree or
-    collide with canonical-id namespace boundaries.
-
-    Used at the public ``get_model``/``delete_model`` boundaries to
-    sanitize user-controlled strings *before* a backend composes them
-    into a filesystem path or SQL key. Mirrors the validators on the
-    ``SlayerModel`` and ``DatasourceConfig`` Pydantic classes — those
-    guard the save path; this guards the read/delete paths where Pydantic
-    validation is bypassed (since callers pass raw strings, not model
-    instances).
-
-    Rejects: empty / whitespace-only, ``..``, any path separator
-    (``/``, ``\\``), embedded NULs, and ``.`` (DEV-1405: dots are the
-    canonical-id namespace delimiter — allowing ``prod.db`` as a
-    datasource name would let ``delete_datasource('prod')`` cascade-nuke
-    embeddings rooted at ``prod.db.*``). Lives in ``StorageBackend`` so
-    every backend gets the same defense without duplication (per the
-    backend-agnostic memory rule).
-    """
+    """Reject a user-supplied path component that could traverse the storage tree
+    or cross the canonical-id namespace: empty/whitespace, ``..``, path separators,
+    NULs, and ``.`` (the id delimiter — ``prod.db`` as a datasource name would let
+    ``delete_datasource('prod')`` nuke ``prod.db.*``). Guards the raw-string
+    read/delete paths that bypass Pydantic."""
     if not isinstance(value, str) or not value or not value.strip():
         raise ValueError(
             f"Invalid {kind} {value!r}: must be a non-empty string."
@@ -176,57 +474,107 @@ def _validate_path_component(value: str, *, kind: str) -> None:
             )
 
 
+def _validate_default_time_dimension(model: SlayerModel) -> None:
+    column = model.get_column(model.default_time_dimension) if model.default_time_dimension else None
+    if column is not None and column.type not in (DataType.DATE, DataType.TIMESTAMP):
+        raise DefaultTimeDimensionTypeError(model=model.name, column=column.name, column_type=column.type)
+
+
 class StorageBackend(ABC):
-    """Abstract storage backend. All methods are async.
+    """Abstract async storage backend keyed by ``(data_source, name)``. Concrete backends implement the composite-key CRUD; this class supplies shared validation and the priority-aware bare-name resolver."""
 
-    Implementations with sync I/O (YAML files, SQLite) simply use
-    ``async def`` with synchronous code inside — this is fine for
-    fast local I/O. Implementations with true async I/O (e.g., asyncpg
-    for Postgres) can ``await`` as needed.
-
-    v4 (DEV-1330) keys models by ``(data_source, name)`` instead of bare
-    ``name``. Concrete backends implement the lower-level CRUD against the
-    composite key; this class provides a generic ``resolve_model_identity``
-    helper so bare-name lookups fall back to the priority list consistently
-    across backends.
-    """
-
-    #: Backends whose ids become filenames (YAML) set this to True: saves
-    #: then reject ids differing only by case, which would alias to the
-    #: same file on case-insensitive filesystems. Wrappers copy it from
-    #: the inner backend.
+    #: True on filename-backed backends (YAML): saves reject ids differing only
+    #: by case (they alias on case-insensitive filesystems). Wrappers copy it.
     _ids_collide_as_filenames = False
+    _instance_identity: str | None = None
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        adapt_legacy_hooks(cls=cls, base=StorageBackend)
 
     # ---- model CRUD (composite key) ----------------------------------------
 
     async def save_model(
-        self, model: SlayerModel, *, _validate: bool = True,
+        self, model: SlayerModel, *, _validate: bool = True, failures: DocumentLoadFailures | None = None,
     ) -> None:
-        """Persist a model.
-
-        Runs save-time validation (case-collision rejection for
-        filename-backed stores, then derived-column cycle detection) and
-        delegates to the backend-specific :meth:`_save_model_impl`. The
-        ``_validate=False`` escape hatch is for trusted internal callers —
-        currently only the migration write-back in
-        :meth:`_migrate_and_refine_on_load` — that must persist legacy
-        data which may not pass current invariants.
-
-        Validation rules live in this base class so every backend gets
-        them uniformly without duplication; concrete backends must NOT
-        override this method.
-        """
+        """Persist a model after ``validate_for_save`` (skipped by ``_validate=False``, migration write-back only). Backends must NOT override this."""
         if _validate:
-            if self._ids_collide_as_filenames:
-                await self._check_model_identity_collision(model)
-            from slayer.engine.column_dependency import validate_no_column_cycles
-            await validate_no_column_cycles(model=model, storage=self)
+            await self.validate_for_save(model, failures=failures)
+            warn_library_shadows(model)
         await self._save_model_impl(model)
+        self._forget_raw(data_source=model.data_source, name=model.name)
+
+    async def validate_for_save(self, model: SlayerModel, *, failures: DocumentLoadFailures | None = None) -> None:
+        """Reserved-name and case-collision rejection, derived-column and model-filter well-formedness (reference arity + cycles) and join-edge validation against this store's peers; then a warning per dependent the save breaks, unless ``failures`` is unreported."""
+        if model.name == TIME_SPINE_MODEL:
+            raise ReservedModelNameError(name=model.name)
+        if self._ids_collide_as_filenames:
+            await self._check_model_identity_collision(model)
+        # A skipped (unloadable) peer is invisible to these checks; its edge names go unchecked.
+        failures = failures or DocumentLoadFailures()
+        loaded, unloaded = await self.load_models(data_source=model.data_source, exclude=model.name)
+        peers = {m.name: m for m in failures.skip((loaded, unloaded))}
+        validate_derived_columns(model=model, peers=peers, unloaded=frozenset(e.name for e in unloaded))
+        check_model_filters(model=model, reachable=peers)
+        self._validate_join_edges(model, peers=peers, identities=await self._list_all_model_identities())
+        await self._validate_aggregations(model)
+        await self._validate_column_granularities(model)
+        _validate_default_time_dimension(model)
+        if failures.report:
+            warn_broken_dependents(
+                model=model, stored=await self.get_model(model.name, data_source=model.data_source), peers=peers,
+            )
+
+    async def _validate_column_granularities(self, model: SlayerModel) -> None:
+        named = [(c, c.granularity) for c in model.columns if c.granularity is not None and not isinstance(c.granularity, TimeGranularity)]
+        if not named:
+            return
+        ds = await self.get_datasource(model.data_source) if model.data_source else None
+        defined = ds.granularity_definitions if ds is not None else {}
+        for column, granularity in named:
+            if resolve_granularity(granularity, defined=defined) is None:
+                raise UnknownGranularityError(summary=unknown_granularity_message(
+                    name=str(granularity), defined=defined.values(),
+                    where=f"column {column.name!r} of model {model.name!r}",
+                ))
+
+    async def _validate_aggregations(self, model: SlayerModel) -> None:
+        if not model.aggregations:
+            return
+        ds = await self.get_datasource(model.data_source) if model.data_source else None
+        dialect = dialect_for_ds_type(ds.type).sqlglot_name if ds else ""
+        for agg in model.aggregations:
+            check_aggregation_definition(
+                where=f"Model '{model.name}', aggregation '{agg.name}'", agg=agg, dialect=dialect,
+            )
+
+    @staticmethod
+    def _validate_join_edges(
+        model: SlayerModel, *, peers: dict[str, SlayerModel], identities: list[tuple[str, str]],
+    ) -> None:
+        """Save-time join validation against the loaded datasource ``peers``: reject duplicate incident edge names, edge/model name collisions (both directions), and exact-inverse re-declarations; warn on unnamed parallel edges."""
+        clash = next((n for n, p in sorted(peers.items()) if any(j.name == model.name for j in p.joins)), None)
+        if clash is not None:
+            raise ValueError(
+                f"Model name '{model.name}' collides with the join name "
+                f"'{model.name}' declared on model '{clash}' in datasource "
+                f"'{model.data_source}'. Edge names and model names share "
+                f"the path-segment namespace."
+            )
+        _check_list_hop_collisions(model=model, peers=peers)
+        if not model.joins:
+            return
+        names = _checked_join_names(model)
+        _checked_join_name_namespace(model=model, names=names, identities=identities)
+        # Join targets always; every peer when a named edge must be checked against incident edges.
+        if not names:
+            targets = {j.target_model for j in model.joins}
+            peers = {n: p for n, p in peers.items() if n in targets}
+        _check_edges_against_peers(model=model, peers=peers)
+        _warn_unnamed_parallel_edges(model=model, peers=peers)
 
     async def _check_model_identity_collision(self, model: SlayerModel) -> None:
-        """Reject a model whose ``data_source`` or ``name`` differs only
-        by case from an existing one — both are filename components in
-        the YAML backend."""
+        """Reject a model whose ``data_source`` or ``name`` case-collides with an existing one (both are YAML filename components)."""
         identities = await self._list_all_model_identities()
         known_ds = {ds for ds, _ in identities}
         known_ds.update(await self.list_datasources())
@@ -249,23 +597,62 @@ class StorageBackend(ABC):
                 data_source=model.data_source,
             )
 
+    async def builtin_models(
+        self, data_source: str, *, detailed: bool = False, failures: DocumentLoadFailures | None = None,
+    ) -> list[SlayerModel]:
+        """The datasource's built-in models (the time spine, unless a stored model shadows it);
+        ``detailed`` describes its wiring, else its description points at ``inspect``. Empty for an unknown datasource."""
+        if await self.get_datasource(data_source) is None:
+            return []
+        if (data_source, TIME_SPINE_MODEL) in await self._list_all_model_identities():
+            return []
+        if not detailed:
+            return [spine_model(data_source=data_source)]
+        peers = (failures or DocumentLoadFailures()).skip(await self.load_models(data_source=data_source))
+        return [spine_model(data_source=data_source, wired=peers)]
+
+    async def load_models(self, *, data_source: str | None = None, exclude: str | None = None) -> Loaded[SlayerModel]:
+        """Every stored model (of ``data_source`` when given, bar ``exclude``), and the ones that failed to load."""
+        sem = asyncio.Semaphore(_MODEL_LOAD_CONCURRENCY)
+
+        async def _load(ds: str, name: str) -> SlayerModel | StoredDocumentLoadError | None:
+            async with sem:
+                try:
+                    return await self.get_model(name, data_source=ds)
+                except StoredDocumentLoadError as exc:
+                    return exc
+
+        token = _RAW_PASS.set({}) if _RAW_PASS.get() is None else None
+        try:
+            loaded = await asyncio.gather(*(
+                _load(ds, name) for ds, name in await self._list_all_model_identities()
+                if (data_source is None or ds == data_source) and name != exclude
+            ))
+        finally:
+            if token is not None:
+                _RAW_PASS.reset(token)
+        return (
+            [m for m in loaded if isinstance(m, SlayerModel)],
+            [e for e in loaded if isinstance(e, StoredDocumentLoadError)],
+        )
+
+    async def get_model_or_builtin(self, name: str, data_source: str | None = None) -> SlayerModel | None:
+        """``get_model``, falling back to a built-in model of the datasource (the only one when unnamed)."""
+        model = await self.get_model(name, data_source=data_source)
+        if model is not None or name != TIME_SPINE_MODEL:
+            return model
+        datasources = [data_source] if data_source is not None else await self.list_datasources()
+        if len(datasources) != 1:
+            return None
+        return next(iter(await self.builtin_models(datasources[0], detailed=True)), None)
+
     @abstractmethod
     async def _save_model_impl(self, model: SlayerModel) -> None:
-        """Backend-specific write of ``model`` to durable storage.
-
-        Concrete backends implement only this method, not ``save_model``.
-        Shared validation lives in :meth:`save_model` (the template
-        method).
-        """
+        """Backend-specific durable write of ``model`` (backends implement this, not ``save_model``)."""
 
     @abstractmethod
     async def _list_all_model_identities(self) -> list[tuple[str, str]]:
-        """Return every saved ``(data_source, name)`` pair.
-
-        Backends override this with whatever is cheapest (filesystem walk,
-        SQL ``SELECT``). The bare-name resolver and ``list_models`` build on
-        it.
-        """
+        """Every saved ``(data_source, name)`` pair (backends pick the cheapest enumeration)."""
 
     @abstractmethod
     async def get_model(
@@ -274,18 +661,111 @@ class StorageBackend(ABC):
         data_source: str | None = None,
     ) -> SlayerModel | None: ...
 
+    async def _load_raw_model_dict(
+        self, *, name: str, data_source: str,
+    ) -> dict | None:
+        """The persisted model dict verbatim — no migration, no validation; ``None`` when absent. The legacy-``__`` rewrite reads sibling models raw through this to avoid recursing their load pipeline; YAML/SQLite override, the default ``None`` limits the rewrite to first-hop walks."""
+        await asyncio.sleep(0)  # awaited protocol hook; async impls override
+        return None
+
+    async def _write_raw_datasource_dict(self, *, name: str, data: dict) -> None:
+        raise NotImplementedError
+
+    async def _write_raw_model_dict(self, *, name: str, data_source: str, data: dict) -> None:
+        raise NotImplementedError
+
+    async def _raw_memory_dicts(self) -> dict[str, dict]:
+        """Every stored memory dict verbatim; backends without raw access store none."""
+        await asyncio.sleep(0)
+        return {}
+
+    async def _write_raw_memory_dict(self, *, memory_id: str, data: dict) -> None:
+        raise NotImplementedError
+
+    async def _settle_library_granularities(self) -> None:
+        """Once per instance, before any model or memory loads: load every datasource, which renames its library-named
+        granularities (an unloadable datasource is reported where it is used)."""
+        if getattr(self, "_granularities_settled", False) or _SETTLING.get():
+            return
+        lock = self._granularities_lock = getattr(self, "_granularities_lock", None) or asyncio.Lock()
+        async with lock:
+            if getattr(self, "_granularities_settled", False):
+                return
+            token = _SETTLING.set(True)
+            try:
+                for name in await self.list_datasources():
+                    with contextlib.suppress(ValueError):
+                        await self.get_datasource(name)
+            finally:
+                _SETTLING.reset(token)
+            self._granularities_settled = True
+
+    async def _with_library_granularities_renamed(self, *, name: str, data: Any) -> Any:
+        """A stored datasource dict with each granularity a library name reserves renamed (system P11.2), its
+        dependants persisted before it so an interrupted rename converges."""
+        if not isinstance(data, dict):
+            return data
+        names = [g["name"] for g in data.get("granularities") or [] if isinstance(g, dict)
+                 and isinstance(g.get("name"), str)]
+        renames = granularity_renames(names)
+        if not renames:
+            return data
+        await self._rename_granularities(data_source=name, raw=data, renames=renames)
+        return renamed_datasource(data, renames=renames)
+
+    async def _rename_granularities(self, *, data_source: str, raw: dict, renames: Renames) -> None:
+        identities = await self._list_all_model_identities()
+        own = {n for d, n in identities if d == data_source}
+        elsewhere = {n for d, n in identities if d != data_source}
+        renamed = self._granularity_renamed_docs = getattr(self, "_granularity_renamed_docs", {})
+        for name in sorted(own):
+            data = await self._load_raw_model_dict(name=name, data_source=data_source)
+            if isinstance(data, dict) and (new := rename_in_model(data, renames=renames)) != data:
+                await self._write_raw_model_dict(name=name, data_source=data_source, data=new)
+                renamed[("model", f"{data_source}.{name}")] = (data, new)
+        for memory_id, data in (await self._raw_memory_dicts()).items():
+            inline_data_source, source = memory_source_model(data)
+            in_datasource = inline_data_source == data_source if inline_data_source is not None else (
+                source in own and (source not in elsewhere or f"{data_source}.{source}" in (data.get("entities") or []))
+            )
+            if in_datasource and (new := rename_in_memory(data, renames=renames)) != data:
+                await self._write_raw_memory_dict(memory_id=memory_id, data=new)
+                renamed[("memory", memory_id)] = (data, new)
+        await self._write_raw_datasource_dict(name=data_source, data=renamed_datasource(raw, renames=renames))
+        for old, new in renames.items():
+            logging.getLogger(__name__).warning(
+                "datasource %r: custom granularity %r is now a reserved library name; renamed to %r with every "
+                "reference to it", data_source, old, new,
+            )
+
+    def _renamed_since_read(self, data: Any, *, kind: str, key: str) -> Any:
+        """``data`` as the settle rewrote it, when it is the stored document read before that rewrite."""
+        original, new = getattr(self, "_granularity_renamed_docs", {}).get((kind, key), (None, None))
+        return new if original is not None and data == original else data
+
+    async def _cached_raw_model_dict(self, *, name: str, data_source: str) -> dict | None:
+        """``_load_raw_model_dict``, read once per ``load_models`` pass (callers must not mutate it)."""
+        memo = _RAW_PASS.get()
+        if memo is None:
+            return await self._load_raw_model_dict(name=name, data_source=data_source)
+        read = memo.get((self, data_source, name))
+        if read is None:
+            read = memo[(self, data_source, name)] = asyncio.ensure_future(
+                self._load_raw_model_dict(name=name, data_source=data_source))
+        return await asyncio.shield(read)  # one waiter's cancellation must not fail the others
+
+    def _forget_raw(self, *, data_source: str, name: str) -> None:
+        """Drop ``(data_source, name)`` from the enclosing pass's raw reads after a write to it."""
+        memo = _RAW_PASS.get()
+        if memo is not None:
+            memo.pop((self, data_source, name), None)
+
     async def delete_model(
         self,
         name: str,
         data_source: str | None = None,
     ) -> bool:
-        """Delete one model by ``(data_source, name)`` and cascade-delete
-        every embedding row tagged with that model's canonical prefix.
-
-        Bare ``name`` resolves through the priority list (see
-        ``_resolve_target_or_none``). Returns ``False`` when no model matches
-        — no cascade is attempted in that case.
-        """
+        """Delete one model by ``(data_source, name)`` and cascade-delete its embeddings. Bare ``name`` resolves via the priority list; ``False`` (no cascade) when no model matches."""
         target = await self._resolve_target_or_none(name, data_source=data_source)
         if target is None:
             return False
@@ -294,6 +774,7 @@ class StorageBackend(ABC):
             data_source=resolved_data_source, name=resolved_name,
         )
         if deleted:
+            self._forget_raw(data_source=resolved_data_source, name=resolved_name)
             canonical = f"{resolved_data_source}.{resolved_name}"
             await self.delete_embeddings_for_canonical(
                 canonical_id_prefix=canonical,
@@ -307,10 +788,7 @@ class StorageBackend(ABC):
     async def _delete_model_row(
         self, *, data_source: str, name: str,
     ) -> bool:
-        """Delete the persisted row for ``(data_source, name)``. Returns
-        ``True`` if a row was removed, ``False`` when the identity did not
-        exist. Embedding cascade is handled by the public ``delete_model``
-        wrapper on the ABC; backends only do the row I/O here."""
+        """Delete the persisted row for ``(data_source, name)`` (``True`` if removed); the embedding cascade is the public ``delete_model`` wrapper's job."""
 
     @abstractmethod
     async def update_column_sampled(
@@ -323,17 +801,7 @@ class StorageBackend(ABC):
         sampled_values: list[str] | None,
         distinct_count: int | None,
     ) -> None:
-        """Patch a single column's sample-value fields in-place (DEV-1375 +
-        DEV-1480).
-
-        Writes ``sampled``, ``sampled_values``, and ``distinct_count`` as a
-        single read-modify-write so the three stay consistent with each
-        other. ``None`` for any field drops the corresponding key from the
-        persisted dict; non-None writes it. Other column fields are
-        untouched.
-
-        Raises ``ValueError`` when the model or column doesn't exist.
-        """
+        """Patch a column's ``sampled``/``sampled_values``/``distinct_count`` as one read-modify-write (``None`` drops the key; other fields untouched). Raises ``ValueError`` when the model or column is absent."""
 
     # ---- shared model lookup / load helpers --------------------------------
 
@@ -343,15 +811,7 @@ class StorageBackend(ABC):
         *,
         data_source: str | None,
     ) -> tuple[str, str] | None:
-        """Sanitize inputs and resolve a bare ``name`` to its
-        ``(data_source, name)`` identity via the priority list.
-
-        Returns ``None`` when ``data_source`` was omitted and no model with
-        that bare name exists in storage. Both ``get_model`` and
-        ``delete_model`` consume this; backends only need to handle the
-        case where the resolved record was deleted out from under them
-        between the lookup and the I/O.
-        """
+        """Sanitize inputs and resolve a bare ``name`` to its ``(data_source, name)`` identity via the priority list; ``None`` when ``data_source`` is omitted and no such bare name exists."""
         _validate_path_component(name, kind="model name")
         if data_source is not None:
             _validate_path_component(data_source, kind="data_source")
@@ -364,37 +824,54 @@ class StorageBackend(ABC):
     async def _apply_refinement_or_raise(
         self, *, name: str, data: dict, data_source: str,
     ) -> None:
-        """Inner gate of :meth:`_migrate_and_refine_on_load`: decide whether
-        live introspection is needed for ``data`` and dispatch to it.
+        """Refine ``data`` against its live table through the loading engine's client (``CLIENT_SOURCE``).
 
-        Hard-fails (``ValueError``) when the dict has DOUBLE base columns
-        and the datasource is missing. SQLite-INT widening with missing DS
-        is best-effort — logs a warning and skips. No-op when neither
-        predicate fires.
+        DOUBLE base columns require it: a missing datasource, or no loading engine, raises
+        ``ValueError``. SQLite-INT widening is best-effort (warn and skip). No-op when neither applies.
         """
         needs_double = has_refineable_columns(data)
         needs_sqlite_int = has_sqlite_widenable_columns(data)
         if not (needs_double or needs_sqlite_int):
             return
         ds = await self.get_datasource(data_source)
-        if ds is not None:
-            refine_dict_with_live_schema(data, ds)
+        client_source = CLIENT_SOURCE.get()
+        if ds is not None and client_source is None and needs_double:
+            raise ValueError(
+                f"Cannot migrate model {name!r}: its DOUBLE columns are refined against datasource "
+                f"{data_source!r}, so the model must be loaded through a query engine "
+                f"(SlayerQueryEngine(storage=...).storage)."
+            )
+        if ds is not None and client_source is not None:
+            try:
+                await refine_dict_with_live_schema(data, ds, client_source(ds))
+            except Exception:
+                # Unreachable DS: DOUBLE narrowing is required (propagate); INT
+                # widening is advisory (persisted INT is safe) — warn and skip.
+                if needs_double:
+                    raise
+                self._warn_skipped_int_probe(name=name, data_source=data_source)
             return
-        if needs_double:
+        if ds is None and needs_double:
             raise ValueError(
                 f"Cannot migrate model {name!r}: datasource "
                 f"{data_source!r} is unavailable for type "
                 f"refinement. Restore the datasource entry or "
                 f"remove the stale model file."
             )
-        import logging as _logging
-        _logging.getLogger(__name__).warning(
-            "Datasource %r unavailable; skipping SQLite "
-            "affinity probe for INT base columns on %r. "
+        self._warn_skipped_int_probe(name=name, data_source=data_source)
+
+    @staticmethod
+    def _warn_skipped_int_probe(*, name: str, data_source: str) -> None:
+        # Sanitize CR/LF before logging (log injection, S5145).
+        safe_ds = data_source.replace("\r", "\\r").replace("\n", "\\n")
+        safe_name = name.replace("\r", "\\r").replace("\n", "\\n")
+        logging.getLogger(__name__).warning(
+            "Datasource '%s' unavailable; skipping SQLite "
+            "affinity probe for INT base columns on '%s'. "
             "Re-run `slayer ingest` once the datasource is "
             "back to widen any mis-typed columns.",
-            data_source,
-            name,
+            safe_ds,
+            safe_name,
         )
 
     async def _migrate_and_refine_on_load(
@@ -404,27 +881,10 @@ class StorageBackend(ABC):
         data: Any,
         data_source: str,
     ) -> SlayerModel:
-        """DEV-1361 storage-driven type refinement, shared across backends.
-
-        When the on-disk model dict is below the current ``SlayerModel`` version,
-        run the migrator chain to bring it forward, then introspect the live
-        datasource and refine ``DOUBLE → INT`` for base columns whose live SQL
-        type is integer. Validates the resulting dict into a ``SlayerModel``
-        and persists it back via ``save_model`` when a migration ran, so
-        subsequent loads short-circuit on the version check.
-
-        Hard-fails with ``ValueError`` when a migration ran, the dict has
-        refineable DOUBLE base columns, and the named datasource entry is
-        missing — silently skipping refinement and persisting the v5 dict
-        would leave base integer columns stuck at ``DOUBLE`` forever.
-        DEV-1538 SQLite-INT widening with missing DS is best-effort: logs
-        a warning and skips. Models with no refineable or widenable
-        columns load without needing a live datasource.
-        """
+        """Migrate a below-version on-disk model dict forward, refine it (below v8) against its live table through the loading engine, validate into a ``SlayerModel``, and (when a migration ran) persist it back so later loads short-circuit."""
         if not isinstance(data, dict):
-            # e.g. a zero-byte YAML file (yaml.safe_load -> None) left behind
-            # by a full disk or interrupted write. Fail with the remediation
-            # instead of a bare Pydantic model_type error.
+            # e.g. a zero-byte/corrupt YAML file (safe_load -> None): give the
+            # remediation, not a bare Pydantic model_type error.
             raise ValueError(
                 f"Model {name!r} in datasource {data_source!r} has an empty or "
                 f"corrupt stored definition (got {type(data).__name__} instead "
@@ -432,36 +892,276 @@ class StorageBackend(ABC):
                 f"models/{data_source}/{name}.yaml) and re-run `slayer ingest` "
                 f"to recreate it."
             )
+        await self._settle_library_granularities()
+        data = self._renamed_since_read(data, kind="model", key=f"{data_source}.{name}")
         write_back = False
-        pre_version = int(data.get("version", 1))
+        data = _mig.stamp_stored(data)
+        pre_version = int(data["version"])
         if pre_version < _mig.CURRENT_VERSIONS["SlayerModel"]:
             data = _mig.migrate("SlayerModel", data)
-            write_back = True
-            await self._apply_refinement_or_raise(
+            # Rewrite legacy ``__`` split-alias qualifiers to dotted on the RAW
+            # dict, before validation (every forward migration may carry them).
+            data = await self._rewrite_legacy_join_aliases(
                 name=name, data=data, data_source=data_source,
             )
+            await self._canonicalize_join_key_spellings(data=data, data_source=data_source)
+            await self._declare_join_keys(name=name, data=data, data_source=data_source)
+            await self._repair_source_query_filters(data=data, data_source=data_source)
+            # Collapse stored exact-inverse mirror pairs.
+            data = await self._dedup_exact_inverse_joins(
+                name=name, data=data, data_source=data_source,
+            )
+            write_back = True
+            if pre_version < _LIVE_REFINEMENT_BELOW_VERSION:
+                await self._apply_refinement_or_raise(
+                    name=name, data=data, data_source=data_source,
+                )
         model = SlayerModel.model_validate(data)
+        if not caller_announces():
+            warn_library_shadows(model)
         if write_back:
-            # DEV-1410: legacy on-disk models may contain derived-column
-            # cycles that current save-time validation would reject. The
-            # migration write-back must not re-validate; otherwise users
-            # could not load a broken legacy model to repair it.
+            # Write-back must not re-validate: legacy models may hold cycles or
+            # fanning refs a user needs to load to repair.
             await self.save_model(model, _validate=False)
         return model
 
+    async def _canonicalize_join_key_spellings(self, *, data: dict, data_source: str) -> None:
+        """Rewrite stored physical join-key spellings in ``data`` to ``Column.name``, both sides."""
+        joins = data.get("joins")
+        if not isinstance(joins, list):
+            return
+        for join in joins:
+            if not isinstance(join, dict) or not isinstance(join.get("target_model"), str):
+                continue
+            peer = await self._cached_raw_model_dict(
+                name=join["target_model"], data_source=data_source,
+            )
+            join["join_pairs"] = canonical_join_pairs(
+                pairs=join.get("join_pairs"), source_columns=data.get("columns"),
+                target_columns=peer.get("columns") if isinstance(peer, dict) else None,
+            )
+
+    async def _declare_join_keys(self, *, name: str, data: dict, data_source: str) -> None:
+        """Declare each join key naming no column of this table- or SQL-backed document as its hidden base column:
+        source keys from its own joins, target keys from its siblings' joins into it. Typed like the opposite key."""
+        columns = data.get("columns")
+        if data.get("source_queries") or not isinstance(columns, list):
+            return
+        keys = await self._outgoing_keys(joins=data.get("joins"), data_source=data_source)
+        keys += await self._sibling_keys_into(name=name, columns=columns, data_source=data_source)
+        for key, key_type in keys:
+            if _undeclared_key(key=key, columns=columns):
+                columns.append({"name": key, "hidden": True, **({"type": key_type} if key_type else {})})
+
+    async def _outgoing_keys(self, *, joins: Any, data_source: str) -> list[tuple[Any, str | None]]:
+        """Source-side keys of ``joins``, each typed like its target key."""
+        keys: list[tuple[Any, str | None]] = []
+        for join in joins if isinstance(joins, list) else []:
+            target = join.get("target_model") if isinstance(join, dict) else None
+            peer = await self._cached_raw_model_dict(name=target, data_source=data_source) if isinstance(target, str) else None
+            peer_columns = peer.get("columns") if isinstance(peer, dict) else None
+            keys.extend((src, _stored_type(key=tgt, columns=peer_columns)) for src, tgt in _key_pairs(join))
+        return keys
+
+    async def _sibling_keys_into(self, *, name: str, columns: list, data_source: str) -> list[tuple[Any, str | None]]:
+        """Target-side keys of every same-datasource sibling's joins into ``name``."""
+        keys: list[tuple[Any, str | None]] = []
+        for ds, sibling_name in await self._list_all_model_identities():
+            if ds != data_source or sibling_name == name:
+                continue
+            sibling = await self._cached_raw_model_dict(name=sibling_name, data_source=ds)
+            if sibling is not None:
+                keys.extend(_incoming_keys(sibling=sibling, target=name, target_columns=columns))
+        return keys
+
+    async def _repair_source_query_filters(self, *, data: dict, data_source: str) -> None:
+        queries = data.get("source_queries")
+        if not isinstance(queries, list):
+            return
+        stage_names = frozenset(q["name"] for q in queries if isinstance(q, dict) and isinstance(q.get("name"), str))
+        for query in queries:
+            await self._repair_query_filters(query=query, data_source=data_source, stage_names=stage_names)
+
+    async def _repair_query_filters(
+        self, *, query: Any, data_source: str | None, stage_names: frozenset[str] = frozenset(),
+    ) -> None:
+        """Repair, in place, legacy time literals a raw stored query's ``filters`` compare with a DATE or TIMESTAMP column;
+        the stored query is migrated first, so its filters read under the current grammar."""
+        if not isinstance(query, dict):
+            return
+        migrated = _mig.migrate("SlayerQuery", _mig.stamp_stored(query))
+        query.clear()
+        query.update(migrated)
+        filters = query.get("filters")
+        if not isinstance(filters, list):
+            return
+        found = [legacy_literal_sites(f) if isinstance(f, str) else None for f in filters]
+        if not any(found):
+            return
+        host = await self._query_host(source=query.get("source_model"), data_source=data_source, stage_names=stage_names)
+        if host is None:
+            return
+        for i, pairs in enumerate(found):
+            if pairs is None:
+                continue
+            temporal = [
+                literal for literal, column in pairs
+                if await self._stored_column_type(host=host, parts=[p.name for p in column.parts])
+                in (DataType.DATE.value, DataType.TIMESTAMP.value)
+            ]
+            if temporal:
+                filters[i] = repaired_filter(filters[i], temporal)
+
+    async def _query_host(
+        self, *, source: Any, data_source: str | None, stage_names: frozenset[str],
+    ) -> tuple[dict, str] | None:
+        """The raw stored model a stored query reads and its datasource; ``None`` for a stage or an unresolvable source."""
+        if isinstance(source, dict) and isinstance(source.get("columns"), list):
+            return source, str(source.get("data_source") or data_source)
+        name = source.get("source_name") if isinstance(source, dict) else source
+        if not isinstance(name, str) or name in stage_names:
+            return None
+        if data_source is None:
+            try:
+                identity = await self.resolve_model_identity(name)
+            except AmbiguousModelError:
+                return None
+            data_source = identity[0] if identity is not None else None
+        raw = await self._cached_raw_model_dict(name=name, data_source=data_source) if data_source else None
+        return (raw, data_source) if isinstance(raw, dict) and data_source else None
+
+    async def _stored_column_type(self, *, host: tuple[dict, str], parts: list[str]) -> str | None:
+        """The stored type of the column ``parts`` names from ``host``, walking its stored joins."""
+        current, data_source = host
+        quals, leaf = parts[:-1], parts[-1]
+        if quals and quals[0] == current.get("name"):
+            quals = quals[1:]
+        for hop in quals:
+            joins = current.get("joins")
+            joins = [j for j in joins if isinstance(j, dict)] if isinstance(joins, list) else []
+            target = next((j.get("target_model") for j in joins if j.get("name") == hop), None) or next(
+                (hop for j in joins if not j.get("name") and j.get("target_model") == hop), None)
+            peer = await self._cached_raw_model_dict(name=target, data_source=data_source) if isinstance(target, str) else None
+            if peer is None:
+                return None
+            current = peer
+        return _stored_type(key=leaf, columns=current.get("columns"))
+
+    async def _dedup_exact_inverse_joins(
+        self, *, name: str, data: dict, data_source: str,
+    ) -> dict:
+        """Drop this document's half of a stored exact-inverse join pair when the counterpart holds the surviving half. Load-order-independent (survivor reads only the two halves); a missing/drifted peer leaves the document untouched."""
+        joins = data.get("joins")
+        if not isinstance(joins, list) or not joins:
+            return data
+        cache: dict[str, dict | None] = {}
+        kept = [
+            join for join in joins
+            if await self._survives_stored_inverse(
+                join=join, name=name, data_source=data_source, cache=cache,
+                columns=data.get("columns"),
+            )
+        ]
+        if len(kept) != len(joins):
+            data["joins"] = kept
+        return data
+
+    async def _survives_stored_inverse(
+        self, *, join, name: str, data_source: str,
+        cache: dict[str, dict | None], columns: Any,
+    ) -> bool:
+        """True when ``join`` has no stored exact-inverse counterpart, or wins
+        against it."""
+        peer_name = join.get("target_model") if isinstance(join, dict) else None
+        if not isinstance(peer_name, str) or peer_name == name:
+            return True
+        if peer_name not in cache:
+            cache[peer_name] = await self._cached_raw_model_dict(
+                name=peer_name, data_source=data_source,
+            )
+        counterpart = _stored_counterpart(
+            join=join, name=name, peer=cache[peer_name], columns=columns,
+        )
+        return counterpart is None or _inverse_survivor(
+            model_a=name, join_a=join,
+            model_b=peer_name, join_b=counterpart,
+        ) == name
+
+    async def _rewrite_legacy_join_aliases(
+        self, *, name: str, data: dict, data_source: str,
+    ) -> dict:
+        """Rewrite legacy ``__`` split-alias qualifiers to dotted across every Mode-A surface on the raw dict. Each ``a__b__c`` is naive-split and resolved as a join walk (first hop against ``data``'s joins, deeper hops against sibling raw dicts); only fully resolvable walks are rewritten, an unresolvable ``__`` is left verbatim. Mutates and returns ``data``."""
+        all_chains: set[tuple[str, ...]] = set()
+        for text in mode_a_surface_texts(data):
+            all_chains |= extract_dunder_chains(text)
+        if not all_chains:
+            return data
+
+        raw_cache: dict[str, dict | None] = {name: data}
+        resolvable: set[tuple[str, ...]] = set()
+        for chain in all_chains:
+            if await self._dunder_chain_is_join_walk(
+                chain=chain, host=data, data_source=data_source, cache=raw_cache,
+            ):
+                resolvable.add(chain)
+        if not resolvable:
+            return data
+
+        apply_dunder_rewrite_to_model_dict(data, resolvable=resolvable)
+        return data
+
+    async def _dunder_chain_is_join_walk(
+        self,
+        *,
+        chain: tuple[str, ...],
+        host: dict,
+        data_source: str,
+        cache: dict[str, dict | None],
+    ) -> bool:
+        """True iff every hop in ``chain`` is a join target on the preceding model (host first, then each hop's own model); sibling dicts loaded raw and memoised, a broken intermediate collapses the chain."""
+        # An exact ``__``-named join target beats a split-alias reading: a host
+        # join to a model literally named ``"__".join(chain)`` is exact, not a walk.
+        host_joins = host.get("joins")
+        host_targets = {
+            j.get("target_model")
+            for j in host_joins if isinstance(j, dict)
+        } if isinstance(host_joins, list) else set()
+        if "__".join(chain) in host_targets:
+            return False
+
+        current: dict | None = host
+        for i, hop in enumerate(chain):
+            if current is None:
+                return False
+            joins = current.get("joins")
+            targets = {
+                j.get("target_model")
+                for j in joins if isinstance(j, dict)
+            } if isinstance(joins, list) else set()
+            if hop not in targets:
+                return False
+            if i == len(chain) - 1:
+                return True
+            if hop not in cache:
+                cache[hop] = await self._cached_raw_model_dict(
+                    name=hop, data_source=data_source,
+                )
+            current = cache[hop]
+        return True
+
     # ---- datasource CRUD ---------------------------------------------------
 
-    @abstractmethod
     async def save_datasource(self, datasource: DatasourceConfig) -> None:
-        """Persist a datasource config (upsert by exact name).
-        Filename-backed implementations should call
-        :meth:`check_datasource_id_collision` before writing."""
+        """Persist a datasource config (upsert by exact name) once its custom granularities pass the save-time rules. Backends must NOT override this."""
+        datasource.check_granularities()
+        await self._save_datasource_impl(datasource)
+
+    @abstractmethod
+    async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
+        """Backend-specific durable write; filename-backed backends should call ``check_datasource_id_collision`` first."""
 
     async def check_datasource_id_collision(self, name: str) -> None:
-        """Raise :class:`IdCollisionError` when ``name`` differs only by
-        case from an existing datasource name or a saved model's
-        ``data_source``. Public so backends can call it from
-        ``save_datasource``."""
+        """Raise :class:`IdCollisionError` when ``name`` case-collides with an existing datasource name or a saved model's ``data_source`` (public so backends call it from ``_save_datasource_impl``)."""
         existing = set(await self.list_datasources())
         existing.update(ds for ds, _ in await self._list_all_model_identities())
         collide = _find_case_colliding_id(candidate=name, existing=existing)
@@ -477,19 +1177,8 @@ class StorageBackend(ABC):
     async def list_datasources(self) -> list[str]: ...
 
     async def delete_datasource(self, name: str) -> bool:
-        """Delete the datasource config and cascade-delete every embedding
-        row tagged with the datasource's canonical prefix (the datasource
-        doc itself, plus every model / column / measure / aggregation
-        embedding under it).
-
-        Models that lived in the deleted datasource are *not* themselves
-        deleted by this call (matches pre-DEV-1386 behaviour); they become
-        orphans referencing a missing datasource config. Re-creating the
-        datasource and re-running ``slayer ingest`` repopulates embeddings.
-        """
-        # DEV-1405: sanitize the raw name before it composes a filesystem
-        # path (YAMLStorage) or a cascade LIKE prefix. Mirrors the
-        # validation done on the save side by ``DatasourceConfig.name``.
+        """Delete the datasource config and cascade-delete every embedding under its canonical prefix. Models in the datasource are NOT deleted — they become orphans; re-creating the datasource and re-ingesting repopulates embeddings."""
+        # Sanitize the raw name before it composes a path / cascade prefix.
         _validate_path_component(name, kind="datasource name")
         deleted = await self._delete_datasource_row(name)
         if deleted:
@@ -503,32 +1192,20 @@ class StorageBackend(ABC):
 
     @abstractmethod
     async def _delete_datasource_row(self, name: str) -> bool:
-        """Delete the datasource config row. Returns ``True`` when a row
-        was removed. Embedding cascade is handled by the public
-        ``delete_datasource`` wrapper on the ABC."""
+        """Delete the datasource config row (``True`` when removed); cascade is the public ``delete_datasource`` wrapper's job."""
 
     # ---- datasource priority (bare-name disambiguation) -------------------
 
     @abstractmethod
     async def get_datasource_priority(self) -> list[str]:
-        """Return the configured priority order (most-preferred first).
-
-        Empty list = no priority configured; bare-name lookups raise
-        ``AmbiguousModelError`` whenever a name appears in ≥2 datasources.
-        """
+        """The configured priority order (most-preferred first); empty = none, so a bare name in ≥2 datasources raises ``AmbiguousModelError``."""
 
     @abstractmethod
     async def _set_datasource_priority_raw(self, priority: list[str]) -> None:
-        """Persist the priority list verbatim. Validation happens in the
-        public ``set_datasource_priority`` wrapper below."""
+        """Persist the priority list verbatim (validation is in the public wrapper)."""
 
     async def set_datasource_priority(self, priority: list[str]) -> None:
-        """Validate and persist the datasource priority list.
-
-        Each entry must already exist as a saved ``DatasourceConfig``;
-        unknown names raise ``ValueError``. Pass ``[]`` to clear the
-        priority.
-        """
+        """Validate (each entry must be a saved ``DatasourceConfig``, else ``ValueError``) and persist the priority list; ``[]`` clears it."""
         if priority:
             known = set(await self.list_datasources())
             unknown = [p for p in priority if p not in known]
@@ -542,25 +1219,7 @@ class StorageBackend(ABC):
     # ---- list_models with auto-detect or required arg ----------------------
 
     async def list_models(self, data_source: str | None = None) -> list[str]:
-        """List model names within a single datasource.
-
-        Resolution rules:
-
-        * ``data_source`` supplied → return models stored under that
-          ``data_source`` (possibly empty). The name is accepted as long as
-          it appears in either a registered ``DatasourceConfig`` *or* in any
-          saved model's ``data_source`` field — that keeps ``list_models``
-          consistent with ``get_model``, which can already retrieve models
-          stored without a corresponding config (e.g. an orphan after the
-          datasource entry was deleted, or a model imported from another
-          environment). Unknown names — neither registered nor referenced by
-          any saved model — still raise ``ValueError`` so typos surface.
-        * ``data_source`` is ``None`` and ≥1 model exists in exactly one
-          datasource → return that datasource's model names.
-        * ``data_source`` is ``None`` and storage is empty → return ``[]``.
-        * ``data_source`` is ``None`` and ≥2 datasources hold models → raise
-          ``ValueError`` listing them.
-        """
+        """Model names within one datasource. With ``data_source``: models stored under it (accepted if registered OR referenced by any saved model, so orphans list; unknown names raise ``ValueError``). Without it: the sole datasource's models, ``[]`` when empty, or a ``ValueError`` naming the datasources when ≥2 hold models."""
         identities = await self._list_all_model_identities()
         if data_source is not None:
             known = set(await self.list_datasources())
@@ -589,21 +1248,7 @@ class StorageBackend(ABC):
         *,
         prefer_data_source: str | None = None,
     ) -> tuple[str, str] | None:
-        """Resolve a bare model name to a ``(data_source, name)`` tuple.
-
-        * No matches → ``None``.
-        * One match → return it.
-        * Multiple matches:
-            - If ``prefer_data_source`` is in the candidates, return that.
-            - Else walk ``get_datasource_priority()`` and return the first
-              listed datasource that has the name.
-            - Else raise ``AmbiguousModelError``.
-
-        ``prefer_data_source`` is the resolution hint used internally for
-        join targets (the parent model's ``data_source``); explicit caller
-        kwargs should be passed through ``get_model(name, data_source=...)``
-        instead of this helper.
-        """
+        """Resolve a bare model name to ``(data_source, name)``: ``None`` if no match, the sole match, ``prefer_data_source`` when it is a candidate, else the first priority-listed datasource holding it, else raise ``AmbiguousModelError``. ``prefer_data_source`` is the internal join-target hint; explicit callers use ``get_model(..., data_source=...)``."""
         identities = await self._list_all_model_identities()
         candidates = [ds for ds, n in identities if n == name]
         if not candidates:
@@ -618,53 +1263,47 @@ class StorageBackend(ABC):
                 return (ds, name)
         raise AmbiguousModelError(name=name, candidates=candidates)
 
-    # ---- memories (DEV-1357 v2 / DEV-1428) -------------------------------
-    #
-    # DEV-1428: memory ids are non-empty strings. Auto-allocation walks
-    # ``max(int-shaped id) + 1`` over the existing corpus where
-    # "int-shaped" means pure-digit, no-leading-zero. User-supplied ids
-    # share the namespace and may collide with prior rows → upsert
-    # unconditionally (``created_at`` of the original row preserved).
-    # Cascade-on-delete in ``delete_memory`` strips any embedding rows
-    # under the freed id AND drops the corresponding ``memory:<id>`` ref
-    # from every other memory's ``entities`` list (defense layer 1).
+    # ---- memories ----
+    # Ids are non-empty strings; auto-allocation walks max(int-shaped id)+1
+    # (pure-digit, no leading zero). User ids share the namespace and upsert
+    # (original ``created_at`` preserved). delete_memory cascades embeddings
+    # and drops ``memory:<id>`` refs from every other memory's ``entities``.
 
     @abstractmethod
     async def _save_memory_row(self, memory: Memory) -> None:
-        """Persist a fully-populated ``Memory`` (id and created_at set).
-        Backends upsert by id; ``created_at`` of the existing row must
-        be preserved when present."""
+        """Persist a fully-populated ``Memory`` (upsert by id; preserve any existing ``created_at``)."""
 
     @abstractmethod
     async def _get_memory_row(self, memory_id: str) -> Memory | None:
         """Read a ``Memory`` by id; return ``None`` when not present."""
 
     async def get_memory_row(self, memory_id: str) -> Memory | None:
-        """Non-raising existence check / fetch. Public so the resolver
-        and the ingest-time cleanup pass can probe without catching
-        ``MemoryNotFoundError``."""
+        """Non-raising fetch/existence check (public so the resolver and ingest cleanup can probe)."""
         return await self._get_memory_row(memory_id)
 
     @abstractmethod
     async def _list_memories_rows(
         self, *, entities: list[str] | None
-    ) -> list[Memory]:
-        """Return every ``Memory`` whose stored entity set has non-empty
-        intersection with ``entities``. ``entities=None`` returns all rows.
-        ``entities=[]`` returns ``[]`` (intersection with the empty set is
-        empty)."""
+    ) -> Loaded[Memory]:
+        """Every ``Memory`` whose entity set intersects ``entities`` (``None`` = all rows, ``[]`` = none), and the rows that failed to load."""
+
+    async def _memory_from_stored(self, *, memory_id: str, decode: Callable[[], Any]) -> Memory:
+        """Decode, repair and validate one stored memory inside its load boundary."""
+        await self._settle_library_granularities()
+        with stored_document_boundary(kind="memory", name=memory_id):
+            data = _mig.stamp_stored(self._renamed_since_read(decode(), kind="memory", key=memory_id))
+            # Memories are never written back, so the repair repeats on every load of a pre-v4 document.
+            if isinstance(data, dict) and int(data["version"]) < _MEMORY_FILTER_REPAIR_BELOW_VERSION:
+                await self._repair_query_filters(query=data.get("query"), data_source=None)
+            return Memory.model_validate(data)
 
     @abstractmethod
     async def _delete_memory_row(self, memory_id: str) -> bool:
-        """Delete by id; return ``True`` if a row was removed, ``False``
-        when the id did not exist."""
+        """Delete by id; ``True`` if a row was removed, ``False`` when absent."""
 
     @abstractmethod
     async def _next_memory_seq(self) -> str:
-        """Return the next int-shaped memory id (as a string), strictly
-        above any int-shaped id currently held by the corpus. Pure-digit,
-        no-leading-zero ids count toward the max walk; ``"42abc"`` and
-        ``"001"`` are ignored. Empty corpus → ``"1"``."""
+        """Next int-shaped memory id (string), above every int-shaped id held — pure-digit, no leading zero (``"42abc"``/``"001"`` ignored); empty corpus → ``"1"``."""
 
     async def save_memory(
         self,
@@ -675,23 +1314,11 @@ class StorageBackend(ABC):
         id: str | None = None,  # noqa: A002 — public kwarg matching MCP / REST
         description: str | None = None,
     ) -> Memory:
-        """Persist a memory.
-
-        * ``id=None`` → allocator picks the next int-shaped id (``str``).
-        * ``id="some-string"`` → user-supplied; rejected on bad charset
-          or empty. Duplicate id → unconditional upsert; ``created_at``
-          of the original row is preserved. On filename-backed (YAML)
-          storage an id differing only by case from an existing one
-          raises :class:`IdCollisionError`.
-
-        DEV-1549: ``description`` is an optional compact preview shown
-        by ``search(compact=True)`` and ``inspect_model(compact=True)``.
-        Length is hard-capped on the ``Memory`` model.
-        """
+        """Persist a memory. ``id=None`` allocates the next int-shaped id; a supplied id is charset-checked and upserts (original ``created_at`` preserved; a case-collision raises :class:`IdCollisionError` on YAML backends). ``description`` is an optional compact preview (capped on the model)."""
         if id is not None:
             _validate_memory_id_charset(id)
             if self._ids_collide_as_filenames:
-                ids = [m.id for m in await self._list_memories_rows(entities=None)]
+                ids = await self._memory_ids()
                 collide = _find_case_colliding_id(candidate=id, existing=ids)
                 if collide is not None:
                     raise IdCollisionError(
@@ -724,21 +1351,28 @@ class StorageBackend(ABC):
             raise MemoryNotFoundError(memory_id)
         return row
 
-    async def list_memories(
-        self, *, entities: list[str] | None = None
-    ) -> list[Memory]:
+    async def _memory_ids(self) -> list[str]:
+        """Every stored memory id, loadable or not."""
+        memories, errors = await self._list_memories_rows(entities=None)
+        return [m.id for m in memories] + [e.name for e in errors]
+
+    async def load_memories(self, *, entities: list[str] | None = None) -> Loaded[Memory]:
+        """The memories ``list_memories`` returns, and the ones that failed to load."""
         return await self._list_memories_rows(entities=entities)
+
+    async def list_memories(
+        self, *, entities: list[str] | None = None, failures: DocumentLoadFailures | None = None,
+    ) -> list[Memory]:
+        return (failures or DocumentLoadFailures()).skip(await self._list_memories_rows(entities=entities))
 
     async def delete_memory(self, memory_id: str) -> None:
         if not await self._delete_memory_row(memory_id):
             raise MemoryNotFoundError(memory_id)
-        # Cascade: drop any embedding rows tagged with this memory's
-        # canonical id so an orphan embedding never survives its source.
+        # Cascade: drop embeddings tagged with this memory's canonical id...
         await self.delete_embeddings_for_canonical(
             canonical_id_prefix=f"{_MEMORY_PREFIX}{memory_id}",
         )
-        # DEV-1428 cascade-strip: drop ``memory:<id>`` refs from every
-        # other memory's ``entities`` list.
+        # ...and drop ``memory:<id>`` refs from every other memory's entities.
         await self.strip_dangling_entities_from_memories(
             canonical_id=f"{_MEMORY_PREFIX}{memory_id}",
         )
@@ -746,30 +1380,11 @@ class StorageBackend(ABC):
     async def strip_dangling_entities_from_memories(
         self, *, canonical_id: str,
     ) -> int:
-        """DEV-1428 defense layer 1: remove ``canonical_id`` from every
-        memory's ``entities`` list.
-
-        Match predicate is split by ref kind:
-
-        * ``memory:<id>`` → exact-match only (memory ids are opaque
-          strings after the prefix; ``memory:42`` must not strip
-          ``memory:421`` or ``memory:42.y``).
-        * ``<ds>[.<model>[.<leaf>]]`` → exact-match OR strict dotted
-          descendant (per the same rule used by
-          ``delete_embeddings_for_canonical``).
-
-        Per-row read-modify-write: re-fetches each candidate row, drops
-        matching entries, and writes back via ``_save_memory_row``
-        directly — does NOT route through ``MemoryService.save_memory``.
-        With memory embeddings rendered from ``learning`` alone (no tags)
-        the content hash never changes, so no embedding refresh fires.
-
-        Returns the number of memories rewritten.
-        """
+        """Remove ``canonical_id`` from every memory's ``entities`` list; returns the count rewritten. Match: ``memory:<id>`` exact-only, ``<ds>[.<model>[.<leaf>]]`` exact or strict dotted descendant. Per-row read-modify-write via ``_save_memory_row`` (not the service); learning-only embeddings mean no refresh fires."""
         if not canonical_id:
             return 0
         is_memory_ref = canonical_id.startswith(_MEMORY_PREFIX)
-        memories = await self._list_memories_rows(entities=None)
+        memories = await self.list_memories()
         rewritten = 0
         for memory in memories:
             if not self._memory_has_cascade_candidate(
@@ -790,9 +1405,7 @@ class StorageBackend(ABC):
     def _memory_has_cascade_candidate(
         *, memory: Memory, canonical_id: str, is_memory_ref: bool,
     ) -> bool:
-        """Cheap snapshot check — does ``memory.entities`` contain any
-        entry the cascade would strip? Used to skip the read-modify-write
-        round-trip for memories the cascade can't touch."""
+        """Cheap snapshot check: does ``memory.entities`` hold anything the cascade would strip? (skips the round-trip when not)."""
         if not memory.entities:
             return False
         return any(
@@ -807,18 +1420,10 @@ class StorageBackend(ABC):
     async def _rewrite_memory_dropping_entity(
         self, *, memory_id: str, canonical_id: str, is_memory_ref: bool,
     ) -> bool:
-        """Re-fetch the row, drop matching entities, write back via
-        ``_save_memory_row``. Returns ``True`` if a write happened.
-
-        Re-fetch is what makes the cascade safe under concurrent saves:
-        the snapshot check above is racy against a write that lands
-        between the read and the cascade rewrite, but the per-row
-        write here always operates on the freshest stored state.
-        """
+        """Re-fetch the row, drop matching entities, write back (``True`` if written). The re-fetch makes the cascade safe under concurrent saves — it always writes the freshest state."""
         fresh = await self._get_memory_row(memory_id)
         if fresh is None:
-            # Concurrent delete won the race; nothing to write.
-            return False
+            return False  # concurrent delete won the race
         fresh_kept = [
             e for e in fresh.entities
             if not _entity_matches_cascade(
@@ -834,30 +1439,23 @@ class StorageBackend(ABC):
         )
         return True
 
-    # ---- graph fingerprint (DEV-1464) -------------------------------------
+    # ---- cache keys ----
 
-    async def graph_fingerprint(self) -> str:
-        """Return a string that changes whenever storage content changes.
-
-        Used by ``slayer.search.graph`` to decide whether to rebuild the
-        ephemeral in-memory LadybugDB property graph.  The default
-        implementation returns ``"0"``; concrete backends override this
-        to provide a meaningful fingerprint (e.g. the db file's mtime for
-        SQLiteStorage, or the max mtime across all YAML files for
-        YAMLStorage).
-
-        Implementations may raise ``OSError`` when the underlying files
-        are inaccessible; callers treat that as a forced rebuild.
-        """
+    async def graph_fingerprint(self) -> str | None:
+        """A string that changes whenever storage content changes; ``None`` (the default) = unknown, so no cache entry is ever reused. May raise ``OSError`` — callers force a rebuild."""
         await asyncio.sleep(0)
-        return "0"
+        return None
 
-    # ---- embeddings sidecar (DEV-1386) ------------------------------------
-    #
-    # One row per ``(canonical_id, embedding_model_name)`` pair. The active
-    # ``embedding_model_name`` (from ``SLAYER_EMBEDDING_MODEL``) selects
-    # which rows the search service actually reads — changing the env var
-    # leaves prior rows in place but inert.
+    async def cache_identity(self) -> Hashable:
+        """Key under which caches derived from this store's content are kept (default: one per instance)."""
+        await asyncio.sleep(0)
+        if self._instance_identity is None:
+            self._instance_identity = uuid.uuid4().hex
+        return self._instance_identity
+
+    # ---- embeddings sidecar ----
+    # One row per ``(canonical_id, embedding_model_name)``; the active model
+    # (``SLAYER_EMBEDDING_MODEL``) selects which rows search reads.
 
     @abstractmethod
     async def save_embedding(self, row: Embedding) -> None:
@@ -874,35 +1472,19 @@ class StorageBackend(ABC):
     async def list_embeddings(
         self, *, embedding_model_name: str,
     ) -> list[Embedding]:
-        """Return every row for ``embedding_model_name``. Used by the
-        search service to load the entire corpus into a numpy matrix."""
+        """Every row for ``embedding_model_name`` (search loads the whole corpus into a numpy matrix)."""
 
     @abstractmethod
     async def delete_embeddings_for_canonical(
         self, *, canonical_id_prefix: str,
     ) -> int:
-        """Cascade-delete embedding rows whose ``canonical_id`` is exactly
-        ``canonical_id_prefix`` or is a strict descendant under the
-        dotted-path namespace (``canonical_id_prefix + "." + …``). Never
-        a character prefix — ``"orders"`` does not match
-        ``"orders_archive"``; ``"memory:4"`` does not match ``"memory:42"``.
-        Returns the row-count deleted.
+        """Cascade-delete embedding rows whose ``canonical_id`` is exactly ``canonical_id_prefix`` or a strict dotted descendant (never a character prefix — ``"orders"`` ≠ ``"orders_archive"``, ``"memory:4"`` ≠ ``"memory:42"``). Returns the count deleted; used by delete_model/_memory/_datasource."""
 
-        Used by ``delete_model`` (root ``"<ds>.<model>"`` matches the
-        model doc and every column / measure / aggregation under it),
-        ``delete_memory`` (root ``"memory:<id>"`` — exact match for one
-        row, no descendants), and ``delete_datasource`` (root ``"<ds>"``
-        — the datasource doc plus every descendant).
-        """
-
-    # Batched read/write helpers (DEV-1405). Default implementations call
-    # the single-row methods M times so any third-party backend keeps
-    # working unchanged; the bundled backends override these to issue one
-    # round-trip via :class:`SidecarEmbeddingStore`.
+    # Batched helpers: defaults call the single-row methods M times so any
+    # backend works unchanged; bundled backends override with one round-trip.
 
     async def save_embeddings(self, rows: list[Embedding]) -> None:
-        """Persist many embedding rows in one round-trip. Default
-        implementation calls :meth:`save_embedding` for each row."""
+        """Persist many embedding rows in one round-trip (default: one :meth:`save_embedding` per row)."""
         for row in rows:
             await self.save_embedding(row)
 
@@ -912,10 +1494,7 @@ class StorageBackend(ABC):
         canonical_ids: list[str],
         embedding_model_name: str,
     ) -> dict[str, "Embedding"]:
-        """Fetch every embedding row in ``canonical_ids`` under the given
-        ``embedding_model_name`` in one round-trip. Returns a dict keyed
-        by ``canonical_id``; missing ids are simply absent from the dict.
-        Default implementation calls :meth:`get_embedding` for each id."""
+        """Fetch every ``canonical_ids`` row under ``embedding_model_name`` in one round-trip, keyed by ``canonical_id`` (missing ids absent; default: one :meth:`get_embedding` per id)."""
         out: dict[str, Embedding] = {}
         for canonical_id in canonical_ids:
             row = await self.get_embedding(
@@ -927,50 +1506,33 @@ class StorageBackend(ABC):
         return out
 
 
-# ---------------------------------------------------------------------------
-# Storage factory with pluggable registry
-# ---------------------------------------------------------------------------
+# ---- storage factory (pluggable registry) ----
 
 _STORAGE_REGISTRY: dict[str, Callable[[str], StorageBackend]] = {}
 
 
 def register_storage(scheme: str, factory: Callable[[str], StorageBackend]) -> None:
-    """Register a storage backend factory for a URI scheme.
-
-    Example:
-        register_storage("redis", lambda path: RedisStorage(url=path))
-    """
+    """Register a storage backend factory for a URI scheme."""
     _STORAGE_REGISTRY[scheme.lower().strip()] = factory
 
 
 def resolve_storage(path: str) -> StorageBackend:
-    """Create a StorageBackend from a path or URI.
-
-    Resolution order:
-    1. URI scheme (e.g., "sqlite:///data.db", "yaml://./dir") → registered factory
-    2. File extension .db/.sqlite/.sqlite3 → SQLiteStorage
-    3. Everything else → YAMLStorage (directory)
-
-    Third-party backends can register via register_storage().
-    """
-    # Check for URI scheme
+    """Create a ``StorageBackend`` from a path/URI: a registered URI scheme first, then ``.db``/``.sqlite``/``.sqlite3`` → SQLite, else a YAML directory. Third-party backends register via ``register_storage()``."""
     if "://" in path:
         scheme, _, remainder = path.partition("://")
         scheme = scheme.lower()
         if scheme in _STORAGE_REGISTRY:
-            return _wrap_join_sync(_STORAGE_REGISTRY[scheme](remainder))
-        # Built-in schemes
+            return _STORAGE_REGISTRY[scheme](remainder)
         if scheme == "yaml":
-            from slayer.storage.yaml_storage import YAMLStorage
+            from slayer.storage.yaml_storage import YAMLStorage  # ALLOW(import-not-top): circular — backend modules import from this module
 
-            return _wrap_join_sync(YAMLStorage(base_dir=remainder))
+            return YAMLStorage(base_dir=remainder)
         if scheme == "sqlite":
-            from slayer.storage.sqlite_storage import SQLiteStorage
+            from slayer.storage.sqlite_storage import SQLiteStorage  # ALLOW(import-not-top): circular — backend modules import from this module
 
-            # sqlite:///abs/path → remainder="/abs/path" (keep absolute)
-            # sqlite://rel/path → remainder="rel/path" (keep relative)
+            # ///abs → "/abs" (absolute); //rel → "rel" (relative)
             db_path = remainder if remainder.startswith("/") else remainder.lstrip("/")
-            return _wrap_join_sync(SQLiteStorage(db_path=db_path))
+            return SQLiteStorage(db_path=db_path)
         raise ValueError(
             f"Unknown storage scheme '{scheme}'. "
             f"Built-in: yaml, sqlite. "
@@ -978,20 +1540,11 @@ def resolve_storage(path: str) -> StorageBackend:
             f"Use register_storage() to add custom backends."
         )
 
-    # Extension-based detection
     if path.endswith((".db", ".sqlite", ".sqlite3")):
-        from slayer.storage.sqlite_storage import SQLiteStorage
+        from slayer.storage.sqlite_storage import SQLiteStorage  # ALLOW(import-not-top): circular — backend modules import from this module
 
-        return _wrap_join_sync(SQLiteStorage(db_path=path))
+        return SQLiteStorage(db_path=path)
 
-    # Default: YAML directory
-    from slayer.storage.yaml_storage import YAMLStorage
+    from slayer.storage.yaml_storage import YAMLStorage  # ALLOW(import-not-top): circular — backend modules import from this module
 
-    return _wrap_join_sync(YAMLStorage(base_dir=path))
-
-
-def _wrap_join_sync(storage: StorageBackend) -> StorageBackend:
-    """Wrap a storage backend with automatic inner-join synchronization."""
-    from slayer.storage.join_sync import JoinSyncStorage
-
-    return JoinSyncStorage(inner=storage)
+    return YAMLStorage(base_dir=path)

@@ -1,155 +1,244 @@
-"""Query models for SLayer.
-
-SlayerQuery is the user-facing query object — minimal, just enough to express intent.
-It is later converted into EnrichedQuery (see slayer/engine/enriched.py) which carries
-fully resolved SQL expressions, model metadata, and is ready for SQL generation.
-"""
+"""Query models for SLayer — the user-facing ``SlayerQuery`` and its helpers."""
 from __future__ import annotations
 
-import datetime
-import logging
+import json
 import math
 import re
-from typing import Annotated, Any, Literal
+from collections.abc import Callable
+from typing import Annotated, Any, Literal, Union
 
 from pydantic import (
+    AfterValidator,
+    AliasChoices,
     BaseModel,
     BeforeValidator,
     ConfigDict,
+    Discriminator,
     Field,
+    PrivateAttr,
+    Tag,
     field_validator,
     model_validator,
 )
 
-from slayer.core.enums import TimeGranularity
-from slayer.core.models import ModelMeasure, SlayerModel
+from slayer.core.direction import normalize_direction
+from slayer.core.enums import BUILTIN_AGGREGATIONS, GRANULARITY_NAMES, TimeGranularity, normalize_aggregation_name, ALL_TRANSFORMS
+from slayer.core.keys import RESERVED_SCALAR_NAMES
+from slayer.core.errors import DistinctDimensionValuesError, GranularityCallError, RefinementConflictError
+from slayer.core.granularity import GranularitySpec, granularity_key
+from slayer.core.models import (
+    Column,
+    ModelJoin,
+    ModelMeasure,
+    SlayerModel,
+    _validate_model_name,
+)
+from slayer.core.refs import auto_name_from_expression
+from slayer.core.time_points import TIME_POINT_FORMS, is_time_point_shape
+from slayer.core.syntax import (
+    AggCall,
+    DottedRef,
+    Placeholder,
+    Ref,
+    StarSource,
+    call_source,
+    canonical_measure_text,
+    drop_root_qualifier,
+    parse_expr,
+    parse_template,
+    root_relative,
+    variable_names,
+)
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
-from slayer.storage.migrations import migrate as _migrate_schema
+from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema
 
-logger = logging.getLogger(__name__)
+#: The SlayerQuery version whose migration retired ``strict``.
+_STRICT_RETIRED_AT = 4
 
-_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-_VAR_PATTERN = re.compile(r"\{\{|\}\}|\{([a-zA-Z_][a-zA-Z0-9_]*)\}|\{([^}]*)\}")
+_NAME_PATTERN = re.compile(r"^[a-zA-Z_]\w*$", re.ASCII)
+_VAR_PATTERN = re.compile(r"\{\{|\}\}|\{([a-zA-Z_]\w*)\}|\{([^}]*)\}", re.ASCII)
+
+# Leading callee of a whole-string single call ``name( ... )``; used only when
+# ``parse_expr`` rejects the shape (e.g. ``month()``) but the callee still names a
+# granularity, so the wrong-shape error can fire.
+_WHOLE_CALL_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*\(.*\)\s*$", re.S)
+
+
+def _reject_call_placeholders(entry: str) -> None:
+    """A functional time-dimension string whose granularity or column is a ``{var}`` is refused."""
+    call = call_source(entry)
+    if call is not None and len(call.callee) == 1:
+        column = call.arguments[0] if len(call.arguments) == 1 else None
+        _reject_time_dimension_placeholders(entry, granularity=call.callee[0], column=column)
+
+
+def _granularity_names() -> str:
+    return ", ".join(g.value for g in TimeGranularity)
+
+
+def _single_col_of_source(node: AggCall) -> str | None:
+    """The dotted column name if ``node``'s source is a lone ref, else ``None``."""
+    src = node.source
+    if isinstance(src, Ref):
+        return src.name
+    if isinstance(src, DottedRef):
+        return ".".join(src.parts)
+    return None
+
+
+def _parsed_or_none(text: str) -> Any:
+    try:
+        return parse_expr(text)
+    except Exception:  # noqa: BLE001 — the caller reports unparseable text
+        return None
+
+
+def call_callee(entry: str) -> tuple[Any, str | None]:
+    """``entry`` parsed as a template (``None`` when unparseable) and its whole-call callee, if any."""
+    try:
+        node: Any = parse_template(entry)
+    except Exception:  # noqa: BLE001 — the caller reports unparseable text
+        node = None
+    if isinstance(node, AggCall):
+        return node, node.agg
+    if node is None:
+        m = _WHOLE_CALL_RE.match(entry)
+        return None, (m.group(1) if m else None)
+    call = call_source(entry)
+    return node, (call.callee[0] if call is not None and len(call.callee) == 1 else None)
+
+
+def functional_call_column(node: Any) -> str | None:
+    """The column of a single-column call ``name(col)``, else ``None``."""
+    if isinstance(node, AggCall) and not node.args and not node.kwargs:
+        return _single_col_of_source(node)
+    return None
+
+
+def granularity_call_argument(node: Any, entry: str) -> str | None:
+    """The argument text of a single-argument call ``name(expr)``, else ``None``."""
+    if not isinstance(node, AggCall) or node.args or node.kwargs or isinstance(node.source, StarSource):
+        return None
+    call = call_source(entry)
+    if call is None or len(call.callee) != 1:
+        return _single_col_of_source(node)  # the legacy ``col:gran`` spelling
+    # ``date_trunc('unit', expr)``: the unit is a plain literal
+    arguments = call.arguments[1:] if call.callee[0].lower() == "date_trunc" else call.arguments
+    return arguments[0] if len(arguments) == 1 else None
+
+
+def _callee_granularity(callee: str) -> str:
+    return callee.lower() if callee.lower() in GRANULARITY_NAMES else callee
+
+
+def time_dimension_from_functional(entry: str, *, names: "frozenset[str] | set[str]") -> dict | None:
+    """A ``gran(expr)`` string whose casefolded callee is in ``names`` → its ``TimeDimension``
+    dict; another callee or a non-call → ``None``; a granularity callee of any other shape → raise."""
+    node, callee = call_callee(entry)
+    if callee is None or callee.casefold() not in names:
+        return None
+    arg = granularity_call_argument(node, entry)
+    if arg is None:
+        _reject_call_placeholders(entry)
+        raise GranularityCallError.wrong_shape(entry)
+    return {"dimension": arg, "granularity": _callee_granularity(callee)}
+
+
+def granularity_call_parts(entry: str) -> tuple[str, str] | None:
+    """``(expr, callee)`` for a well-formed single-argument call string, else ``None`` (never raises);
+    used to resolve a functional order key against projected time dimensions."""
+    node, callee = call_callee(entry)
+    arg = granularity_call_argument(node, entry)
+    if callee is None or arg is None:
+        return None
+    return arg, _callee_granularity(callee)
+
+
+def _split_functional_dimensions(dims: "list | tuple") -> tuple[list, list]:
+    """Partition ``dimensions`` into (kept, extracted-TD-dicts): a built-in ``gran(col)``
+    string becomes a ``TimeDimension`` dict; any other call resolves at binding."""
+    kept: list = []
+    rewritten: list = []
+    for item in dims:
+        if isinstance(item, str):
+            td = time_dimension_from_functional(item, names=GRANULARITY_NAMES)
+            if td is not None:
+                rewritten.append(td)
+                continue
+        kept.append(item)
+    return kept, rewritten
+
+
+def _coerce_time_dimension_entry(entry: Any) -> Any:
+    """A string ``time_dimensions`` entry must be the functional ``gran(col)`` form (a
+    non-built-in callee resolves at binding); dicts/objects pass through untouched."""
+    if not isinstance(entry, str):
+        return entry
+    _reject_call_placeholders(entry)
+    td = time_dimension_from_functional(entry, names=GRANULARITY_NAMES)
+    if td is not None:
+        return td
+    node, callee = call_callee(entry)
+    arg = granularity_call_argument(node, entry)
+    if callee is None or arg is None:
+        raise GranularityCallError(
+            f"Time dimension {entry!r} must be the functional form "
+            f"``gran(expr)`` (e.g. ``month(created_at)``) for one of: "
+            f"{_granularity_names()} or a datasource granularity; no default granularity is invented."
+        )
+    return {"dimension": arg, "granularity": callee}
+
+
+def _rewrite_functional_granularity(data: dict) -> dict:
+    """Move ``gran(col)`` dimension strings into ``time_dimensions`` and coerce
+    string ``time_dimensions`` entries; both accept only the functional form."""
+    rewritten: list = []
+    dims = data.get("dimensions")
+    if isinstance(dims, (list, tuple)):
+        kept, rewritten = _split_functional_dimensions(dims)
+        if len(kept) != len(dims):
+            # Consuming every entry leaves ``None`` (not ``[]``) so the dump
+            # matches an explicitly time-dimension-only query.
+            data = {**data, "dimensions": kept or None}
+    tds = data.get("time_dimensions")
+    # A malformed non-list ``time_dimensions`` is left untouched so field
+    # validation rejects it cleanly, rather than a silent replace / TypeError.
+    if tds is not None and not isinstance(tds, (list, tuple)):
+        return data
+    if tds or rewritten:
+        coerced = [_coerce_time_dimension_entry(entry) for entry in (tds or [])]
+        coerced.extend(rewritten)
+        data = {**data, "time_dimensions": coerced}
+    return data
 
 
 def _validate_query_filter_string(formula: str) -> None:
-    """Apply DEV-1369 DSL-mode construction-time rules to a single
-    ``SlayerQuery.filters`` entry: reject raw ``OVER (...)`` window-function
-    syntax.
-
-    Raw SQL function calls (``json_extract``, ``coalesce``, …) and
-    unknown bare names are rejected at enrichment time by
-    :func:`slayer.core.formula.parse_filter` and the strict-resolution
-    pass in :func:`slayer.engine.enrichment.resolve_filter_columns`.
-    """
+    """Reject raw ``OVER (...)`` window syntax in a ``SlayerQuery.filters`` entry."""
     if has_window_function(formula):
         raise ValueError(f"Filter '{formula}' {WINDOW_IN_FILTER_ERROR}")
 
 
-# C0 control characters (U+0000–U+001F) → Python string-literal escapes, used
-# by the ``"python"`` regime (DEV-1727). A raw newline / carriage return / NUL
-# inside a single-quoted literal makes ``ast.parse`` raise, so every C0 char is
-# encoded: ``\t``/``\n``/``\r`` as their named escape, the rest as ``\xNN``.
-# Encoding the whole C0 range (not just the three ast-breakers) keeps the
-# substituted filter single-line and printable, at zero behavioural cost —
-# ``ast.parse`` recovers the identical value either way.
-_C0_NAMED_ESCAPES = {"\t": "\\t", "\n": "\\n", "\r": "\\r"}
-_C0_ESCAPE_MAP = {
-    chr(codepoint): _C0_NAMED_ESCAPES.get(chr(codepoint), f"\\x{codepoint:02x}")
-    for codepoint in range(0x20)
-}
-_C0_RE = re.compile(r"[\x00-\x1f]")
+def _escape_string_value(value: str, *, backslash_escapes: bool) -> str:
+    """Escape a string value for a SQL literal; double quote deliberately left untouched."""
+    if backslash_escapes:
+        # order matters: double the backslash before escaping the quote.
+        return value.replace("\\", "\\\\").replace("'", "\\'")
+    return value.replace("'", "''")
 
 
-def _escape_string_value(
-    value: str, escape: Literal["sql", "python"], *, backslash_escapes: bool
-) -> str:
-    """Escape a string variable value for the target expression layer.
-
-    The value is inserted, unquoted, into a quoted literal the author already
-    wrote (``status = '{v}'``); escaping keeps it from breaking out of that
-    literal. Two layers, two escaping regimes (DEV-1625, hardened in DEV-1727):
-
-    - ``"sql"`` — Mode-A raw-SQL surfaces are parsed by sqlglot. The regime is
-      **dialect-aware** (``backslash_escapes``):
-
-      * ``False`` (standard dialects — SQLite/Postgres/DuckDB/T-SQL/Trino/
-        Presto/Oracle): a backslash is an ordinary literal char, so only the
-        single quote is doubled (``'`` → ``''``).
-      * ``True`` (backslash dialects — MySQL/ClickHouse/Snowflake/Redshift/
-        BigQuery/Databricks/Spark): a backslash escapes the next char, so it is
-        doubled FIRST (``\\`` → ``\\\\``) and the single quote is
-        backslash-escaped (``'`` → ``\\'``). The double quote is left untouched
-        — inside a single-quoted literal it is an ordinary char on every
-        dialect, and ``\\"`` is not a recognised escape on 6 of the 7 backslash
-        dialects (only MySQL), so escaping it would corrupt the value.
-
-    - ``"python"`` — Mode-B query filters are parsed by SLayer's Python-AST
-      formula parser, where SQL quote-doubling would be read as adjacent-literal
-      concatenation (``'O''Brien'`` → ``'OBrien'``). So backslash is doubled
-      FIRST, then both quote styles are backslash-escaped, then every C0
-      control char (U+0000–U+001F) is encoded, matching Python string-literal
-      rules so ``ast.parse`` recovers the original value. This matters because a
-      raw newline/CR/NUL in a single-quoted Python literal is a ``SyntaxError``
-      (or "null bytes" error), so leaving control chars unescaped would make
-      ``ast.parse`` reject an otherwise valid value. SQL literals permit raw
-      newlines, so the ``"sql"`` branch leaves them alone.
-      ``backslash_escapes`` is ignored here.
-    """
-    if escape == "sql":
-        if backslash_escapes:
-            # Double the backslash before escaping the quote (order matters).
-            return value.replace("\\", "\\\\").replace("'", "\\'")
-        return value.replace("'", "''")
-    # python: order matters — double the backslash before escaping quotes, then
-    # encode C0 control chars so ast.parse recovers a single-line literal.
-    escaped = value.replace("\\", "\\\\").replace("'", "\\'").replace('"', '\\"')
-    return _C0_RE.sub(lambda m: _C0_ESCAPE_MAP[m.group(0)], escaped)
-
-
-def _render_list_value(
-    name: str,
-    value: "list | tuple",
-    escape: Literal["sql", "python"],
-    *,
-    backslash_escapes: bool,
-) -> str:
-    """Render a ``list``/``tuple`` variable value into an ``IN``-list body
-    (DEV-1730 multi-value pushdown).
-
-    The intended template shape is ``col IN ({var})`` — the author writes the
-    parentheses; this renders the comma-separated body only. Unlike a scalar
-    string (where the author writes the surrounding quotes), each string element
-    is **auto-quoted** here: a single placeholder can't carry per-element quotes,
-    so quoting has to happen at render time. Elements are escaped per the target
-    layer via :func:`_escape_string_value`, so DEV-1727's escaping composes.
-
-    - ``str`` element → auto-quoted + escaped (``O'Brien`` → ``'O''Brien'`` in
-      sql mode; ``'O\\'Brien'`` in python mode).
-    - ``int``/``float``/``bool`` element → bare via ``str()``; a non-finite float
-      element raises (it can never render a valid literal).
-    - ``escape="python"`` appends a **trailing comma** so the Mode-B Python-AST
-      parser always reads a tuple — ``x in ('A',)`` (1-tuple membership), never
-      ``x in ('A')`` (which parses as ``str`` containment).
-    - An **empty** list/tuple raises: ``IN ()`` is invalid SQL, and "no filter"
-      semantics belong to a sentinel default (see DEV-1730).
-    - ``None``, nested list/tuple, dict, or any other element type raises,
-      naming the variable.
-    """
+def _render_list_value(name: str, value: "list | tuple", *, backslash_escapes: bool) -> str:
+    """Render a ``list``/``tuple`` into an ``IN``-list body: template writes
+    the parens (``col IN ({var})``), string elements auto-quoted; empty list raises (``IN ()`` invalid)."""
     if len(value) == 0:
         raise ValueError(
             f"Variable '{name}' cannot be an empty list; 'IN ()' is invalid SQL. "
-            f"For 'no filter' semantics, use a sentinel default (see DEV-1730)."
+            f"For 'no filter' semantics, use a sentinel default."
         )
     rendered: list[str] = []
     for element in value:
         if isinstance(element, str):
             rendered.append(
-                "'"
-                + _escape_string_value(
-                    value=element, escape=escape, backslash_escapes=backslash_escapes
-                )
-                + "'"
+                "'" + _escape_string_value(value=element, backslash_escapes=backslash_escapes) + "'"
             )
         # bool is an int subclass and is accepted (renders True/False).
         elif isinstance(element, (int, float)):
@@ -163,37 +252,16 @@ def _render_list_value(
                 f"Variable '{name}' list element must be a string, number, or bool, "
                 f"got {type(element).__name__}"
             )
-    joined = ", ".join(rendered)
-    # Mode-B (python) needs the trailing comma to force tuple parsing; Mode-A
-    # (sql) must NOT have it (``IN (1, 2,)`` is a syntax error in most dialects).
-    return f"{joined}," if escape == "python" else joined
+    return ", ".join(rendered)
 
 
-def _render_variable_value(
-    name: str,
-    value: Any,
-    escape: Literal["sql", "python"],
-    *,
-    backslash_escapes: bool,
-) -> str:
-    """Render a single resolved variable value into substitution text.
-
-    Strings are escaped for the target layer (see :func:`_escape_string_value`);
-    numbers (including ``bool``) pass through via ``str()`` but non-finite floats
-    raise (they can never render a valid literal). A ``list``/``tuple`` renders
-    an ``IN``-list body (see :func:`_render_list_value`); anything else raises.
-    """
-    # list/tuple first: an IN-list body (DEV-1730). Checked before str so the
-    # scalar path only ever sees a single value.
+def _render_variable_value(name: str, value: Any, *, backslash_escapes: bool) -> str:
+    """Render one resolved variable value into substitution text (see the two helpers)."""
+    # list/tuple first, so the scalar path only ever sees a single value.
     if isinstance(value, (list, tuple)):
-        return _render_list_value(
-            name=name, value=value, escape=escape, backslash_escapes=backslash_escapes
-        )
+        return _render_list_value(name=name, value=value, backslash_escapes=backslash_escapes)
     if isinstance(value, str):
-        return _escape_string_value(
-            value=value, escape=escape, backslash_escapes=backslash_escapes
-        )
-    # bool is an int subclass and is accepted (renders True/False).
+        return _escape_string_value(value=value, backslash_escapes=backslash_escapes)
     if isinstance(value, (int, float)):
         if isinstance(value, float) and not math.isfinite(value):
             raise ValueError(f"Variable '{name}' must be finite, got {value!r}")
@@ -209,12 +277,7 @@ _BLOCK_CLOSE = "?}"
 
 
 def _find_block_end(text: str, start: int) -> int:
-    """Scan from ``start`` (just past a ``{?``) to the matching ``?}``.
-
-    Returns the index of the closing ``?}``. Raises on a nested ``{?`` (blocks
-    do not nest) or if no close is found before end-of-string. ``{{``/``}}``
-    escapes are skipped so they can never masquerade as block delimiters.
-    """
+    """Index of the ``?}`` closing the block at ``start`` (blocks don't nest; ``{{``/``}}`` skipped)."""
     i, n = start, len(text)
     while i < n:
         two = text[i:i + 2]
@@ -234,13 +297,7 @@ def _find_block_end(text: str, start: int) -> int:
 
 
 def _split_blocks(text: str) -> list[tuple[str, str]]:
-    """Split ``text`` into ``("text", s)`` / ``("block", inner)`` parts.
-
-    Top-level ``{? ... ?}`` spans become ``block`` parts (inner text only);
-    everything else is ``text``. ``{{``/``}}`` escapes are preserved verbatim in
-    ``text`` parts (the downstream var pass renders them). Raises on a stray
-    ``?}`` (a close with no open). Blocks never nest (enforced here).
-    """
+    """Split ``text`` into ``("text", s)`` / ``("block", inner)`` parts on top-level ``{? ?}`` spans."""
     parts: list[tuple[str, str]] = []
     buf: list[str] = []
     i, n = 0, len(text)
@@ -268,12 +325,7 @@ def _split_blocks(text: str) -> list[tuple[str, str]]:
 
 
 def _block_var_names(inner: str, whole: str) -> list[str]:
-    """Return the valid ``{var}`` names inside a block's ``inner`` text.
-
-    Raises if the block carries an invalid ``{...}`` name, or if it contains no
-    ``{var}`` at all (an optional block with nothing to key on is a mistake —
-    it would render identically whether or not any variable is supplied).
-    """
+    """Valid ``{var}`` names inside a block; raises on an invalid name or an empty block."""
     names: list[str] = []
     for match in _VAR_PATTERN.finditer(inner):
         if match.group(0) in ("{{", "}}"):
@@ -297,12 +349,8 @@ def _contains_block_delimiter(text: str) -> bool:
     return _BLOCK_OPEN in text or _BLOCK_CLOSE in text
 
 
-def _make_var_replacer(
-    filter_str: str, variables: dict, escape: str, backslash_escapes: bool
-):
-    """Build the ``re.sub`` replacement callable for ``{var}`` / ``{{`` / ``}}``
-    tokens, closed over the resolved escaping regime. Extracted from
-    :func:`substitute_variables` to keep its cognitive complexity in check."""
+def _make_var_replacer(filter_str: str, variables: dict, backslash_escapes: bool):
+    """Build the ``re.sub`` replacement callable for ``{var}`` / ``{{`` / ``}}`` tokens."""
 
     def _replace(match: re.Match) -> str:
         full = match.group(0)
@@ -310,7 +358,6 @@ def _make_var_replacer(
             return "{"
         if full == "}}":
             return "}"
-        # Group 1: valid variable name
         valid_name = match.group(1)
         if valid_name is not None:
             if valid_name not in variables:
@@ -321,10 +368,8 @@ def _make_var_replacer(
             return _render_variable_value(
                 name=valid_name,
                 value=variables[valid_name],
-                escape=escape,
                 backslash_escapes=backslash_escapes,
             )
-        # Group 2: invalid variable name (matched {something} but name was invalid)
         bad_name = match.group(2)
         raise ValueError(
             f"Invalid variable name '{bad_name}' in filter: {filter_str!r}. "
@@ -338,74 +383,24 @@ def substitute_variables(
     filter_str: str,
     variables: dict[str, Any],
     *,
-    escape: Literal["sql", "python"],
     backslash_escapes: bool | None = None,
 ) -> str:
-    """Substitute {variable} placeholders in a filter or raw-SQL string.
-
-    - {var_name} is replaced with the variable's value (str, number, or list).
-    - {{ and }} are escaped to literal { and }.
-    - Variable names must be alphanumeric + underscore.
-    - Raises ValueError for undefined variables or invalid variable names.
-
-    ``escape`` (required, keyword-only) selects the escaping regime for string
-    values by expression layer — ``"sql"`` for Mode-A raw-SQL surfaces,
-    ``"python"`` for Mode-B query filters. See :func:`_escape_string_value`.
-    Numbers (including ``bool``) pass through via ``str()``; non-finite floats
-    (``nan``/``inf``) raise, since they can never render a valid literal.
-
-    ``backslash_escapes`` (keyword-only) is the **dialect-aware** signal for the
-    ``"sql"`` regime (DEV-1727) and is **fail-closed**: with ``escape="sql"`` it
-    is REQUIRED (``None`` raises), so a caller that renders raw SQL can never
-    silently under-escape on a backslash dialect. Derive it from
-    ``SqlDialect.backslash_escapes_strings``. It is ignored for
-    ``escape="python"`` (Mode-B escaping is dialect-independent).
-
-    A ``list``/``tuple`` value renders an ``IN``-list body (DEV-1730). The
-    template writes the parentheses (``col IN ({var})``) and each string element
-    is **auto-quoted** — the opposite of the scalar-string convention where the
-    author writes the quotes (``status = '{v}'``). See :func:`_render_list_value`.
-
-    Example:
-        substitute_variables("status = '{status_val}'", {"status_val": "active"}, escape="sql", backslash_escapes=False)
-        → "status = 'active'"
-
-        substitute_variables("amount > {min_amount}", {"min_amount": 100}, escape="sql", backslash_escapes=False)
-        → "amount > 100"
-
-        substitute_variables("region IN ({regions})", {"regions": ["US", "CA"]}, escape="sql", backslash_escapes=False)
-        → "region IN ('US', 'CA')"
-    """
-    if escape not in ("sql", "python"):
+    """Substitute ``{var}`` placeholders in a raw-SQL string (``{{``/``}}`` → literal braces).
+    ``backslash_escapes`` is the fail-closed dialect signal. A ``list``/``tuple`` renders an
+    auto-quoted ``IN``-list body."""
+    if backslash_escapes is None:
         raise ValueError(
-            f"Invalid escape mode {escape!r}; expected 'sql' or 'python'."
-        )
-    if escape == "sql" and backslash_escapes is None:
-        raise ValueError(
-            "escape='sql' requires backslash_escapes to be specified: True on "
+            "substitute_variables requires backslash_escapes to be specified: True on "
             "backslash-escaping dialects (MySQL, ClickHouse, Snowflake, "
             "Redshift, BigQuery, Databricks, Spark), False on standard dialects "
             "(SQLite, Postgres, DuckDB, ...). Derive it from "
             "SqlDialect.backslash_escapes_strings."
         )
-    # Normalise to a concrete bool for the value renderers; python mode ignores
-    # the signal (Mode-B escaping is dialect-independent).
-    effective_backslash_escapes = bool(backslash_escapes) if escape == "sql" else False
     _replace = _make_var_replacer(
-        filter_str, variables, escape, effective_backslash_escapes
+        filter_str=filter_str, variables=variables, backslash_escapes=backslash_escapes
     )
 
-    # Optional blocks {? ... ?} are a Mode-A-only construct (DEV-1730). The
-    # Mode-B Python-AST filter layer rejects them outright.
-    if escape == "python":
-        if _contains_block_delimiter(filter_str):
-            raise ValueError(
-                f"Optional blocks '{{? ... ?}}' are not supported in Mode-B "
-                f"(python) filters: {filter_str!r}."
-            )
-        return _VAR_PATTERN.sub(_replace, filter_str)
-
-    # Fast path: no block delimiters -> the original single-pass regex sub.
+    # Fast path: no blocks -> single-pass regex sub.
     if not _contains_block_delimiter(filter_str):
         return _VAR_PATTERN.sub(_replace, filter_str)
 
@@ -413,11 +408,7 @@ def substitute_variables(
 
 
 def _render_block_segments(filter_str: str, variables: dict, replace_fn) -> str:
-    """Render a Mode-A string that contains at least one ``{? ... ?}`` block.
-
-    Plain text segments substitute normally; a block renders parenthesised when
-    every inner ``{var}`` is supplied, else collapses to the neutral ``(1=1)``.
-    """
+    """Render a Mode-A string with ``{? ?}`` blocks: parenthesised when every inner ``{var}`` is supplied, else ``(1=1)``."""
     out: list[str] = []
     for kind, segment in _split_blocks(filter_str):
         if kind == "text":
@@ -431,20 +422,30 @@ def _render_block_segments(filter_str: str, variables: dict, replace_fn) -> str:
     return "".join(out)
 
 
+def _mode_b_surfaces(query: "SlayerQuery") -> list[str]:
+    """Every Mode-B text of ``query`` that binds ``{var}``: filters, measure formulas,
+    computed-dimension and time-dimension expressions and order expressions."""
+    return [
+        *(query.filters or []),
+        *(m.formula for m in query.measures or []),
+        *(d.expression for d in query.dimensions or [] if isinstance(d, ComputedDimension)),
+        *(o.raw_formula for o in query.order or [] if o.raw_formula),
+        *(td.dimension for td in query.time_dimensions or []),
+    ]
+
+
+def _bare_variable_names(text: str) -> set[str]:
+    """The ``{var}`` names of a non-Mode-B text (a granularity, a ``date_range`` bound)."""
+    return {m.group(1) for m in _VAR_PATTERN.finditer(text) if m.group(1)}
+
+
 def extract_placeholder_names(query: "SlayerQuery") -> set:
-    """Return the set of valid {var} placeholder names referenced in
-    ``query.filters``. Used to compute required-variable lists and to
-    inject placeholder defaults during save-time dry-run validation.
-    """
-    found: set = set()
-    for f in (query.filters or []):
-        for match in _VAR_PATTERN.finditer(f):
-            if match.group(0) in ("{{", "}}"):
-                continue
-            valid_name = match.group(1)
-            if valid_name:
-                found.add(valid_name)
-    return found
+    """The variables ``query``'s binding looks up, ``date_range`` bounds included."""
+    bounds = (b for td in query.time_dimensions or [] for b in td.date_range or [] if b is not None)
+    return {
+        *(name for text in _mode_b_surfaces(query) for name in variable_names(text)),
+        *(name for bound in bounds for name in _bare_variable_names(bound)),
+    }
 
 
 def _probe_replace(match: re.Match) -> str:
@@ -457,13 +458,7 @@ def _probe_replace(match: re.Match) -> str:
 
 
 def render_probe_text(text: str) -> str:
-    """Render a Mode-A surface for a syntax-only sqlglot parse (DEV-1730).
-
-    Optional blocks collapse to ``(1=1)`` (their absent-value form) and every
-    remaining ``{var}`` becomes the literal ``0`` — enough for sqlglot to parse
-    structure without any caller variables. Shared by every converter validation
-    path so import-time validation matches execution-time rendering.
-    """
+    """Render a Mode-A surface for a syntax-only sqlglot parse (blocks → ``(1=1)``, ``{var}`` → ``0``); shared so import-time parsing matches execution."""
     out: list[str] = []
     for kind, segment in _split_blocks(text):
         if kind == "block":
@@ -474,35 +469,21 @@ def render_probe_text(text: str) -> str:
 
 
 class ModelVariables(BaseModel):
-    """Structural classification of a model's Mode-A ``{var}`` placeholders.
-
-    ``required`` vars have no default and are not inside an optional block, so a
-    query that omits them raises. ``optional`` vars either sit inside a ``{? ?}``
-    block (collapse to ``(1=1)`` when absent) or carry a ``query_variables``
-    default. Derived on demand from the four Mode-A surfaces — nothing is
-    persisted, so there is no schema-version impact (DEV-1730).
-    """
+    """A model's ``{var}`` placeholders split into ``required`` (no default, not in a block) and ``optional`` (blocked or defaulted)."""
 
     required: list[str] = Field(default_factory=list)
     optional: list[str] = Field(default_factory=list)
 
 
 def extract_variable_refs(text: str) -> tuple[set[str], set[str]]:
-    """Return ``(bare_names, blocked_names)`` referenced in a Mode-A ``text``.
-
-    ``bare_names`` appear outside any ``{? ?}`` block; ``blocked_names`` appear
-    inside one. A name may land in both sets (used bare in one place and blocked
-    in another) — the caller resolves the precedence.
-    """
+    """Return ``(bare_names, blocked_names)`` in a Mode-A ``text`` — outside vs inside a ``{? ?}`` block; a name may land in both."""
     bare: set[str] = set()
     blocked: set[str] = set()
     try:
         parts = _split_blocks(text)
     except ValueError:
-        # Malformed block delimiters (stray '?}' / unterminated '{?'): classify
-        # structurally as block-free rather than breaking read-only inspection
-        # (extract_model_variables runs unguarded from the inspect skeleton).
-        # Execution still raises through substitute_variables.
+        # Malformed delimiters: classify as block-free so read-only inspection
+        # doesn't break; execution still raises through substitute_variables.
         parts = [("text", text)]
     for kind, segment in parts:
         target = bare if kind == "text" else blocked
@@ -515,14 +496,9 @@ def extract_variable_refs(text: str) -> tuple[set[str], set[str]]:
 
 
 def extract_model_variables(model: SlayerModel) -> ModelVariables:
-    """Classify a model's Mode-A ``{var}`` placeholders as required / optional.
-
-    Walks the four Mode-A surfaces — ``SlayerModel.sql``, ``SlayerModel.filters``,
-    ``Column.sql``, ``Column.filter`` — the same surfaces DEV-1625 substitutes.
-    A bare occurrence with no ``query_variables`` default is required; everything
-    else (inside a block, or defaulted) is optional. A bare-without-default
-    occurrence anywhere wins, so a var used both bare and blocked is required.
-    """
+    """Classify a model's ``{var}`` placeholders as required / optional across its four
+    Mode-A surfaces and its saved measure formulas. A bare, undefaulted occurrence
+    anywhere makes the var required (a measure has no optional blocks); everything else is optional."""
     surfaces: list[str] = []
     if model.sql:
         surfaces.append(model.sql)
@@ -539,6 +515,8 @@ def extract_model_variables(model: SlayerModel) -> ModelVariables:
         s_bare, s_blocked = extract_variable_refs(surface)
         bare |= s_bare
         blocked |= s_blocked
+    for measure in model.measures:
+        bare |= set(variable_names(measure.formula))
 
     defaults = set(model.query_variables or {})
     required = {name for name in bare if name not in defaults}
@@ -549,23 +527,9 @@ def extract_model_variables(model: SlayerModel) -> ModelVariables:
 
 
 def declared_variable_specs(model: SlayerModel) -> dict[str, dict]:
-    """The model's DECLARED Mode-A variable bag (``name -> spec``), or ``{}``.
-
-    An importer that generates parameterized model SQL records what it emitted
-    under ``meta.cube_variables``, so the engine can tell a generated template
-    apart from hand-written SQL that merely contains braces. ``meta`` is
-    user-extensible, so every layer is shape-checked and a malformed bag
-    degrades to "nothing declared" rather than raising during a query.
-
-    An entry counts as a declaration only if it carries a NON-EMPTY string
-    ``member`` — the shape every importer writes (a member name is always a
-    parsed identifier). That makes the bag SELF-IDENTIFYING, so a hand-written
-    ``meta`` that happens to reuse the ``cube_variables`` key for something else
-    (``{"cube_variables": {"note": {}}}``) is not mistaken for generated SQL.
-    The distinction matters: :func:`declares_variables` disables the
-    zero-variable brace-literal fast path, so a false positive would make a
-    previously-working model with raw braces start raising.
-    """
+    """The model's declared Mode-A variable bag (``name -> spec``) from ``meta.cube_variables``,
+    or ``{}`` (shape-checked; ``meta`` is user-extensible). An entry counts only with a non-empty
+    string ``member``, so a reused ``cube_variables`` key isn't mistaken for generated SQL."""
     declared = (model.meta or {}).get("cube_variables")
     if not isinstance(declared, dict):
         return {}
@@ -577,48 +541,21 @@ def declared_variable_specs(model: SlayerModel) -> dict[str, dict]:
 
 
 def _is_member_name(spec: dict) -> bool:
-    """True if ``spec`` carries the non-empty string ``member`` that marks it as
-    a real importer-written variable declaration."""
+    """True if ``spec`` carries the non-empty string ``member`` marking a real declaration."""
     member = spec.get("member")
     return isinstance(member, str) and bool(member)
 
 
 def declares_variables(model: SlayerModel) -> bool:
-    """True if the model declares its Mode-A variables (importer-generated SQL).
-
-    Such a model is unambiguously parameterized, so the DEV-1625 brace-literal
-    protection — which leaves surfaces untouched on a zero-variable call so raw
-    braces like a Postgres array ``'{1,2,3}'`` survive — must NOT apply: leaving
-    a declared ``{var}`` unrendered emits it into SQL instead of raising the
-    documented missing-variable error. Hand-written models declare nothing and
-    keep the protection.
-    """
+    """True if the model declares its Mode-A variables (importer-generated SQL), disabling the
+    brace-literal protection: a declared but unrendered ``{var}`` must raise, not survive as a raw brace."""
     return bool(declared_variable_specs(model))
 
 
 def list_valued_variable_names(model: SlayerModel) -> set[str]:
-    """Names of the model's Mode-A variables DECLARED to fill an ``IN``-list.
-
-    The generic ``{var}`` contract puts quoting on the template author — a
-    scalar string renders unquoted so ``{var}`` also works in numeric and
-    fragment positions (``order_total >= {floor}``, ``{d}::TIMESTAMP``). That
-    reasoning needs an author who can see the position, and it breaks down for
-    a MACHINE-generated surface: the Cube importer emits the fixed template
-    ``col IN ({var})``, so the caller can never write the quotes, and a scalar
-    string would render ``IN (US)`` — a column reference that sqlglot parses
-    happily and the database rejects (or, worse, silently resolves).
-
-    An importer therefore declares such a variable with ``list_valued: true`` in
-    ``meta.cube_variables``; :func:`coerce_declared_list_variables` acts on it.
-    Only that neutral flag is read here — not Cube's ``kind`` taxonomy — so a
-    future front-end emitting a different list-shaped template opts in the same
-    way. Returns an empty set for a hand-written model (nothing declared), which
-    keeps the generic scalar convention untouched.
-
-    The flag must be exactly ``True``: ``meta`` is user-extensible, and matching
-    on truthiness would let a stray ``1`` or the string ``"false"`` silently
-    switch a variable's substitution semantics.
-    """
+    """Names of Mode-A variables declared ``list_valued: true`` in ``meta.cube_variables``. A
+    machine-generated ``col IN ({var})`` can't quote the author, so a scalar renders ``IN (US)``
+    (rejected); the flag opts into list-wrapping. Must be exactly ``True`` (truthiness would flip semantics)."""
     return {
         name
         for name, spec in declared_variable_specs(model).items()
@@ -629,20 +566,9 @@ def list_valued_variable_names(model: SlayerModel) -> set[str]:
 def coerce_declared_list_variables(
     variables: dict[str, Any], *, list_valued: set[str]
 ) -> dict[str, Any]:
-    """Wrap a scalar supplied for a declared list-valued variable in a
-    one-element list, so it renders ``IN ('US')`` rather than ``IN (US)``.
-
-    In ``IN (...)`` position a scalar and a one-element list are semantically
-    identical, so this is a normalisation, not a guess — there is no competing
-    reading of ``{"regions": "US"}`` against ``region IN ({regions})``.
-
-    Only ``str``/``int``/``float``/``bool`` are wrapped. A ``list``/``tuple``
-    passes through unchanged (including the empty list, which keeps raising —
-    ``IN ()`` is invalid SQL and "no filter" belongs to an optional block or a
-    sentinel default). Any other type is left alone so
-    :func:`_render_variable_value` still raises its own naming error. Returns
-    the input dict unchanged when nothing needs wrapping; never mutates it.
-    """
+    """Wrap a scalar supplied for a declared list-valued variable in a one-element list, so it
+    renders ``IN ('US')`` not ``IN (US)`` — a normalisation, not a guess. Only ``str``/``int``/``float``/
+    ``bool`` are wrapped; other types (incl. the empty list, which keeps raising) pass through. Never mutates."""
     if not list_valued:
         return variables
     coerced: dict[str, Any] | None = None
@@ -650,7 +576,6 @@ def coerce_declared_list_variables(
         if name not in variables:
             continue
         value = variables[name]
-        # bool is an int subclass and is accepted, matching the list renderer.
         if isinstance(value, (str, int, float)):
             if coerced is None:
                 coerced = dict(variables)
@@ -659,38 +584,23 @@ def coerce_declared_list_variables(
 
 
 class ColumnRef(BaseModel):
-    """Reference to a dimension by name.
-
-    Supports dotted paths for joined models: "status", "customers.name",
-    "customers.regions.name" (multi-hop). Dots are parsed at validation time:
-    everything before the last dot goes into ``model``, the leaf stays in ``name``.
-
-    Computed dimensions (SQL expressions) should be defined via ModelExtension
-    on the query's model.
-    """
+    """A column reference: bare name or dotted join path."""
     name: str
     model: str | None = None
     label: str | None = None
 
     @model_validator(mode="after")
     def _parse_dotted_name(self) -> "ColumnRef":
-        """Parse dotted paths into model + leaf name.
-
-        "customers.regions.name" → model="customers.regions", name="name"
-        "customers.name"         → model="customers",         name="name"
-        "status"                 → model=None,                 name="status"
-        """
+        """Split a dotted ``name`` into ``model`` prefix + leaf, then validate both."""
         if self.model is None and "." in self.name:
             prefix, leaf = self.name.rsplit(".", 1)
             self.model = prefix
             self.name = leaf
-        # Validate leaf name (must be a simple identifier, no dots)
         if not _NAME_PATTERN.match(self.name):
             raise ValueError(
                 f"Invalid name '{self.name}': must contain only letters, "
                 f"digits, and underscores, and start with a letter or underscore"
             )
-        # Validate each part of the model path
         if self.model:
             for part in self.model.split("."):
                 if not _NAME_PATTERN.match(part):
@@ -706,10 +616,60 @@ class ColumnRef(BaseModel):
             return f"{self.model}.{self.name}"
         return self.name
 
+    @property
+    def parts(self) -> tuple[str, ...]:
+        return (*self.model.split("."), self.name) if self.model else (self.name,)
+
     @classmethod
     def from_string(cls, s: str) -> ColumnRef:
         """Create a ColumnRef from a string. Dots are parsed by the validator."""
         return cls(name=s)
+
+
+class ComputedDimension(BaseModel):
+    """A dimension computed from an ``expression``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expression: str
+    name: str | None = None
+    # Pre-substitution expression; explicitness is judged against it.
+    _template: str | None = PrivateAttr(default=None)
+
+    @property
+    def template(self) -> str:
+        """The expression as written, before ``{var}`` substitution."""
+        return self._template or self.expression
+
+    @model_validator(mode="after")
+    def _fill_name(self) -> "ComputedDimension":
+        if self.name is None:
+            self.name = computed_dimension_name(self.expression)
+        _validate_model_name(self.name, "Computed dimension")
+        return self
+
+
+def computed_dimension_name(expression: str) -> str:
+    """An unnamed computed dimension's name: its expression's canonical text, sanitised, so every
+    spelling of one expression names it alike."""
+    return auto_name_from_expression(_canonical_expression_text(expression))
+
+
+def _time_dimension_name_identity(td: "TimeDimension") -> tuple[str, tuple] | None:
+    """A named or expression time dimension's name and what it may repeat for; ``None`` for an unnamed column."""
+    if td.name is None and td.column_ref is not None:
+        return None
+    text = _canonical_expression_text(td.template)
+    if td.name is not None:
+        return td.name, ("named", text, str(td.granularity))
+    return computed_dimension_name(td.template), ("auto", text)
+
+
+def _canonical_expression_text(expression: str) -> str:
+    try:
+        return canonical_measure_text(parse_expr(expression))
+    except Exception:  # noqa: BLE001 — an unparseable expression is reported at binding
+        return expression
 
 
 def _coerce_column_ref(v: Any) -> Any:
@@ -719,104 +679,253 @@ def _coerce_column_ref(v: Any) -> Any:
     return v
 
 
-_FUNCSTYLE_CALL_PATTERN = re.compile(r"^\w+\([^()]*\)$")
+# Sentinel ``ColumnRef.name`` values: this ORDER BY item is an expression to
+# resolve from ``raw_formula``, not a column reference. Consumers must also
+# require a non-empty ``raw_formula`` before treating a name as a sentinel, so a
+# real column of that name still resolves normally.
+_FUNCSTYLE_PENDING = "_funcstyle_pending"
+_EXPR_PENDING = "_expr_pending"
+ORDER_PLACEHOLDER_NAMES = frozenset({_FUNCSTYLE_PENDING, _EXPR_PENDING})
 
 
-def _coerce_order_column(v: Any) -> Any:
-    """Coerce ORDER BY column, normalizing aggregation syntax.
-
-    Handles both colon syntax and function-style syntax for built-in
-    aggregations. Converts to the underscore form that matches enriched
-    measure names.
-
-    Examples:
-    - "revenue:sum" → "revenue_sum"
-    - "*:count" → "_count"
-    - "sum(revenue)" → "revenue_sum"
-    - "revenue:last(ordered_at)" → "revenue_last"
-    - "rolling_avg(revenue)" → placeholder, raw_formula carries the call so
-      enrichment can resolve it via ``extra_agg_names``.
-    """
-    if isinstance(v, str):
-        from slayer.core.formula import _rewrite_funcstyle_aggregations
-        rewritten = _rewrite_funcstyle_aggregations(v)
-        if _FUNCSTYLE_CALL_PATTERN.match(rewritten):
-            # Unrewritten function-style call (custom aggregation). Enrichment
-            # parses raw_formula with custom_agg_names and overwrites
-            # column.name with the canonical alias, so a placeholder is fine.
-            return {"name": "_funcstyle_pending"}
-        if ":" in rewritten:
-            base, agg = rewritten.rsplit(":", 1)
-            agg_name = agg.split("(", 1)[0]  # strip arglist
-            if base == "*":
-                rewritten = f"_{agg_name}"
-            else:
-                rewritten = f"{base}_{agg_name}"
-        return {"name": rewritten}
+def _order_formula_candidate(v: str) -> str | None:
+    """``v`` verbatim if it is an expression rather than a column reference, else ``None``;
+    shared by ``_capture_raw_formula`` and ``_coerce_order_column`` so they can't drift.
+    Binding judges whether the expression is legal there."""
+    if _is_valid_column_ref_name(v):
+        return None
+    if _parsed_or_none(v) is None:
+        # Rejected text: a colon spelling reaches binding, which reports the syntax error.
+        return v if ":" in v else None
     return v
 
 
-# DEV-1575: the accepted ORDER BY direction vocabulary (case-insensitive),
-# mapping every synonym to the canonical lowercase form the SQL generator
-# compares against (``direction == "asc"``). Single source of truth shared by
-# the shorthand-healing detector (``_process_order_item``) and the
-# ``OrderItem.direction`` normalizing validator.
-_DIRECTION_NORMALIZE = {
-    "asc": "asc",
-    "ascending": "asc",
-    "desc": "desc",
-    "descending": "desc",
-}
+def _is_valid_column_ref_name(name: str) -> bool:
+    """Whether ``name`` parses as a ``ColumnRef`` (bare leaf or dotted path)."""
+    try:
+        ColumnRef.model_validate({"name": name})
+    except Exception:
+        return False
+    return True
+
+
+def _colon_spelled_name(node: Any) -> str | None:
+    """A legacy colon-spelled aggregation's result name (``revenue:sum`` → ``revenue_sum``), else ``None``."""
+    if not isinstance(node, AggCall) or node.filter is not None:
+        return None
+    base = "*" if isinstance(node.source, StarSource) else _single_col_of_source(node)
+    if base is None:
+        return None
+    name = f"_{node.agg}" if base == "*" else f"{base}_{node.agg}"
+    return name if _is_valid_column_ref_name(name) else None
+
+
+def _coerce_order_column(v: Any) -> Any:
+    """Coerce an ORDER BY column. Legacy colon-spelling aggregations normalize to the
+    underscore form (``revenue:sum`` → ``revenue_sum``); call-style entries (``sum(revenue)``,
+    ``my_agg(price)``) emit a placeholder whose ``raw_formula`` the planner binds;
+    other non-column expressions carry ``raw_formula`` under ``_EXPR_PENDING``."""
+    if not isinstance(v, str):
+        return v
+    if _order_formula_candidate(v) is None:
+        return {"name": v}
+    call = call_source(v)
+    if call is not None:
+        return {"name": _FUNCSTYLE_PENDING if len(call.callee) == 1 else _EXPR_PENDING}
+    return {"name": _colon_spelled_name(_parsed_or_none(v)) or _EXPR_PENDING}
 
 
 def _is_direction(value: Any) -> bool:
     """True if ``value`` is a recognized direction word (case/whitespace-insensitive)."""
-    return isinstance(value, str) and value.strip().lower() in _DIRECTION_NORMALIZE
+    return normalize_direction(value) is not None
+
+
+def _coerce_date_range(value: Any) -> Any:
+    """A single time-point string is a one-element range."""
+    return [value] if isinstance(value, str) else value
+
+
+def _advertise_string_date_range(schema: dict[str, Any]) -> None:
+    """Advertise the single-string ``date_range`` form the before-validator accepts."""
+    schema["anyOf"] = [{"type": "string"}, *schema.get("anyOf", [])]
+
+
+def _date_range_problem(date_range: list[str | None]) -> str | None:
+    if not 1 <= len(date_range) <= 2:
+        return "must be one time point or a [lower, upper] pair"
+    if all(bound is None for bound in date_range):
+        return "needs at least one non-null bound"
+    # A placeholder bound is checked after substitution (the query is rebuilt then).
+    bad = next(
+        (b for b in date_range if b is not None and not _bare_variable_names(b) and not is_time_point_shape(b)),
+        None,
+    )
+    return None if bad is None else f"has {bad!r}, which is not {TIME_POINT_FORMS}"
+
+
+def _reject_time_dimension_placeholders(entry: Any, *, granularity: Any = None, column: Any = None) -> None:
+    """Variables supply literals: a ``{var}`` naming a time dimension's granularity, or standing for its
+    whole dimension, is refused; one inside an expression is a literal."""
+    for what, value, names_it in (
+        ("granularity", granularity, lambda text: bool(_bare_variable_names(text))),
+        ("column", column, lambda text: isinstance(_parsed_or_none(text), Placeholder)),
+    ):
+        if isinstance(value, str) and names_it(value):
+            raise ValueError(
+                f"Time dimension {entry!r}: variables supply literal values; they can't name a {what} ({value!r})."
+            )
+
+
+def _legacy_column_ref_text(value: Any) -> Any:
+    """The dotted text of a legacy column-reference object (``{"name", "model"}`` or a ``ColumnRef``)."""
+    if isinstance(value, ColumnRef):
+        return value.full_name
+    if isinstance(value, dict) and isinstance(name := value.get("name"), str):
+        return f"{value['model']}.{name}" if value.get("model") else name
+    return value
+
+
+def _coerce_time_dimension_text(value: Any) -> Any:
+    """A time dimension's dimension as Mode-B text; it must parse as an expression."""
+    value = _legacy_column_ref_text(value)
+    if isinstance(value, str):
+        try:
+            parse_template(value)
+        except Exception as exc:
+            raise ValueError(f"Time dimension {value!r} is not a row-level expression: {exc}") from exc
+    return value
 
 
 class TimeDimension(BaseModel):
-    dimension: Annotated[ColumnRef, BeforeValidator(_coerce_column_ref)]
-    granularity: TimeGranularity
-    date_range: list[str] | None = None
+    """A time-bucketed group-by: ``dimension`` truncated to ``granularity``."""
+    dimension: Annotated[str, BeforeValidator(_coerce_time_dimension_text)] = Field(
+        validation_alias=AliasChoices("dimension", "column"),
+    )
+    name: str | None = None
+    granularity: GranularitySpec = Field(
+        description="A built-in granularity, or a custom granularity defined on the query's datasource.",
+    )
+    date_range: Annotated[list[str | None] | None, BeforeValidator(_coerce_date_range)] = Field(
+        default=None, json_schema_extra=_advertise_string_date_range,
+        description=(
+            'The buckets to return: one period ("2025", "2025-Q1", "last month") or [lower, upper] '
+            'with either bound null (one-sided); a bound may be a {var} placeholder, written unquoted ("{start}"). '
+            "change, change_pct, time_shift and window= "
+            "aggregates read rows before the range (a forward time_shift, after it) by themselves, "
+            "so each month of 2025 with its "
+            'change vs the previous month is just "2025": never widen the range and drop rows '
+            "afterwards. cumsum starts at the range start."
+        ),
+    )
     label: str | None = None
+    # Pre-substitution dimension; an unnamed expression is named from it.
+    _template: str | None = PrivateAttr(default=None)
+
+    @property
+    def template(self) -> str:
+        """The dimension as written, before ``{var}`` substitution."""
+        return self._template or self.dimension
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_placeholder_names(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            dimension = data.get("dimension", data.get("column"))
+            _reject_time_dimension_placeholders(data, granularity=data.get("granularity"), column=dimension)
+            if isinstance(dimension, dict) and dimension.get("label") is not None and data.get("label") is None:
+                data = {**data, "label": dimension["label"]}
+        return data
+
+    @property
+    def column_ref(self) -> ColumnRef | None:
+        """The dimension as a column reference when it is one, else ``None``."""
+        return ColumnRef.from_string(self.dimension) if _is_valid_column_ref_name(self.dimension) else None
+
+    @property
+    def effective_name(self) -> str | None:
+        """``name``, else an expression's sanitised template; ``None`` for an unnamed column."""
+        if self.name is not None or self.column_ref is not None:
+            return self.name
+        return computed_dimension_name(self.template)
+
+    @model_validator(mode="after")
+    def _check_date_range(self) -> "TimeDimension":
+        if self.name is not None:
+            _validate_model_name(self.name, "Time dimension")
+        if self.date_range is not None and (problem := _date_range_problem(self.date_range)):
+            raise ValueError(
+                f"time dimension {self.dimension!r}: date_range {self.date_range!r} {problem}."
+            )
+        return self
+
+
+def _advertise_string_time_dimensions(schema: dict[str, Any]) -> None:
+    """Add the functional ``gran(col)`` string alternative to each ``time_dimensions``
+    item in the derived JSON/MCP input schema, without widening the field's Python
+    type (strings are coerced by the model before-validator). A callable
+    ``json_schema_extra`` works on the pydantic >=2.0 floor."""
+    for option in schema.get("anyOf", [schema]):
+        if option.get("type") == "array" and "items" in option:
+            option["items"] = {"anyOf": [option["items"], {"type": "string"}]}
+
+
+def _advertise_order_item(schema: dict[str, Any]) -> None:
+    """Publish ``column``'s string form; hide the internal ``raw_formula``."""
+    props = schema.get("properties", {})
+    props.pop("raw_formula", None)
+    props.pop("implied", None)
+    if "column" in props:
+        props["column"] = {"anyOf": [{"type": "string"}, props["column"]]}
+
+
+def _order_column_text(col: Any) -> str | None:
+    """The string form of an order ``column``: the string itself, or the expression a ``{"name": …}``-only object carries."""
+    if isinstance(col, str):
+        return col
+    if isinstance(col, dict) and set(col) == {"name"} and isinstance(name := col["name"], str):
+        if not _is_valid_column_ref_name(name) and _order_formula_candidate(name) is not None:
+            return name
+    return None
 
 
 class OrderItem(BaseModel):
-    # DEV-1575: reject stray keys so a mixed canonical+shorthand item
-    # (e.g. ``{"column": "x", "b": "asc"}``) raises loudly instead of silently
-    # dropping the extra key.
-    model_config = ConfigDict(extra="forbid")
+    """A sort key."""
+    # extra="forbid": reject stray keys so a mixed canonical+shorthand item
+    # raises instead of silently dropping the extra key.
+    model_config = ConfigDict(extra="forbid", json_schema_extra=_advertise_order_item)
 
     column: Annotated[ColumnRef, BeforeValidator(_coerce_order_column)]
     direction: str = "asc"
-    raw_formula: str | None = None
+    nulls: Literal["first", "last"] | None = None
+    raw_formula: str | None = Field(
+        default=None,
+        description="Internal — captured automatically from expression strings; do not set.",
+    )
+    implied: bool = Field(
+        default=False, exclude=True,
+        description="Internal — set on the default order SLayer adds; do not set.",
+    )
 
     @model_validator(mode="before")
     @classmethod
     def _capture_raw_formula(cls, data: Any) -> Any:
         """Capture the raw column formula before coercion normalizes it."""
         if isinstance(data, dict):
-            col = data.get("column")
-            if isinstance(col, str):
-                from slayer.core.formula import _rewrite_funcstyle_aggregations
-                rewritten = _rewrite_funcstyle_aggregations(col)
-                if ":" in rewritten or _FUNCSTYLE_CALL_PATTERN.match(rewritten):
-                    data = {**data, "raw_formula": rewritten}
+            col = _order_column_text(data.get("column"))
+            if col is not None:
+                candidate = _order_formula_candidate(col)
+                if candidate is not None:
+                    data = {**data, "column": col, "raw_formula": candidate}
         return data
 
     @field_validator("direction")
     @classmethod
     def _normalize_direction(cls, v: str) -> str:
-        """DEV-1575: normalize direction to canonical ``asc``/``desc`` (case- and
-        whitespace-insensitive, accepting ``ascending``/``descending`` synonyms),
-        rejecting anything else.
-
-        The SQL generator compares ``direction == "asc"`` strictly, so a
-        non-normalized value (``"ASC"``, ``"ascending"``) would silently emit
-        DESC. Normalizing here fixes that for both healed and canonical items.
-        """
-        if _is_direction(v):
-            return _DIRECTION_NORMALIZE[v.strip().lower()]
+        """Normalize direction to canonical ``asc``/``desc`` (else raise); the generator
+        compares ``== "asc"`` strictly, so a non-normalized ``"ASC"`` would silently emit DESC."""
+        normalized = normalize_direction(v)
+        if normalized is not None:
+            return normalized
         raise ValueError(
             "order direction must be one of asc/desc/ascending/descending "
             f"(case-insensitive), got {v!r}"
@@ -832,32 +941,58 @@ def _coerce_measures(v: Any) -> Any:
     return [{"formula": item} if isinstance(item, str) else item for item in v]
 
 
+def _may_name_datasource_granularity(entry: str) -> bool:
+    """A whole call whose callee is no built-in name — possibly a datasource granularity."""
+    _, callee = call_callee(entry)
+    if callee is None:
+        return False
+    name = callee.lower()
+    return not (
+        name in GRANULARITY_NAMES or name in RESERVED_SCALAR_NAMES or name in ALL_TRANSFORMS
+        or normalize_aggregation_name(callee) in BUILTIN_AGGREGATIONS
+    )
+
+
+def _coerce_dimension_item(item: Any) -> Any:
+    """Coerce one ``dimensions`` entry: a bare identifier / dotted path stays a ``ColumnRef``, any other string parses as a Mode-B expression → ``ComputedDimension`` (neither raises)."""
+    if isinstance(item, (ColumnRef, ComputedDimension)):
+        return item
+    if isinstance(item, dict):
+        if "expression" in item:
+            return ComputedDimension(**item)
+        return item
+    if isinstance(item, str):
+        if _is_valid_column_ref_name(item):
+            return {"name": item}
+        try:
+            parse_expr(item)
+        except Exception as exc:
+            if _may_name_datasource_granularity(item):
+                return ComputedDimension(expression=item)  # its datasource resolves it at binding
+            raise ValueError(
+                f"Dimension {item!r} is neither a column reference (a bare "
+                f"identifier or dotted join path) nor a parseable Mode-B "
+                f"expression: {exc}"
+            ) from exc
+        return ComputedDimension(expression=item)
+    return item
+
+
 def _coerce_dimensions(v: Any) -> Any:
-    """Allow plain strings in the dimensions list: "status" → {"name": "status"}."""
+    """Allow plain strings / expression dicts in the dimensions list."""
     if v is None:
         return v
     if not isinstance(v, (list, tuple)):
         raise TypeError(f"'dimensions' must be a list, got {type(v).__name__}")
-    return [{"name": item} if isinstance(item, str) else item for item in v]
+    return [_coerce_dimension_item(item) for item in v]
 
 
 def _process_order_item(item: Any) -> list:
-    """DEV-1575: heal a single ``order`` entry, returning the list of canonical
-    items it expands to.
-
-    LLM agents frequently write a shorthand dict mapping column → direction
-    instead of the canonical ``{"column", "direction"}`` shape. A dict with no
-    ``column``/``direction`` key whose values are *all* direction words is
-    treated as shorthand and expanded — one canonical item per key, preserving
-    insertion order (so a single-key dict yields one item and a multi-key dict
-    yields several). Everything else passes through unchanged: canonical dicts
-    (their stray keys are policed by ``OrderItem``'s ``extra="forbid"``) and
-    malformed input (rejected by ``OrderItem`` validation).
-    """
+    """Heal a single ``order`` entry into the canonical items it expands to; a shorthand dict
+    column → direction (no ``column``/``direction`` key, all-direction values) expands one item per key."""
     if not isinstance(item, dict):
         return [item]
-    # A dict carrying a reserved key is canonical-intended; never reinterpret it
-    # as shorthand. extra="forbid" on OrderItem rejects any stray keys.
+    # A dict with a reserved key is canonical-intended, never shorthand.
     if "column" in item or "direction" in item:
         return [item]
     if (
@@ -870,14 +1005,7 @@ def _process_order_item(item: Any) -> list:
 
 
 def _coerce_order(v: Any) -> Any:
-    """DEV-1575: heal shorthand ``order`` items before ``OrderItem`` validation.
-
-    Accepts the canonical ``list``/``tuple`` of items, healing each shorthand
-    dict (see ``_process_order_item``). A bare single item passed without the
-    enclosing list (a ``dict`` or an ``OrderItem``) is wrapped into a
-    one-element list; any other non-list input raises (mirrors the
-    ``_coerce_measures``/``_coerce_dimensions`` convention).
-    """
+    """Heal shorthand ``order`` items before ``OrderItem`` validation; a bare ``dict``/``OrderItem`` is wrapped into a one-element list, other non-list input raises."""
     if v is None:
         return v
     if not isinstance(v, (list, tuple)):
@@ -891,291 +1019,625 @@ def _coerce_order(v: Any) -> Any:
     return result
 
 
+# Field types shared by ``SlayerQuery`` and ``QueryRefinement`` (one coercion each).
+MeasuresField = Annotated[list[ModelMeasure] | None, BeforeValidator(_coerce_measures)]
+DimensionsField = Annotated[list[ColumnRef | ComputedDimension] | None, BeforeValidator(_coerce_dimensions)]
+OrderField = Annotated[list[OrderItem] | None, BeforeValidator(_coerce_order)]
+
+
 class ModelExtension(BaseModel):
-    """Extend an existing model with extra columns, measures, or joins.
-
-    Used inline on a query to add computed columns (SQL expressions),
-    extra joins, or additional measure formulas without modifying the
-    stored model.
-    """
-    source_name: str                                # Model/query to extend
-    columns: list | None = None                  # Extra Column objects
-    measures: list[ModelMeasure] | None = None   # Extra ModelMeasure formulas
-    joins: list | None = None                    # Extra ModelJoin objects
-
-
-def _get_source_model_name(source_model: object) -> str | None:
-    """Extract the model name from any source_model type.
-
-    Works before model resolution — handles str, dict, ModelExtension,
-    and SlayerModel (or any object with a .name attribute).
-    """
-    if isinstance(source_model, str):
-        return source_model
-    if isinstance(source_model, dict):
-        return source_model.get("source_name") or source_model.get("name")
-    # ModelExtension has .source_name; SlayerModel has .name
-    source_name = getattr(source_model, "source_name", None)
-    if isinstance(source_name, str):
-        return source_name
-    name = getattr(source_model, "name", None)
-    if isinstance(name, str):
-        return name
-    return None
-
-
-def _strip_column_ref(ref: ColumnRef, model_name: str) -> ColumnRef:
-    """Strip source model prefix from a ColumnRef.
-
-    "orders.status"          on model "orders" → model=None,  name="status"
-    "orders.customers.name"  on model "orders" → model="customers", name="name"
-    "customers.name"         on model "orders" → unchanged
-    "status"                 on model "orders" → unchanged
-    """
-    if ref.model is None:
-        return ref
-    if ref.model == model_name:
-        return ref.model_copy(update={"model": None})
-    prefix = model_name + "."
-    if ref.model.startswith(prefix):
-        return ref.model_copy(update={"model": ref.model[len(prefix):]})
-    return ref
-
-
-class SlayerQuery(BaseModel):
-    """User-facing query object. Specifies what data to retrieve from a model.
-
-    This is intentionally minimal — just names and references, no SQL.
-    The query engine enriches it into an EnrichedQuery for execution.
-
-    Use ``measures`` for computed/aggregated values and ``filters`` for
-    conditions::
-
-        measures=[{"formula": "*:count"}, {"formula": "revenue:sum / *:count", "name": "aov"}]
-        filters=["status == 'completed'", "amount > 100"]
-    """
+    """Extend a model inline on a query with extra columns, measures, or joins, without modifying the stored model."""
 
     model_config = ConfigDict(extra="forbid")
 
-    version: int = 3
-    name: str | None = None  # For referencing this query from other queries in a list
-    source_model: object  # str (model name), SlayerModel (inline), or ModelExtension
-    measures: Annotated[list[ModelMeasure] | None, BeforeValidator(_coerce_measures)] = None
+    source_name: str                                # Model/query to extend
+    columns: list[Column] | None = None
+    measures: list[ModelMeasure] | None = None
+    joins: list[ModelJoin] | None = None
+
+
+def _source_spec_tag(value: Any) -> str:
+    """Classify a raw ``source_model``: an object carrying ``source_name`` is always an extension."""
+    if isinstance(value, ModelExtension):
+        return "extension"
+    if isinstance(value, SlayerModel):
+        return "model"
+    if isinstance(value, dict):
+        return "extension" if "source_name" in value else "model"
+    return "name"
+
+
+def _reject_inline_query_backed(value: Any) -> Any:
+    if isinstance(value, SlayerModel) and value.source_queries:
+        raise ValueError(
+            f"Inline model {value.name!r} carries source_queries; an inline query-backed "
+            f"source is not supported — write those queries as named stages of the "
+            f"query list instead."
+        )
+    return value
+
+
+# Anything accepted as ``SlayerQuery.source_model``; validated at construction.
+SourceSpec = Annotated[
+    Union[
+        Annotated[str, Tag("name")],
+        Annotated[ModelExtension, Tag("extension")],
+        Annotated[SlayerModel, Tag("model")],
+    ],
+    Discriminator(_source_spec_tag),
+    AfterValidator(_reject_inline_query_backed),
+]
+
+
+def _root_relative_ref(ref: ColumnRef, root: str | None) -> ColumnRef:
+    """``ref`` with a leading root qualifier dropped."""
+    kept = drop_root_qualifier(ref.parts, root)
+    if kept == ref.parts:
+        return ref
+    return ColumnRef(name=kept[-1], model=".".join(kept[:-1]) or None, label=ref.label)
+
+
+def _parsed_identity(text: str, root: str | None) -> str:
+    """``text``'s root-relative parsed meaning, as canonical text; the text itself when unparseable."""
+    node = _parsed_or_none(text)
+    return text if node is None else canonical_measure_text(root_relative(node, root))
+
+
+class SlayerQuery(BaseModel):
+    """User-facing query object — what to retrieve from a model, as names/references, no SQL."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = CURRENT_VERSIONS["SlayerQuery"]
+    name: str | None = Field(
+        default=None,
+        description=(
+            "Stage name. In a list of query objects every entry but the last carries a name, and "
+            "later stages use it as their source_model. A STAGE IS NOT NEEDED for top N per group "
+            "(filter on `rank(...)` in the same stage), for averaging or bucketing per-entity "
+            "totals (a nested aggregate, or a computed dimension with `partition_by`), or for "
+            "shares and totals (`partition_by`). A filter on a transform's value "
+            "(`rank(...) <= 3`, `cumsum(...) > 100`) applies after it, which is computed over "
+            "every row the other filters keep. Stages ARE "
+            "needed only to drop rows by a dimension or time condition that a cross-row value "
+            "must still see, or to join or reuse a whole result: a row filter or date_range "
+            "applies before a running total, lag / lead, rank, ntile, consecutive_periods or "
+            "`partition_by` total (change, change_pct, time_shift and window= still read past "
+            "date_range or a filter on their own time dimension, but not past other filters). "
+            "Compute the value "
+            "in an inner stage and filter in the outer one. An outer stage sees the inner "
+            "result's columns with dotted paths flattened to __: an inner dimension "
+            "customers.regions.name is customers__regions__name outside; a measure keeps its "
+            "name. More: "
+            'inspect(reference=["memory:help.queries"], entity_type="memory").'
+        ),
+    )
+    source_model: SourceSpec | None = Field(
+        default=None,
+        description=(
+            "The population: the rows the result lists. When the question asks for every X (each "
+            "region, zero included), root at X so rows without facts appear: rooted at regions, "
+            "the measures count(customers.orders.id) and "
+            "{\"formula\": \"sum(iif(customers.orders.order_date >= '2025-01-01', 1, 0))\", "
+            '"name": "orders_2025"} list every region, including those without orders (a count '
+            "over no rows is 0, any other aggregate NULL). Always name a conditional aggregate. "
+            "Otherwise root where the facts are (rows without facts then drop out), or omit to "
+            "infer the smallest model determining every dimension and row-level condition column "
+            '(reported in the response). A saved model or stage name, an inline extension '
+            '{"source_name": ..., "columns" / "measures" / "joins": [...]}, or a full inline '
+            "model. Write a per-query column as an expression in the position that uses it (a "
+            "dimension, a filter, an aggregation's argument)."
+        ),
+    )
+    measures: MeasuresField = Field(
+        default=None,
+        description=(
+            'Values to return: formula strings or {"formula": ..., "name": ...} (name sets the '
+            "result key; a bare name references a saved model measure). Formulas combine "
+            "aggregations with arithmetic, also across models: rooted at customers, "
+            "sum(orders.amount) / count(*) divides the orders' total by the number of customers.\n"
+            "- Aggregations: count(*), sum(amount), count_distinct(customer_id), "
+            "avg(amount - cost), percentile(amount, p=0.9); a joined model's field by dotted path.\n"
+            "- agg(x) FILTER (WHERE c) aggregates only the rows where c holds: "
+            "count(*) FILTER (WHERE status = 'paid').\n"
+            "- partition_by= computes an aggregate at a coarser grain, repeated on every row; "
+            "spell its keys exactly like the query's dimensions (a joined column by its dotted "
+            "path; its bare name fails). Share of group: "
+            "sum(amount) / sum(amount, partition_by=customers.regions.name); share of the grand "
+            "total: sum(amount) / sum(amount, partition_by=[]).\n"
+            "- window= turns any aggregation into a trailing time window ending at each time "
+            "bucket, in compact durations only ('90d', '3m', '1y'; never '3 months'): "
+            "count_distinct(customer_id, window='90d').\n"
+            "- Nesting aggregates per-group values: "
+            "avg(sum(amount, partition_by=[customers.regions.name, customers.id]), "
+            "partition_by=[customers.regions.name]) averages the per-customer totals in each region.\n"
+            "- Transforms wrap an aggregate; all but the rank family need a time dimension: "
+            "cumsum(sum(amount)) running total; change(sum(amount)) / change_pct(sum(amount)) "
+            "period-over-period delta / ratio; time_shift(sum(amount), -1) the previous "
+            "bucket's value ('year' as a third argument for year-over-year); lag(x, n) / "
+            "lead(x, n) n rows back / ahead; rank(x, direction='desc') / "
+            "dense_rank(x, direction='asc') with direction required and partition_by= to rank "
+            "within groups; ntile(x, n=4) buckets, lowest first; "
+            "consecutive_periods(sum(amount) > 0) trailing run length.\n"
+            "- A joined model's aggregate such as sum(customers.credit) from orders is computed "
+            "over that model's own rows, each customer once. Sliced by a dimension it cannot "
+            "be attributed to (an order's status), it repeats its total on every row with a "
+            "warning; to_many_handling='associate' splits it per group. Rooted at customers, "
+            "sum(orders.amount) and sum(returns.amount) in one query are each computed over their "
+            "own rows: several child models never fan out or double count. A child row without a "
+            "parent (an order with no customer) has NULL parent columns: it counts in the NULL "
+            "row of a parent dimension when that row exists, and in an ungrouped total; never add "
+            "it again. An aggregate over a model no join path reaches from the root is computed "
+            "over that model's own rows and repeated on every row (per bucket of a time_spine "
+            "time dimension), with an unrelated_dataset warning: rooted at customers, "
+            "count(events.id) / count(*).\n"
+            "More (every aggregation, empty-input values, nesting and transform rules): "
+            'inspect(reference=["memory:help.aggregations", "memory:help.transforms"], '
+            'entity_type="memory").'
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod
-    def _apply_schema_migrations(cls, data: Any) -> Any:
-        return _migrate_schema(entity="SlayerQuery", data=data)
+    def _migrate_and_rewrite(cls, data: Any) -> Any:
+        # Single before-validator: migrate, THEN rewrite the functional granularity
+        # form. Pydantic runs before-validators in reverse declaration order, so
+        # sequencing them explicitly here keeps the rewrite on migrated input.
+        # `strict` is retired. Reject it for fresh (no version), v4-or-later,
+        # or malformed payloads; only a pre-v4 *integer* stored version
+        # migrates it (v3→v4 maps strict:true→to_many_handling='error'). ``version``
+        # is raw here (pre-coercion), so accept only int / integer-string forms —
+        # never truncate a float or other malformed value into a stale version.
+        if isinstance(data, dict) and "strict" in data:
+            raw_version = data.get("version")
+            version: int | None = None
+            if isinstance(raw_version, int) and not isinstance(raw_version, bool):
+                version = raw_version
+            elif isinstance(raw_version, str):
+                try:
+                    version = int(raw_version)
+                except ValueError:
+                    version = None
+            if version is None or version >= _STRICT_RETIRED_AT:
+                raise ValueError(
+                    "`strict` is retired; set to_many_handling='error' instead "
+                    "(one of broadcast|associate|error)."
+                )
+        data = _migrate_schema(entity="SlayerQuery", data=data)
+        if isinstance(data, dict):
+            data = _rewrite_functional_granularity(data)
+        return data
 
     @field_validator("name")
     @classmethod
     def _validate_query_name(cls, v: str | None) -> str | None:
-        # Share the same rejection rules as SlayerModel.name —
-        # SlayerQuery names occupy the same naming space when persisted
-        # as query-backed models. Rejects ``__`` (join-path alias
-        # separator), ``.`` (dotted reference syntax), and ``:`` (DSL
-        # aggregation separator).
+        # Same rules as SlayerModel.name: query names share the naming space when
+        # persisted as query-backed models (rejects __, ., :).
         if v is None:
             return v
-        from slayer.core.models import _validate_model_name
         return _validate_model_name(v, "Query")
-    dimensions: Annotated[list[ColumnRef] | None, BeforeValidator(_coerce_dimensions)] = None
-    time_dimensions: list[TimeDimension] | None = None
-    main_time_dimension: str | None = None  # Explicit time dimension for transforms (overrides auto-detection)
-    filters: list[str] | None = None
-    variables: dict[str, Any] | None = None  # Variable values for filter substitution
-    order: Annotated[list[OrderItem] | None, BeforeValidator(_coerce_order)] = None
-    limit: int | None = None
-    offset: int | None = None
-    whole_periods_only: bool = False
-    # DEV-1543: opt out of the auto "distinct dimension tuples" GROUP BY
-    # for dim-only queries. Default ``True`` preserves the Cube.js-style
-    # dedup that fires when ``measures`` is empty. Setting ``False`` emits
-    # a flat ``SELECT <dims/td-exprs> FROM ... WHERE ... ORDER BY ...
-    # LIMIT ...`` projection. Any measure reference (in ``measures``, in
-    # ``filters``, or in ``order``) is rejected with
-    # ``DistinctDimensionValuesError``; both ``dimensions`` and
-    # ``time_dimensions`` empty is also rejected (nothing to project).
-    distinct_dimension_values: bool = True
+    dimensions: DimensionsField = Field(
+        default=None,
+        description=(
+            "Group-by columns, one result row per distinct combination: names, dotted paths to "
+            'joined columns (customers.regions.name), or computed {"expression": ..., "name": '
+            "...}. A granularity call buckets a timestamp like a time_dimensions entry: "
+            "month(created_at); granularities are second, minute, hour, day, week, week_sunday, "
+            "month, quarter, year, or the datasource's custom ones. An aggregate inside a "
+            "computed dimension needs partition_by= to fix its grain: "
+            "{\"expression\": \"iif(sum(amount, partition_by=customers.id) > 150, 'high', "
+            "'low')\", \"name\": \"spend_band\"}. Group by naturally readable labels: a name "
+            "(customers.regions.name), never by an id alone unless ids are asked for; when a name "
+            "may repeat (people, products), by the id and the name."
+        ),
+    )
+    time_dimensions: list[TimeDimension] | None = Field(
+        default=None,
+        json_schema_extra=_advertise_string_time_dimensions,
+        description=(
+            "Time-bucketed group-bys — one result row per bucket. Each entry is a "
+            "TimeDimension dict or the functional string gran(expr), e.g. "
+            "\"month(created_at)\"; the dimension may be any DATE/TIMESTAMP expression, with an "
+            "optional name. Buckets without rows are absent. To return every bucket, "
+            "empty ones included, bucket time_spine.timestamp with a lower date_range bound and "
+            "measure models by dotted path: "
+            '{"dimension": "time_spine.timestamp", "granularity": "month", "date_range": "2025"} '
+            "with sum(orders.amount) returns all twelve months. It also lines several models up "
+            "on one time axis."
+        ),
+    )
+    main_time_dimension: str | None = Field(
+        default=None,
+        description=(
+            "Name (or column) of the time dimension that time-ordered transforms (change, lag, ...) "
+            "key off; overrides auto-detection when the query has multiple time dimensions."
+        ),
+    )
+    filters: list[str] | None = Field(
+        default=None,
+        description=(
+            "Conditions, AND-ed; each routes automatically to row filtering (WHERE), aggregate "
+            "filtering (HAVING) or filtering after transforms. SQL operators: = <> < <= > >=, in, "
+            "between, like / ilike, is null / is not null, IS [NOT] TRUE / FALSE (NULL counts as "
+            "not true), IS DISTINCT FROM / IS NOT DISTINCT FROM (NULL-safe =), and / or / not, "
+            "CAST(x AS DATE), regex x ~ '^A[0-9]{3}', "
+            "JSON payload ->> 'key'; strings are single-quoted ('paid'); build them from the "
+            "column's sampled values.\n"
+            "- Aggregates and transforms filter too, by formula or by a measure's name: "
+            "sum(amount) > 100; top N per group: "
+            "rank(sum(amount), partition_by=customers.regions.name, direction='desc') <= 1.\n"
+            "- Anti-join: rooted at customers, orders.id is null keeps the customers without "
+            "orders.\n"
+            "- A list tags: contains(tags, 'x') or tags.value = 'x'; contains_any(tags, ['x', "
+            "'y']) shares an element, contains_all(tags, ['x', 'y']) holds every one.\n"
+            "- Time points: a string compared with a date/time column is a half-open period: "
+            "'2025', '2025-Q1', '2025-03', '2025-W05' (ISO week), '2025-03-01' (the whole day), or "
+            "relative: 'today', 'last month', 'last 7 days' (excludes the current day), "
+            "'year to date'. order_date >= '2025-Q1' starts at the period, <= ends with it, "
+            "order_date in '2025-Q1' is inside it.\n"
+            "- {variable} placeholders take literal values from variables.\n"
+            'More: inspect(reference=["memory:help.time", "memory:help.joins"], '
+            'entity_type="memory").'
+        ),
+    )
+    # The effective variables a whole-``IN`` placeholder left unwritten by binding reads (``parse_bound_expr``).
+    _bound_variables: dict[str, Any] = PrivateAttr(default_factory=dict)
+
+    @property
+    def bound_variables(self) -> dict[str, Any]:
+        return self._bound_variables
+
+    variables: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "{placeholder} values scoped to this query object / stage; the "
+            "tool-level variables argument overrides. A placeholder binds a literal value only: "
+            "its text inside quotes ('{s}'), a number, numeric string or boolean in a bare slot, "
+            "a list as the whole right-hand side of IN (status in ({statuses}); over a list column, one "
+            "list: tags in ({wanted})) or as a list literal anywhere else (tags = {wanted}, a "
+            "list-function argument). A placeholder in a name position is an error."
+        ),
+    )
+    order: OrderField = Field(
+        default=None,
+        description=(
+            'Sort keys, [{"column": ..., "direction": "asc" | "desc", "nulls": "first" | "last"}] '
+            "(nulls optional). column is a result column name or any aggregate or transform "
+            "expression, displayed or not: with "
+            'measures ["count(*)"], [{"column": "sum(amount)", "direction": "desc"}] sorts by '
+            "an amount it does not return. Add limit for the top N. Return only the columns the "
+            "question asks for: never add the sort value to measures just to sort by it."
+        ),
+    )
+    limit: int | None = Field(
+        default=None,
+        description=(
+            "Max rows to return: the top N, or a limit covering a list longer than "
+            "the 20 rows an uncapped MCP response returns (with a notice). Never "
+            "use it to cut a list asked for in full."
+        ),
+    )
+    offset: int | None = Field(default=None, description="Rows to skip.")
+    whole_periods_only: bool = Field(
+        default=False,
+        description=(
+            "Snap date filters to whole time buckets and drop the current "
+            "incomplete bucket."
+        ),
+    )
+    distinct_dimension_values: bool = Field(
+        default=True,
+        description=(
+            "Default true: dimension-only queries return distinct dimension "
+            "combinations (GROUP BY the projected dimensions). Set false for "
+            "raw per-record rows — requires empty `measures` and no measure "
+            "reference in `filters`/`order`. For rows plus a count, keep the "
+            "default and add `count(*)`."
+        ),
+    )
+
+    # Filters keep EXISTS pushdown in every mode.
+    to_many_handling: Literal["broadcast", "associate", "error"] = Field(
+        default="broadcast",
+        description=(
+            "What happens when an aggregation is sliced by a dimension not "
+            "attributable to it: broadcast (default — repeat the value across "
+            "the cells, with a warning) | associate (aggregate per cell over "
+            "the distinct associated entities, e.g. per list element "
+            "tags.value) | error (refuse)."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_dsl_user_input(self) -> "SlayerQuery":
-        """DEV-1369: enforce DSL-mode rules on every user-input string field.
-
-        Filter strings are pre-parsed in DSL mode so raw ``OVER (...)``
-        is caught at construction time with an actionable error message.
-        Bare-name strict resolution and raw-SQL-function rejection happen
-        at enrichment, where the parser has full custom-aggregation and
-        named-measure context.
-
-        Note: ``__`` is **not** rejected here. Virtual-model columns
-        produced by ``_query_as_model`` flatten join paths into single
-        identifiers like ``kpis__total_amount_sum``, which downstream
-        stages reference directly. Strict resolution at enrichment
-        catches typos that don't resolve to any column / measure.
-        """
+        """Enforce DSL-mode rules on user-input strings at construction — raw ``OVER (...)``
+        in a filter is caught here; bare-name/raw-SQL-function rejection happen at binding.
+        ``__`` is not rejected: virtual-model columns flatten join paths (``kpis__total_amount_sum``)."""
         if self.filters:
             for f in self.filters:
                 _validate_query_filter_string(f)
         self._validate_distinct_dimension_values()
         return self
 
+    @model_validator(mode="after")
+    def _dedupe_time_dimensions(self) -> "SlayerQuery":
+        """Collapse exact-duplicate time dimensions; reject same dimension+granularity differing
+        in date range, name or label. Dimensions compare by root-relative parsed meaning, so
+        ``created_at`` and ``orders.created_at`` are one."""
+        if not (tds := self.time_dimensions):
+            return self
+        root = self.source_model_name
+
+        def _canon(td: TimeDimension) -> tuple:
+            return (_parsed_identity(td.template, root), td.granularity, tuple(td.date_range or ()), td.name, td.label)
+
+        seen: dict[tuple[str, str], tuple] = {}
+        result: list[TimeDimension] = []
+        for td in tds:
+            canon = _canon(td)
+            base = (canon[0], str(canon[1]))
+            prior = seen.get(base)
+            if prior is None:
+                seen[base] = canon
+                result.append(td)
+            elif prior != canon:
+                raise GranularityCallError(
+                    f"Conflicting time dimensions on {td.dimension!r} at "
+                    f"{td.granularity} granularity: same dimension and "
+                    f"granularity must not differ in date range, name or label."
+                )
+        if len(result) != len(tds):
+            self.time_dimensions = result
+        self._check_unique_dimension_names()
+        return self
+
+    def _check_unique_dimension_names(self) -> None:
+        """Time-dimension names, an unnamed expression's included, are unique across dimensions and
+        time dimensions; a name repeats only for its own expression — an auto-name at any granularity
+        (suffixes tell them apart), an explicit one at the same granularity — which binding dedupes or
+        rejects."""
+        taken: set[str] = set()
+        for dim in self.dimensions or ():
+            if (name := dim.name if isinstance(dim, ComputedDimension) else dim.full_name) is not None:
+                taken.add(name)
+        identities: dict[str, tuple] = {}
+        for td in self.time_dimensions or ():
+            if (named := _time_dimension_name_identity(td)) is None:
+                continue
+            name, identity = named
+            if name in taken or identities.setdefault(name, identity) != identity:
+                raise ValueError(
+                    f"Dimension name {name!r} is used twice; give the time dimension {td.dimension!r} a "
+                    f"distinct `name`."
+                )
+
     def _validate_distinct_dimension_values(self) -> None:
-        """DEV-1543: structural rejection rules for ``distinct_dimension_values=False``.
-
-        Only the cheap, model-free checks fire here:
-
-        * ``measures`` non-empty — flag asks for raw rows, but the query
-          asks for aggregations.
-        * Both ``dimensions`` and ``time_dimensions`` empty — there are
-          no projected columns to ``SELECT``.
-
-        Deep filter / order measure-reference checks happen at enrichment,
-        where named measures, custom aggregations, and post-substitution
-        text are all available. Detecting them here would either reject
-        valid ``{var}`` filters before substitution or miss model-defined
-        custom aggregations.
-        """
+        """Cheap, model-free rejection for ``distinct_dimension_values=False``: non-empty
+        ``measures``, or both ``dimensions``/``time_dimensions`` empty. Deep filter/order
+        measure-reference checks happen at binding, where post-substitution text is available."""
         if self.distinct_dimension_values:
             return
-        from slayer.core.errors import DistinctDimensionValuesError
-
         if self.measures:
             n = len(self.measures)
             raise DistinctDimensionValuesError(
-                f"distinct_dimension_values=False requires an empty `measures` "
-                f"field, but {n} measure(s) were supplied. Either remove the "
-                f"measures (and any other measure references) or set "
-                f"distinct_dimension_values=True (the default) to keep the "
-                f"auto-aggregating behaviour."
+                summary=f"distinct_dimension_values=False requires an empty `measures` "
+                f"field, but {n} measure(s) were supplied.",
+                suggestion="Either remove the measures (and any other measure "
+                "references) or set distinct_dimension_values=True (the default) "
+                "to keep the auto-aggregating behaviour.",
             )
         if not self.dimensions and not self.time_dimensions:
             raise DistinctDimensionValuesError(
-                "distinct_dimension_values=False requires at least one of "
+                summary="distinct_dimension_values=False requires at least one of "
                 "`dimensions` or `time_dimensions` to be non-empty — there "
-                "are no columns to SELECT. Add the columns you want to "
-                "project."
+                "are no columns to SELECT.",
+                suggestion="Add the columns you want to project.",
             )
 
-    def snap_to_whole_periods(self) -> "SlayerQuery":
-        """Adjust date filters to align with period boundaries when whole_periods_only=True.
+    @property
+    def source_model_name(self) -> str | None:
+        """The population's model name before resolution (an extension names its base)."""
+        match self.source_model:
+            case str() as name:
+                return name
+            case ModelExtension(source_name=name):
+                return name
+            case SlayerModel(name=name):
+                return name
+            case _:
+                return None
 
-        For each time dimension with a granularity, adds a date range filter
-        to exclude the current incomplete period if no date filter exists.
-        """
-        if not self.whole_periods_only or not self.time_dimensions:
-            return self
 
-        filters = list(self.filters or [])
-        for td in self.time_dimensions:
-            gran = td.granularity
-            dim_name = td.dimension.name
+def _refinement_field(name: str) -> Any:
+    """``SlayerQuery``'s field ``name`` with a ``None`` default (supplied-ness is ``model_fields_set``)."""
+    info = SlayerQuery.model_fields[name]
+    return Field(
+        default=None, description=f"Same syntax as the query object's {name}.",
+        json_schema_extra=info.json_schema_extra,
+    )
 
-            # Check if any filter already references this time dimension
-            has_filter = any(dim_name in f for f in filters)
-            if not has_filter:
-                # Add filter to exclude current incomplete period
-                today = datetime.date.today()
-                prev_end = gran.period_end(gran.period_start(today) - datetime.timedelta(days=1))
-                filters.append(f"{dim_name} <= '{prev_end.isoformat()}'")
 
-        return self.model_copy(update={"filters": filters, "whole_periods_only": False})
+_NON_NULLABLE_SETTINGS = ("whole_periods_only", "distinct_dimension_values", "to_many_handling")
 
-    def strip_source_model_prefix(self) -> "SlayerQuery":
-        """Strip redundant source model name prefix from all dotted references.
 
-        LLMs frequently include the source model name as a prefix
-        (e.g., "orders.revenue:sum" instead of "revenue:sum" when
-        querying source_model="orders"). This normalizes all references
-        by removing the redundant prefix before any other processing.
-        """
-        model_name = _get_source_model_name(self.source_model)
-        if model_name is None:
-            return self
+class QueryRefinement(BaseModel):
+    """Clauses merged into a saved query's final stage when it runs by name."""
 
-        updates: dict[str, Any] = {}
-        pattern = re.compile(r"\b" + re.escape(model_name) + r"\.")
+    model_config = ConfigDict(extra="forbid")
 
-        # Dimensions
-        if self.dimensions:
-            new_dims = [_strip_column_ref(d, model_name) for d in self.dimensions]
-            if any(n is not o for n, o in zip(new_dims, self.dimensions)):
-                updates["dimensions"] = new_dims
+    dimensions: DimensionsField = _refinement_field("dimensions")
+    time_dimensions: list[TimeDimension] | None = _refinement_field("time_dimensions")
+    measures: MeasuresField = _refinement_field("measures")
+    filters: list[str] | None = _refinement_field("filters")
+    order: OrderField = _refinement_field("order")
+    limit: int | None = _refinement_field("limit")
+    offset: int | None = _refinement_field("offset")
+    main_time_dimension: str | None = _refinement_field("main_time_dimension")
+    whole_periods_only: bool | None = _refinement_field("whole_periods_only")
+    distinct_dimension_values: bool | None = _refinement_field("distinct_dimension_values")
+    to_many_handling: Literal["broadcast", "associate", "error"] | None = _refinement_field("to_many_handling")
 
-        # Time dimensions
-        if self.time_dimensions:
-            new_tds = []
-            td_changed = False
-            for td in self.time_dimensions:
-                stripped = _strip_column_ref(td.dimension, model_name)
-                if stripped is not td.dimension:
-                    new_tds.append(TimeDimension(
-                        dimension=stripped,
-                        granularity=td.granularity,
-                        date_range=td.date_range,
-                        label=td.label,
-                    ))
-                    td_changed = True
-                else:
-                    new_tds.append(td)
-            if td_changed:
-                updates["time_dimensions"] = new_tds
+    @model_validator(mode="before")
+    @classmethod
+    def _rewrite_functional(cls, data: Any) -> Any:
+        return _rewrite_functional_granularity(data) if isinstance(data, dict) else data
 
-        # Order
-        if self.order:
-            new_order = []
-            order_changed = False
-            for item in self.order:
-                stripped = _strip_column_ref(item.column, model_name)
-                stripped_raw_formula = (
-                    pattern.sub("", item.raw_formula) if item.raw_formula else None
-                )
-                if stripped is not item.column or stripped_raw_formula != item.raw_formula:
-                    new_order.append(OrderItem(
-                        column=stripped,
-                        direction=item.direction,
-                        raw_formula=stripped_raw_formula,
-                    ))
-                    order_changed = True
-                else:
-                    new_order.append(item)
-            if order_changed:
-                updates["order"] = new_order
+    @model_validator(mode="after")
+    def _validate_inputs(self) -> "QueryRefinement":
+        for f in self.filters or []:
+            _validate_query_filter_string(f)
+        for name in _NON_NULLABLE_SETTINGS:
+            if name in self.model_fields_set and getattr(self, name) is None:
+                raise ValueError(f"refine.{name} cannot be null; omit it to keep the saved value")
+        return self
 
-        # Measures (formula strings)
-        if self.measures:
-            new_measures = []
-            measures_changed = False
-            for f in self.measures:
-                new_formula = pattern.sub("", f.formula)
-                if new_formula != f.formula:
-                    new_measures.append(f.model_copy(update={"formula": new_formula}))
-                    measures_changed = True
-                else:
-                    new_measures.append(f)
-            if measures_changed:
-                updates["measures"] = new_measures
 
-        # Filters
-        if self.filters:
-            new_filters = [pattern.sub("", f) for f in self.filters]
-            if new_filters != self.filters:
-                updates["filters"] = new_filters
+_ENTRY_CONFLICT_SUGGESTION = "Give the refinement entry another name, or repeat the saved entry exactly."
+_WINDOW_CONFLICT_SUGGESTION = (
+    "Add a filter on the time column instead (filters AND together), or save the window as a "
+    "filter with variables, e.g. `ordered_at >= '{start}'`."
+)
 
-        # main_time_dimension
-        prefix = model_name + "."
-        if self.main_time_dimension and self.main_time_dimension.startswith(prefix):
-            updates["main_time_dimension"] = self.main_time_dimension[len(prefix):]
 
-        if not updates:
-            return self
+def _show(value: Any) -> str:
+    if isinstance(value, BaseModel):
+        value = value.model_dump(mode="json", exclude_none=True)
+    return json.dumps(value)
 
-        # Sanitize for log injection (S5145): model names are usually trusted
-        # internal identifiers, but they originate from user input via the
-        # public API, so strip CR/LF before logging.
-        safe_name = model_name.replace("\r", "\\r").replace("\n", "\\n")
-        logger.info(
-            "Stripped source model prefix '%s.' from query references",
-            safe_name,
-        )
-        return self.model_copy(update=updates)
+
+def _union(
+    saved: list | None, refined: list | None, *, field: str, canon: Callable[[Any], Any],
+    identity: Callable[[Any], tuple[str, str]],
+) -> list | None:
+    """``saved`` then the ``refined`` entries not present; same ``(kind, key)`` identity must mean equal ``canon``."""
+    if not refined:
+        return saved
+    merged = list(saved or [])
+    seen: dict[tuple[str, str], Any] = {}
+    for entry in merged:
+        seen.setdefault(identity(entry), entry)
+    for entry in refined:
+        key = identity(entry)
+        prior = seen.get(key)
+        if prior is None:
+            seen[key] = entry
+            merged.append(entry)
+        elif canon(prior) != canon(entry):
+            raise RefinementConflictError(
+                field=field, key=key[1], saved=_show(prior), refined=_show(entry),
+                suggestion=_ENTRY_CONFLICT_SUGGESTION,
+            )
+    return merged
+
+
+_RESTATABLE_FIELDS = ("label", "type", "description", "meta")
+
+
+def _restated_name(formula: str, root: str | None) -> str | None:
+    """The saved-measure name ``formula`` restates: a bare name, or that name qualified by the root."""
+    node = _parsed_or_none(formula)
+    node = root_relative(node, root) if node is not None else None
+    return node.name if isinstance(node, Ref) else None
+
+
+def _check_restatement(entry: ModelMeasure, prior: ModelMeasure) -> None:
+    for field in _RESTATABLE_FIELDS:
+        if field in entry.model_fields_set and getattr(entry, field) != getattr(prior, field):
+            raise RefinementConflictError(
+                field="measures", key=prior.name or "", saved=_show(prior), refined=_show(entry),
+                suggestion=_ENTRY_CONFLICT_SUGGESTION,
+            )
+
+
+def _drop_restatements(
+    saved: list[ModelMeasure] | None, refined: list[ModelMeasure] | None, root: str | None,
+) -> list[ModelMeasure] | None:
+    """``refined`` without the entries restating a saved entry by name; a differing set field conflicts."""
+    by_name = {m.name: m for m in saved or [] if m.name}
+    kept: list[ModelMeasure] = []
+    for entry in refined or []:
+        name = _restated_name(entry.formula, root)
+        prior = by_name.get(name) if name is not None else None
+        if prior is None or entry.name not in (None, prior.name):
+            kept.append(entry)
+        else:
+            _check_restatement(entry, prior)
+    return kept if refined else refined
+
+
+def _merge_attribute(*, saved: Any, refined: Any, key: str, attribute: str) -> Any:
+    if refined is None or refined == saved:
+        return saved
+    if saved is None:
+        return refined
+    raise RefinementConflictError(
+        field="time_dimensions", key=key, saved=f"{attribute}={_show(saved)}",
+        refined=f"{attribute}={_show(refined)}", suggestion=_WINDOW_CONFLICT_SUGGESTION,
+    )
+
+
+def _merge_time_dimensions(
+    saved: list[TimeDimension] | None, refined: list[TimeDimension] | None, root: str | None,
+) -> list[TimeDimension] | None:
+    """Per (dimension, granularity): append new keys, merge ``date_range`` / ``name`` / ``label`` of existing ones."""
+    if not refined:
+        return saved
+    merged = list(saved or [])
+    positions: dict[tuple[str, str], int] = {}
+    for i, td in enumerate(merged):
+        positions.setdefault((_parsed_identity(td.dimension, root), granularity_key(td.granularity)), i)
+    for td in refined:
+        slot = (_parsed_identity(td.dimension, root), granularity_key(td.granularity))
+        i = positions.get(slot)
+        if i is None:
+            positions[slot] = len(merged)
+            merged.append(td)
+            continue
+        prior, key = merged[i], f"{slot[0]}@{td.granularity}"
+        update = {
+            attribute: _merge_attribute(
+                saved=getattr(prior, attribute), refined=getattr(td, attribute), key=key, attribute=attribute,
+            )
+            for attribute in ("date_range", "name", "label")
+        }
+        merged[i] = prior.model_copy(update=update)
+    return merged
+
+
+def refine_query(*, saved: SlayerQuery, refinement: QueryRefinement) -> SlayerQuery:
+    """The saved final stage with ``refinement`` merged in, revalidated as a whole."""
+    root = saved.source_model_name
+    supplied = refinement.model_fields_set
+    data: dict[str, Any] = {name: getattr(saved, name) for name in saved.model_fields_set | {"version"}}
+
+    def canonical_dimension(dim: ColumnRef | ComputedDimension) -> Any:
+        return dim if isinstance(dim, ComputedDimension) else _root_relative_ref(dim, root)
+
+    def dimension_identity(dim: ColumnRef | ComputedDimension) -> tuple[str, str]:
+        if isinstance(dim, ComputedDimension):
+            return "computed", dim.name or dim.expression
+        return "column", _root_relative_ref(dim, root).full_name
+
+    def canonical_measure(m: ModelMeasure) -> ModelMeasure:
+        return m.model_copy(update={"formula": _parsed_identity(m.formula, root)})
+
+    merged_lists = {
+        "dimensions": _union(
+            saved.dimensions, refinement.dimensions, field="dimensions", canon=canonical_dimension,
+            identity=dimension_identity,
+        ),
+        "measures": _union(
+            saved.measures, _drop_restatements(saved.measures, refinement.measures, root), field="measures",
+            canon=canonical_measure,
+            identity=lambda m: ("name", m.name) if m.name else ("formula", _parsed_identity(m.formula, root)),
+        ),
+        "time_dimensions": _merge_time_dimensions(saved.time_dimensions, refinement.time_dimensions, root),
+        "filters": _union(saved.filters, refinement.filters, field="filters", canon=str, identity=lambda f: ("filter", f)),
+    }
+    data.update((name, value) for name, value in merged_lists.items() if value is not getattr(saved, name))
+    for name in ("limit", "offset", "main_time_dimension", *_NON_NULLABLE_SETTINGS):
+        if name in supplied:
+            data[name] = getattr(refinement, name)
+    if "order" in supplied:
+        data["order"] = refinement.order or None
+    return SlayerQuery.model_validate(data)

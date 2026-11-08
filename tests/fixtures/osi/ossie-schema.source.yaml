@@ -1,0 +1,5 @@
+# Provenance of the vendored ossie-schema.json beside this file.
+repository: open-semantic-interchange/OSI
+path: core-spec/ossie-schema.json
+commit: 89e2e17f8249e68f30df7b29ac8852fa9dd24501
+committed: "2026-10-27"

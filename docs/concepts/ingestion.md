@@ -1,6 +1,6 @@
 # Auto-Ingestion
 
-SLayer can introspect a database schema and automatically generate models with a unified `columns` list and **direct FK-based joins**. Aggregations are picked at query time with colon syntax (`amount:sum`, `*:count`); the model itself doesn't carry pre-baked aggregates.
+SLayer can introspect a database schema and automatically generate models with a unified `columns` list and **direct FK-based joins**. Aggregations are picked at query time (`sum(amount)`, `count(*)`); the model itself doesn't carry pre-baked aggregates.
 
 SLayer has three ingestion paths:
 
@@ -20,7 +20,7 @@ SLayer introspects foreign key constraints and builds a directed dependency grap
 orders ──FK──→ customers ──FK──→ regions
 ```
 
-If the graph is acyclic, SLayer computes the **transitive closure** for each table — all tables reachable via FK chains — to determine which columns to introspect for dotted references (e.g. `customers.regions.name`). The transitive closure is used only for column discovery, not for generating joins (see Step 2). If a cycle is detected, ingestion logs a warning and falls back to simple models without rollup joins (see [Cycle Handling](#cycle-handling) below).
+Every foreign key between two ingested tables of the same schema becomes a join, whatever cycles the graph contains (see [Cycle Handling](#cycle-handling) below); self-referencing FKs are skipped.
 
 ### Step 2: Build Direct Joins
 
@@ -33,7 +33,7 @@ Each model gets one join entry per foreign key **on its own table** — never mu
 Each join stores the source/target column pair from the table's own FK. Multi-hop paths (e.g., `customers.regions.name` queried from `orders`) are resolved at query time by walking each intermediate model's joins.
 
 - **Dotted column references**: `customers.name`, `customers.id`, `customers.regions.name`, `customers.regions.id` are reachable from `orders` via the join graph at query time — they live as columns on the target models, not on `orders`.
-- **Path-based SQL**: At query time, column SQL uses `__`-delimited table aliases (e.g., `customers__regions.name`) to disambiguate joined tables. Each joined table gets a path-based alias (e.g., `LEFT JOIN regions AS customers__regions`).
+- **Path-based SQL**: You reference joined columns with dotted paths (`customers.regions.name`); at query time SLayer emits them with `__`-delimited internal table aliases to disambiguate joined tables (e.g., `LEFT JOIN regions AS customers__regions`). The `__` alias is a generated-SQL detail, not something you write.
 
 Tables with no FK references use their plain table name with no joins.
 
@@ -41,15 +41,52 @@ Tables with no FK references use their plain table name with no joins.
 
 SLayer introspects each table's column types and generates a model:
 
-- **One `Column`** per non-joined column on the source table — name, `type` inferred from the database (`string` / `number` / `boolean` / `time` / `date`), `primary_key=True` for PKs. Whether each column is used as a group-by dimension or as an aggregation source is decided per query.
-- **A column literally named `count`** is renamed to `count_col` to avoid clashing with the always-available `*:count`.
+- **One `Column`** per non-joined column on the source table — name, `type` inferred from the database (`TEXT` / `INT` / `DOUBLE` / `BOOLEAN` / `DATE` / `TIMESTAMP`, or `UNKNOWN` for a type SLayer can only store and display), `primary_key=True` for PKs. Whether each column is used as a group-by dimension or as an aggregation source is decided per query, except for a list column, which is never a group-by key and aggregates only with `count`.
+- **List columns** become `type: ARRAY` with their `element_type`: Postgres `T[]`, BigQuery `REPEATED T` / `ARRAY<T>`, DuckDB `T[]` / `LIST`, ClickHouse `Array(T)` (`Nullable` / `LowCardinality` unwrapped), Trino `array(T)` and Snowflake `ARRAY(T)`; a nested list or a list of records gets `element_type: UNKNOWN`, and a Snowflake `ARRAY` without a declared element type has it inferred from the stored elements.
+- **`db_type`** keeps the raw database type where `type` loses information (`UNKNOWN`, exact `NUMERIC` / `DECIMAL`, JSON, zoned timestamps, lists); a native JSON column is read natively only when it is recorded, so a model written by hand without it reads the column as `TEXT`.
+- **Column and table comments** stored in the database become `Column.description` and `SlayerModel.description` (see [Comments and descriptions](#comments-and-descriptions) below).
+- **`unique=True`** for columns that alone form a `UNIQUE` constraint or unique index. PK columns are not stamped redundantly — a sole `primary_key` already implies uniqueness. Composite uniqueness is evaluated per key-set during join-cardinality inference rather than being flattened onto individual columns.
+- On DuckDB (1.1 or later), columns and keys (primary, foreign, `UNIQUE`, unique indexes over plain columns) are read from DuckDB's own catalog (`duckdb_columns()`, `duckdb_constraints()`, `duckdb_indexes()`); a key that cannot be read on any database is logged as a warning and the table is ingested without it.
+- **A column literally named `count`** is renamed to `count_col` to avoid clashing with the always-available `count(*)`.
 - **No auto-generated `measures`** — `SlayerModel.measures` is the named-formula library and stays empty after ingestion. You can add named formulas later via the API/MCP if you want bare-name shortcuts (`{"formula": "aov"}`).
-- **`*:count`** is always available without any model definition.
-- The `allowed_aggregations` whitelist is left at the default for the column's data type. PK columns are restricted to `count`/`count_distinct` automatically.
+- **`count(*)`** is always available without any model definition.
+- The `allowed_aggregations` whitelist is left at the default for the column's data type. A sole PK column is restricted to `count`/`count_distinct`/`count_distinct_approx`/`min`/`max` automatically.
 
 FK columns from referenced tables are excluded from the source model to avoid redundancy — they're reachable via the join graph as `customers.id` etc.
 
-All models use `sql_table` (the source table) plus `joins` (direct FK joins only, storing source/target column pairs). Multi-hop JOINs are resolved dynamically at query time by walking the join graph.
+All models use `sql_table` (the source table) plus `joins` (direct FK joins only, storing source/target column pairs). Multi-hop JOINs are resolved dynamically at query time by walking the join graph. A **composite** foreign key becomes a single join carrying all of its column pairs, not one join per column.
+
+Each FK join also gets a structural [`cardinality`](models.md#join-cardinality) guess from the key constraints alone (no data is read): `many_to_one` by default, upgrading to `one_to_one` when the source key is itself unique. A side counts as unique only when some PK/unique key-set is a subset of the join key — if `(a)` is unique then `(a, b)` is too, but a constraint on `(a, b)` does not make `(a)` unique. When the target key cannot be *verified* unique from its constraints, cardinality is left unset rather than guessed. To infer it from the data instead, run `slayer validate-models --cardinality`.
+
+### Comments and descriptions
+
+Textual metadata stored in the database is imported during ingestion, so
+agents see the same documentation the DBA wrote:
+
+- **Column comments** → `Column.description`
+- **Table comments** → `SlayerModel.description`
+- **BigQuery dataset description** → the datasource's `description`
+  (BigQuery only — no cross-database API exists for schema-level comments)
+
+The import is strictly **fill-if-empty**: a comment lands only where the
+existing `description` is empty. Hand-written descriptions are never
+overwritten, on first ingest or any re-ingest — consistent with the
+additive-only re-ingestion contract. To re-import a comment, clear the
+description and re-run `slayer ingest`. Imported descriptions feed the
+search corpus like any other description, so the next embedding refresh
+picks them up.
+
+Per-database support:
+
+| Database | Column comments | Table comments |
+|---|---|---|
+| BigQuery | ✓ (field descriptions) | ✓ (table description) |
+| Postgres, MySQL, SQL Server, Snowflake, ClickHouse | ✓ | ✓ |
+| DuckDB | ✓ (`COMMENT ON`) | ✓ |
+| SQLite | — (no such feature) | — |
+
+Comment fetching is best-effort: a database or driver that cannot surface
+comments simply yields models without descriptions, never a failed ingest.
 
 ### SQLite affinity probing
 
@@ -66,32 +103,80 @@ The probe is **idempotent re-ingest aware**: a persisted `Column.type = INT` is 
 
 Non-SQLite datasources (Postgres, MySQL, DuckDB, ClickHouse, SQL Server) skip the probe entirely — their type systems are strict and this class of bug doesn't exist.
 
-Already-persisted v7 SQLite models with the wrong `INT` type are **not** auto-repaired on `storage.get_model()` load (running a full table scan per column on every load would be too expensive). Re-ingest is the auto-heal path: `slayer ingest` or `slayer serve --ingest-on-startup`. The DEV-1361 DOUBLE → INT narrowing on legacy-dict migration is also gated on the probe on SQLite — it only fires when the probe positively certifies INT.
+Already-persisted v7 SQLite models with the wrong `INT` type are **not** auto-repaired on `storage.get_model()` load (running a full table scan per column on every load would be too expensive). Re-ingest is the auto-heal path: `slayer ingest` or `slayer serve --ingest-on-startup`. The DOUBLE → INT narrowing on legacy-dict migration is also gated on the probe on SQLite — it only fires when the probe positively certifies INT.
+
+## Schema scope
+
+By default `slayer ingest` covers only the connection's **default schema**, and
+that schema's tables stay unqualified (`sql_table: orders`). To reach other
+schemas, pass their names or ask for all of them:
+
+- `--schema a,b` (or `schemas=["a","b"]`) — ingest the named schemas. A single
+  name is emitted **verbatim** into `sql_table` (`--schema public` →
+  `public.orders`); across several schemas the default one stays bare and only
+  the non-default siblings are prefixed (`analytics.orders`).
+- `--all-schemas` — ingest every non-system schema in the datasource's own
+  catalog. The default schema stays bare; every other schema is qualified.
+- `--schema` and `--all-schemas` are mutually exclusive (the same conflict is
+  rejected by the REST `IngestRequest` as a 422 and by the MCP tools as an
+  error string).
+
+Object names with `__` are preserved as faithful model names — `a__b` and `a_b`
+are distinct models, and neither is sanitized. A name collision therefore only
+happens when two objects share the **same raw name** across different scanned
+schemas; exactly one wins the model name — the default schema beats a non-default
+one, then the lower schema name, then the lower object name — and the losers are
+reported under `skipped` (labelled `schema.table` when more than one schema was
+scanned). Columns, primary keys, and comments are always read from the winning
+table's own schema, never unioned across same-named twins. `sanitize_model_name`
+survives only as a re-ingest fallback-matching spelling: a stored old-world
+sanitized model (`a_b`) whose `sql_table` points at the live `a__b` is still
+matched to it, so re-ingest updates it in place (stored name wins).
+
+`datasources create --schema X` persists `X` as the datasource's
+`schema_name`, so later bare `slayer ingest` runs keep using it; `--all-schemas`
+persists no default schema. A model that was ingested before qualification
+existed (stored bare) is **self-healed** to its qualified `sql_table` on the
+next re-ingest when that is unambiguous — but a bare model that names a real
+default-schema table is never repointed at a non-default twin.
 
 ## Usage
 
 ### CLI
 
 ```bash
-slayer ingest --datasource my_postgres --schema public --storage ./slayer_data
+# Default schema only (tables stay unqualified)
+slayer ingest --datasource my_postgres --storage ./slayer_data
+
+# A specific non-default schema (emitted verbatim: analytics.orders)
+slayer ingest --datasource my_postgres --schema analytics
+
+# Several schemas, or every non-system schema
+slayer ingest --datasource my_postgres --schema public,analytics
+slayer ingest --datasource my_postgres --all-schemas
 ```
 
 ### Python
 
 ```python
 import asyncio
-from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.engine.query_engine import SlayerQueryEngine
 
 async def main():
-    result = await ingest_datasource_idempotent(
-        datasource=ds,
-        storage=storage,
-        schema="public",
-        include_tables=["orders", "customers"],  # Optional filter
-        exclude_tables=["migrations"],            # Optional exclusion
-    )
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        # Reads the database through the engine's client and writes to its storage.
+        result = await engine.ingest_idempotent(
+            ds,
+            schema="public",
+            include_tables=["orders", "customers"],  # Optional filter
+            exclude_tables=["migrations"],            # Optional exclusion
+        )
+    finally:
+        await engine.aclose()  # release the client's resources on this event loop
     # result.additions  — what was added (new models / columns / joins)
     # result.to_delete  — pending validate_models drift entries
+    # result.broken_dependents — stored definitions a list re-type broke
     # result.errors     — per-model failures (best-effort, doesn't abort)
     return result
 
@@ -103,6 +188,9 @@ asyncio.run(main())
 ```
 create_datasource(name="mydb", type="postgres", ...)
 ingest_datasource_models(datasource_name="mydb", schema_name="public")
+# or, across schemas:
+ingest_datasource_models(datasource_name="mydb", schemas="public,analytics")
+ingest_datasource_models(datasource_name="mydb", all_schemas=True)
 ```
 
 ### REST API
@@ -111,6 +199,8 @@ ingest_datasource_models(datasource_name="mydb", schema_name="public")
 curl -X POST http://localhost:5143/ingest \
   -H "Content-Type: application/json" \
   -d '{"datasource": "my_postgres", "schema_name": "public"}'
+# or: {"datasource": "my_postgres", "schemas": ["public", "analytics"]}
+# or: {"datasource": "my_postgres", "all_schemas": true}
 ```
 
 ## Querying Rolled-Up Models
@@ -120,7 +210,7 @@ After ingestion, you can query rolled-up dimensions directly:
 ```json
 {
   "source_model": "orders",
-  "measures": ["*:count", "amount:sum"],
+  "measures": ["count(*)", "sum(amount)"],
   "dimensions": ["customers.name"]
 }
 ```
@@ -130,7 +220,7 @@ Or multi-hop dimensions (resolved at query time by walking each model's joins):
 ```json
 {
   "source_model": "orders",
-  "measures": ["*:count"],
+  "measures": ["count(*)"],
   "dimensions": ["customers.regions.name"]
 }
 ```
@@ -151,13 +241,13 @@ This avoids table alias collisions and allows querying both paths simultaneously
     "customers.regions.name",
     "warehouses.regions.name"
   ],
-  "measures": ["*:count"]
+  "measures": ["count(*)"]
 }
 ```
 
 ## Cycle Handling
 
-If the FK graph contains cycles (e.g., `A → B → A`), ingestion logs a warning and falls back to simple models without rollup joins.
+FK cycles (e.g., `A → B → A`) are ingested as-is, and when two or more joins connect the same pair of models (a 2-cycle, or `billing_address_id` and `shipping_address_id` both referencing `addresses`) ingestion names each unnamed one after its FK column with a trailing `_id`/`_fk` removed (`billing_address`, `shipping_address`) — falling back to `<model>_<stem>`, then a numeric suffix, on a name clash, and never renaming a name you set — so you address them as `billing_address.city`.
 
 ## Ingesting at Startup
 
@@ -172,14 +262,14 @@ freshly-created demo.
 
 Each per-datasource pass refreshes embeddings for the datasource doc,
 every visible model + its visible children, **and every memory whose
-canonical entities are rooted at the datasource** (DEV-1416). A stale
+canonical entities are rooted at the datasource**. A stale
 `embeddings.db` (created without an `OPENAI_API_KEY`, or after a manual
 `memories/<id>.md` edit) is therefore repaired by the next
 `--ingest-on-startup` with no extra step. Per-memory embed failures
 surface as `IngestionError(model_name="memory:<id>", …)` in the
 result's `errors` list.
 
-### Defense-in-depth dangling-ref cleanup (DEV-1428)
+### Defense-in-depth dangling-ref cleanup
 
 The same per-datasource memory pass also walks each memory's
 `entities` list and probes every reference against storage. Refs
@@ -273,19 +363,19 @@ Ingest-on-startup: N/M datasources ingested (K failed: name1, name2)
 `slayer ingest` (and the equivalent MCP / REST entry points) is idempotent by default — re-runs are safe. For each in-scope live table:
 
 - **No persisted model with that name** → ingest from scratch via the path above.
-- **Existing `sql_table`-mode model** → append new columns and joins from the live schema. Existing columns and joins are **never** mutated — `description`, `label`, `format`, `meta`, and `allowed_aggregations` are preserved verbatim.
-- **Existing `sql`-mode or query-backed model with the matching name** → skipped silently; those are user-authored.
+- **Existing `sql_table`-mode model** → append new columns and joins from the live schema. Existing user metadata is **never** overwritten — `description`, `label`, `format`, `meta`, and `allowed_aggregations` are preserved verbatim. The only in-place updates are strictly additive gap-fills: a join's `cardinality` is set only when it is currently unset (a value you chose is never replaced), a column's `unique` is only ever turned on, never off, a model with no primary key takes the live one (a key you set is never changed), and an **empty** `description` (column and model level) is filled from the live DB comment. Filling any of these is enough to trigger a save, so a re-ingest that adds no columns or joins still persists newly-discovered metadata. Filled descriptions are reported per model (`ModelAddition.described_columns`, `model_described`; the CLI prints `+descriptions: …`).
+- **Existing `sql`-mode or query-backed model with the matching name** → skipped by the merge, since those are user-authored; the only change re-ingestion makes to an `sql`-mode model is the list re-type below.
 
 With the default YAML storage, two live tables whose quoted names differ only by letter case (`"Orders"` vs `orders`) cannot both be persisted — model names collide as filenames on macOS / Windows, so the save is rejected (`IdCollisionError`). The first table wins; the second surfaces as a per-model entry in `IdempotentIngestResult.errors` (or a per-model message on the CLI / MCP paths) without aborting the rest of the ingest. SQLite storage persists both.
 
-After the additive pass, `validate_models` runs against the in-scope models and the result is merged into the response (`IdempotentIngestResult.to_delete`). Type-bucket drift on existing columns surfaces there — apply via `slayer validate-models --force-clean`, then re-ingest to pick up the new live type. See [Schema Drift](schema-drift.md) for the full diff / cascade contract.
+After the additive pass, `validate_models` runs against the in-scope models and the result is merged into the response (`IdempotentIngestResult.to_delete`). Type-bucket drift on existing columns surfaces there — apply via `slayer validate-models --force-clean`, then re-ingest to pick up the new live type; the one exception is a non-list column whose live column is now a list, which re-ingestion re-types in place (keeping only `count` allowed) — in a stored `sql`-mode model too, whose column is matched to its query's result column. See [Schema Drift](schema-drift.md) for the full diff / cascade contract.
 
 ### Search side effects
 
 After validation, every ingest also refreshes the search corpus for the touched datasource:
 
-- **Sample values** (`Column.sampled`) — **not** re-profiled at ingest. A per-column full-table scan would dominate ingest wall-clock on wide datasources, so samples are populated lazily on the first `inspect` of a column (or explicitly via `slayer search refresh-samples`). See [Search](search.md#sample-value-cache).
-- **Embedding rows** — when the `advanced_search` extra is installed and a usable provider API key is in the environment, the embedding refresh re-runs for the datasource doc plus every visible model + its visible children. `SLAYER_EMBEDDING_MODEL` is an *optional* override of the default (`openai/text-embedding-3-small`); setting it is not required. The SHA256 `content_hash` on each row means re-ingests are cheap when nothing changed. See [Search](search.md#channel-3--dense-embedding-similarity).
+- **Sample values** (`Column.sampled`) — **not** re-profiled at ingest. A per-column full-table scan would dominate ingest wall-clock on wide datasources, so samples are populated lazily on the first `inspect` of a column (or explicitly via `slayer datasources refresh-samples`). See [Search](search.md#sample-value-cache).
+- **Embedding rows** — when the `advanced_search` extra is installed and a usable provider API key is in the environment, the embedding refresh re-runs for the datasource doc plus every visible model + its visible children. `SLAYER_EMBEDDING_MODEL` is an *optional* override of the default (`openai/text-embedding-3-small`); setting it is not required. The SHA256 `content_hash` on each row means re-ingests are cheap when nothing changed. See [Search](search.md#channel-3-dense-embedding-similarity).
 
 Both refreshes are best-effort: per-entity runtime failures land in `IdempotentIngestResult.errors` as friendly strings, never aborting ingestion. When the `advanced_search` extra is not installed or no API key is configured for the active embedding model, the embedding pass is silently skipped — the user-visible signal lives on the next `search` response.
 

@@ -1,0 +1,44 @@
+name: Poetry environment
+description: Python, a pinned wheel-only Poetry, the cached virtualenv and the locked dependencies.
+
+inputs:
+  python-version:
+    description: Python version to set up.
+    required: true
+  install-args:
+    description: Arguments to `poetry install`.
+    default: "-E all --with dev"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python ${{ inputs.python-version }}
+      id: setup-python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install Poetry
+      shell: bash
+      run: "pip install --only-binary :all: poetry==2.4.1"
+
+    # Keyed on the exact interpreter (a patch bump breaks the venv), the lock and the install args.
+    - name: Restore Poetry virtualenv
+      id: venv-cache
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/.cache/pypoetry/virtualenvs
+        key: venv-${{ runner.os }}-py${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('poetry.lock') }}-${{ inputs.install-args }}
+
+    - name: Install dependencies
+      shell: bash
+      # poetry.lock hash-pins every artifact; clickhouse-sqlalchemy and esprima ship only sdists.
+      run: poetry install ${{ inputs.install-args }}  # NOSONAR(githubactions:S8541)
+
+    # Saved from main only (PRs read main's caches; per-PR copies overflow the 10 GB repo cache), before later steps change the venv.
+    - name: Save Poetry virtualenv
+      if: github.ref == 'refs/heads/main' && steps.venv-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ~/.cache/pypoetry/virtualenvs
+        key: ${{ steps.venv-cache.outputs.cache-primary-key }}

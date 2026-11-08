@@ -4,7 +4,7 @@ Most translator coverage lives in tests/facade/test_translator.py (the shared
 SQL → SlayerQuery pipeline). This file pins behaviours that are specific to
 the Flight shim's `_shared_translate(..., allow_column_cast=False)` call:
 
-* DEV-1566 ``CAST(<col> AS <type>)`` projection is rejected at translate
+* ``CAST(<col> AS <type>)`` projection is rejected at translate
   time (Codex round 1 — Flight has no value-coercion pass and would crash
   inside ``pa.Table.from_pylist`` if the projection were admitted).
 * The time-grain ``CAST(DATE_TRUNC(...) AS DATE)`` Metabase fingerprint is
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, SlayerModel
 from slayer.facade.catalog import FacadeCatalog, build_catalog
 from slayer.flight.translator import QueryResult, TranslationError, translate
@@ -38,7 +38,7 @@ def _catalog() -> FacadeCatalog:
     return build_catalog(models_by_datasource={"jaffle": [orders]})
 
 
-# --- DEV-1566 gate: Flight rejects CAST(<col> AS <type>) projections ---------
+# --- Gate: Flight rejects CAST(<col> AS <type>) projections ---------
 
 
 @pytest.mark.parametrize(
@@ -57,10 +57,11 @@ def test_flight_rejects_cast_projection(col: str, target: str) -> None:
     branch is skipped and the body falls through to the existing
     'Unsupported projection expression' terminal error. Without this gate
     pa.Table.from_pylist would raise ArrowTypeError at materialisation."""
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
         translate(
             sql=f"SELECT CAST({col} AS {target}) FROM orders",
-            catalog=_catalog(),
+            catalog=catalog,
         )
     assert "Unsupported projection expression" in str(exc_info.value)
 
@@ -79,4 +80,4 @@ def test_flight_admits_time_grain_cast_unwrap() -> None:
     )
     assert isinstance(result, QueryResult)
     assert result.query.time_dimensions is not None
-    assert result.query.time_dimensions[0].granularity.value == "month"
+    assert result.query.time_dimensions[0].granularity == TimeGranularity.MONTH

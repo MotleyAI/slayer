@@ -20,16 +20,16 @@ If you just want to kick the tyres, spin up the bundled Jaffle Shop dataset in o
 
 ```bash
 slayer datasources create demo --ingest
-slayer query '{"source_model": "orders", "measures": ["*:count"]}'
+slayer query '{"source_model": "orders", "measures": ["count(*)"]}'
 ```
 
-This generates ~2 years of synthetic coffee-shop data into a local DuckDB file under your storage directory and ingests the models (`customers`, `orders`, `items`, `products`, `stores`, `supplies`, `tweets`). The demo models come pre-enriched with a curated semantic layer: column labels and descriptions, currency/percent formats, ready-made measures (`total_revenue`, `avg_order_value`, `effective_tax_rate`, `unique_customers`, …), and a custom-aggregation example (`weighted_avg` defaulting its weight to `subtotal`) — so `models_summary` / `inspect` output is informative out of the box and there are saved measures to query by name:
+This generates ~2 years of synthetic coffee-shop data into a local DuckDB file under your storage directory and ingests the models (`customers`, `orders`, `items`, `products`, `regions`, `stores`, `supplies`, `tweets`). The demo models come pre-enriched with a curated semantic layer: column labels and descriptions, currency/percent formats, ready-made measures (`total_revenue`, `avg_order_value`, `effective_tax_rate`, `unique_customers`, …), and a custom-aggregation example (`weighted_avg` defaulting its weight to `subtotal`) — so `models_summary` / `inspect` output is informative out of the box and there are saved measures to query by name:
 
 ```bash
 slayer query '{"source_model": "orders", "measures": [{"formula": "total_revenue"}, {"formula": "avg_order_value"}], "dimensions": ["stores.name"]}'
 ```
 
-Re-running is idempotent — the DuckDB is reused if it already exists, and the enrichment is additive-only (your edits to labels, descriptions, or measures are never overwritten). Override the years with `--years N`; the default is kept small so `slayer serve --demo` / `slayer mcp --demo` finish quickly enough to fit inside MCP-client startup timeouts. Only the first four bundled stores open within the first two years — bump `--years` to 4+ if you want all six.
+Monetary columns (`price`, `subtotal`, `tax_paid`, `order_total`, `cost`) are stored as exact `DECIMAL(12,2)` dollars, so revenue sums carry no floating-point noise. Re-running is idempotent — an up-to-date DuckDB is reused (one built with an older schema is regenerated), and ingestion plus enrichment are additive-only (missing joins are added; your edits to labels, descriptions, or measures are never overwritten). Override the years with `--years N`; the default is kept small so `slayer serve --demo` / `slayer mcp --demo` finish quickly enough to fit inside MCP-client startup timeouts. Only the first four bundled stores open within the first two years — bump `--years` to 4+ if you want all six.
 
 Pre-populate once and `--demo` is instant afterwards:
 
@@ -93,7 +93,7 @@ The same `--schema`, `--include`, and `--exclude` flags work on `datasources cre
 
 ```bash
 # Count orders by status
-slayer query '{"source_model": "orders", "measures": ["*:count"], "dimensions": ["status"]}'
+slayer query '{"source_model": "orders", "measures": ["count(*)"], "dimensions": ["status"]}'
 
 # From a file
 slayer query @query.json
@@ -121,7 +121,7 @@ slayer datasources list
 After install + ingest, this should return data:
 
 ```bash
-slayer query '{"source_model": "orders", "measures": ["*:count"]}'
+slayer query '{"source_model": "orders", "measures": ["count(*)"]}'
 ```
 
 Expected output:
@@ -158,11 +158,11 @@ Persist a note with `slayer memory save` so the next session inherits it:
 
 ```bash
 slayer memory save \
-  --learning "orders.is_returned in {0,1,NULL}; treat NULL as not returned" \
-  --entities jaffle_shop.orders.is_returned \
-  --id kb.returns.null-handling
+  --learning "Refunded and cancelled orders keep their order_total; count only completed orders for net revenue" \
+  --entities jaffle_shop.orders.status,jaffle_shop.orders.order_total \
+  --id kb.orders.refunds
 
-slayer memory forget kb.returns.null-handling   # cascade-strips memory:<id> refs
+slayer memory forget kb.orders.refunds   # cascade-strips memory:<id> refs
 ```
 
 See [Search](../concepts/search.md), [Memories](../concepts/memories.md), and the [CLI Reference](../reference/cli.md#slayer-search) for the full signature.

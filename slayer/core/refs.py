@@ -1,42 +1,45 @@
-"""Shared identifier and aggregation-suffix definitions for SLayer references.
-
-DEV-1369 consolidates the identifier-shape regexes and aggregation-suffix
-parsing that previously lived in four different files (``formula.py``,
-``dbt/converter.py``, ``engine/enrichment.py``, ``memories/resolver.py``).
-Keeping a single source of truth prevents the four copies from drifting
-out of sync.
-
-This module is intentionally side-effect-free and depends on nothing from
-``slayer.core.models`` / ``slayer.core.query`` so it can be imported from
-those modules' validators without circular import risk.
-"""
+"""Shared identifier and aggregation-suffix definitions for SLayer references (single source
+of truth). Depends only on ``slayer.core.keys`` so model/query validators avoid circular imports."""
 from __future__ import annotations
 
+import hashlib
 import re
+from decimal import Decimal
+from operator import attrgetter
+from typing import Any, Callable
 
-# ---------------------------------------------------------------------------
+from slayer.core.granularity import CustomGranularity
+from slayer.core.keys import (
+    MIRRORED_TIME_POINT_OP,
+    OPTIONAL_KEY_FIELDS,
+    AggregateKey,
+    ArithmeticKey,
+    ArrayLiteralKey,
+    CastKey,
+    ColumnKey,
+    ColumnSqlKey,
+    InKey,
+    ListSetKey,
+    LiteralKey,
+    ScalarCallKey,
+    SqlFragmentKey,
+    StarKey,
+    TimePointCmpKey,
+    TimeTruncKey,
+    TransformKey,
+    ValueKey,
+)
+
 # Identifier shapes
-# ---------------------------------------------------------------------------
 
-# A bare SQL identifier (no dots, no double underscores constraint at this
-# level — the dunder restriction is applied selectively at user-input time).
+# A bare SQL identifier; the dunder restriction is applied at user-input time.
 IDENTIFIER_RE = re.compile(r"^[a-zA-Z_]\w*$")
 
-# An identifier or a dotted path of identifiers, e.g. ``revenue``,
-# ``customers.revenue``, ``a.b.c.d``. Used to scan formula text for
-# reference candidates.
+# An identifier or dotted path; used to scan formula text for reference candidates.
 IDENT_OR_PATH_RE = re.compile(r"[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*")
 
-# A string that is exactly a chain of ``.``-joined identifiers and nothing
-# else. Distinguishes ``customers.regions.name`` from a SQL fragment that
-# happens to contain a dot.
-DOTTED_IDENT_REF_RE = re.compile(r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)+$")
-
-# Aggregation colon syntax, e.g. ``revenue:sum``, ``*:count``,
-# ``customers.revenue:weighted_avg(weight=quantity)``. Group 1 is the
-# measure name (``*``, identifier, or dotted path, optionally
-# ``path.*``); group 2 is the aggregation name; group 3 is the optional
-# ``(...)`` arglist.
+# Legacy colon aggregation spelling (``revenue:sum``, ``*:count``). Group 1 measure name,
+# group 2 aggregation name, group 3 optional ``(...)`` arglist.
 AGG_REF_RE = re.compile(
     r"(\*|[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*(?:\.\*)?)"  # measure / *
     r":"
@@ -45,26 +48,137 @@ AGG_REF_RE = re.compile(
 )
 
 
-# ---------------------------------------------------------------------------
 # Aggregation-suffix utilities
-# ---------------------------------------------------------------------------
 
 _NON_IDENT_RE = re.compile(r"\W+")
+
+
+def auto_name_from_expression(expression: str) -> str:
+    """Deterministic identifier for an expression-derived name (computed
+    dimensions AND expression-aggregation leaves — one convention product-wide);
+    long names fold to ``<head>_<hash8>_<tail>`` to avoid prefix collisions."""
+    base = re.sub(r"\W+", "_", expression.strip()).strip("_").lower() or "expr"
+    if base[0].isdigit():
+        base = f"e_{base}"
+    if len(base) > 48:
+        digest = hashlib.sha256(expression.encode("utf-8")).hexdigest()[:8]
+        base = f"{base[:28]}_{digest}_{base[-8:]}"
+    # No ``__`` — reserved for join-path aliases in generated SQL.
+    return re.sub(r"_+", "_", base).strip("_")
+
+
+# The row-level ``ValueKey`` kinds an ``AggregateKey.source`` may take when it
+# is a same-model scalar EXPRESSION rather than a column / star.
+EXPRESSION_SOURCE_KINDS = (
+    ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey, InKey, TimePointCmpKey, CastKey, ListSetKey,
+)
+
+
+# The pinned legacy key spelling: the historical Pydantic
+# str/repr of every key kind, frozen as literals so emitted SQL aliases never
+# move when Python field/class names do. Goldens pin the exact tokens.
+_LegacyFields = tuple[tuple[str, Callable[[Any], Any]], ...]
+
+_LEGACY_KEY_SPELLINGS: dict[type, tuple[str, _LegacyFields]] = {
+    ColumnKey: ("ColumnKey", (
+        ("path", attrgetter("path")), ("leaf", attrgetter("leaf")),
+    )),
+    ColumnSqlKey: ("ColumnSqlKey", (
+        ("path", attrgetter("path")), ("model", attrgetter("model")),
+        ("column_name", attrgetter("column_name")),
+    )),
+    TimeTruncKey: ("TimeTruncKey", (
+        ("column", attrgetter("source")),
+        ("granularity", lambda k: str(k.granularity)),
+    )),
+    StarKey: ("StarKey", (("path", attrgetter("path")),)),
+    LiteralKey: ("LiteralKey", (("value", attrgetter("value")),)),
+    AggregateKey: ("AggregateKey", (
+        ("source", attrgetter("source")), ("agg", attrgetter("agg")),
+        ("args", attrgetter("args")), ("kwargs", attrgetter("kwargs")),
+        ("grain", attrgetter("locus")),
+        ("partition_keys", lambda k: (
+            None if k.partition_keys is None else k.partition_keys.keys
+        )),
+        ("filter", attrgetter("filter")),
+    )),
+    TransformKey: ("TransformKey", (
+        ("op", attrgetter("op")), ("input", attrgetter("input")),
+        ("args", attrgetter("args")), ("kwargs", lambda k: tuple(
+            (n, str(v) if isinstance(v, CustomGranularity) else v) for n, v in k.kwargs
+        )),
+        ("partition_keys", lambda k: k.partition_keys.keys),
+        ("time_key", attrgetter("time_key")),
+    )),
+    ArithmeticKey: ("ArithmeticKey", (
+        ("op", attrgetter("op")), ("operands", attrgetter("operands")),
+    )),
+    ScalarCallKey: ("ScalarCallKey", (
+        ("name", attrgetter("name")), ("args", attrgetter("args")),
+    )),
+    TimePointCmpKey: ("TimePointCmpKey", (
+        ("op", attrgetter("op")), ("operand", attrgetter("operand")),
+        ("point", attrgetter("point")), ("literal_on_left", attrgetter("literal_on_left")),
+    )),
+    InKey: ("InKey", (
+        ("column", attrgetter("column")), ("values", attrgetter("values")),
+        ("negated", attrgetter("negated")),
+    )),
+    SqlFragmentKey: ("SqlFragmentKey", (
+        ("template", attrgetter("template")), ("refs", attrgetter("refs")),
+    )),
+    CastKey: ("CastKey", (
+        ("source", attrgetter("source")), ("type_text", attrgetter("type_text")),
+        ("try_", attrgetter("try_")),
+    )),
+    ListSetKey: ("ListSetKey", (("source", attrgetter("source")),)),
+}
+
+
+def _legacy_value_spelling(value: Any) -> str:
+    if type(value) in _LEGACY_KEY_SPELLINGS:
+        return legacy_key_repr(value)
+    if isinstance(value, tuple):
+        inner = [_legacy_value_spelling(x) for x in value]
+        if len(inner) == 1:
+            return f"({inner[0]},)"
+        return "(" + ", ".join(inner) + ")"
+    if isinstance(value, frozenset):
+        if not value:
+            return "frozenset()"
+        return (
+            "frozenset({"
+            + ", ".join(sorted(_legacy_value_spelling(x) for x in value))
+            + "})"
+        )
+    return repr(value)
+
+
+def _legacy_key_fields(key: Any) -> tuple[str, list[tuple[str, str]]]:
+    spelled_cls, fields = _LEGACY_KEY_SPELLINGS[type(key)]
+    return spelled_cls, [
+        (name, _legacy_value_spelling(get(key))) for name, get in fields
+        if not (name in OPTIONAL_KEY_FIELDS and get(key) is None)
+    ]
+
+
+def legacy_key_repr(key: Any) -> str:
+    """``repr``-position spelling: ``ClassName(field=..., ...)``."""
+    spelled_cls, fields = _legacy_key_fields(key)
+    return spelled_cls + "(" + ", ".join(f"{n}={v}" for n, v in fields) + ")"
+
+
+def legacy_key_str(key: Any) -> str:
+    """``str``-position spelling: ``field=... field=...``."""
+    _, fields = _legacy_key_fields(key)
+    return " ".join(f"{n}={v}" for n, v in fields)
 
 
 def agg_signature_suffix(
     agg_args: list[str] | None,
     agg_kwargs: dict | None,
 ) -> str:
-    """Build a deterministic identifier suffix from aggregation args/kwargs.
-
-    Returns the empty string when both are empty so unparameterized
-    aggregations keep their existing canonical names. For parameterized
-    variants (``last(created_at)`` vs ``last(updated_at)``,
-    ``percentile(p=0.5)`` vs ``percentile(p=0.95)``,
-    ``sum(window='90d')`` vs ``sum(window='30d')``) the suffix
-    differentiates them so they don't collapse onto a single hidden alias.
-    """
+    """Deterministic identifier suffix from aggregation args/kwargs (empty when both empty); differentiates parametric variants (``percentile(p=0.5)`` vs ``(p=0.95)``)."""
     args = agg_args or []
     kwargs = agg_kwargs or {}
     if not args and not kwargs:
@@ -84,18 +198,256 @@ def agg_signature_suffix(
     return "_" + "_".join(parts) if parts else ""
 
 
+def _partition_key_display(key: Any) -> str:
+    if isinstance(key, (TimeTruncKey, ListSetKey)):
+        key = key.source
+    if isinstance(key, ColumnKey):
+        parts = [*key.path, key.leaf]
+    elif isinstance(key, ColumnSqlKey):
+        parts = [*key.path, key.column_name]
+    else:
+        parts = [legacy_key_str(key)]
+    return _NON_IDENT_RE.sub("_", "_".join(parts)).strip("_")
+
+
+def dotted_key_display(pk: ValueKey) -> str:
+    """Human-readable dotted path for a key in error messages."""
+    if isinstance(pk, (TimeTruncKey, ListSetKey)):
+        return dotted_key_display(pk.source)
+    return key_display(pk)
+
+
+def _scalar_display(value: Any) -> str:
+    if isinstance(value, str):
+        return f"'{value}'"
+    if value is None:
+        return "NULL"
+    if isinstance(value, Decimal):
+        return _decimal_to_plain_str(value)
+    return str(value)
+
+
+def _arg_display(value: Any) -> str:
+    if isinstance(value, ArrayLiteralKey) or type(value) in _LEGACY_KEY_SPELLINGS:
+        return key_display(value)
+    return _scalar_display(value)
+
+
+def _grain_display_list(keys: Any) -> str:
+    return "[" + ", ".join(sorted(key_display(k) for k in keys)) + "]"
+
+
+def _call_display(name: str, args: list[str]) -> str:
+    return f"{name}({', '.join(args)})"
+
+
+def _aggregate_display(key: AggregateKey) -> str:
+    args = [key_display(key.source), *(_arg_display(a) for a in key.args)]
+    args.extend(f"{k}={_arg_display(v)}" for k, v in key.kwargs)
+    if key.partition_keys is not None:
+        args.append(f"partition_by={_grain_display_list(key.partition_keys)}")
+    text = _call_display(key.agg, args)
+    return text if key.filter is None else f"{text} FILTER (WHERE {key_display(key.filter)})"
+
+
+def _transform_display(key: TransformKey) -> str:
+    args = [key_display(key.input), *(_scalar_display(a) for a in key.args)]
+    args.extend(f"{k}={_scalar_display(v)}" for k, v in key.kwargs)
+    if key.partition_keys:
+        args.append(f"partition_by={_grain_display_list(key.partition_keys)}")
+    return _call_display(key.op, args)
+
+
+def _arithmetic_display(key: ArithmeticKey) -> str:
+    rendered = [
+        f"({key_display(o)})" if isinstance(o, ArithmeticKey) else key_display(o)
+        for o in key.operands
+    ]
+    if len(rendered) == 1:
+        return f"not {rendered[0]}" if key.op == "not" else f"{key.op}{rendered[0]}"
+    return f" {key.op} ".join(rendered)
+
+
+def _time_point_cmp_display(key: TimePointCmpKey) -> str:
+    if key.literal_on_left:
+        return f"{_scalar_display(key.point)} {MIRRORED_TIME_POINT_OP[key.op]} {key_display(key.operand)}"
+    return f"{key_display(key.operand)} {key.op} {_scalar_display(key.point)}"
+
+
+def _fragment_display(key: SqlFragmentKey) -> str:
+    text = key.template
+    for i, ref in enumerate(key.refs):
+        text = text.replace(f"{{r{i}}}", key_display(ref))
+    return text
+
+
+def _leaf_display(key: ValueKey) -> str | None:
+    if isinstance(key, ColumnKey):
+        return ".".join((*key.path, key.leaf))
+    if isinstance(key, ColumnSqlKey):
+        return ".".join((*key.path, key.column_name))
+    if isinstance(key, StarKey):
+        return ".".join((*key.path, "*"))
+    if isinstance(key, LiteralKey):
+        return _scalar_display(key.value)
+    return None
+
+
+def _listed_display(key: ValueKey) -> str | None:
+    """Display of a key reading or holding several values, else ``None``."""
+    if isinstance(key, InKey):
+        values = ", ".join(key_display(v) for v in key.values)
+        return f"{key_display(key.column)} {'not in' if key.negated else 'in'} ({values})"
+    if isinstance(key, ArrayLiteralKey):
+        return f"[{', '.join(key_display(v) for v in key.values)}]"
+    if isinstance(key, ListSetKey):
+        return key_display(key.source)
+    return None
+
+
+def key_display(key: ValueKey) -> str:
+    """User-facing formula text of any key kind."""
+    shown = _leaf_display(key) or _listed_display(key)
+    if shown is not None:
+        return shown
+    if isinstance(key, TimeTruncKey):
+        return f"{key.granularity}({key_display(key.source)})"
+    if isinstance(key, AggregateKey):
+        return _aggregate_display(key)
+    if isinstance(key, TransformKey):
+        return _transform_display(key)
+    if isinstance(key, ArithmeticKey):
+        return _arithmetic_display(key)
+    if isinstance(key, ScalarCallKey):
+        return _call_display(key.name, [_arg_display(a) for a in key.args])
+    if isinstance(key, CastKey):
+        return f"{'TRY_CAST' if key.try_ else 'CAST'}({key_display(key.source)} AS {key.type_text})"
+    if isinstance(key, TimePointCmpKey):
+        return _time_point_cmp_display(key)
+    if isinstance(key, SqlFragmentKey):
+        return _fragment_display(key)
+    raise TypeError(f"key_display has no rule for {type(key).__name__}")
+
+
+def partition_by_suffix(partition_keys) -> str:
+    """Deterministic identifier suffix for ``partition_keys``: ``None`` -> empty; empty frozenset (grand total) -> ``_partition_by``; non-empty -> ``_partition_by`` + sorted displays."""
+    if partition_keys is None:
+        return ""
+    displays = sorted(_partition_key_display(k) for k in partition_keys)
+    return "_partition_by" + "".join(f"_{d}" for d in displays)
+
+
+def _decimal_to_plain_str(value: Decimal) -> str:
+    """``value`` as a plain-decimal string, no scientific notation: ``str(Decimal("1E-7"))`` yields ``"1E-7"``, which the generator's ``_SAFE_AGG_PARAM_RE`` allowlist rejects."""
+    s = f"{value:f}"
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s or "0"
+
+
+def agg_kwarg_canonical_str(value: Any) -> str:
+    """Canonicalize an AggregateKey kwarg/arg value to the SQL-string form the generator's
+    ``_validate_agg_param_value`` accepts (so a ``ColumnKey`` never leaks as Pydantic repr).
+    ``bool``/``None`` raise (kept distinct from numerics to fail loudly); ``ColumnKey`` → ``[path.]leaf``."""
+    if isinstance(value, bool):
+        # bool is-a int, must check first.
+        raise TypeError(
+            f"AggregateKey kwarg cannot be bool: {value!r}",
+        )
+    if value is None:
+        raise TypeError("AggregateKey kwarg cannot be None")
+    if isinstance(value, Decimal):
+        return _decimal_to_plain_str(value)
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        # Decimal(str(float)) preserves human-readable text (matches planner normalize_scalar).
+        return _decimal_to_plain_str(Decimal(str(value)))
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (ColumnKey, ColumnSqlKey)):
+        return ".".join((*value.path, value.leaf if isinstance(value, ColumnKey) else value.column_name))
+    if isinstance(value, AggregateKey):
+        return _agg_key_canonical_str(value)
+    if isinstance(value, TransformKey):
+        return _transform_key_canonical_str(value)
+    if isinstance(value, SqlFragmentKey):
+        return sql_fragment_digest(value)
+    if isinstance(value, (ScalarCallKey, ArithmeticKey, CastKey, InKey, TimeTruncKey, LiteralKey, ListSetKey)):
+        # A row-level expression parameter (a FILTER-masked one included).
+        return auto_name_from_expression(key_display(value))
+    raise TypeError(
+        f"AggregateKey kwarg value of type {type(value).__name__!r} "
+        f"is not supported: {value!r}",
+    )
+
+
+def sql_fragment_digest(value: SqlFragmentKey) -> str:
+    """A short stable name for a bound parameter expression (template + refs)."""
+    refs = ",".join(agg_kwarg_canonical_str(r) for r in value.refs)
+    digest = hashlib.sha256(f"{value.template}|{refs}".encode("utf-8"))
+    return f"expr_{digest.hexdigest()[:8]}"
+
+
+def _agg_key_canonical_str(value: AggregateKey) -> str:
+    """Canonical fragment for an aggregate-valued parameter (alias/identity only;
+    render-time reads the picked ``_p<i>`` column). Ordered positional args are
+    included so aggregates differing only in positionals (a ranked ``first``'s
+    ranking key) never collapse to the same fragment."""
+    parts = [value.agg]
+    if isinstance(value.source, (ColumnKey, ColumnSqlKey)):
+        parts.append(agg_kwarg_canonical_str(value.source))
+    parts.extend(
+        f"arg{i}_{agg_kwarg_canonical_str(a)}" for i, a in enumerate(value.args)
+    )
+    parts.extend(f"{k}_{agg_kwarg_canonical_str(v)}" for k, v in value.kwargs)
+    if value.partition_keys is not None:
+        pks = sorted(
+            agg_kwarg_canonical_str(p)
+            if isinstance(p, (ColumnKey, ColumnSqlKey)) else str(p)
+            for p in value.partition_keys
+        )
+        if pks:
+            parts.append("by_" + "_".join(pks))
+    return "_".join(parts)
+
+
+def _time_aware_key_display(key: ValueKey) -> str:
+    """A partition/time key's display with a ``TimeTruncKey``'s granularity kept, so
+    the same column bucketed month vs year yields distinct fragments (identity)."""
+    display = _partition_key_display(key)
+    if isinstance(key, TimeTruncKey):
+        return f"{display}_{key.granularity}"
+    return display
+
+
+def _transform_key_canonical_str(value: TransformKey) -> str:
+    """Canonical fragment for a transform-valued parameter (alias/identity
+    only — render reads the picked column). Op, its scalar kwargs, the input
+    fragment, its rank partition keys, and the resolved time key — every time key
+    carrying its granularity (a bucketed ``cumsum`` differs from an unbucketed one)."""
+    parts = [value.op]
+    parts.extend(f"{k}_{agg_kwarg_canonical_str(v)}" for k, v in value.kwargs)
+    if isinstance(value.input, (ColumnKey, ColumnSqlKey, AggregateKey, TransformKey)):
+        parts.append(agg_kwarg_canonical_str(value.input))
+    else:
+        parts.append(_NON_IDENT_RE.sub("_", legacy_key_str(value.input)).strip("_"))
+    if value.partition_keys:
+        parts.append(
+            "by_" + "_".join(sorted(_time_aware_key_display(p) for p in value.partition_keys))
+        )
+    if value.time_key is not None:
+        parts.append(_time_aware_key_display(value.time_key))
+    return "_".join(parts)
+
+
 def canonical_agg_name(
     measure_name: str,
     aggregation_name: str,
     agg_args: list[str] | None = None,
     agg_kwargs: dict | None = None,
 ) -> str:
-    """Canonical hidden-column name for an aggregated measure ref.
-
-    ``revenue:sum`` → ``revenue_sum``; ``*:count`` → ``_count``;
-    ``revenue:percentile(p=0.5)`` → ``revenue_percentile_p_0_5``;
-    ``revenue:sum(window='90d')`` → ``revenue_sum_window_90d``.
-    """
+    """Canonical hidden-column name for an aggregated measure ref (``sum(revenue)`` → ``revenue_sum``, ``count(*)`` → ``_count``)."""
     suffix = agg_signature_suffix(agg_args, agg_kwargs)
     if measure_name == "*":
         return f"_{aggregation_name}{suffix}"
@@ -103,17 +455,7 @@ def canonical_agg_name(
 
 
 def strip_agg_suffix(raw: str) -> tuple[str, str | None]:
-    """Return ``(prefix, agg_name)`` after stripping a trailing ``:agg``
-    or ``:agg(...)``.
-
-    ``agg`` may be parametric: ``revenue:weighted_avg(weight=qty)`` →
-    ``("revenue", "weighted_avg")``. The args themselves are discarded
-    since the aggregation is not an independent entity.
-
-    Locates the *outermost* colon (one not inside parentheses) so a
-    parametric aggregation like ``revenue:last(created_at)`` doesn't
-    fool the scan.
-    """
+    """Return ``(prefix, agg_name)`` stripping a trailing legacy colon suffix ``:agg``/``:agg(...)`` (arglist discarded); locates the outermost colon (outside parens) so ``revenue:last(created_at)`` isn't fooled."""
     depth = 0
     for i, ch in enumerate(raw):
         if ch == "(":
@@ -129,16 +471,7 @@ def strip_agg_suffix(raw: str) -> tuple[str, str | None]:
 
 
 def split_agg_suffix(raw: str) -> tuple[str, str | None]:
-    """Return ``(prefix, suffix)`` splitting off a trailing ``:agg`` /
-    ``:agg(...)``, keeping the *full* suffix text (args included).
-
-    Unlike :func:`strip_agg_suffix` (which discards the arglist and returns
-    only the aggregation name), this preserves the entire suffix so callers
-    that re-root a reference can re-attach it verbatim —
-    ``"orders.revenue:weighted_avg(weight=qty)"`` →
-    ``("orders.revenue", "weighted_avg(weight=qty)")``. Returns
-    ``(raw, None)`` when there is no top-level ``:`` aggregation.
-    """
+    """Return ``(prefix, suffix)`` splitting a trailing legacy colon suffix ``:agg`` but keeping the full suffix (args included) — unlike :func:`strip_agg_suffix`, so a re-rooted reference re-attaches it verbatim."""
     depth = 0
     for i, ch in enumerate(raw):
         if ch == "(":
@@ -150,33 +483,11 @@ def split_agg_suffix(raw: str) -> tuple[str, str | None]:
     return raw, None
 
 
-# ---------------------------------------------------------------------------
-# User-input validation
-# ---------------------------------------------------------------------------
+def functional_agg_text(*, source: str, suffix: str) -> str:
+    """Functional text of ``(source, suffix)``, the inverse of :func:`split_agg_suffix`:
+    ``("price", "percentile(p=0.9)")`` → ``percentile(price, p=0.9)``."""
+    name, paren, rest = suffix.strip().partition("(")
+    args = rest.rstrip()[:-1].strip() if paren else ""
+    inner = f"{source}, {args}" if args else source
+    return f"{name.strip()}({inner})"
 
-
-def reject_user_dunder(value: str, *, context: str) -> str:
-    """Reject ``__`` in user-supplied query / DSL input.
-
-    The double-underscore separator is reserved for internal join-path
-    aliases (``customers__regions``) and for virtual-model column names
-    produced by ``_query_as_model`` (``stores__name``). User-authored
-    queries and ModelMeasure formulas must use single-dot DSL paths
-    (``customers.regions.name``).
-
-    SQL-mode fields (``Column.sql``, ``Column.filter``,
-    ``SlayerModel.filters``) intentionally do NOT call this validator —
-    they accept ``__`` as legitimate join-alias syntax.
-
-    Returns the value unchanged on success; raises ``ValueError`` on a
-    violation. The message names the offending context so multi-field
-    validators surface a helpful error.
-    """
-    if "__" in value:
-        raise ValueError(
-            f"{context} contains a reserved double-underscore (`__`) in "
-            f"{value!r}. `__` is reserved for internal join-path aliases "
-            f"in generated SQL — use single-dot DSL paths "
-            f"(e.g. `customers.region`) in queries and ModelMeasure formulas."
-        )
-    return value

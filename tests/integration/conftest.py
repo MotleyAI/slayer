@@ -1,20 +1,19 @@
-"""Shared integration-test fixtures (DEV-1390).
+"""Shared integration-test fixtures.
 
 Currently hosts the Flight SQL demo-server fixture used by both
 ``test_integration_flight.py`` (JayDeBeAPI) and
 ``test_integration_flight_pyarrow_client.py``.
 
 Also re-exports the ``metabase_e2e_env`` fixture from
-``conftest_metabase.py`` so the live-Metabase suite (DEV-1562) can pick it
+``conftest_metabase.py`` so the live-Metabase suite can pick it
 up via pytest's auto-discovery without an explicit import (which would
 shadow it via parameter binding in every test).
 """
 
 from __future__ import annotations
 
-import argparse
+import os
 import shutil
-import tempfile
 import threading
 import time
 import urllib.request
@@ -22,7 +21,21 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Callable, Iterator
 
+import jaydebeapi
+import jpype
 import pytest
+
+from slayer.engine.query_engine import SlayerQueryEngine
+from tests.integration._demo_build import prepare_demo_storage
+
+# The Flight server needs the optional ``flight`` extra; without it only the Flight fixtures are unusable.
+try:
+    from slayer.flight.handlers import FlightHandlers
+    from slayer.flight.server import build_server
+except ModuleNotFoundError as exc:
+    if (exc.name or "").split(".")[0] not in {"pyarrow", "google"}:
+        raise
+    FlightHandlers = build_server = None
 
 # Import the metabase fixture conditionally: ``conftest_metabase`` top-imports
 # ``requests``, which is in the ``all`` poetry extra but not in narrower dev
@@ -117,8 +130,6 @@ def _ensure_jvm_started_for_arrow(jar_path: Path) -> None:
     on the classpath, so JayDeBeAPI's lazy ``startJVM()`` becomes a no-op
     and ``jpype.JClass(...)`` can resolve the driver class).
     """
-    import jpype
-
     if jpype.isJVMStarted():
         return
     jpype.startJVM(
@@ -145,21 +156,14 @@ def pytest_unconfigure(config) -> None:
     we sat for 16 minutes until the 20-minute step ceiling. ``os._exit``
     bypasses every atexit hook and lets pytest's exit code propagate.
     """
-    try:
-        import jpype
-    except ImportError:
-        return
     if not jpype.isJVMStarted():
         return
-    import os
     os._exit(getattr(config, "_slayer_jvm_exit_status", 0))
 
 
 @pytest.fixture
 def jaydebeapi_connect(jdbc_jar: Path) -> Callable[..., Any]:
     """Return a factory that opens a JayDeBeAPI connection to a Flight SQL URL."""
-    import jaydebeapi
-
     _ensure_jvm_started_for_arrow(jdbc_jar)
 
     def _connect(url: str, driver_args: list[str] | None = None):
@@ -173,27 +177,20 @@ def jaydebeapi_connect(jdbc_jar: Path) -> Callable[..., Any]:
     return _connect
 
 
-def _start_flight_demo_server(*, token: str | None):
+def _start_flight_demo_server(
+    *, token: str | None, base_dir: str, prebuilt_duckdb: str | None = None
+):
     """Boot a Flight SQL server backed by the bundled Jaffle Shop demo.
 
     Returns ``(server, host, port)``. The caller is responsible for
-    ``server.shutdown()`` + ``.wait()``.
+    ``server.shutdown()`` + ``.wait()``. When ``prebuilt_duckdb`` is given, the
+    demo build reuses that file instead of running jafgen.
     """
-    from slayer.cli import _prepare_demo, _resolve_storage
-    from slayer.engine.query_engine import SlayerQueryEngine
-    from slayer.flight.handlers import FlightHandlers
-    from slayer.flight.server import build_server
-
-    args = argparse.Namespace(
-        storage=tempfile.mkdtemp(prefix="slayer-flight-it-"),
-        models_dir=None,
-        datasource=None,
-        force=False,
-    )
-    storage = _resolve_storage(args)
-    _prepare_demo(args, storage)
+    if FlightHandlers is None or build_server is None:
+        pytest.skip("Flight SQL needs the optional 'flight' extra (pyarrow)")
+    _args, storage = prepare_demo_storage(prebuilt_duckdb=prebuilt_duckdb, base_dir=base_dir)
     engine = SlayerQueryEngine(storage=storage)
-    handlers = FlightHandlers(engine=engine, storage=storage)
+    handlers = FlightHandlers(engine=engine)
     server = build_server(
         host="127.0.0.1", port=0, handlers=handlers, token=token,
     )
@@ -205,9 +202,16 @@ def _start_flight_demo_server(*, token: str | None):
 
 
 @pytest.fixture(scope="module")
-def flight_demo_server() -> Iterator[tuple[str, int]]:
+def flight_demo_server(
+    shared_demo_duckdb: str, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[tuple[str, int]]:
     """Yield ``(host, port)`` of a no-auth Flight SQL server backed by the Jaffle Shop demo."""
-    server, host, port = _start_flight_demo_server(token=None)
+    # tmp_path_factory dirs are cleaned by pytest — no manual rmtree in teardown,
+    # which (while the demo engine still held the DuckDB open) errored on CI.
+    base = str(tmp_path_factory.mktemp("flight-demo"))
+    server, host, port = _start_flight_demo_server(
+        token=None, prebuilt_duckdb=shared_demo_duckdb, base_dir=base
+    )
     try:
         yield host, port
     finally:
@@ -216,10 +220,15 @@ def flight_demo_server() -> Iterator[tuple[str, int]]:
 
 
 @pytest.fixture(scope="module")
-def flight_demo_server_with_token() -> Iterator[tuple[str, int, str]]:
+def flight_demo_server_with_token(
+    shared_demo_duckdb: str, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[tuple[str, int, str]]:
     """Same as ``flight_demo_server`` but with a bearer token enforced."""
     token = "s3cret"
-    server, host, port = _start_flight_demo_server(token=token)
+    base = str(tmp_path_factory.mktemp("flight-demo-tok"))
+    server, host, port = _start_flight_demo_server(
+        token=token, prebuilt_duckdb=shared_demo_duckdb, base_dir=base
+    )
     try:
         yield host, port, token
     finally:

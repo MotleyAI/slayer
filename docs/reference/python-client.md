@@ -19,7 +19,7 @@ client = SlayerClient(url="http://localhost:5143")
 
 query = {
     "source_model": "orders",
-    "measures": ["*:count", "revenue:sum"],
+    "measures": ["count(*)", "sum(order_total)"],
     "dimensions": ["status"],
     "limit": 10,
 }
@@ -48,6 +48,8 @@ data = client.query(query)
 df = client.query_df(query)
 ```
 
+Pass `client_factory=` to run every database access through your own client — for example a gateway that holds the credentials; see [SQL Clients](../configuration/sql-clients.md).
+
 ### Accepted Input Shapes
 
 `client.query` / `query_sync` / `sql` / `sql_sync` / `explain` / `explain_sync` / `query_df` all accept the same input union (mirroring `engine.execute`):
@@ -57,21 +59,25 @@ df = client.query_df(query)
 - A **list of dicts or `SlayerQuery`** — a multi-stage DAG. Earlier stages are named sub-queries; the last entry is the root. Order doesn't matter (the engine auto-sorts). See [Query Lists](../concepts/queries.md#query-lists).
 - A **string** — runs the backing query of a query-backed model by name.
 
+Each also takes `variables=` — runtime values for `{placeholders}`, overriding saved defaults.
+
 ```python
 # Multi-stage DAG
 client.query_sync([
-    {"name": "by_customer", "source_model": "orders", "measures": [{"formula": "amount:sum"}], "dimensions": [{"name": "customer_id"}]},
-    {"source_model": "by_customer", "measures": [{"formula": "amount_sum:avg"}]},
+    {"name": "by_customer", "source_model": "orders", "measures": [{"formula": "sum(order_total)"}], "dimensions": [{"name": "customer_id"}]},
+    {"source_model": "by_customer", "measures": [{"formula": "avg(order_total_sum)"}]},
 ])
 
-# Run-by-name (query-backed model)
+# Run-by-name (query-backed model), optionally refined
 client.query_sync("rev_by_region")
+client.query_sync("rev_by_region", refine={"dimensions": ["status"]})
+client.query_sync("rev_by_status", variables={"status": "refunded"})
 
 # Raw rows — opt out of the dim-only auto-dedup. Per-stage in DAG queries.
 client.query_sync({
     "source_model": "orders",
-    "dimensions": ["status", "amount"],
-    "filters": ["amount > 100"],
+    "dimensions": ["status", "order_total"],
+    "filters": ["order_total > 100"],
     "limit": 100,
     "distinct_dimension_values": False,
 })
@@ -98,29 +104,29 @@ client.create_datasource({"name": "mydb", "type": "postgres", ...})
 
 ### Inspect
 
-`inspect` / `inspect_sync` is a point lookup (DEV-1588): the rendered detail for **exactly one** entity by `reference` + required `entity_type`. No fusion / ranking / bundled memories — use `search` for an entity *in context*. Same arguments as the MCP `inspect` tool and `POST /inspect`; returns the rendered string. **DEV-1612:** `reference` also accepts a **list** — a homogeneous-kind batch (one `entity_type` for every id), returning one block per id in input order with per-id error isolation. **DEV-1667:** `reference=None` (or `[]`) is the **collection** view — lists the whole kind (`model` grouped by datasource, or `datasource`); other kinds raise. Subsumes `models_summary` / `list_datasources`.
+`inspect` / `inspect_sync` is a point lookup: the rendered detail for **exactly one** entity by `reference` + required `entity_type`. No fusion / ranking / bundled memories — use `search` for an entity *in context*. Same arguments as the MCP `inspect` tool and `POST /inspect`; returns the rendered string. `reference` also accepts a **list** — a homogeneous-kind batch (one `entity_type` for every id), returning one block per id in input order with per-id error isolation. `reference=None` (or `[]`) is the **collection** view — lists the whole kind (`model` grouped by datasource, or `datasource`); other kinds raise. Subsumes `models_summary` / `list_datasources`.
 
 ```python
 # Compact default: schema skeleton for a model (column / measure / aggregation
 # names + joins, zero DB calls); description-only for the other kinds.
-print(client.inspect_sync(reference="mydb.orders", entity_type="model"))
+print(client.inspect_sync(reference="jaffle_shop.orders", entity_type="model"))
 
 # Collection: all models grouped by datasource (one terse line per model).
 print(client.inspect_sync(reference=None, entity_type="model"))
 
 # Full render of one column (compact=False); join paths resolve to the owner.
 print(client.inspect_sync(
-    reference="mydb.orders.customers.region", entity_type="column",
+    reference="jaffle_shop.orders.stores.regions.name", entity_type="column",
     compact=False,
 ))
 
-# Batch: several same-kind columns in one round-trip (DEV-1612).
+# Batch: several same-kind columns in one round-trip.
 print(client.inspect_sync(
-    reference=["mydb.orders.amount", "mydb.orders.customer_id"],
+    reference=["jaffle_shop.orders.order_total", "jaffle_shop.orders.customer_id"],
     entity_type="column", compact=False,
 ))
 
-# async form:  await client.inspect(reference="mydb.orders", entity_type="model")
+# async form:  await client.inspect(reference="jaffle_shop.orders", entity_type="model")
 ```
 
 `entity_type` is required (`datasource` / `model` / `column` / `measure` / `aggregation` / `memory`) and asserts the resolved kind. The model-only `num_rows` / `show_sql` / `sections` apply for `entity_type="model"`; `descriptions_max_chars` applies to every kind. `format="json"` returns a JSON string instead of Markdown.
@@ -134,9 +140,9 @@ from slayer.async_utils import run_sync
 
 # Save a learning
 run_sync(client.save_memory(
-    learning="orders.is_returned in {0,1,NULL}; treat NULL as not returned",
-    linked_entities=["mydb.orders.is_returned"],
-    id="kb.returns.null-handling",   # optional; auto-allocated if omitted
+    learning="Refunded and cancelled orders keep their order_total; count only completed orders for net revenue",
+    linked_entities=["jaffle_shop.orders.status", "jaffle_shop.orders.order_total"],
+    id="kb.orders.refunds",   # optional; auto-allocated if omitted
 ))
 
 # Save a query-bearing memory — pass a SlayerQuery / dict for linked_entities
@@ -144,7 +150,7 @@ run_sync(client.save_memory(
     learning="Top customers by lifetime spend",
     linked_entities={
         "source_model": "orders",
-        "measures": [{"formula": "amount:sum", "name": "lifetime_spend"}],
+        "measures": [{"formula": "sum(order_total)", "name": "lifetime_spend"}],
         "dimensions": ["customers.name"],
         "order": [{"column": "lifetime_spend", "direction": "desc"}],
         "limit": 5,
@@ -166,7 +172,7 @@ for hit in resp.results:
         print(f"[{hit.kind}] {hit.id} score={hit.score:.3f}")
 
 # Forget by id (cascade-strips memory:<id> refs from other memories)
-run_sync(client.forget_memory("kb.returns.null-handling"))
+run_sync(client.forget_memory("kb.orders.refunds"))
 ```
 
 `client.search` signature (keyword-only):
@@ -206,7 +212,7 @@ result = engine.execute(query=query)
 #
 # client.query() returns SlayerResponse with all fields above
 # client.sql(query) returns just the generated SQL string
-# client.explain(query) returns SlayerResponse with EXPLAIN ANALYZE output
+# client.explain(query) returns SlayerResponse with the database's EXPLAIN output
 # result.row_count — number of rows
 # result.sql       — generated SQL string
 ```

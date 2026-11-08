@@ -8,9 +8,11 @@ without any string-building on the client side.
 
 Substitution spans SLayer's [two expression layers](../../concepts/references.md):
 
-- **Mode B — the DSL.** A query's `filters` reference dimension and measure
-  names. A `{var}` here is filled from the query's `variables` and applied as a
-  post-aggregation predicate on named entities.
+- **Mode B — the DSL.** A `{var}` in a query's `filters` binds a literal value
+  from the query's `variables` (`'{s}'` for text, a bare number or boolean, a list
+  as a whole `IN` list), never a name. Measure formulas, computed
+  dimensions, `order` expressions, `date_range` bounds and the source model's saved
+  measures take placeholders too (`"measures": ["sum(order_total) * {rate} / 100"]`).
 - **Mode A — raw SQL.** A model's `sql` and `filters`, and every `Column`'s `sql`
   and `filter`, are raw SQL over the underlying table. A `{var}` here is injected
   directly into that SQL, so it takes effect **before** aggregation — inside a
@@ -39,7 +41,7 @@ SQL — not as a filter on the result.
     "data_source": "jaffle_shop",
     "filters": ["order_total >= {floor}"]
   },
-  "measures": ["*:count"],
+  "measures": ["count(*)"],
   "variables": {"floor": 50}
 }
 ```
@@ -70,7 +72,7 @@ collapse leaves valid SQL.
     "data_source": "jaffle_shop",
     "sql": "SELECT o.id, s.name AS store_name FROM orders o LEFT JOIN stores s ON o.store_id = s.id WHERE 1=1 AND {? s.name IN ({stores}) ?}"
   },
-  "measures": ["*:count"],
+  "measures": ["count(*)"],
   "variables": {"stores": ["Brooklyn", "Philadelphia"]}
 }
 ```
@@ -84,7 +86,7 @@ This is exactly how `slayer import-cube` represents an optional Cube
 
 The same variable may be set in several places. Highest priority wins:
 
-**runtime `variables=` kwarg > query `variables` > model `query_variables`**
+**runtime `variables=` kwarg > stage `variables` > outer query `variables` (when a query-backed model is the `source_model`) > model `query_variables`**
 
 `query_variables` on a model are the lowest-priority *defaults*, so a
 parameterized model can ship with sensible values and still be overridden per
@@ -102,7 +104,7 @@ query or per call.
   for literal braces in a model that *does* use variables.
 - **Trusted input.** Values are treated as trusted, not attacker-controlled —
   prefer not to feed untrusted end-user input through `variables`. The Mode-A
-  escaping is dialect-aware (DEV-1727), so a quoted string value stays inside its
+  escaping is dialect-aware, so a quoted string value stays inside its
   literal on every backend, including backslash-escaping ones like MySQL and
   ClickHouse; only *quoted* literals are escaped, and a `{var}` in an unquoted
   position is still raw substitution.
@@ -112,7 +114,7 @@ Substitution currently applies to a query's **direct source model**; nested
 follow-up.
 
 See [Variables in model SQL](../../concepts/models.md#variables-in-model-sql) and
-[Filter Variables](../../concepts/queries.md#filter-variables) for the reference
+[Variables](../../concepts/queries.md#variables) for the reference
 details.
 
 ---

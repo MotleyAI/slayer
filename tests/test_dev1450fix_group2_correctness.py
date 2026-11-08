@@ -1,0 +1,341 @@
+"""DEV-1450 review fixes (group 2) — correctness bugs from CodeRabbit.
+
+* [0] ``OVER(`` inside a string literal isn't treated as a window clause.
+* [1] ``**kwargs`` dictionary unpacking in a Mode-B call is rejected, not
+  silently dropped.
+* [8] a cyclic dotted star (``a.b.a.*``) is rejected like the dotted-column
+  form.
+* [12] ``_measure_formula_refs`` rewrites model-custom function-style aggs
+  when ``custom_agg_names`` is supplied (drift cascade completeness).
+* [14] an ORDER ref without a raw_formula binds its FULL dotted name, not
+  just the leaf.
+"""
+
+from __future__ import annotations
+
+import os
+import tempfile
+from typing import AsyncIterator
+
+import pytest
+
+from slayer.core.enums import DataType
+from slayer.core.errors import AggregationNotAllowedError, IllegalWindowInFilterError
+from slayer.core.keys import AggregateKey, StarKey, TransformKey
+from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
+from slayer.core.scope import ModelScope
+from slayer.engine.binding import bind_expr
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.schema_drift import _measure_formula_refs
+from slayer.storage.sqlite_conn import transaction
+from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.core.syntax import parse_expr, parse_expr as _parse
+from slayer.storage.yaml_storage import YAMLStorage
+
+
+# ---------------------------------------------------------------------------
+# [0] OVER( inside a string literal
+# ---------------------------------------------------------------------------
+
+
+def test_over_inside_string_literal_is_not_a_window_clause():
+    # No raise — the OVER( is inside a quoted literal.
+    parse_expr("status == 'OVER('")
+    parse_expr("label == 'x OVER (y)'")
+
+
+def test_over_inside_escaped_string_literal_not_window():
+    # The value is `x ' OVER(`: a doubled quote must not end the literal early.
+    parse_expr("status == 'x '' OVER('")
+
+
+def test_in_keyword_inside_escaped_string_literal_not_rewritten():
+    """An embedded ``IN`` inside a literal bounded by a doubled quote stays text."""
+    parse_expr("label == 'x '' IN (foo)'")
+
+
+def test_colon_inside_escaped_string_literal_not_preprocessed():
+    """A literal containing ``revenue:sum`` after a doubled quote is not an aggregation."""
+    parse_expr("label == 'x '' revenue:sum'")
+
+
+# ---------------------------------------------------------------------------
+# Group A — Codex typed-pipeline correctness regressions
+# ---------------------------------------------------------------------------
+
+
+def test_is_null_filter_parses_and_renders():
+    """Codex review: ``IS`` / ``IS NOT`` were stripped to ``is`` / ``is
+    not`` by the filter normalizer but the AST converter rejected the
+    resulting ``ast.Is`` / ``ast.IsNot`` nodes. Pins both the parse and
+    a downstream render through ``_compose_arithmetic_op``."""
+    # Parse must accept the SQL-style spelling.
+    parse_expr("deleted_at IS NULL")
+    parse_expr("deleted_at IS NOT NULL")
+    # And the lower-cased Python form should also work.
+    parse_expr("deleted_at is None")
+    parse_expr("deleted_at is not None")
+
+
+def test_partition_by_multi_column_parses_and_binds():
+    """Codex review: ``partition_by=[region, channel]`` is parsed into
+    a tuple by ``_convert_kwarg_value``, but the binder's
+    ``partition_by`` branch only handled a single column ref. Pin that
+    a multi-column form binds to a multi-element ``partition_keys``."""
+    # Build a model scope and bundle that has the needed columns.
+    orders = SlayerModel(
+        name="orders", data_source="prod", sql_table="orders",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="amount", type=DataType.DOUBLE),
+            Column(name="region", type=DataType.TEXT),
+            Column(name="channel", type=DataType.TEXT),
+        ],
+    )
+    bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[])
+    scope = ModelScope(source_model=orders)
+    parsed = _parse("rank(amount:sum, partition_by=[region, channel], direction='desc')")
+    bound = bind_expr(parsed=parsed, scope=scope, bundle=bundle)
+    assert isinstance(bound.value_key, TransformKey)
+    assert bound.value_key.op == "rank"
+    # Two distinct partition keys, not one (the frozenset is unordered;
+    # check membership).
+    pk_leaves = {
+        getattr(p, "leaf", None) for p in bound.value_key.partition_keys
+    }
+    assert pk_leaves == {"region", "channel"}, (
+        f"expected partition_keys={{region, channel}}; got {pk_leaves}"
+    )
+
+
+def test_aggregation_eligibility_primary_key_rejected():
+    """A sole primary-key column is restricted to the count family and
+    ``min`` / ``max``; ``id:sum`` raises ``AggregationNotAllowedError``."""
+    orders = SlayerModel(
+        name="orders", data_source="prod", sql_table="orders",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="amount", type=DataType.DOUBLE),
+        ],
+    )
+    bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[])
+    scope = ModelScope(source_model=orders)
+    for agg in ("count", "count_distinct", "max", "min"):
+        bind_expr(parsed=parse_expr(f"id:{agg}"), scope=scope, bundle=bundle)
+    for agg in ("sum", "avg"):
+        parsed = parse_expr(f"id:{agg}")
+        with pytest.raises(AggregationNotAllowedError, match="primary-key"):
+            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
+
+
+def test_aggregation_eligibility_type_default_rejected():
+    """A TEXT column rejects numeric aggregations (``avg`` / ``sum``)
+    per the type-default whitelist."""
+    orders = SlayerModel(
+        name="orders", data_source="prod", sql_table="orders",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="status", type=DataType.TEXT),
+        ],
+    )
+    bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[])
+    scope = ModelScope(source_model=orders)
+    # count is fine on text.
+    bind_expr(parsed=parse_expr("status:count"), scope=scope, bundle=bundle)
+    # avg / sum are not.
+    for agg in ("avg", "sum"):
+        parsed = parse_expr(f"status:{agg}")
+        with pytest.raises(AggregationNotAllowedError, match="not applicable"):
+            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
+
+
+async def test_is_null_filter_renders_end_to_end(engine):
+    """Codex round 2: ``b7ba22b`` patched two of the three filter
+    render sites for ``is`` / ``is not`` but missed
+    ``_build_arithmetic_for_filter`` at generator.py:7685 — local-stage
+    filters like ``deleted_at IS NULL`` parsed/bound but failed at SQL
+    generation with ``NotImplementedError``. Pin the end-to-end path."""
+    # ``region`` is TEXT on the customers seed, so ``region IS NULL``
+    # makes sense as a predicate. Use ``orders`` as the host model with
+    # an Mode-B filter through the join.
+    resp = await engine.execute(
+        SlayerQuery(
+            source_model="orders",
+            dimensions=["customers.region"],
+            measures=[{"formula": "*:count"}],
+            # IS NULL via the SQL spelling (filter normalizer lowers to
+            # ``is None``; AST converter maps to ``is``; generator emits
+            # ``IS NULL``).
+            filters=["customers.region IS NOT NULL"],
+        )
+    )
+    # Both seed rows have non-null region; the filter is inert (passes).
+    assert resp.row_count == 2
+    sql_upper = (resp.sql or "").upper()
+    # The emitted SQL renders the predicate via SQL's NULL-aware
+    # operator, not Python's ``is not None``. sqlglot emits the
+    # ``NOT x IS NULL`` form (equivalent to ``x IS NOT NULL``); accept
+    # either spelling.
+    assert "IS NULL" in sql_upper, f"expected IS NULL in SQL:\n{resp.sql}"
+    assert "NOT" in sql_upper, f"expected NOT in SQL:\n{resp.sql}"
+    # And no Python-spelling leak.
+    assert "IS NONE" not in sql_upper, (
+        f"Python ``is None`` leaked into emitted SQL:\n{resp.sql}"
+    )
+
+
+def test_aggregation_eligibility_allowed_aggregations_whitelist():
+    """An explicit ``allowed_aggregations`` whitelist overrides the
+    type-default gate."""
+    orders = SlayerModel(
+        name="orders", data_source="prod", sql_table="orders",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(
+                name="amount",
+                type=DataType.DOUBLE,
+                # Tighter than the default DOUBLE whitelist; reject avg.
+                allowed_aggregations=frozenset({"sum", "max"}),
+            ),
+        ],
+    )
+    bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[])
+    scope = ModelScope(source_model=orders)
+    bind_expr(parsed=parse_expr("amount:sum"), scope=scope, bundle=bundle)
+    bind_expr(parsed=parse_expr("amount:max"), scope=scope, bundle=bundle)
+    parsed = parse_expr("amount:avg")
+    with pytest.raises(AggregationNotAllowedError, match="allowed_aggregations"):
+        bind_expr(parsed=parsed, scope=scope, bundle=bundle)
+
+
+def test_real_over_clause_still_rejected():
+    with pytest.raises(IllegalWindowInFilterError):
+        parse_expr("rank() OVER (ORDER BY x)")
+
+
+# ---------------------------------------------------------------------------
+# [1] **kwargs rejected, not silently dropped
+# ---------------------------------------------------------------------------
+
+
+def test_double_star_kwargs_rejected():
+    with pytest.raises(ValueError, match="unpacking"):
+        parse_expr("foo(amount, **opts)")
+
+
+# ---------------------------------------------------------------------------
+# [8] cyclic dotted star rejected
+# ---------------------------------------------------------------------------
+
+
+def _cyclic_bundle():
+    a = SlayerModel(
+        name="a", data_source="prod", sql_table="a",
+        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        joins=[ModelJoin(target_model="b", join_pairs=[["id", "id"]])],
+    )
+    b = SlayerModel(
+        name="b", data_source="prod", sql_table="b",
+        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+    )
+    # ``a`` is also referenced so the walk back to it (over the inverted edge,
+    # DEV-1853) resolves and the cycle guard — not a missing-target error — fires.
+    return ResolvedSourceBundle(dialect="postgres", source_model=a, referenced_models=[b, a])
+
+
+def test_cyclic_dotted_star_rejected():
+    bundle = _cyclic_bundle()
+    scope = ModelScope(source_model=bundle.source_model)
+    parsed = parse_expr("a.b.a.*:count")
+    with pytest.raises(ValueError, match="Circular join"):
+        bind_expr(parsed, scope=scope, bundle=bundle)
+
+
+def test_noncyclic_dotted_star_ok():
+    bundle = _cyclic_bundle()
+    scope = ModelScope(source_model=bundle.source_model)
+    bound = bind_expr(parse_expr("b.*:count"), scope=scope, bundle=bundle)
+    # *:count over the joined model -> AggregateKey on a StarKey(path=("b",)).
+    assert isinstance(bound.value_key, AggregateKey)
+    assert isinstance(bound.value_key.source, StarKey)
+    assert bound.value_key.source.path == ("b",)
+
+
+# ---------------------------------------------------------------------------
+# [12] _measure_formula_refs rewrites custom function-style aggs
+# ---------------------------------------------------------------------------
+
+
+def test_measure_formula_refs_custom_agg():
+    # DEV-1826: an unknown functional name defers as an AggCall candidate, so
+    # a custom aggregation's source ref surfaces with NO registry threading.
+    refs = _measure_formula_refs("my_custom_agg(amount)")
+    assert "amount" in refs
+
+
+# ---------------------------------------------------------------------------
+# [14] ORDER ref binds the full dotted name
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def engine() -> AsyncIterator[SlayerQueryEngine]:
+    d = tempfile.mkdtemp()
+    db_path = os.path.join(d, "t.db")
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT)")
+        cur.executemany(
+            "INSERT INTO customers VALUES (?,?)", [(1, "NA"), (2, "EU")]
+        )
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL)"
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?,?,?)",
+            [(1, 1, 10.0), (2, 2, 5.0)],
+        )
+    storage = YAMLStorage(base_dir=os.path.join(d, "store"))
+    await storage.save_datasource(
+        DatasourceConfig(name="prod", type="sqlite", database=db_path)
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="customers", sql_table="customers", data_source="prod",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="region", type=DataType.TEXT),
+            ],
+        )
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="orders", sql_table="orders", data_source="prod",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="customer_id", type=DataType.INT),
+                Column(name="amount", type=DataType.DOUBLE),
+            ],
+            joins=[
+                ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+            ],
+        )
+    )
+    yield SlayerQueryEngine(storage=storage)
+
+
+async def test_order_by_joined_column_not_in_dimensions(engine):
+    """Ordering by a joined column (customers.region) that is NOT a declared
+    dimension binds the full dotted ref — leaf-only binding would fail to
+    resolve ``region`` on ``orders``."""
+    resp = await engine.execute(
+        SlayerQuery(
+            source_model="orders",
+            dimensions=["customers.region"],
+            measures=[{"formula": "amount:sum"}],
+            order=[OrderItem(column=ColumnRef(name="customers.region"), direction="asc")],
+        )
+    )
+    regions = [r["orders.customers.region"] for r in resp.data]
+    assert regions == ["EU", "NA"]

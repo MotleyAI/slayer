@@ -1,0 +1,4 @@
+version: 2
+name: cube
+type: duckdb
+database: data.duckdb

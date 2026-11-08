@@ -1,23 +1,5 @@
-"""Shared SQLAlchemy engine factory (DEV-1551).
-
-Single source of truth for building ``sa.Engine`` instances from a
-``DatasourceConfig``. Every production code path that creates engines —
-ingestion, schema_drift, type_refinement, the CLI's datasources-test
-command, the MCP server's connectivity probes, and ``SlayerSQLClient`` —
-funnels through ``get_engine(datasource)``.
-
-The factory itself is dialect-agnostic. Each dialect's ``SqlDialect``
-strategy class carries its own runtime hooks
-(``build_engine``, ``apply_session_overrides``) under
-``slayer/sql/dialects/<name>.py``; this module just calls them and falls
-back to a vanilla ``sa.create_engine`` when the dialect declines to
-customise.
-
-Engine caching is keyed on ``DatasourceConfig.get_connection_string()``
-plus a fingerprint of the dialect-relevant runtime fields, so two
-datasources that differ only in (e.g.) warehouse get different cached
-engines.
-"""
+"""Shared engine factory: the single ``get_engine(datasource)`` every engine-creating
+path funnels through. Dialect-agnostic; cached by connection string + runtime fingerprint."""
 
 from __future__ import annotations
 
@@ -28,34 +10,31 @@ from collections import OrderedDict
 
 import sqlalchemy as sa
 import sqlalchemy.event as sa_event
+from sqlalchemy.engine.url import URL, make_url
+from sqlalchemy.exc import ArgumentError, NoSuchModuleError
+from sqlalchemy.pool import QueuePool, StaticPool
 
 from slayer.core.models import DatasourceConfig
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.base import SqlDialect, _digest
+from slayer.sql.dialects.drivers import load_driver
 
 logger = logging.getLogger(__name__)
 
 
-#: (connection_string, runtime_fingerprint, credential_fingerprint). Exported so
-#: callers keying their own caches by engine identity don't hard-code the arity.
 EngineCacheKey = tuple[str, str, str]
 
-# LRU-ordered, bounded. The credential leg is a security boundary: where the
-# secret isn't in the URL (BigQuery), two identities would otherwise share one
-# engine. Including it also makes cardinality track users, hence the cap.
+# SQLite in-memory sentinel (bare value or path of ``sqlite:///:memory:``).
+_MEMORY_DB_NAME = ":memory:"
+
+# LRU-ordered, bounded. Credential leg is a security boundary: with the secret out of the URL (BigQuery), two identities would otherwise share one engine.
 _engine_cache: "OrderedDict[EngineCacheKey, sa.Engine]" = OrderedDict()
 
-# Engines are reached from worker threads as well as the event loop, so the
-# lookup/move_to_end pair needs guarding: an interleaved invalidate raises
-# KeyError, and simultaneous misses orphan a pool. Never held across engine
-# construction or dispose() — both do I/O.
+# Guards the lookup/move_to_end pair (reached from worker threads); never held across construction or dispose() (both do I/O).
 _cache_lock = threading.Lock()
 
-#: Sized for "datasources x working set of active users". A miss costs one
-#: engine build, so over-eviction hurts latency, not correctness.
 DEFAULT_MAX_CACHED_ENGINES = 64
 
-#: Env override for :data:`DEFAULT_MAX_CACHED_ENGINES`. ``0`` disables caching.
 MAX_CACHED_ENGINES_ENV = "SLAYER_MAX_CACHED_ENGINES"
 
 
@@ -82,21 +61,12 @@ def _max_cached_engines() -> int:
 
 
 def loggable_key(key: EngineCacheKey) -> str:
-    """Log-safe id for a cache key.
-
-    ``key[0]`` renders with ``hide_password=False``, so the raw key must never
-    reach a log line. The digest stays correlatable but not reversible.
-    """
+    """Log-safe (irreversible) digest — ``key[0]`` embeds a plaintext secret, never log it raw."""
     return _digest("\x00".join(key))
 
 
 def _dispose_quietly(*, engine: sa.Engine, reason: str) -> None:
-    """Release an engine's pooled connections, logging rather than raising.
-
-    Safe on an engine someone still holds: ``dispose()`` swaps in a fresh pool
-    and lets in-flight connections close on return. ``reason`` is logged, so
-    keep secrets out of it — see :func:`loggable_key`.
-    """
+    """Dispose an engine's pool, logging rather than raising (safe while others hold it). Keep secrets out of ``reason`` — it's logged."""
     try:
         engine.dispose()
     except Exception:
@@ -104,11 +74,7 @@ def _dispose_quietly(*, engine: sa.Engine, reason: str) -> None:
 
 
 def _take_evictions_over_limit() -> list[sa.Engine]:
-    """Pop LRU entries until the cache fits its cap.
-
-    Returns them instead of disposing: callers hold ``_cache_lock``, and
-    ``dispose()`` does I/O. Dispose after releasing.
-    """
+    """Pop LRU entries over the cap and RETURN them (callers hold ``_cache_lock``; dispose after releasing)."""
     limit = _max_cached_engines()
     evicted: list[sa.Engine] = []
     while len(_engine_cache) > limit:
@@ -118,13 +84,7 @@ def _take_evictions_over_limit() -> list[sa.Engine]:
 
 
 def _cache_key(datasource: DatasourceConfig, connection_string: str) -> EngineCacheKey:
-    """Cache identity: URL + runtime fields + credentials.
-
-    Shared with ``query_engine._sql_client_cache_key`` — if the two diverged, a
-    caller could get a client whose engine was built for other credentials.
-    Only ``get_engine`` snapshots ``datasource`` first; callers that use the key
-    immediately just miss and rebuild.
-    """
+    """Cache identity: URL + runtime fields + credentials (shared with ``_sql_client_cache_key``)."""
     return (
         connection_string,
         _runtime_fingerprint(datasource),
@@ -132,25 +92,38 @@ def _cache_key(datasource: DatasourceConfig, connection_string: str) -> EngineCa
     )
 
 
-def _runtime_fingerprint(datasource: DatasourceConfig) -> str:
-    """Stable fingerprint of dialect-relevant runtime fields for the
-    cache key. Two datasources differing only in (e.g.) warehouse or
-    role must NOT share a cached engine — the session-overrides listener
-    would otherwise apply the wrong USE statements.
-
-    Currently only Snowflake uses any of these fields; for other
-    dialects the fingerprint collapses to an empty string and the
-    cache key reduces to the connection_string alone.
-    """
-    if datasource.type != "snowflake":
-        return ""
-    parts = (
-        ("wh", datasource.warehouse or ""),
-        ("rl", datasource.role or ""),
-        ("db", datasource.database or ""),
-        ("sc", datasource.schema_name or ""),
+def _sql_client_cache_key(datasource: DatasourceConfig) -> EngineCacheKey:
+    """A datasource's connection identity — delegates to :func:`_cache_key` so a memoized client can't disagree with the engine's creds."""
+    return _cache_key(
+        datasource=datasource, connection_string=datasource.get_connection_string(),
     )
-    return "|".join(f"{k}={v}" for k, v in parts)
+
+
+ClientCacheKey = tuple[str, EngineCacheKey]
+
+
+def client_cache_key(datasource: DatasourceConfig) -> ClientCacheKey:
+    """A query engine's client-cache key: datasource name plus connection identity."""
+    return (datasource.name, _sql_client_cache_key(datasource))
+
+
+def _runtime_fingerprint(datasource: DatasourceConfig) -> str:
+    """Fingerprint of runtime fields so datasources differing only in (e.g.) warehouse don't share an engine. Only Snowflake and in-memory SQLite use this; others collapse to ``""``."""
+    if datasource.type == "snowflake":
+        parts = (
+            ("wh", datasource.warehouse or ""),
+            ("rl", datasource.role or ""),
+            ("db", datasource.database or ""),
+            ("sc", datasource.schema_name or ""),
+        )
+        return "|".join(f"{k}={v}" for k, v in parts)
+    # An in-memory database is unique to its datasource: two ``:memory:`` sources
+    # share one connection string, so the name must key them apart (D2).
+    if datasource.type == "sqlite" and _is_in_memory_sqlite(
+        datasource.get_connection_string()
+    ):
+        return f"mem={datasource.name}"
+    return ""
 
 
 def _attach_session_overrides_listener(
@@ -158,26 +131,7 @@ def _attach_session_overrides_listener(
     engine: sa.Engine,
     datasource: DatasourceConfig,
 ) -> None:
-    """Register a ``checkout`` event listener that calls the dialect's
-    ``apply_session_overrides`` hook every time a connection is taken
-    from the pool.
-
-    The ``checkout`` event is used (not ``connect``) so the session
-    state is re-applied on every query — not just on the first physical
-    connection creation. Without this, anything that mutates Snowflake
-    session state mid-flight (an inspector probe issuing its own ``USE``,
-    or a user-issued ``client.execute("USE SCHEMA other")``) would
-    silently persist on the pooled connection and leak into the next
-    query. Cost: ~1-4 ``USE`` round-trips per query, dominated by
-    network latency to Snowflake. Acceptable trade-off for correctness.
-
-    The listener's name is ``_slayer_session_overrides`` so tests can
-    verify registration without coupling to a private API.
-
-    Skipped when the dialect's hook is the base-class no-op; detection
-    is by class identity so the no-op default doesn't trigger a
-    ``checkout`` listener that does nothing.
-    """
+    """Apply ``apply_session_overrides`` on every pool ``checkout`` (not ``connect``) so a stray ``USE`` can't leak into the next query. Skipped when the hook is the no-op."""
     dialect = dialect_for_ds_type(datasource.type)
     base_method = SqlDialect.apply_session_overrides
     dialect_method = type(dialect).apply_session_overrides
@@ -192,24 +146,9 @@ def _attach_session_overrides_listener(
         )
 
 
-def _attach_register_udfs_listener(
-    *,
-    engine: sa.Engine,
-    datasource: DatasourceConfig,
-) -> None:
-    """Register a ``connect`` event listener that calls the dialect's
-    ``register_udfs`` hook on every new pooled connection.
-
-    Skipped when the dialect's hook is the base-class no-op (every
-    dialect except SQLite). SQLite needs this to register the median /
-    percentile_cont / stddev / corr / log10 / log2 / ... UDFs without
-    which generated SQL like ``STDDEV_SAMP(x)`` fails with
-    ``sqlite3.OperationalError: no such function``.
-    """
-    dialect = dialect_for_ds_type(datasource.type)
-    base_method = SqlDialect.register_udfs
-    dialect_method = type(dialect).register_udfs
-    if dialect_method is base_method:
+def _attach_register_udfs_for_dialect(*, engine: sa.Engine, dialect: SqlDialect) -> None:
+    """Call ``register_udfs`` on every new connection, unless the dialect keeps the no-op base (SQLite needs median / percentile_cont / stddev / ... or generated SQL fails with ``no such function``)."""
+    if type(dialect).register_udfs is SqlDialect.register_udfs:
         return
 
     @sa_event.listens_for(engine, "connect")
@@ -217,13 +156,77 @@ def _attach_register_udfs_listener(
         dialect.register_udfs(dbapi_connection)
 
 
-def _build_engine(*, datasource: DatasourceConfig, connection_string: str) -> sa.Engine:
-    """Construct a new SA engine for the datasource without consulting
-    the cache. Delegates engine-build to the dialect's ``build_engine``
-    hook; falls back to vanilla ``sa.create_engine`` when the dialect
-    declines (returns ``None``).
+def _attach_register_udfs_listener(
+    *,
+    engine: sa.Engine,
+    datasource: DatasourceConfig,
+) -> None:
+    """``_attach_register_udfs_for_dialect`` for a datasource's dialect."""
+    _attach_register_udfs_for_dialect(
+        engine=engine, dialect=dialect_for_ds_type(datasource.type),
+    )
+
+
+def _names_async_driver(url: URL) -> bool:
+    """Whether ``url`` names an async driver (an unknown one is judged at engine build)."""
+    try:
+        return url.get_dialect().is_async
+    except NoSuchModuleError:
+        return False
+
+
+def _is_in_memory_sqlite(connection_string: str) -> bool:
+    """True iff the connection string is a SQLite in-memory database (URI forms included) on a sync driver;
+    an async one goes to the engine build, which refuses it."""
+    if connection_string == _MEMORY_DB_NAME:
+        return True
+    try:
+        url = make_url(connection_string)
+    except ArgumentError:
+        return False
+    if not url.drivername.startswith("sqlite") or _names_async_driver(url):
+        return False
+    database = url.database
+    if not database or database == _MEMORY_DB_NAME:
+        return True
+    query = dict(url.query) if url.query else {}
+    # mode=memory / file::memory: are in-memory only with uri=true; otherwise
+    # SQLite treats the path as a literal filename, so don't misclassify it.
+    is_uri = str(query.get("uri", "")).lower() == "true"
+    if is_uri and database.startswith("file:") and (
+        query.get("mode") == "memory" or _MEMORY_DB_NAME in database
+    ):
+        return True
+    return False
+
+
+def build_in_memory_sqlite_engine(connection_string: str) -> sa.Engine:
+    """The one in-memory SQLite engine builder.
+
+    ``StaticPool`` + ``check_same_thread=False`` pin one connection shared across
+    threads, so the in-memory DB survives across ``asyncio`` worker threads and
+    closes cleanly from any of them. Registers the SQLite UDFs on connect.
     """
+    # make_url rejects bare ":memory:" — normalize to the scheme form first.
+    if connection_string == _MEMORY_DB_NAME:
+        connection_string = f"sqlite:///{_MEMORY_DB_NAME}"
+    engine = sa.create_engine(
+        connection_string,
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    _attach_register_udfs_for_dialect(
+        engine=engine, dialect=dialect_for_ds_type("sqlite"),
+    )
+    return engine
+
+
+def _build_engine(*, datasource: DatasourceConfig, connection_string: str) -> sa.Engine:
+    """Build a new engine (no cache). In-memory SQLite goes through the one StaticPool builder; otherwise ``build_engine``, falling back to ``sa.create_engine`` when the dialect declines."""
+    if _is_in_memory_sqlite(connection_string):
+        return build_in_memory_sqlite_engine(connection_string)
     dialect = dialect_for_ds_type(datasource.type)
+    load_driver(datasource, connection_string, dialect=dialect, is_async=False)
     engine = dialect.build_engine(datasource, connection_string=connection_string)
     if engine is None:
         engine = sa.create_engine(connection_string, pool_pre_ping=True)
@@ -233,22 +236,8 @@ def _build_engine(*, datasource: DatasourceConfig, connection_string: str) -> sa
 
 
 def get_engine(datasource: DatasourceConfig) -> sa.Engine:
-    """Return a cached ``sa.Engine`` for the given datasource. Builds one
-    if the cache misses.
-
-    The cache key includes a fingerprint of dialect runtime fields so
-    that two datasources differing in (e.g.) warehouse get different
-    cached engines — otherwise the connect listener would silently
-    apply the wrong USE statements.
-
-    The cap is re-applied on hits as well as inserts, so lowering
-    ``SLAYER_MAX_CACHED_ENGINES`` takes effect on the next call, not the next
-    miss.
-    """
-    # DatasourceConfig is mutable and the build sits between the key and the
-    # dialect's second read of the credentials; a rotation in that window would
-    # cache an engine under a fingerprint that misdescribes it. Shallow is
-    # enough — every field is a scalar.
+    """Return a cached engine, building on a miss. The cap is re-applied on hits too, so a lowered ``SLAYER_MAX_CACHED_ENGINES`` takes effect next call."""
+    # Snapshot first: a credential rotation mid-build would cache an engine under a wrong fingerprint.
     snapshot = datasource.model_copy()
     connection_string = snapshot.get_connection_string()
     cache_key = _cache_key(datasource=snapshot, connection_string=connection_string)
@@ -258,25 +247,21 @@ def get_engine(datasource: DatasourceConfig) -> sa.Engine:
             trimmed, reuse = [], False
         else:
             _engine_cache.move_to_end(cache_key)
-            # Trim here too, else a lowered cap waits for the next miss.
             trimmed = _take_evictions_over_limit()
-            # A cap of 0 trims the entry we just touched: fall through and
-            # build rather than hand back an engine we are about to dispose.
+            # A cap of 0 trims the entry we just touched: fall through and rebuild.
             reuse = cache_key in _engine_cache
     for stale in trimmed:
         _dispose_quietly(engine=stale, reason="cache limit lowered")
     if reuse:
         return cached
-    # Built outside the lock: construction does I/O, and every other datasource
-    # would queue behind it.
+    # Built outside the lock: construction does I/O and would queue everyone else behind it.
     engine = _build_engine(
         datasource=snapshot, connection_string=connection_string,
     )
     with _cache_lock:
         winner = _engine_cache.get(cache_key)
         if winner is not None:
-            # Someone else built it first; converge so one key never backs
-            # two live pools.
+            # Someone built it first; converge so one key never backs two live pools.
             _engine_cache.move_to_end(cache_key)
             loser, engine = engine, winner
         else:
@@ -290,18 +275,22 @@ def get_engine(datasource: DatasourceConfig) -> sa.Engine:
     return engine
 
 
-def invalidate_engine(datasource: DatasourceConfig) -> bool:
-    """Drop and dispose the cached engine for ``datasource``. Returns whether
-    one was cached.
+def release_idle(engine: sa.Engine) -> None:
+    """Close a cached engine's idle connections (freeing file locks) without disposing it: checked-out connections return to the same, still-owned pool."""
+    try:
+        # Only QueuePool's dispose drains idle connections alone; the in-memory pools
+        # (StaticPool, SingletonThreadPool) close live connections and drop the data.
+        if isinstance(engine.pool, QueuePool):
+            engine.pool.dispose()
+    except Exception:
+        logger.warning("Failed to release idle connections.", exc_info=True)
 
-    For credentials that have stopped working — revoked grant, rotated key.
-    Such engines are poisoned permanently (the credentials are baked in at
-    construction), so retrying through the cache fails identically until one is
-    thrown away; a transient blip, by contrast, wants the pool kept.
-    ``get_engine`` then rebuilds from whatever the datasource now carries.
-    """
-    connection_string = datasource.get_connection_string()
-    cache_key = _cache_key(datasource=datasource, connection_string=connection_string)
+
+def invalidate_engine(datasource: DatasourceConfig) -> bool:
+    """Drop and dispose the cached engine (returns whether one was cached) — creds are baked in at construction, so only eviction lets ``get_engine`` rebuild after a rotation/revocation."""
+    snapshot = datasource.model_copy()
+    connection_string = snapshot.get_connection_string()
+    cache_key = _cache_key(datasource=snapshot, connection_string=connection_string)
     with _cache_lock:
         evicted = _engine_cache.pop(cache_key, None)
     if evicted is None:
@@ -310,16 +299,15 @@ def invalidate_engine(datasource: DatasourceConfig) -> bool:
     return True
 
 
-def reset_cache(*, dispose: bool = False) -> None:
-    """Discard every cached engine.
+def reset_cache() -> None:
+    """Discard and dispose every cached engine (teardown / test isolation).
 
-    ``dispose`` defaults to False, preserving the test-fixture behaviour of
-    dropping references only. Pass True when tearing a process down, so
-    server-side connections close promptly rather than at GC.
+    Always disposes: a reset that leaves live pools behind is the leak (D5).
+    Dispose closes checked-in connections and lets a checked-out one finish and
+    close on return.
     """
     with _cache_lock:
         dropped = list(_engine_cache.items())
         _engine_cache.clear()
-    if dispose:
-        for key, engine in dropped:
-            _dispose_quietly(engine=engine, reason=f"cache reset ({loggable_key(key)})")
+    for key, engine in dropped:
+        _dispose_quietly(engine=engine, reason=f"cache reset ({loggable_key(key)})")

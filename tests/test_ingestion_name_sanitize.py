@@ -2,21 +2,26 @@
 from __future__ import annotations
 
 import logging
-import sqlite3
 import tempfile
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 import sqlalchemy as sa
 
 from slayer.core.models import DatasourceConfig, SlayerModel, sanitize_model_name
 from slayer.sql import engine_factory
+from slayer.engine import ingestion as ingestion_module
 from slayer.engine.ingestion import (
     IngestionScanReport,
-    SkippedTable,
-    ingest_datasource,
-    ingest_datasource_report,
+    _introspect_table_columns,
 )
+from slayer.sql.client import SlayerSQLClient
+from slayer.storage.sqlite_conn import transaction
+from sqlalchemy.pool import QueuePool
 
 
 @pytest.fixture
@@ -30,11 +35,29 @@ def workspace():
 
 def _sqlite_ds(workspace: Path, script: str) -> DatasourceConfig:
     db_path = str(workspace / "live.db")
-    conn = sqlite3.connect(db_path)
-    conn.executescript(script)
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        conn.executescript(script)
     return DatasourceConfig(name="ds", type="sqlite", database=db_path)
+
+
+@asynccontextmanager
+async def _client(ds: DatasourceConfig) -> AsyncIterator[SlayerSQLClient]:
+    client = SlayerSQLClient(datasource=ds)
+    try:
+        yield client
+    finally:
+        await client.aclose()
+        client.close()
+
+
+async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
+    async with _client(ds) as client:
+        return await ingestion_module.ingest_datasource_async(ds, client=client, **kwargs)
+
+
+async def _report(ds: DatasourceConfig, **kwargs: Any) -> IngestionScanReport:
+    async with _client(ds) as client:
+        return await ingestion_module.ingest_datasource_report_async(ds, client=client, **kwargs)
 
 
 def _skipped_names(report: IngestionScanReport) -> set[str]:
@@ -97,10 +120,11 @@ class TestSanitizer:
 
 
 class TestDunderTableIngestion:
-    def test_dunder_table_is_modelled_under_a_sanitized_name(
+    async def test_dunder_table_is_modelled_under_its_faithful_name(
         self, workspace: Path
     ) -> None:
-        """sql_table keeps the real object name so queries still resolve."""
+        """The ``__`` ban is lifted — the model keeps the faithful
+        object name, and ``sql_table`` matches."""
         ds = _sqlite_ds(
             workspace,
             """
@@ -110,11 +134,11 @@ class TestDunderTableIngestion:
             );
             """,
         )
-        models = ingest_datasource(datasource=ds)
-        model = next(m for m in models if m.name == "reports_patient_drug")
+        models = await _ingest(ds)
+        model = next(m for m in models if m.name == "reports__patient__drug")
         assert model.sql_table == "reports__patient__drug"
 
-    def test_one_bad_name_no_longer_kills_the_run(self, workspace: Path) -> None:
+    async def test_one_bad_name_no_longer_kills_the_run(self, workspace: Path) -> None:
         """Headline regression: before the fix this produced zero models."""
         ds = _sqlite_ds(
             workspace,
@@ -124,14 +148,14 @@ class TestDunderTableIngestion:
             CREATE TABLE reports__patient__drug (id INTEGER PRIMARY KEY, x TEXT);
             """,
         )
-        models = ingest_datasource(datasource=ds)
+        models = await _ingest(ds)
         names = {m.name for m in models}
         assert "orders" in names
         assert "customers" in names
-        assert "reports_patient_drug" in names
+        assert "reports__patient__drug" in names
 
-    def test_dunder_view_is_also_sanitized(self, workspace: Path) -> None:
-        """dlt child tables are sometimes exposed as views."""
+    async def test_dunder_view_is_preserved(self, workspace: Path) -> None:
+        """dlt child tables are sometimes exposed as views; ``__`` is kept."""
         ds = _sqlite_ds(
             workspace,
             """
@@ -139,20 +163,21 @@ class TestDunderTableIngestion:
             CREATE VIEW stg__nested__thing AS SELECT id, x FROM base;
             """,
         )
-        models = ingest_datasource(datasource=ds)
-        model = next(m for m in models if m.name == "stg_nested_thing")
+        models = await _ingest(ds)
+        model = next(m for m in models if m.name == "stg__nested__thing")
         assert model.sql_table == "stg__nested__thing"
 
-    def test_schema_qualified_dunder_table_keeps_qualified_sql_table(
+    async def test_schema_qualified_dunder_table_keeps_qualified_sql_table(
         self, workspace: Path
     ) -> None:
-        """The schema prefix survives sanitization; only the model name changes."""
+        """The schema prefix stays on ``sql_table``; the model keeps the faithful
+        ``__`` name."""
         ds = _sqlite_ds(
             workspace,
             "CREATE TABLE reports__patient (id INTEGER PRIMARY KEY, x TEXT);",
         )
-        report = ingest_datasource_report(datasource=ds, schema="main")
-        model = next(m for m in report.models if m.name == "reports_patient")
+        report = await _report(ds, schema="main")
+        model = next(m for m in report.models if m.name == "reports__patient")
         assert model.sql_table == "main.reports__patient"
 
 
@@ -162,46 +187,49 @@ class TestDunderTableIngestion:
 
 
 class TestCollisionPolicy:
+    """``__`` is a legal model-name character now, so ``a__b`` and
+    ``a_b`` (and ``a___b``) are DISTINCT models — the old sanitize-collapse
+    collision between them no longer exists. A genuine collision is now only two
+    objects sharing one raw name across different schemas (covered in
+    ``test_ingestion_schema_qualification.py``)."""
+
     _SCRIPT = """
         CREATE TABLE a__b (id INTEGER PRIMARY KEY, viaview TEXT);
         CREATE TABLE a_b (id INTEGER PRIMARY KEY, real_col TEXT);
     """
 
-    def test_real_table_wins_and_dunder_table_is_skipped(
+    async def test_faithful_and_sanitized_names_are_distinct_models(
         self, workspace: Path
     ) -> None:
-        """An unsanitized name always beats a sanitized one for the same model name."""
+        """``a__b`` keeps its faithful name; ``a_b`` is its own model; no skip."""
         ds = _sqlite_ds(workspace, self._SCRIPT)
-        report = ingest_datasource_report(datasource=ds)
+        report = await _report(ds)
 
-        model = next(m for m in report.models if m.name == "a_b")
-        assert model.sql_table == "a_b"
-        assert "a__b" in _skipped_names(report)
+        by_name = {m.name: m for m in report.models}
+        assert by_name["a__b"].sql_table == "a__b"
+        assert by_name["a_b"].sql_table == "a_b"
+        assert "a__b" not in _skipped_names(report)
 
-    def test_collision_skip_records_a_reason(self, workspace: Path) -> None:
+    async def test_no_collision_skip_for_distinct_faithful_names(
+        self, workspace: Path
+    ) -> None:
         ds = _sqlite_ds(workspace, self._SCRIPT)
-        report = ingest_datasource_report(datasource=ds)
-        entry = next(s for s in report.skipped if s.table_name == "a__b")
-        assert isinstance(entry, SkippedTable)
-        assert "collision" in entry.reason.lower()
-        assert "a_b" in entry.reason
+        report = await _report(ds)
+        assert report.skipped == []
 
-    def test_collision_outcome_is_order_independent(self, workspace: Path) -> None:
-        """Reversing the scan order must not flip which object wins the name."""
-        from slayer.engine import ingestion as ingestion_module
-
+    async def test_outcome_is_order_independent(
+        self, workspace: Path, monkeypatch
+    ) -> None:
+        """Reversing the scan order must not change the (distinct) result."""
         ds = _sqlite_ds(workspace, self._SCRIPT)
         real = ingestion_module.list_ingestable_objects
 
-        def _reversed(**kwargs):
-            return list(reversed(real(**kwargs)))
+        async def _reversed(**kwargs):
+            return list(reversed(await real(**kwargs)))
 
-        forward = ingest_datasource_report(datasource=ds)
-        ingestion_module.list_ingestable_objects = _reversed
-        try:
-            backward = ingest_datasource_report(datasource=ds)
-        finally:
-            ingestion_module.list_ingestable_objects = real
+        forward = await _report(ds)
+        monkeypatch.setattr(ingestion_module, "list_ingestable_objects", _reversed)
+        backward = await _report(ds)
 
         def _mapping(report):
             return {m.name: m.sql_table for m in report.models}
@@ -209,10 +237,10 @@ class TestCollisionPolicy:
         assert _mapping(forward) == _mapping(backward)
         assert _skipped_names(forward) == _skipped_names(backward)
 
-    def test_no_numeric_suffix_disambiguation(self, workspace: Path) -> None:
+    async def test_no_numeric_suffix_disambiguation(self, workspace: Path) -> None:
         """Numeric suffixes were rejected: unstable across runs, they churn drift."""
         ds = _sqlite_ds(workspace, self._SCRIPT)
-        report = ingest_datasource_report(datasource=ds)
+        report = await _report(ds)
         assert not any(m.name.endswith(("_2", "_3")) for m in report.models)
 
     _TWO_DUNDER = """
@@ -220,39 +248,36 @@ class TestCollisionPolicy:
         CREATE TABLE a___b (id INTEGER PRIMARY KEY, y TEXT);
     """
 
-    def test_two_dunder_names_collapsing_to_one_skips_the_second(
+    async def test_two_dunder_names_are_distinct_models(
         self, workspace: Path
     ) -> None:
-        """Two dunder names collapsing to one: exactly one wins, the other skips."""
+        """``a__b`` and ``a___b`` are different objects → different faithful
+        models; nothing collapses, nothing is skipped."""
         ds = _sqlite_ds(workspace, self._TWO_DUNDER)
-        report = ingest_datasource_report(datasource=ds)
-        assert len([m for m in report.models if m.name == "a_b"]) == 1
-        assert len(report.skipped) == 1
+        report = await _report(ds)
+        names = {m.name for m in report.models}
+        assert {"a__b", "a___b"} <= names
+        assert report.skipped == []
 
-    def test_sanitized_vs_sanitized_winner_is_order_independent(
-        self, workspace: Path
+    async def test_two_dunder_names_result_is_order_independent(
+        self, workspace: Path, monkeypatch
     ) -> None:
-        """Two names collapsing to the same model must pick an order-independent winner."""
-        from slayer.engine import ingestion as ingestion_module
-
+        """Both distinct models appear regardless of scan order."""
         ds = _sqlite_ds(workspace, self._TWO_DUNDER)
         real = ingestion_module.list_ingestable_objects
 
-        def _reversed(**kwargs):
-            return list(reversed(real(**kwargs)))
+        async def _reversed(**kwargs):
+            return list(reversed(await real(**kwargs)))
 
-        forward = ingest_datasource_report(datasource=ds)
-        ingestion_module.list_ingestable_objects = _reversed
-        try:
-            backward = ingest_datasource_report(datasource=ds)
-        finally:
-            ingestion_module.list_ingestable_objects = real
+        forward = await _report(ds)
+        monkeypatch.setattr(ingestion_module, "list_ingestable_objects", _reversed)
+        backward = await _report(ds)
 
-        def _winner(report):
-            return next(m.sql_table for m in report.models if m.name == "a_b")
+        def _mapping(report):
+            return {m.name: m.sql_table for m in report.models}
 
-        assert _winner(forward) == _winner(backward)
-        assert _skipped_names(forward) == _skipped_names(backward)
+        assert _mapping(forward) == _mapping(backward)
+        assert _skipped_names(forward) == _skipped_names(backward) == set()
 
 
 # ---------------------------------------------------------------------------
@@ -261,12 +286,10 @@ class TestCollisionPolicy:
 
 
 class TestSkipBackstop:
-    def test_unmodellable_object_is_skipped_not_fatal(
+    async def test_unmodellable_object_is_skipped_not_fatal(
         self, workspace: Path, monkeypatch
     ) -> None:
         """Anything that fails per-object construction is skipped, run intact."""
-        from slayer.engine import ingestion as ingestion_module
-
         ds = _sqlite_ds(
             workspace,
             """
@@ -284,13 +307,13 @@ class TestSkipBackstop:
 
         monkeypatch.setattr(ingestion_module, "_columns_to_model", _explode)
 
-        report = ingest_datasource_report(datasource=ds)
+        report = await _report(ds)
         names = {m.name for m in report.models}
         assert "good_one" in names
         assert "good_two" in names
         assert "bad_one" in _skipped_names(report)
 
-    def test_fk_introspection_failure_does_not_abort_the_run(
+    async def test_fk_introspection_failure_does_not_abort_the_run(
         self, workspace: Path, monkeypatch
     ) -> None:
         """FK introspection runs before the per-object backstop, and some dialects raise on views."""
@@ -317,10 +340,10 @@ class TestSkipBackstop:
             return insp
 
         monkeypatch.setattr(
-            "slayer.engine.ingestion.sa.inspect", _patched_inspect
+            "slayer.sql.client.sa.inspect", _patched_inspect
         )
 
-        report = ingest_datasource_report(datasource=ds)
+        report = await _report(ds)
         names = {m.name for m in report.models}
         assert "orders" in names
         assert "v_orders" in names
@@ -331,13 +354,11 @@ class TestSkipBackstop:
 # ---------------------------------------------------------------------------
 
 
-class TestEngineDisposal:
-    def test_dispose_failure_does_not_mask_the_real_error(
+class TestIdleRelease:
+    async def test_release_failure_does_not_mask_the_real_error(
         self, workspace: Path, monkeypatch
     ) -> None:
-        """A raising dispose in the finally must not mask the in-flight error."""
-        from slayer.engine import ingestion as ingestion_module
-
+        """A raising idle release in the finally must not mask the in-flight error."""
         ds = _sqlite_ds(
             workspace, "CREATE TABLE orders (id INTEGER PRIMARY KEY, x TEXT);"
         )
@@ -345,94 +366,106 @@ class TestEngineDisposal:
         class _Boom(Exception):
             pass
 
-        disposed: list[bool] = []
+        released: list[bool] = []
+
+        class _ExplodingPool(QueuePool):
+            def __init__(self):  # no creator: never connects
+                pass
+
+            def dispose(self):
+                released.append(True)
+                raise RuntimeError("release blew up")
 
         class _ExplodingEngine:
-            def dispose(self):
-                disposed.append(True)
-                raise RuntimeError("dispose blew up")
+            pool = _ExplodingPool()
+
+            def connect(self) -> nullcontext[MagicMock]:
+                return nullcontext(MagicMock())
 
         monkeypatch.setattr(
             "slayer.sql.engine_factory.get_engine",
             lambda _cfg: _ExplodingEngine(),
         )
         monkeypatch.setattr(
-            ingestion_module.sa,
-            "inspect",
+            "slayer.sql.client.sa.inspect",
             lambda *_a, **_k: (_ for _ in ()).throw(_Boom("the real failure")),
         )
 
         with pytest.raises(_Boom, match="the real failure"):
-            ingest_datasource_report(datasource=ds)
-        assert disposed, "dispose must still be attempted"
+            await _report(ds)
+        assert released, "the idle release must still be attempted"
 
-    def test_dispose_failure_does_not_fail_a_successful_ingest(
+    async def test_release_failure_does_not_fail_a_successful_ingest(
         self, workspace: Path, monkeypatch
     ) -> None:
-        """With no in-flight error, a raising dispose must not fail the ingest."""
+        """With no in-flight error, a raising idle release must not fail the ingest."""
         ds = _sqlite_ds(
             workspace, "CREATE TABLE orders (id INTEGER PRIMARY KEY, x TEXT);"
         )
 
         real_get_engine = engine_factory.get_engine
-        disposed: list[bool] = []
-        real_dispose = None
+        released: list[bool] = []
+        real_release = None
 
         def _wrap(cfg):
-            nonlocal real_dispose
+            nonlocal real_release
             engine = real_get_engine(cfg)
-            real_dispose = engine.dispose
+            real_release = engine.pool.dispose
 
             def _explode():
-                disposed.append(True)
-                raise RuntimeError("dispose blew up")
+                released.append(True)
+                raise RuntimeError("release blew up")
 
-            monkeypatch.setattr(engine, "dispose", _explode)
+            monkeypatch.setattr(engine.pool, "dispose", _explode)
             return engine
 
         monkeypatch.setattr(engine_factory, "get_engine", _wrap)
 
         try:
-            report = ingest_datasource_report(datasource=ds)
+            report = await _report(ds)
             assert {m.name for m in report.models} == {"orders"}
-            assert disposed, "dispose must still be attempted"
+            assert released, "the idle release must still be attempted"
         finally:
             # engine_factory caches engines; without this the pool holds the file open
-            if real_dispose is not None:
-                real_dispose()
+            if real_release is not None:
+                real_release()
 
-    def test_dispose_failure_is_logged_at_warning(
+    def test_release_failure_is_logged_at_warning(
         self, workspace: Path, caplog
     ) -> None:
-        """A dispose failure must be visible above DEBUG."""
-        from slayer.engine.ingestion import _dispose_quietly
+        """An idle-release failure must be visible above DEBUG."""
+        class _ExplodingPool(QueuePool):
+            def __init__(self):  # no creator: never connects
+                pass
+
+            def dispose(self):
+                raise RuntimeError("release blew up")
 
         class _ExplodingEngine:
-            def dispose(self):
-                raise RuntimeError("dispose blew up")
+            pool = _ExplodingPool()
 
-        with caplog.at_level(logging.WARNING, logger="slayer.engine.ingestion"):
-            _dispose_quietly(_ExplodingEngine())
+        with caplog.at_level(logging.WARNING, logger="slayer.sql.engine_factory"):
+            engine_factory.release_idle(_ExplodingEngine())  # pyright: ignore[reportArgumentType]  # deliberate fake
 
         assert any(
-            r.levelno >= logging.WARNING and "dispose failed" in r.getMessage()
+            r.levelno >= logging.WARNING and "release idle connections" in r.getMessage()
             for r in caplog.records
         )
 
 
 class TestWrapperContract:
-    def test_ingest_datasource_still_returns_a_list_of_models(
+    async def test_ingest_datasource_still_returns_a_list_of_models(
         self, workspace: Path
     ) -> None:
         """Existing call sites still expect a plain list of models."""
         ds = _sqlite_ds(
             workspace, "CREATE TABLE orders (id INTEGER PRIMARY KEY, x TEXT);"
         )
-        models = ingest_datasource(datasource=ds)
+        models = await _ingest(ds)
         assert isinstance(models, list)
         assert all(isinstance(m, SlayerModel) for m in models)
 
-    def test_report_carries_models_skipped_and_objects(
+    async def test_report_carries_models_skipped_and_objects(
         self, workspace: Path
     ) -> None:
         ds = _sqlite_ds(
@@ -442,18 +475,126 @@ class TestWrapperContract:
             CREATE VIEW v_orders AS SELECT id, x FROM orders;
             """,
         )
-        report = ingest_datasource_report(datasource=ds)
+        report = await _report(ds)
         assert isinstance(report, IngestionScanReport)
         assert {m.name for m in report.models} == {"orders", "v_orders"}
         assert report.skipped == []
         assert {o.name for o in report.objects} == {"orders", "v_orders"}
 
-    def test_empty_schema_reports_no_objects(self, workspace: Path) -> None:
+    async def test_empty_schema_reports_no_objects(self, workspace: Path) -> None:
         """Empty schema vs everything-skipped drives the CLI's exit-1 hint path."""
         db_path = str(workspace / "empty.db")
-        sqlite3.connect(db_path).close()
+        with transaction(db_path):
+            pass
         ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
-        report = ingest_datasource_report(datasource=ds)
+        report = await _report(ds)
         assert report.models == []
         assert report.skipped == []
         assert report.objects == []
+
+
+# ---------------------------------------------------------------------------
+# FK targets follow the sanitized model name
+# ---------------------------------------------------------------------------
+
+
+class TestJoinTargetsUseModelNames:
+    """A join must name the persisted MODEL, not the live object.
+
+    Model names keep ``__``, so an FK pointing at
+    ``reports__patient__drug`` binds to the faithful ``reports__patient__drug``.
+    """
+
+    async def test_fk_to_dunder_table_targets_the_faithful_model_name(
+        self, workspace: Path
+    ) -> None:
+        ds = _sqlite_ds(
+            workspace,
+            """
+            CREATE TABLE reports__patient__drug (id INTEGER PRIMARY KEY);
+            CREATE TABLE visits (
+                id INTEGER PRIMARY KEY,
+                report_id INTEGER REFERENCES reports__patient__drug(id)
+            );
+            """,
+        )
+        models = {m.name: m for m in await _ingest(ds)}
+        assert "reports__patient__drug" in models
+
+        visits = models["visits"]
+        assert [j.target_model for j in visits.joins] == ["reports__patient__drug"]
+        # The whole point: the target resolves to a model that exists.
+        assert visits.joins[0].target_model in models
+
+    async def test_join_is_dropped_when_the_target_has_no_model(
+        self, workspace: Path
+    ) -> None:
+        """An out-of-scope target is not ingested, so a join to it is dropped
+        rather than left dangling (no longer a sanitize-collision, but
+        the exclude filter still yields a target with no model)."""
+        ds = _sqlite_ds(
+            workspace,
+            """
+            CREATE TABLE a__b (id INTEGER PRIMARY KEY);
+            CREATE TABLE refs_it (
+                id INTEGER PRIMARY KEY,
+                x INTEGER REFERENCES a__b(id)
+            );
+            """,
+        )
+        report = await _report(ds, exclude_tables=["a__b"])
+        models = {m.name: m for m in report.models}
+        assert "a__b" not in models
+
+        refs_it = models["refs_it"]
+        assert refs_it.joins == []
+        assert all(j.target_model in models for j in refs_it.joins)
+
+
+class TestIntrospectionReadsOnlyTheOwnTable:
+    """Column introspection never reaches into a referenced object (no dotted `a__b.label`)."""
+
+    def _fixture(self, workspace: Path):
+        ds = _sqlite_ds(
+            workspace,
+            """
+            CREATE TABLE a_b (id INTEGER PRIMARY KEY);
+            CREATE TABLE a__b (id INTEGER PRIMARY KEY, label TEXT);
+            CREATE TABLE refs_it (
+                id INTEGER PRIMARY KEY,
+                x INTEGER REFERENCES a__b(id)
+            );
+            """,
+        )
+        return ds
+
+    async def test_introspects_no_referenced_table(self, workspace: Path) -> None:
+        async with _client(self._fixture(workspace)) as client:
+            columns = await _introspect_table_columns(client=client, table_name="refs_it", ref=None)
+        assert [c.name for c in columns] == ["id", "x"]
+
+
+class TestSanitizedNamesDoNotLeakIntoColumns:
+    """A join target's name must never leak into the source model's COLUMNS as a
+    dotted/qualified column — join paths belong in ``joins``, not column names."""
+
+    async def test_no_dotted_columns_when_target_is_a_faithful_dunder_model(
+        self, workspace: Path
+    ) -> None:
+        ds = _sqlite_ds(
+            workspace,
+            """
+            CREATE TABLE a__b (id INTEGER PRIMARY KEY, label TEXT);
+            CREATE TABLE refs_it (
+                id INTEGER PRIMARY KEY,
+                x INTEGER REFERENCES a__b(id)
+            );
+            """,
+        )
+        models = {m.name: m for m in await _ingest(ds)}
+        refs_it = models["refs_it"]
+        # ``a__b`` is a valid model now, so the FK becomes a real join
+        # (not dropped) targeting the faithful name.
+        assert [j.target_model for j in refs_it.joins] == ["a__b"]
+        # No qualified column names leaked in from the join target.
+        assert all("." not in c.name for c in refs_it.columns)

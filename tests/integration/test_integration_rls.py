@@ -7,8 +7,6 @@ it does not list.
 Run with: poetry run pytest tests/integration/test_integration_rls.py -m integration
 """
 
-import sqlite3
-
 import pytest
 
 from slayer.core.enums import DataType
@@ -27,8 +25,12 @@ from slayer.core.policy import (
     SessionPolicy,
 )
 from slayer.core.query import ColumnRef, SlayerQuery
-from slayer.engine.profiling import profile_column
+from slayer.engine.profiling import ensure_samples_fresh
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql.client import SlayerSQLClient
+from slayer.sql.dialects import SqliteDialect
+from slayer.storage.sqlite_conn import transaction
+from slayer.storage.yaml_storage import YAMLStorage
 
 pytestmark = pytest.mark.integration
 
@@ -41,60 +43,56 @@ async def rls_storage(tmp_path):
     """Two-tenant SQLite DB with org-scoped orders/customers and a tenant-less
     exchange_rates table."""
     db_path = tmp_path / "rls.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE customers (
-            id INTEGER PRIMARY KEY,
-            organization_uuid TEXT NOT NULL,
-            name TEXT NOT NULL,
-            region TEXT NOT NULL
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE customers (
+                id INTEGER PRIMARY KEY,
+                organization_uuid TEXT NOT NULL,
+                name TEXT NOT NULL,
+                region TEXT NOT NULL
+            )
+            """
         )
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            organization_uuid TEXT NOT NULL,
-            amount REAL NOT NULL,
-            customer_id INTEGER NOT NULL
+        cur.execute(
+            """
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                organization_uuid TEXT NOT NULL,
+                amount REAL NOT NULL,
+                customer_id INTEGER NOT NULL
+            )
+            """
         )
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE exchange_rates (
-            day TEXT NOT NULL,
-            rate REAL NOT NULL
+        cur.execute(
+            """
+            CREATE TABLE exchange_rates (
+                day TEXT NOT NULL,
+                rate REAL NOT NULL
+            )
+            """
         )
-        """
-    )
-    cur.executemany(
-        "INSERT INTO customers VALUES (?, ?, ?, ?)",
-        [
-            (1, ORG_A, "Alice", "US"),
-            (2, ORG_A, "Bob", "EU"),
-            (3, ORG_B, "Charlie", "APAC"),
-        ],
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?, ?, ?, ?)",
-        [
-            (1, ORG_A, 100.0, 1),
-            (2, ORG_A, 200.0, 2),
-            (3, ORG_B, 999.0, 3),
-        ],
-    )
-    cur.executemany(
-        "INSERT INTO exchange_rates VALUES (?, ?)",
-        [("2025-01-01", 1.1), ("2025-02-01", 1.2)],
-    )
-    conn.commit()
-    conn.close()
-
-    from slayer.storage.yaml_storage import YAMLStorage
+        cur.executemany(
+            "INSERT INTO customers VALUES (?, ?, ?, ?)",
+            [
+                (1, ORG_A, "Alice", "US"),
+                (2, ORG_A, "Bob", "EU"),
+                (3, ORG_B, "Charlie", "APAC"),
+            ],
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?, ?, ?, ?)",
+            [
+                (1, ORG_A, 100.0, 1),
+                (2, ORG_A, 200.0, 2),
+                (3, ORG_B, 999.0, 3),
+            ],
+        )
+        cur.executemany(
+            "INSERT INTO exchange_rates VALUES (?, ?)",
+            [("2025-01-01", 1.1), ("2025-02-01", 1.2)],
+        )
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -200,13 +198,12 @@ async def test_join_scoped_both_sides(rls_storage):
 
 async def test_block_fails_on_columnless_table(rls_storage):
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
+    q = SlayerQuery(
+        source_model="exchange_rates",
+        measures=[ModelMeasure(formula="*:count")],
+    )
     with pytest.raises(ForcedFilterError) as exc:
-        await engine.execute(
-            SlayerQuery(
-                source_model="exchange_rates",
-                measures=[ModelMeasure(formula="*:count")],
-            )
-        )
+        await engine.execute(q)
     assert exc.value.table == "exchange_rates"
     assert exc.value.column == "organization_uuid"
 
@@ -231,9 +228,11 @@ async def test_profiling_sample_values_org_scoped(rls_storage):
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
     customers = await rls_storage.get_model("customers", data_source="rls_sqlite")
     region_col = next(c for c in customers.columns if c.name == "region")
-    sample = await profile_column(model=customers, column=region_col, engine=engine)
-    assert sample is not None
-    assert set(sample.sampled_values) == {"US", "EU"}  # APAC (orgB) excluded
+    outcome = await ensure_samples_fresh(
+        model=customers, columns=[region_col], engine=engine, storage=rls_storage,
+    )
+    assert outcome.columns[0].sampled_values is not None
+    assert set(outcome.columns[0].sampled_values) == {"US", "EU"}  # APAC (orgB) excluded
 
 
 # -- dry_run preview shows the wraps ----------------------------------------
@@ -288,17 +287,15 @@ async def test_get_column_types_blocking_policy_degrades(rls_storage):
 async def test_none_presence_reprobes_and_self_heals(rls_storage, monkeypatch):
     """A transient introspection failure (-> None -> fail closed) is not
     cached: once introspection recovers, the next query succeeds."""
-    import slayer.engine.query_engine as qe
-
-    real = qe._safe_get_columns
+    real = SqliteDialect.reflect_columns
     state = {"fail": True}
 
-    def flaky(*args, **kwargs):
+    def flaky(self, **kwargs):
         if state["fail"]:
             raise RuntimeError("transient introspection failure")
-        return real(*args, **kwargs)
+        return real(self, **kwargs)
 
-    monkeypatch.setattr(qe, "_safe_get_columns", flaky)
+    monkeypatch.setattr(SqliteDialect, "reflect_columns", flaky)
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
     query = SlayerQuery(
         source_model="orders", measures=[ModelMeasure(formula="*:count")]
@@ -318,16 +315,14 @@ async def test_none_presence_reprobes_and_self_heals(rls_storage, monkeypatch):
 async def test_column_presence_is_cached(rls_storage, monkeypatch):
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
 
-    import slayer.engine.query_engine as qe
-
     calls = {"n": 0}
-    real = qe._safe_get_columns
+    real = SqliteDialect.reflect_columns
 
-    def counting(*args, **kwargs):
+    def counting(self, **kwargs):
         calls["n"] += 1
-        return real(*args, **kwargs)
+        return real(self, **kwargs)
 
-    monkeypatch.setattr(qe, "_safe_get_columns", counting)
+    monkeypatch.setattr(SqliteDialect, "reflect_columns", counting)
 
     query = SlayerQuery(
         source_model="orders", measures=[ModelMeasure(formula="*:count")]
@@ -350,58 +345,54 @@ async def rls_join_storage(tmp_path):
     """The tenant column lives only on ``customers``, so ``orders`` and ``line_items``
     must reach it through explicit joins; ``exchange_rates`` is tenant-less."""
     db_path = tmp_path / "rls_join.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE customers (
-            id INTEGER PRIMARY KEY,
-            organization_uuid TEXT NOT NULL,
-            name TEXT NOT NULL
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE customers (
+                id INTEGER PRIMARY KEY,
+                organization_uuid TEXT NOT NULL,
+                name TEXT NOT NULL
+            )
+            """
         )
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            customer_id INTEGER NOT NULL,
-            amount REAL NOT NULL
+        cur.execute(
+            """
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                customer_id INTEGER NOT NULL,
+                amount REAL NOT NULL
+            )
+            """
         )
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE line_items (
-            id INTEGER PRIMARY KEY,
-            order_id INTEGER NOT NULL,
-            qty INTEGER NOT NULL
+        cur.execute(
+            """
+            CREATE TABLE line_items (
+                id INTEGER PRIMARY KEY,
+                order_id INTEGER NOT NULL,
+                qty INTEGER NOT NULL
+            )
+            """
         )
-        """
-    )
-    cur.execute(
-        "CREATE TABLE exchange_rates (day TEXT NOT NULL, rate REAL NOT NULL)"
-    )
-    cur.executemany(
-        "INSERT INTO customers VALUES (?, ?, ?)",
-        [(1, ORG_A, "Alice"), (2, ORG_B, "Charlie")],
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?, ?, ?)",
-        [(10, 1, 100.0), (11, 2, 999.0)],  # order 10 -> orgA, 11 -> orgB
-    )
-    cur.executemany(
-        "INSERT INTO line_items VALUES (?, ?, ?)",
-        [(100, 10, 5), (101, 11, 7)],  # item 100 -> orgA, 101 -> orgB
-    )
-    cur.executemany(
-        "INSERT INTO exchange_rates VALUES (?, ?)",
-        [("2025-01-01", 1.1), ("2025-02-01", 1.2)],
-    )
-    conn.commit()
-    conn.close()
-
-    from slayer.storage.yaml_storage import YAMLStorage
+        cur.execute(
+            "CREATE TABLE exchange_rates (day TEXT NOT NULL, rate REAL NOT NULL)"
+        )
+        cur.executemany(
+            "INSERT INTO customers VALUES (?, ?, ?)",
+            [(1, ORG_A, "Alice"), (2, ORG_B, "Charlie")],
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?, ?, ?)",
+            [(10, 1, 100.0), (11, 2, 999.0)],  # order 10 -> orgA, 11 -> orgB
+        )
+        cur.executemany(
+            "INSERT INTO line_items VALUES (?, ?, ?)",
+            [(100, 10, 5), (101, 11, 7)],  # item 100 -> orgA, 101 -> orgB
+        )
+        cur.executemany(
+            "INSERT INTO exchange_rates VALUES (?, ?)",
+            [("2025-01-01", 1.1), ("2025-02-01", 1.2)],
+        )
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -567,35 +558,29 @@ async def test_dry_run_shows_exists_wrap(rls_join_storage):
     assert "organization_uuid = 'orgA'" in flat
 
 
-async def test_execute_invokes_clickhouse_preflight(rls_join_storage, monkeypatch):
-    """The execution pipeline calls the ClickHouse correlated-subquery preflight
-    before applying the policy (it no-ops for non-ClickHouse dialects)."""
+def _record_profile_probes(monkeypatch) -> list[str]:
+    probes: list[str] = []
+
+    async def record(self):  # NOSONAR(S7503) — must stay async
+        probes.append(self.datasource.name)
+        raise AssertionError("a policy-only query needs no server profile")
+
+    monkeypatch.setattr(SlayerSQLClient, "server_profile", record)
+    return probes
+
+
+async def test_execute_runs_no_profile_probe(rls_join_storage, monkeypatch):
+    """A join policy alone never probes the server profile."""
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
-    seen = {"n": 0}
-    real = engine._preflight_clickhouse_correlated
-
-    async def spy(*, dialect, datasource):
-        seen["n"] += 1
-        return await real(dialect=dialect, datasource=datasource)
-
-    monkeypatch.setattr(engine, "_preflight_clickhouse_correlated", spy)
+    probes = _record_profile_probes(monkeypatch)
     await engine.execute(
         SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="*:count")])
     )
-    assert seen["n"] >= 1
+    assert probes == []
 
 
-async def test_get_column_types_invokes_clickhouse_preflight(
-    rls_join_storage, monkeypatch
-):
+async def test_get_column_types_runs_no_profile_probe(rls_join_storage, monkeypatch):
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
-    seen = {"n": 0}
-    real = engine._preflight_clickhouse_correlated
-
-    async def spy(*, dialect, datasource):
-        seen["n"] += 1
-        return await real(dialect=dialect, datasource=datasource)
-
-    monkeypatch.setattr(engine, "_preflight_clickhouse_correlated", spy)
+    probes = _record_profile_probes(monkeypatch)
     await engine.get_column_types(model_name="orders", data_source="rls_sqlite")
-    assert seen["n"] >= 1
+    assert probes == []

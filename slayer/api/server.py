@@ -1,31 +1,44 @@
 """FastAPI server for SLayer."""
 
+import contextlib
 import logging
+import sys
+from collections.abc import AsyncIterator
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.exc import SQLAlchemyError
 
+from fastapi import FastAPI, HTTPException, Response
+from fastapi.routing import APIRoute
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from slayer import usage_reporting
 from slayer.mcp.server import create_mcp_server
 from slayer.core.errors import (
     AmbiguousModelError,
-    EntityResolutionError,
     MemoryNotFoundError,
     SchemaDriftError,
-    SlayerError,
 )
-from slayer.core.format import NumberFormat
+from slayer.core.format import NumberFormat, encode_json
 from slayer.core.models import DatasourceConfig, SlayerModel
-from slayer.core.query import SlayerQuery
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.core.query import QueryRefinement, SlayerQuery, SourceSpec
+from slayer.async_utils import run_sync
+from slayer.engine import ingestion as engine_ingestion
+from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine
+from slayer.sql.client import SqlClientError
+from slayer.engine.schema_scope import validate_scope_args
 from slayer.inspect.service import InspectService
 from slayer.memories.help_seed import seed_help_memories
 from slayer.memories.service import MemoryService
 from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
+from slayer.storage.document_loading import DocumentLoadFailures
 
 logger = logging.getLogger(__name__)
+
+_MCP_MOUNT = "/mcp"
 
 
 class QueryRequest(BaseModel):
@@ -34,41 +47,46 @@ class QueryRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     name: str | None = None  # Run-by-name: backing query for a query-backed model
-    # ``source_model`` accepts a string (stored model name) or a dict
-    # — the dict form is an inline ``ModelExtension`` (``{"source_name":
-    # "<model>", "columns": [...], "joins": [...]}``) or an inline
-    # ``SlayerModel`` (``{"name": "...", "sql_table": "...", "data_source":
-    # "...", "columns": [...]}``). The full polymorphism is handled by
-    # ``SlayerQuery.model_validate`` downstream.
-    source_model: str | dict[str, Any] | None = None
+    source_model: SourceSpec | None = None
     # ``measures`` and ``dimensions`` accept bare strings as a shorthand,
-    # mirroring the Python API: ``"*:count"`` is lifted to
-    # ``{"formula": "*:count"}``, ``"status"`` to ``{"name": "status"}``.
+    # mirroring the Python API: ``"count(*)"`` is lifted to
+    # ``{"formula": "count(*)"}``, ``"status"`` to ``{"name": "status"}``.
     # ``SlayerQuery``'s before-validators (``_coerce_measures`` /
     # ``_coerce_dimensions``) do the actual lifting downstream.
     measures: list[str | dict[str, Any]] | None = None
     dimensions: list[str | dict[str, Any]] | None = None
-    time_dimensions: list[dict[str, Any]] | None = None
+    # A string entry is the functional ``gran(col)`` form, coerced downstream by
+    # ``SlayerQuery``.
+    time_dimensions: list[str | dict[str, Any]] | None = None
     filters: list[str] | None = None
     order: list[dict[str, Any]] | None = None
     limit: int | None = None
     offset: int | None = None
     whole_periods_only: bool | None = None
-    # DEV-1543: opt out of the dim-only auto-dedup GROUP BY. Default
+    # Opt out of the dim-only auto-dedup GROUP BY. Default
     # (``None`` here) keeps the v3 SlayerQuery default (``True``). Set
     # ``False`` to emit raw rows.
     distinct_dimension_values: bool | None = None
+    # How aggregates resolve query dimensions unattributable from their root
+    # (broadcast|associate|error); posting the retired `strict` flag is rejected
+    # downstream by SlayerQuery (extra="allow" forwards it into the payload).
+    to_many_handling: str | None = None
     dry_run: bool | None = None
     explain: bool | None = None
     variables: dict[str, Any] | None = None
+    # Run-by-name only: clauses merged into the saved query's final stage.
+    refine: QueryRefinement | None = None
+
+
+_RUN_BY_NAME_FIELDS = frozenset({"name", "variables", "dry_run", "explain", "refine"})
 
 
 class QueryListRequest(BaseModel):
     """Body shape for multi-stage DAG queries at ``POST /query``.
 
     ``queries`` is a non-empty list of query dicts forming a DAG —
-    same shape as ``engine.execute(query=[...])`` and the MCP
-    ``query_nested`` tool. Order doesn't matter; the engine auto-sorts.
+    same shape as ``engine.execute(query=[...])`` and the MCP ``query``
+    tool's list form. Order doesn't matter; the engine auto-sorts.
     Top-level ``variables`` / ``dry_run`` / ``explain`` apply to the
     whole execution.
     """
@@ -97,16 +115,36 @@ class QueryResponse(BaseModel):
     columns: list[str]
     sql: str | None = None
     attributes: AttributesResponse | None = None
+    # The effective population model and whether it was inferred.
+    population: str | None = None
+    population_inferred: bool = False
+    # Advisories about the query itself — slack-normalization
+    # rewrites and filters that were dropped as unreachable. One list, each
+    # entry tagged with a ``kind`` discriminator the consumer switches on.
+    warnings: list[dict[str, Any]] = []
 
 
 class IngestRequest(BaseModel):
     datasource: str
     include_tables: list[str] | None = None
     exclude_tables: list[str] | None = None
+    # Scope: legacy single ``schema_name``, a plural ``schemas`` list,
+    # or ``all_schemas``. At most one may be set — the validator returns 422.
     schema_name: str | None = None
+    schemas: list[str] | None = None
+    all_schemas: bool = False
     # Ingest recognised ELT/migration internals visible rather than hidden.
     # Governs models this call creates; unhide an existing one via edit_model.
     surface_internals: bool = False
+
+    @model_validator(mode="after")
+    def _validate_scope(self) -> "IngestRequest":
+        validate_scope_args(
+            schema=self.schema_name,
+            schemas=self.schemas,
+            all_schemas=self.all_schemas,
+        )
+        return self
 
 
 class ValidateModelsRequest(BaseModel):
@@ -139,13 +177,13 @@ class SaveMemoryRequest(BaseModel):
     entity extraction (the query is then persisted alongside the
     learning).
 
-    DEV-1428: optional ``id`` lets callers pin the memory's canonical id
+    Optional ``id`` lets callers pin the memory's canonical id
     (e.g. for knowledge-base ingestion that wants stable string ids
     like ``kb.policy.42``). Bad charset → 400. Omit → auto-allocated
     int-shaped id.
 
-    DEV-1549: optional ``description`` is a short compact preview
-    surfaced by ``search(compact=True)`` and ``inspect_model``. Hard
+    Optional ``description`` is a short compact preview
+    surfaced by ``search(compact=True)`` and ``inspect``. Hard
     cap of 500 chars; over-cap returns HTTP 400.
     """
 
@@ -156,13 +194,13 @@ class SaveMemoryRequest(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    """Body for ``POST /search`` (DEV-1375). Mirrors the MCP / CLI /
+    """Body for ``POST /search``. Mirrors the MCP / CLI /
     SlayerClient surfaces.
 
     All retrieval inputs are optional. Empty input falls back to a
     recency listing capped at ``max_results`` hits.
 
-    DEV-1549: ``compact`` defaults to ``True`` everywhere. Compact
+    ``compact`` defaults to ``True`` everywhere. Compact
     memory hits surface ``description`` (with a first-paragraph
     fallback from ``learning``) and empty ``text``; compact entity
     hits surface ``entity.description`` and empty ``text``. Set
@@ -181,15 +219,15 @@ class SearchRequest(BaseModel):
 
 
 class InspectRequest(BaseModel):
-    """Body for ``POST /inspect`` (DEV-1588). Mirrors the MCP / CLI /
+    """Body for ``POST /inspect``. Mirrors the MCP / CLI /
     SlayerClient ``inspect`` surfaces — a point-lookup of one entity, or a
-    homogeneous-kind batch when ``reference`` is a list (DEV-1612)."""
+    homogeneous-kind batch when ``reference`` is a list."""
 
     model_config = ConfigDict(extra="forbid")
 
-    # DEV-1612: a list is a homogeneous-kind batch (one ``entity_type`` for
+    # A list is a homogeneous-kind batch (one ``entity_type`` for
     # every id). A single str keeps single-id behaviour byte-for-byte.
-    # DEV-1667: ``None`` / omitted (or ``[]``) renders the whole collection at
+    # ``None`` / omitted (or ``[]``) renders the whole collection at
     # ``entity_type`` (model / datasource only).
     reference: str | list[str] | None = None
     entity_type: str
@@ -199,6 +237,41 @@ class InspectRequest(BaseModel):
     show_sql: bool = False
     sections: list[str] | None = None
     descriptions_max_chars: int | None = None
+
+
+class _UsageMiddleware:
+    """Counts each REST request by its matched route template; requests under ``mounted`` count themselves."""
+
+    def __init__(self, app: ASGIApp, *, mounted: str) -> None:
+        self.app = app
+        self.mounted = mounted
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        path = scope.get("path", "")
+        if scope["type"] != "http" or not usage_reporting.is_active() or path == self.mounted or path.startswith(f"{self.mounted}/"):
+            await self.app(scope, receive, send)
+            return
+        status: list[int] = []
+
+        async def capture(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                status.append(message["status"])
+            await send(message)
+
+        with usage_reporting.action() as action:
+            try:
+                await self.app(scope, receive, capture)
+            except BaseException as exc:
+                self._record(scope, error=exc, dry_run=action.dry_run)
+                raise
+        error = usage_reporting.HttpError(status[0]) if status and status[0] >= 400 else None
+        self._record(scope, error=error, dry_run=action.dry_run)
+
+    @staticmethod
+    def _record(scope: Scope, *, error: BaseException | None, dry_run: bool) -> None:
+        route = scope.get("route")
+        token = route.path if isinstance(route, APIRoute) else "other"
+        usage_reporting.record(surface="rest", token=token, error=error, dry_run=dry_run)
 
 
 def _slayer_version() -> str:
@@ -212,32 +285,46 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     storage: StorageBackend,
     *,
     ingest_on_startup: bool = False,
+    always_load_query: bool = False,
+    client_factory: ClientFactory | None = None,
 ) -> FastAPI:
-    from slayer.async_utils import run_sync
-
-    # DEV-1658: seed conceptual-help memories once here; the embedded MCP
+    # Built first: an invalid SLAYER_NOW must fail before any side effect.
+    engine = SlayerQueryEngine(storage=storage, client_factory=client_factory)
+    # Every route reads models, and the live database, through the server's engine.
+    storage = engine.storage
+    # Seed conceptual-help memories once here; the embedded MCP
     # server below is created with _seed_help=False so the pass never fires
     # twice (mirrors the ingest_on_startup single-orchestration rule).
     run_sync(seed_help_memories(storage=storage))
 
     if ingest_on_startup:
-        import sys
-
-        from slayer.engine.ingestion import ingest_all_datasources_idempotent
-
-        run_sync(
-            ingest_all_datasources_idempotent(storage=storage, stream=sys.stderr)
+        engine.run_sync(
+            # Via the module so tests can monkeypatch the seam.
+            engine_ingestion.ingest_all_datasources_idempotent(
+                storage=storage, client_for=engine.client_for, stream=sys.stderr,
+            )
         )
-    app = FastAPI(title="SLayer", version=_slayer_version())
-    engine = SlayerQueryEngine(storage=storage)
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # Every step runs even if an earlier one raises; per engine, aclose before close.
+        async with contextlib.AsyncExitStack() as stack:
+            for owned in (engine, getattr(mcp, "_slayer_engine")):
+                stack.callback(owned.close)
+                stack.push_async_callback(owned.aclose)
+            yield
+
+    app = FastAPI(title="SLayer", version=_slayer_version(), lifespan=lifespan)
+    app.add_middleware(_UsageMiddleware, mounted=_MCP_MOUNT)
 
     # Mount MCP server over SSE at /mcp. The embedded server intentionally
     # does NOT receive `ingest_on_startup` — orchestration happens once,
     # above, so calling `create_app(ingest_on_startup=True)` doesn't fire
     # the orchestrator twice.
-    mcp = create_mcp_server(storage=storage, _seed_help=False)
+    mcp = create_mcp_server(
+        storage=storage, always_load_query=always_load_query, client_factory=client_factory, _seed_help=False,
+    )
     mcp_app = mcp.sse_app()
-    app.mount("/mcp", mcp_app)
+    app.mount(_MCP_MOUNT, mcp_app)
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -245,11 +332,12 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
 
     @app.post(
         "/query",
+        response_model=QueryResponse,
         responses={
             400: {"description": "Invalid query payload (e.g. missing source_model/name, mutually exclusive fields, validation error)."},
             422: {
                 "description": (
-                    "Schema drift detected on the touched models — query "
+                    "Schema drift detected on models the query read — it "
                     "could not run against the live schema. Body shape: "
                     "``{\"error\": \"schema_drift\", \"models\": [...], "
                     "\"to_delete\": [ToDeleteEntry], \"original\": str|null}``. "
@@ -260,12 +348,13 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     )
     async def query(
         request: QueryRequest | QueryListRequest,
-    ) -> QueryResponse:
+    ) -> Response:
         try:
             # Multi-stage DAG: body is ``{"queries": [...], "variables": ...,
-            # "dry_run": ..., "explain": ...}``. Mirrors the MCP
-            # ``query_nested`` tool and ``engine.execute(query=[...])``.
+            # "dry_run": ..., "explain": ...}``. Mirrors the MCP ``query``
+            # tool's list form and ``engine.execute(query=[...])``.
             # Engine auto-sorts the list and validates DAG invariants.
+            run_kwargs: dict[str, Any] = {}
             if isinstance(request, QueryListRequest):
                 if not request.queries:
                     raise HTTPException(
@@ -274,65 +363,53 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                     )
                 dry_run = bool(request.dry_run)
                 explain = bool(request.explain)
-                result = await engine.execute(
-                    query=list(request.queries),
-                    variables=request.variables or {},
-                    dry_run=dry_run,
-                    explain=explain,
-                )
-            # Run-by-name: ``{"name": "<model>", "variables": {...}}``
-            # routes through ``engine.execute(str)`` so the model's stored
-            # backing query runs directly. Cannot be combined with
-            # ``source_model`` or other query fields.
+                run_query: Any = list(request.queries)
+                variables = request.variables or {}
+            # Run-by-name: ``{"name": "<model>", "refine": {...}, "variables": {...}}``
+            # runs the model's stored backing query, ``refine`` merged into its
+            # final stage. Any other query field (even ``null``) is rejected.
             elif request.name is not None:
-                disallowed = [
-                    f for f in (
-                        request.source_model, request.measures, request.dimensions,
-                        request.time_dimensions, request.filters, request.order,
-                        request.limit, request.offset, request.whole_periods_only,
-                        request.distinct_dimension_values,
-                    ) if f is not None
-                ]
-                if disallowed:
+                if request.model_fields_set - _RUN_BY_NAME_FIELDS or request.model_extra:
                     raise HTTPException(
                         status_code=400,
                         detail=(
-                            "When 'name' is supplied for run-by-name, no other "
-                            "query fields may be set (only 'variables', 'dry_run', "
-                            "'explain' are allowed)."
+                            "When 'name' is supplied for run-by-name, put query clauses in "
+                            "'refine' (only 'variables', 'dry_run', 'explain' and 'refine' "
+                            "are allowed)."
                         ),
                     )
                 dry_run = bool(request.dry_run)
                 explain = bool(request.explain)
-                result = await engine.execute(
-                    request.name,
-                    variables=request.variables or {},
-                    dry_run=dry_run,
-                    explain=explain,
+                run_query = request.name
+                variables = request.variables or {}
+                run_kwargs["refine"] = request.refine
+            elif "refine" in request.model_fields_set:
+                raise HTTPException(
+                    status_code=400,
+                    detail="'refine' requires 'name' (a saved query-backed model).",
                 )
             else:
-                if request.source_model is None:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Either 'name' (run-by-name) or 'source_model' must be provided.",
-                    )
+                # A rootless query (no name, no source_model) is valid —
+                # the engine infers the population. The query must still project
+                # something, which SlayerQuery validation enforces downstream.
                 payload = request.model_dump(exclude_none=True)
                 # ``variables`` is consumed at execute() level, not part of
                 # SlayerQuery's filter-substitution variables (those merge
                 # automatically via the kwarg path).
-                runtime_kwarg = payload.pop("variables", None)
+                variables = payload.pop("variables", None)
                 # ``dry_run``/``explain`` are execution-mode flags only — pop
                 # them here and pass as engine kwargs so v3 SlayerQuery
                 # (extra="forbid") doesn't reject them.
                 dry_run = bool(payload.pop("dry_run", False))
                 explain = bool(payload.pop("explain", False))
-                slayer_query = SlayerQuery.model_validate(payload)
-                result = await engine.execute(
-                    query=slayer_query,
-                    variables=runtime_kwarg,
-                    dry_run=dry_run,
-                    explain=explain,
-                )
+                run_query = SlayerQuery.model_validate(payload)
+            if dry_run:
+                usage_reporting.mark_dry_run()
+            usage_reporting.observe_query(run_query)
+            result = await engine.execute(
+                query=run_query, variables=variables, dry_run=dry_run, explain=explain, **run_kwargs,
+            )
+            usage_reporting.observe_executed(result)
             attrs = result.attributes
 
             def _convert_meta(d: dict) -> dict[str, FieldMetadataResponse]:
@@ -349,12 +426,16 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 row_count=result.row_count,
                 columns=result.columns,
                 attributes=attributes,
+                warnings=[
+                    w.model_dump(mode="json") for w in (result.warnings or [])
+                ],
+                population=result.population,
+                population_inferred=result.population_inferred,
             )
             if dry_run or explain:
                 response.sql = result.sql
-            return response
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            body = {"data": response.data, **response.model_dump(mode="json", exclude={"data"})}
+            return Response(content=encode_json(body), media_type="application/json")
         except SchemaDriftError as drift:
             raise HTTPException(
                 status_code=422,
@@ -367,28 +448,34 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                     "original": str(drift.__cause__) if drift.__cause__ else None,
                 },
             )
+        except ValueError as e:
+            # SlayerError subclasses ValueError; both map to 400.
+            raise HTTPException(status_code=400, detail=str(e))
 
     @app.get("/models")
     async def list_models(
         data_source: str | None = None,
     ) -> list[dict[str, Any]]:
-        identities = await storage._list_all_model_identities()
         result = []
-        for ds_name, name in identities:
-            if data_source is not None and ds_name != data_source:
+        for model in DocumentLoadFailures().skip(await storage.load_models(data_source=data_source)):
+            if model.hidden:
                 continue
-            model = await storage.get_model(name, data_source=ds_name)
-            if model is None or model.hidden:
-                continue
-            entry: dict[str, Any] = {"name": name, "data_source": ds_name}
+            entry: dict[str, Any] = {"name": model.name, "data_source": model.data_source}
             if model.description:
                 entry["description"] = model.description
             result.append(entry)
+        datasources = [data_source] if data_source is not None else await storage.list_datasources()
+        for ds_name in datasources:
+            result.extend(
+                {"name": m.name, "data_source": ds_name, "description": m.description}
+                for m in await storage.builtin_models(ds_name)
+            )
         return result
 
     @app.get(
         "/models/{name}",
         responses={
+            404: {"description": "Model not found."},
             409: {
                 "description": (
                     "Model name resolves to multiple datasources. Pass "
@@ -403,7 +490,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         data_source: str | None = None,
     ) -> dict[str, Any]:
         try:
-            model = await storage.get_model(name, data_source=data_source)
+            model = await storage.get_model_or_builtin(name, data_source=data_source)
         except AmbiguousModelError as exc:
             raise HTTPException(
                 status_code=409,
@@ -451,6 +538,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     @app.delete(
         "/models/{name}",
         responses={
+            404: {"description": "Model not found."},
             409: {
                 "description": (
                     "Model name resolves to multiple datasources. Pass "
@@ -512,7 +600,10 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             result.append(entry)
         return result
 
-    @app.get("/datasources/{name}")
+    @app.get(
+        "/datasources/{name}",
+        responses={404: {"description": "Datasource not found."}},
+    )
     async def get_datasource(name: str) -> dict[str, Any]:
         ds = await storage.get_datasource(name)
         if ds is None:
@@ -537,7 +628,10 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             raise HTTPException(status_code=400, detail=str(e))
         return {"status": "created", "name": datasource.name}
 
-    @app.delete("/datasources/{name}")
+    @app.delete(
+        "/datasources/{name}",
+        responses={404: {"description": "Datasource not found."}},
+    )
     async def delete_datasource(name: str) -> dict[str, Any]:
         deleted = await storage.delete_datasource(name)
         if not deleted:
@@ -570,11 +664,9 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                     status_code=404,
                     detail=f"Datasource '{request.data_source}' not found",
                 )
-        from sqlalchemy.exc import SQLAlchemyError
-
         try:
             entries = await engine.validate_models(data_source=request.data_source)
-        except SQLAlchemyError as exc:
+        except (SQLAlchemyError, SqlClientError) as exc:
             safe_ds = (request.data_source or "").replace("\r", "").replace("\n", "")
             logger.exception("validate_models failed for datasource %r", safe_ds)
             raise HTTPException(
@@ -595,13 +687,12 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         """Recommend the query ``source_model`` (root) for a set of
         ``model.column`` / ``model.metric`` items, plus each item's
         join-qualified path from that root. Read-only."""
-        engine = SlayerQueryEngine(storage=storage)
         try:
             rec = await engine.recommend_root_model(
                 request.items, data_source=request.data_source,
                 root_hint=request.root_hint,
             )
-        except (ValueError, SlayerError) as exc:
+        except ValueError as exc:  # SlayerError is a ValueError subclass
             raise HTTPException(status_code=400, detail=str(exc))
         return rec.model_dump(mode="json")
 
@@ -643,19 +734,19 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             raise HTTPException(
                 status_code=404, detail=f"Datasource '{request.datasource}' not found"
             )
-        from sqlalchemy.exc import SQLAlchemyError
-        from slayer.engine.ingestion import ingest_datasource_idempotent
-
         try:
-            result = await ingest_datasource_idempotent(
+            result = await engine_ingestion.ingest_datasource_idempotent(
                 datasource=ds,
                 storage=storage,
+                client=engine.client_for(ds),
                 include_tables=request.include_tables,
                 exclude_tables=request.exclude_tables,
                 schema=request.schema_name,
+                schemas=request.schemas,
+                all_schemas=request.all_schemas,
                 surface_internals=request.surface_internals,
             )
-        except SQLAlchemyError as exc:
+        except (SQLAlchemyError, SqlClientError) as exc:
             # OperationalError / DatabaseError both derive from SQLAlchemyError
             # (Sonar S5713 — catching them separately is redundant).
             logger.exception("Ingest failed for datasource %r", safe_ds_name)
@@ -690,7 +781,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             )
         return result.model_dump(mode="json")
 
-    # ---------- DEV-1357 v2: Memory endpoints ------------------------------
+    # ---------- Memory endpoints ------------------------------
 
     memory_service = MemoryService(storage=storage)
 
@@ -713,11 +804,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 id=request.id,
                 description=request.description,
             )
-        except (
-            EntityResolutionError,
-            AmbiguousModelError,
-            ValueError,
-        ) as exc:
+        except ValueError as exc:  # EntityResolutionError/AmbiguousModelError are ValueError subclasses
             raise HTTPException(status_code=400, detail=str(exc))
         return response.model_dump(mode="json")
 
@@ -737,9 +824,9 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             raise HTTPException(status_code=400, detail=str(exc))
         return response.model_dump(mode="json")
 
-    # ---------- DEV-1375: semantic search -----------------------------
+    # ---------- Semantic search -----------------------------
 
-    # DEV-1516: pass the engine so the search service's post-fusion
+    # Pass the engine so the search service's post-fusion
     # column-hit hook can auto-refresh stale categorical columns.
     search_service = SearchService(storage=storage, engine=engine)
 
@@ -765,7 +852,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 cypher_filter=request.cypher_filter,
                 compact=request.compact,
             )
-        except (SlayerError, ValueError) as exc:
+        except ValueError as exc:  # SlayerError is a ValueError subclass
             raise HTTPException(status_code=400, detail=str(exc))
         return response.model_dump(mode="json")
 
@@ -794,7 +881,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 sections=request.sections,
                 descriptions_max_chars=request.descriptions_max_chars,
             )
-        except (SlayerError, ValueError) as exc:
+        except ValueError as exc:  # SlayerError is a ValueError subclass
             raise HTTPException(status_code=400, detail=str(exc))
         return {"result": result}
 

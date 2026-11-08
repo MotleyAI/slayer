@@ -30,12 +30,13 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.search.graph import (
+    _validate_cypher,
+    build_graph,
     clear_cache,
     get_filtered_ids,
     is_available,
 )
 from slayer.search.service import SearchResponse, SearchService
-from slayer.storage.join_sync import JoinSyncStorage
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -75,6 +76,7 @@ async def rich_storage() -> AsyncIterator[YAMLStorage]:
                         description="Net order value in USD",
                     ),
                     Column(name="status", sql="status", type=DataType.TEXT),
+                    Column(name="customer_id", type=DataType.INT, hidden=True),
                 ],
                 measures=[
                     ModelMeasure(
@@ -260,14 +262,6 @@ async def test_sqlite_storage_fingerprint_changes_after_write() -> None:
         assert fp_after != fp_before
     finally:
         os.unlink(db_path)
-
-
-@pytest.mark.asyncio
-async def test_join_sync_storage_fingerprint_delegates(
-    shop_only_storage: YAMLStorage,
-) -> None:
-    wrapped = JoinSyncStorage(inner=shop_only_storage)
-    assert await wrapped.graph_fingerprint() == await shop_only_storage.graph_fingerprint()
 
 
 @pytest.mark.skipif(not is_available(), reason="ladybug not installed")
@@ -758,7 +752,6 @@ async def test_hidden_model_excluded_from_graph() -> None:
 @pytest.mark.skipif(not is_available(), reason="ladybug not installed")
 @pytest.mark.asyncio
 async def test_cache_hit_does_not_rebuild(shop_only_storage: YAMLStorage) -> None:
-    from slayer.search.graph import build_graph
 
     with patch("slayer.search.graph.build_graph", wraps=build_graph) as mock_build:
         await get_filtered_ids(
@@ -773,7 +766,6 @@ async def test_cache_hit_does_not_rebuild(shop_only_storage: YAMLStorage) -> Non
 @pytest.mark.skipif(not is_available(), reason="ladybug not installed")
 @pytest.mark.asyncio
 async def test_cache_miss_after_storage_write(shop_only_storage: YAMLStorage) -> None:
-    from slayer.search.graph import build_graph
 
     with patch("slayer.search.graph.build_graph", wraps=build_graph) as mock_build:
         await get_filtered_ids(
@@ -795,7 +787,6 @@ async def test_cache_miss_after_storage_write(shop_only_storage: YAMLStorage) ->
 @pytest.mark.skipif(not is_available(), reason="ladybug not installed")
 @pytest.mark.asyncio
 async def test_two_storage_paths_use_independent_caches() -> None:
-    from slayer.search.graph import build_graph
 
     with tempfile.TemporaryDirectory() as tmp1, tempfile.TemporaryDirectory() as tmp2:
         s1 = YAMLStorage(base_dir=tmp1)
@@ -825,8 +816,10 @@ async def test_two_storage_paths_use_independent_caches() -> None:
         ids2 = await get_filtered_ids(
             "MATCH (d:Datasource) RETURN d.id AS id", s2
         )
-        assert "ds1" in ids1 and "ds2" not in ids1
-        assert "ds2" in ids2 and "ds1" not in ids2
+        assert "ds1" in ids1
+        assert "ds2" not in ids1
+        assert "ds2" in ids2
+        assert "ds1" not in ids2
 
 
 @pytest.mark.skipif(not is_available(), reason="ladybug not installed")
@@ -835,7 +828,6 @@ async def test_concurrent_rebuild_rebuilds_once(
     shop_only_storage: YAMLStorage,
 ) -> None:
     """Two coroutines racing on a cold cache should trigger exactly one rebuild."""
-    from slayer.search.graph import build_graph
 
     clear_cache()
     with patch("slayer.search.graph.build_graph", wraps=build_graph) as mock_build:
@@ -851,7 +843,6 @@ async def test_concurrent_rebuild_rebuilds_once(
 async def test_inaccessible_fingerprint_triggers_rebuild(
     shop_only_storage: YAMLStorage,
 ) -> None:
-    from slayer.search.graph import build_graph
 
     await get_filtered_ids("MATCH (m:Model) RETURN m.id AS id", shop_only_storage)
 
@@ -873,7 +864,6 @@ async def test_inaccessible_fingerprint_triggers_rebuild(
 
 
 def test_validate_cypher_accepts_match_return() -> None:
-    from slayer.search.graph import _validate_cypher
 
     _validate_cypher("MATCH (m:Memory) RETURN m.id AS id")
     _validate_cypher(
@@ -887,7 +877,6 @@ def test_validate_cypher_accepts_match_return() -> None:
 def test_validate_cypher_accepts_leading_whitespace_and_case_variants() -> None:
     """The MATCH-prefix allowlist (DEV-1464) is case-insensitive and
     tolerates leading whitespace."""
-    from slayer.search.graph import _validate_cypher
 
     _validate_cypher("  MATCH (m:Memory) RETURN m.id AS id")
     _validate_cypher("\tMATCH (m:Memory) RETURN m.id AS id")
@@ -933,7 +922,6 @@ def test_validate_cypher_accepts_leading_whitespace_and_case_variants() -> None:
     ],
 )
 def test_validate_cypher_rejects_invalid(bad_cypher: str) -> None:
-    from slayer.search.graph import _validate_cypher
 
     with pytest.raises(ValueError):
         _validate_cypher(bad_cypher)
@@ -1279,7 +1267,6 @@ async def test_stale_canonical_ids_in_candidate_set_cause_no_error(
 def test_validate_cypher_accepts_mutation_keyword_in_string_literal() -> None:
     """A Cypher query whose property value contains a mutation keyword as a
     standalone word must NOT be rejected by the safety validator."""
-    from slayer.search.graph import _validate_cypher
 
     # 'call me' contains the CALL keyword but is a string literal.
     _validate_cypher(
@@ -1302,7 +1289,6 @@ def test_validate_cypher_still_rejects_bare_mutation_keyword() -> None:
     after) is the one that exercises the keyword denylist directly; the
     bare-CALL case is now caught one layer earlier by the
     must-start-with-MATCH allowlist (DEV-1464 round 2)."""
-    from slayer.search.graph import _validate_cypher
 
     with pytest.raises(ValueError, match="mutation keyword"):
         _validate_cypher("MATCH (m:Memory) SET m.x = 1 RETURN m.id AS id")

@@ -14,7 +14,7 @@ map: ``EntityResolutionError`` / ``AmbiguousModelError`` /
 
 import os
 import shutil
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
 import tempfile
 from collections.abc import Generator
 
@@ -67,7 +67,7 @@ def _reset_yaml_storage(storage: YAMLStorage) -> None:
     # rather than deleting the SidecarEmbeddingStore's open db file.
     emb_path = os.path.join(storage.base_dir, "embeddings.db")
     if os.path.exists(emb_path):
-        with sqlite3.connect(emb_path) as conn:
+        with transaction(emb_path) as conn:
             conn.execute("DELETE FROM embeddings")
 
 

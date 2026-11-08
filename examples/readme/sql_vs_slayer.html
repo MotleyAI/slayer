@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<!--
+  Source of docs/images/sql-vs-slayer.png (the README example). Render from the repo root with:
+  google-chrome --headless --disable-gpu --hide-scrollbars --force-device-scale-factor=1.5 --window-size=1680,560 --screenshot=docs/images/sql-vs-slayer.png examples/readme/sql_vs_slayer.html
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SQL vs SLayer</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --bar: #f3f3f3;
+    --rule: #e5e5e5;
+    --gutter: #767676;
+    --guide: #d8d8d8;
+    --text: #333333;
+    --keyword: #bc4c00;
+    --func: #d73a49;
+    --string: #2f7d32;
+    --column: #0f7a74;
+    --number: #8250df;
+    --paren: #0550ae;
+    --key: #0b6fa4;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    width: 1680px; height: 560px; overflow: hidden;
+    background: var(--bg); color: var(--text);
+    font: 15px/24px "DejaVu Sans Mono", Menlo, Consolas, monospace;
+    display: grid; grid-template-columns: 920px 1fr;
+  }
+  .pane { border-right: 1px solid var(--rule); }
+  .pane:last-child { border-right: 0; }
+  .tabs { height: 40px; background: var(--bar); border-bottom: 1px solid var(--rule); display: flex; }
+  .tab {
+    display: flex; align-items: center; gap: 8px; padding: 0 16px;
+    background: var(--bg); border-top: 2px solid #e8a33d; border-right: 1px solid var(--rule);
+    font: 14px/1 -apple-system, "Segoe UI", "DejaVu Sans", sans-serif; color: #333;
+  }
+  .tab .x { color: #767676; margin-left: 6px; }
+  .code { padding-top: 8px; counter-reset: line; }
+  .l { white-space: pre; }
+  .l::before {
+    counter-increment: line; content: counter(line); display: inline-block;
+    width: 64px; padding-right: 26px; text-align: right; color: var(--gutter);
+  }
+  .g { display: inline-block; width: 2ch; height: 24px; vertical-align: top; border-left: 1px solid var(--guide); }
+  .k { color: var(--keyword); }
+  .f { color: var(--func); }
+  .s { color: var(--string); }
+  .c { color: var(--column); }
+  .n { color: var(--number); }
+  .p { color: var(--paren); }
+  .y { color: var(--key); }
+</style>
+</head>
+<body>
+<section class="pane">
+  <div class="tabs"><div class="tab"><span style="color:#d73a49">&#9707;</span>query.sql<span class="x">&#10005;</span></div></div>
+  <div class="code">
+<div class="l"><span class="k">WITH</span> monthly <span class="k">AS</span> <span class="p">(</span></div>
+<div class="l"><i class="g"></i><span class="k">SELECT</span></div>
+<div class="l"><i class="g"></i><i class="g"></i><span class="c">s.name</span> <span class="k">AS</span> store,</div>
+<div class="l"><i class="g"></i><i class="g"></i>DATE_TRUNC(<span class="s">'month'</span>, <span class="c">o.ordered_at</span>) <span class="k">AS</span> <span class="k">month</span>,</div>
+<div class="l"><i class="g"></i><i class="g"></i><span class="f">SUM</span>(<span class="c">o.order_total</span>) <span class="k">AS</span> revenue</div>
+<div class="l"><i class="g"></i><span class="k">FROM</span> orders o</div>
+<div class="l"><i class="g"></i><span class="k">JOIN</span> stores s <span class="k">ON</span> <span class="c">s.id</span> <span class="f">=</span> <span class="c">o.store_id</span></div>
+<div class="l"><i class="g"></i><span class="k">GROUP BY</span> <span class="c">s.name</span>, DATE_TRUNC(<span class="s">'month'</span>, <span class="c">o.ordered_at</span>)</div>
+<div class="l"><span class="p">)</span></div>
+<div class="l"><span class="k">SELECT</span></div>
+<div class="l"><i class="g"></i>store,</div>
+<div class="l"><i class="g"></i><span class="k">month</span>,</div>
+<div class="l"><i class="g"></i>revenue,</div>
+<div class="l"><i class="g"></i>(revenue <span class="f">-</span> <span class="f">LAG</span>(revenue) <span class="k">OVER</span> (<span class="k">PARTITION BY</span> store <span class="k">ORDER BY</span> <span class="k">month</span>))</div>
+<div class="l"><i class="g"></i><i class="g"></i><span class="f">/ NULLIF</span>(<span class="f">LAG</span>(revenue) <span class="k">OVER</span> (<span class="k">PARTITION BY</span> store <span class="k">ORDER BY</span> <span class="k">month</span>), <span class="n">0</span>) <span class="k">AS</span> mom_pct_change</div>
+<div class="l"><span class="k">FROM</span> monthly</div>
+<div class="l"><span class="k">ORDER BY</span> store, <span class="k">month</span>;</div>
+  </div>
+</section>
+<section class="pane">
+  <div class="tabs"><div class="tab"><span style="color:#8a6d00">{}</span>query.json<span class="x">&#10005;</span></div></div>
+  <div class="code">
+<div class="l"><span class="p">{</span></div>
+<div class="l"><i class="g"></i><span class="y">"source_model"</span>: <span class="s">"orders"</span>,</div>
+<div class="l"><i class="g"></i><span class="y">"measures"</span>: [<span class="s">"sum(order_total)"</span>, <span class="s">"change_pct(sum(order_total))"</span>],</div>
+<div class="l"><i class="g"></i><span class="y">"dimensions"</span>: [<span class="s">"stores.name"</span>, <span class="s">"month(ordered_at)"</span>]</div>
+<div class="l"><span class="p">}</span></div>
+  </div>
+</section>
+</body>
+</html>

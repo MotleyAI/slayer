@@ -1,19 +1,24 @@
-"""Integration tests that execute all example notebooks end-to-end.
+"""Execute every example notebook end-to-end via nbclient; success = it runs
+without raising. The Jaffle Shop DB is built once per session and the models dir
+is reset per notebook (see fixtures)."""
 
-Each notebook under docs/examples/ is run via nbclient. Success means
-the notebook completes without raising any exceptions.
-
-The Jaffle Shop database is generated once per test session (slow ~1-2 min).
-The models directory is cleaned before each notebook to prevent stale
-cross-notebook state (custom models created by one notebook shouldn't
-leak into another).
-"""
-
+import re
 import shutil
 import socket
+import sys
 from pathlib import Path
 
 import pytest
+
+from slayer.async_utils import run_sync
+from slayer.demo.jaffle_shop import DEMO_NAME, TABLE_NAMES, ensure_demo_datasource
+from slayer.storage.yaml_storage import YAMLStorage
+
+from tests.integration._demo_build import (
+    NOTEBOOK_DEMO_DIR,
+    NOTEBOOK_DEMO_YEARS,
+    build_notebook_demo_db,
+)
 
 nbclient = pytest.importorskip("nbclient")
 nbformat = pytest.importorskip("nbformat")
@@ -21,8 +26,7 @@ nbformat = pytest.importorskip("nbformat")
 pytestmark = pytest.mark.integration
 
 EXAMPLES_DIR = Path(__file__).resolve().parent.parent.parent / "docs" / "examples"
-JAFFLE_DATA_DIR = EXAMPLES_DIR / "jaffle_data"
-JAFFLE_DB_PATH = JAFFLE_DATA_DIR / "demo" / "jaffle_shop.duckdb"
+JAFFLE_DATA_DIR = NOTEBOOK_DEMO_DIR
 JAFFLE_MODELS_DIR = JAFFLE_DATA_DIR / "slayer_models"
 
 # Discover all .ipynb files, excluding checkpoints
@@ -35,24 +39,64 @@ _NOTEBOOKS = sorted(
 @pytest.fixture(scope="session", autouse=True)
 def _ensure_jaffle_db():
     """Generate the Jaffle Shop DuckDB once for the entire test session."""
-    if JAFFLE_DB_PATH.exists():
-        return  # Reuse existing DB
-
-    from slayer.demo.jaffle_shop import build_jaffle_shop
-
-    JAFFLE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     try:
-        build_jaffle_shop(db_path=str(JAFFLE_DB_PATH), years=3)
+        build_notebook_demo_db()
     except (FileNotFoundError, RuntimeError) as e:
         pytest.skip(f"Jaffle shop prerequisite missing: {e}")
 
 
-@pytest.fixture(params=_NOTEBOOKS, ids=[str(p.relative_to(EXAMPLES_DIR)) for p in _NOTEBOOKS])
-def notebook_path(request):
-    # Clean models before each notebook so custom models from one
-    # notebook don't leak into another (e.g., order_items_custom).
+# Notebooks whose POINT is to demonstrate initial ingestion — they must run on a
+# CLEAN models dir so they exercise the full auto-ingest path. This harness
+# carries that cold-ingest coverage. Every other notebook gets the prebuilt base models
+# restored (below) so it skips re-ingestion.
+_INGEST_DEMO_NOTEBOOKS = {
+    "03_auto_ingest/auto_ingest_nb.ipynb",
+}
+
+
+@pytest.fixture(scope="session")
+def _jaffle_models_template(_ensure_jaffle_db, tmp_path_factory) -> Path:
+    """Ingest the base Jaffle models once, validate every demo table is present,
+    and snapshot ``slayer_models/`` so consumers restore it instead of
+    re-ingesting."""
     if JAFFLE_MODELS_DIR.exists():
         shutil.rmtree(JAFFLE_MODELS_DIR)
+    storage = YAMLStorage(base_dir=str(JAFFLE_MODELS_DIR))
+    ensure_demo_datasource(
+        storage,
+        storage_path=str(JAFFLE_DATA_DIR),
+        years=NOTEBOOK_DEMO_YEARS,
+        ingest_models=True,
+        assume_yes=True,
+    )
+    present = set(run_sync(storage.list_models(data_source=DEMO_NAME)))
+    missing = [t for t in TABLE_NAMES if t not in present]
+    if missing:
+        pytest.skip(f"Jaffle models template incomplete: missing {missing}")
+
+    snapshot = tmp_path_factory.mktemp("jaffle-models-template")
+    shutil.copytree(JAFFLE_MODELS_DIR, snapshot, dirs_exist_ok=True)
+    return snapshot
+
+
+# Notebooks expected to fail under current engine gaps.
+# Map: notebook path relative to EXAMPLES_DIR → Linear issue + reason.
+# Re-enable a notebook by removing its entry once the cited issue lands —
+# the marker is STRICT, so a lingering entry fails the suite as XPASS.
+_KNOWN_FAILING_NOTEBOOKS: dict[str, str] = {}
+
+
+@pytest.fixture(params=_NOTEBOOKS, ids=[str(p.relative_to(EXAMPLES_DIR)) for p in _NOTEBOOKS])
+def notebook_path(request, _jaffle_models_template):
+    # Wipe models before each notebook so custom models from one notebook don't
+    # leak into another (e.g., order_items_custom). For everything but the
+    # ingest-demo notebooks, restore the prebuilt base models so the notebook's
+    # ensure_jaffle_shop() call reuses them instead of re-ingesting.
+    if JAFFLE_MODELS_DIR.exists():
+        shutil.rmtree(JAFFLE_MODELS_DIR)
+    rel = str(request.param.relative_to(EXAMPLES_DIR))
+    if rel not in _INGEST_DEMO_NOTEBOOKS:
+        shutil.copytree(_jaffle_models_template, JAFFLE_MODELS_DIR)
     return request.param
 
 
@@ -72,13 +116,128 @@ def _github_reachable(host: str = "github.com", port: int = 443, timeout: float 
         return False
 
 
-def test_notebook_runs_without_errors(notebook_path):
+def _bootstrap_failure_is_transient(error_text: str) -> bool:
+    """True if a MetricFlow bootstrap error is a transient network/server problem
+    (5xx/429, DNS, dropped connection) — a reachable socket can still 503 — not a
+    deterministic one (bad pin, missing CSVs). Reuses the setup helper's classifier;
+    if it can't be imported, err toward not-transient so real failures aren't hidden."""
+    metricflow_dir = EXAMPLES_DIR / _METRICFLOW_NB_DIR
+    if str(metricflow_dir) not in sys.path:
+        sys.path.insert(0, str(metricflow_dir))
+    try:
+        from setup_metricflow import _is_transient_git_error  # ALLOW(import-not-top): sys.path set above at call time
+    except ImportError:
+        return False
+    return _is_transient_git_error(error_text)
+
+
+# The DuckDB notebooks read a CSV over httpfs and auto-install the httpfs
+# extension + CLI from these hosts; the pre-run probe gates on the CSV CDN (443),
+# and the classifier below skips (never fails) on any outage reaching them.
+_DUCKDB_NB_DIR = "15_duckdb"
+_DUCKDB_DATA_HOST = "cdn.jsdelivr.net"
+_DUCKDB_REMOTE_HOSTS = (
+    _DUCKDB_DATA_HOST,
+    "extensions.duckdb.org",
+    "install.duckdb.org",
+    "duckdb.org",
+)
+
+# Substrings marking a failure as a transient outage of one of those hosts —
+# case-insensitive, and only when the error names a host. Throttle/block/service
+# statuses only (403/408/429/5xx, incl. curl's "returned error: NNN"); a 404/400
+# means the fixed URL is genuinely wrong — a real failure that must stay loud.
+# curl transport failures surface as the connection/DNS messages below.
+_DUCKDB_TRANSIENT_SIGNATURES = (
+    r"http (?:403|408|429|5\d\d)",
+    r"returned error: (?:403|408|429|5\d\d)",
+    r"could not resolve host",
+    r"temporary failure in name resolution",
+    r"name or service not known",
+    r"connection reset",
+    r"connection refused",
+    r"connection timed out",
+    r"timed out",
+    r"broken pipe",
+    r"could not establish",
+    r"failed to (?:connect|download)",
+    r"remote file has changed",  # CDN edges serving different ETags mid-read
+)
+
+# httpfs transport errors DuckDB emits without naming the URL, but which can only
+# come from the remote fetch (they cite httpfs-only state), so they skip the host gate.
+_DUCKDB_HTTPFS_TRANSPORT_SIGNATURES = (
+    r"server sent back more data than expected",  # CDN range/download mismatch
+)
+
+
+def _duckdb_data_host_reachable() -> bool:
+    return _github_reachable(host=_DUCKDB_DATA_HOST)
+
+
+def _duckdb_failure_text(nb) -> str:
+    """Error text of whichever cell failed, for transient classification.
+
+    A failing ``%%bash`` cell raises ``CalledProcessError`` whose message only
+    embeds the cell *source* (always contains the CDN URL) — the real error
+    ("could not resolve host", an HTTP 5xx) lands on the cell's stderr *stream*.
+    So classify from the failing cell's captured outputs, not from ``exc``.
+    """
+    parts: list[str] = []
+    for cell in nb.cells:
+        outputs = cell.get("outputs", [])
+        if not any(o.get("output_type") == "error" for o in outputs):
+            continue
+        for out in outputs:
+            if out.get("output_type") == "stream":
+                parts.append(out.get("text", ""))
+            elif out.get("output_type") == "error" and out.get("ename") != "CalledProcessError":
+                # A %%bash failure's CalledProcessError embeds the cell SOURCE
+                # (which carries the remote URLs), so a deterministic error like
+                # "timed out" would spuriously satisfy the host+signature gate.
+                # Classify %%bash cells from their stderr stream only; a real
+                # Python exception carries the actual error in evalue/traceback.
+                parts.append(out.get("evalue", ""))
+                parts.append("\n".join(out.get("traceback", [])))
+    # Contiguous join: nbclient splits one stderr write into several stream
+    # outputs, so "".join reconstructs the original text — a host or HTTP status
+    # split across chunk boundaries would otherwise dodge the host/signature gate.
+    return "".join(parts)
+
+
+def _duckdb_network_error_is_transient(error_text: str) -> bool:
+    text = (error_text or "").lower()
+    if any(re.search(pattern=p, string=text) for p in _DUCKDB_HTTPFS_TRANSPORT_SIGNATURES):
+        return True
+    if not any(host in text for host in _DUCKDB_REMOTE_HOSTS):
+        return False
+    return any(re.search(pattern=pattern, string=text) for pattern in _DUCKDB_TRANSIENT_SIGNATURES)
+
+
+def _report_notebook_failure(rel: str, exc: BaseException) -> None:
+    # On Python 3.14 a notebook failure in the full integration session can end the
+    # run without pytest's end-of-session FAILURES/summary; flushing the cause now
+    # keeps it in the CI log so the failure is never silent.
+    print(f"\n===== NOTEBOOK FAILED: {rel} =====\n{exc}", file=sys.stderr, flush=True)
+
+
+def test_notebook_runs_without_errors(notebook_path, request):
     """Execute the notebook and assert it completes without errors."""
+    rel = str(notebook_path.relative_to(EXAMPLES_DIR))
+    if rel in _KNOWN_FAILING_NOTEBOOKS:
+        request.applymarker(pytest.mark.xfail(
+            reason=_KNOWN_FAILING_NOTEBOOKS[rel],
+            strict=True,
+        ))
     is_metricflow = _METRICFLOW_NB_DIR in notebook_path.parts
     if is_metricflow:
         complete_marker = notebook_path.parent / ".cache" / ".complete"
         if not complete_marker.exists() and not _github_reachable():
             pytest.skip("GitHub unreachable; cannot bootstrap the MetricFlow notebook")
+
+    is_duckdb = _DUCKDB_NB_DIR in notebook_path.parts
+    if is_duckdb and not _duckdb_data_host_reachable():
+        pytest.skip("jsDelivr CDN unreachable; cannot run the DuckDB httpfs notebook")
 
     with open(notebook_path) as f:
         nb = nbformat.read(f, as_version=4)
@@ -91,10 +250,32 @@ def test_notebook_runs_without_errors(notebook_path):
     )
     try:
         client.execute()
+    except nbclient.exceptions.CellTimeoutError as exc:
+        # The DuckDB notebooks normally finish in ~15s; a 600s timeout means a
+        # network hang (stalled CDN, installer, or extension download), not a
+        # code bug. Other notebooks still fail loudly on timeout.
+        if is_duckdb:
+            pytest.skip(f"DuckDB notebook timed out (likely a network hang): {exc}")
+        _report_notebook_failure(rel, exc)
+        raise
     except nbclient.exceptions.CellExecutionError as exc:
-        # A reachable socket but a failing `git fetch` (or a stale/partial cache)
-        # surfaces as MetricFlowDemoError mid-run; skip when GitHub is unreachable
-        # rather than reporting a bootstrap failure as a notebook bug.
-        if is_metricflow and "MetricFlowDemoError" in str(exc) and not _github_reachable():
-            pytest.skip(f"MetricFlow notebook could not bootstrap offline: {exc}")
+        # A failing `git fetch` (or a stale/partial cache) surfaces as
+        # MetricFlowDemoError mid-run. Skip — rather than report a bootstrap
+        # failure as a notebook bug — when GitHub is unreachable *or* the failure
+        # is a transient network/server hiccup (e.g. a 503 over a reachable
+        # socket). A deterministic MetricFlowDemoError (bad pin, missing CSVs)
+        # still fails loudly.
+        if is_metricflow and "MetricFlowDemoError" in str(exc):
+            text = str(exc)
+            if not _github_reachable() or _bootstrap_failure_is_transient(text):
+                pytest.skip(f"MetricFlow notebook could not bootstrap: {exc}")
+        # Narrow by design: classify the failing cell's captured stderr/error
+        # output, never ``str(exc)`` or a ``%%bash`` ``evalue`` — both embed the
+        # cell source, which always contains the CDN URL, so the host-name gate
+        # would always pass and a real NotImplementedError / assertion / query
+        # bug could be misread as transient. The pre-run probe already covers
+        # "network down at start".
+        if is_duckdb and _duckdb_network_error_is_transient(_duckdb_failure_text(nb)):
+            pytest.skip(f"DuckDB notebook hit a transient network error: {exc}")
+        _report_notebook_failure(rel, exc)
         raise

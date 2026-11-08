@@ -9,19 +9,18 @@ Metabase suite's hygiene-noise assertion (DEV-1562, A.6).
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import logging
-import tempfile
 import threading
 import time
 
 import pytest
 
-from slayer.cli import _prepare_demo, _resolve_storage
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.pg_facade.auth import validate_bind_address
 from slayer.pg_facade.connection import PgConnection
+
+from tests.integration._demo_build import prepare_demo_storage
 
 DEMO_DATASOURCE = "jaffle_shop"
 
@@ -32,6 +31,8 @@ def start_pg_demo_server(
     log_records: list[logging.LogRecord] | None = None,
     storage_sink: list | None = None,
     bind_host: str = "127.0.0.1",
+    prebuilt_duckdb: str | None = None,
+    base_dir: str,
 ) -> tuple[asyncio.AbstractEventLoop, threading.Thread, str, int]:
     """Boot a Postgres-facade server backed by the Jaffle Shop demo.
 
@@ -65,15 +66,10 @@ def start_pg_demo_server(
     network-facing interface (CLI startup applies the same guard).
     """
     validate_bind_address(host=bind_host, token=token)
-    args = argparse.Namespace(
-        storage=tempfile.mkdtemp(prefix="slayer-pg-it-"),
-        models_dir=None,
-        datasource=None,
-        force=False,
-    )
-    storage = _resolve_storage(args)
     try:
-        _prepare_demo(args, storage)
+        _args, storage = prepare_demo_storage(
+            prebuilt_duckdb=prebuilt_duckdb, base_dir=base_dir
+        )
     except Exception as exc:  # pragma: no cover - demo deps missing
         pytest.skip(f"Jaffle Shop demo unavailable: {exc}")
     engine = SlayerQueryEngine(storage=storage)

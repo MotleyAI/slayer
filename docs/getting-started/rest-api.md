@@ -66,7 +66,7 @@ curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
   -d '{
     "source_model": "orders",
-    "measures": ["*:count"],
+    "measures": ["count(*)"],
     "dimensions": ["status"]
   }'
 ```
@@ -76,24 +76,25 @@ Response:
 ```json
 {
   "data": [
-    {"orders.status": "completed", "orders._count": 42},
-    {"orders.status": "pending", "orders._count": 15}
+    {"orders.status": "completed", "orders._count": 248238},
+    {"orders.status": "refunded", "orders._count": 19288},
+    {"orders.status": "cancelled", "orders._count": 8315}
   ],
   "columns": ["orders.status", "orders._count"],
-  "row_count": 2
+  "row_count": 3
 }
 ```
 
 ## More examples
 
 ```bash
-# Monthly revenue with date range
+# Monthly revenue over the last 12 months
 curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
   -d '{
     "source_model": "orders",
-    "measures": ["revenue:sum"],
-    "time_dimensions": [{"dimension": "created_at", "granularity": "month", "date_range": ["2024-01-01", "2024-12-31"]}]
+    "measures": ["sum(order_total)"],
+    "time_dimensions": [{"dimension": "ordered_at", "granularity": "month", "date_range": "last 12 months"}]
   }'
 
 # Top 5 customers
@@ -101,9 +102,9 @@ curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
   -d '{
     "source_model": "orders",
-    "measures": ["revenue:sum"],
+    "measures": ["sum(order_total)"],
     "dimensions": ["customers.name"],
-    "order": [{"column": "revenue:sum", "direction": "desc"}],
+    "order": [{"column": "sum(order_total)", "direction": "desc"}],
     "limit": 5
   }'
 
@@ -135,13 +136,13 @@ If `/models` returns an empty list, restart with `slayer serve --ingest-on-start
 # Question-driven
 curl -X POST http://localhost:5143/search \
   -H "Content-Type: application/json" \
-  -d '{"question": "What should I know about returns?", "max_results": 10}'
+  -d '{"question": "What should I know about refunds?", "max_results": 10}'
 
 # Entity-driven; cypher_filter narrows to memories only (naive form, always available)
 curl -X POST http://localhost:5143/search \
   -H "Content-Type: application/json" \
   -d '{
-    "entities": ["mydb.orders.is_returned"],
+    "entities": ["jaffle_shop.orders.status"],
     "cypher_filter": "MATCH (n:Memory) RETURN n.id AS id"
   }'
 
@@ -149,13 +150,13 @@ curl -X POST http://localhost:5143/search \
 curl -X POST http://localhost:5143/memories \
   -H "Content-Type: application/json" \
   -d '{
-    "learning": "orders.is_returned in {0,1,NULL}; treat NULL as not returned",
-    "linked_entities": ["mydb.orders.is_returned"],
-    "id": "kb.returns.null-handling"
+    "learning": "Refunded and cancelled orders keep their order_total; count only completed orders for net revenue",
+    "linked_entities": ["jaffle_shop.orders.status", "jaffle_shop.orders.order_total"],
+    "id": "kb.orders.refunds"
   }'
 
 # Delete (cascade-strips memory:<id> refs)
-curl -X DELETE http://localhost:5143/memories/kb.returns.null-handling
+curl -X DELETE http://localhost:5143/memories/kb.orders.refunds
 ```
 
 Each hit in the response carries a `kind` discriminator (`"memory"` for prior notes, `"datasource"` / `"model"` / `"column"` / `"measure"` / `"aggregation"` for entity discovery hits) and a `score`. `cypher_filter` accepts full openCypher when `advanced_search` is installed (LadybugDB property graph with `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `JOINS` edges); without the extra, only the naive `MATCH (n:Label) RETURN n.id AS id` kind-filter form is accepted — anything richer returns HTTP 400. See [Search](../concepts/search.md), [Memories](../concepts/memories.md), and the [REST API Reference](../reference/rest-api.md#memories-semantic-search).
@@ -170,9 +171,9 @@ const res = await fetch("http://localhost:5143/query", {
   method: "POST",
   headers: {"Content-Type": "application/json"},
   body: JSON.stringify({
-    source_model: "orders",
-    measures: ["*:count"],
-    dimensions: ["status"],
+    "source_model": "orders",
+    "measures": ["count(*)"],
+    "dimensions": ["status"],
   }),
 });
 const {data} = await res.json();
@@ -180,7 +181,7 @@ const {data} = await res.json();
 
 **Go:**
 ```go
-body := `{"source_model": "orders", "measures": ["*:count"]}`
+body := `{"source_model": "orders", "measures": ["count(*)"]}`
 resp, _ := http.Post("http://localhost:5143/query", "application/json", strings.NewReader(body))
 ```
 

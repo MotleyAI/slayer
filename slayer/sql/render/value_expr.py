@@ -1,0 +1,535 @@
+"""The single ``ValueKey`` → sqlglot-AST renderer, parameterised by :class:`RenderContext`
+rather than by call site so one key can't render two ways. Column-like leaves anchor through
+``ScopeFrame.resolve``; a missing facility raises instead of degrading quietly."""
+
+from __future__ import annotations
+
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from pydantic import BaseModel, ConfigDict, Field
+from sqlglot import exp
+from sqlglot.expressions.core import Expression
+
+from slayer.core.enums import DataType
+from slayer.core.errors import RenderContextMissingFacilityError
+from slayer.core.keys import (
+    NULL_SAFE_COMPARISON_OPS,
+    AggregateKey,
+    ArithmeticKey,
+    ArrayLiteralKey,
+    CastKey,
+    ColumnKey,
+    ColumnSqlKey,
+    ColumnTypeFn,
+    InKey,
+    ListSetKey,
+    LiteralKey,
+    ScalarCallKey,
+    SqlFragmentKey,
+    StarKey,
+    TimePointCmpKey,
+    TimeTruncKey,
+    TransformKey,
+    ValueKey,
+    _FrozenKey,
+    aggregation_source_type,
+    source_anchor_path,
+)
+from slayer.core.models import Column
+from slayer.sql.dialects.base import SqlDialect
+from slayer.sql.dialects.reflection import info_schema_type, is_exact_numeric_db_type
+from slayer.sql.render.aggregates import (
+    DISPATCH_DISTINCT,
+    DISPATCH_SIMPLE,
+    apply_aggregate,
+    is_builtin_agg,
+    resolve_agg_entry,
+)
+from slayer.sql.render.parse import (  # noqa: F401 — re-exported render surface
+    rewrite_log_aliases as rewrite_log_alias,
+)
+# The pure operator / scalar / literal composers live in the scope-free leaf
+# module ``row_expr`` so ``ScopeFrame`` can reuse them; re-imported
+# here so this module keeps its full render surface.
+from slayer.sql.render.row_expr import (  # noqa: F401 — re-exported render surface
+    DATE_FUNCTIONS,
+    _literal,
+    data_type_target,
+    group_is_operands,
+    group_unary_operand,
+    iif_case_chain,
+    list_keyed,
+    numeric_parts,
+    render_arithmetic,
+    render_array_literal,
+    render_cast,
+    render_in_predicate,
+    render_list_set,
+    render_modulo,
+    render_null_safe,
+    render_date_call,
+    render_temporal_comparison,
+    render_scalar_call,
+    render_scalar_key,
+    temporal_comparison,
+)
+from slayer.sql.scope import ScopeFrame
+
+_AGG_BUILDER = "composites.agg_builder"
+
+# Stands in when a HAVING aggregate wasn't materialised in the base SELECT (so the ``filtered_rn_map`` lookup misses to the unfiltered ranked path).
+_HAVING_PLACEHOLDER = "__having_ref__"
+
+
+def _wrap_cast_for_type(
+    expr: Expression, dt: Optional[DataType], *, dialect: SqlDialect,
+) -> Expression:
+    """Wrap ``expr`` in ``CAST(expr AS <dt>)`` to enforce a declared ``DataType``. Skipped for
+    ``None`` / ``TEXT`` / opaque types and a bare ``exp.Column`` (on SQLite the cast can truncate).
+    Idempotent: a cast that renders as the same ``dialect`` type (a re-parsed one included) is kept."""
+    if dt is None or dt == DataType.TEXT or dt.is_opaque:
+        return expr
+    if isinstance(expr, exp.Column):
+        return expr
+    target = data_type_target(dt)
+    if isinstance(expr, exp.Cast):
+        existing = expr.args.get("to")
+        if isinstance(existing, exp.DataType) and (
+            existing.sql(dialect=dialect.sqlglot_name) == target.sql(dialect=dialect.sqlglot_name)
+        ):
+            return expr
+    return exp.Cast(this=expr, to=target)
+
+
+def keeps_native_type(*, col: Column | None, dialect: SqlDialect) -> bool:
+    """Whether derived ``col`` skips its cast: an exact-numeric ``db_type`` the dialect stores exactly,
+    with the type that ``db_type`` implies (a different declared type is an explicit override)."""
+    return (
+        col is not None and dialect.exact_decimal_native and is_exact_numeric_db_type(col.db_type)
+        and info_schema_type(col.db_type or "")[0] == col.type
+    )
+
+
+def _filter_cast_type(dt: Optional[DataType]) -> Optional[DataType]:
+    """CAST target for a derived column inside WHERE/HAVING; temporal types suppressed
+    (``CAST(text AS TIMESTAMP)`` truncates on SQLite, and a base column here isn't cast either)."""
+    if dt in (DataType.DATE, DataType.TIMESTAMP):
+        return None
+    return dt
+
+
+def _ranked_value_cast_type(dt: Optional[DataType]) -> Optional[DataType]:
+    """CAST target for a ``first`` / ``last`` value; temporal casts suppressed (the value IS
+    the raw picked column, redundant and truncating on SQLite). Non-temporal types keep their cast."""
+    if dt in (DataType.DATE, DataType.TIMESTAMP):
+        return None
+    return dt
+
+
+class FilterFacilities(BaseModel):
+    """What WHERE / HAVING rendering needs. ``agg_builder`` (the HAVING seam) emits the
+    aggregate as an expression, not its alias — Postgres rejects aliases in HAVING;
+    ``cast_column_sql`` casts derived leaves; ``paren_comparison_operands`` over-parenthesises."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    slot_by_key: Dict[Any, Any] = Field(default_factory=dict)
+    aliases_by_slot_id: Dict[str, List[str]] = Field(default_factory=dict)
+    agg_builder: Optional[
+        Callable[[AggregateKey, Optional[Any], str], Expression]
+    ] = None
+    cast_column_sql: bool = False
+    paren_comparison_operands: bool = True
+
+
+class CompositeFacilities(BaseModel):
+    """What AGGREGATE-phase composite rendering needs; ``agg_builder`` is the seam to ``_build_agg`` (absent, the renderer handles simple built-ins and raises for the rest)."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    agg_builder: Optional[Callable[[AggregateKey], Expression]] = None
+    rn_suffix_map: Optional[Dict[str, str]] = None
+    default_time_col: Optional[str] = None
+    filtered_rn_map: Optional[Dict[str, str]] = None
+    filtered_match_map: Optional[Dict[str, str]] = None
+    composite_alias_by_key: Optional[Dict[Any, str]] = None
+    resolved_agg_kwargs: Optional[Dict[Any, Any]] = None
+    value_alias_by_sql: Optional[Dict[str, str]] = None
+
+
+class AliasFacilities(BaseModel):
+    """The aliases an earlier scope projected; its presence makes every available slot read by
+    its slot and switches the five slotted kinds to ALIAS-EXCLUSIVE resolution (an absent slot
+    RAISES). ``table_by_slot_id`` carries the qualifier."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    slot_id_by_key: Dict[Any, str] = Field(default_factory=dict)
+    available_alias_by_slot_id: Dict[str, str] = Field(default_factory=dict)
+    table_by_slot_id: Dict[str, str] = Field(default_factory=dict)
+    #: Attached-producer slots: their value expression (empty value applied) wins over the alias.
+    value_by_slot_id: Dict[str, Expression] = Field(default_factory=dict)
+
+
+class RenderContext(BaseModel):
+    """Everything a render needs beyond the key. ``consumer`` is the projection-boundary seam;
+    ``scope`` is Optional — a reference-anchoring key with none fails closed (not a deep ``AttributeError``)."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    scope: Optional[ScopeFrame] = None
+    dialect: SqlDialect
+    consumer: Optional[ScopeFrame] = None
+    filters: Optional[FilterFacilities] = None
+    composites: Optional[CompositeFacilities] = None
+    aliases: Optional[AliasFacilities] = None
+    #: Declared column types for date-function operands; defaults to ``scope.column_type``.
+    column_type: Optional[ColumnTypeFn] = None
+    #: Grouped SELECT: each dimension's key → its GROUP BY expression.
+    dimension_values: Optional[Dict[Any, Expression]] = None
+
+
+def _require(*, ctx: RenderContext, facility: str, key: Any) -> Any:
+    got = getattr(ctx, facility, None)
+    if got is None:
+        raise RenderContextMissingFacilityError(
+            key_kind=type(key).__name__, facility=facility,
+        )
+    return got
+
+
+def _require_scope(ctx: RenderContext, key: Any) -> ScopeFrame:
+    """Fail closed when a reference-anchoring key has no scope (alias-environment families carry ``scope=None``)."""
+    if ctx.scope is None:
+        raise RenderContextMissingFacilityError(
+            key_kind=type(key).__name__,
+            facility="scope",
+            detail="a scope is required to anchor this reference",
+        )
+    return ctx.scope
+
+
+# Comparison ops whose multi-term operands the filter families parenthesise unconditionally.
+_COMPARISON_OPS = frozenset({"==", "=", "!=", "<>", "<", "<=", ">", ">="})
+
+
+def _paren_if_binary(node: Expression) -> Expression:
+    """Wrap an ``exp.Binary`` operand in ``(...)`` (self-delimiting); other nodes pass through."""
+    return exp.Paren(this=node) if isinstance(node, exp.Binary) else node
+
+
+def _render_via_alias(key: ValueKey, ctx: RenderContext) -> Expression:
+    """Alias-exclusive resolution: the materialised alias for ``key`` (table-qualified when
+    the facility carries a qualifier); an unmaterialised slot RAISES."""
+    facilities = ctx.aliases
+    assert facilities is not None  # guarded by the caller
+    slot_id = facilities.slot_id_by_key.get(key)
+    value = facilities.value_by_slot_id.get(slot_id) if slot_id is not None else None
+    if value is not None:
+        return value.copy()
+    alias = (
+        facilities.available_alias_by_slot_id.get(slot_id)
+        if slot_id is not None
+        else None
+    )
+    if alias is None:
+        raise RenderContextMissingFacilityError(
+            key_kind=type(key).__name__,
+            facility="aliases",
+            detail=f"{type(key).__name__} is not materialised as a slot",
+        )
+    col_ident = exp.to_identifier(alias, quoted=True)
+    table = facilities.table_by_slot_id.get(slot_id)
+    if table:
+        return exp.Column(this=col_ident, table=exp.to_identifier(table))
+    return exp.Column(this=col_ident)
+
+
+_ALIAS_SLOTTED_KINDS: Tuple[type, ...] = (
+    ColumnKey, ColumnSqlKey, TimeTruncKey, AggregateKey, TransformKey,
+)
+
+
+def _slot_available(key: ValueKey, facilities: AliasFacilities) -> bool:
+    """Whether ``key``'s slot is a column (or attached value) of the current relation."""
+    slot_id = facilities.slot_id_by_key.get(key)
+    return slot_id is not None and (
+        slot_id in facilities.value_by_slot_id
+        or slot_id in facilities.available_alias_by_slot_id
+    )
+
+
+def _render_filter_aggregate(
+    key: AggregateKey, ctx: RenderContext,
+) -> Expression:
+    """The HAVING seam: recover the aggregate's base-SELECT alias (or placeholder) and hand it to ``_build_agg``, rendered as an expression so HAVING works where SELECT aliases are rejected."""
+    filters = ctx.filters
+    assert filters is not None and filters.agg_builder is not None  # caller-guarded
+    slot = filters.slot_by_key.get(key)
+    having_full_alias = _HAVING_PLACEHOLDER
+    if slot is not None:
+        aliases = filters.aliases_by_slot_id.get(slot.id)
+        if aliases:
+            having_full_alias = aliases[0]
+    return filters.agg_builder(key, slot, having_full_alias)
+
+
+def _render_aggregate(key: AggregateKey, ctx: RenderContext) -> Expression:
+    """Dispatch an ``AggregateKey``: filter HAVING seam, then composite builder, then built-in."""
+    if ctx.filters is not None and ctx.filters.agg_builder is not None:
+        return _render_filter_aggregate(key, ctx)
+
+    facilities = _require(ctx=ctx, facility="composites", key=key)
+    if facilities.agg_builder is not None:
+        return facilities.agg_builder(key)
+
+    return _render_builtin_aggregate(key, ctx)
+
+
+def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guards over the built-in agg contract (mechanism gate, then the FIELD guards that keep a filtered / parametric / cross-star aggregate from silently rendering as a plain SUM). Each guard IS a distinct wrong-number-vs-error boundary; merging them hides which one fired.
+    key: AggregateKey, ctx: RenderContext,
+) -> Expression:
+    """Render a simple / distinct built-in aggregate; anything it can't faithfully emit (custom mechanisms, filtered / parametric sources, cross-model stars) refuses."""
+    if not is_builtin_agg(key.agg):
+        raise RenderContextMissingFacilityError(
+            key_kind=type(key).__name__,
+            facility=_AGG_BUILDER,
+            detail=f"custom aggregation {key.agg!r} needs the generator's builder",
+        )
+    entry = resolve_agg_entry(key.agg)
+    if entry.dispatch not in (DISPATCH_SIMPLE, DISPATCH_DISTINCT):
+        raise RenderContextMissingFacilityError(
+            key_kind=type(key).__name__,
+            facility=_AGG_BUILDER,
+            detail=(
+                f"aggregation {key.agg!r} renders via the {entry.dispatch!r} "
+                f"mechanism, which needs the generator's builder"
+            ),
+        )
+    # A Column.filter on the source rides its ColumnSqlKey (CASE WHEN baked into
+    # the source's scope resolution), so no separate guard is needed.
+    if key.kwargs or key.args:
+        raise RenderContextMissingFacilityError(
+            key_kind=type(key).__name__,
+            facility=_AGG_BUILDER,
+            detail=(
+                f"aggregation {key.agg!r} carries args/kwargs, which need the "
+                f"generator's parameter resolution"
+            ),
+        )
+    if isinstance(key.source, StarKey):
+        star_path = source_anchor_path(key.source)
+        if star_path:
+            # ``count(customers.*)`` counts the JOINED relation's rows (needs the join graph); a bare ``*`` would count host rows.
+            raise RenderContextMissingFacilityError(
+                key_kind=type(key).__name__,
+                facility=_AGG_BUILDER,
+                detail=(
+                    f"cross-model star over path {star_path!r} needs the "
+                    f"generator's join-graph routing"
+                ),
+            )
+        if key.agg != "count":
+            # ``COUNT`` is the only aggregation a bare star is defined for (else ``SUM(*)`` etc.).
+            raise NotImplementedError(
+                f"Aggregation {key.agg!r} cannot take ``*`` as its source; "
+                f"only 'count' is defined over a bare star.",
+            )
+        inner: Expression = exp.Star()
+    elif isinstance(key.source, (AggregateKey, TransformKey)):
+        # A nested-aggregate / transform source (re-aggregation) desugars before render.
+        raise RenderContextMissingFacilityError(
+            key_kind=type(key).__name__,
+            facility=_AGG_BUILDER,
+            detail="a nested-aggregate source must desugar to a producer",
+        )
+    else:
+        assert not isinstance(key.source, TimePointCmpKey)  # lowered by the checker before planning
+        inner = _require_scope(ctx, key).resolve(
+            key.source, consumer=ctx.consumer,
+        )
+    column_type = ctx.column_type or _require_scope(ctx, key).column_type
+    return apply_aggregate(
+        entry=entry, value=inner, dialect=ctx.dialect,
+        input_type=aggregation_source_type(key.source, column_type=column_type),
+    )
+
+
+def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed ValueKey union; each branch IS that type's render contract, and splitting them is exactly the fragmentation this module removes.
+    *, key: ValueKey, ctx: RenderContext,
+) -> Expression:
+    """Render ``key`` to sqlglot AST in ``ctx``."""
+    # ALIAS mode: any available slot reads by its slot; an unavailable slotted kind RAISES.
+    if ctx.aliases is not None and (
+        _slot_available(key, ctx.aliases) or isinstance(key, _ALIAS_SLOTTED_KINDS)
+    ):
+        return _render_via_alias(key, ctx)
+    # Aggregate internals render through their builder's own scope, never here.
+    if ctx.dimension_values is not None and key in ctx.dimension_values:
+        return ctx.dimension_values[key].copy()
+
+    if isinstance(key, (ColumnKey, SqlFragmentKey)):
+        return _require_scope(ctx, key).resolve(key, consumer=ctx.consumer)
+
+    if isinstance(key, ColumnSqlKey):
+        scope = _require_scope(ctx, key)
+        resolved = scope.resolve(key, consumer=ctx.consumer)
+        # Filter-side CAST for a DERIVED leaf (temporal suppressed); target-scope never casts.
+        if ctx.filters is not None and ctx.filters.cast_column_sql:
+            if not keeps_native_type(col=scope.column(key), dialect=ctx.dialect):
+                resolved = _wrap_cast_for_type(resolved, _filter_cast_type(scope.column_type(key)), dialect=ctx.dialect)
+        return resolved
+
+    if isinstance(key, StarKey):
+        # Like the aggregate branch: a pathed star needs the join graph; a bare ``*`` counts the host's rows.
+        if key.path:
+            raise RenderContextMissingFacilityError(
+                key_kind=type(key).__name__,
+                facility=_AGG_BUILDER,
+                detail=(
+                    f"cross-model star over path {key.path!r} needs the "
+                    f"generator's join-graph routing"
+                ),
+            )
+        return exp.Star()
+
+    if isinstance(key, LiteralKey):
+        return _literal(key.value, dialect=ctx.dialect)
+
+    if isinstance(key, ArrayLiteralKey):
+        return render_array_literal(key=key, dialect=ctx.dialect)
+
+    if isinstance(key, TimeTruncKey):
+        source = (
+            _require_scope(ctx, key).resolve(key.source, consumer=ctx.consumer)
+            if isinstance(key.source, (ColumnKey, ColumnSqlKey))
+            else render_value_key(key=key.source, ctx=ctx)
+        )
+        # The dialect owns the per-backend wire form; a literal DATE_TRUNC would name a function SQLite lacks.
+        return ctx.dialect.build_bucket(col_expr=source, granularity=key.granularity)
+
+    if isinstance(key, ArithmeticKey):
+        comparison = temporal_comparison(key)
+        if comparison is not None:
+            op, operand, value = comparison
+            rendered = render_value_key(key=operand, ctx=ctx)
+            if ctx.filters is not None and ctx.filters.paren_comparison_operands:
+                rendered = _paren_if_binary(rendered)
+            return render_temporal_comparison(op=op, operand=rendered, value=value, dialect=ctx.dialect)
+        rendered = list_keyed(
+            key.operands, [render_value_key(key=o, ctx=ctx) for o in key.operands], dialect=ctx.dialect,
+        )
+        if key.op in NULL_SAFE_COMPARISON_OPS:
+            return render_null_safe(op=key.op, operands=rendered, dialect=ctx.dialect)
+        op = key.op.lower()
+        operands = numeric_parts(key=key, parts=rendered, column_type=_known_column_types(ctx))
+        if (
+            ctx.filters is not None
+            and ctx.filters.paren_comparison_operands
+            and op in _COMPARISON_OPS
+        ):
+            operands = [_paren_if_binary(o) for o in operands]
+        if op == "%":
+            return render_modulo(key=key, operands=operands, dialect=ctx.dialect, column_type=_known_column_types(ctx))
+        return render_arithmetic(op=op, operands=operands)
+
+    if isinstance(key, ScalarCallKey):
+        if key.name == "iif":
+            return _render_iif_case(key=key, ctx=ctx)
+        # ANY key routes as a key (the tail raise owns unsupported kinds); only
+        # true scalars render as literals.
+        args = numeric_parts(key=key, column_type=_known_column_types(ctx), parts=[
+            render_value_key(key=a, ctx=ctx)
+            if isinstance(a, _FrozenKey)
+            else _literal(a, dialect=ctx.dialect)
+            for a in key.args
+        ])
+        if key.name in DATE_FUNCTIONS:
+            return render_date_call(
+                key=key, args=args, dialect=ctx.dialect, column_type=_column_types(ctx, key),
+            )
+        return render_scalar_key(key=key, args=args, dialect=ctx.dialect, column_type=_known_column_types(ctx),
+                                 part=lambda a: render_value_key(key=a, ctx=ctx),
+                                 column_element=ctx.scope.column_element if ctx.scope is not None else None)
+
+    if isinstance(key, InKey):
+        (column,) = numeric_parts(
+            key=key, parts=[render_value_key(key=key.column, ctx=ctx)], column_type=_known_column_types(ctx),
+        )
+        return render_in_predicate(key=key, column=column, dialect=ctx.dialect)
+
+    if isinstance(key, CastKey):
+        return render_cast(
+            key=key, part=lambda k: render_value_key(key=k, ctx=ctx), dialect=ctx.dialect,
+            direct=ctx.aliases is None or not _slot_available(key.source, ctx.aliases),
+        )
+
+    if isinstance(key, ListSetKey):
+        return render_list_set(
+            key=key, part=lambda k: render_value_key(key=k, ctx=ctx), dialect=ctx.dialect,
+            column_type=_known_column_types(ctx),
+            column_element=ctx.scope.column_element if ctx.scope is not None else None,
+        )
+
+    if isinstance(key, AggregateKey):
+        return _render_aggregate(key, ctx)
+
+    if isinstance(key, TransformKey):
+        # POST-phase: materialised by an earlier scope, referenced by alias.
+        facilities = _require(ctx=ctx, facility="aliases", key=key)
+        slot_id = facilities.slot_id_by_key.get(key)
+        alias = (
+            facilities.available_alias_by_slot_id.get(slot_id)
+            if slot_id is not None
+            else None
+        )
+        if alias is None:
+            raise RenderContextMissingFacilityError(
+                key_kind=type(key).__name__,
+                facility="aliases",
+                detail=f"transform {key.op!r} is not materialised as a slot",
+            )
+        return exp.column(alias, quoted=True)
+
+    raise NotImplementedError(
+        f"Unsupported ValueKey type {type(key).__name__}: {key!r}",
+    )
+
+
+def _render_iif_case(*, key: ScalarCallKey, ctx: "RenderContext") -> exp.Case:
+    """Render an ``iif`` chain as one multi-WHEN CASE, flattening nested ``iif`` in the otherwise position."""
+    def _part(a):
+        return (
+            render_value_key(key=a, ctx=ctx)
+            if isinstance(a, _FrozenKey) else _literal(a, dialect=ctx.dialect)
+        )
+
+    return iif_case_chain(key=key, part=_part, column_type=_known_column_types(ctx))
+
+
+def _known_column_types(ctx: RenderContext) -> ColumnTypeFn:
+    """Declared column types where the context knows them; otherwise every column is untyped."""
+    if ctx.column_type is not None:
+        return ctx.column_type
+    if ctx.scope is not None:
+        return ctx.scope.column_type
+    return lambda _key: None
+
+
+def _column_types(ctx: RenderContext, key: ScalarCallKey) -> ColumnTypeFn:
+    if ctx.column_type is not None:
+        return ctx.column_type
+    if ctx.scope is not None:
+        return ctx.scope.column_type
+    raise RenderContextMissingFacilityError(
+        key_kind=type(key).__name__, facility="column_type",
+        detail=f"{key.name}() needs its operands' declared types",
+    )
+
+
+def contains_aggregate(key: ValueKey) -> bool:
+    """Whether ``key``'s tree contains an ``AggregateKey`` (decides GROUP BY / HAVING). A structural
+    walk over ``children()``, NOT ``phase >= AGGREGATE``: every ``TransformKey`` is POST phase, which would route a transform over a raw column into HAVING."""
+    if isinstance(key, AggregateKey):
+        return True
+    return any(contains_aggregate(c) for c in key.children())

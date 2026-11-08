@@ -31,6 +31,13 @@ Each dbt semantic model becomes one SLayer model:
 - `time` → `type: time`
 - `expr` → `sql` (omitted if same as name)
 - `label` and `description` preserved directly
+- an `expr` reading a physical column whose name another dimension holds, or transforming the one of its own name (`status: UPPER(status)`),
+  is dropped with a report
+- a column's type is the live database type when `--datasource` resolves (with or without
+  `--include-hidden-models`), else the `data_type` declared for it in `schema.yml` or the manifest (`array<string>`,
+  `text[]` and `ARRAY<INT64>` become lists of their element type), else the measure's aggregation; a `min`/`max`
+  measure over a column none of these sources types, or an aggregation SLayer refuses over a list, is dropped with a
+  report
 
 ### Entities → Primary Keys + Joins
 
@@ -48,13 +55,18 @@ The converter builds an entity registry by scanning all models, then resolves fo
 joins:
   - target_model: customers
     join_pairs: [["customer_id", "id"]]
+    cardinality: many_to_one
 ```
+
+An entity's `expr` names a physical column, so each join key names the column that reads it: a dimension whose `expr` is that column, otherwise a new (hidden, for a foreign entity) column; if the name is taken by a column reading something else, the join is skipped with a warning.
+
+Each generated join carries a [`cardinality`](../concepts/models.md#join-cardinality) read source→target: a foreign→primary entity reference is `many_to_one`, while a **peer** join (two models sharing the same primary/unique entity) is `one_to_one` and is declared once per pair — every edge traverses [in both directions](../concepts/models.md#bidirectional-traversal) automatically.
 
 ### Measures — Column + ModelMeasure Split
 
 dbt bakes aggregation into each measure (`agg: sum`). SLayer separates them — a row-level expression lives on a `Column`, and the aggregation is named on a `ModelMeasure` formula.
 
-Each unique SQL expression among the dbt measures of a semantic model becomes one SLayer `Column`; each dbt measure becomes one `ModelMeasure` whose formula references that column with the colon aggregation:
+Each unique SQL expression among the dbt measures of a semantic model becomes one SLayer `Column`; each dbt measure becomes one `ModelMeasure` whose formula references that column with its aggregation:
 
 ```yaml
 # dbt: {name: revenue, agg: sum, expr: amount}
@@ -65,7 +77,7 @@ columns:
     format: {type: float}
 measures:
   - name: revenue
-    formula: amount:sum
+    formula: sum(amount)
 ```
 
 When the dbt expression is a SQL fragment rather than a bare identifier (e.g. `amount * quantity`), the Column is named `<first_dbt_measure_name>_col`:
@@ -79,7 +91,7 @@ columns:
     format: {type: float}
 measures:
   - name: line_total
-    formula: line_total_col:sum
+    formula: sum(line_total_col)
 ```
 
 If the natural Column name would collide with a `ModelMeasure` name on the same model, the Column is suffixed with `_col`. The dbt measure's `label` and `description` are written verbatim onto the `ModelMeasure` only — never onto the underlying `Column`.
@@ -96,9 +108,9 @@ columns:
     format: {type: float}
 measures:
   - name: revenue_sum
-    formula: amount:sum
+    formula: sum(amount)
   - name: revenue_avg
-    formula: amount:avg
+    formula: avg(amount)
 ```
 
 ### Metrics
@@ -119,7 +131,7 @@ columns:
     filter: "has_loss_payment = 1"
 measures:
   - name: loss_payment_amount
-    formula: loss_payment_amount_col:sum
+    formula: sum(loss_payment_amount_col)
 ```
 
 At query time, `loss_payment_amount` generates:
@@ -146,10 +158,10 @@ Every legal dbt construct that reaches the importer is either represented exactl
 
 | dbt construct | SLayer representation |
 | --- | --- |
-| Measure `agg: sum/avg/min/max/count/count_distinct/median` | `ModelMeasure` `col:<agg>` |
-| Measure `agg: percentile` (continuous) | `col:percentile(p=<value>)` |
-| Measure `agg: count_distinct_approx` | `col:count_distinct_approx` (dialect-aware) |
-| Measure `agg: sum_boolean` | `Column.sql = "CASE WHEN (<expr>) THEN 1 ELSE 0 END"`, type `INT`, `col:sum` |
+| Measure `agg: sum/avg/min/max/count/count_distinct/median` | `ModelMeasure` `<agg>(col)` |
+| Measure `agg: percentile` (continuous) | `percentile(col, p=<value>)` |
+| Measure `agg: count_distinct_approx` | `count_distinct_approx(col)` (dialect-aware) |
+| Measure `agg: sum_boolean` | `Column.sql = "CASE WHEN (<expr>) THEN 1 ELSE 0 END"`, type `INT`, `sum(col)` |
 | Metric-level / per-input `filter` | pushed down into a leaf `Column.filter` (CASE-inside-aggregate) |
 | Filter as string **or** list (`WhereFilterIntersection`) | AND-joined into one filter |
 | Ratio metric | `num / nullif(den, 0)` |
@@ -164,21 +176,20 @@ Constructs that cannot be expressed exactly are **failed cleanly** — never con
 
 | dbt construct | Why | Workaround |
 | --- | --- | --- |
-| Cumulative `window` (rolling) | Query-grain-dependent re-aggregation | Use `cumsum(measure)` for an unbounded total |
+| Cumulative `window` (rolling) | Query-grain-dependent re-aggregation | Query with `window=` (e.g. `sum(measure, window='30d')`), or `cumsum(measure)` for an unbounded total |
 | Cumulative `grain_to_date` | Reset-at-grain can't bake into a saved measure | `cumsum(measure)` + put the grain dimension in the query |
 | Cumulative `period_agg` ≠ `first` | Only the default running total is exact | Use the default `period_agg` |
 | Derived input `offset_to_grain` | No truncate-to-grain shift transform | Use `cumsum(...)` + grain dimension |
 | `offset_window` on a ratio/derived input | Multi-aggregate offset isn't exactly expressible | Restructure as a multi-stage `source_queries` model |
 | Non-standard granularity (e.g. `fortnight`) | Not a SLayer granularity | Use day/week/month/quarter/year |
-| `non_additive_dimension` (semi-additive) | Not exactly expressible | `balance:last(<time>)` / `first(...)`, or a multi-stage query |
+| `non_additive_dimension` (semi-additive) | Not exactly expressible | `last(balance, <time>)` / `first(...)`, or a multi-stage query |
 | Discrete / approximate percentile flags | Only continuous-exact `PERCENTILE_CONT` is supported | Drop `use_discrete_percentile` / `use_approximate_percentile` |
 | Conversion metrics (funnel) | Sequential-event SQL unsupported | Express the funnel as a multi-stage query |
-| `join_to_timespine` / `fill_nulls_with` | No time-spine gap-filling | Remove the gap-fill request |
 | Measure-less simple metric (`metric_aggregation_params`) | Unsupported shape | Define an explicit measure |
 | Cross-model filter on an unreachable model | No join from the source model | Add the required join, or filter locally |
 | Transform-name shadowing | A measure/metric named after a transform (`cumsum`, `lag`, `lead`, `change`, `change_pct`, `time_shift`, `rank`, `percent_rank`, `dense_rank`, `ntile`, `first`, `last`) would shadow it | Rename the dbt measure/metric |
 
-Percentile/median measures on a dialect that lacks them (MySQL / T-SQL) import fine but get an **info** caveat — pass `target_dialect=` to surface it at import time.
+A percentile/median measure is dropped with a report when the target datasource's dialect cannot compute it (MySQL, T-SQL).
 
 #### Conversion report
 
@@ -265,8 +276,8 @@ This lets you promote a silently imported table to first-class visibility once y
 
 ## Limitations
 
-- **Non-additive dimensions** (`non_additive_dimension`): not converted. Use `balance:last(time_col)` for snapshot measures, or multi-stage queries for complex patterns.
-- **Rolling-window cumulative**: SLayer's `cumsum()` is unbounded; trailing windows are not supported.
+- **Non-additive dimensions** (`non_additive_dimension`): not converted. Use `last(balance, time_col)` for snapshot measures, or multi-stage queries for complex patterns.
+- **Rolling-window cumulative**: not converted; express the trailing window at query time with `window=` (e.g. `sum(measure, window='30d')`).
 - **Grain-to-date cumulative**: not supported.
 - **Conversion metrics**: not supported.
 - **Per-measure `agg_time_dimension`**: SLayer has one `default_time_dimension` per model. Specify at query time.

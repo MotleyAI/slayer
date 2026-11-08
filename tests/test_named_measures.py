@@ -1,8 +1,8 @@
 """End-to-end tests for bare-name ``ModelMeasure`` resolution.
 
-These tests exercise the full enrichment + SQL-generation pipeline. They prove
-that a query referencing a saved measure by bare name produces the same SQL as
-the equivalent query with the saved formula inlined.
+These tests exercise the full typed-pipeline (parse → bind → plan → render).
+They prove that a query referencing a saved measure by bare name produces
+the same SQL as the equivalent query with the saved formula inlined.
 """
 
 import pytest
@@ -10,12 +10,9 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.enrichment import enrich_query
-from slayer.sql.generator import SQLGenerator
+from slayer.engine.binding import _name_suggestion
 
-
-async def _noop_async(**kw):
-    return None
+from tests._engine_helpers import _engine_generate
 
 
 def _orders_model(measures=None) -> SlayerModel:
@@ -34,14 +31,7 @@ def _orders_model(measures=None) -> SlayerModel:
 
 
 async def _generate(query: SlayerQuery, model: SlayerModel) -> str:
-    enriched = await enrich_query(
-        query=query,
-        model=model,
-        resolve_dimension_via_joins=_noop_async,
-        resolve_cross_model_measure=_noop_async,
-        resolve_join_target=_noop_async,
-    )
-    return SQLGenerator(dialect="postgres").generate(enriched=enriched)
+    return await _engine_generate(query=query, model=model)
 
 
 class TestNamedMeasureSQL:
@@ -158,7 +148,9 @@ class TestNamedMeasureSQL:
             measures=[{"formula": "a", "name": "result"}],
         )
 
-        with pytest.raises(ValueError, match="cyclic"):
+        with pytest.raises(
+            ValueError, match=r"Cyclic reference in named-measure expansion"
+        ):
             await _generate(query, model)
 
     async def test_unknown_bare_name_still_errors(self) -> None:
@@ -173,13 +165,77 @@ class TestNamedMeasureSQL:
             measures=[{"formula": "nonexistent", "name": "result"}],
         )
 
-        with pytest.raises(ValueError, match="Bare measure name"):
+        with pytest.raises(
+            ValueError, match=r"Cannot resolve reference 'nonexistent'"
+        ):
             await _generate(query, model)
 
-    async def test_duplicate_saved_measure_name_rejected_in_enrichment(self) -> None:
+    async def test_near_miss_bare_name_suggests_the_saved_measure(self) -> None:
+        model = _orders_model(
+            measures=[ModelMeasure(name="aov_net", formula="revenue:sum")]
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "aov_nett", "name": "result"}],
+        )
+
+        with pytest.raises(ValueError, match="Did you mean 'aov_net'"):
+            await _generate(query, model)
+
+    async def test_aggregating_a_saved_measure_says_to_drop_the_suffix(self) -> None:
+        model = _orders_model(
+            measures=[ModelMeasure(name="aov", formula="revenue:sum")]
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "aov:sum", "name": "result"}],
+        )
+
+        with pytest.raises(
+            ValueError, match="is a saved measure.*takes no aggregation"
+        ):
+            await _generate(query, model)
+
+    async def test_bare_column_in_expression_asks_for_an_aggregation(self) -> None:
+        model = _orders_model()
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "round(revenue, 2)", "name": "result"}],
+        )
+
+        with pytest.raises(
+            ValueError, match="needs an aggregation inside an expression"
+        ):
+            await _generate(query, model)
+
+    def test_name_suggestion_skips_unnamed_measures(self) -> None:
+        # Tested directly: the full pipeline rejects unnamed measures at model
+        # re-validation, so they only reach the helper via a raw mutation.
+        model = _orders_model(
+            measures=[ModelMeasure(name="aov", formula="revenue:sum")]
+        )
+        model.measures.append(ModelMeasure(formula="revenue:avg"))
+        assert (
+            _name_suggestion(name="revenu", model=model)
+            == "Did you mean 'revenue'?"
+        )
+
+    async def test_unknown_column_suggests_a_close_column(self) -> None:
+        model = _orders_model()
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "revenu:sum", "name": "result"}],
+        )
+
+        with pytest.raises(ValueError, match="Did you mean 'revenue'"):
+            await _generate(query, model)
+
+    async def test_duplicate_saved_measure_name_rejected_at_query_time(self) -> None:
         """Defense-in-depth: even if a model with duplicate saved-measure names
         slips past the construction-time validator (e.g., direct mutation),
-        the enrichment helper refuses to build the bare-name lookup table.
+        the storage-to-engine reload path re-validates via Pydantic and
+        raises before the query can run. Replaces the legacy
+        enrichment-time guard.
         """
         model = _orders_model(
             measures=[ModelMeasure(name="aov", formula="revenue:sum")]
@@ -192,7 +248,7 @@ class TestNamedMeasureSQL:
             measures=[{"formula": "aov", "name": "result"}],
         )
 
-        with pytest.raises(ValueError, match="Duplicate saved measure name"):
+        with pytest.raises(ValueError, match=r"duplicate measure names"):
             await _generate(query, model)
 
 

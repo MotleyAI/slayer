@@ -29,6 +29,7 @@ nav = [
     { "Models" = "concepts/models.md" },
     { "Queries" = "concepts/queries.md" },
     { "Formulas" = "concepts/formulas.md" },
+    { "Time" = "concepts/time.md" },
     { "References (SQL vs DSL)" = "concepts/references.md" },
     { "Auto-Ingestion" = "concepts/ingestion.md" },
     { "Schema Drift" = "concepts/schema-drift.md" },
@@ -42,11 +43,12 @@ nav = [
     { "REST API" = "reference/rest-api.md" },
     { "Python Client" = "reference/python-client.md" },
     { "CLI" = "reference/cli.md" },
+    { "Usage reporting" = "reference/usage-reporting.md" },
     { "Database Support" = "database-support.md" },
   ]},
   { "Wire Protocols (BI Tools)" = [
     { "Flight SQL" = "interfaces/flight-sql.md" },
-    { "Postgres Facade" = "interfaces/pg-facade.md" },
+    { "SQL API" = "interfaces/pg-facade.md" },
   ]},
   { "dbt" = [
     { "SLayer vs dbt" = "dbt/slayer_vs_dbt.md" },
@@ -57,6 +59,7 @@ nav = [
   ]},
   { "OSI" = [
     { "Importing OSI configs" = "osi/osi_import.md" },
+    { "Exporting to OSI" = "osi/osi_export.md" },
   ]},
   { "Tutorials" = [
     { "Make it dynamic" = "examples/01_dynamic/dynamic.md" },
@@ -88,6 +91,7 @@ nav = [
       "examples/07_aggregations/aggregations.md",
       { "Notebook" = "examples/07_aggregations/aggregations_nb.ipynb" },
     ]},
+    { "MCP Introspection" = "examples/08_mcp_introspect/mcp_introspect_nb.ipynb" },
     { "Lightning Talk" = [
       "examples/09_lightning_talk/lightning_talk.md",
       { "Notebook" = "examples/09_lightning_talk/lightning_talk_nb.ipynb" },
@@ -111,15 +115,25 @@ nav = [
       "examples/14_variable_substitution/variable_substitution.md",
       { "Notebook" = "examples/14_variable_substitution/variable_substitution_nb.ipynb" },
     ]},
+    { "DuckDB" = [
+      "examples/15_duckdb/duckdb.md",
+      { "Notebook (Python)" = "examples/15_duckdb/duckdb_python_nb.ipynb" },
+      { "Notebook (CLI)" = "examples/15_duckdb/duckdb_cli_nb.ipynb" },
+    ]},
+    { "List Columns" = [
+      "examples/16_list_columns/list_columns.md",
+      { "Notebook" = "examples/16_list_columns/list_columns_nb.ipynb" },
+    ]},
     { "Cube Import" = [
-      "examples/15_cube_import/cube_import.md",
-      { "Notebook" = "examples/15_cube_import/cube_import_nb.ipynb" },
+      "examples/17_cube_import/cube_import.md",
+      { "Notebook" = "examples/17_cube_import/cube_import_nb.ipynb" },
     ]},
     { "Schema Drift (worked example)" = "examples/schema-drift.md" },
   ]},
   { "Configuration" = [
     { "Datasources" = "configuration/datasources.md" },
     { "Storage Backends" = "configuration/storage.md" },
+    { "SQL Clients" = "configuration/sql-clients.md" },
   ]},
   { "Development" = "development.md" },
 ]

@@ -6,27 +6,34 @@ remain unconditional.
 """
 
 import logging
+from unittest.mock import MagicMock
 
 import pytest
 import sqlalchemy as sa
 
-ch_types = pytest.importorskip("clickhouse_sqlalchemy.types")
-
 from slayer.core.enums import DataType
-from slayer.engine import ingestion
-from slayer.engine.ingestion import (
+from slayer.core.models import DatasourceConfig
+from slayer.engine.ingestion import _introspect_table_columns
+from slayer.sql.client import DelegatingSqlClient, SlayerSQLClient
+from slayer.sql.dialects import ReflectedColumn, SqlDialect, TableKeys
+from slayer.sql.dialects import reflection
+from slayer.sql.dialects.reflection import (
+    TableLocation,
+    _sa_type_is_exact_numeric,
     _sa_type_is_float,
     _sa_type_to_data_type,
     _unwrap_clickhouse_wrappers,
 )
 
+ch_types = pytest.importorskip("clickhouse_sqlalchemy.types")
+
 
 @pytest.fixture(autouse=True)
 def _reset_warning_dedup():
     """Ensure each test sees a clean warning dedup set."""
-    ingestion._logged_unmapped_sa_types.clear()
+    reflection._logged_unmapped_sa_types.clear()
     yield
-    ingestion._logged_unmapped_sa_types.clear()
+    reflection._logged_unmapped_sa_types.clear()
 
 
 class TestClickHouseIntTypes:
@@ -49,7 +56,6 @@ class TestClickHouseIntTypes:
     )
     def test_int_maps_to_number_not_float(self, sa_type_cls):
         sa_type = sa_type_cls()
-        # DEV-1361: integer family now narrows to DataType.INT.
         assert _sa_type_to_data_type(sa_type) is DataType.INT
         assert _sa_type_is_float(sa_type) is False
 
@@ -72,7 +78,6 @@ class TestClickHouseDecimalScaleAware:
     )
     def test_decimal_scale_decides_float(self, scale, expect_float):
         sa_type = ch_types.Decimal(10, scale)
-        # DEV-1361: scale=0 → INT, scale>0 → DOUBLE.
         expected = DataType.DOUBLE if expect_float else DataType.INT
         assert _sa_type_to_data_type(sa_type) is expected
         assert _sa_type_is_float(sa_type) is expect_float
@@ -90,6 +95,14 @@ class TestClickHouseDateTimeTypes:
 
     def test_date32_maps_to_date(self):
         assert _sa_type_to_data_type(ch_types.Date32()) is DataType.DATE
+
+
+class TestClickHouseUuid:
+    def test_uuid_maps_to_text_without_warning(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="slayer.sql.dialects.reflection"):
+            assert _sa_type_to_data_type(ch_types.UUID()) is DataType.TEXT
+            assert _sa_type_to_data_type(ch_types.Nullable(ch_types.UUID())) is DataType.TEXT
+        assert "Unrecognized SQLAlchemy type" not in caplog.text
 
 
 class TestClickHouseNullableUnwrap:
@@ -110,7 +123,7 @@ class TestClickHouseNullableUnwrap:
 
     def test_nullable_decimal_integer(self):
         sa_type = ch_types.Nullable(ch_types.Decimal(10, 0))
-        # DEV-1361: scale=0 narrows to INT.
+        # scale=0 narrows to INT.
         assert _sa_type_to_data_type(sa_type) is DataType.INT
         assert _sa_type_is_float(sa_type) is False
 
@@ -159,6 +172,85 @@ class TestUnwrapHelper:
         assert _unwrap_clickhouse_wrappers(sa_type) is sa_type
 
 
+class TestClickHouseExactNumericDetection:
+    @pytest.mark.parametrize(
+        "sa_type",
+        [
+            ch_types.Decimal(18, 2),
+            ch_types.Nullable(ch_types.Decimal(18, 2)),
+            ch_types.LowCardinality(ch_types.Nullable(ch_types.Decimal(10, 4))),
+        ],
+    )
+    def test_wrapped_decimal_is_exact_numeric(self, sa_type):
+        assert _sa_type_is_exact_numeric(sa_type) is True
+
+    @pytest.mark.parametrize(
+        "sa_type",
+        [
+            ch_types.Float64(),
+            ch_types.Nullable(ch_types.Float64()),
+            ch_types.Nullable(ch_types.Int32()),
+        ],
+    )
+    def test_non_decimal_is_not_exact_numeric(self, sa_type):
+        assert _sa_type_is_exact_numeric(sa_type) is False
+
+
+class _InspectorClient(DelegatingSqlClient):
+    """Serves column and key reads through the base dialect hooks over a mocked Inspector."""
+
+    def __init__(self, inspector: MagicMock) -> None:
+        super().__init__(inner=SlayerSQLClient(datasource=DatasourceConfig(name="mock", type="sqlite")))
+        self._inspector = inspector
+
+    async def reflect_columns(self, location: TableLocation) -> list[ReflectedColumn]:
+        return SqlDialect().reflect_columns(
+            connection=MagicMock(), inspector=self._inspector, table=location.name,
+            schema=location.schema_name, catalog=location.catalog,
+        )
+
+    async def reflect_table_keys(self, location: TableLocation) -> TableKeys:
+        return SqlDialect().reflect_table_keys(
+            connection=MagicMock(), inspector=self._inspector, table=location.name,
+            schema=location.schema_name, catalog=location.catalog,
+        )
+
+
+async def _introspect_columns(columns):
+    inspector = MagicMock()
+    inspector.get_columns.return_value = columns
+    inspector.get_pk_constraint.return_value = {"constrained_columns": []}
+    results = await _introspect_table_columns(
+        client=_InspectorClient(inspector),
+        table_name="t",
+        ref=None,
+    )
+    return {c.name: c for c in results}
+
+
+class TestWrappedDbTypeCapture:
+    """Inspector-path db_type must store the bare inner type, no wrapper text."""
+
+    async def test_wrapped_decimal_stores_bare_inner_string(self):
+        by_name = await _introspect_columns([
+            {"name": "amount", "type": ch_types.Nullable(ch_types.Decimal(18, 2))},
+            {"name": "rate", "type": ch_types.LowCardinality(
+                ch_types.Nullable(ch_types.Decimal(10, 4))
+            )},
+        ])
+        assert by_name["amount"].type is DataType.DOUBLE
+        assert by_name["amount"].db_type == "Decimal(18, 2)"
+        assert by_name["rate"].type is DataType.DOUBLE
+        assert by_name["rate"].db_type == "Decimal(10, 4)"
+
+    async def test_wrapped_opaque_stores_unwrapped_string(self):
+        by_name = await _introspect_columns([
+            {"name": "payload", "type": ch_types.Nullable(sa.JSON())},
+        ])
+        assert by_name["payload"].type is DataType.UNKNOWN
+        assert by_name["payload"].db_type == "JSON"
+
+
 class _FakeUnknownType(sa.types.TypeEngine):
     """Stand-in for an unrecognized SA type. Inherits TypeEngine so the
     function-signature contract is satisfied for static analysers without
@@ -176,7 +268,7 @@ class _AnotherUnknownType(sa.types.TypeEngine):
 
 class TestUnmappedTypeWarning:
     def test_warning_fires_once_per_type_name(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="slayer.engine.ingestion"):
+        with caplog.at_level(logging.WARNING, logger="slayer.sql.dialects.reflection"):
             for _ in range(3):
                 # Unrecognized types stay TEXT: most unmapped types are
                 # comparable. Only the known non-comparable ones are opaque.
@@ -189,7 +281,7 @@ class TestUnmappedTypeWarning:
         assert len(relevant) == 1
 
     def test_warning_message_contains_class_name_and_str(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="slayer.engine.ingestion"):
+        with caplog.at_level(logging.WARNING, logger="slayer.sql.dialects.reflection"):
             _sa_type_to_data_type(_AnotherUnknownType())
 
         relevant = [
@@ -203,7 +295,7 @@ class TestUnmappedTypeWarning:
         assert "AnotherUnknownType(123)" in msg
 
     def test_warning_dedup_isolated_between_distinct_types(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="slayer.engine.ingestion"):
+        with caplog.at_level(logging.WARNING, logger="slayer.sql.dialects.reflection"):
             _sa_type_to_data_type(_FakeUnknownType())
             _sa_type_to_data_type(_AnotherUnknownType())
 

@@ -8,18 +8,22 @@ accident); HTTP-mode tests pin the bug — ``query.model_dump`` blowing up
 on list/str inputs is what the original report describes.
 """
 
+import asyncio
 import tempfile
 from types import MappingProxyType
 from typing import Any
 from collections.abc import Mapping
 
 import pytest
+from fastapi.testclient import TestClient
 
+from slayer.api.server import create_app
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._saved_query_refinement_fixtures import BY_REGION_MONTH, build_refine_storage, month
 
 
 # --------------------------------------------------------------------------- #
@@ -564,16 +568,13 @@ class TestHttpBodyShape:
         ]
         assert body["queries"] == expected
 
-    # --- pass-through of variables (DEV-1438 ergonomics live in body) -- #
+    # --- pass-through of variables ------------------------------------ #
 
     def test_dict_with_variables_preserved(
         self,
         http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
-        """A dict input carrying top-level ``variables`` reaches the server
-        verbatim. DEV-1437 doesn't add a ``variables=`` kwarg (see DEV-1438)
-        but the dict-passthrough must not drop or mutate the key.
-        """
+        """A dict input's own ``variables`` reach the server verbatim."""
         client, cap = http_client_with_capture
         payload = {
             "source_model": "orders",
@@ -729,3 +730,226 @@ class TestHttpBodyShape:
         client, cap = http_client_with_capture
         await client.query("rev_by_region")
         assert cap.last_body == {"name": "rev_by_region"}
+
+
+# --------------------------------------------------------------------------- #
+# Saved-query refinement
+# --------------------------------------------------------------------------- #
+
+REFINE = {"dimensions": ["region"]}
+ONLY_BY_NAME = "refine applies only to a saved query run by name"
+
+
+class TestRefine:
+    def test_http_body_shape(
+        self,
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
+    ) -> None:
+        client, cap = http_client_with_capture
+        client.query_sync("monthly_revenue", refine=REFINE)
+        assert cap.last_body is not None
+        assert set(cap.last_body) == {"name", "refine"}
+        assert cap.last_body["name"] == "monthly_revenue"
+        assert cap.last_body["refine"]["dimensions"] in (["region"], [{"name": "region"}])
+
+    def test_http_body_keeps_explicit_null(
+        self,
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
+    ) -> None:
+        client, cap = http_client_with_capture
+        client.query_sync("monthly_revenue", refine={"limit": None})
+        assert cap.last_body == {"name": "monthly_revenue", "refine": {"limit": None}}
+
+    async def test_http_async_and_helpers_forward_refine(
+        self,
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
+    ) -> None:
+        client, cap = http_client_with_capture
+        await client.query("m", refine={"limit": 1})
+        assert cap.last_body == {"name": "m", "refine": {"limit": 1}}
+        await client.sql("m", refine={"limit": 1})
+        assert cap.last_body == {"name": "m", "refine": {"limit": 1}, "dry_run": True}
+        await client.explain("m", refine={"limit": 1})
+        assert cap.last_body == {"name": "m", "refine": {"limit": 1}, "explain": True}
+        client.sql_sync("m", refine={"limit": 1})
+        assert cap.last_body == {"name": "m", "refine": {"limit": 1}, "dry_run": True}
+        client.explain_sync("m", refine={"limit": 1})
+        assert cap.last_body == {"name": "m", "refine": {"limit": 1}, "explain": True}
+
+    @pytest.mark.parametrize("query", [
+        {"source_model": "orders"},
+        SlayerQuery(source_model="orders"),
+        [{"name": "a", "source_model": "orders"}, {"source_model": "a"}],
+    ], ids=["dict", "query", "list"])
+    def test_http_rejects_non_name(
+        self,
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
+        query: Any,
+    ) -> None:
+        client, cap = http_client_with_capture
+        with pytest.raises(ValueError, match=ONLY_BY_NAME):
+            client.query_sync(query, refine=REFINE)
+        assert cap.last_body is None
+
+    def test_http_rejects_empty_refine_with_non_name(
+        self,
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
+    ) -> None:
+        client, cap = http_client_with_capture
+        with pytest.raises(ValueError, match=ONLY_BY_NAME):
+            client.query_sync({"source_model": "orders"}, refine={})
+        assert cap.last_body is None
+
+    async def test_local_forwards_to_engine(self, tmp_path) -> None:
+        client = SlayerClient(storage=await build_refine_storage(str(tmp_path)))
+        resp = await client.query("monthly_revenue", refine=REFINE)
+        assert _by_region(resp.data) == BY_REGION_MONTH
+
+    def test_local_sync_and_dataframe(self, tmp_path) -> None:
+        pd = pytest.importorskip("pandas")
+        client = SlayerClient(storage=asyncio.run(build_refine_storage(str(tmp_path))))
+        assert _by_region(client.query_sync("monthly_revenue", refine=REFINE).data) == BY_REGION_MONTH
+        df = client.query_df("monthly_revenue", refine=REFINE)
+        assert isinstance(df, pd.DataFrame)
+        assert len(df) == 3
+
+    async def test_local_rejects_non_name(self, tmp_path) -> None:
+        client = SlayerClient(storage=await build_refine_storage(str(tmp_path)))
+        with pytest.raises(ValueError, match=ONLY_BY_NAME):
+            await client.query({"source_model": "orders", "measures": ["count(*)"]}, refine=REFINE)
+
+    def test_over_http(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        storage = asyncio.run(build_refine_storage(str(tmp_path)))
+        server = TestClient(create_app(storage=storage))
+
+        def via_app(*, method: str, path: str, json: dict | None = None, params: dict | None = None) -> Any:
+            resp = server.request(method, path, json=json, params=params)
+            resp.raise_for_status()
+            return resp.json()
+
+        client = SlayerClient(url="http://testserver")
+        monkeypatch.setattr(client, "_request_sync", via_app)
+        assert _by_region(client.query_sync("monthly_revenue", refine=REFINE).data) == BY_REGION_MONTH
+
+
+class TestVariables:
+    def test_http_body_by_name(
+        self,
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
+    ) -> None:
+        client, cap = http_client_with_capture
+        client.query_sync("m", refine={"limit": 1}, variables={"status": "paid"})
+        assert cap.last_body == {"name": "m", "refine": {"limit": 1}, "variables": {"status": "paid"}}
+
+    def test_http_body_list(
+        self,
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
+    ) -> None:
+        client, cap = http_client_with_capture
+        client.query_sync([{"name": "a", "source_model": "orders"}, {"source_model": "a"}], variables={"x": 1})
+        assert cap.last_body is not None
+        assert cap.last_body["variables"] == {"x": 1}
+
+    @pytest.mark.parametrize("query", [
+        {"source_model": "orders", "measures": ["count(*)"], "variables": {"a": "own", "b": "own"}},
+        SlayerQuery.model_validate(
+            {"source_model": "orders", "measures": ["count(*)"], "variables": {"a": "own", "b": "own"}}
+        ),
+    ], ids=["dict", "query"])
+    def test_http_single_query_runtime_wins(
+        self,
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
+        query: Any,
+    ) -> None:
+        client, cap = http_client_with_capture
+        client.query_sync(query, variables={"b": "runtime"})
+        assert cap.last_body is not None
+        assert cap.last_body["variables"] == {"a": "own", "b": "runtime"}
+
+    def test_http_does_not_mutate_caller(
+        self,
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
+    ) -> None:
+        client, _ = http_client_with_capture
+        query = {"source_model": "orders", "measures": ["count(*)"], "variables": {"a": "own"}}
+        runtime = {"a": "runtime"}
+        client.query_sync(query, variables=runtime)
+        assert query["variables"] == {"a": "own"}
+        assert runtime == {"a": "runtime"}
+
+    def test_http_empty_variables_omitted(
+        self,
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
+    ) -> None:
+        client, cap = http_client_with_capture
+        client.query_sync("m", variables={})
+        assert cap.last_body == {"name": "m"}
+
+    async def test_http_helpers_forward_variables(
+        self,
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
+    ) -> None:
+        client, cap = http_client_with_capture
+        v = {"status": "paid"}
+        await client.query("m", variables=v)
+        assert cap.last_body == {"name": "m", "variables": v}
+        await client.sql("m", variables=v)
+        assert cap.last_body == {"name": "m", "variables": v, "dry_run": True}
+        await client.explain("m", variables=v)
+        assert cap.last_body == {"name": "m", "variables": v, "explain": True}
+        client.sql_sync("m", variables=v)
+        assert cap.last_body == {"name": "m", "variables": v, "dry_run": True}
+        client.explain_sync("m", variables=v)
+        assert cap.last_body == {"name": "m", "variables": v, "explain": True}
+
+    async def test_local_refinement_with_runtime_variables(self, tmp_path) -> None:
+        client = SlayerClient(storage=await build_refine_storage(str(tmp_path)))
+        resp = await client.query(
+            "revenue_by_status", refine={"measures": ["count(*)"]}, variables={"status": "refunded"},
+        )
+        assert resp.data == [{"orders.region": "US", "orders.revenue": 40.0, "orders._count": 1}]
+
+    async def test_local_refinement_placeholder(self, tmp_path) -> None:
+        client = SlayerClient(storage=await build_refine_storage(str(tmp_path)))
+        resp = await client.query(
+            "monthly_revenue", refine={"filters": ["region = '{region}'"]}, variables={"region": "EU"},
+        )
+        assert [(month(r["orders.ordered_at"]), r["orders.revenue"]) for r in resp.data] == [("2025-02", 105.0)]
+
+    async def test_local_single_query(self, tmp_path) -> None:
+        client = SlayerClient(storage=await build_refine_storage(str(tmp_path)))
+        query = {"source_model": "orders", "measures": ["count(*)"], "filters": ["status = '{status}'"]}
+        resp = await client.query(query, variables={"status": "refunded"})
+        assert resp.data == [{"orders._count": 1}]
+
+    def test_local_sync_and_dataframe(self, tmp_path) -> None:
+        pd = pytest.importorskip("pandas")
+        client = SlayerClient(storage=asyncio.run(build_refine_storage(str(tmp_path))))
+        resp = client.query_sync("revenue_by_status", variables={"status": "refunded"})
+        assert resp.data == [{"orders.region": "US", "orders.revenue": 40.0}]
+        df = client.query_df("revenue_by_status", variables={"status": "refunded"})
+        assert isinstance(df, pd.DataFrame)
+        assert df.to_dict("records") == [{"orders.region": "US", "orders.revenue": 40.0}]
+
+    def test_over_http(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        storage = asyncio.run(build_refine_storage(str(tmp_path)))
+        server = TestClient(create_app(storage=storage))
+
+        def via_app(*, method: str, path: str, json: dict | None = None, params: dict | None = None) -> Any:
+            resp = server.request(method, path, json=json, params=params)
+            resp.raise_for_status()
+            return resp.json()
+
+        client = SlayerClient(url="http://testserver")
+        monkeypatch.setattr(client, "_request_sync", via_app)
+        resp = client.query_sync(
+            "revenue_by_status", refine={"measures": ["count(*)"]}, variables={"status": "refunded"},
+        )
+        assert resp.data == [{"orders.region": "US", "orders.revenue": 40.0, "orders._count": 1}]
+        single = {"source_model": "orders", "measures": ["count(*)"], "filters": ["status = '{status}'"],
+                  "variables": {"status": "paid"}}
+        assert client.query_sync(single, variables={"status": "refunded"}).data == [{"orders._count": 1}]
+
+
+def _by_region(rows: list[dict[str, Any]]) -> dict[tuple, Any]:
+    return {(r["orders.region"], month(r["orders.ordered_at"])): r["orders.revenue"] for r in rows}

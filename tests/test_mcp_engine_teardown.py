@@ -23,7 +23,6 @@ leak across tests.
 from __future__ import annotations
 
 import json
-import sqlite3
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -35,8 +34,10 @@ import pytest
 import slayer.mcp.server as srv
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
+from slayer.sql.engine_factory import client_cache_key
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -51,11 +52,9 @@ def workspace() -> Iterator[Path]:
 
 def _make_sqlite_db(workspace: Path) -> Path:
     db = workspace / "live.db"
-    conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)")
-    conn.execute("INSERT INTO t (v) VALUES (10), (20), (30)")
-    conn.commit()
-    conn.close()
+    with transaction(db) as conn:
+        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)")
+        conn.execute("INSERT INTO t (v) VALUES (10), (20), (30)")
     return db
 
 
@@ -97,16 +96,17 @@ async def _query_count(server, *, source_model: str) -> int:
     text = await _call(
         server, name="query",
         arguments={
-            "source_model": source_model,
-            "measures": [{"formula": "*:count"}],
+            "query": {
+                "source_model": source_model,
+                "measures": [{"formula": "*:count"}],
+            },
             "format": "json",
         },
     )
-    # The query tool's json format appends a human-readable "Measure
-    # attributes:" footer after the JSON payload — decode just the leading
-    # JSON value and ignore the trailing text.
-    rows, _ = json.JSONDecoder().raw_decode(text)
-    row = rows[0] if isinstance(rows, list) else rows["data"][0]
+    # json output is a bare array, or a {"data", ...} envelope once
+    # attributes/warnings are present — strict-parse and unwrap either.
+    payload = json.loads(text)
+    row = payload[0] if isinstance(payload, list) else payload["data"][0]
     return int(row[f"{source_model}._count"])
 
 
@@ -138,11 +138,11 @@ class TestContractAttribute:
 
         assert captured["self"] is server._slayer_engine
 
-    async def test_slayer_engine_is_the_object_query_nested_uses(
+    async def test_slayer_engine_is_the_object_query_list_uses(
         self, workspace: Path, monkeypatch,
     ) -> None:
-        """query_nested shares the same closure engine (plan: one engine
-        across query/query_nested/validate_models/recommend_root_model)."""
+        """The list (multi-stage) form shares the same closure engine (plan:
+        one engine across query/validate_models/recommend_root_model)."""
         storage = await _seed_storage(workspace)
         server = create_mcp_server(storage=storage)
 
@@ -155,8 +155,8 @@ class TestContractAttribute:
 
         monkeypatch.setattr(SlayerQueryEngine, "execute", _spy)
         await _call(
-            server, name="query_nested",
-            arguments={"queries": [{"source_model": "t", "measures": [{"formula": "*:count"}]}]},
+            server, name="query",
+            arguments={"query": [{"source_model": "t", "measures": [{"formula": "*:count"}]}]},
         )
 
         assert captured["self"] is server._slayer_engine
@@ -197,15 +197,11 @@ class TestToolsReuseClosureEngine:
 
 
 class TestAcloseDisposesCachedClients:
-    async def test_aclose_disposes_async_engine_sync_pool_survives(
+    async def test_aclose_releases_client_sync_pool_survives(
         self, workspace: Path, monkeypatch,
     ) -> None:
-        """After a ``query`` caches a client, ``server._slayer_engine.aclose()``
-        disposes the (fake) async engine while leaving the sqlite StaticPool
-        sync engine intact, and a follow-up query still returns the same rows.
-        File-backed sqlite stands in for ``:memory:`` — the client-cache logic
-        is identical and ``:memory:`` can't be probed past DEV-1538 introspect.
-        """
+        """``server._slayer_engine.aclose()`` releases the cached client, leaves its StaticPool intact,
+        and a follow-up query returns the same rows (file-backed sqlite stands in for ``:memory:``)."""
         storage = await _seed_storage(workspace)
         server = create_mcp_server(storage=storage)
 
@@ -215,11 +211,10 @@ class TestAcloseDisposesCachedClients:
         client = next(iter(engine._sql_clients.values()))
         sync_engine_before = client._sync_engine
 
-        # sqlite never opens an async engine; inject a tracked one so the real
-        # aclose loop (engine -> client -> dispose) is exercised.
-        fake = MagicMock(name="fake_async_engine")
-        fake.dispose = AsyncMock(name="dispose")
-        client._async_engine = fake
+        # sqlite opens no async engine; spy on the client's release so the real
+        # aclose loop (engine -> client) is exercised.
+        aclose = AsyncMock(wraps=client.aclose)
+        monkeypatch.setattr(client, "aclose", aclose)
 
         # Guard: aclose must NOT dispose the sync StaticPool engine — that's
         # what pins the (potential :memory:) connection holding the data.
@@ -228,8 +223,7 @@ class TestAcloseDisposesCachedClients:
 
         await engine.aclose()
 
-        fake.dispose.assert_awaited_once()
-        assert client._async_engine is None
+        aclose.assert_awaited_once()
         assert client in engine._sql_clients.values()  # client kept
         assert client._sync_engine is sync_engine_before  # StaticPool untouched
         sync_dispose_spy.assert_not_called()
@@ -266,7 +260,7 @@ class TestSqlModeDriftClientReachable:
     reaches it (otherwise it leaks an asyncpg pool on Postgres)."""
 
     async def test_validate_models_caches_sql_mode_client_and_aclose_disposes_it(
-        self, workspace: Path,
+        self, workspace: Path, monkeypatch,
     ) -> None:
         """A ``validate_models`` call with no prior query must cache the
         ``sql``-mode drift client on the shared engine, and a subsequent
@@ -278,23 +272,20 @@ class TestSqlModeDriftClientReachable:
 
         await _call(server, name="validate_models", arguments={"data_source": "lite"})
 
-        key = _sql_client_cache_key(_lite_datasource(workspace / "live.db"))
+        key = client_cache_key(_lite_datasource(workspace / "live.db"))
         assert key in engine._sql_clients, (
             "sql-mode drift client not cached on the engine — aclose() can't "
             "reach it, so the pool leaks"
         )
 
-        # Prove teardown actually disposes this cached client (sqlite opens no
-        # async engine, so inject a tracked one — the Postgres leak path).
+        # Prove teardown actually releases this cached client (the Postgres leak path).
         client = engine._sql_clients[key]
-        fake = MagicMock(name="fake_async_engine")
-        fake.dispose = AsyncMock(name="dispose")
-        client._async_engine = fake
+        aclose = AsyncMock(wraps=client.aclose)
+        monkeypatch.setattr(client, "aclose", aclose)
 
         await engine.aclose()
 
-        fake.dispose.assert_awaited_once()
-        assert client._async_engine is None
+        aclose.assert_awaited_once()
 
     async def test_query_then_validate_reuses_same_client(
         self, workspace: Path,

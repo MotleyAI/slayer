@@ -1,6 +1,7 @@
-version: 7
+version: 18
 name: tweets
 sql_table: tweets
+source_kind: table
 query_variables: {}
 data_source: jaffle_shop
 columns:
@@ -8,12 +9,14 @@ columns:
   sql: id
   type: TEXT
   primary_key: true
+  unique: false
   label: Tweet ID
   hidden: false
 - name: user_id
   sql: user_id
   type: TEXT
   primary_key: false
+  unique: false
   description: Customer who tweeted.
   label: Customer ID
   hidden: false
@@ -21,6 +24,7 @@ columns:
   sql: tweeted_at
   type: DATE
   primary_key: false
+  unique: false
   description: When the tweet was posted.
   label: Tweet Date
   hidden: false
@@ -28,11 +32,12 @@ columns:
   sql: content
   type: TEXT
   primary_key: false
+  unique: false
   description: Tweet text.
   label: Tweet
   hidden: false
 measures:
-- formula: id:count
+- formula: count(id)
   name: tweet_count
   label: Tweets
   description: Number of tweets.
@@ -44,7 +49,9 @@ joins:
   - - user_id
     - id
   join_type: left
+  cardinality: many_to_one
 filters: []
 default_time_dimension: tweeted_at
 description: Synthetic customer tweets mentioning the Jaffle Shop.
 hidden: false
+access_tags: []

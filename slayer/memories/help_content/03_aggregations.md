@@ -1,122 +1,73 @@
 # Aggregations
 
-An aggregation is picked at query time via colon syntax: `measure:agg`. It is
-not baked into the measure definition.
+An aggregation is a function call over a column, a joined column (dotted path) or a
+row-level expression, which may reach across to-one joins (`sum(amount * customers.credit)`
+from `orders`). It is valid in every expression position: measures,
+filters, order, and computed dimensions.
 
-## Built-in aggregations
+## Catalogue
 
-| Aggregation | Example | SQL |
-|-------------|---------|-----|
-| `sum` | `revenue:sum` | `SUM(expr)` |
-| `avg` | `revenue:avg` | `AVG(expr)` |
-| `sum` / `avg` with `window` | `revenue:sum(window='90d')` | trailing range aggregate |
-| `min` / `max` | `revenue:min` | `MIN(expr)` / `MAX(expr)` |
-| `count` | `*:count` | `COUNT(*)` |
-| `count` (non-null) | `email:count` | `COUNT(email)` |
-| `count_distinct` | `customer_id:count_distinct` | `COUNT(DISTINCT customer_id)` |
-| `median` | `latency:median` | `PERCENTILE_CONT(0.5) …` |
-| `percentile` | `latency:percentile(p=0.95)` | `PERCENTILE_CONT(0.95) …` |
-| `weighted_avg` | `price:weighted_avg(weight=quantity)` | `SUM(price*qty)/SUM(qty)` |
-| `stddev_samp` | `latency:stddev_samp` | `STDDEV_SAMP(expr)` — NULL when N ≤ 1 |
-| `stddev_pop` | `latency:stddev_pop` | `STDDEV_POP(expr)` — 0 at N=1, NULL at N=0 |
-| `var_samp` | `latency:var_samp` | `VAR_SAMP(expr)` (or `VARIANCE` on SQLite/MySQL) |
-| `var_pop` | `latency:var_pop` | `VAR_POP(expr)` (or `VARIANCE_POP` on SQLite/MySQL) |
-| `corr` | `price:corr(other=quantity)` | `CORR(price, quantity)` — Pearson r |
-| `covar_samp` | `price:covar_samp(other=quantity)` | `COVAR_SAMP(price, quantity)` — sample covariance |
-| `covar_pop` | `price:covar_pop(other=quantity)` | `COVAR_POP(price, quantity)` — population covariance |
-| `first` / `last` | `balance:last(updated_at)` | earliest / latest record's value |
+`count(*)`, `count(x)`, `count_distinct(x)` (or `count(distinct x)`),
+`count_distinct_approx(x)`, `sum`, `avg`, `min`, `max`, `median(x)`,
+`percentile(x, p=0.95)`, `weighted_avg(x, weight=w)`, `stddev_samp`, `stddev_pop`,
+`var_samp`, `var_pop`, `corr(x, other=y)`, `covar_samp(x, other=y)`,
+`covar_pop(x, other=y)`, `first(x[, time_col])` / `last(x[, time_col])` (the earliest /
+latest record's value in each group), `collect(x)` (the distinct sorted values in each
+group, as a list), plus the model's custom aggregations
+(`inspect` the model to list them). Any column argument may be a row-level expression:
+`weighted_avg(x, weight=qty * 2)`, `last(x, coalesce(updated_at, created_at))`.
+After an aggregation's or transform's first argument, `name = value` is a keyword
+argument (`first(x, a = b)` binds the keyword `a`), so a comparison there needs `==`; a
+keyword's value may itself be a single-`=` comparison. In a scalar function
+(`iif(status = 'paid', …)`) `=` compares.
 
-## first and last — per-group snapshots
+A sole primary-key column only takes `count`, `count_distinct`,
+`count_distinct_approx`, `min` and `max`; a column's `allowed_aggregations` may
+restrict it further. Expressions are not gated: `sum(price * quantity)` works.
 
-`first` and `last` return the value from the earliest or latest **record** in
-each group, ordered by a time column. They need to know which time column.
-Resolution:
+## Expressions and booleans
 
-1. Explicit argument: `balance:last(updated_at)` — highest priority.
-2. Query's `main_time_dimension`.
-3. Single entry in `time_dimensions`.
-4. First time dim appearing in `filters`.
-5. Model's `default_time_dimension`.
+`sum(amount - cost)`, `count_distinct(upper(email))`, `percentile(price * qty, p=0.5)`.
+A comparison aggregates as 1 / 0: `sum(amount > 15)` counts the rows above 15. A
+conditional aggregate uses `iif`: `sum(iif(status = 'paid', amount, 0))`; always give
+it a `name`. `agg(x) FILTER (WHERE c)` aggregates only the rows where the row-level
+condition `c` holds: `sum(amount) FILTER (WHERE status = 'paid')`.
 
-If none resolves, the aggregation errors at query time.
+## Empty input
 
-Don't confuse:
+An aggregate over no rows (a parent without joined rows, an empty window) is 0 for the
+`count` family, `[]` for `collect`, and NULL for everything else, `sum(iif(...))` included.
 
-- `:first`/`:last` aggregation — per-group record's earliest/latest value.
-- `first(x)`/`last(x)` transform — broadcasts the earliest/most recent bucket's
-  aggregated value to every row. See `memory:help.transforms`.
+## Result names
 
-## Windowed sum and average
+`sum(amount)` on `orders` returns `orders.amount_sum`, `count(*)` returns
+`orders._count`, an expression is sanitized (`sum(amount - cost)` → `amount_cost_sum`).
+A `name` overrides it. A name equal to a column of the source model is refused with a
+suggested free name.
 
-`sum` and `avg` accept `window='...'` for trailing time-window aggregations:
+## partition_by
 
-```json
-{
-  "source_model": "orders",
-  "measures": [
-    {"formula": "revenue:sum(window='30d')", "name": "revenue_30d"},
-    {"formula": "revenue:avg(window='1y2m')", "name": "avg_14m"}
-  ],
-  "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
-}
-```
+`partition_by=` computes the aggregate at a coarser grain and repeats it on every row:
+one key, a list, a dotted path for a joined column, or `[]` for the grand total. Keys
+are spelled exactly like the query's dimensions, an expression key (`upper(city)`) being
+the computed dimension with that expression. In a measure, filter, order or
+transform input every key must be one of the query's dimensions (a time dimension
+partitions by its bucket). The coarser total is computed over the rows that pass the
+row-level conditions; aggregate conditions and `limit` never change it.
 
-The window is applied to raw source rows and ends at each output bucket's end.
-It can be larger than, equal to, or smaller than the query time granularity.
-Duration syntax is compact: `y`, `m`, `w`, `d`, `h`, `min`, `s`, combinable as
-in `1y2m3w5d6h7min8s`, `90d`, `6h`, or `15min`.
+## window
 
-## Allowed aggregations (whitelist)
+`window='90d'` aggregates source rows in a trailing interval ending at each output
+bucket's end. Units: `y`, `m` (months), `w`, `d`, `h`, `min`, `s`, combinable
+(`'1y2m'`); only this compact form is accepted. The query needs exactly one time
+dimension (or `main_time_dimension`). The window reads rows before the query's date
+range. A window adds no dialect support: `median` and `percentile` stay unavailable on
+MySQL and SQL Server.
 
-A column can restrict which aggregations make sense. Model-side:
+## Nesting
 
-```yaml
-columns:
-  - name: customer_id
-    sql: customer_id
-    type: number
-    allowed_aggregations: [count, count_distinct]
-```
-
-`customer_id:avg` would then error with a clear message listing the valid
-options. Validated at both model creation and query time.
-
-```json
-{
-  "source_model": "orders",
-  "measures": ["customer_id:count_distinct"]
-}
-```
-
-## Custom aggregations
-
-Defined at model level. `{value}` is the measure's SQL; named placeholders are
-kwargs:
-
-```yaml
-aggregations:
-  - name: trimmed_mean
-    formula: "AVG(CASE WHEN {value} BETWEEN {lo} AND {hi} THEN {value} END)"
-    params:
-      - {name: lo, sql: "0"}
-      - {name: hi, sql: "1000"}
-```
-
-Query time:
-
-```json
-{
-  "source_model": "orders",
-  "measures": [{"formula": "score:trimmed_mean(lo=10, hi=90)"}]
-}
-```
-
-You can also override built-in defaults. If you declare `weighted_avg` with a
-default `weight` of `quantity`, then `price:weighted_avg` uses it without the
-arg, and `price:weighted_avg(weight=revenue)` overrides.
-
-## See also
-
-- `memory:help.formulas` — where `:agg` fits in the broader formula language.
-- `memory:help.transforms` — `first()`/`last()` transforms vs `:first`/`:last` aggregations.
-- `memory:help.models` — declaring measures and their `allowed_aggregations`.
+`avg(sum(amount, partition_by=[region, city]), partition_by=[region])` averages the
+per-city totals in each region: the outer aggregation runs over one row per inner
+group, never over the base rows. The top-level `partition_by` must be a subset of the
+query's dimensions; inner ones need not be. An outer aggregation's parameters must be
+fixed by the inner grain, e.g. `weight=count(id, partition_by=[region, city])`.

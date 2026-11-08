@@ -1,25 +1,42 @@
 """Persist what kind of database object backs a model."""
 from __future__ import annotations
 
-import sqlite3
 import tempfile
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from unittest.mock import MagicMock
+from typing import Any, TypeVar
+from unittest.mock import MagicMock, patch
 
 import pytest
 import sqlalchemy as sa
 from pydantic import ValidationError
 
+from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.engine import ingestion
 from slayer.engine.ingestion import (
-    ingest_datasource,
+    _additive_merge_existing,
     ingest_datasource_idempotent,
     introspect_table_to_model,
     list_ingestable_objects,
 )
+from slayer.sql.client import SlayerSQLClient
 from slayer.storage.migrations import CURRENT_VERSIONS, migrate
+from slayer.storage.sqlite_conn import transaction
+from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
+
+_T = TypeVar("_T")
+
+
+async def _with_client(fn: Callable[..., Awaitable[_T]], /, *, datasource: DatasourceConfig, **kwargs: Any) -> _T:
+    client = SlayerSQLClient(datasource=datasource)
+    try:
+        return await fn(datasource=datasource, client=client, **kwargs)
+    finally:
+        await client.aclose()
+        client.close()
 
 
 @pytest.fixture
@@ -33,10 +50,8 @@ def workspace():
 
 def _ds(workspace: Path, script: str, name: str = "live.db") -> tuple[str, DatasourceConfig]:
     db_path = str(workspace / name)
-    conn = sqlite3.connect(db_path)
-    conn.executescript(script)
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        conn.executescript(script)
     return db_path, DatasourceConfig(name="ds", type="sqlite", database=db_path)
 
 
@@ -55,39 +70,45 @@ _TABLE_AND_VIEW = """
 class TestClassification:
     def test_table_and_view_are_classified(self, workspace: Path) -> None:
         _, ds = _ds(workspace, _TABLE_AND_VIEW)
-        by_name = {m.name: m for m in ingest_datasource(datasource=ds)}
+        by_name = {m.name: m for m in run_sync(_with_client(ingestion.ingest_datasource_async, datasource=ds))}
         assert by_name["orders"].source_kind == "table"
         assert by_name["v_orders"].source_kind == "view"
 
-    def test_materialized_view_is_classified(self) -> None:
+    async def test_materialized_view_is_classified(self) -> None:
         """no SQLite/DuckDB matview support, so this is mock-only."""
         insp = MagicMock(spec=sa.engine.Inspector)
         insp.get_table_names.return_value = []
         insp.get_view_names.return_value = []
         insp.get_materialized_view_names.return_value = ["mv_orders"]
 
-        objects = list_ingestable_objects(inspector=insp, schema=None)
+        client = SlayerSQLClient(datasource=DatasourceConfig(name="ds", type="sqlite", database=":memory:"))
+        try:
+            with patch("sqlalchemy.inspect", return_value=insp):
+                objects = await list_ingestable_objects(client=client, schema=None)
+        finally:
+            await client.aclose()
+            client.close()
         assert [(o.name, o.kind) for o in objects] == [
             ("mv_orders", "materialized_view")
         ]
 
-    def test_introspect_table_to_model_defaults_to_none(
+    async def test_introspect_table_to_model_defaults_to_none(
         self, workspace: Path
     ) -> None:
         """The dbt and OSI converters call this without a kind and must be unaffected."""
-        db_path, ds = _ds(workspace, _TABLE_AND_VIEW)
-        engine = sa.create_engine(f"sqlite:///{db_path}")
+        _, ds = _ds(workspace, _TABLE_AND_VIEW)
+        client = SlayerSQLClient(datasource=ds)
         try:
-            model = introspect_table_to_model(
-                sa_engine=engine,
-                inspector=sa.inspect(engine),
+            model = await introspect_table_to_model(
+                client=client,
                 table_name="orders",
-                schema=None,
+                ref=None,
                 data_source="ds",
             )
             assert model.source_kind is None
         finally:
-            engine.dispose()
+            await client.aclose()
+            client.close()
 
 
 # ---------------------------------------------------------------------------
@@ -111,8 +132,6 @@ class TestPersistence:
         assert loaded.source_kind == "view"
 
     async def test_round_trips_through_sqlite_storage(self, workspace: Path) -> None:
-        from slayer.storage.sqlite_storage import SQLiteStorage
-
         storage = SQLiteStorage(db_path=str(workspace / "slayer.db"))
         model = SlayerModel(
             name="mv_orders",
@@ -152,9 +171,12 @@ class TestPersistence:
 
 
 class TestMigration:
-    def test_current_version_is_8(self) -> None:
-        assert CURRENT_VERSIONS["SlayerModel"] == 8
-        assert SlayerModel(name="m", sql_table="t", data_source="ds").version == 8
+    def test_current_version_is_at_least_8(self) -> None:
+        current = CURRENT_VERSIONS["SlayerModel"]
+        assert current >= 8  # v8 added source_kind; bumped to 9
+        assert SlayerModel(
+            name="m", sql_table="t", data_source="ds"
+        ).version == current
 
     def test_v7_payload_migrates_without_raising(self) -> None:
         """migrate() raises when a step has no converter, so v8_migration.py is mandatory."""
@@ -166,7 +188,7 @@ class TestMigration:
             "columns": [],
         }
         migrated = migrate("SlayerModel", payload)
-        assert migrated["version"] == 8
+        assert migrated["version"] == CURRENT_VERSIONS["SlayerModel"]
 
     def test_v7_payload_loads_with_unknown_source_kind(self) -> None:
         """A pre-existing model cannot know what backed it — None is correct."""
@@ -180,12 +202,12 @@ class TestMigration:
             }
         )
         assert model.source_kind is None
-        assert model.version == 8
+        assert model.version == CURRENT_VERSIONS["SlayerModel"]
 
     def test_migration_chain_walks_from_v1(self) -> None:
         """no gap anywhere in the chain."""
         payload = {"name": "orders", "data_source": "ds", "version": 1}
-        assert migrate("SlayerModel", payload)["version"] == 8
+        assert migrate("SlayerModel", payload)["version"] == CURRENT_VERSIONS["SlayerModel"]
 
 
 # ---------------------------------------------------------------------------
@@ -205,23 +227,21 @@ class TestSourceKindRefresh:
         )
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
         first = await storage.get_model("foo", data_source="ds")
         assert first is not None
         assert first.source_kind == "view"
 
         # dbt's `+materialized: table` — same name, same columns, now a table.
-        conn = sqlite3.connect(db_path)
-        conn.executescript(
-            """
-            DROP VIEW foo;
-            CREATE TABLE foo (id INTEGER PRIMARY KEY, amount REAL);
-            """
-        )
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.executescript(
+                """
+                DROP VIEW foo;
+                CREATE TABLE foo (id INTEGER PRIMARY KEY, amount REAL);
+                """
+            )
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
         second = await storage.get_model("foo", data_source="ds")
         assert second is not None
         assert second.source_kind == "table", (
@@ -239,19 +259,17 @@ class TestSourceKindRefresh:
             """,
         )
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
         first = await storage.get_model("foo", data_source="ds")
         assert first is not None
         assert first.source_kind == "table"
 
-        conn = sqlite3.connect(db_path)
-        conn.executescript(
-            "DROP TABLE foo; CREATE VIEW foo AS SELECT id, amount FROM src;"
-        )
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.executescript(
+                "DROP TABLE foo; CREATE VIEW foo AS SELECT id, amount FROM src;"
+            )
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
         second = await storage.get_model("foo", data_source="ds")
         assert second is not None
         assert second.source_kind == "view"
@@ -266,23 +284,19 @@ class TestSourceKindRefresh:
             """,
         )
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
-        conn = sqlite3.connect(db_path)
-        conn.executescript(
-            "DROP VIEW foo; CREATE TABLE foo (id INTEGER PRIMARY KEY, amount REAL);"
-        )
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.executescript(
+                "DROP VIEW foo; CREATE TABLE foo (id INTEGER PRIMARY KEY, amount REAL);"
+            )
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
         addition = next(a for a in result.additions if a.model_name == "foo")
         assert addition.kind_change == "view → table"
 
     async def test_none_never_erases_a_known_value(self, workspace: Path) -> None:
         """A fresh model with kind None must not wipe a persisted value."""
-        from slayer.engine.ingestion import _additive_merge_existing
-
         persisted = SlayerModel(
             name="foo",
             sql_table="foo",
@@ -303,8 +317,6 @@ class TestSourceKindRefresh:
 
     def test_no_op_merge_preserves_the_early_return_contract(self) -> None:
         """An identical re-ingest must still short-circuit."""
-        from slayer.engine.ingestion import _additive_merge_existing
-
         model = SlayerModel(
             name="foo",
             sql_table="foo",
@@ -317,7 +329,6 @@ class TestSourceKindRefresh:
         )
         assert outcome.merged is model
         assert outcome.new_columns == []
-        assert outcome.new_joins == []
         assert outcome.widened_columns == []
         assert outcome.kind_changed is False
 
@@ -327,8 +338,8 @@ class TestSourceKindRefresh:
         """End-to-end: adding source_kind must not turn every re-ingest into a write."""
         _, ds = _ds(workspace, _TABLE_AND_VIEW)
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
+        result = await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
         for addition in result.additions:
             assert addition.created is False
             assert addition.new_columns == []

@@ -27,6 +27,7 @@ from slayer.core.models import ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -68,7 +69,7 @@ class TestMemoryCRUD:
         assert memory.learning.startswith("orders.is_returned")
         assert memory.entities == ["mydb.orders.is_returned"]
         assert memory.query is None
-        assert memory.version == 2
+        assert memory.version == 7
         assert memory.created_at is not None
 
     async def test_save_with_query_persists_query(
@@ -334,8 +335,6 @@ class TestMemoryIds:
         next id comes from a Python-side scan over ``SELECT id FROM
         memories``. Pre-existing ``id_counters`` rows are harmless dead
         data; the seq derivation ignores them entirely."""
-        import sqlite3
-
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "test.db")
             ss = SQLiteStorage(db_path=db_path)
@@ -344,7 +343,7 @@ class TestMemoryIds:
             # If id_counters table still exists from a legacy schema,
             # planting a misleading row in it must not affect future
             # allocations.
-            with sqlite3.connect(db_path) as conn:
+            with transaction(db_path) as conn:
                 tables = {
                     r[0] for r in conn.execute(
                         "SELECT name FROM sqlite_master WHERE type='table'"

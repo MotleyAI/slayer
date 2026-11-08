@@ -1,0 +1,182 @@
+"""Slack normalization layer.
+
+Rewrites tolerant-but-unambiguous agent input to canonical form before the
+typed pipeline sees it, returning every rewrite as a typed
+``NormalizationWarning`` (P0). Downstream stages never see the slack form.
+
+Active rules:
+
+- ``MISPLACED_MEASURE`` (query shape): bare column-looking entries in
+  ``SlayerQuery.measures`` that resolve as a column (not a named
+  ``ModelMeasure``) move to ``SlayerQuery.dimensions``. Mirrors the
+  existing ``_auto_move_fields_to_dimensions`` heuristic but emits a
+  structured warning.
+
+- ``STALE_PATH_SPELLING`` (stage boundary): a flat name written against a
+  non-canonical path spelling binds to its canonical upstream column; recorded
+  at binding, surfaced via :func:`stale_spelling_warnings`.
+
+Retired rules: ``FUNC_STYLE_AGG`` (the parser accepts the functional
+aggregation spelling natively),
+``DOT_PATH_IN_SQL`` (Mode-A free SQL is dotted-canonical) and
+``MALFORMED_DATE_RANGE`` (a malformed ``date_range`` is a construction error).
+
+Each rule emits a ``SlayerNormalizationWarning`` via ``warnings.warn(...)``
+AND appends a ``NormalizationWarning`` payload to the returned result,
+so REST / MCP / CLI consumers see the rewrite alongside the response and
+``warnings.catch_warnings()`` callers see it via the standard channel.
+"""
+
+from __future__ import annotations
+
+import warnings as _warnings_module
+from typing import List, Optional, Sequence
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from slayer.core.models import SlayerModel
+from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.scope import StaleSpelling
+from slayer.core.syntax import Ref, parse_expr, root_relative
+from slayer.core.warnings import NormalizationWarning, SlayerNormalizationWarning
+
+
+# ---------------------------------------------------------------------------
+# Result type
+# ---------------------------------------------------------------------------
+
+
+class NormalizationResult(BaseModel):
+    """Output of a normalization pass.
+
+    ``query`` and ``model`` are either the same object the caller passed
+    in (if no rewrite fired) or a new instance with the slack form
+    rewritten. ``warnings`` lists one ``NormalizationWarning`` per
+    rewrite — empty when the input was already canonical.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    query: Optional[SlayerQuery] = None
+    model: Optional[SlayerModel] = None
+    warnings: List[NormalizationWarning] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Rule: MISPLACED_MEASURE
+# ---------------------------------------------------------------------------
+
+
+def _bare_name(formula: str, *, root: str) -> Optional[str]:
+    """The column-or-measure name ``formula`` is when it is a lone reference, else ``None``."""
+    try:
+        node = root_relative(parse_expr(formula), root)
+    except ValueError:
+        return None
+    return node.name if isinstance(node, Ref) else None
+
+
+def _apply_misplaced_measure(
+    query: SlayerQuery,
+    *,
+    model: Optional[SlayerModel],
+) -> tuple[SlayerQuery, List[NormalizationWarning]]:
+    """Move bare (non-aggregate, non-call) entries from ``query.measures`` to
+    ``query.dimensions`` when they name a column on the model that isn't
+    a ``ModelMeasure`` formula.
+
+    Mirrors the existing ``_auto_move_fields_to_dimensions`` heuristic but
+    emits a structured warning. When ``model`` is None we can't classify,
+    so the rule is a no-op.
+    """
+    if not query.measures or model is None:
+        return query, []
+
+    measure_formula_names = {m.name for m in model.measures}
+    column_names = {c.name for c in model.columns}
+
+    new_measures = list(query.measures)
+    moved_dims: List[ColumnRef] = []
+    emitted: List[NormalizationWarning] = []
+
+    kept: List = []
+    for i, m in enumerate(new_measures):
+        formula = getattr(m, "formula", None)
+        if not isinstance(formula, str):
+            kept.append(m)
+            continue
+        bare = _bare_name(formula, root=model.spelling)
+        # A bare name of a saved measure stays a measure; of a column, it moves to dimensions.
+        if bare is None or bare in measure_formula_names:
+            kept.append(m)
+            continue
+        if bare in column_names:
+            moved_dims.append(ColumnRef.from_string(bare))
+            emitted.append(NormalizationWarning(
+                rule_id="MISPLACED_MEASURE",
+                original=bare,
+                normalized=f"dimensions += {bare!r}",
+                location=f"measures[{i}].formula",
+                rule_doc_url="docs/agent_input_slack.md#misplaced-measure",
+            ))
+            _warnings_module.warn(
+                SlayerNormalizationWarning(emitted[-1]), stacklevel=2,
+            )
+            continue
+        # Unknown bare token — leave for downstream resolver to error on.
+        kept.append(m)
+
+    if not emitted:
+        return query, []
+
+    # model_copy skips validation, so build the ColumnRef here.
+    # A raw string reaches the planner and fails on ``.full_name``.
+    new_dimensions = list(query.dimensions or []) + moved_dims
+    return (
+        query.model_copy(update={"measures": kept, "dimensions": new_dimensions}),
+        emitted,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Top-level entry points
+# ---------------------------------------------------------------------------
+
+
+def normalize_query(
+    query: SlayerQuery,
+    *,
+    model: Optional[SlayerModel] = None,
+) -> NormalizationResult:
+    """Apply all enabled slack rules to a ``SlayerQuery``.
+
+    Returns the (possibly rewritten) query and the structured warnings.
+    Formula TEXT is never rewritten — both aggregation spellings are
+    first-class parser input.
+    """
+    all_warnings: List[NormalizationWarning] = []
+
+    # Rule 1: MISPLACED_MEASURE.
+    query, ws = _apply_misplaced_measure(query, model=model)
+    all_warnings.extend(ws)
+
+    return NormalizationResult(query=query, warnings=all_warnings)
+
+
+
+
+STALE_PATH_SPELLING = "STALE_PATH_SPELLING"
+
+
+def stale_spelling_warnings(records: Sequence[StaleSpelling]) -> List[NormalizationWarning]:
+    """One ``STALE_PATH_SPELLING`` warning per recorded stale spelling."""
+    emitted = [
+        NormalizationWarning(
+            rule_id=STALE_PATH_SPELLING, original=r.original,
+            normalized=r.normalized, location=r.location,
+        )
+        for r in records
+    ]
+    for payload in emitted:
+        _warnings_module.warn(SlayerNormalizationWarning(payload), stacklevel=2)
+    return emitted

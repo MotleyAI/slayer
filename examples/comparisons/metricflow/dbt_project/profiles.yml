@@ -1,0 +1,7 @@
+mf_probe:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('MF_PROBE_DB') }}"
+      threads: 1

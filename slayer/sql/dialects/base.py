@@ -1,40 +1,73 @@
-"""DEV-1542: SqlDialect strategy base class.
-
-Every dialect-specific SQL-generation quirk lives on a subclass of
-``SqlDialect``. The base class itself is a fully concrete Postgres-shaped
-default — concrete dialects (``SqliteDialect``, ``TsqlDialect``, ...)
-override only the methods whose behaviour differs.
-
-The class is a Pydantic ``BaseModel`` with ``frozen=True`` so registry
-singletons can't drift. Method overrides happen via regular subclassing —
-fields use class-level defaults (``sqlglot_name: str = "postgres"``).
-"""
+"""SqlDialect strategy base class: neutral AST defaults, or a typed refusal where only a database's own SQL will do."""
 
 from __future__ import annotations
 
 import hashlib
+import re
+from datetime import date, datetime
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any
-from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, Optional, TypeGuard, get_args
+from collections.abc import Callable, Iterable, Mapping, Sequence
 
-from pydantic import BaseModel, ConfigDict
+import sqlalchemy as sa
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from sqlalchemy.engine.url import URL, make_url
+from sqlalchemy.exc import ArgumentError
 from sqlglot import exp
+from sqlglot.expressions.datatypes import DType
+from sqlglot.expressions.core import Expr, Expression
 from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
+from sqlglot.errors import SqlglotError
 
-from slayer.core.enums import TimeGranularity
-from slayer.core.errors import IdentifierCollisionError
-from slayer.sql.dialects._identifier_fit import fit_identifier, substitute_quoted
+from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
+from slayer.core.errors import (
+    IdentifierCollisionError,
+    IdentifierLengthError,
+    ServerVersionError,
+    UnsupportedServerFunctionError,
+)
+from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts, nests_into
+from slayer.core.json_path import JsonPath
+from slayer.core.keys import CastTypeParts, cast_type_parts
+from slayer.core.like_pattern import LikePattern
+from slayer.core.regex_pattern import RegexPattern, RegexReplacement, parse_regex
+from slayer.sql.dialects.patterns import RegexFlavour, emit_regex, emit_replacement, like_expression, like_text
+from slayer.sql._identifier_fit import (
+    SqlLexis,
+    fit_identifier,
+    overlimit_tokens,
+    quoted_identifiers,
+    substitute_quoted,
+)
+from slayer.sql.dialects.reflection import (
+    CatalogConnection,
+    ReflectedColumn,
+    ResultColumnType,
+    TableKeys,
+    TableLocation,
+    all_of,
+    best_effort,
+    clean_comment,
+    col,
+    column_from_sa_type,
+    column_from_type_string,
+    eq_literal,
+    fetch,
+    inspector_column_names,
+    inspector_foreign_keys,
+    inspector_unique_constraints,
+    inspector_unique_indexes,
+    recover,
+    relation,
+    result_column_type_of_name,
+    schema_token,
+    without_primary_key,
+)
+from slayer.sql.naming_bijection import decode_alias, encode_alias
 
 if TYPE_CHECKING:
-    import sqlalchemy as sa
-
     from slayer.core.models import DatasourceConfig
 
-
-# ---------------------------------------------------------------------------
-# Granularity & duration mapping (used by default impls of date_trunc /
-# time-offset / interval helpers)
-# ---------------------------------------------------------------------------
 
 _GRANULARITY_TO_DATE_TRUNC = {
     TimeGranularity.SECOND: "second",
@@ -47,85 +80,439 @@ _GRANULARITY_TO_DATE_TRUNC = {
     TimeGranularity.YEAR: "year",
 }
 
-_WINDOW_UNIT_SQL = {
-    "y": "year",
-    "m": "month",
-    "w": "week",
-    "d": "day",
-    "h": "hour",
-    "min": "minute",
-    "s": "second",
+_INTERVAL_UNITS: dict[TimeGranularity, tuple[str, int]] = {
+    TimeGranularity.SECOND: ("SECOND", 1), TimeGranularity.MINUTE: ("MINUTE", 1),
+    TimeGranularity.HOUR: ("HOUR", 1), TimeGranularity.DAY: ("DAY", 1),
+    TimeGranularity.WEEK: ("WEEK", 1), TimeGranularity.WEEK_SUNDAY: ("WEEK", 1),
+    TimeGranularity.MONTH: ("MONTH", 1), TimeGranularity.QUARTER: ("MONTH", 3),
+    TimeGranularity.YEAR: ("YEAR", 1),
+}
+_UNIT_SECONDS = {TimeGranularity.MINUTE: 60, TimeGranularity.HOUR: 3600}
+SUB_DAY_PARTS = frozenset({DatePart.HOUR, DatePart.MINUTE, DatePart.SECOND})
+
+
+def literal_int(node: Expression) -> Optional[int]:
+    """The value of an integer literal node (``-2`` included), else ``None``."""
+    negative = isinstance(node, exp.Neg)
+    inner = node.this if negative else node
+    if not (isinstance(inner, exp.Literal) and not inner.is_string):
+        return None
+    try:
+        value = int(inner.name)
+    except ValueError:
+        return None
+    return -value if negative else value
+
+
+StatAgg1Name = Literal["stddev_samp", "stddev_pop", "var_samp", "var_pop"]
+StatAgg2Name = Literal["corr", "covar_samp", "covar_pop"]
+
+def is_stat_agg1(name: str) -> TypeGuard[StatAgg1Name]:
+    return name in get_args(StatAgg1Name)
+
+
+def is_stat_agg2(name: str) -> TypeGuard[StatAgg2Name]:
+    return name in get_args(StatAgg2Name)
+
+
+TextFn = Literal[
+    "left", "right", "starts_with", "ends_with", "contains", "lpad", "rpad", "reverse", "repeat", "concat_ws",
+    "chr", "ascii", "trim", "ltrim", "rtrim", "strpos", "instr", "replace",
+]
+TrimFn = Literal["trim", "ltrim", "rtrim"]
+MathFn = Literal["div", "pi", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "cbrt"]
+ExtremumFn = Literal["greatest", "least"]
+
+
+#: Functions a database may declare native (``native_functions``), spelled as named.
+NativeFn = Literal[
+    "REPEAT", "LPAD", "RPAD", "REVERSE", "CONCAT_WS", "CHR", "ASCII", "SPLIT_PART", "PI", "CBRT", "GREATEST", "LEAST",
+]
+_EXTREMUM_NAMES: dict[str, NativeFn] = {"greatest": "GREATEST", "least": "LEAST"}
+
+
+def is_text_fn(name: str) -> TypeGuard[TextFn]:
+    return name in get_args(TextFn)
+
+
+def is_math_fn(name: str) -> TypeGuard[MathFn]:
+    return name in get_args(MathFn)
+
+
+def is_extremum_fn(name: str) -> TypeGuard[ExtremumFn]:
+    return name in get_args(ExtremumFn)
+
+
+#: Scalars rendered through a dialect hook.
+LIBRARY_FUNCTIONS = frozenset({
+    *get_args(TextFn), *get_args(MathFn), *get_args(ExtremumFn), "split_part", "like", "ilike", "json_value",
+    "regexp_like", "regexp_extract", "regexp_replace",
+})
+REGEX_LIBRARY = frozenset({"regexp_like", "regexp_extract", "regexp_replace"})
+#: Every library function plus ``TRY_CAST``: what a dialect translating the whole library declares.
+PORTABLE_LIBRARY = LIBRARY_FUNCTIONS | {"try_cast"}
+
+
+def library_refusal(name: str, *, database: str) -> UnsupportedServerFunctionError:
+    """The typed refusal of a library construct ``database`` has no translation of."""
+    what = ("TRY_CAST (and comparing or computing text with numbers, which reads through it)" if name == "try_cast"
+            else f"`{name}()`")
+    return UnsupportedServerFunctionError(
+        summary=f"{what} is not supported on {database} yet.",
+        suggestion="Express it in the model's own SQL (Column.sql), or run the query on a database that translates it.",
+    )
+
+
+def require_library(dialect: "SqlDialect", name: str) -> None:
+    """Refuse ``name`` unless ``dialect`` declares a translation of it."""
+    if name not in dialect.library_functions:
+        raise library_refusal(name, database=dialect.database_name)
+
+
+def text_try_cast(value: Expression, to: exp.DataType) -> Expression:
+    """``TRY_CAST(CAST(value AS TEXT) AS to)``, for an engine whose own ``TRY_CAST`` has the portable meaning."""
+    return exp.TryCast(this=as_text(value), to=to)
+
+
+def setting(*, name: str, value: int) -> exp.SetItem:
+    """``name = value`` as a session-setting item."""
+    return exp.SetItem(this=exp.EQ(this=exp.column(name), expression=exp.Literal.number(value)))
+
+
+def set_statement(*, name: str, value: int, kind: str | None = None) -> exp.Set:
+    """``SET [kind] name = value``."""
+    item = setting(name=name, value=value)
+    if kind is not None:
+        item.set("kind", kind)
+    return exp.Set(expressions=[item])
+
+
+def anon(name: str, *args: Expression) -> exp.Anonymous:
+    """``NAME(args)`` emitted as written on every dialect (no transpilation)."""
+    return exp.Anonymous(this=name, expressions=[a.copy() for a in args])
+
+
+def case(*branches: tuple[Expression, Expression], default: Optional[Expression] = None) -> exp.Case:
+    return exp.Case(ifs=[exp.If(this=c, true=v) for c, v in branches], default=default)
+
+
+def lit(value: int | str) -> Expression:
+    return exp.Literal.number(value) if isinstance(value, int) else exp.Literal.string(value)
+
+
+def is_null(value: Expression) -> Expression:
+    return exp.Is(this=operand_copy(value), expression=exp.Null())
+
+
+def is_not_null(value: Expression) -> Expression:
+    return exp.Is(this=operand_copy(value), expression=exp.Null(), negate=True)
+
+
+ListFn = Literal["contains", "contains_any", "contains_all", "length"]
+#: The element variable of a list lambda (reserved prefix: never a user name).
+LIST_ELEMENT = "__slayer_e"
+
+
+def is_list_fn(name: str) -> TypeGuard[ListFn]:
+    return name in get_args(ListFn)
+
+
+def is_empty_array(node: Expression) -> bool:
+    return isinstance(node, exp.Array) and not node.expressions
+
+
+def non_null_elements(values: Expression, *, filter_name: str = "FILTER") -> Expression:
+    """``filter_name(values, e -> e IS NOT NULL)`` (a list lambda filter)."""
+    element = exp.to_identifier(LIST_ELEMENT)
+    return exp.Anonymous(this=filter_name, expressions=[
+        values.copy(), exp.Lambda(this=is_not_null(exp.Column(this=element.copy())), expressions=[element]),
+    ])
+
+
+def either(*conditions: Expression) -> Expression:
+    """``c1 OR c2 OR …``."""
+    out = conditions[0]
+    for condition in conditions[1:]:
+        out = exp.Or(this=out, expression=condition)
+    return out
+
+
+def any_null(*values: Expression) -> Expression:
+    return either(*(is_null(v) for v in values))
+
+
+def func(name: str, *args: Expression) -> Expression:
+    """``exp.func``: the named sqlglot function, transpiled per dialect."""
+    node = exp.func(name, *(a.copy() for a in args))
+    assert isinstance(node, Expression)  # concrete Func classes and Anonymous all are
+    return node
+
+
+def pad_fill(args: Sequence[Expression]) -> Expression:
+    """``lpad`` / ``rpad``'s fill: the third argument, else one space."""
+    return args[2] if len(args) > 2 else lit(" ")
+
+
+def literal_value(node: Expression) -> Optional[int]:
+    """An integer literal's value (``-2`` included), else ``None``."""
+    return literal_int(node)
+
+
+#: Code points ``chr`` takes: 1 to 0x10FFFF without the surrogates.
+CHR_RANGES = ((1, 0xD7FF), (0xE000, 0x10FFFF))
+
+
+_OPERATOR_SHAPED = (exp.Binary, exp.Unary, exp.Between, exp.In)
+
+
+def is_operator(node: object) -> bool:
+    """Whether ``node`` is an operator expression (needs parens as an operand)."""
+    return isinstance(node, _OPERATOR_SHAPED) and not isinstance(node, exp.Paren)
+
+
+def operand_copy(value: Expression) -> Expression:
+    """A copy of ``value`` safe to place as an operator's operand."""
+    return exp.Paren(this=value.copy()) if is_operator(value) else value.copy()
+
+
+def iso_text(value: date) -> str:
+    """``YYYY-MM-DD``, or ``YYYY-MM-DD HH:MM:SS[.ffffff]`` for a datetime."""
+    return str(value)
+
+
+TemporalComparisonOp = Literal["=", "!=", "<", "<=", ">", ">="]
+COMPARISON_NODES: dict[str, Any] = {
+    "=": exp.EQ, "!=": exp.NEQ, "<": exp.LT, "<=": exp.LTE, ">": exp.GT, ">=": exp.GTE,
 }
 
 
-def _granularity_to_unit(granularity: str) -> str:
-    """Map a granularity string to a SQL INTERVAL unit name.
+#: The validity grammar where a database cannot check a cast itself: a signed decimal with an optional
+#: fraction and exponent, surrounding spaces ignored (POSIX classes, so no backslash meets a string literal).
+NUMBER_TEXT_PATTERN = r"^[[:space:]]*[+-]?([0-9]+[.]?[0-9]*|[.][0-9]+)([eE][+-]?[0-9]+)?[[:space:]]*$"
+INTEGER_TEXT_PATTERN = r"^ *[+-]?[0-9]+ *$"
+#: The ranges of the integer types narrower than INT, checked where a database only has them as aliases.
+NARROW_INTEGER_BOUNDS: dict[DType, tuple[int, int]] = {
+    exp.DataType.Type.TINYINT: (-(2 ** 7), 2 ** 7 - 1), exp.DataType.Type.SMALLINT: (-(2 ** 15), 2 ** 15 - 1),
+    exp.DataType.Type.MEDIUMINT: (-(2 ** 23), 2 ** 23 - 1), exp.DataType.Type.UTINYINT: (0, 2 ** 8 - 1),
+    exp.DataType.Type.USMALLINT: (0, 2 ** 16 - 1), exp.DataType.Type.UMEDIUMINT: (0, 2 ** 24 - 1),
+}
+INT64_BOUNDS = (-(2 ** 63), 2 ** 63 - 1)
+#: The half-open ranges of the integer types wider than BIGINT.
+WIDE_INTEGER_BOUNDS: dict[DType, tuple[int, int]] = {
+    exp.DataType.Type.UBIGINT: (0, 2 ** 64), exp.DataType.Type.INT128: (-(2 ** 127), 2 ** 127),
+    exp.DataType.Type.UINT128: (0, 2 ** 128), exp.DataType.Type.INT256: (-(2 ** 255), 2 ** 255),
+    exp.DataType.Type.UINT256: (0, 2 ** 256),
+}
+TRUE_WORDS = ("true", "t", "yes", "1")
+FALSE_WORDS = ("false", "f", "no", "0")
 
-    Quarter has no INTERVAL unit on most dialects — callers normalise to
-    ``MONTH`` with the value multiplied by 3 before invoking the default.
-    Week stays ``WEEK`` (Postgres / MySQL / ClickHouse / BigQuery all
-    accept it). SQLite + T-SQL override the whole method.
-    """
-    return {
-        "year": "YEAR",
-        "month": "MONTH",
-        "day": "DAY",
-        "quarter": "MONTH",  # caller multiplies by 3
-        "week": "WEEK",
-        # DEV-1572: a one-period shift of a Sunday-week is just one week.
-        "week_sunday": "WEEK",
-        "hour": "HOUR",
-        "minute": "MINUTE",
-        "second": "SECOND",
-    }.get(granularity, granularity.upper())
+
+#: ``meta`` tag on the cast ``read_column`` wraps around a zoned column.
+ZONED_READ = "slayer_zoned_read"
+#: ``meta`` tag on every ``TRY_CAST`` input: whether it reads no rows (a constant).
+CONSTANT_INPUT = "slayer_constant_input"
 
 
-# ---------------------------------------------------------------------------
-# Shared variance-decomposition formula (used by MySQL + T-SQL overrides
-# of build_covar_2arg).
-# ---------------------------------------------------------------------------
+def bare_comparands(left: Expression, right: Expression) -> tuple[Expression, Expression]:
+    """A zoned column read stays bare where the other side is already in the zoned type (a ``TIMESTAMP``
+    cast, ISO text, another zoned column), so the comparison keeps partition pruning."""
+    def zoned(node: Expression) -> bool:
+        return isinstance(node, exp.Cast) and bool(node.meta.get(ZONED_READ))
+
+    def in_zoned_type(node: Expression) -> bool:
+        return zoned(node) or (isinstance(node, exp.Literal) and node.is_string) or (
+            isinstance(node, exp.Cast) and node.to.this is exp.DataType.Type.TIMESTAMPTZ)
+
+    new_left = left.this if zoned(left) and in_zoned_type(right) else left
+    new_right = right.this if zoned(right) and in_zoned_type(left) else right
+    return new_left, new_right
+
+
+def _exact_bound(bound: int) -> Expression:
+    """A power-of-two bound as an exact float literal (``9223372036854775808e0``)."""
+    literal = exp.Literal.number(f"{abs(bound)}e0")
+    return exp.Neg(this=literal) if bound < 0 else literal
+
+
+def as_text(value: Expression) -> Expression:
+    """``CAST(value AS TEXT)`` — the input a validity check reads."""
+    return exp.Cast(this=value.copy(), to=exp.DataType.build("TEXT"))
+
+
+def cast_target(type_text: str, *, dialect: "SqlDialect") -> exp.DataType:
+    """The author's cast type as ``dialect``'s ``DataType``; ``ValueError`` when it cannot express it, or would
+    render it losing a part (family, parameters, time zone, signedness, array)."""
+    sqlglot_name = dialect.sqlglot_name
+    parts = cast_type_parts(type_text)
+    if parts.array_rank > 1:
+        raise ValueError(f"CAST to {type_text} cannot be expressed on {sqlglot_name}: there is no array of arrays.")
+    built = _read_type(type_text, readers=(sqlglot_name, "postgres"))
+    if (built is None or built.this == exp.DataType.Type.USERDEFINED or not dialect.cast_type_supported(built)
+            or not _keeps_author_parts(parts, built) or not _renders_losslessly(built, dialect=dialect)):
+        raise ValueError(f"CAST to {type_text} cannot be expressed on {sqlglot_name}.")
+    return built
+
+
+def cast_type_of(type_text: str, *, dialect: "SqlDialect") -> tuple[DataType, Optional[DataType]]:
+    """SLayer's type of a cast to ``type_text``, read as Postgres (the reference) spells it, else as ``dialect`` does."""
+    for reader in ("postgres", dialect.sqlglot_name):
+        built = _read_type(type_text, readers=(reader,))
+        if built is not None and not built.is_type(exp.DataType.Type.USERDEFINED):
+            return slayer_type_of(built)
+    return DataType.UNKNOWN, None
+
+
+def _read_type(text: str, *, readers: Sequence[str]) -> Optional[exp.DataType]:
+    for reader in readers:
+        try:
+            return exp.DataType.build(text, dialect=reader)
+        except (SqlglotError, ValueError):
+            continue
+    return None
+
+
+_ZONED_TYPES: frozenset[DType] = frozenset({
+    exp.DataType.Type.TIMESTAMPTZ, exp.DataType.Type.TIMESTAMPLTZ, exp.DataType.Type.TIMETZ,
+})
+UNSIGNED_CAST_TYPES: frozenset[DType] = frozenset({
+    exp.DataType.Type.UTINYINT, exp.DataType.Type.USMALLINT, exp.DataType.Type.UMEDIUMINT, exp.DataType.Type.UINT,
+    exp.DataType.Type.UBIGINT, exp.DataType.Type.UINT128, exp.DataType.Type.UINT256, exp.DataType.Type.UDECIMAL,
+    exp.DataType.Type.UDOUBLE,
+})
+_DATE_TYPES: frozenset[DType] = frozenset({exp.DataType.Type.DATE, exp.DataType.Type.DATE32})
+_TIMESTAMP_TYPES: frozenset[DType] = frozenset(
+    exp.DataType.TEMPORAL_TYPES - _DATE_TYPES - {exp.DataType.Type.TIME, exp.DataType.Type.TIMETZ})
+#: Type groups a dialect's spelling may move within (DOUBLE → FLOAT, TEXT → VARCHAR(MAX), BOOLEAN → INTEGER).
+_CAST_FAMILIES: tuple[frozenset[DType], ...] = (
+    frozenset(exp.DataType.INTEGER_TYPES | exp.DataType.REAL_TYPES | {exp.DataType.Type.BOOLEAN}),
+    frozenset(exp.DataType.TEXT_TYPES),
+    _DATE_TYPES,
+    _TIMESTAMP_TYPES,
+    frozenset({exp.DataType.Type.JSON, exp.DataType.Type.JSONB, exp.DataType.Type.VARIANT}),
+)
+_SLAYER_TYPES: tuple[tuple[frozenset[DType], DataType], ...] = (
+    (frozenset(exp.DataType.INTEGER_TYPES), DataType.INT),
+    (frozenset(exp.DataType.REAL_TYPES), DataType.DOUBLE),
+    (frozenset(exp.DataType.TEXT_TYPES | {exp.DataType.Type.BPCHAR}), DataType.TEXT),
+    (frozenset({exp.DataType.Type.BOOLEAN}), DataType.BOOLEAN),
+    (_DATE_TYPES, DataType.DATE),
+    (_TIMESTAMP_TYPES, DataType.TIMESTAMP),
+)
+
+
+def _scalar_slayer_type(data_type: exp.DataType) -> DataType:
+    return next((slayer for family, slayer in _SLAYER_TYPES if data_type.this in family), DataType.UNKNOWN)
+
+
+def slayer_type_of(data_type: exp.DataType) -> tuple[DataType, Optional[DataType]]:
+    """SLayer's type of a SQL type, with its elements' for an array; UNKNOWN where unmapped."""
+    if not data_type.is_type(exp.DataType.Type.ARRAY):
+        return _scalar_slayer_type(data_type), None
+    element = _element(data_type)
+    return DataType.ARRAY, DataType.UNKNOWN if element is None else _scalar_slayer_type(element)
+
+
+class _CastSignature(BaseModel):
+    """What a rendering must keep of a cast type; ``sizes`` (its parameters) only where the source has them."""
+
+    model_config = ConfigDict(frozen=True)
+
+    family: int | DType
+    sizes: tuple[str, ...]
+    zoned: bool
+    unsigned: bool
+    element: Optional["_CastSignature"] = None
+
+    def kept_by(self, other: "_CastSignature") -> bool:
+        return (
+            (self.family, self.zoned, self.unsigned) == (other.family, other.zoned, other.unsigned)
+            and (not self.sizes or self.sizes == other.sizes)
+            and (self.element is None) == (other.element is None)
+            and (self.element is None or other.element is None or self.element.kept_by(other.element))
+        )
+
+
+def _type_params(data_type: exp.DataType) -> tuple[str, ...]:
+    return tuple(p.sql() for p in data_type.expressions if isinstance(p, exp.DataTypeParam))
+
+
+def _element(data_type: exp.DataType) -> Optional[exp.DataType]:
+    if not data_type.is_type(exp.DataType.Type.ARRAY):
+        return None
+    return next((e for e in data_type.expressions if isinstance(e, exp.DataType)), None)
+
+
+def _cast_signature(data_type: exp.DataType) -> _CastSignature:
+    t = data_type.this
+    element = _element(data_type)
+    return _CastSignature(
+        family=next((i for i, family in enumerate(_CAST_FAMILIES) if t in family), t),
+        sizes=_type_params(data_type), zoned=t in _ZONED_TYPES, unsigned=t in UNSIGNED_CAST_TYPES,
+        element=_cast_signature(element) if element is not None else None,
+    )
+
+
+def _renders_losslessly(built: exp.DataType, *, dialect: "SqlDialect") -> bool:
+    """Whether ``built`` as ``dialect`` spells it reads back with its signature kept."""
+    rendered = _read_type(built.sql(dialect=dialect.sqlglot_name), readers=(dialect.sqlglot_name,))
+    return rendered is not None and _cast_signature(built).kept_by(_cast_signature(rendered))
+
+
+def _keeps_author_parts(parts: CastTypeParts, built: exp.DataType) -> bool:
+    """Whether reading the author's type kept what they wrote: parameters, time zone, signedness, array."""
+    base = _element(built) if parts.array_rank else built
+    if base is None:
+        return False
+    if parts.sizes and _type_params(base) != parts.sizes:
+        return False
+    if parts.zone is not None and parts.zone != (base.this in _ZONED_TYPES):
+        return False
+    return not parts.unsigned or base.this in UNSIGNED_CAST_TYPES
+
+
+#: Types only some databases have; a dialect without one rejects a CAST to it at plan time.
+VENDOR_ONLY_CAST_TYPES: frozenset[DType] = frozenset({
+    exp.DataType.Type.MONEY, exp.DataType.Type.SMALLMONEY, exp.DataType.Type.INT128, exp.DataType.Type.INT256,
+})
+
+
+def temporal_type_of(value: date) -> DataType:
+    return DataType.TIMESTAMP if isinstance(value, datetime) else DataType.DATE
 
 
 def _build_covar_decomposition(
     *,
-    col_sql: str,
-    other_sql: str,
-    agg: str,
+    col_expr: Expression,
+    other_expr: Expression,
+    agg: StatAgg2Name,
     var_fn_samp: str,
     var_fn_pop: str,
     stddev_fn: str,
-    parse: Callable[[str], exp.Expression],
-) -> exp.Expression:
-    """Variance-decomposition formula for corr / covar_samp / covar_pop.
+) -> Expression:
+    """corr / covar via ``cov(x, y) = (Var(x+y) - Var(x) - Var(y)) / 2`` for dialects without them.
 
-    ``cov(x, y) = (Var(x+y) - Var(x) - Var(y)) / 2``
-    ``corr(x, y) = cov_samp(x, y) / (Stddev(x) * Stddev(y))``
-
-    Used by MySQL and T-SQL where the native CORR / COVAR_SAMP / COVAR_POP
-    functions are absent. Both columns are NULL-guarded against each other
-    so rows where either leg is NULL are excluded from all variance calls.
-
-    Uses ``exp.Anonymous`` for aggregate calls to bypass sqlglot's MySQL
-    rewrite that aliases VAR_SAMP → VARIANCE = VAR_POP (silently wrong).
+    Each leg is NULL-guarded by the other; ``exp.Anonymous`` calls dodge sqlglot's
+    MySQL VAR_SAMP → VARIANCE (= VAR_POP) rewrite.
     """
     var_fn = var_fn_samp if agg in ("covar_samp", "corr") else var_fn_pop
 
-    x_guarded = parse(
-        f"CASE WHEN ({other_sql}) IS NOT NULL THEN ({col_sql}) END"
-    )
-    y_guarded = parse(
-        f"CASE WHEN ({col_sql}) IS NOT NULL THEN ({other_sql}) END"
-    )
-    xy_sum = exp.Add(this=x_guarded, expression=y_guarded)
+    def _guarded(value: Expression, guard: Expression) -> Expression:
+        return exp.Case(ifs=[exp.If(
+            this=exp.Not(this=exp.Is(this=operand_copy(guard), expression=exp.Null())),
+            true=value.copy(),
+        )])
 
-    var_xy = exp.Anonymous(this=var_fn, expressions=[xy_sum])
-    var_x = exp.Anonymous(this=var_fn, expressions=[x_guarded])
-    var_y = exp.Anonymous(this=var_fn, expressions=[y_guarded])
+    x_guarded = _guarded(col_expr, other_expr)
+    y_guarded = _guarded(other_expr, col_expr)
 
+    def _call(fn: str, *args: Expression) -> exp.Anonymous:
+        return exp.Anonymous(this=fn, expressions=[a.copy() for a in args])
+
+    xy_sum = exp.Add(this=x_guarded.copy(), expression=y_guarded.copy())
     covar = exp.Div(
         this=exp.Paren(this=exp.Sub(
-            this=exp.Sub(this=var_xy, expression=var_x),
-            expression=var_y,
+            this=exp.Sub(this=_call(var_fn, xy_sum), expression=_call(var_fn, x_guarded)),
+            expression=_call(var_fn, y_guarded),
         )),
         expression=exp.Literal.number(2),
     )
@@ -133,31 +520,18 @@ def _build_covar_decomposition(
     if agg != "corr":
         return covar
 
-    std_x = exp.Anonymous(this=stddev_fn, expressions=[x_guarded])
-    std_y = exp.Anonymous(this=stddev_fn, expressions=[y_guarded])
-    raw_denom = exp.Paren(this=exp.Mul(this=std_x, expression=std_y))
+    raw_denom = exp.Paren(this=exp.Mul(
+        this=_call(stddev_fn, x_guarded), expression=_call(stddev_fn, y_guarded),
+    ))
     denom = exp.Anonymous(
         this="NULLIF", expressions=[raw_denom, exp.Literal.number(0)]
     )
     return exp.Div(this=covar, expression=denom)
 
 
-# ---------------------------------------------------------------------------
-# SqlDialect — base class with Postgres-shaped defaults
-# ---------------------------------------------------------------------------
-
-
 @lru_cache(maxsize=None)
 def _sqlglot_backslash_escapes(sqlglot_name: str) -> bool:
-    """Whether ``sqlglot``'s tokenizer for ``sqlglot_name`` treats a backslash
-    as a string-literal escape character (DEV-1727).
-
-    This is the single source of truth for the Mode-A ``{var}`` escaping regime:
-    deriving it from the same tokenizer that later PARSES the substituted SQL
-    means our escaping can never drift from the parser. ``STRING_ESCAPES`` is a
-    semi-internal sqlglot attribute; guard it so a future sqlglot change that
-    renames/reshapes it fails loudly here rather than silently mis-escaping.
-    """
+    """Whether sqlglot's tokenizer treats backslash as a string escape."""
     tokenizer = _SqlglotDialect.get_or_raise(sqlglot_name).tokenizer_class
     escapes = getattr(tokenizer, "STRING_ESCAPES", None)
     if not isinstance(escapes, (list, tuple, set, frozenset)):
@@ -165,26 +539,199 @@ def _sqlglot_backslash_escapes(sqlglot_name: str) -> bool:
             f"Cannot derive the backslash-escaping regime for sqlglot dialect "
             f"{sqlglot_name!r}: its tokenizer's STRING_ESCAPES is "
             f"{type(escapes).__name__}, expected a collection of strings. A "
-            f"sqlglot upgrade may have changed this internal API (DEV-1727)."
+            f"sqlglot upgrade may have changed this internal API."
         )
     return "\\" in escapes
 
 
+@lru_cache(maxsize=None)
+def _sqlglot_masking_lexis(sqlglot_name: str) -> SqlLexis:
+    """Lexical rules the identifier masker needs, read from sqlglot's tokenizer."""
+    tokenizer = _SqlglotDialect.get_or_raise(sqlglot_name).tokenizer_class
+    nested = getattr(tokenizer, "NESTED_COMMENTS", None)
+    heredoc = getattr(tokenizer, "HEREDOC_STRINGS", None)
+    raw = getattr(tokenizer, "RAW_STRINGS", None)
+    if not isinstance(nested, bool) or not isinstance(
+        heredoc, (list, tuple, set, frozenset)
+    ) or not isinstance(raw, (list, tuple, set, frozenset)):
+        raise RuntimeError(
+            f"Cannot derive the masking lexis for sqlglot dialect {sqlglot_name!r}: "
+            f"tokenizer NESTED_COMMENTS/HEREDOC_STRINGS/RAW_STRINGS shape changed. A "
+            f"sqlglot upgrade may have changed these internal APIs."
+        )
+    return SqlLexis(
+        backslash_escapes=_sqlglot_backslash_escapes(sqlglot_name),
+        nested_comments=nested,
+        dollar_quotes="$" in heredoc or any("$" in str(r) for r in raw),
+    )
+
+
+_SLAYER_TYPE_CATEGORIES: Mapping[DataType, str] = {
+    DataType.INT: "number", DataType.DOUBLE: "number", DataType.DATE: "time", DataType.TIMESTAMP: "time",
+    DataType.BOOLEAN: "boolean",
+}
+
+
+class LegacyTypeCategories(BaseModel):
+    """A dialect's SLayer 1.6.0 category per database type name, read only by the deprecated category probes.
+
+    A name (lower-case, parenthesised parts dropped) matches ``names``, else the first ``contains`` substring
+    (upper-case), else takes ``other``; an unclassified column takes its SLayer type's category."""
+
+    model_config = ConfigDict(frozen=True)
+
+    names: Mapping[str, str] = Field(default_factory=dict)
+    contains: tuple[tuple[str, str], ...] = ()
+    other: str | None = None
+    unnamed: Mapping[DataType, str] = Field(default_factory=dict)
+
+    def category(self, column: ResultColumnType) -> str:
+        if column.db_type is not None:
+            name = " ".join(re.sub(r"\([^)]*\)", " ", column.db_type).lower().split())
+            found = self.names.get(name) or next(
+                (c for token, c in self.contains if token in column.db_type.upper()), self.other)
+            if found is not None:
+                return found
+            return _SLAYER_TYPE_CATEGORIES.get(column.type, "string")
+        return self.unnamed.get(column.type) or _SLAYER_TYPE_CATEGORIES.get(column.type, "string")
+
+
+def describe_type_name_code(
+    description_row: Sequence[Any], *, overrides: Mapping[str, DataType] | None = None,
+) -> ResultColumnType | None:
+    """A description row whose type code is a type name (DuckDB, BigQuery, Trino, ClickHouse); ``None`` otherwise."""
+    code = description_row[1]
+    if code is None or isinstance(code, (int, type)):
+        return None
+    return result_column_type_of_name(str(code), overrides=overrides)
+
+
+def _scheme_driver(url_scheme: str | None) -> str | None:
+    return (url_scheme or "").partition("+")[2] or None
+
+
 def _digest(secret: str | None) -> str:
-    """Non-reversible id for secret material in cache keys. 16 hex chars keeps
-    it log-readable; collisions are negligible at this scale."""
+    """Non-reversible 16-hex id for secret material in cache keys."""
     if not secret:
         return ""
     return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:16]
 
 
-class SqlDialect(BaseModel):
-    """Strategy class encapsulating one database's SQL-generation quirks.
+#: A list child's element column, as every list relation exposes it.
+LIST_VALUE = "value"
+_UNNESTED = "__slayer_u"
+_EACH = "__slayer_each"
 
-    The base class IS the Postgres-shaped default. Concrete dialects
-    (``SqliteDialect``, ``TsqlDialect``, ...) subclass and override only
-    what differs.
-    """
+
+class ListRelation(BaseModel):
+    """A list child as a relation: ``relation`` exposes ``<alias>.value``; ``join_kind`` attaches it to its parent."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    relation: Expression
+    join_kind: Literal["CROSS", "ARRAY"] = "CROSS"
+
+
+def unnest_elements(values: Expression, *, alias: exp.Identifier) -> exp.Unnest:
+    """``UNNEST(values) AS alias(value)``."""
+    return exp.Unnest(expressions=[values.copy()], alias=exp.TableAlias(
+        this=alias.copy(), columns=[exp.to_identifier(LIST_VALUE)],
+    ))
+
+
+def element_lambda(predicate: Expr, *, alias: exp.Identifier) -> exp.Lambda:
+    """``e -> predicate`` with each ``alias.value`` read as the lambda's element ``e``."""
+    element_name = exp.to_identifier(LIST_ELEMENT)
+
+    def bind(node: Expression) -> Expression:
+        if isinstance(node, exp.Column) and node.name == LIST_VALUE and node.table == alias.name:
+            return exp.Column(this=element_name.copy())
+        return node
+
+    return exp.Lambda(this=predicate.copy().transform(bind), expressions=[element_name])
+
+
+def kept_elements(values: Expression) -> exp.Select:
+    """``SELECT u.value FROM UNNEST(values) AS u(value) WHERE u.value IS NOT NULL``."""
+    unnested = exp.to_identifier(_UNNESTED)
+    value = exp.column(LIST_VALUE, table=_UNNESTED)
+    return exp.select(value).from_(unnest_elements(values, alias=unnested)).where(is_not_null(value))
+
+
+class ServerProfile(BaseModel):
+    """What the server reports about itself and the connected user; ``None`` = unknown."""
+
+    model_config = ConfigDict(frozen=True)
+
+    version: tuple[int, ...] | None = None
+    readonly: int | None = None
+    correlated_subqueries: bool | None = None
+
+    @field_validator("version", mode="before")
+    @classmethod
+    def _three_parts(cls, value: Any) -> Any:
+        """``(major, minor, patch)``: missing parts are 0, parts past the patch are dropped."""
+        if isinstance(value, (tuple, list)) and value:
+            return (*tuple(value)[:3], *(0,) * (3 - len(value)))
+        return value
+
+
+class DriverFacts(BaseModel):
+    """The URL scheme, drivers and pip extra one datasource type connects with."""
+
+    model_config = ConfigDict(frozen=True)
+
+    url_scheme: str | None = None
+    url_backend_aliases: frozenset[str] = frozenset()
+    install_extra: str | None = None
+    extra_drivers: dict[str, str] = Field(default_factory=dict)
+    refused_loops: dict[str, frozenset[str]] = Field(default_factory=dict)
+
+    @property
+    def url_backend(self) -> str:
+        """The SQLAlchemy backend name of ``url_scheme``."""
+        return (self.url_scheme or "").partition("+")[0]
+
+    @property
+    def url_backends(self) -> frozenset[str]:
+        """Every SQLAlchemy backend this type serves; none without a scheme."""
+        if self.url_scheme is None:
+            return frozenset()
+        return frozenset({self.url_backend}) | self.url_backend_aliases
+
+    @property
+    def default_driver(self) -> str | None:
+        """The default driver: ``url_scheme``'s ``+driver`` part."""
+        return _scheme_driver(self.url_scheme)
+
+    def bundled_non_default(self, url: URL) -> bool:
+        """Whether ``url`` names a driver the extra installs besides the default."""
+        driver = url.get_driver_name()
+        return url.get_backend_name() in self.url_backends and driver in self.extra_drivers and (
+            driver != self.default_driver
+        )
+
+    def refuses_loop(self, driver: str | None, loop: object) -> bool:
+        """Whether ``driver``'s async mode refuses ``loop``'s kind."""
+        refused = self.refused_loops.get(driver or "", frozenset())
+        return any(kind.__name__ in refused for kind in type(loop).__mro__)
+
+    def pin_default_driver(self, url: str) -> str:
+        """``url`` with the default driver named when it names none on a served backend; else unchanged."""
+        if self.default_driver is None:
+            return url
+        try:
+            parsed = make_url(url)
+        except (ArgumentError, ValueError):
+            return url
+        backend = parsed.get_backend_name()
+        if "+" in parsed.drivername or backend not in self.url_backends:
+            return url
+        return parsed.set(drivername=f"{backend}+{self.default_driver}").render_as_string(hide_password=False)
+
+
+class SqlDialect(BaseModel):
+    """One database's quirks: neutral AST defaults, a typed refusal where a database's own SQL is needed."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
@@ -192,351 +739,1003 @@ class SqlDialect(BaseModel):
     ds_type_aliases: frozenset[str] = frozenset()
     explain_prefix: str | None = "EXPLAIN"
     explain_postfix: str = ""
-    log10_native: bool = True
-    log2_native: bool = True
+    log10_native: bool = False
+    log2_native: bool = False
 
-    # Conservative universal identifier budget in BYTES; ``None`` = unbounded
-    # (fitting hooks become no-ops). Default is the tightest Tier-1 value
-    # (Postgres), so a new dialect over-shortens rather than silently truncating.
+    # Whether NUMERIC/DECIMAL is stored exactly (False: SQLite's numeric affinity).
+    exact_decimal_native: bool = True
+
+    # ``AVG`` over integers returns a truncated integer, so a non-DOUBLE input is read as a float.
+    integer_avg: bool = False
+
+    # Identifier budget in bytes (``None`` = unbounded); defaults to Postgres, the tightest.
     max_identifier_bytes: int | None = 63
+
+    # Oracle/T-SQL name the call: sqlglot mis-spells theirs.
+    approx_count_distinct_native: bool = False
+    approx_count_distinct_anonymous_name: str | None = None
+
+    # A rejected ``statement_timeout_sql`` is rolled back and reported instead of raised.
+    statement_timeout_best_effort: bool = False
+
+    # Correlated subqueries need a server setting this user may be unable to set.
+    correlated_subqueries_gated: bool = False
+
+    # Whether setting the statement timeout depends on the server profile (probed only then).
+    timeout_reads_profile: bool = False
+
+    # The server's profile, when SQL generation reads it (``profile_needed``); unknown otherwise.
+    server_profile: ServerProfile = ServerProfile()
+
+    # An ``IN`` subquery and its joins run once on the initiator (``GLOBAL``): exact over shards.
+    global_in_subqueries: bool = False
+
+    # URL scheme (``None`` = datasource type; its ``+driver`` is the default driver), extra URL
+    # backends served, the pip extra, the drivers it installs (driver → distribution) and the
+    # event-loop classes each driver's async mode refuses; read through ``driver_facts``.
+    url_scheme: str | None = None
+    url_backend_aliases: frozenset[str] = frozenset()
+    install_extra: str | None = None
+    extra_drivers: dict[str, str] = Field(default_factory=dict)
+    refused_loops: dict[str, frozenset[str]] = Field(default_factory=dict)
+
+    # SQLAlchemy backend names (``engine.dialect.name``) whose structure this dialect reflects.
+    sa_backend_names: frozenset[str] = frozenset()
+
+    # Declared-INT columns may store non-integers (SQLite affinity): ingestion probes them.
+    probes_integer_affinity: bool = False
+
+    # Dates live in TEXT columns: a stored DATE/TIMESTAMP over live TEXT is no drift.
+    temporal_text_compatible: bool = False
+    # The deprecated category probes' 1.6.0 classification.
+    legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories()
+
+    # Cursor metadata carries column types; when not, types are read off a row, so an empty result has none.
+    cursor_reports_types: bool = True
+
+    # Rows a ``result_census_select`` samples.
+    result_census_rows: int | None = None
+
+    # The Inspector's PK is final: an empty one means "no PK", never an INFORMATION_SCHEMA retry.
+    primary_key_inspector_only: bool = False
+
+    # ``get_schema_names()`` yields ``catalog.schema`` tokens; elsewhere a dot is part of the name.
+    catalog_qualified_schema_tokens: bool = False
+
+    @property
+    def default_driver(self) -> str | None:
+        """The default driver: ``url_scheme``'s ``+driver`` part."""
+        return _scheme_driver(self.url_scheme)
+
+    def driver_facts(self, ds_type: str | None) -> DriverFacts:
+        """``ds_type``'s driver facts: this dialect's when it serves ``ds_type``, else only ``ds_type`` as scheme."""
+        if ds_type is None or ds_type not in self.ds_type_aliases:
+            return DriverFacts(url_scheme=ds_type)
+        return DriverFacts(
+            url_scheme=self.url_scheme or ds_type,
+            url_backend_aliases=self.url_backend_aliases,
+            install_extra=self.install_extra,
+            extra_drivers=self.extra_drivers,
+            refused_loops=self.refused_loops,
+        )
 
     @property
     def backslash_escapes_strings(self) -> bool:
-        """Whether this dialect's string literals treat a backslash as an escape
-        character (MySQL/ClickHouse/Snowflake/Redshift/BigQuery/Databricks/Spark)
-        rather than an ordinary char (SQLite/Postgres/DuckDB/T-SQL/Trino/Presto/
-        Oracle).
-
-        Drives DEV-1727 dialect-aware Mode-A ``{var}`` escaping: pass this to
-        ``substitute_variables(..., backslash_escapes=...)`` so a value like
-        ``a\\'b`` stays inside its quoted literal on every backend. Derived from
-        sqlglot's tokenizer (see :func:`_sqlglot_backslash_escapes`) so it can't
-        disagree with the parser; a pinning test freezes the expected value.
-        """
+        """Whether string literals treat backslash as an escape; feeds Mode-A ``{var}`` escaping."""
         return _sqlglot_backslash_escapes(self.sqlglot_name)
 
-    # ------------------------------------------------------------------
-    # Date-trunc / time arithmetic
-    # ------------------------------------------------------------------
+    @property
+    def identifier_masking_lexis(self) -> SqlLexis:
+        """Lexical rules for the identifier masker, including this dialect's identifier quotes."""
+        return _sqlglot_masking_lexis(self.sqlglot_name).model_copy(
+            update={"identifier_quote": self._identifier_quote_anchors()},
+        )
+
+    def declared_cast_type(self, dt: Optional[DataType]) -> Optional[DataType]:
+        """The CAST target for a value of type ``dt`` (``None`` skips the cast)."""
+        return dt
+
+    # Vendor-only types sqlglot parses for every dialect; a dialect lists the ones it has.
+    vendor_cast_types: ClassVar[frozenset[DType]] = frozenset()
+    #: The unsigned types this database has.
+    unsigned_cast_types: ClassVar[frozenset[DType]] = frozenset()
+    #: Whether this database has typed arrays (``CAST(x AS INT[])``).
+    array_cast_types: ClassVar[bool] = False
+
+    def cast_type_supported(self, data_type: exp.DataType) -> bool:
+        """Whether this dialect can express a CAST to ``data_type``."""
+        t = data_type.this
+        if t is exp.DataType.Type.ARRAY:
+            return self.array_cast_types and all(
+                self.cast_type_supported(e) for e in data_type.expressions if isinstance(e, exp.DataType))
+        if t in UNSIGNED_CAST_TYPES:
+            return t in self.unsigned_cast_types
+        return t not in VENDOR_ONLY_CAST_TYPES or t in self.vendor_cast_types
+
+    #: Column ``db_type``s holding a zoned instant where SLayer's TIMESTAMP is naive (BigQuery ``TIMESTAMP``).
+    zoned_timestamp_db_types: ClassVar[frozenset[str]] = frozenset()
+
+    def is_zoned_db_type(self, db_type: Optional[str]) -> bool:
+        """Whether a column of ``db_type`` holds a zoned instant on this dialect."""
+        return bool(db_type) and db_type.split("(")[0].strip().upper() in self.zoned_timestamp_db_types
+
+    def read_column(self, column: Expression, *, zoned: bool) -> Expression:  # NOSONAR(S1172) — hook parameter read by dialect overrides
+        """A column as SLayer reads it; default: as stored."""
+        return column
+
+    def try_cast_type(self, to: exp.DataType, *, data_type: DataType) -> exp.DataType:  # NOSONAR(S1172) — hook parameter read by dialect overrides
+        """The portable ``TRY_CAST`` target of a cast to ``data_type``; default: the database's own type."""
+        return to
+
+    def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:  # NOSONAR(S1172) — hook signature
+        """``TRY_CAST``: NULL for an input the cast cannot convert; the input is read as text first."""
+        self.refuse("try_cast")
+
+    #: Integer types narrower than INT this database only has as aliases of a wider one.
+    aliased_integer_types: ClassVar[frozenset[DType]] = frozenset()
+
+    def build_integer_try_cast(self, value: Expression, to: exp.DataType, *, source: Optional[DataType]) -> Expression:
+        """``TRY_CAST`` to an integer type: integer text, or an integral number, in the target's range; else NULL.
+        ``source``: ``CastKey.numeric_source``."""
+        if source is not DataType.DOUBLE:
+            return self.build_integer_text_try_cast(as_text(value), to)
+        wide = to.this in WIDE_INTEGER_BOUNDS
+        low, high = WIDE_INTEGER_BOUNDS.get(to.this, (INT64_BOUNDS[0], INT64_BOUNDS[1] + 1))
+        in_range = exp.And(
+            this=exp.GTE(this=operand_copy(value), expression=_exact_bound(low)),
+            expression=exp.LT(this=operand_copy(value), expression=_exact_bound(high)),
+        )
+        integral = exp.And(
+            this=exp.EQ(this=operand_copy(value), expression=exp.Floor(this=operand_copy(value))), expression=in_range,
+        )
+        # The guard sits inside the cast: a database folding a constant cast never sees an out-of-range one.
+        whole = exp.Cast(this=case((integral, operand_copy(value))), to=to.copy() if wide else exp.DataType.build("BIGINT"))
+        return self.build_integer_text_try_cast(as_text(whole), to)
+
+    def build_integer_text_try_cast(self, text: Expression, to: exp.DataType) -> Expression:
+        """Integer text (surrounding spaces ignored) through the database's ``TRY_CAST``, else NULL."""
+        integer = self.build_regexp_like(text, parse_regex(INTEGER_TEXT_PATTERN), False)
+        return case((integer, self.within_integer_range(self.build_try_cast(exp.Trim(this=text.copy()), to), to)))
+
+    def within_integer_range(self, value: Expression, to: exp.DataType) -> Expression:
+        """``value`` where it fits ``to``; checked only for a type this database has as an alias."""
+        if to.this not in self.aliased_integer_types:
+            return value
+        low, high = NARROW_INTEGER_BOUNDS[to.this]
+        return case((exp.Between(this=operand_copy(value), low=lit(low), high=lit(high)), value))
+
+    def build_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        """The author's ``CAST``; NULL stays NULL."""
+        return exp.Cast(this=value, to=to)
+
+    # A native case-insensitive ``ILIKE``; elsewhere it is ``LOWER(x) LIKE LOWER(p)``.
+    ilike_native: ClassVar[bool] = False
+
+    def build_ilike(self, value: Expression, pattern: Expression) -> Expression:
+        if self.ilike_native:
+            return exp.ILike(this=value, expression=pattern)
+        return exp.Like(this=exp.Lower(this=value), expression=exp.Lower(this=pattern))
+
+    # -- The portable library (spec: queries/scalar-functions, regex, json, string-matching) -------
+
+    #: The library functions (and ``try_cast``) this dialect translates; any other is refused at plan time.
+    library_functions: ClassVar[frozenset[str]] = frozenset()
+    #: Functions this database has natively with the reference meaning, spelled as named (``REPEAT``, ``PI``, …).
+    native_functions: ClassVar[frozenset[NativeFn]] = frozenset()
+    #: Whether ``GREATEST`` / ``LEAST`` return NULL when any argument is NULL.
+    extremum_propagates_null: ClassVar[bool] = False
+    #: How this engine spells the portable regex (``None``: it has no translation).
+    regex_flavour: ClassVar[Optional[RegexFlavour]] = None
+    #: This engine's JSON column types (a column of one is read natively by ``json_value``).
+    json_db_types: ClassVar[frozenset[str]] = frozenset({"JSON"})
+    #: Whether LIKE takes ``ESCAPE '\'`` (else backslash already escapes).
+    like_escape_clause: ClassVar[bool] = True
+    #: Whether ``[`` is a LIKE metacharacter (SQL Server).
+    like_brackets: ClassVar[bool] = False
+
+    def profile_needed(self, keys: Iterable[object]) -> bool:  # NOSONAR(S1172) — no-op hook default
+        """Whether rendering ``keys`` reads ``server_profile``."""
+        return False
+
+    def require_version(self, *, minimum: tuple[int, int, int], what: str, release: str) -> None:
+        """Fail closed when the known server version is below ``minimum``; an unknown version emits."""
+        version = self.server_profile.version
+        if version is not None and version < minimum:
+            raise ServerVersionError(
+                summary=f"{what} needs {release} or later; the server reports version {'.'.join(map(str, version))}.",
+                suggestion=f"Upgrade to {release}, or express the computation without {what}.",
+            )
+
+    def refuse(self, name: str) -> NoReturn:
+        """The typed refusal of library construct ``name`` on this database."""
+        raise library_refusal(name, database=self.database_name)
+
+    def native(self, name: NativeFn, *args: Expression) -> exp.Anonymous:
+        """``NAME(args)`` for a function in ``native_functions``; any other is refused."""
+        if name not in self.native_functions:
+            self.refuse(name.lower())
+        return anon(name, *args)
+
+    def char_length(self, value: Expression) -> Expression:
+        """The length of ``value`` in characters."""
+        return self.rewrite_target_ast(exp.Length(this=value.copy()))
+
+    def char_substring(self, value: Expression, start: Expression, length: Expression) -> Expression:
+        """``length`` characters of ``value`` from the 1-based ``start``."""
+        return self.rewrite_target_ast(exp.Substring(this=value.copy(), start=start.copy(), length=length.copy()))
+
+    def text_repeat(self, value: Expression, count: Expression) -> Expression:
+        """``value`` repeated ``count`` (≥ 1) times."""
+        return self.native("REPEAT", value, count)
+
+    def truncate(self, value: Expression) -> Expression:
+        """``value`` truncated toward zero."""
+        return self.rewrite_target_ast(func("TRUNC", value))
+
+    def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
+        """A library string function with its Postgres meaning (characters, never bytes)."""
+        s = args[0]
+        if fn in ("trim", "ltrim", "rtrim"):
+            return self.trim_spaces(fn, s)
+        if fn in ("left", "right"):
+            return self._left_right(fn=fn, s=s, n=args[1])
+        if fn == "starts_with":
+            head = self.char_substring(s, lit(1), self.char_length(args[1]))
+            return exp.EQ(this=self.binary_text(head), expression=self.binary_text(args[1]))
+        if fn == "ends_with":
+            p = args[1]
+            start = case((exp.GTE(this=self.char_length(s), expression=self.char_length(p)),
+                          exp.Add(this=exp.Sub(this=self.char_length(s), expression=self.char_length(p)),
+                                  expression=lit(1))), default=lit(1))
+            tail = self.char_substring(s, start, self.char_length(p))
+            return exp.EQ(this=self.binary_text(tail), expression=self.binary_text(p))
+        if fn == "contains":
+            return exp.GT(this=self.text_position(s, args[1]), expression=lit(0))
+        if fn in ("strpos", "instr"):
+            return self.text_position(s, args[1])
+        if fn == "replace":
+            return self.rewrite_target_ast(func("REPLACE", *args))
+        if fn in ("lpad", "rpad"):
+            return self._pad(fn=fn, s=s, n=args[1], fill=pad_fill(args))
+        if fn == "reverse":
+            return self.native("REVERSE", s)
+        if fn == "repeat":
+            return self._non_positive_empty(args[1], self.text_repeat(s, args[1]), source=s)
+        if fn == "concat_ws":
+            return self.native("CONCAT_WS", *args)
+        if fn == "chr":
+            return self._code_point_guard(s, self.code_point_char(s))
+        return self.first_code_point(s)
+
+    def binary_text(self, value: Expression) -> Expression:
+        """``value`` compared case- and accent-sensitively whatever its collation; default: as is."""
+        return value.copy()
+
+    def text_position(self, s: Expression, p: Expression) -> Expression:
+        """The 1-based character position of the first ``p`` in ``s``, 0 when absent, compared binary."""
+        return self.rewrite_target_ast(exp.StrPosition(this=self.binary_text(s), substr=self.binary_text(p)))
+
+    def trim_spaces(self, fn: TrimFn, s: Expression) -> Expression:
+        """Postgres ``trim`` / ``ltrim`` / ``rtrim``: spaces only, never other whitespace."""
+        return self.rewrite_target_ast(func(fn.upper(), s))
+
+    def _left_right(self, *, fn: TextFn, s: Expression, n: Expression) -> Expression:
+        """Postgres ``left`` / ``right``: a negative count drops that many characters from the other end."""
+        length = self.char_length(s)
+        kept = exp.Add(this=length, expression=n.copy())
+        if fn == "left":
+            positive = self.char_substring(s, lit(1), n)
+            negative = self.char_substring(s, lit(1), kept)
+        else:
+            positive = self.char_substring(s, exp.Add(this=exp.Sub(this=length.copy(), expression=n.copy()),
+                                                      expression=lit(1)), n)
+            negative = self.char_substring(s, exp.Sub(this=lit(1), expression=n.copy()), kept.copy())
+        branches: list[tuple[Expression, Expression]] = [(any_null(s, n), exp.Null())]
+        if fn == "right":
+            branches.append((exp.GTE(this=n.copy(), expression=length.copy()), s.copy()))
+        branches += [(exp.GTE(this=n.copy(), expression=lit(0)), positive),
+                     (exp.GT(this=kept.copy(), expression=lit(0)), negative)]
+        return case(*branches, default=lit(""))
+
+    def _non_positive_empty(self, n: Expression, value: Expression, *, source: Expression) -> Expression:
+        """``value``, or ``''`` for a count ≤ 0 (a NULL ``source`` stays NULL)."""
+        count = literal_value(n)
+        if count is not None:
+            return value if count > 0 else case((exp.Not(this=any_null(source)), lit("")))
+        return case((exp.LTE(this=n.copy(), expression=lit(0)), case((exp.Not(this=any_null(source)), lit("")))),
+                    default=value)
+
+    def _pad(self, *, fn: TextFn, s: Expression, n: Expression, fill: Expression) -> Expression:
+        node = self.native("LPAD" if fn == "lpad" else "RPAD", s, n, fill)
+        return self._non_positive_empty(n, node, source=s)
+
+    def portable_pad(self, *, fn: TextFn, s: Expression, n: Expression, fill: Expression) -> Expression:
+        """``lpad`` / ``rpad`` built from substring and repeat, for an engine without them."""
+        length = self.char_length(s)
+        padding = self.char_substring(self.text_repeat(fill, n), lit(1), exp.Sub(this=n.copy(), expression=length))
+        padded = self.concat_text(padding, s) if fn == "lpad" else self.concat_text(s, padding)
+        return case(
+            (any_null(s, n, fill), exp.Null()),
+            (exp.LTE(this=n.copy(), expression=lit(0)), lit("")),
+            (exp.GTE(this=length.copy(), expression=n.copy()), self.char_substring(s, lit(1), n)),
+            (exp.EQ(this=self.char_length(fill), expression=lit(0)), s.copy()),
+            default=padded,
+        )
+
+    def concat_text(self, left: Expression, right: Expression) -> Expression:
+        return exp.DPipe(this=left.copy(), expression=right.copy())
+
+    def field_count(self, value: Expression, delimiter: Expression) -> Expression:
+        """How many ``delimiter``-separated fields ``value`` has."""
+        removed = self.char_length(anon("REPLACE", self.binary_text(value), self.binary_text(delimiter), lit("")))
+        gap = exp.Paren(this=exp.Sub(this=self.char_length(value), expression=removed))
+        per_field = exp.Nullif(this=self.char_length(delimiter), expression=lit(0))
+        return exp.Add(this=exp.IntDiv(this=gap, expression=per_field), expression=lit(1))
+
+    def code_point_char(self, n: Expression) -> Expression:
+        """The character of Unicode code point ``n`` (in range)."""
+        return self.native("CHR", n)
+
+    def _code_point_guard(self, n: Expression, value: Expression) -> Expression:
+        """``value`` where ``n`` is a Unicode scalar value, else NULL."""
+        inside = either(*(exp.Between(this=n.copy(), low=lit(lo), high=lit(hi)) for lo, hi in CHR_RANGES))
+        return case((inside, value))
+
+    def first_code_point(self, s: Expression) -> Expression:
+        """The code point of ``s``'s first character; 0 for ``''``."""
+        return self.native("ASCII", s)
+
+    def build_split_part(self, value: Expression, delimiter: Expression, index: int) -> Expression:
+        """The ``index``-th field (negative: from the end); ``''`` beyond the last."""
+        return self.native("SPLIT_PART", value, delimiter, lit(index))
+
+    def build_math_call(self, fn: MathFn, args: tuple[Expression, ...]) -> Expression:
+        """A library math function; an out-of-domain argument yields NULL."""
+        if fn == "div":
+            divisor = exp.Nullif(this=operand_copy(args[1]), expression=lit(0))
+            return self.truncate(exp.Div(this=operand_copy(args[0]), expression=divisor))
+        if fn == "pi":
+            return self.native("PI")
+        if fn in ("asin", "acos"):
+            inside = exp.Between(this=args[0].copy(), low=lit(-1), high=lit(1))
+            return case((inside, self.rewrite_target_ast(func(fn.upper(), args[0]))))
+        if fn == "cbrt":
+            return self.cube_root(args[0])
+        return self.rewrite_target_ast(func(fn.upper(), *args))
+
+    def cube_root(self, value: Expression) -> Expression:
+        return self.native("CBRT", value)
+
+    def natural_log(self, value: Expression) -> Expression:
+        return self.rewrite_target_ast(exp.Ln(this=value.copy()))
+
+    def build_extremum(self, fn: ExtremumFn, args: tuple[Expression, ...]) -> Expression:
+        """``greatest`` / ``least`` of the non-NULL arguments; NULL only when all are NULL."""
+        name = _EXTREMUM_NAMES[fn]
+        if self.extremum_propagates_null:
+            self.native(name)
+            return self.coalesced_extremum(fn, args, spelling="upper")
+        return self.native(name, *args)
+
+    def coalesced_extremum(
+        self, fn: ExtremumFn, args: tuple[Expression, ...], *, spelling: Literal["upper", "lower", "min_max"],
+    ) -> Expression:
+        """``GREATEST(COALESCE(a, b, c), COALESCE(b, a, c), …)`` for an engine whose function propagates NULL
+        (``min_max``: the scalar ``MAX`` / ``MIN``)."""
+        terms = [exp.Coalesce(this=a.copy(), expressions=[o.copy() for j, o in enumerate(args) if j != i])
+                 for i, a in enumerate(args)]
+        name = {"upper": fn.upper(), "lower": fn, "min_max": "MAX" if fn == "greatest" else "MIN"}[spelling]
+        return anon(name, *terms)
+
+    def build_modulo(self, left: Expression, right: Expression, integer: bool) -> Expression:  # NOSONAR(S1172) — hook parameter read by dialect overrides
+        """``left % right`` truncated (the result takes the dividend's sign); ``integer``: both are integers."""
+        return exp.Mod(this=operand_copy(left), expression=operand_copy(right))
+
+    # Regex
+
+    def _flavour(self) -> RegexFlavour:
+        if self.regex_flavour is None:
+            self.refuse("regexp_like")
+        return self.regex_flavour
+
+    def regex_text(
+        self, pattern: RegexPattern, *, case_insensitive: bool = False, capture: Optional[int] = None,
+        wrap: bool = False, anchored: bool = False,
+    ) -> Expression:
+        return lit(emit_regex(pattern, self._flavour(), case_insensitive=case_insensitive, capture=capture,
+                              wrap=wrap, anchored=anchored))
+
+    def replacement_text(self, replacement: RegexReplacement) -> Expression:
+        return lit(emit_replacement(replacement, self._flavour()))
+
+    def build_regexp_like(
+        self, value: Expression, pattern: RegexPattern, case_insensitive: bool,  # NOSONAR(S1172) — hook signature
+    ) -> Expression:
+        """Whether ``pattern`` matches anywhere in ``value``."""
+        self.refuse("regexp_like")
+
+    def build_regexp_extract(
+        self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,  # NOSONAR(S1172) — hook signature
+    ) -> Expression:
+        """The first match (``group`` 0) or its ``group``; NULL on no match, ``''`` for a group that did not
+        take part."""
+        self.refuse("regexp_extract")
+
+    def skipped_group_empty(
+        self, value: Expression, pattern: RegexPattern, group: int, extracted: Expression,
+    ) -> Expression:
+        """``extracted`` with a skipped group's NULL read as ``''`` (NULL stays for no match)."""
+        if group == 0:
+            return extracted
+        matched = self.build_regexp_like(value, pattern, False)
+        return case((matched, exp.Coalesce(this=extracted, expressions=[lit("")])))
+
+    def build_regexp_replace(
+        self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,  # NOSONAR(S1172) — hook signature
+    ) -> Expression:
+        """``value`` with every match replaced."""
+        self.refuse("regexp_replace")
+
+    # LIKE
+
+    def like_pattern(self, pattern: LikePattern | Expression) -> Expression:
+        """The pattern as this engine's backslash-escaped LIKE text."""
+        if isinstance(pattern, LikePattern):
+            return lit(like_text(pattern, brackets=self.like_brackets))
+        return like_expression(pattern.copy(), brackets=self.like_brackets)
+
+    def build_like(
+        self, value: Expression, pattern: LikePattern | Expression, case_insensitive: bool,
+    ) -> Expression:
+        """``LIKE`` / ``ILIKE`` in the one LIKE pattern language."""
+        text = self.like_pattern(pattern)
+        if not case_insensitive:
+            node: Expression = exp.Like(this=value.copy(), expression=text)
+        elif self.ilike_native:
+            node = exp.ILike(this=value.copy(), expression=text)
+        else:
+            node = exp.Like(this=exp.Lower(this=value.copy()), expression=exp.Lower(this=text))
+        return exp.Escape(this=node, expression=lit("\\")) if self.like_escape_clause else node
+
+    # JSON
+
+    def build_json_value(
+        self, value: Expression, path: JsonPath, native: bool,  # NOSONAR(S1172) — hook signature
+    ) -> Expression:
+        """The scalar at ``path`` as TEXT; NULL when missing, JSON null, an object or an array."""
+        self.refuse("json_value")
+
+    def build_json_value_as(
+        self, value: Expression, path: JsonPath, native: bool, to: exp.DataType, target: DataType,  # NOSONAR(S1172) — hook parameter read by dialect overrides
+    ) -> Expression:
+        """``json_value(… RETURNING target)``: the scalar converted, NULL where it cannot convert."""
+        text = self.build_json_value(value, path, native)
+        if target is DataType.INT:
+            return self.build_integer_try_cast(text, to, source=None)
+        return self.build_try_cast(text, to)
+
+    # Lists (spec: queries/list-functions, aggregations/collect): a list's elements are its non-NULL elements.
+
+    #: Whether the database has native lists; elsewhere every list construct is refused at plan time.
+    native_lists: ClassVar[bool] = False
+    # Rows a type probe reads; a driver that reports no cursor types needs one.
+    type_probe_rows: ClassVar[int] = 0
+    #: The database's name in a refusal.
+    database_name: ClassVar[str] = "this database"
+
+    def build_list_call(
+        self, fn: ListFn, args: tuple[Expression, ...], *, each: Optional[DataType] = None,
+        element: Optional[DataType] = None,  # NOSONAR(S1172) — read by dialect overrides
+    ) -> Expression:
+        """A list function, NULL only when an operand is NULL; ``[]`` as the second list is decided here. ``each``:
+        the second list's element type, unlike the first's, so compared one element at a time; ``element``: the
+        lists' shared element type, when known."""
+        values = args[0]
+        if fn == "length":
+            return case((is_null(values), exp.Null()), default=self.list_length(self.build_list_set(values, element)))
+        other = args[1]
+        if is_empty_array(other):
+            return case((is_null(values), exp.Null()), default=exp.false() if fn == "contains_any" else exp.true())
+        if each is not None:
+            core = self.list_each(fn, values, other, element=each)
+        elif fn == "contains":
+            core = self.list_contains(values, other)
+        elif fn == "contains_any":
+            core = self.list_overlaps(values, other)
+        else:
+            core = self.list_contains_all(values, other)
+        return case((any_null(values, other), exp.Null()), default=core)
+
+    def list_each(self, fn: ListFn, values: Expression, other: Expression, *, element: DataType) -> Expression:
+        """``contains_any`` / ``contains_all`` as ``contains(values, e)`` over each element ``e`` of ``other``, a TEXT
+        ``e`` read as a number (unconvertible: not an element)."""
+        alias = exp.to_identifier(_EACH)
+        wanted: Expression = exp.column(LIST_VALUE, table=_EACH)
+        if element is DataType.TEXT:
+            wanted = self.build_try_cast(wanted, self.try_cast_type(exp.DataType.build("DOUBLE"), data_type=DataType.DOUBLE))
+        found = self.list_contains(values, wanted)
+        if fn == "contains_any":
+            return self.list_exists(other, alias=alias, element=element, predicate=found)
+        missing = exp.and_(is_not_null(wanted), exp.Not(this=found))
+        return exp.Not(this=self.list_exists(other, alias=alias, element=element, predicate=missing))
+
+    def list_length(self, values: Expression) -> Expression:  # NOSONAR(S1172) — hook signature
+        """The size of element set ``values``."""
+        self.refuse("length")
+
+    def build_list_set(
+        self, values: Expression, element: Optional[DataType],  # NOSONAR(S1172) — hook signature
+    ) -> Expression:
+        """The element set of ``values``: its distinct non-NULL elements sorted as ``collect`` sorts them; NULL stays
+        NULL."""
+        self.refuse("list_set")
+
+    def build_list_key(self, values: Expression) -> Expression:  # NOSONAR(S1172) — hook signature
+        """What grouping, comparison, distinct counting, partitioning and join-backs read of element set ``values``."""
+        self.refuse("list_key")
+
+    def list_contains(self, values: Expression, value: Expression) -> Expression:  # NOSONAR(S1172) — hook signature
+        self.refuse("contains")
+
+    def list_overlaps(self, values: Expression, other: Expression) -> Expression:  # NOSONAR(S1172) — hook signature
+        self.refuse("contains_any")
+
+    def list_contains_all(self, values: Expression, other: Expression) -> Expression:  # NOSONAR(S1172) — hook signature
+        self.refuse("contains_all")
+
+    def result_readers(self, description: Sequence[Any]) -> dict[int, Callable[[Any], Any]]:  # NOSONAR(S1172) — hook default
+        """Per result-column position, how to read a non-NULL cell the driver returns as text (default: none)."""
+        return {}
+
+    def list_relation(
+        self, values: Expression, *, alias: exp.Identifier,
+        element: Optional[DataType],  # NOSONAR(S1172) — hook parameter read by dialect overrides
+        leading: bool, distinct: bool = False,
+    ) -> ListRelation:
+        """The elements of ``values`` (non-NULL; ``distinct``: each once) as ``alias``; ``leading``: the first FROM
+        item (no LATERAL)."""
+        rows = kept_elements(values).distinct() if distinct else kept_elements(values)
+        table_alias = exp.TableAlias(this=alias.copy())
+        subquery = exp.Subquery(this=rows, alias=table_alias) if leading else None
+        return ListRelation(relation=subquery or exp.Lateral(this=exp.Subquery(this=rows), alias=table_alias))
+
+    def list_exists(
+        self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], predicate: Expr,
+    ) -> Expression:
+        """Whether some non-NULL element of ``values`` (read as ``alias.value``) satisfies ``predicate``."""
+        relation = self.list_relation(values, alias=alias, element=element, leading=True)  # NOSONAR(S1172)
+        return exp.Exists(this=exp.select(exp.Literal.number(1)).from_(relation.relation).where(predicate.copy()))
+
+    def list_element_types_query(self, *, table: exp.Table, column: exp.Identifier) -> Optional[exp.Select]:  # NOSONAR(S1172) — hook default
+        """The query naming an untyped list column's element types (``None``: every list is typed here)."""
+        return None
+
+    def list_element_type(self, names: Sequence[Any]) -> DataType:  # NOSONAR(S1172) — hook default
+        """The element type the ``list_element_types_query`` rows name."""
+        return DataType.UNKNOWN
+
+    def build_array_literal(self, values: Sequence[Expression]) -> Expression:
+        return exp.Array(expressions=[v.copy() for v in values])
+
+    def empty_list(self) -> Expression:
+        """An untyped ``[]``, which takes the type of the list it meets (``collect``'s empty value)."""
+        return exp.Array(expressions=[])
+
+    def distinct_sorted(self, value: Expression) -> exp.Order:
+        """``DISTINCT value ORDER BY value`` (NULLs where the engine puts them, so no NULLS clause is emitted)."""
+        nulls = "first" if self.native_nulls_first(descending=False) else "last"
+        return exp.Order(this=exp.Distinct(expressions=[value.copy()]),
+                         expressions=[self.build_ordered(value.copy(), descending=False, nulls=nulls)])
+
+    def build_collect(
+        self, value: Expression, element: Optional[DataType],  # NOSONAR(S1172) — hook signature
+    ) -> Expression:
+        """The distinct non-NULL values, sorted ascending; ``[]`` when there are none."""
+        self.refuse("collect")
+
+    def filtered_collect(self, value: Expression) -> Expression:
+        """``COALESCE(ARRAY_AGG(DISTINCT value ORDER BY value) FILTER (WHERE value IS NOT NULL), [])``."""
+        aggregate = exp.Filter(this=exp.ArrayAgg(this=self.distinct_sorted(value)),
+                               expression=exp.Where(this=is_not_null(value)))
+        return exp.Coalesce(this=aggregate, expressions=[self.empty_list()])
+
+    def build_null_safe_eq(
+        self, left: Expression, right: Expression,
+    ) -> Expression:
+        """Null-safe equality (``IS NOT DISTINCT FROM``) for grain join-backs."""
+        return exp.NullSafeEQ(this=left, expression=right)
+
+    def build_is_not_distinct_from(self, left: Expression, right: Expression) -> Expression:
+        """``IS NOT DISTINCT FROM`` in an expression (``build_null_safe_eq`` serves join conditions)."""
+        return self.build_null_safe_eq(left, right)
+
+    def build_ordered(
+        self,
+        order_col: Expression,
+        *,
+        descending: bool,
+        nulls: Literal["default", "first", "last"] = "default",
+    ) -> exp.Ordered:
+        """The one builder of ``ORDER BY`` terms; ``"default"`` renders nulls last."""
+        kwargs: dict = {"this": order_col, "desc": descending}
+        if nulls == "first":
+            kwargs["nulls_first"] = True
+        elif nulls == "last":
+            kwargs["nulls_first"] = False
+        return exp.Ordered(**kwargs)
+
+    def build_order_terms(
+        self,
+        order_col: Expression,
+        *,
+        descending: bool,
+        nulls: Literal["default", "first", "last"] = "default",
+        resolved: Optional[Expression] = None,  # NOSONAR(S1172) — read by the T-SQL emulation
+    ) -> list[exp.Ordered]:
+        """The ``ORDER BY`` terms of one entry; ``resolved`` is the expression ``order_col`` names, when it is
+        an alias of the SELECT being ordered."""
+        return [self.build_ordered(order_col, descending=descending, nulls=nulls)]
+
+    def native_nulls_first(self, *, descending: bool) -> bool:
+        """Where NULLs natively sort for ``descending``, read from sqlglot's emitter."""
+        ordering = getattr(
+            _SqlglotDialect.get_or_raise(self.sqlglot_name),
+            "NULL_ORDERING", None,
+        )
+        if ordering == "nulls_are_last":
+            return False
+        if ordering == "nulls_are_small":
+            return not descending
+        if ordering == "nulls_are_large":
+            return descending
+        raise RuntimeError(
+            f"Cannot derive the native null ordering for sqlglot dialect "
+            f"{self.sqlglot_name!r}: NULL_ORDERING is {ordering!r}. A sqlglot "
+            f"upgrade may have changed this API.",
+        )
+
+    @staticmethod
+    def _expanded_null_safe_eq(
+        left: Expression, right: Expression,
+    ) -> Expression:
+        """Two-valued ``(l = r AND l IS NOT NULL AND r IS NOT NULL) OR (l IS NULL AND r IS NULL)``, safe to negate."""
+        def is_null(side: Expression) -> Expression:
+            return exp.Is(this=side.copy(), expression=exp.Null())
+
+        both_known = exp.and_(
+            exp.EQ(this=left.copy(), expression=right.copy()),
+            exp.Not(this=is_null(left)),
+            exp.Not(this=is_null(right)),
+        )
+        both_null = exp.And(this=is_null(left), expression=is_null(right))
+        return exp.paren(exp.Or(this=exp.paren(both_known), expression=exp.paren(both_null)))
 
     def build_date_trunc(
         self,
-        col_expr: exp.Expression,
+        col_expr: Expression,
         granularity: TimeGranularity,
-        *,
-        parse: Callable[[str], exp.Expression],
-    ) -> exp.Expression:
-        """Default: ``DATE_TRUNC('unit', col)`` via sqlglot's ``exp.DateTrunc``.
-
-        Non-bare-column / non-cast operands are wrapped in
-        ``CAST(... AS TIMESTAMP)`` so Postgres can pick the right
-        ``date_trunc`` overload — preserving today's
-        ``generator.py:_build_date_trunc`` behaviour.
-        """
+    ) -> Expression:
+        """``DATE_TRUNC``; other operands are cast to TIMESTAMP so Postgres picks an overload."""
         if granularity == TimeGranularity.WEEK_SUNDAY:
-            # DEV-1572: Sunday-anchored week = Monday-week of (col + 1 day),
-            # shifted back 1 day. This is Metabase's own reference formula and
-            # reuses each dialect's existing (Monday-based) WEEK truncation, so
-            # WEEK_SUNDAY's correctness tracks WEEK's per dialect. BigQuery —
-            # whose native WEEK is Sunday — overrides this to emit
-            # ``DATE_TRUNC(col, WEEK(SUNDAY))`` directly.
-            shifted = self.build_time_offset_expr(
-                col_expr=col_expr, offset=1, granularity="day",
+            # Sunday week = Monday week of (col + 1 day), shifted back a day.
+            shifted = self.build_date_add(
+                expr=col_expr, count=exp.Literal.number(1), unit=TimeGranularity.DAY,
+                operand=DataType.TIMESTAMP,
             )
             monday = self.build_date_trunc(
-                col_expr=shifted, granularity=TimeGranularity.WEEK, parse=parse,
+                col_expr=shifted, granularity=TimeGranularity.WEEK,
             )
-            return self.build_time_offset_expr(
-                col_expr=monday, offset=-1, granularity="day",
+            return self.build_date_add(
+                expr=monday, count=exp.Literal.number(-1), unit=TimeGranularity.DAY,
+                operand=DataType.TIMESTAMP,
             )
         gran_str = _GRANULARITY_TO_DATE_TRUNC.get(granularity, granularity.value)
         if not isinstance(col_expr, (exp.Column, exp.Cast)):
             col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
         return exp.DateTrunc(this=col_expr, unit=exp.Literal.string(gran_str))
 
-    def build_time_offset_expr(
-        self,
-        col_expr: exp.Expression,
-        offset: int,
-        granularity: str,
-    ) -> exp.Expression:
-        """Default: ``col ± INTERVAL N UNIT`` via ``exp.Add`` / ``exp.Sub``.
+    def build_bucket(self, *, col_expr: Expression, granularity: Granularity) -> Expression:
+        """Bucket start of ``col_expr``; custom: last ``origin + k·multiple·base`` at or before it."""
+        if not isinstance(granularity, CustomGranularity):
+            return self.build_date_trunc(col_expr=col_expr, granularity=granularity)
+        base, multiple, origin = granularity_parts(granularity)
+        ts = self.promote_to_timestamp(col_expr)
+        anchor = self.build_temporal_literal(value=origin, dt=DataType.TIMESTAMP)
 
-        Granularity normalization (preserved across every dialect):
-        ``quarter`` becomes ``val * 3`` of ``MONTH``. SQLite additionally
-        normalises ``week`` to ``val * 7`` of ``days`` — that branch lives
-        on ``SqliteDialect`` since other dialects accept ``WEEK`` natively.
-        """
-        unit = _granularity_to_unit(granularity)
-        val = offset * 3 if granularity == "quarter" else offset
-        if val >= 0:
-            return exp.Add(
-                this=col_expr,
-                expression=exp.Interval(
-                    this=exp.Literal.number(val),
-                    unit=exp.Var(this=unit),
-                ),
+        def at(count: Expression) -> Expression:
+            return self.build_date_add(expr=anchor, count=count, unit=base, operand=DataType.TIMESTAMP)
+
+        crossed = self.build_date_diff(unit=base, start=anchor, end=ts, operand=DataType.TIMESTAMP)
+        # Boundaries crossed equal whole periods unless the origin is off the base's own boundaries.
+        whole = crossed if nests_into(base, granularity) else exp.Case(ifs=[exp.If(
+            this=exp.GT(this=at(crossed), expression=ts.copy()),
+            true=exp.Sub(this=exp.Paren(this=crossed.copy()), expression=exp.Literal.number(1)),
+        )], default=crossed.copy())
+        if multiple == 1:
+            return at(whole)
+        m = exp.Literal.number(multiple)
+
+        def natural_div(value: Expression) -> Expression:
+            return self.natural_div(exp.Paren(this=value), divisor=m.copy())
+
+        floored = exp.Case(ifs=[exp.If(
+            this=exp.GTE(this=exp.Paren(this=whole.copy()), expression=exp.Literal.number(0)),
+            true=natural_div(whole.copy()),
+        )], default=exp.Neg(this=exp.Paren(this=natural_div(exp.Add(
+            this=exp.Neg(this=exp.Paren(this=whole.copy())), expression=exp.Literal.number(multiple - 1),
+        )))))
+        return at(exp.Mul(this=exp.Paren(this=floored), expression=m))
+
+    def natural_div(self, value: Expression, *, divisor: Expression) -> Expression:
+        """``value // divisor`` for non-negative integers."""
+        return exp.IntDiv(this=value, expression=divisor)
+
+    def build_integer_sequence(self, *, size: int) -> exp.Select:
+        """``SELECT i`` over the integers ``0 .. size - 1``; default: a recursive CTE."""
+        seq = exp.to_identifier("_seq")
+        step = exp.select(exp.Add(this=exp.column("i"), expression=exp.Literal.number(1))).from_(
+            exp.Table(this=seq.copy()),
+        ).where(exp.LT(this=exp.column("i"), expression=exp.Literal.number(size - 1)))
+        cte = exp.CTE(
+            this=exp.union(exp.select(exp.Literal.number(0).as_("i")), step, distinct=False),
+            alias=exp.TableAlias(this=seq.copy(), columns=[exp.to_identifier("i")]),
+        )
+        out = exp.select(exp.column("i")).from_(exp.Table(this=seq.copy()))
+        out.set("with_", exp.With(expressions=[cte], recursive=True))
+        return out
+
+    def attach_sequence_setting(self, statement: Expression, *, size: int) -> None:  # NOSONAR(S1172) — no-op hook default
+        """Statement-level setting a generated integer sequence of ``size`` rows needs."""
+
+    def bucket_step(self, *, bucket: Expression, count: int, unit: Granularity) -> Expression:
+        """A time bucket moved by ``count`` ``unit`` steps (a custom unit steps ``multiple`` of its base)."""
+        base, multiple, _ = granularity_parts(unit)
+        return self.bucket_offset(bucket=bucket, count=count * multiple, unit=base)
+
+    def promote_to_timestamp(self, expr: Expression) -> Expression:
+        """A DATE value as the dialect's naive timestamp (midnight)."""
+        return exp.Cast(this=expr.copy(), to=exp.DataType.build("TIMESTAMP"))
+
+    def build_temporal_literal(self, *, value: date, dt: DataType) -> Expression:
+        return exp.Cast(this=exp.Literal.string(iso_text(value)), to=exp.DataType.build(dt.value))
+
+    def build_temporal_comparison(
+        self, *, op: TemporalComparisonOp, operand: Expression, value: date,
+    ) -> Expression:
+        """``operand <op> value`` for a DATE / TIMESTAMP ``value`` (the operand's type)."""
+        literal = self.build_temporal_literal(value=value, dt=temporal_type_of(value))
+        return COMPARISON_NODES[op](this=operand, expression=literal)
+
+    def build_current_date(self) -> Expression:
+        return exp.CurrentDate()
+
+    def build_current_timestamp(self) -> Expression:
+        return exp.Cast(this=exp.CurrentTimestamp(), to=exp.DataType.build("TIMESTAMP"))
+
+    def build_date_part(self, *, part: DatePart, expr: Expression, operand: DataType) -> Expression:
+        """``date_part``: an integer; sub-day parts of a DATE are 0."""
+        if part in SUB_DAY_PARTS and operand is DataType.DATE:
+            return self._date_part(part, self.promote_to_timestamp(expr))
+        return self._date_part(part, expr.copy())
+
+    _EXTRACT_FIELDS: ClassVar[dict[DatePart, str]] = {
+        DatePart.YEAR: "YEAR", DatePart.ISO_YEAR: "ISOYEAR", DatePart.QUARTER: "QUARTER",
+        DatePart.MONTH: "MONTH", DatePart.WEEK: "WEEK", DatePart.DAY: "DAY",
+        DatePart.DAY_OF_WEEK: "ISODOW", DatePart.DAY_OF_YEAR: "DOY",
+        DatePart.HOUR: "HOUR", DatePart.MINUTE: "MINUTE", DatePart.SECOND: "SECOND",
+    }
+
+    def _date_part(self, part: DatePart, expr: Expression) -> Expression:
+        """``part`` of ``expr`` (owned by the caller); timestamp parts only for a timestamp."""
+        node: Expression = exp.Extract(this=exp.var(self._EXTRACT_FIELDS[part]), expression=expr)
+        if part is DatePart.SECOND:
+            node = exp.Floor(this=node)
+        return exp.Cast(this=node, to=exp.DataType.build("INT"))
+
+    def build_date_diff(
+        self, *, unit: TimeGranularity, start: Expression, end: Expression, operand: DataType,
+    ) -> Expression:
+        """``unit`` boundaries crossed from ``start`` to ``end`` (both of type ``operand``)."""
+        if unit in (TimeGranularity.YEAR, TimeGranularity.QUARTER, TimeGranularity.MONTH):
+            years = self._part_gap(DatePart.YEAR, start=start, end=end, operand=operand)
+            if unit is TimeGranularity.YEAR:
+                return years
+            sub, per_year = (
+                (DatePart.QUARTER, 4) if unit is TimeGranularity.QUARTER else (DatePart.MONTH, 12)
             )
+            return exp.Add(
+                this=exp.Mul(this=exp.Literal.number(per_year), expression=exp.Paren(this=years)),
+                expression=exp.Paren(this=self._part_gap(sub, start=start, end=end, operand=operand)),
+            )
+        if unit in (TimeGranularity.WEEK, TimeGranularity.WEEK_SUNDAY):
+            gap = self._day_gap(
+                start=self.build_date_trunc(col_expr=start.copy(), granularity=unit),
+                end=self.build_date_trunc(col_expr=end.copy(), granularity=unit),
+            )
+            return self._exact_div(gap, 7)
+        if unit is TimeGranularity.DAY:
+            return self._day_gap(start=start.copy(), end=end.copy())
+        if operand is DataType.DATE:
+            start, end = self.promote_to_timestamp(start), self.promote_to_timestamp(end)
+        gap = self._second_gap(
+            start=self.build_date_trunc(col_expr=start.copy(), granularity=unit),
+            end=self.build_date_trunc(col_expr=end.copy(), granularity=unit),
+        )
+        return gap if unit is TimeGranularity.SECOND else self._exact_div(gap, _UNIT_SECONDS[unit])
+
+    def _part_gap(self, part: DatePart, *, start: Expression, end: Expression, operand: DataType) -> Expression:
         return exp.Sub(
-            this=col_expr,
-            expression=exp.Interval(
-                this=exp.Literal.number(-val),
-                unit=exp.Var(this=unit),
-            ),
+            this=self.build_date_part(part=part, expr=end, operand=operand),
+            expression=self.build_date_part(part=part, expr=start, operand=operand),
         )
 
-    def duration_interval_exprs(
-        self,
-        parts: list[tuple[int, str]],
-        sign: int = 1,
-    ) -> list[exp.Expression]:
-        """Default: one ``exp.Interval`` per (amount, unit) pair.
+    def _day_gap(self, *, start: Expression, end: Expression) -> Expression:
+        """Whole days from ``start``'s date to ``end``'s date; operands are owned by the caller."""
+        return exp.Sub(
+            this=exp.Cast(this=end, to=exp.DataType.build("DATE")),
+            expression=exp.Cast(this=start, to=exp.DataType.build("DATE")),
+        )
 
-        The Add-vs-Sub direction is decided by ``add_intervals_expr`` from
-        its own ``sign`` arg, so the Interval values themselves stay
-        positive at this layer. sqlglot transpiles each single-unit
-        interval per dialect (MySQL/ClickHouse/BigQuery all accept
-        ``INTERVAL N UNIT``).
-        """
-        return [
-            exp.Interval(
-                this=exp.Literal.number(amount),
-                unit=exp.Var(this=_WINDOW_UNIT_SQL[unit].upper()),
-            )
-            for amount, unit in parts
-        ]
+    def _second_gap(self, *, start: Expression, end: Expression) -> Expression:
+        """Whole seconds between two second-aligned timestamps; operands are owned by the caller."""
+        return exp.Cast(
+            this=exp.Extract(this=exp.var("EPOCH"), expression=exp.Paren(this=exp.Sub(this=end, expression=start))),
+            to=exp.DataType.build("BIGINT"),
+        )
 
-    def add_intervals_expr(
-        self,
-        expr: exp.Expression,
-        intervals: list[exp.Expression],
-        sign: int = 1,
-    ) -> exp.Expression:
-        """Default: fold ``exp.Add`` (sign>=0) or ``exp.Sub`` (sign<0) over
-        the interval list."""
-        op_cls = exp.Add if sign >= 0 else exp.Sub
-        result = expr
-        for iv in intervals:
-            result = op_cls(this=result, expression=iv)
-        return result
+    def _exact_div(self, value: Expression, divisor: int) -> Expression:
+        """``value / divisor`` for an exact multiple, as an integer."""
+        return exp.IntDiv(this=exp.Paren(this=value), expression=exp.Literal.number(divisor))
 
-    # ------------------------------------------------------------------
-    # Median / percentile / stat aggregates
-    # ------------------------------------------------------------------
+    def bucket_offset(self, *, bucket: Expression, count: int, unit: TimeGranularity) -> Expression:
+        """A time bucket moved by ``count`` ``unit``s, comparable with ``bucket_comparand`` of a bucket."""
+        return self.build_date_add(
+            expr=self.bucket_comparand(bucket), count=exp.Literal.number(count), unit=unit,
+            operand=DataType.TIMESTAMP,
+        )
 
-    def build_median(
-        self,
-        inner: exp.Expression,
-        *,
-        parse: Callable[[str], exp.Expression],
-    ) -> exp.Expression:
-        """Default: ``PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY inner)``."""
-        inner_sql = inner.sql(dialect=self.sqlglot_name)
-        return parse(f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {inner_sql})")
+    def bucket_comparand(self, bucket: Expression) -> Expression:
+        """A time bucket as compared with a ``bucket_offset``."""
+        return bucket
+
+    def build_date_add(
+        self, *, expr: Expression, count: Expression, unit: TimeGranularity, operand: DataType,
+    ) -> Expression:
+        """``expr`` moved by ``count`` ``unit``s; months clamp at month-end.
+
+        A DATE stays a DATE for day-or-coarser units."""
+        interval_unit, per_count = _INTERVAL_UNITS[unit]
+        literal = literal_int(count)
+        if literal is not None:
+            amount = literal * per_count
+            op = exp.Add if amount >= 0 else exp.Sub
+            moved: Expression = op(this=expr.copy(), expression=self._interval(abs(amount), exp.var(interval_unit)))
+        else:
+            moved = exp.Add(this=expr.copy(), expression=exp.Mul(
+                this=exp.Paren(this=count.copy()), expression=self._interval(per_count, exp.var(interval_unit)),
+            ))
+        if operand is DataType.DATE and unit not in SUB_DAY_GRANULARITIES:
+            return exp.Cast(this=moved, to=exp.DataType.build("DATE"))
+        return moved
+
+    def _interval(self, amount: int, unit: exp.Var) -> exp.Interval:
+        """``INTERVAL amount unit`` for a non-negative ``amount``."""
+        return exp.Interval(this=exp.Literal.number(amount), unit=unit)
+
+    def frame_time_operand(self, expr: Expression) -> Expression:
+        """The source time column as compared in a trailing-window frame."""
+        return expr
+
+    def build_median(self, inner: Expression) -> Expression:
+        """``PERCENTILE_CONT(0.5)``."""
+        return self.build_percentile(p=exp.Literal.number("0.5"), col_expr=inner)
 
     def build_percentile(
-        self,
-        p_str: str,
-        col_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
-    ) -> exp.Expression:
-        """Default: ``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col_sql)``.
-
-        ``p_str`` is the original pre-validated string the user provided —
-        not a float — so ``0.50`` / ``1`` / scientific notation are
-        preserved verbatim (Codex finding #3).
-        """
-        return parse(
-            f"PERCENTILE_CONT({p_str}) WITHIN GROUP (ORDER BY {col_sql})"
+        self, p: Expression, col_expr: Expression,
+    ) -> Expression:
+        """``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col)``."""
+        return exp.WithinGroup(
+            this=exp.PercentileCont(this=p.copy()),
+            expression=exp.Order(expressions=[exp.Ordered(
+                this=col_expr.copy(),
+                nulls_first=self.native_nulls_first(descending=False),
+            )]),
         )
 
-    def build_approx_count_distinct(
-        self,
-        col_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
-    ) -> exp.Expression:
-        """Default: exact ``COUNT(DISTINCT col)`` fallback (DEV-1595).
-
-        Backends with no native approximate-distinct function (Postgres /
-        SQLite / MySQL) fall back to the exact count, which is *more*
-        accurate than an approximation — consistent with the "no
-        approximate SQL" rule. Native-supporting dialects override this to
-        emit their own approximate-distinct function (DuckDB
-        ``approx_count_distinct``, ClickHouse ``uniq``, …).
-        """
-        return parse(f"COUNT(DISTINCT {col_sql})")
+    def build_approx_count_distinct(self, col_expr: Expression) -> Expression:
+        """Approximate distinct; the exact ``COUNT(DISTINCT col)`` unless the dialect has a native one."""
+        if self.approx_count_distinct_anonymous_name is not None:
+            return exp.Anonymous(
+                this=self.approx_count_distinct_anonymous_name,
+                expressions=[col_expr.copy()],
+            )
+        if self.approx_count_distinct_native:
+            return exp.ApproxDistinct(this=col_expr.copy())
+        return exp.Count(this=exp.Distinct(expressions=[col_expr.copy()]))
 
     def build_stat_agg_1arg(
-        self,
-        agg_name: str,
-        col_expr: str,
-        *,
-        parse: Callable[[str], exp.Expression],
-    ) -> exp.Expression:
-        """Default: emit canonical Postgres-style name and let sqlglot
-        transpile per dialect (e.g. var_samp → VARIANCE on SQLite/DuckDB)."""
-        return parse(f"{agg_name.upper()}({col_expr})")
+        self, agg_name: StatAgg1Name, col_expr: Expression,
+    ) -> Expression:
+        """Canonical name; sqlglot transpiles per dialect."""
+        return self._named_call(agg_name, col_expr)
 
     def build_covar_2arg(
         self,
-        agg_name: str,
-        col_sql: str,
-        other_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
-    ) -> exp.Expression:
-        """Default: native ``CORR(x, y)`` / ``COVAR_SAMP(x, y)`` /
-        ``COVAR_POP(x, y)``."""
-        return parse(f"{agg_name.upper()}({col_sql}, {other_sql})")
+        agg_name: StatAgg2Name,
+        col_expr: Expression,
+        other_expr: Expression,
+    ) -> Expression:
+        """Native ``CORR`` / ``COVAR_SAMP`` / ``COVAR_POP``."""
+        return self._named_call(agg_name, col_expr, other_expr)
 
-    # ------------------------------------------------------------------
-    # Log-alias rewrite
-    # ------------------------------------------------------------------
+    def _named_call(
+        self, agg_name: StatAgg1Name | StatAgg2Name, *args: Expression,
+    ) -> Expression:
+        """``AGG_NAME(args)`` as this dialect's parser would build it, spelling kept."""
+        name = agg_name.upper()
+        node = exp.func(name, *(a.copy() for a in args), dialect=self.sqlglot_name)
+        assert isinstance(node, Expression)  # concrete Func classes and Anonymous all are
+        node.meta["name"] = name
+        return node
 
     def should_use_native_log(self, base: int) -> bool:
-        """Whether ``log{N}(x)`` should be emitted as the dialect's native
-        single-arg function (vs the canonical 2-arg ``LOG(N, x)``).
-
-        Defaults: log10 native = True (every Tier-1+2 dialect except
-        Oracle), log2 native = True (Postgres-shaped baseline). Concrete
-        dialects override via the ``log10_native`` / ``log2_native``
-        fields.
-        """
+        """Whether ``log{N}(x)`` uses a native single-arg function rather than ``LOG(N, x)``."""
         if base == 10:
             return self.log10_native
         if base == 2:
             return self.log2_native
         return False
 
-    # ------------------------------------------------------------------
-    # AST rewrite hook + per-connection UDF registration
-    # ------------------------------------------------------------------
-
-    def rewrite_parsed_ast(self, tree: exp.Expression) -> exp.Expression:
-        """Default: identity. SQLite overrides to rewrite JSONExtract to
-        the function-call form (DEV-1331)."""
+    def rewrite_parsed_ast(self, tree: Expression) -> Expression:
+        """Hook: input-side AST rewrite keyed on the dialect the text was parsed with."""
         return tree
 
-    def rewrite_target_ast(self, tree: exp.Expression) -> exp.Expression:
-        """Default: identity. Target-keyed AST rewrite (DEV-1576).
-
-        Applied in ``SQLGenerator._parse`` using the generator's **target**
-        dialect (``self._dialect``), independent of the parse dialect. This is
-        the place for output-shaping a dialect needs that the input-side
-        ``rewrite_parsed_ast`` cannot do: formula/measure expressions are
-        canonically parsed as Postgres regardless of target, so a
-        ``rewrite_parsed_ast`` override would fire for every backend.
-
-        ``PostgresDialect`` overrides this to wrap the first argument of a
-        2-arg ``ROUND`` in a numeric ``CAST`` (Postgres has no
-        ``round(double precision, integer)`` — only ``round(numeric, int)``).
-        SQLite / DuckDB round ``DOUBLE`` natively, so they keep the identity.
-        """
+    def rewrite_target_ast(self, tree: Expression) -> Expression:
+        """Hook: output-shaping AST rewrite keyed on the target dialect."""
         return tree
 
-    def emit_outer_wrap(
+    def rewrite_library_ast(self, tree: Expression) -> Expression:
+        """Hook: a Mode-B call's rewrite to its portable meaning; author (Mode-A) SQL never sees it."""
+        return tree
+
+    def rewrite_statement(self, statement: Expression) -> Expression:
+        """Rewrite the assembled statement once, just before its single render. Default: identity."""
+        return statement
+
+    def apply_pagination(
         self,
+        select: exp.Select,
         *,
-        inner_sql: str,
-        public: list[str],
-        order: exp.Expression | None,
-        limit: exp.Expression | None,
-        offset_arg: exp.Expression | None,
-        parse: Callable[[str], exp.Expression] | None = None,
-    ) -> str:
-        """Emit the DEV-1444 outer-projection wrap around ``inner_sql``.
+        limit: Optional[int],
+        offset: Optional[int],
+    ) -> exp.Select:
+        """The single place LIMIT/OFFSET is applied to a completed ``SELECT``.
 
-        Contract: ``inner_sql`` is the inner SELECT with **trailing
-        pagination already detached** (``SQLGenerator._build_outer_wrap``
-        owns the strip). ``order`` / ``limit`` / ``offset_arg`` are the
-        detached sqlglot AST nodes the caller pulled off the inner; the
-        hook re-emits them on the outer statement.
-
-        ``parse`` is the generator's ``_parse`` callback when the
-        generator is the caller (``SQLGenerator._build_outer_wrap``).
-        T-SQL needs it to preserve SLayer-specific AST rewrites (LOG10/
-        LOG2 alias preservation, SQLite JSONExtract function-form) when
-        the override re-parses ``inner_sql`` to detach the WITH clause.
-        The base impl ignores it because it embeds ``inner_sql`` verbatim
-        (no re-parse, no rewrite drift).
-
-        Base impl (Postgres-shaped, used by every dialect except T-SQL)::
-
-            SELECT "alias1", "alias2"
-            FROM   (<inner_sql>) AS _outer
-            ORDER BY ... LIMIT N OFFSET M
-
-        Identifier quoting on the public-alias list is driven by sqlglot
-        via ``self.sqlglot_name`` — backticks on MySQL/BigQuery, brackets
-        on T-SQL (the override only changes the CTE-hoist shape, not the
-        quoting), ANSI double quotes on Postgres/SQLite/DuckDB/...
-        (DEV-1571 Bug 3).
-
-        T-SQL's ``WITH``-must-be-statement-prefix rule means
-        ``TsqlDialect`` overrides this method to lift the inner top-level
-        CTEs to the outer statement (DEV-1571 Bug 1).
-
-        ORDER BY may carry inner-CTE qualifiers like ``_base."col"`` from
-        ``_assemble_combined_sql``; those don't resolve at the outer-
-        wrapper scope (only ``_outer`` is in scope). The base impl strips
-        every Column's ``table`` qualifier so the outer scope can resolve
-        each column by its bare alias name (DEV-1444 behaviour preserved).
+        Set on the ``Select``: sqlglot transpiles bounds only there, never from a free ``Limit``.
         """
-        del parse  # base impl embeds inner_sql verbatim; no re-parse needed.
-        col_sep = ",\n    "
-        outer_select = col_sep.join(
-            exp.Identifier(this=a, quoted=True).sql(dialect=self.sqlglot_name)
-            for a in public
-        )
-        base = (
-            f"SELECT\n    {outer_select}\n"
-            f"FROM (\n{inner_sql.rstrip()}\n) AS _outer"
-        )
-        if order is None and limit is None and offset_arg is None:
-            return base
-        out = base
-        if order is not None:
-            for col in order.find_all(exp.Column):
-                if col.args.get("table") is not None:
-                    col.set("table", None)
-            out += "\n" + order.sql(dialect=self.sqlglot_name, pretty=True)
+        out = select
         if limit is not None:
-            out += "\n" + limit.sql(dialect=self.sqlglot_name, pretty=True)
-        if offset_arg is not None:
-            out += "\n" + offset_arg.sql(dialect=self.sqlglot_name, pretty=True)
+            out = out.limit(limit)
+        if offset is not None:
+            out = out.offset(offset)
         return out
 
-    # DEV-1756 identifier-length fitting. Aliases stay canonical inside SLayer,
-    # fitted only on emission and restored on the result keys.
+    # Aliases stay canonical inside SLayer; fitted on emission, restored on result keys.
 
     def quote_identifier(self, name: str) -> str:
         """``name`` wrapped in this dialect's identifier quotes."""
         return exp.Identifier(this=name, quoted=True).sql(dialect=self.sqlglot_name)
 
     def fit_alias(self, name: str) -> str:
-        """Length-only fitting; identity when ``name`` already fits.
-
-        Drives the write pass (not ``emit_alias``), so an under-limit alias
-        produces byte-identical SQL even on dialects that mangle dots.
-        """
+        """Length-only fitting; identity when ``name`` already fits."""
         return fit_identifier(name=name, limit=self.max_identifier_bytes)
 
     def emit_alias(self, alias: str) -> str:
-        """The final identifier a canonical alias reaches the SQL as.
-
-        Equals ``fit_alias`` here; BigQuery/T-SQL compose dot-mangling on top.
-        Used to build the read-side map, so must match the emitted token exactly.
-        """
+        """The final identifier a canonical alias reaches the SQL as."""
         return self.fit_alias(alias)
 
     def alias_rewrite_map(self, aliases: Sequence[str]) -> dict[str, str]:
-        """``{canonical: fitted}`` for the write pass, only where they differ.
-
-        The collision check covers every alias including identities: a short
-        alias equal to another's fitted form is just as much a duplicate.
-        """
+        """``{canonical: fitted}`` where they differ; collisions checked over identities too."""
         if self.max_identifier_bytes is None:
             return {}
         allocation: dict[str, str] = {}
@@ -557,11 +1756,19 @@ class SqlDialect(BaseModel):
         return {k: v for k, v in allocation.items() if k != v}
 
     def decode_alias_map(self, aliases: Sequence[str]) -> dict[str, str]:
-        """``{emitted: canonical}`` — read-side inverse, rebuilt by re-running
-        the pure fitting rather than threading a map through generation."""
+        """``{emitted: canonical}`` read-side inverse; raises if two aliases emit alike."""
         out: dict[str, str] = {}
+        owner: dict[str, str] = {}
         for alias in aliases:
             emitted = self.emit_alias(alias)
+            prior = owner.get(emitted)
+            if prior is not None and prior != alias:
+                raise IdentifierCollisionError(
+                    first=prior, second=alias, emitted=emitted,
+                    dialect=self.sqlglot_name, limit=self.max_identifier_bytes,
+                    namespace="result key",
+                )
+            owner[emitted] = alias
             if emitted != alias:
                 out[emitted] = alias
         return out
@@ -573,13 +1780,7 @@ class SqlDialect(BaseModel):
         *,
         fallback: Callable[[str], str] | None = None,
     ) -> dict[str, Any]:
-        """Apply ``mapping`` to a row's keys, erroring if two keys collapse onto
-        one (silent column loss).
-
-        ``fallback`` decodes keys absent from ``mapping`` (BigQuery/T-SQL
-        ``___`` -> ``.``). Applied here, not upstream, so the collapse check
-        sees every key.
-        """
+        """Rekey a row via ``mapping`` (else ``fallback``); raises if two keys collapse."""
         out: dict[str, Any] = {}
         for key, value in row.items():
             if key in mapping:
@@ -597,22 +1798,77 @@ class SqlDialect(BaseModel):
             out[decoded] = value
         return out
 
-    def rewrite_emitted_sql(
-        self, sql: str, *, aliases: Sequence[str] = (),
-    ) -> str:
-        """Post-pass string rewrite of the final SQL; write-side companion to
-        ``rewrite_parsed_ast``, applied at the end of ``generate()``.
+    def _identifier_quote_anchors(self) -> tuple[str, str]:
+        """This dialect's identifier open/close quote chars, read off ``quote_identifier``."""
+        probe = self.quote_identifier("x")
+        return probe[0], probe[-1]
 
-        Base impl fits over-limit aliases (DEV-1756), replacing each canonical
-        token everywhere it occurs. Driven by the query's own alias set, not a
-        length regex, which bounds what it can touch (see :func:`substitute_quoted`).
-        Empty ``aliases`` is a no-op. Must preserve query semantics, not shape.
-        BigQuery/T-SQL compose dot-mangling after this pass.
-        """
-        mapping = self.alias_rewrite_map(aliases)
+    def _emission_fit_map(
+        self, *, sql: str, aliases: Sequence[str], exempt: frozenset[str],
+    ) -> dict[str, str]:
+        """``{canonical: fitted}`` for over-limit aliases and scanned CTE columns; exempt pass through."""
+        limit = self.max_identifier_bytes
+        if limit is None:
+            return {}
+        quote_open, quote_close = self._identifier_quote_anchors()
+        present = quoted_identifiers(
+            sql, quote_open=quote_open, quote_close=quote_close,
+            lexis=self.identifier_masking_lexis,
+        )
+        # Post-mangle sizing also catches dotted aliases that mangling pushes over.
+        scanned = sorted(n for n in present if self.fit_alias(n) != n)
+        allocation: dict[str, str] = {}
+        owner: dict[str, str] = {}
+        for name in (*aliases, *scanned):
+            if name in exempt or name in allocation:
+                continue
+            fitted = self.fit_alias(name)
+            prior = owner.get(fitted)
+            if prior is not None and prior != name:
+                raise IdentifierCollisionError(
+                    first=prior, second=name, emitted=fitted,
+                    dialect=self.sqlglot_name, limit=limit,
+                )
+            owner[fitted] = name
+            allocation[name] = fitted
+        for name, fitted in allocation.items():
+            if fitted != name and fitted in present and fitted not in allocation:
+                raise IdentifierCollisionError(
+                    first=name, second=fitted, emitted=fitted,
+                    dialect=self.sqlglot_name, limit=limit,
+                )
+        return {k: v for k, v in allocation.items() if k != v}
+
+    def rewrite_emitted_sql(
+        self, sql: str, *, aliases: Sequence[str] = (), exempt: frozenset[str] = frozenset(),
+    ) -> str:
+        """Fit over-limit SLayer-minted identifiers in the final SQL (literals/comments excepted)."""
+        mapping = self._emission_fit_map(sql=sql, aliases=aliases, exempt=exempt)
         if not mapping:
             return sql
-        return substitute_quoted(sql=sql, mapping=mapping, quote=self.quote_identifier)
+        return substitute_quoted(
+            sql=sql, mapping=mapping, quote=self.quote_identifier,
+            lexis=self.identifier_masking_lexis,
+        )
+
+    def assert_no_overlimit_identifiers(
+        self, sql: str, *, exempt: frozenset[str] = frozenset(),
+    ) -> None:
+        """Raise if the final SQL still carries a non-exempt over-limit identifier."""
+        limit = self.max_identifier_bytes
+        if limit is None:
+            return
+        survivors = [
+            t for t in overlimit_tokens(
+                sql, limit=limit, quote_styles=[self._identifier_quote_anchors()],
+                lexis=self.identifier_masking_lexis,
+            )
+            if t not in exempt
+        ]
+        if survivors:
+            raise IdentifierLengthError(
+                tokens=survivors, dialect=self.sqlglot_name, limit=limit,
+            )
 
     def decode_result_keys(
         self,
@@ -620,32 +1876,18 @@ class SqlDialect(BaseModel):
         *,
         aliases: Sequence[str] = (),
     ) -> list[dict[str, Any]]:
-        """Reverse the write-side rewrite on result-row keys, so consumers always
-        see SLayer's canonical alias shape regardless of dialect or shortening.
-
-        BigQuery/T-SQL additionally decode the ``___`` mangling back to dots.
-        """
+        """Reverse the write-side rewrite on result-row keys."""
         mapping = self.decode_alias_map(aliases)
         if not mapping:
             return rows
         return [self._rekey_row(row=row, mapping=mapping) for row in rows]
 
-    def register_udfs(self, dbapi_connection) -> None:
-        """Default: no-op. SQLite overrides to register Python aggregate
-        / scalar UDFs on every fresh connection."""
+    def register_udfs(self, dbapi_connection) -> None:  # NOSONAR(S1172) — no-op hook default; overrides use it
+        """Hook: register UDFs on every fresh connection."""
         return None
 
-    # ------------------------------------------------------------------
-    # EXPLAIN
-    # ------------------------------------------------------------------
-
     def build_explain_sql(self, sql: str) -> str:
-        """Wrap ``sql`` in the dialect's EXPLAIN prefix/postfix pair.
-
-        Raises ``ValueError`` when ``explain_prefix`` is ``None``
-        (BigQuery — EXPLAIN unsupported). Preserves today's
-        ``query_engine.py:_build_explain_sql`` semantics.
-        """
+        """Wrap ``sql`` in the dialect's EXPLAIN prefix/postfix pair."""
         if self.explain_prefix is None:
             raise ValueError(
                 f"EXPLAIN is not supported for dialect '{self.sqlglot_name}'. "
@@ -653,93 +1895,343 @@ class SqlDialect(BaseModel):
             )
         return f"{self.explain_prefix} {sql}{self.explain_postfix}"
 
-    # ------------------------------------------------------------------
-    # Engine / connection / runtime hooks
-    #
-    # These let a dialect carry its own runtime quirks (connection-string
-    # form, engine-creation bridge, per-connection session setup, per-
-    # statement timeout, cursor-type-code mapping) without spilling
-    # dialect-specific conditionals into ``slayer/sql/engine_factory.py``
-    # or ``slayer/sql/client.py``. Defaults are all no-op — concrete
-    # dialects override what's relevant.
-    # ------------------------------------------------------------------
+    # Runtime hooks: keep dialect conditionals out of engine_factory / client.
 
     def build_connection_url(
         self,
-        datasource: "DatasourceConfig",
+        datasource: "DatasourceConfig",  # NOSONAR(S1172) — no-op hook default; overrides use it
     ) -> str | None:
-        """Hook: dialect-specific connection-string builder.
-
-        Returning ``None`` (the default) means: defer to
-        ``DatasourceConfig.get_connection_string()``'s standard branches
-        (sqlite / duckdb / tsql / generic URL form). SnowflakeDialect
-        overrides this to emit either the
-        ``snowflake://?connection_name=<name>`` sentinel or the inline
-        ``snowflake-sqlalchemy`` URL.
-        """
+        """Hook: connection string, or ``None`` to use ``DatasourceConfig.get_connection_string()``."""
         return None
 
     def build_engine(
         self,
-        datasource: "DatasourceConfig",
+        datasource: "DatasourceConfig",  # NOSONAR(S1172) — no-op hook default; overrides use it
         *,
-        connection_string: str,
+        connection_string: str,  # NOSONAR(S1172) — no-op hook default; overrides use it
     ) -> "sa.Engine | None":
-        """Hook: build a dialect-specific SQLAlchemy engine.
-
-        Returning ``None`` (the default) means: ``engine_factory`` falls
-        back to ``sa.create_engine(connection_string, pool_pre_ping=True)``.
-        SnowflakeDialect overrides this when the sentinel URL is in play,
-        wiring the ``creator=`` kwarg to delegate to
-        ``snowflake.connector.connect(connection_name=...)``.
-        """
+        """Hook: a dialect-built engine, or ``None`` for ``engine_factory``'s default ``create_engine``."""
         return None
 
-    # ------------------------------------------------------------------
-    # Credential identity (engine-cache safety)
-    # ------------------------------------------------------------------
+    def deferred_driver_modules(
+        self,
+        connection_string: str,  # NOSONAR(S1172) — no-op hook default; overrides use it
+    ) -> tuple[str, ...]:
+        """Hook: driver modules the engine first imports at connect time, checked up front instead."""
+        return ()
 
     def credential_fingerprint(self, datasource: "DatasourceConfig") -> str:
-        """Opaque identity of the credentials this datasource authenticates with.
-
-        Part of the engine cache key: a dialect whose secret is *not* in the
-        connection string MUST override this, or callers with different
-        credentials share one engine. Return a digest, never raw secret —
-        keys reach logs.
-        """
+        """Digest of credentials not in the connection string; part of the engine cache key."""
         return _digest(datasource.credentials_json)
 
     def apply_session_overrides(
         self,
-        dbapi_connection: Any,
-        datasource: "DatasourceConfig",
+        dbapi_connection: Any,  # NOSONAR(S1172) — no-op hook default; overrides use it
+        datasource: "DatasourceConfig",  # NOSONAR(S1172) — no-op hook default; overrides use it
     ) -> None:
-        """Hook: per-connection session setup (e.g. ``USE WAREHOUSE``).
-
-        Called by ``engine_factory``'s ``connect`` event listener on every
-        new pooled connection. SnowflakeDialect overrides this to issue
-        ``USE WAREHOUSE / USE ROLE / USE DATABASE / USE SCHEMA`` from the
-        DatasourceConfig's typed fields.
-        """
+        """Hook: session setup on every new pooled connection (e.g. ``USE WAREHOUSE``)."""
         return None
 
-    def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
-        """Hook: SQL to set a per-statement timeout, or ``None`` if the
-        dialect doesn't expose one or the existing client.py path handles
-        it via a hardcoded branch (mysql / clickhouse / postgres).
+    @property
+    def needs_sync_connections(self) -> bool:
+        """Whether a per-connection hook (UDFs, session overrides) runs, which an async driver's connections cannot take."""
+        cls = type(self)
+        return (
+            cls.register_udfs is not SqlDialect.register_udfs
+            or cls.apply_session_overrides is not SqlDialect.apply_session_overrides
+        )
 
-        SnowflakeDialect returns
-        ``ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = N``.
-        """
+    def statement_timeout(self, timeout_seconds: int) -> Expression | None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: statement that sets the timeout before the query, or ``None``."""
         return None
 
-    def map_cursor_type_code(self, type_code: int) -> str | None:
-        """Hook: dialect-specific cursor-type-code → SLayer category
-        (one of ``"number"``, ``"string"``, ``"time"``, ``"boolean"``).
-
-        Returning ``None`` (the default) means: ``client._map_type_code``
-        falls back to the Postgres OID map. SnowflakeDialect overrides
-        this to return the snowflake-connector ``FieldType`` integer
-        codes' mapping.
-        """
+    def set_connection_timeout(self, dbapi_connection: Any, timeout_seconds: int) -> object:  # NOSONAR(S1172) — hook
+        """Hook: put the timeout on the DBAPI connection; returns the prior state for restore."""
         return None
+
+    def restore_connection_timeout(self, dbapi_connection: Any, prior: object) -> None:  # NOSONAR(S1172) — hook
+        """Hook: undo ``set_connection_timeout`` with the state it returned."""
+        return None
+
+    def server_profile_sql(self) -> str | None:
+        """Hook: probe whose one row ``parse_server_profile`` reads as ``base_row``, or ``None``."""
+        return None
+
+    def correlated_setting_probe(self, profile: ServerProfile) -> Expression | None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: follow-up probe for the correlated-subquery setting (its row is ``correlated_row``), or ``None``."""
+        return None
+
+    def type_probe(self, query: Expr) -> exp.Select:
+        """Hook: ``query`` bounded to ``type_probe_rows`` rows, for typing its columns."""
+        source = exp.Subquery(this=query.copy(), alias=exp.TableAlias(this=exp.to_identifier("_types")))
+        return exp.select("*").from_(source).limit(self.type_probe_rows)
+
+    def parse_server_profile(
+        self,
+        *,
+        base_row: Sequence[Any] | None,  # NOSONAR(S1172) — no-op hook default; overrides use it
+        correlated_row: Sequence[Any] | None = None,  # NOSONAR(S1172) — no-op hook default
+    ) -> ServerProfile:
+        """Hook: probe rows → profile; tolerant, never raises."""
+        return ServerProfile()
+
+    def timeout_permitted(self, profile: ServerProfile) -> bool:  # NOSONAR(S1172) — no-op hook default
+        """Hook: whether this user may set the statement timeout."""
+        return True
+
+    def correlated_subquery_refusal(
+        self, profile: ServerProfile, *, sql: str = "",  # NOSONAR(S1172) — no-op hook default
+    ) -> str | None:
+        """Hook: why this user cannot run ``sql``'s correlated subquery, or ``None``."""
+        return None
+
+    def attach_correlated_setting(self, statement: Expression) -> None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: enable correlated subqueries on ``statement`` in place."""
+        return None
+
+    def in_subquery_key(self, key: Expression) -> Expression:
+        """Hook: the key an uncorrelated ``IN`` subquery projects; default unchanged."""
+        return key
+
+    def describe_cursor_column(self, description_row: Sequence[Any]) -> ResultColumnType | None:
+        """Hook: one DB-API ``cursor.description`` row → its type, or ``None`` when the code is not this dialect's."""
+        return describe_type_name_code(description_row)
+
+    def describe_result_statement(self, probe: exp.National) -> Expression | None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: a statement whose rows describe ``probe``'s result columns, or ``None`` to read the cursor."""
+        return None
+
+    def read_result_description(self, rows: list[dict[str, Any]]) -> dict[str, ResultColumnType]:  # NOSONAR(S1172) — no-op hook default
+        """Hook: ``describe_result_statement``'s rows → the result's column types."""
+        return {}
+
+    def result_undescribable(self, exc: BaseException) -> bool:  # NOSONAR(S1172) — no-op hook default
+        """Hook: whether ``exc`` says the describe statement cannot type this result (the cursor is read instead)."""
+        return False
+
+    def result_census_select(self, columns: Sequence[str]) -> list[Expression] | None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: a select-list counting ``columns``' stored value kinds over a sample, or ``None`` when the cursor types them."""
+        return None
+
+    def result_census_types(  # NOSONAR(S1172) — no-op hook default
+        self, *, columns: Sequence[str], row: Sequence[Any] | None,
+    ) -> dict[str, ResultColumnType]:
+        """Hook: ``result_census_select``'s row → the result's column types."""
+        return dict.fromkeys(columns, ResultColumnType(type=DataType.TEXT))
+
+    # Structure reflection: the one reader of a live table's columns and keys.
+
+    def reflect_columns(
+        self, *, connection: CatalogConnection | None, inspector: Any, table: str, schema: str | None,
+        catalog: str | None,
+    ) -> list[ReflectedColumn]:
+        """Inspector columns; when it raises, ``columns_query`` plus ``column_comments_query``."""
+        location = TableLocation(name=table, schema_name=schema, catalog=catalog)
+        try:
+            raw = inspector.get_columns(table, schema=schema_token(schema=schema, catalog=catalog))
+            return self.columns_from_inspector(raw, connection=connection, inspector=inspector, location=location)
+        except Exception:  # noqa: BLE001 — catalog fallback below
+            recover(connection)
+        rows = fetch(connection, self.columns_query(location), dialect=self.sqlglot_name)
+        comments = self._column_comments(connection=connection, location=location)
+        return [
+            column_from_type_string(
+                name=name, data_type=dtype, comment=comments.get(name), zoned_types=self.zoned_timestamp_db_types,
+                json_types=self.json_db_types,
+            )
+            for name, dtype in rows
+        ]
+
+    def columns_from_inspector(
+        self, raw: list[dict[str, Any]], *, connection: CatalogConnection | None, inspector: Any,  # NOSONAR(S1172) — hook signature
+        location: TableLocation,  # NOSONAR(S1172) — hook signature
+    ) -> list[ReflectedColumn]:
+        """Hook: the Inspector's column dicts as columns."""
+        sa_dialect = getattr(inspector, "dialect", None)
+        return [
+            column_from_sa_type(
+                name=c["name"], sa_type=c["type"], comment=c.get("comment"),
+                zoned_types=self.zoned_timestamp_db_types, json_types=self.json_db_types, sa_dialect=sa_dialect,
+            )
+            for c in raw
+        ]
+
+    def columns_query(self, location: TableLocation) -> exp.Select:
+        """``(column_name, data_type)`` of one table from INFORMATION_SCHEMA, in column order."""
+        conditions = [eq_literal(col("table_name"), location.name)]
+        if location.schema_name:
+            conditions.append(eq_literal(col("table_schema"), location.schema_name))
+        if location.catalog:
+            conditions.append(eq_literal(col("table_catalog"), location.catalog))
+        return (
+            exp.select(col("column_name"), col("data_type"))
+            .from_(relation("columns", db="information_schema"))
+            .where(all_of(conditions))
+            .order_by(col("ordinal_position"))
+        )
+
+    def column_comments_query(self, location: TableLocation) -> exp.Select | None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: ``(column_name, comment)`` of one table, or ``None`` when comments have no catalog source."""
+        return None
+
+    def _column_comments(self, *, connection: CatalogConnection | None, location: TableLocation) -> dict[str, str]:
+        query = self.column_comments_query(location)
+        if query is None:
+            return {}
+        try:
+            rows = fetch(connection, query, dialect=self.sqlglot_name)
+        except Exception:  # noqa: BLE001 — comments are optional
+            recover(connection)
+            return {}
+        return {name: comment for name, raw in rows if (comment := clean_comment(raw))}
+
+    def reflect_table_keys(
+        self, *, connection: CatalogConnection | None, inspector: Any, table: str, schema: str | None,
+        catalog: str | None,
+    ) -> TableKeys:
+        """PK, FKs and whole-table unique key sets; each read best-effort, a failure logged at WARNING."""
+        token = schema_token(schema=schema, catalog=catalog)
+        pk = best_effort(
+            lambda: self._primary_key(
+                connection=connection, inspector=inspector, table=table, schema=schema, catalog=catalog,
+            ),
+            connection=connection, default=[], table=table, what="primary key",
+        )
+        fks = best_effort(
+            lambda: inspector_foreign_keys(inspector, table=table, token=token),
+            connection=connection, default=[], table=table, what="foreign keys",
+        )
+        uniques = best_effort(
+            lambda: inspector_unique_constraints(inspector, table=table, token=token),
+            connection=connection, default=[], table=table, what="unique constraints",
+        )
+        indexes = best_effort(
+            lambda: inspector_unique_indexes(inspector, table=table, token=token),
+            connection=connection, default=[], table=table, what="unique indexes",
+        )
+        return TableKeys(
+            primary_key=pk, foreign_keys=fks, unique_key_sets=without_primary_key(pk, uniques + indexes),
+        )
+
+    def _primary_key(
+        self, *, connection: CatalogConnection | None, inspector: Any, table: str, schema: str | None,
+        catalog: str | None,
+    ) -> list[str]:
+        """The Inspector's PK; when it yields none, ``primary_key_query`` (unless the Inspector is final)."""
+        try:
+            result = inspector.get_pk_constraint(table, schema=schema_token(schema=schema, catalog=catalog))
+            found = inspector_column_names(result.get("constrained_columns")) if isinstance(result, dict) else None
+        except Exception:
+            if self.primary_key_inspector_only:
+                raise
+            recover(connection)
+            found = None
+        if found or self.primary_key_inspector_only:
+            return found or []
+        query = self.primary_key_query(TableLocation(name=table, schema_name=schema, catalog=catalog))
+        return [row[0] for row in fetch(connection, query, dialect=self.sqlglot_name)]
+
+    def primary_key_query(self, location: TableLocation) -> exp.Select:
+        """PK column names from INFORMATION_SCHEMA; joined on the catalog too (DuckDB reuses constraint names)."""
+        on = [
+            exp.EQ(this=col("constraint_name", "tc"), expression=col("constraint_name", "kcu")),
+            exp.EQ(this=col("table_schema", "tc"), expression=col("table_schema", "kcu")),
+        ]
+        where = [
+            eq_literal(col("table_name", "tc"), location.name),
+            eq_literal(col("constraint_type", "tc"), "PRIMARY KEY"),
+        ]
+        if location.catalog:
+            on.append(exp.EQ(this=col("table_catalog", "tc"), expression=col("table_catalog", "kcu")))
+            where.append(eq_literal(col("table_catalog", "tc"), location.catalog))
+        if location.schema_name:
+            where.append(eq_literal(col("table_schema", "tc"), location.schema_name))
+        return (
+            exp.select(col("column_name", "kcu"))
+            .from_(relation("table_constraints", db="information_schema", alias="tc"))
+            .join(relation("key_column_usage", db="information_schema", alias="kcu"), on=all_of(on))
+            .where(all_of(where))
+        )
+
+    def url_default_schema(self, *, url: URL) -> str | None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: the default schema the connection URL fixes, known without a request; ``None`` when it fixes none."""
+        return None
+
+    def reflect_default_schema(self, *, connection: sa.Connection | None, inspector: Any) -> str | None:
+        """The connection's default schema: the Inspector's, else ``current_schema()``; ``None`` when unknown."""
+        try:
+            name = inspector.default_schema_name
+        except Exception:  # noqa: BLE001
+            name = None
+        if isinstance(name, str) and name:
+            return name
+        if connection is None:
+            return None
+        try:
+            row = connection.exec_driver_sql("SELECT current_schema()").fetchone()
+        except Exception:  # noqa: BLE001 — dialect may lack current_schema()
+            recover(connection)
+            return None
+        value = row[0] if row else None
+        return value if isinstance(value, str) and value else None
+
+    def reflect_schema_description(
+        self, *, connection: sa.Connection, schema: str | None, configured_schema: str | None,  # NOSONAR(S1172) — no-op hook default
+    ) -> str | None:
+        """Hook: the schema's own description (``schema``, else the connection's, else ``configured_schema``)."""
+        return None
+
+    def current_catalog_sql(self) -> str | None:
+        """Hook: the statement reading the connection's current catalog where schema tokens are catalog-qualified."""
+        return None
+
+    def normalize_reflected_name(self, name: str) -> str:
+        """Hook: a schema name as reflection reports it (case-folding dialects lower an all-upper name)."""
+        return name
+
+
+class DottedAliasManglingMixin:
+    """Shared ``.``-to-``___`` alias mangling for BigQuery / T-SQL.
+
+    Mix in before ``SqlDialect`` so the base length pass runs first.
+    """
+
+    dotted_alias_re: ClassVar[re.Pattern[str]]
+    alias_quote_open: ClassVar[str]
+    alias_quote_close: ClassVar[str]
+
+    def fit_alias(self, name: str) -> str:
+        """Fit against the post-mangle length; the result stays dotted."""
+        return fit_identifier(
+            name=name, limit=self.max_identifier_bytes, expand=encode_alias,
+        )
+
+    def emit_alias(self, alias: str) -> str:
+        """The final identifier: length-fitted, then dot-mangled."""
+        return encode_alias(self.fit_alias(alias))
+
+    def rewrite_emitted_sql(
+        self, sql: str, *, aliases: Sequence[str] = (), exempt: frozenset[str] = frozenset(),
+    ) -> str:
+        """Base LENGTH pass, then ``.`` -> ``___`` inside quoted identifiers."""
+        sql = super().rewrite_emitted_sql(sql=sql, aliases=aliases, exempt=exempt)
+        return self.dotted_alias_re.sub(
+            lambda m: (
+                f"{self.alias_quote_open}{encode_alias(m.group(1))}"
+                f"{self.alias_quote_close}"
+            ),
+            sql,
+        )
+
+    def decode_result_keys(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        aliases: Sequence[str] = (),
+    ) -> list[dict[str, Any]]:
+        """Reverse the mangling on result-row keys."""
+        mapping = self.decode_alias_map(aliases)
+        return [
+            self._rekey_row(row=row, mapping=mapping, fallback=decode_alias)
+            for row in rows
+        ]

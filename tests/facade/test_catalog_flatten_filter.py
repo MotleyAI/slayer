@@ -40,6 +40,17 @@ from slayer.facade.catalog import (
     local_dimensions,
     local_metrics,
 )
+from slayer.facade.catalog_sql import (
+    _build_is_columns,
+    _build_is_dimensions,
+    _build_is_metrics,
+    _build_pg_attribute,
+    _build_pg_class,
+    _build_pg_description,
+    _table_oid,
+)
+from slayer.facade.catalog_sql import _fingerprint as graph_fingerprint
+from slayer.facade.info_schema import _serve_columns
 
 
 def _model(
@@ -232,7 +243,6 @@ def test_raw_metrics_still_carry_cross_model_entries() -> None:
 
 
 def test_info_schema_columns_excludes_dotted_entries() -> None:
-    from slayer.facade.info_schema import _serve_columns
 
     cat = _orders_customers_catalog()
     batch = _serve_columns(catalog=cat)
@@ -244,7 +254,6 @@ def test_info_schema_columns_excludes_dotted_entries() -> None:
 
 
 def test_info_schema_columns_row_count_matches_local_counts() -> None:
-    from slayer.facade.info_schema import _serve_columns
 
     cat = _orders_customers_catalog()
     batch = _serve_columns(catalog=cat)
@@ -259,7 +268,6 @@ def test_info_schema_columns_row_count_matches_local_counts() -> None:
 
 
 def test_pg_attribute_excludes_dotted_attnames() -> None:
-    from slayer.facade.catalog_sql import _build_pg_attribute
 
     cat = _orders_customers_catalog()
     rel = _build_pg_attribute(cat)
@@ -270,7 +278,6 @@ def test_pg_attribute_excludes_dotted_attnames() -> None:
 def test_pg_attribute_attnum_within_local_range() -> None:
     """Every attnum for a given table must be within
     ``len(local_dims) + len(local_metrics)``."""
-    from slayer.facade.catalog_sql import _build_pg_attribute, _table_oid
 
     cat = _orders_customers_catalog()
     rel = _build_pg_attribute(cat)
@@ -290,7 +297,6 @@ def test_pg_class_relnatts_matches_local_count() -> None:
     """``relnatts`` counts the number of column rows pg_attribute will
     surface for that table; with the filter, it must equal the local
     count, not the raw catalog count."""
-    from slayer.facade.catalog_sql import _build_pg_class, _table_oid
 
     cat = _orders_customers_catalog()
     rel = _build_pg_class(cat)
@@ -311,7 +317,6 @@ def test_pg_description_attnum_within_local_range() -> None:
     """attnum on pg_description must align with the (filtered)
     pg_attribute attnum space — no orphan descriptions past the local
     column count."""
-    from slayer.facade.catalog_sql import _build_pg_description, _table_oid
 
     orders = _model(
         name="orders",
@@ -320,6 +325,7 @@ def test_pg_description_attnum_within_local_range() -> None:
                 name="id", type=DataType.INT, primary_key=True,
                 description="order pk",
             ),
+            Column(name="customer_id", type=DataType.INT, description="fk"),
             Column(name="total", type=DataType.DOUBLE, description="ord total"),
         ],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
@@ -333,10 +339,6 @@ def test_pg_description_attnum_within_local_range() -> None:
             ),
             Column(name="name", type=DataType.TEXT, description="cust name"),
         ],
-    )
-    # Add customer_id on orders so the join is satisfied.
-    orders.columns.insert(
-        1, Column(name="customer_id", type=DataType.INT, description="fk"),
     )
     cat = build_catalog(models_by_datasource={"jaffle": [orders, customers]})
 
@@ -357,7 +359,6 @@ def test_pg_description_attnum_within_local_range() -> None:
 
 
 def test_is_columns_excludes_dotted_column_name() -> None:
-    from slayer.facade.catalog_sql import _build_is_columns
 
     cat = _orders_customers_catalog()
     rel = _build_is_columns(cat, "jaffle")
@@ -373,7 +374,6 @@ def test_is_metrics_still_includes_cross_model_entries() -> None:
     """The catalog-namespaced metrics view must still expose cross-model
     metrics — that's the proper place for them and the regression guard
     against an over-eager filter."""
-    from slayer.facade.catalog_sql import _build_is_metrics
 
     cat = _orders_customers_catalog()
     rel = _build_is_metrics(cat, "jaffle")
@@ -382,7 +382,6 @@ def test_is_metrics_still_includes_cross_model_entries() -> None:
 
 
 def test_is_dimensions_still_includes_cross_model_entries() -> None:
-    from slayer.facade.catalog_sql import _build_is_dimensions
 
     cat = _orders_customers_catalog()
     rel = _build_is_dimensions(cat, "jaffle")
@@ -397,7 +396,6 @@ def test_graph_fingerprint_changes_when_cross_model_metric_changes() -> None:
     """Cache invalidation must still fire when a cross-model metric's
     underlying data shifts. The filter does NOT extend to the fingerprint
     hash — graph_fingerprint sees the raw view."""
-    from slayer.facade.catalog_sql import _fingerprint as graph_fingerprint
 
     orders = _model(
         name="orders",

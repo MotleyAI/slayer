@@ -1,6 +1,6 @@
 """Multi-dialect SQL generation end-to-end tests.
 
-DEV-1542 cleanup: lifted from ``tests/test_sql_generator.py``. Each test
+Lifted from ``tests/test_sql_generator.py``. Each test
 class drives ``SQLGenerator`` across multiple dialects and asserts on the
 final emitted SQL — orthogonal to the per-dialect strategy-class tests in
 ``tests/dialects/test_<dialect>.py`` which pin emission from the
@@ -22,18 +22,18 @@ from slayer.sql.generator import SQLGenerator
 from tests.dialects.conftest import _generate, _norm
 
 
-# DEV-1337: per-alias allowlists for "natively supports single-arg log10/log2"
+# Per-alias allowlists for "natively supports single-arg log10/log2"
 # rendering. Outside these sets the current 2-arg LOG(base, x) form is kept.
 # Explicit hand-written sets — these are the spec; deriving from the dialect
 # flags would make the log-alias tests self-fulfilling.
 _LOG10_NATIVE_DIALECTS = frozenset({
     "sqlite", "postgres", "duckdb", "mysql", "clickhouse",
-    "snowflake", "bigquery", "redshift",
+    "bigquery", "redshift",
     "trino", "presto", "databricks", "spark", "tsql",
 })
 _LOG2_NATIVE_DIALECTS = frozenset({
-    "sqlite", "postgres", "duckdb", "mysql", "clickhouse",
-    "bigquery", "trino", "presto", "databricks", "spark",
+    "sqlite", "duckdb", "mysql", "clickhouse",
+    "trino", "presto", "databricks", "spark",
 })
 
 
@@ -97,7 +97,7 @@ class TestMultiDialectGeneration:
         query = SlayerQuery(
             source_model="orders",
             measures=[ModelMeasure(formula="*:count")],
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
         )
         sql = await _generate(gen, query, orders_model)
         assert "COUNT(" in sql
@@ -107,7 +107,7 @@ class TestMultiDialectGeneration:
 
     # Oracle is excluded: its native TRUNC(x,'WEEK') is Jan-1-anchored, so
     # neither WEEK nor WEEK_SUNDAY is truly Monday/Sunday there — Oracle
-    # Sunday-week correctness is explicitly out of scope (DEV-1572). The exact
+    # Sunday-week correctness is explicitly out of scope. The exact
     # per-dialect Sunday shape is pinned in tests/dialects/test_<dialect>.py;
     # SQLite runtime bucketing is pinned by execution there. This is an
     # emission-only smoke test guarding against a silent fallback to Monday
@@ -118,7 +118,7 @@ class TestMultiDialectGeneration:
     async def test_date_trunc_week_sunday_differs_from_week(
         self, dialect: str, orders_model: SlayerModel
     ) -> None:
-        """DEV-1572 emission smoke test: a WEEK_SUNDAY breakout must emit
+        """Emission smoke test: a WEEK_SUNDAY breakout must emit
         different SQL from a plain (Monday) WEEK breakout — a dialect-agnostic
         guard that WEEK_SUNDAY is genuinely shifted/overridden and never
         silently falls back to Monday-week bucketing. Exact Sunday-shape and
@@ -128,7 +128,7 @@ class TestMultiDialectGeneration:
                 source_model="orders",
                 measures=[ModelMeasure(formula="*:count")],
                 time_dimensions=[TimeDimension(
-                    dimension=ColumnRef(name="created_at"), granularity=grain
+                    dimension="created_at", granularity=grain
                 )],
             )
 
@@ -164,7 +164,7 @@ class TestMultiDialectGeneration:
                 source_model="orders",
                 measures=[ModelMeasure(formula="*:count")],
                 time_dimensions=[TimeDimension(
-                    dimension=ColumnRef(name="ordered_on"),
+                    dimension="ordered_on",
                     granularity=TimeGranularity.WEEK_SUNDAY,
                 )],
             ),
@@ -202,7 +202,7 @@ class TestMultiDialectGeneration:
             SlayerQuery(
                 source_model="orders",
                 measures=[ModelMeasure(formula="*:count")],
-                time_dimensions=[TimeDimension(dimension=ColumnRef(name="ts"), granularity=TimeGranularity.MONTH)],
+                time_dimensions=[TimeDimension(dimension="ts", granularity=TimeGranularity.MONTH)],
             ),
             model,
         )
@@ -216,11 +216,15 @@ class TestMultiDialectGeneration:
             SlayerQuery(
                 source_model="orders",
                 measures=[ModelMeasure(formula="*:count")],
-                time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+                time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             ),
             model,
         )
-        assert "CAST(" not in sql.upper(), sql
+        # Scoped to the TIME DIMENSION operand: a bare column keeps its live
+        # DB type and must not be cast. (A blanket "no CAST anywhere" check
+        # would now trip on the typed pipeline's result-type cast around the
+        # ``*:count`` measure, which is unrelated to this contract.)
+        assert "CAST(ORDERS.CREATED_AT" not in sql.upper(), sql
 
     @pytest.mark.parametrize("dialect", ALL_DIALECTS)
     async def test_calendar_time_shift(self, dialect: str, orders_model: SlayerModel) -> None:
@@ -228,7 +232,7 @@ class TestMultiDialectGeneration:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="time_shift(revenue:sum, -1, 'year')", name="rev_prev_year")],
         )
         sql = await _generate(gen, query, orders_model)
@@ -237,12 +241,11 @@ class TestMultiDialectGeneration:
         # Join should be simple equality (timestamp shift is inside the shifted CTE)
         # Dialect-specific date arithmetic should appear in the shifted CTE's SELECT/GROUP BY
         sql_upper = sql.upper()
-        if dialect == "sqlite":
-            assert "DATE(" in sql_upper
-        elif dialect == "tsql":
-            assert "DATEADD" in sql_upper
-        else:
-            assert "INTERVAL" in sql_upper
+        expected = {
+            "sqlite": "SLAYER_DATE_ADD(", "tsql": "DATEADD", "clickhouse": "ADDYEARS(",
+            "snowflake": "DATEADD(YEAR", "bigquery": "DATETIME_ADD(",
+        }
+        assert expected.get(dialect, "INTERVAL") in sql_upper
 
     @pytest.mark.parametrize("dialect", ["mysql", "clickhouse"])
     async def test_window_measure_multi_unit_interval_dialect_correct(
@@ -261,7 +264,7 @@ class TestMultiDialectGeneration:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"),
+                TimeDimension(dimension="created_at",
                               granularity=TimeGranularity.DAY),
             ],
             measures=[ModelMeasure(formula="revenue:sum(window='1y2m3d')",
@@ -274,10 +277,12 @@ class TestMultiDialectGeneration:
             f"Multi-unit Postgres-shape INTERVAL literal is invalid on {dialect}.\n"
             f"sql:\n{sql}"
         )
-        # Per-unit INTERVAL clauses must each be present (sqlglot transpiles
-        # exp.Interval per dialect; MySQL + ClickHouse both render as
-        # `INTERVAL N UNIT` for these AST nodes).
-        for piece in ("INTERVAL 1 YEAR", "INTERVAL 2 MONTH", "INTERVAL 3 DAY"):
+        # One dialect date-add per unit, never a single combined literal.
+        pieces = {
+            "mysql": ("INTERVAL -1 YEAR", "INTERVAL -2 MONTH", "INTERVAL -3 DAY"),
+            "clickhouse": ("ADDYEARS(", "ADDMONTHS(", "ADDDAYS("),
+        }[dialect]
+        for piece in pieces:
             assert piece in norm, (
                 f"Expected dialect-correct '{piece}' in {dialect} output.\n"
                 f"sql:\n{sql}"
@@ -287,18 +292,16 @@ class TestMultiDialectGeneration:
     async def test_window_measure_single_unit_interval_dialect_correct(
         self, dialect: str, orders_model: SlayerModel,
     ) -> None:
-        """Even single-unit windows must render unquoted on MySQL/ClickHouse.
-
-        The pre-refactor code emits `INTERVAL '7 day'` for single-unit windows
-        on every non-SQLite dialect, which is invalid MySQL syntax (MySQL wants
-        `INTERVAL 7 DAY`). After the AST refactor, sqlglot's per-dialect
-        transpiler emits the canonical form for each dialect.
+        """Single-unit windows must render as a per-unit clause, never the
+        combined `INTERVAL '7 day'` string that is invalid MySQL syntax. sqlglot's
+        per-dialect transpiler emits `INTERVAL 7 DAY` for MySQL/ClickHouse — a
+        valid form, distinct from the combined-string bug this guards against.
         """
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"),
+                TimeDimension(dimension="created_at",
                               granularity=TimeGranularity.DAY),
             ],
             measures=[ModelMeasure(formula="revenue:sum(window='7d')",
@@ -310,8 +313,9 @@ class TestMultiDialectGeneration:
             f"Quoted single-unit INTERVAL literal is invalid on {dialect}.\n"
             f"sql:\n{sql}"
         )
-        assert "INTERVAL 7 DAY" in norm, (
-            f"Expected dialect-correct 'INTERVAL 7 DAY' in {dialect} output.\n"
+        piece = {"mysql": "INTERVAL -7 DAY", "clickhouse": ", -7"}[dialect]
+        assert piece in norm, (
+            f"Expected dialect-correct {piece!r} in {dialect} output.\n"
             f"sql:\n{sql}"
         )
 
@@ -323,7 +327,7 @@ class TestMultiDialectGeneration:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"),
+                TimeDimension(dimension="created_at",
                               granularity=TimeGranularity.DAY),
             ],
             measures=[ModelMeasure(formula="revenue:sum(window='7d')", name="rev_w")],
@@ -341,7 +345,7 @@ class TestMultiDialectGeneration:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"),
+                TimeDimension(dimension="created_at",
                               granularity=TimeGranularity.DAY),
             ],
             measures=[ModelMeasure(formula="revenue:sum(window='1y2m3d')", name="rev_w")],
@@ -352,7 +356,7 @@ class TestMultiDialectGeneration:
         assert "INTERVAL" not in norm, f"INTERVAL is invalid T-SQL syntax:\n{sql}"
         assert "DATEADD" in norm, f"Expected DATEADD in multi-unit T-SQL window:\n{sql}"
 
-    # DEV-1317: cross-dialect stat-agg generation. The exact SQL shape per
+    # Cross-dialect stat-agg generation. The exact SQL shape per
     # Tier-1 dialect is pinned in TestStatAggsPerDialect; here we just confirm
     # the generator produces parseable SQL on every supported dialect.
     # Assertions check the function-call SHAPE (qualified column refs in the
@@ -477,13 +481,21 @@ class TestMultiDialectGeneration:
 
 
 class TestLogAliasPreservation:
-    """DEV-1337 — user-written ``log10(x)`` / ``log2(x)`` must round-trip
+    """User-written ``log10(x)`` / ``log2(x)`` must round-trip
     verbatim in emitted SQL on dialects that natively support those single-arg
     aliases. sqlglot's default behaviour normalises both into a generic
     ``Log(this=Literal(base), expression=arg)`` AST node and re-emits as
     ``LOG(base, x)`` for almost every dialect, which makes generated SQL
     diverge from the recipe formula text and (on dialects that lack 2-arg
     ``LOG``) can break a previously working call.
+
+    The expectations name the column ``ORDERS.AMOUNT`` rather than bare
+    ``AMOUNT``: the typed pipeline anchors every reference at its scope root
+    (Law 1), so a ``Column.sql`` operand emits qualified. That is orthogonal
+    to the alias-preservation contract under test here, and pinning the
+    qualified form keeps the negative assertions meaningful — a bare
+    ``LOG(10, AMOUNT)`` needle would be trivially absent whatever the
+    generator did with the alias.
     """
 
     @pytest.fixture
@@ -521,20 +533,20 @@ class TestLogAliasPreservation:
         sql = await _generate(generator=gen, query=query, model=log_model)
         upper_no_ws = "".join(sql.upper().split())
         if dialect in _LOG10_NATIVE_DIALECTS:
-            assert "LOG10(AMOUNT)" in upper_no_ws, (
+            assert "LOG10(ORDERS.AMOUNT)" in upper_no_ws, (
                 f"{dialect}: expected literal LOG10(amount), got:\n{sql}"
             )
             # Must not have canonicalised to either arg-order 2-arg form.
-            assert "LOG(10,AMOUNT)" not in upper_no_ws, (
+            assert "LOG(10,ORDERS.AMOUNT)" not in upper_no_ws, (
                 f"{dialect}: should not canonicalise to LOG(10, amount):\n{sql}"
             )
-            assert "LOG(AMOUNT,10)" not in upper_no_ws, (
+            assert "LOG(ORDERS.AMOUNT,10)" not in upper_no_ws, (
                 f"{dialect}: should not canonicalise to LOG(amount, 10):\n{sql}"
             )
         else:
             # Fallback: current 2-arg LOG behaviour is preserved on dialects
             # without native single-arg log10 (oracle).
-            assert "LOG(10,AMOUNT)" in upper_no_ws or "LOG(AMOUNT,10)" in upper_no_ws, (
+            assert "LOG(10,ORDERS.AMOUNT)" in upper_no_ws or "LOG(ORDERS.AMOUNT,10)" in upper_no_ws, (
                 f"{dialect}: expected fallback LOG(base,x) form, got:\n{sql}"
             )
 
@@ -550,18 +562,20 @@ class TestLogAliasPreservation:
         sql = await _generate(generator=gen, query=query, model=log_model)
         upper_no_ws = "".join(sql.upper().split())
         if dialect in _LOG2_NATIVE_DIALECTS:
-            assert "LOG2(AMOUNT)" in upper_no_ws, (
+            assert "LOG2(ORDERS.AMOUNT)" in upper_no_ws, (
                 f"{dialect}: expected literal LOG2(amount), got:\n{sql}"
             )
-            assert "LOG(2,AMOUNT)" not in upper_no_ws, (
+            assert "LOG(2,ORDERS.AMOUNT)" not in upper_no_ws, (
                 f"{dialect}: should not canonicalise to LOG(2, amount):\n{sql}"
             )
-            assert "LOG(AMOUNT,2)" not in upper_no_ws, (
+            assert "LOG(ORDERS.AMOUNT,2)" not in upper_no_ws, (
                 f"{dialect}: should not canonicalise to LOG(amount, 2):\n{sql}"
             )
         else:
-            # Fallback for tsql / oracle / redshift / snowflake (no native LOG2).
-            assert "LOG(2,AMOUNT)" in upper_no_ws or "LOG(AMOUNT,2)" in upper_no_ws, (
+            # Fallback for postgres / tsql / oracle / redshift / snowflake (no native LOG2); Postgres's
+            # LOG(b, x) takes NUMERIC only.
+            assert ("LOG(2,ORDERS.AMOUNT)" in upper_no_ws or "LOG(ORDERS.AMOUNT,2)" in upper_no_ws
+                    or "LOG(2,CAST(ORDERS.AMOUNTASDECIMAL))" in upper_no_ws), (
                 f"{dialect}: expected fallback LOG(base,x) form, got:\n{sql}"
             )
 
@@ -598,11 +612,11 @@ class TestLogAliasPreservation:
         )
         sql = await _generate(generator=gen, query=query, model=model)
         upper_no_ws = "".join(sql.upper().split())
-        assert "LOG10(AMOUNT)" in upper_no_ws, (
+        assert "LOG10(ORDERS.AMOUNT)" in upper_no_ws, (
             f"{dialect}: expected literal log10(amount) inside filtered "
             f"column wrapper, got:\n{sql}"
         )
-        assert "LOG(10,AMOUNT)" not in upper_no_ws, (
+        assert "LOG(10,ORDERS.AMOUNT)" not in upper_no_ws, (
             f"{dialect}: filtered-column re-parse must not re-canonicalise "
             f"to LOG(10, amount):\n{sql}"
         )
@@ -621,7 +635,7 @@ class TestLogAliasPreservation:
         )
         sql = await _generate(generator=gen, query=query, model=log_model)
         upper_no_ws = "".join(sql.upper().split())
-        assert "LOG10(AMOUNT)" in upper_no_ws, (
+        assert "LOG10(ORDERS.AMOUNT)" in upper_no_ws, (
             f"{dialect}: expected log10(amount) inside arithmetic measure:\n{sql}"
         )
         assert "COUNT(" in sql.upper(), f"COUNT(*) leg missing on {dialect}:\n{sql}"
@@ -645,7 +659,8 @@ class TestLogAliasPreservation:
             f"{dialect}: must not invent LOG3() — only base 10 and 2 are aliased:\n{sql}"
         )
         # The 2-arg form must remain in some arg order.
-        assert "LOG(3,AMOUNT)" in upper_no_ws or "LOG(AMOUNT,3)" in upper_no_ws, (
+        assert ("LOG(3,ORDERS.AMOUNT)" in upper_no_ws or "LOG(ORDERS.AMOUNT,3)" in upper_no_ws
+                or "LOG(3,CAST(ORDERS.AMOUNTASDECIMAL))" in upper_no_ws), (
             f"{dialect}: expected 2-arg LOG(3, amount) preserved, got:\n{sql}"
         )
 
@@ -669,7 +684,7 @@ class TestLogAliasPreservation:
 
 
 class TestStringHygieneDialectTranslation:
-    """DEV-1378: lowercase string-hygiene operators are pass-through to
+    """Lowercase string-hygiene operators are pass-through to
     the emitted SQL string, then re-parsed by sqlglot under the target
     dialect at WHERE-assembly. sqlglot's per-dialect emitter chooses
     each dialect's preferred spelling. These tests pin the actual
@@ -684,7 +699,7 @@ class TestStringHygieneDialectTranslation:
             ("postgres", "LOWER(orders.status) = 'active'"),
             ("mysql", "LOWER(orders.status) = 'active'"),
             ("duckdb", "LOWER(orders.status) = 'active'"),
-            ("clickhouse", "lower(orders.status) = 'active'"),
+            ("clickhouse", "lowerUTF8(orders.status) = 'active'"),
         ],
     )
     async def test_lower(self, orders_model: SlayerModel, dialect: str, expected: str) -> None:
@@ -705,9 +720,10 @@ class TestStringHygieneDialectTranslation:
         [
             ("sqlite", "INSTR(orders.status, ',')"),
             ("postgres", "POSITION(',' IN orders.status)"),
-            ("mysql", "LOCATE(',', orders.status)"),
+            ("mysql", "LOCATE(\n    CAST(',' AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_bin,\n"
+                      "    CAST(orders.status AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_bin\n  )"),
             ("duckdb", "STRPOS(orders.status, ',')"),
-            ("clickhouse", "POSITION(orders.status, ',')"),
+            ("clickhouse", "positionUTF8(orders.status, ',')"),
         ],
     )
     async def test_instr_translates_per_dialect(
@@ -732,7 +748,7 @@ class TestStringHygieneDialectTranslation:
             ("postgres", "SUBSTRING(orders.status FROM 1 FOR 5)"),
             ("mysql", "SUBSTRING(orders.status, 1, 5)"),
             ("duckdb", "SUBSTRING(orders.status, 1, 5)"),
-            ("clickhouse", "substr(orders.status, 1, 5)"),
+            ("clickhouse", "substringUTF8(orders.status, 1, 5)"),
         ],
     )
     async def test_substr_translates_per_dialect(
@@ -755,9 +771,9 @@ class TestStringHygieneDialectTranslation:
         [
             # SQLite normalises CONCAT(...) → a || b at emit time.
             ("sqlite", "orders.status || orders.status"),
-            ("postgres", "CONCAT(orders.status, orders.status)"),
+            ("postgres", "orders.status || orders.status"),
             ("mysql", "CONCAT(orders.status, orders.status)"),
-            ("duckdb", "CONCAT(orders.status, orders.status)"),
+            ("duckdb", "orders.status || orders.status"),
             ("clickhouse", "CONCAT(orders.status, orders.status)"),
         ],
     )

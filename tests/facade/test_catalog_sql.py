@@ -78,13 +78,56 @@ def _demo_catalog() -> FacadeCatalog:
     )
 
 
+# DEV-1815: building a CatalogSqlExecutor materialises an in-memory DuckDB
+# (37 table creates + bulk inserts). The default demo catalog is deterministic
+# and every query here is read-only, so reuse one executor per datasource across
+# the ~80 default-catalog tests instead of rebuilding it each call. Tests that
+# pass a custom catalog, or that exercise the executor_for cache/eviction, are
+# unaffected (they never hit this cache).
+_DEMO_EXECUTOR_CACHE: dict[str, CatalogSqlExecutor] = {}
+
+
+def _reset_demo_executor_cache() -> None:
+    _DEMO_EXECUTOR_CACHE.clear()
+
+
 def _executor(catalog: FacadeCatalog | None = None, *, datasource: str = "jaffle") -> CatalogSqlExecutor:
-    return CatalogSqlExecutor(catalog=catalog or _demo_catalog(), datasource=datasource)
+    if catalog is not None:
+        return CatalogSqlExecutor(catalog=catalog, datasource=datasource)
+    ex = _DEMO_EXECUTOR_CACHE.get(datasource)
+    if ex is None:
+        ex = CatalogSqlExecutor(catalog=_demo_catalog(), datasource=datasource)
+        _DEMO_EXECUTOR_CACHE[datasource] = ex
+    return ex
 
 
 def _run(sql: str, *, executor: CatalogSqlExecutor | None = None) -> RowBatch:
     ex = executor or _executor()
     return ex.execute(parsed=_parse(sql), sql=sql)
+
+
+# --- DEV-1815 reuse guard ---------------------------------------------------
+
+
+def test_dev1815_demo_executor_built_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default-catalog runs share a single executor (one DuckDB materialisation)."""
+    _reset_demo_executor_cache()
+    calls = {"n": 0}
+    real_init = CatalogSqlExecutor.__init__
+
+    def _counting_init(self, *args, **kwargs):
+        calls["n"] += 1
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(CatalogSqlExecutor, "__init__", _counting_init)
+    try:
+        _run("SELECT 1")
+        _run("SELECT 2")
+        assert _executor() is _executor()
+    finally:
+        _reset_demo_executor_cache()
+
+    assert calls["n"] == 1
 
 
 # --- corpus shape -----------------------------------------------------------

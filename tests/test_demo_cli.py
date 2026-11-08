@@ -3,12 +3,21 @@
 import argparse
 import subprocess
 import sys
+import types
 from pathlib import Path
 
+import duckdb
 import pytest
 
 from slayer import cli
+from slayer.async_utils import run_sync
+from slayer.core.enums import DataType
+from slayer.core.format import NumberFormat, NumberFormatType
+from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.demo import jaffle_shop
+from slayer.storage.yaml_storage import YAMLStorage
+from tests._cli_inprocess import run_cli_in_process
+from tests._fake_uvicorn import fake_uvicorn
 
 
 def _make_args(**overrides):
@@ -75,11 +84,10 @@ class TestDemoKeywordDispatch:
             raise ValueError("stop here")
 
         monkeypatch.setattr(cli, "_parse_connection_string", fake_parse)
-        with pytest.raises(SystemExit):
-            cli._run_datasources_create(
-                args=_make_args(connection_string="postgresql://host/db"),
-                storage=object(),
-            )
+        args = _make_args(connection_string="postgresql://host/db")
+        storage = object()
+        with pytest.raises(cli._CommandFailed):
+            cli._run_datasources_create(args=args, storage=storage)
 
 
 class TestServeMcpDemoHook:
@@ -90,18 +98,12 @@ class TestServeMcpDemoHook:
         )
         monkeypatch.setattr(cli, "_resolve_storage", lambda *args, **kwargs: "STORAGE")
 
-        # Stub out create_app + uvicorn.run.
-        import sys as _sys
-        import types as _types
-
-        fake_api = _types.ModuleType("slayer.api.server")
+        fake_api = types.ModuleType("slayer.api.server")
         fake_api.create_app = lambda *args, **kwargs: "APP"
-        monkeypatch.setitem(_sys.modules, "slayer.api.server", fake_api)
-        fake_uvicorn = _types.ModuleType("uvicorn")
-        fake_uvicorn.run = lambda *args, **kwargs: calls.append(
-            f"uvicorn:{args[0] if args else kwargs.get('app')}:{kwargs.get('host')}:{kwargs.get('port')}"
+        monkeypatch.setitem(sys.modules, "slayer.api.server", fake_api)
+        monkeypatch.setitem(
+            sys.modules, "uvicorn", fake_uvicorn(lambda app, host, port: calls.append(f"uvicorn:{app}:{host}:{port}"))
         )
-        monkeypatch.setitem(_sys.modules, "uvicorn", fake_uvicorn)
 
         args = argparse.Namespace(host="h", port=1, storage=None, models_dir=None, demo=True)
         cli._run_serve(args=args)
@@ -115,16 +117,13 @@ class TestServeMcpDemoHook:
         )
         monkeypatch.setattr(cli, "_resolve_storage", lambda *args, **kwargs: "STORAGE")
 
-        import sys as _sys
-        import types as _types
-
         class _FakeMCP:
             def run(self):
                 calls.append("mcp.run")
 
-        fake_mcp = _types.ModuleType("slayer.mcp.server")
+        fake_mcp = types.ModuleType("slayer.mcp.server")
         fake_mcp.create_mcp_server = lambda *args, **kwargs: _FakeMCP()
-        monkeypatch.setitem(_sys.modules, "slayer.mcp.server", fake_mcp)
+        monkeypatch.setitem(sys.modules, "slayer.mcp.server", fake_mcp)
 
         args = argparse.Namespace(storage=None, models_dir=None, demo=True)
         cli._run_mcp(args=args)
@@ -178,31 +177,24 @@ class TestJafgenCmdResolution:
         assert result.returncode == 0, result.stderr
 
 
+def _setup_demo(storage: YAMLStorage, storage_path: Path) -> tuple:
+    return jaffle_shop.ensure_demo_datasource(storage, storage_path=str(storage_path), years=1)
+
+
 class TestEnsureDemoDatasourceScoping:
-    def test_fast_path_with_models_in_multiple_datasources(self, tmp_path, monkeypatch):
+    def test_lookups_scoped_with_models_in_multiple_datasources(self, tmp_path, jaffle_generator):
         # Bare list_models()/get_model() raise on storages whose models span
         # several datasources (DEV-1330); the demo must scope every lookup to
         # its own datasource.
-        from slayer.core.models import SlayerModel
-        from slayer.storage.yaml_storage import YAMLStorage
-
         storage = YAMLStorage(base_dir=str(tmp_path))
-        for table in jaffle_shop.TABLE_NAMES:
-            jaffle_shop.run_sync(
-                storage.save_model(
-                    SlayerModel(name=table, sql_table=table, data_source="jaffle_shop")
-                )
-            )
+        _setup_demo(storage, tmp_path)
         jaffle_shop.run_sync(
             storage.save_model(
                 SlayerModel(name="unrelated", sql_table="unrelated", data_source="other_ds")
             )
         )
-        monkeypatch.setattr(jaffle_shop, "build_jaffle_shop", lambda **kwargs: False)
 
-        ds, models, db_built = jaffle_shop.ensure_demo_datasource(
-            storage, storage_path=str(tmp_path)
-        )
+        ds, models, db_built = _setup_demo(storage, tmp_path)
 
         assert db_built is False
         assert ds.name == "jaffle_shop"
@@ -211,9 +203,6 @@ class TestEnsureDemoDatasourceScoping:
 
 class TestDemoEnrichment:
     def _orders_model(self):
-        from slayer.core.enums import DataType
-        from slayer.core.models import Column, SlayerModel
-
         return SlayerModel(
             name="orders",
             sql_table="orders",
@@ -233,8 +222,6 @@ class TestDemoEnrichment:
         assert set(jaffle_shop.DEMO_ENRICHMENT) == set(jaffle_shop.TABLE_NAMES)
 
     def test_applies_labels_measures_and_aggregations(self):
-        from slayer.core.format import NumberFormatType
-
         model = self._orders_model()
         assert jaffle_shop.apply_demo_enrichment(model) is True
 
@@ -265,8 +252,6 @@ class TestDemoEnrichment:
         assert by_name["subtotal"].label == "Net Sales"
 
     def test_auto_default_format_replaced_custom_format_preserved(self):
-        from slayer.core.format import NumberFormat, NumberFormatType
-
         model = self._orders_model()
         by_name = {c.name: c for c in model.columns}
         # Auto-ingestion stamps a bare FLOAT format on numeric columns — the
@@ -281,8 +266,6 @@ class TestDemoEnrichment:
         assert by_name["subtotal"].format.symbol == "€"
 
     def test_duplicate_measure_names_not_added(self):
-        from slayer.core.models import ModelMeasure
-
         model = self._orders_model()
         model.measures = [ModelMeasure(name="total_revenue", formula="subtotal:sum")]
         jaffle_shop.apply_demo_enrichment(model)
@@ -291,14 +274,10 @@ class TestDemoEnrichment:
         assert revenue[0].formula == "subtotal:sum"
 
     def test_unknown_model_untouched(self):
-        from slayer.core.models import SlayerModel
-
         model = SlayerModel(name="unrelated", sql_table="t", data_source="other")
         assert jaffle_shop.apply_demo_enrichment(model) is False
 
     def test_non_table_backed_model_skipped(self):
-        from slayer.core.models import SlayerModel
-
         # The curated spec assumes the physical jaffle tables — a demo model
         # redefined as sql-mode or query-backed must be left alone.
         model = SlayerModel(
@@ -332,12 +311,9 @@ class TestDemoEnrichment:
         fmt_b = next(c for c in model_b.columns if c.name == "order_total").format
         assert fmt_b.symbol == "$"
 
-    def test_fast_path_saves_enriched_models(self, tmp_path, monkeypatch):
-        from slayer.core.enums import DataType
-        from slayer.core.models import Column, SlayerModel
-        from slayer.storage.yaml_storage import YAMLStorage
-
+    def test_setup_saves_enriched_models(self, tmp_path, jaffle_generator):
         storage = YAMLStorage(base_dir=str(tmp_path))
+        _setup_demo(storage, tmp_path)
         for table in jaffle_shop.TABLE_NAMES:
             jaffle_shop.run_sync(
                 storage.save_model(
@@ -349,11 +325,8 @@ class TestDemoEnrichment:
                     )
                 )
             )
-        monkeypatch.setattr(jaffle_shop, "build_jaffle_shop", lambda **kwargs: False)
 
-        _, models, _ = jaffle_shop.ensure_demo_datasource(
-            storage, storage_path=str(tmp_path)
-        )
+        _, models, _ = _setup_demo(storage, tmp_path)
 
         # Returned models are enriched, and the enrichment was persisted.
         assert all(m.description is not None for m in models)
@@ -378,11 +351,13 @@ class TestResolveDemoDbPath:
 
 class TestBuildJaffleShopIdempotency:
     def test_returns_false_and_reshifts_when_db_exists(self, tmp_path, monkeypatch):
-        import duckdb
-
         db = tmp_path / "jaffle_shop.duckdb"
-        # Create a real (empty) DuckDB file so the reuse path can open it.
-        duckdb.connect(str(db)).close()
+        # An up-to-date (bundled-schema) DuckDB file, so the reuse path applies.
+        conn = duckdb.connect(str(db))
+        try:
+            jaffle_shop.create_schema(conn)
+        finally:
+            conn.close()
 
         shift_called = []
         monkeypatch.setattr(
@@ -393,3 +368,20 @@ class TestBuildJaffleShopIdempotency:
 
         assert jaffle_shop.build_jaffle_shop(db_path=str(db)) is False
         assert len(shift_called) == 1, "reuse path must refresh dates"
+
+
+class TestDemoRejectsIngestScope:
+    """The demo ingests all of its tables, so a scope option is refused before anything is built or saved."""
+
+    @pytest.mark.parametrize("flags", [
+        ["--include", "orders"], ["--exclude", "tweets"], ["--schema", "main"], ["--all-schemas"],
+        ["--no-views"], ["--surface-internals"],
+    ])
+    def test_scope_option_is_refused(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str]) -> None:
+        monkeypatch.setattr(cli, "build_jaffle_shop", lambda **_: pytest.fail("the demo must not be built"))
+        store = tmp_path / "store"
+        result = run_cli_in_process(["datasources", "--storage", str(store), "create", "demo", "--ingest", *flags])
+        assert result.returncode == 1
+        assert result.stderr.splitlines() == [result.stderr.strip()]
+        assert flags[0] in result.stderr
+        assert run_sync(YAMLStorage(base_dir=str(store)).list_datasources()) == []

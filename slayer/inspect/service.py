@@ -1,14 +1,6 @@
-"""DEV-1588: shared single-entity inspection service.
+"""Shared entity-inspection service behind the MCP, REST, CLI and client ``inspect`` surfaces.
 
-``InspectService.inspect(reference, entity_type, ...)`` returns the
-rendered detail for EXACTLY one entity — no RRF / fusion / cypher /
-bundled memories. ``entity_type`` is required and disambiguates the
-3-part canonical collision (a name shared by, e.g., a column and an
-aggregation).
-
-Exposed on four surfaces: the MCP ``inspect`` tool, REST ``POST
-/inspect``, CLI ``slayer inspect``, and ``SlayerClient.inspect`` /
-``inspect_sync``.
+``entity_type`` is required: it disambiguates a 3-part canonical id shared by, e.g., a column and an aggregation.
 """
 
 from __future__ import annotations
@@ -16,13 +8,14 @@ from __future__ import annotations
 import json
 from typing import Any, NamedTuple
 
+from slayer.core.time_spine import TIME_SPINE_MODEL
 from slayer.core.errors import (
     AmbiguousModelError,
     EntityResolutionError,
     MemoryNotFoundError,
 )
 from slayer.core.models import SlayerModel
-from slayer.engine.profiling import ensure_column_sample_fresh
+from slayer.engine.profiling import ensure_samples_fresh
 from slayer.inspect.collection_render import (
     BLOCK_SEP,
     datasource_skeleton_fields,
@@ -33,10 +26,13 @@ from slayer.inspect.collection_render import (
 from slayer.inspect.model_render import (
     _TRUNCATION_MARKER,
     _truncate_description,
+    load_visible_models,
     model_skeleton_fields,
     render_model_inspection,
     render_model_skeleton,
+    saved_queries_index,
 )
+from slayer.memories.help_seed import HELP_ID_PREFIX
 from slayer.memories.resolver import resolve_entity
 from slayer.search.render import (
     collect_model_entity_pairs,
@@ -55,10 +51,9 @@ VALID_ENTITY_TYPES = {
 }
 _VALID_FORMATS = {"markdown", "json"}
 
-# Kinds for which the leaf-lookup canonical form is the 3-part id.
 _LEAF_KINDS = {"column", "measure", "aggregation"}
 
-# DEV-1667: kinds for which a null/empty reference renders the collection.
+# Kinds for which a null/empty reference renders the collection.
 _COLLECTION_KINDS = {"model", "datasource"}
 _COLLECTION_UNSUPPORTED = (
     "Collection view (null reference) is only supported for entity_type "
@@ -67,21 +62,12 @@ _COLLECTION_UNSUPPORTED = (
 
 _DESCRIPTION_PREFIX = "Description: "
 
-# DEV-1612: markdown batch blocks are separated by this rule so per-id block
-# boundaries are unambiguous even when a body carries its own ``##`` headings
-# (e.g. a datasource compact=False render lists models under ``## `model```).
+# A rule, not a heading: block bodies may carry their own ``##`` headings.
 _BATCH_BLOCK_SEP = "\n\n---\n\n"
 
 
 class _OneResult(NamedTuple):
-    """The outcome of inspecting a SINGLE id (DEV-1612).
-
-    ``serialized`` is the exact per-kind output the single-id path returns
-    byte-for-byte (markdown body or JSON string). ``canonical_id`` is the
-    resolved id when available (used for the markdown batch header).
-    ``is_error`` is set explicitly on every error branch — never inferred
-    from ``canonical_id`` or from whether ``serialized`` parses as JSON.
-    """
+    """Outcome of inspecting a single id; ``is_error`` is set explicitly, never inferred."""
 
     canonical_id: str | None
     is_error: bool
@@ -89,8 +75,7 @@ class _OneResult(NamedTuple):
 
 
 def _warn_line(*, arg: str, entity_type: str) -> str:
-    """A model-only-arg warning message (plain text, no ``> Warning:``
-    prefix — that is added at markdown render time)."""
+    """Model-only-arg warning text (the ``> Warning:`` prefix is added at render time)."""
     return (
         f"'{arg}' is ignored for entity_type "
         f"'{entity_type}' (only applies to models)."
@@ -98,7 +83,7 @@ def _warn_line(*, arg: str, entity_type: str) -> str:
 
 
 class InspectService:
-    """Shared single-entity point-lookup core (DEV-1588)."""
+    """Shared single-entity point-lookup core."""
 
     def __init__(
         self,
@@ -108,10 +93,6 @@ class InspectService:
     ) -> None:
         self._storage = storage
         self._engine = engine
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
     async def inspect(
         self,
@@ -125,18 +106,10 @@ class InspectService:
         sections: list[str] | None = None,
         descriptions_max_chars: int | None = None,
     ) -> str:
-        """Inspect EXACTLY one entity, a homogeneous-kind BATCH when
-        ``reference`` is a list (DEV-1612), or — DEV-1667 — the whole COLLECTION
-        at a kind when ``reference`` is ``None`` / ``[]``.
+        """Inspect one entity (``str``), a same-kind batch (list), or the collection (``None``/``[]``).
 
-        A ``str`` keeps its single-id behaviour and output byte-for-byte. A
-        non-empty ``list`` returns one rendered block per id, in input order,
-        each echoing its resolved canonical id; per-id resolution errors are
-        isolated. ``None`` or ``[]`` (identical) renders the collection at
-        ``entity_type`` — supported only for ``model`` / ``datasource``.
+        Batch blocks keep input order with per-id errors isolated; collections support model/datasource only.
         """
-        # 1. Global argument validation (raise ValueError). Applies once to
-        #    the whole call for the str, list, and collection shapes.
         if entity_type not in VALID_ENTITY_TYPES:
             raise ValueError(
                 f"Invalid entity_type '{entity_type}'. Must be one of: "
@@ -153,9 +126,6 @@ class InspectService:
                 f"{descriptions_max_chars}."
             )
 
-        # 2. Collection detection (DEV-1667): ``None`` OR ``[]`` → collection.
-        #    ``[]`` is normalized to ``None`` here, so it produces the SAME
-        #    behaviour as ``None`` (the old empty-list raise is removed).
         if reference is None or reference == []:
             if entity_type not in _COLLECTION_KINDS:
                 raise ValueError(_COLLECTION_UNSUPPORTED)
@@ -169,16 +139,13 @@ class InspectService:
                 descriptions_max_chars=descriptions_max_chars,
             )
 
-        # Non-collection: str single / non-empty list batch.
         if isinstance(reference, list):
             if any(not isinstance(ref, str) for ref in reference):
                 raise ValueError("reference list must contain only strings.")
         elif not isinstance(reference, str):
             raise ValueError("reference must be a string or a list of strings.")
 
-        # 4. Model-only-arg warnings (skip entirely for model entity_type).
-        #    These are global-arg warnings, so the SAME base list seeds every
-        #    id in a batch; each id appends its own resolver warnings to a copy.
+        # Seeds every batch id; each id appends its resolver warnings to a copy.
         warnings: list[str] = self._model_only_arg_warnings(
             entity_type=entity_type,
             num_rows=num_rows,
@@ -186,7 +153,6 @@ class InspectService:
             sections=sections,
         )
 
-        # 5. Single id → byte-for-byte single output. List → batch framing.
         if isinstance(reference, str):
             result = await self._inspect_one(
                 reference=reference, entity_type=entity_type, compact=compact,
@@ -214,9 +180,7 @@ class InspectService:
         descriptions_max_chars: int | None,
         warnings: list[str],
     ) -> _OneResult:
-        """Dispatch a SINGLE id to its per-kind helper. Returns the structured
-        :class:`_OneResult` so the batch path can frame success vs error
-        explicitly (no inference)."""
+        """Dispatch a single id to its per-kind helper."""
         if entity_type == "model":
             return await self._inspect_model(
                 reference=reference, compact=compact, fmt=fmt,
@@ -256,8 +220,7 @@ class InspectService:
         descriptions_max_chars: int | None,
         warnings: list[str],
     ) -> str:
-        """DEV-1612: render a homogeneous-kind batch. Order preserved, no
-        dedup, per-id errors isolated."""
+        """Render a same-kind batch: order preserved, no dedup, per-id errors isolated."""
         results: list[tuple[str, _OneResult]] = []
         for ref in references:
             r = await self._inspect_one(
@@ -273,26 +236,17 @@ class InspectService:
             elements: list[Any] = []
             for ref, r in results:
                 if r.is_error:
-                    # Error elements are objects keyed by the INPUT ref so a
-                    # batch JSON array stays homogeneous (objects only).
+                    # Keyed by the input ref so the array stays objects-only.
                     elements.append({"reference": ref, "error": r.serialized})
                 else:
-                    # ``serialized`` is our own freshly-emitted JSON object →
-                    # round-trips safely; default=str re-applies at the array
-                    # layer for any non-JSON-native value.
                     elements.append(json.loads(r.serialized))
             return json.dumps(elements, default=str)
 
-        # Markdown: one ``## <header>`` block per id, joined by the rule.
         blocks: list[str] = []
         for ref, r in results:
             header = ref if r.is_error else (r.canonical_id or ref)
             blocks.append(f"## {header}\n{r.serialized}")
         return _BATCH_BLOCK_SEP.join(blocks)
-
-    # ------------------------------------------------------------------
-    # Warnings
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _model_only_arg_warnings(
@@ -305,31 +259,20 @@ class InspectService:
         if entity_type == "model":
             return []
         out: list[str] = []
-        # num_rows: warns for all non-model kinds when != default.
         if num_rows != 3:
             out.append(_warn_line(arg="num_rows", entity_type=entity_type))
-        # sections: warns for all non-model kinds when set.
         if sections:
             out.append(_warn_line(arg="sections", entity_type=entity_type))
-        # show_sql: no-op (no warn) for leaf kinds; warns for ds / memory.
+        # show_sql is a silent no-op for leaf kinds.
         if show_sql and entity_type in ("datasource", "memory"):
             out.append(_warn_line(arg="show_sql", entity_type=entity_type))
-        # descriptions_max_chars applies to every kind (never warns).
         return out
-
-    # ------------------------------------------------------------------
-    # Output assembly helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _truncate_description_field(
         text: str, max_chars: int | None,
     ) -> str:
-        """Truncate only the ``Description: <value>`` line(s) of a rendered
-        entity blob — NOT the whole render. Mirrors ``inspect_model``'s
-        per-field truncation semantics so the structural lines (Type, SQL,
-        sample values, …) of a column/measure/aggregation/datasource render
-        survive a small ``descriptions_max_chars``."""
+        """Truncate only the ``Description:`` line(s) of a rendered blob, keeping structural lines."""
         if max_chars is None:
             return text
         out: list[str] = []
@@ -354,21 +297,12 @@ class InspectService:
             return f"{body}\n\n{warn_block}"
         return warn_block
 
-    # ------------------------------------------------------------------
-    # Collection views (DEV-1667) — null / [] reference
-    # ------------------------------------------------------------------
+    # Collection views (null / [] reference)
 
     async def _load_visible_models(self, ds_name: str) -> list[SlayerModel]:
-        """Hidden-filtered, name-sorted models for one datasource (matches
-        ``models_summary``). Individual load failures skip that model."""
-        models: list[SlayerModel] = []
-        for name in await self._storage.list_models(data_source=ds_name):
-            try:
-                m = await self._storage.get_model(name, data_source=ds_name)
-            except Exception:  # noqa: BLE001 — one bad model must not sink the DS
-                continue
-            if m is not None and not m.hidden:
-                models.append(m)
+        """Visible, name-sorted models of one datasource, built-in models included."""
+        models = await load_visible_models(self._storage, ds_name)
+        models.extend(await self._storage.builtin_models(ds_name))
         models.sort(key=lambda m: m.name)
         return models
 
@@ -404,7 +338,6 @@ class InspectService:
             return render_model_oneliner_index(
                 groups=groups, fmt=fmt, warnings=[],
             )
-        # compact=False: full models_summary block per DS.
         if fmt == "json":
             return self._collection_model_verbose_json(
                 groups=groups, descriptions_max_chars=descriptions_max_chars,
@@ -426,9 +359,6 @@ class InspectService:
                     {"data_source": ds, "error": "invalid config", "models": []}
                 )
             else:
-                # render_models_summary now returns valid JSON for empty
-                # datasources too (model_count 0, models []) — one consistent
-                # ``datasource_name`` shape for every non-error entry.
                 entries.append(json.loads(render_models_summary(
                     datasource_name=ds, models=models, fmt="json",
                     compact=False, descriptions_max_chars=descriptions_max_chars,
@@ -466,9 +396,6 @@ class InspectService:
     ) -> str:
         ds_names = await self._storage.list_datasources()
         if not ds_names:
-            # Empty-state parity with the model collection: the list renderer
-            # emits the "No datasources configured" message (markdown) / the
-            # empty envelope (json) for both compact modes.
             return render_datasource_list(pairs=[], fmt=fmt, warnings=[])
 
         if compact:
@@ -481,7 +408,6 @@ class InspectService:
                     pairs.append((name, None))
             return render_datasource_list(pairs=pairs, fmt=fmt, warnings=[])
 
-        # compact=False: per-DS name + description + model skeleton.
         if fmt == "json":
             return await self._collection_datasource_verbose_json(
                 ds_names=ds_names, descriptions_max_chars=descriptions_max_chars,
@@ -535,10 +461,6 @@ class InspectService:
             ))
         return BLOCK_SEP.join(blocks)
 
-    # ------------------------------------------------------------------
-    # Memory
-    # ------------------------------------------------------------------
-
     async def _inspect_memory(
         self,
         *,
@@ -562,6 +484,8 @@ class InspectService:
                 f"No memory with id '{memory_id}' found "
                 f"(reference '{reference}')."
             ))
+        # Help topics are read for their body, so ``compact`` never trims them.
+        compact = compact and not mem.id.startswith(HELP_ID_PREFIX)
 
         description = (
             mem.description
@@ -576,8 +500,7 @@ class InspectService:
         else:
             mem_for_render = mem
             if descriptions_max_chars is not None:
-                # Truncate the learning body only — keep the tagged-entities
-                # line intact (mirrors per-field truncation elsewhere).
+                # Truncate the learning body only; the tagged-entities line stays intact.
                 truncated_learning = _truncate_description(
                     text=mem.learning, max_chars=descriptions_max_chars,
                 ) or ""
@@ -593,8 +516,6 @@ class InspectService:
                 "entity_type": "memory",
                 "description": description,
             }
-            # ``text`` present iff non-empty (DEV-1588 follow-up): compact mode
-            # leaves ``full_text`` empty, so the key is omitted.
             if full_text:
                 payload["text"] = full_text
             payload["warnings"] = warnings
@@ -605,25 +526,16 @@ class InspectService:
             self._markdown_with_warnings(body or "", warnings),
         )
 
-    # ------------------------------------------------------------------
-    # Datasource
-    # ------------------------------------------------------------------
-
     async def _resolve_single_canonical(
         self, *, reference: str, warnings: list[str],
     ) -> tuple[str, list[str]] | _OneResult:
-        """Resolve ``reference`` to its single canonical form for the
-        datasource / leaf paths. Returns ``(canonical, warnings)`` on success,
-        or an error ``_OneResult`` (the resolver raised, or the reference did
-        not resolve to exactly one canonical id)."""
+        """``(canonical, warnings)`` for a single-canonical reference, else an error ``_OneResult``."""
         try:
             res = await resolve_entity(
                 reference, storage=self._storage, source_model=None,
             )
         except (EntityResolutionError, AmbiguousModelError) as exc:
-            # AmbiguousModelError (a SlayerError sibling, NOT a subclass of
-            # EntityResolutionError) escapes resolve_entity's bare-name model
-            # leg; surface its message instead of crashing the surface.
+            # AmbiguousModelError is not an EntityResolutionError subclass.
             return _OneResult(None, True, str(exc))
         warnings = warnings + list(res.warnings)
         if len(res.canonical_forms) != 1:
@@ -682,8 +594,6 @@ class InspectService:
             text=description, max_chars=descriptions_max_chars,
         )
 
-        # compact=True: datasource description only (DB-free); ``text`` is
-        # omitted entirely (present iff non-empty, DEV-1588 follow-up).
         if compact:
             if fmt == "json":
                 return json.dumps({
@@ -694,20 +604,19 @@ class InspectService:
                 })
             return self._markdown_with_warnings(trunc_desc or "", warnings)
 
-        # compact=False: a per-model schema skeleton for each VISIBLE model,
-        # sorted by name (matches models_summary), still DB-free. Uses the
-        # shared resilient loader so one malformed model file is skipped rather
-        # than sinking the whole render (parity with the collection JSON path).
         models = await self._load_visible_models(ds_name)
+        granularities = [g.model_dump(mode="json") for g in (cfg.granularities if cfg is not None else [])]
+        saved = saved_queries_index(models, max_chars=descriptions_max_chars)
 
         if fmt == "json":
             return json.dumps({
                 "canonical_id": ds_name,
                 "entity_type": "datasource",
                 "description": trunc_desc,
+                "granularities": granularities,
                 "models": [
                     model_skeleton_fields(
-                        model=m, max_chars=descriptions_max_chars,
+                        model=m, max_chars=descriptions_max_chars, saved_queries=saved.get(m.name),
                     )
                     for m in models
                 ],
@@ -717,18 +626,18 @@ class InspectService:
         md_lines: list[str] = [f"Datasource: {ds_name}"]
         if trunc_desc:
             md_lines.append(f"Description: {trunc_desc}")
+        if granularities:
+            md_lines.append("Custom granularities: " + ", ".join(
+                f"`{g['name']}` ({g['multiple']} × {g['base']} from {g['origin']})" for g in granularities
+            ))
         for m in models:
             md_lines.append(f"\n## `{m.name}`")
             md_lines.append(
                 render_model_skeleton(
-                    model=m, max_chars=descriptions_max_chars,
+                    model=m, max_chars=descriptions_max_chars, saved_queries=saved.get(m.name),
                 )
             )
         return self._markdown_with_warnings("\n".join(md_lines), warnings)
-
-    # ------------------------------------------------------------------
-    # Model
-    # ------------------------------------------------------------------
 
     async def _inspect_model(
         self,
@@ -745,9 +654,12 @@ class InspectService:
         try:
             canonical = await self._resolve_model_canonical(reference)
         except AmbiguousModelError as exc:
-            # A bare model name present in ≥2 datasources with no priority
-            # winner — surface the actionable message, not an uncaught raise.
             return _OneResult(None, True, str(exc))
+        if canonical is None and reference.split(".")[-1] == TIME_SPINE_MODEL:
+            spine = await self._storage.get_model_or_builtin(
+                TIME_SPINE_MODEL, data_source=reference.split(".")[0] if "." in reference else None,
+            )
+            canonical = f"{spine.data_source}.{TIME_SPINE_MODEL}" if spine is not None else None
         if canonical is None:
             return _OneResult(None, True, (
                 f"'{reference}' does not resolve to a model. Pass a "
@@ -755,24 +667,21 @@ class InspectService:
                 f"bare model name."
             ))
         ds_name, model_name = canonical.split(".", 1)
-        model = await self._storage.get_model(model_name, data_source=ds_name)
+        model = await self._storage.get_model_or_builtin(model_name, data_source=ds_name)
         if model is None:
             return _OneResult(None, True, (
                 f"Model '{canonical}' not found "
                 f"(reference '{reference}')."
             ))
         if compact:
-            # Schema skeleton (DEV-1588 follow-up): column / measure /
-            # aggregation NAMES + join targets, zero DB calls — short-circuit
-            # before the full renderer (which can run row-count / profiling /
-            # sample-data DB work). compact=False returns the full model view
-            # (sections / samples / SQL).
+            # DB-free skeleton; short-circuits the full renderer's DB work.
+            saved_queries = saved_queries_index(
+                await self._load_visible_models(ds_name), max_chars=descriptions_max_chars,
+            ).get(model.name)
             if fmt == "json":
                 payload = dict(model_skeleton_fields(
-                    model=model, max_chars=descriptions_max_chars,
+                    model=model, max_chars=descriptions_max_chars, saved_queries=saved_queries,
                 ))
-                # The resolved id is authoritative (echoes the normalized
-                # reference, like every other inspect JSON shape).
                 payload["canonical_id"] = canonical
                 payload["entity_type"] = "model"
                 payload["warnings"] = warnings
@@ -780,7 +689,7 @@ class InspectService:
                     canonical, False, json.dumps(payload, indent=2, default=str),
                 )
             body = render_model_skeleton(
-                model=model, max_chars=descriptions_max_chars,
+                model=model, max_chars=descriptions_max_chars, saved_queries=saved_queries,
             )
             return _OneResult(canonical, False, self._markdown_with_warnings(
                 f"# `{model.name}`\n{body}", warnings,
@@ -808,15 +717,12 @@ class InspectService:
         )
 
     async def _resolve_model_canonical(self, reference: str) -> str | None:
-        """Resolve ``reference`` to a 2-part ``<ds>.<model>`` canonical id,
-        applying the Case-D entity_type=model override (a resolver that
-        picked a datasource for a name that is also a model)."""
+        """Resolve ``reference`` to a ``<ds>.<model>`` id, even when the resolver picked a same-named datasource."""
         try:
             res = await resolve_entity(
                 reference, storage=self._storage, source_model=None,
             )
         except AmbiguousModelError:
-            # Bare ambiguous model name: let the caller surface the message.
             raise
         except EntityResolutionError:
             res = None
@@ -824,13 +730,7 @@ class InspectService:
             canonical = res.canonical_forms[0]
             if canonical.count(".") == 1:
                 return canonical
-        # Case D fallback: a *bare* name the resolver mapped to a datasource
-        # (1-seg) that is ALSO a model elsewhere. Only the reference itself is
-        # a valid model-identity candidate — never the last segment of a
-        # dotted reference. A dotted reference that resolved to a leaf (or
-        # didn't resolve to a 2-seg model) is a kind mismatch, not a model:
-        # collapsing `ds.orders.amount` to `amount` could return an unrelated
-        # model named `amount`.
+        # Only the whole reference is a model candidate, never a dotted ref's last segment.
         try:
             ident = await self._storage.resolve_model_identity(reference)
         except AmbiguousModelError:
@@ -840,10 +740,6 @@ class InspectService:
         if ident is not None:
             return f"{ident[0]}.{ident[1]}"
         return None
-
-    # ------------------------------------------------------------------
-    # Leaf (column / measure / aggregation)
-    # ------------------------------------------------------------------
 
     async def _inspect_leaf(
         self,
@@ -874,8 +770,7 @@ class InspectService:
                 f"(reference '{reference}')."
             ))
 
-        # DEV-1615: lazily back-fill the column's sample values before render.
-        model = await self._maybe_refresh_leaf_sample(
+        model =await self._maybe_refresh_leaf_sample(
             model=model, entity_type=entity_type, compact=compact, leaf=leaf,
         )
 
@@ -906,34 +801,19 @@ class InspectService:
         compact: bool,
         leaf: str,
     ) -> SlayerModel:
-        """DEV-1615: lazily back-fill a column's missing/stale sample values on
-        read — same shared helper + cache-aware semantics inspect_model /
-        search use — so this point-lookup is no longer a regression vs the
-        tools it replaced.
+        """Lazily back-fill a column's sample on a ``compact=False`` column read (engine-guarded).
 
-        Gated to ``entity_type="column"`` (measures / aggregations have no
-        sample concept) and to ``compact=False``: the compact leaf render is
-        description-only and never shows "Sample values:", so refreshing there
-        would add a profiling DB query to a deliberately cheap lookup. Engine-
-        guarded (no-op without an engine, like search's hook). Hidden columns
-        are rendered but never back-filled — the helper's ``_is_sample_cached``
-        treats hidden/PK as cached (system-wide convention, parity with
-        inspect_model).
-
-        Returns the input model unchanged when no refresh applies; otherwise a
-        ``model_copy`` with the refreshed column substituted, so the render
-        (``collect_model_entity_pairs``) reflects the fresh sample with no
-        change to the downstream render logic.
+        Returns ``model`` unchanged when nothing changed, else a copy with the returned column.
         """
         if entity_type != "column" or compact or self._engine is None:
             return model
         col = model.get_column(leaf)
         if col is None:
             return model
-        refreshed = await ensure_column_sample_fresh(
-            model=model, column=col,
-            engine=self._engine, storage=self._storage,
+        outcome = await ensure_samples_fresh(
+            model=model, columns=[col], engine=self._engine, storage=self._storage,
         )
+        refreshed = outcome.columns[0]
         if refreshed is col:
             return model
         return model.model_copy(update={
@@ -960,10 +840,7 @@ class InspectService:
         full_text = self._truncate_description_field(
             text=entry.text, max_chars=descriptions_max_chars,
         )
-        # Measures / aggregations carry no verbose sample data — their full text
-        # (formula / params / label / type) is essential, so include it even in
-        # compact mode. Columns stay gated: their text can carry sampled values
-        # (a DB read / verbose output).
+        # Measure/aggregation text is essential and sample-free, so shown even when compact.
         show_full = bool(full_text) and (
             not compact or entity_type in {"measure", "aggregation"}
         )
@@ -973,8 +850,6 @@ class InspectService:
                 "entity_type": entity_type,
                 "description": trunc_desc,
             }
-            # ``text`` present iff non-empty (DEV-1588 follow-up): included in
-            # full mode, and for measures/aggregations in compact mode too.
             if show_full:
                 payload["text"] = full_text
             payload["warnings"] = warnings
@@ -999,7 +874,6 @@ class InspectService:
                 f"model '{ds_name}.{model_name}'; cannot uniquely identify "
                 f"which to inspect."
             )
-        # Zero matches of the requested kind. Name the available kind(s).
         other_kinds = sorted({
             p.kind for p in pairs if p.canonical_id == canonical
         })

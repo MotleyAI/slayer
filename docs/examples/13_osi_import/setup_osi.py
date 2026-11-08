@@ -10,8 +10,8 @@ Everything generated lives under a gitignored ``.cache/`` next to this file, so
 nothing generated is committed and re-runs rebuild it cheaply.
 
 The OSI importer takes column *types* from **live introspection** of the
-datasource (OSI carries no type hints), so the datasource must be saved and
-reachable *before* :func:`convert_osi_to_slayer` runs.
+datasource (a declared ``datatype`` is only the fallback), so the datasource
+must be saved and reachable *before* :func:`convert_osi_to_slayer` runs.
 
 Gold-query helper note: SLayer opens the DuckDB file through SQLAlchemy with a
 read-write engine that DuckDB will not let a second raw connection share under a
@@ -32,10 +32,10 @@ import duckdb
 from slayer.async_utils import run_sync
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.models import DatasourceConfig
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ingest_report import ConversionResult
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.parser import parse_osi_path
-from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 
 logger = logging.getLogger(__name__)
@@ -135,14 +135,14 @@ def convert_osi_to_slayer(
     run_sync(storage.save_datasource(ds))
 
     documents = parse_osi_path(osi_path)
-    sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
-    result = OsiToSlayerConverter(
+    converter = OsiToSlayerConverter(
         documents=documents,
         data_source=DATASOURCE_NAME,
-        sa_engine=sa_engine,
-        dialect="ANSI_SQL",
         target_dialect="duckdb",
-    ).convert()
+    )
+    engine = SlayerQueryEngine(storage=storage)
+    engine.run_sync(converter.collect_metadata(client=engine.client_for(ds)))
+    result = converter.convert()
 
     for model in result.models:
         run_sync(storage.save_model(model))

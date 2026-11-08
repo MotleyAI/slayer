@@ -1,6 +1,6 @@
 [project]
 name = "motley-slayer"
-version = "0.9.12"
+version = "1.8.1"
 description = "A lightweight, agent-first semantic layer for AI agents"
 requires-python = ">=3.11"
 license = "MIT"
@@ -29,20 +29,22 @@ Discord = "https://discord.gg/egWxMctHCA"
 
 [tool.poetry.dependencies]
 python = "^3.11"
-sqlglot = {version = ">=30.0", extras = ["c"]}
-sqlalchemy = ">=2.0"
+sqlglot = {version = ">=30.17", extras = ["c"]}
+sqlalchemy = ">=2.0,<2.1"
+greenlet = ">=1"
 pydantic = ">=2.0"
+pyparsing = ">=3.1"
 python-dateutil = ">=2.8"
 pyyaml = ">=6.0"
 fastapi = ">=0.100"
 uvicorn = ">=0.20"
 httpx = {version = ">=0.24", optional = true}
 pandas = {version = ">=2.0", optional = true}
-# DEV-1757: mcp 2.x dropped the `mcp.server.fastmcp` module layout that
-# `slayer/mcp/server.py` imports (renamed to `mcp.server.mcpserver.MCPServer`).
-# An unbounded `>=1.0` let every lockfile-free install resolve 2.0.0 and ship a
-# broken MCP server. Cap until the 2.x migration lands, then raise the floor.
-mcp = ">=1.0,<2"
+# mcp 2.x dropped the `mcp.server.fastmcp` module layout that `slayer/mcp/server.py`
+# imports (renamed to `mcp.server.mcpserver.MCPServer`); cap until the 2.x migration
+# lands. Floor 1.19: the first `FastMCP.tool` accepting `meta` (always-load option).
+mcp = ">=1.19,<2"
+psycopg = {version = ">=3.1", extras = ["binary"], optional = true}
 psycopg2-binary = {version = ">=2.9", optional = true}
 asyncpg = {version = ">=0.27", optional = true}
 pymysql = {version = ">=1.0", optional = true}
@@ -51,13 +53,13 @@ clickhouse-sqlalchemy = {version = ">=0.3", optional = true}
 pyodbc = {version = ">=5.0", optional = true}
 sqlalchemy-bigquery = {version = ">=1.11", optional = true, python = "<3.15"}
 # DuckDB + jafgen are core deps so the bundled `slayer datasources create demo`
-# works after a single `pip install motley-slayer`.
-duckdb = ">=0.9"
+# works after a single `pip install motley-slayer`. 1.1 is the first catalog with every key column ingestion reads.
+duckdb = ">=1.1"
 duckdb-engine = ">=0.13"
 jafgen = "^0.4.14"
 # esprima is a pure-Python ESTree parser (zero transitive deps) used by the
-# Cube JavaScript-config importer (`slayer import-cube` on `.js` files,
-# DEV-1730). Core dep so `import-cube` works after a single
+# Cube JavaScript-config importer (`slayer import-cube` on `.js`
+# files). Core dep so `import-cube` works after a single
 # `pip install motley-slayer`. Frozen upstream at ES2017 — sufficient for the
 # declarative cube()/view() config subset; newer syntax surfaces as a report
 # issue rather than a crash.
@@ -66,12 +68,11 @@ esprima = ">=4.0"
 # concerns arise — the actively-maintained alternative is `bm25s`.
 rank-bm25 = ">=0.2.2"
 dbt-core = {version = ">=1.7", optional = true}
-# pyarrow is already a transitive dep of duckdb, but exposing it under the
-# `flight` extra makes the Flight SQL facade dependency explicit and lets
-# users who skip duckdb still get it via `pip install motley-slayer[flight]`.
+# The Flight SQL facade imports both pyarrow and the checked-in protobuf module.
 pyarrow = {version = ">=18.0", optional = true}
+protobuf = {version = ">=6.31.1", optional = true}
 tantivy = "^0.26"
-# Embedding-based semantic search (DEV-1386). Optional — search degrades
+# Embedding-based semantic search. Optional — search degrades
 # gracefully to tantivy + BM25 when this extra is not installed.
 litellm = {version = ">=1.50", optional = true}
 numpy = {version = ">=1.24", optional = true}
@@ -79,24 +80,27 @@ numpy = {version = ">=1.24", optional = true}
 # the original KuzuDB repo was archived post-acquisition). Import name is
 # ``ladybug``.
 ladybug = {version = ">=0.1", optional = true}
-# Snowflake support (DEV-1551). snowflake-sqlalchemy >= 1.7 is the first
+# Snowflake support. snowflake-sqlalchemy >= 1.7 is the first
 # release with SQLAlchemy 2.x support (a hard repo dep).
 snowflake-connector-python = {version = ">=3.13", optional = true}
 snowflake-sqlalchemy = {version = ">=1.7", optional = true}
+# 0.340: credentials pass through undecoded, and HTTP auth needs allow_insecure_auth.
+trino = {version = ">=0.340", optional = true}
 
 [tool.poetry.extras]
 client = ["httpx", "pandas"]
-postgres = ["psycopg2-binary", "asyncpg"]
+postgres = ["psycopg", "psycopg2-binary", "asyncpg"]
 mysql = ["pymysql", "aiomysql"]
 clickhouse = ["clickhouse-sqlalchemy"]
 sqlserver = ["pyodbc"]
 snowflake = ["snowflake-connector-python", "snowflake-sqlalchemy"]
 bigquery = ["sqlalchemy-bigquery"]
+trino = ["trino"]
 dbt = ["dbt-core"]
-flight = ["pyarrow"]
+flight = ["pyarrow", "protobuf"]
 advanced_search = ["litellm", "numpy", "ladybug"]
 embedding_search = ["litellm", "numpy"]  # legacy alias for advanced_search without graph support
-all = ["httpx", "pandas", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "pyodbc", "snowflake-connector-python", "snowflake-sqlalchemy", "sqlalchemy-bigquery", "dbt-core", "pyarrow", "litellm", "numpy", "ladybug"]
+all = ["httpx", "pandas", "psycopg", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "pyodbc", "snowflake-connector-python", "snowflake-sqlalchemy", "sqlalchemy-bigquery", "trino", "dbt-core", "pyarrow", "protobuf", "litellm", "numpy", "ladybug"]
 
 [project.scripts]
 slayer = "slayer.cli:main"
@@ -109,7 +113,7 @@ ruff = ">=0.4"
 pytest-postgresql = "^8.0.0"
 psycopg2-binary = "^2.9.11"
 pytest-benchmark = "^5.2.3"
-duckdb = ">=0.9"
+duckdb = ">=1.1"
 duckdb-engine = ">=0.13"
 nbclient = ">=0.10"
 nbformat = ">=5.10"
@@ -123,11 +127,17 @@ pyinstrument = "^5.1.2"
 # wire path a real BI tool would. Java >= 11 must be on PATH.
 jaydebeapi = "^1.2.3"
 jpype1 = "^1.5.0"
-# DEV-1564: dialect integration suites spin up real DBs via testcontainers.
-# The MySQL/ClickHouse/SQL Server suites import `testcontainers.<dialect>`
+# Dialect integration suites spin up real DBs via testcontainers.
+# The MySQL/ClickHouse/SQL Server/Trino suites import `testcontainers.<dialect>`
 # and skip cleanly if it's missing; CI workflows assert the extras are
 # importable before invoking pytest so a missing dep surfaces as failure.
-testcontainers = {extras = ["mysql", "clickhouse", "mssql"], version = "^4.0"}
+testcontainers = {extras = ["mysql", "clickhouse", "mssql", "trino"], version = "^4.0"}
+basedpyright = "^1.39.10"
+pytest-xdist = ">=3.6"
+living-architecture = "0.4.0"
+jsonschema = "^4.23"
+filelock = ">=3.12,<4"
+pg8000 = "^1.31.6"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -137,6 +147,26 @@ markers = [
     "metabase_e2e: live-Metabase end-to-end suite (requires Docker)",
 ]
 asyncio_mode = "auto"
+# Resource-ownership gate: a leaked sqlite connection / undisposed engine is an error on
+# CPython 3.13+. Both filters are sqlite-specific and inert on 3.11/3.12 (the
+# messages are 3.13+). The unraisable filter is scoped to sqlite's finalizer
+# message so a non-sqlite driver's connection finalizer (e.g. aiomysql's
+# "Exception ignored in: <function Connection.__del__>" after the loop closes)
+# stays a warning — the gate's scope is sqlite. See test_law_resource_ownership.py.
+filterwarnings = [
+    "error:unclosed database:ResourceWarning",
+    "error:Exception ignored while finalizing database connection:pytest.PytestUnraisableExceptionWarning",
+    # An unawaited coroutine is a silently skipped call; it warns from the finalizer, hence both filters.
+    "error:coroutine .* was never awaited:RuntimeWarning",
+    "error:Exception ignored .*coroutine:pytest.PytestUnraisableExceptionWarning",
+]
+
+[tool.basedpyright]
+typeCheckingMode = "basic"
+# The oldest supported Python: flags newer-only stdlib APIs, and pins results across interpreters.
+pythonVersion = "3.11"
+include = ["slayer", "tests"]
+exclude = ["slayer/flight/_flight_sql_pb2.py"]
 
 [tool.ruff]
 target-version = "py311"

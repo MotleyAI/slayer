@@ -1,0 +1,14 @@
+name: orders
+data_source: probe
+sql_table: orders
+columns:
+  - {name: id, type: number, primary_key: true}
+  - {name: customer_id, type: number}
+  - {name: amount, type: number}
+  - {name: status, type: string}
+  - {name: order_date, type: date}
+joins:
+  - {target_model: customers, join_pairs: [[customer_id, id]], cardinality: many_to_one}
+measures:
+  - {name: aov, formula: "sum(amount) / count(*)"}
+  - {name: aov_chg, formula: "change_pct(aov)"}

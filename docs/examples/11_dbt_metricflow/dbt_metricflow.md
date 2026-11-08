@@ -20,7 +20,7 @@ Each dbt **semantic model** becomes a SLayer model; each dbt **metric** folds in
 
 | Question | SLayer query | Verified against |
 |----------|--------------|------------------|
-| How many claims do we have? | `{"source_model": "claim", "measures": ["*:count"]}` | `SELECT COUNT(*) FROM claim` |
+| How many claims do we have? | `{"source_model": "claim", "measures": ["count(*)"]}` | `SELECT COUNT(*) FROM claim` |
 | Total loss by claim number | `total_loss_amount` grouped by `claim.company_claim_number` | the benchmark's multi-join gold SQL |
 
 The claim-number grouping reaches across a join that the converter inferred from the dbt entities — no manual SQL join is written. Both answers match the gold SQL exactly.

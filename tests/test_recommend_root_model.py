@@ -1,4 +1,4 @@
-"""Engine-level tests for ``recommend_root_model`` (DEV-1626).
+"""Engine-level tests for ``recommend_root_model``.
 
 Given a set of ``model.column`` / ``model.metric`` items an agent wants in
 one query, the engine recommends which model to use as ``source_model``
@@ -10,13 +10,16 @@ Fixture graph (datasource ``mydb``)::
     orders ──LEFT──> customers ──LEFT──> regions
       │  │  └──LEFT──> warehouses ──LEFT──> regions   (diamond onto regions)
       │  └──LEFT──> products
-      └──INNER──> order_items  (symmetric: order_items ──INNER──> orders)
+      └──INNER──> order_items   (declared once; reverse traversal is automatic)
 
     tickets ──LEFT──> agents            (disconnected region)
+    logs                                (isolated — reaches nothing)
 
-A second datasource ``otherdb`` also has a model named ``orders`` (for
-data_source disambiguation) plus ``widgets`` (for the cross-datasource
-guard).
+Every declared edge traverses in both directions, so each
+datasource splits into connected components: {orders-world}, {tickets,
+agents}, {logs}. A second datasource ``otherdb`` also has a model named
+``orders`` (for data_source disambiguation) plus ``widgets`` (for the
+cross-datasource guard).
 """
 
 from __future__ import annotations
@@ -42,6 +45,7 @@ from slayer.core.recommend import (
     ItemPath,
     RootModelRecommendation,
 )
+from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.base import StorageBackend
 from slayer.storage.yaml_storage import YAMLStorage
@@ -74,6 +78,10 @@ async def storage() -> AsyncIterator[StorageBackend]:
                 _col("revenue", DataType.DOUBLE),
                 _col("amount", DataType.DOUBLE),
                 _col("qty", DataType.INT),
+                _col("ordered_at", DataType.TIMESTAMP),
+                Column(name="customer_id", type=DataType.INT, hidden=True),
+                Column(name="product_id", type=DataType.INT, hidden=True),
+                Column(name="warehouse_id", type=DataType.INT, hidden=True),
             ],
             measures=[ModelMeasure(formula="revenue:sum / *:count", name="aov")],
             aggregations=[Aggregation(
@@ -105,10 +113,11 @@ async def storage() -> AsyncIterator[StorageBackend]:
             name="regions", data_source="mydb", sql_table="regions",
             columns=[_col("id", DataType.INT, pk=True), _col("name"), _col("population", DataType.INT)],
         ))
+        # No reverse declaration on order_items — the orders→order_items INNER
+        # edge traverses both ways; a mirror would be rejected.
         await s.save_model(SlayerModel(
             name="order_items", data_source="mydb", sql_table="order_items",
             columns=[_col("id", DataType.INT, pk=True), _col("order_id", DataType.INT), _col("sku"), _col("quantity", DataType.INT)],
-            joins=[_inner("orders", [["order_id", "id"]])],
         ))
         await s.save_model(SlayerModel(
             name="tickets", data_source="mydb", sql_table="tickets",
@@ -118,6 +127,10 @@ async def storage() -> AsyncIterator[StorageBackend]:
         await s.save_model(SlayerModel(
             name="agents", data_source="mydb", sql_table="agents",
             columns=[_col("id", DataType.INT, pk=True), _col("name")],
+        ))
+        await s.save_model(SlayerModel(
+            name="logs", data_source="mydb", sql_table="logs",
+            columns=[_col("id", DataType.INT, pk=True), _col("line")],
         ))
 
         # otherdb — a uniquely-named model, for the cross-datasource guard.
@@ -214,8 +227,11 @@ class TestRootSelection:
         assert rec.root_model == "orders"
         assert _paths(rec) == {"orders.status": "status", "orders.revenue": "revenue"}
 
-    async def test_fan_out_picks_unmentioned_bridge(self, engine) -> None:
-        # customers & products don't reach each other; orders bridges both.
+    async def test_fan_out_picks_bridge_that_determines_both(self, engine) -> None:
+        # Determination is to-one. Neither customers nor products
+        # determines the other's column (the reverse hop through orders fans
+        # out), so only the shared child orders determines both — the bridge
+        # wins outright, no tiebreak needed.
         rec = await engine.recommend_root_model(["customers.name", "products.category"])
         assert rec.root_model == "orders"
         assert _paths(rec) == {
@@ -239,17 +255,18 @@ class TestRootSelection:
             "regions.population": "customers.regions.population",
         }
 
-    async def test_sole_unmentioned_bridge_root(self, engine) -> None:
-        # Only orders reaches {customers, products}; it is unmentioned but
-        # is the sole valid root.
+    async def test_shared_child_is_sole_determiner(self, engine) -> None:
+        # Only orders determines both columns along to-one paths;
+        # customers/products each fan out to the other, so orders is the sole
+        # valid root.
         rec = await engine.recommend_root_model(["customers.name", "products.price"])
         assert rec.root_model == "orders"
 
     async def test_symmetric_tie_broken_lexicographically(self, engine) -> None:
-        # orders <-> order_items symmetric INNER: root=orders costs 1 hop,
-        # root=order_items costs 1 hop. Both are mentioned owning models, so
-        # the mentioned-preference can't break it → lexicographically
-        # smallest name wins: "order_items" < "orders".
+        # The single orders→order_items INNER edge routes both ways:
+        # root=orders costs 1 hop, root=order_items costs 1 hop. Both are
+        # mentioned owning models, so the mentioned-preference can't break it
+        # → lexicographically smallest name wins: "order_items" < "orders".
         rec = await engine.recommend_root_model(["orders.status", "order_items.sku"])
         assert rec.root_model == "order_items"
         assert _paths(rec) == {"orders.status": "orders.status", "order_items.sku": "sku"}
@@ -262,19 +279,19 @@ class TestAggSuffix:
     async def test_simple_suffix_local(self, engine) -> None:
         rec = await engine.recommend_root_model(["orders.revenue:sum"], data_source="mydb")
         assert rec.root_model == "orders"
-        assert _paths(rec) == {"orders.revenue:sum": "revenue:sum"}
+        assert _paths(rec) == {"orders.revenue:sum": "sum(revenue)"}
 
     async def test_suffix_cross_model(self, engine) -> None:
         rec = await engine.recommend_root_model(["products.price:sum", "orders.status"])
         assert rec.root_model == "orders"
-        assert _paths(rec)["products.price:sum"] == "products.price:sum"
+        assert _paths(rec)["products.price:sum"] == "sum(products.price)"
 
     async def test_kwarg_suffix_local(self, engine) -> None:
         rec = await engine.recommend_root_model(
             ["orders.amount:weighted_avg(weight=qty)"], data_source="mydb"
         )
         assert _paths(rec) == {
-            "orders.amount:weighted_avg(weight=qty)": "amount:weighted_avg(weight=qty)"
+            "orders.amount:weighted_avg(weight=qty)": "weighted_avg(amount, weight=qty)"
         }
 
     async def test_kwarg_suffix_cross_model_preserved_verbatim(self, engine) -> None:
@@ -284,7 +301,7 @@ class TestAggSuffix:
         assert rec.root_model == "orders"
         assert (
             _paths(rec)["products.price:weighted_avg(weight=price)"]
-            == "products.price:weighted_avg(weight=price)"
+            == "weighted_avg(products.price, weight=price)"
         )
 
     async def test_dotted_kwarg_arg_preserved_verbatim(self, engine) -> None:
@@ -293,7 +310,7 @@ class TestAggSuffix:
         item = "products.price:weighted_avg(weight=products.price)"
         rec = await engine.recommend_root_model([item, "orders.status"])
         assert rec.root_model == "orders"
-        assert _paths(rec)[item] == item
+        assert _paths(rec)[item] == "weighted_avg(products.price, weight=products.price)"
 
     async def test_suffix_through_multi_hop_path(self, engine) -> None:
         # regions is 2 hops from orders (via customers); suffix rides along.
@@ -301,43 +318,75 @@ class TestAggSuffix:
             ["orders.status", "regions.population:sum"]
         )
         assert rec.root_model == "orders"
-        assert _paths(rec)["regions.population:sum"] == "customers.regions.population:sum"
+        assert _paths(rec)["regions.population:sum"] == "sum(customers.regions.population)"
+
+    @pytest.mark.parametrize(
+        ("item", "expected"),
+        [
+            ("sum(orders.amount)", "sum(amount)"),
+            ("orders.amount:sum", "sum(amount)"),
+            ("percentile(orders.amount, p=0.9)", "percentile(amount, p=0.9)"),
+            ("orders.amount:percentile(p=0.9)", "percentile(amount, p=0.9)"),
+            ("last(orders.amount, ordered_at)", "last(amount, ordered_at)"),
+            ("orders.amount:last(ordered_at)", "last(amount, ordered_at)"),
+            ("weighted_avg(orders.amount, weight=qty)", "weighted_avg(amount, weight=qty)"),
+        ],
+    )
+    async def test_local_paths_are_functional(self, engine, item: str, expected: str) -> None:
+        rec = await engine.recommend_root_model([item], data_source="mydb")
+        assert rec.root_model == "orders"
+        assert _paths(rec) == {item: expected}
+
+    @pytest.mark.parametrize("item", ["sum(regions.population)", "regions.population:sum"])
+    async def test_cross_model_path_is_functional(self, engine, item: str) -> None:
+        rec = await engine.recommend_root_model(["orders.status", item])
+        assert rec.root_model == "orders"
+        assert _paths(rec)[item] == "sum(customers.regions.population)"
 
 
 # --------------------------------------------------------------------------
-# INNER symmetry + real resolvability
+# INNER routing + real resolvability
 #
-# INNER joins are kept symmetric by the storage layer (join_sync materializes
-# BOTH directions), and JoinGraph reads stored *outgoing* joins only — there
-# is deliberately no "reverse-only" traversal (a reverse-only fixture would be
-# unreachable by design). The fixture declares the symmetric pair explicitly
-# (orders<->order_items), so these tests verify routing works in both
-# directions and that the emitted path is walkable by the query engine.
+# The orders→order_items INNER edge is declared ONCE; every declared edge
+# is traversable in both directions. Determination is
+# to-one: orders→order_items fans out (order_items.order_id is not unique), so
+# only order_items determines the trio — and it reaches orders/products over
+# the to-one order_items→orders→(products) chain.
 # --------------------------------------------------------------------------
 class TestInnerJoins:
-    async def test_inner_pair_routes_from_either_side(self, engine) -> None:
-        # {orders, order_items, products}: orders reaches all in 2 hops
-        # (order_items via the stored INNER edge, products via LEFT);
-        # order_items would need 3 (order_items->orders->products). So the
-        # chosen root is orders and it reaches order_items via the stored
-        # orders->order_items INNER edge. The other direction
-        # (order_items->orders) is exercised by
-        # TestRootSelection.test_symmetric_tie_broken_lexicographically.
+    async def test_inner_pair_routes_from_child(self, engine) -> None:
+        # {orders, order_items, products}: orders cannot determine order_items
+        # (the INNER hop fans out), so order_items is the sole to-one determiner
+        # — reaching orders in 1 hop and products in 2 (order_items→orders→products).
         rec = await engine.recommend_root_model(
             ["orders.status", "order_items.sku", "products.category"]
         )
-        assert rec.root_model == "orders"
-        assert _paths(rec)["order_items.sku"] == "order_items.sku"
+        assert rec.root_model == "order_items"
+        assert _paths(rec)["order_items.sku"] == "sku"
+        assert _paths(rec)["orders.status"] == "orders.status"
 
-    async def test_inner_path_resolvable_by_engine_walker(self, engine, storage) -> None:
-        # The emitted INNER hop must be walkable by the engine's own
-        # _walk_join_chain (the query-time resolver), proving the recommended
-        # path is query-resolvable given the storage symmetry invariant.
-        orders = await storage.get_model("orders", data_source="mydb")
-        terminal, _first = await engine._walk_join_chain(
-            source_model=orders, hop_names=["order_items"]
+    async def test_inner_path_resolvable_by_engine_walker(self, engine) -> None:
+        """The recommended to-one hop must be resolvable by the code that
+        actually runs a query — executing the recommended path is the honest,
+        strictly stronger check (it fails if any layer cannot traverse the hop).
+        """
+        rec = await engine.recommend_root_model(
+            ["orders.status", "order_items.sku", "products.category"]
         )
-        assert terminal.name == "order_items"
+        assert rec.root_model == "order_items"
+        path = _paths(rec)["orders.status"]
+        assert path == "orders.status"
+
+        # Feed the recommended order_items→orders hop back in as a query.
+        resp = await engine.execute(
+            SlayerQuery(source_model=rec.root_model, dimensions=[path]),
+            dry_run=True,
+        )
+        sql = resp.sql or ""
+        assert "orders" in sql, sql
+        assert "JOIN" in sql.upper(), sql
+        # Resolved as a joined dimension under the dotted result key.
+        assert "order_items.orders.status" in sql, sql
 
 
 # --------------------------------------------------------------------------
@@ -355,17 +404,32 @@ class TestNoCommonRoot:
         # {customers}; agents (hops 0) dominates tickets for {agents}.
         assert covered == {"customers", "agents"}
 
-    async def test_coverage_surfaces_unmentioned_bridge(self, engine) -> None:
+    async def test_attachment_only_disconnected_still_lists_coverage(self, engine) -> None:
+        # Attachment-only items on disconnected models: coverage falls back to
+        # attachment reachability, so it is non-empty (orders.aov / logs.line:count).
+        rec = await engine.recommend_root_model(
+            ["orders.aov", "logs.line:count"], data_source="mydb"
+        )
+        assert rec.reachable is False
+        assert rec.item_paths == []
+        assert rec.coverage  # not empty — the regression this guards
+        covered = {c.model_name for c in rec.coverage}
+        assert "orders" in covered
+        assert "logs" in covered
+
+    async def test_coverage_surfaces_partial_roots(self, engine) -> None:
         rec = await engine.recommend_root_model(
             ["customers.name", "products.category", "agents.name"]
         )
         assert rec.reachable is False
-        # orders (unmentioned) is the best partial root: covers the two
-        # order-world items; it should sort first (len desc), and its item
-        # lists preserve original input order.
+        # To-one determination: only orders determines both order-world
+        # columns (customers/products fan out to the other), so it dominates them
+        # on the frontier; agents covers the disconnected item. Item lists preserve
+        # original input order.
         assert rec.coverage[0].model_name == "orders"
         assert rec.coverage[0].reachable_items == ["customers.name", "products.category"]
         assert rec.coverage[0].unreachable_items == ["agents.name"]
+        assert {c.model_name for c in rec.coverage} == {"orders", "agents"}
         # Sorted by len(reachable_items) desc, then total hops asc, then name.
         lengths = [len(c.reachable_items) for c in rec.coverage]
         assert lengths == sorted(lengths, reverse=True)
@@ -382,12 +446,65 @@ class TestNoCommonRoot:
         rec = await engine.recommend_root_model(
             ["customers.name", "products.category", "agents.name"]
         )
-        # Neither a bare owning model dominated by orders (customers/products)
-        # nor tickets (dominated by agents) survives the frontier.
+        # To-one determination: orders is the sole determiner of both
+        # order-world columns, dominating customers/products (each reaches only its
+        # own, a subset); tickets is dominated by agents. Only orders + agents survive.
         names = {c.model_name for c in rec.coverage}
-        assert "orders" in names and "agents" in names
+        assert "orders" in names
+        assert "agents" in names
         assert "tickets" not in names
-        assert "products" not in names and "customers" not in names
+        assert "products" not in names
+        assert "customers" not in names
+
+
+# --------------------------------------------------------------------------
+# Attachments on unrelated datasets (no join path from the root)
+# --------------------------------------------------------------------------
+class TestUnrelatedAttachments:
+    async def test_unrelated_attachment_is_reported_through_the_product_hop(self, engine) -> None:
+        rec = await engine.recommend_root_model(["customers.name", "logs.id:count"])
+        assert rec.root_model == "customers"
+        assert rec.reachable is True
+        flags = {ip.input_item: (ip.path, ip.unrelated) for ip in rec.item_paths}
+        assert flags == {"customers.name": ("name", False), "logs.id:count": ("count(logs.id)", True)}
+        resp = await engine.execute(
+            SlayerQuery.model_validate({"source_model": "customers", "measures": [flags["logs.id:count"][0]]}),
+            dry_run=True,
+        )
+        assert resp.sql
+
+    async def test_unrelated_attachment_never_steers_the_choice(self, engine) -> None:
+        items = ["customers.name", "regions.name"]
+        without = await engine.recommend_root_model(items)
+        with_unrelated = await engine.recommend_root_model([*items, "logs.id:count", "agents.id:count"])
+        assert with_unrelated.root_model == without.root_model == "customers"
+        assert {ip.input_item for ip in with_unrelated.item_paths if ip.unrelated} == {
+            "logs.id:count", "agents.id:count",
+        }
+
+    async def test_feasible_root_hint_reaches_an_unrelated_attachment(self, engine) -> None:
+        rec = await engine.recommend_root_model(["customers.name", "logs.id:count"], root_hint="orders")
+        assert rec.root_model == "orders"
+        assert rec.warnings == []
+        assert {ip.input_item: ip.unrelated for ip in rec.item_paths} == {
+            "customers.name": False, "logs.id:count": True,
+        }
+
+    async def test_unrelated_column_stays_unreachable(self, engine) -> None:
+        rec = await engine.recommend_root_model(["customers.name", "logs.line"])
+        assert rec.root_model is None
+        assert rec.reachable is False
+        assert rec.item_paths == []
+
+    async def test_attachments_alone_keep_join_path_selection(self, engine) -> None:
+        rec = await engine.recommend_root_model(["customers.id:count", "logs.id:count"])
+        assert rec.root_model is None
+        assert rec.reachable is False
+        assert rec.item_paths == []
+
+    async def test_connected_items_are_never_flagged(self, engine) -> None:
+        rec = await engine.recommend_root_model(["orders.status", "products.price:sum", "orders.aov"])
+        assert [ip.unrelated for ip in rec.item_paths] == [False, False, False]
 
 
 # --------------------------------------------------------------------------
@@ -401,7 +518,8 @@ class TestDataSourceAndDedup:
             rec_other = await eng.recommend_root_model(["orders.status"], data_source="otherdb")
             assert rec_my.data_source == "mydb"
             assert rec_other.data_source == "otherdb"
-            assert rec_my.root_model == "orders" and rec_other.root_model == "orders"
+            assert rec_my.root_model == "orders"
+            assert rec_other.root_model == "orders"
         finally:
             await eng.aclose()
 
@@ -486,8 +604,10 @@ class TestDataSourceAndDedup:
         try:
             rec_my = await eng.recommend_root_model(["status"], data_source="mydb")
             rec_other = await eng.recommend_root_model(["status"], data_source="otherdb")
-            assert rec_my.data_source == "mydb" and rec_my.root_model == "orders"
-            assert rec_other.data_source == "otherdb" and rec_other.root_model == "orders"
+            assert rec_my.data_source == "mydb"
+            assert rec_my.root_model == "orders"
+            assert rec_other.data_source == "otherdb"
+            assert rec_other.root_model == "orders"
             assert _paths(rec_my) == {"status": "status"}
         finally:
             await eng.aclose()
@@ -519,43 +639,36 @@ class TestSyncWrapper:
 
 
 class TestDistinctOwningModelHopSum:
-    async def test_hop_total_summed_over_distinct_owning_models(self) -> None:
-        # Graph (ds "iso"): B --LEFT--> A (1 hop); A --LEFT--> M1 --> M2 --> B
-        # (3 hops). Mentioned owning models = {A, B}.
-        #   root A: A(0) + B(3) = 3   |   root B: B(0) + A(1) = 1  → B wins.
-        # Input has FIVE A-columns + one B-column. Under a per-INPUT-ITEM hop
-        # sum, root A would total 3 and root B would total 5 → A would win.
-        # Summing over DISTINCT owning models keeps B the winner.
+    async def test_only_to_one_determiner_wins(self) -> None:
+        # Chain (ds "iso"): A →to-one→ B →to-one→ C (FK→PK forward; reverse hops
+        # fan out). Determination is to-one, so only A determines every
+        # column: A reaches A(0), B(1), C(2). B cannot determine A.a* (B→A fans
+        # out), and neither can C — so A is the sole viable root regardless of how
+        # the per-item hops sum.
         with tempfile.TemporaryDirectory() as tmpdir:
             s = YAMLStorage(base_dir=tmpdir)
             await s.save_datasource(DatasourceConfig(name="iso", type="postgres", host="x"))
             await s.save_model(SlayerModel(
                 name="A", data_source="iso", sql_table="A",
-                columns=[_col("id", DataType.INT, pk=True)]
+                columns=[_col("id", DataType.INT, pk=True), _col("b_id", DataType.INT)]
                 + [_col(f"a{i}") for i in range(1, 6)],
-                joins=[_left("M1", [["m1_id", "id"]])],
-            ))
-            await s.save_model(SlayerModel(
-                name="M1", data_source="iso", sql_table="M1",
-                columns=[_col("id", DataType.INT, pk=True), _col("m2_id", DataType.INT)],
-                joins=[_left("M2", [["m2_id", "id"]])],
-            ))
-            await s.save_model(SlayerModel(
-                name="M2", data_source="iso", sql_table="M2",
-                columns=[_col("id", DataType.INT, pk=True), _col("b_id", DataType.INT)],
                 joins=[_left("B", [["b_id", "id"]])],
             ))
             await s.save_model(SlayerModel(
                 name="B", data_source="iso", sql_table="B",
-                columns=[_col("id", DataType.INT, pk=True), _col("b1"), _col("a_id", DataType.INT)],
-                joins=[_left("A", [["a_id", "id"]])],
+                columns=[_col("id", DataType.INT, pk=True), _col("b1"), _col("c_id", DataType.INT)],
+                joins=[_left("C", [["c_id", "id"]])],
+            ))
+            await s.save_model(SlayerModel(
+                name="C", data_source="iso", sql_table="C",
+                columns=[_col("id", DataType.INT, pk=True), _col("c1")],
             ))
             eng = SlayerQueryEngine(storage=s)
             try:
                 rec = await eng.recommend_root_model(
-                    ["A.a1", "A.a2", "A.a3", "A.a4", "A.a5", "B.b1"]
+                    ["A.a1", "A.a2", "A.a3", "A.a4", "A.a5", "B.b1", "C.c1"]
                 )
-                assert rec.root_model == "B"
+                assert rec.root_model == "A"
             finally:
                 await eng.aclose()
 
@@ -625,28 +738,29 @@ class TestRootHint:
 
     # -- infeasible hint (real model) → fallback + warning --------------
     async def test_infeasible_hint_falls_back_with_warning(self, engine) -> None:
-        # {customers, products}: only 'orders' reaches both. 'customers'
-        # reaches customers but not products → infeasible.
+        # 'agents' determines neither order-world column (to-one), so
+        # it is infeasible and we fall back to the auto-pick (orders, the sole
+        # to-one determiner of both).
         rec = await engine.recommend_root_model(
-            ["customers.name", "products.category"], root_hint="customers"
+            ["customers.name", "products.category"], root_hint="agents"
         )
         assert rec.reachable is True
         assert rec.root_model == "orders"  # fell back to the auto-pick
         joined = " ".join(rec.warnings)
         assert "root_hint" in joined
         assert "cannot reach" in joined
-        assert "customers" in joined  # the rejected hint
-        assert "products" in joined   # the unreachable owning model
-        assert "orders" in joined     # the fallback root
+        assert "agents" in joined     # the rejected hint
+        assert "products" in joined   # an undetermined owning model
+        assert "customers" in joined  # the other undetermined owning model
 
     async def test_infeasible_warning_echoes_original_ds_qualified_hint(self, engine) -> None:
-        # The diagnostic must quote what the caller typed ('mydb.customers'),
-        # not the resolved bare model name ('customers').
+        # The diagnostic must quote what the caller typed ('mydb.agents'),
+        # not the resolved bare model name ('agents').
         rec = await engine.recommend_root_model(
-            ["customers.name", "products.category"], root_hint="mydb.customers"
+            ["customers.name", "products.category"], root_hint="mydb.agents"
         )
         assert rec.root_model == "orders"
-        assert any("mydb.customers" in w for w in rec.warnings)
+        assert any("mydb.agents" in w for w in rec.warnings)
 
     # -- bad hint → ValueError ------------------------------------------
     async def test_nonexistent_hint_raises(self, engine) -> None:
@@ -691,16 +805,18 @@ class TestRootHint:
         assert lengths == sorted(lengths, reverse=True)
 
     async def test_no_root_zero_reach_hint_row_surfaced(self, engine) -> None:
-        # 'products' reaches neither {customers, agents}. Force-included row
-        # has an empty reachable list and both items unreachable.
+        # 'logs' is isolated and reaches neither {customers, agents}
+        # ('products' reaches customers, so only a disconnected model has
+        # zero reach). Force-included row has an empty reachable list and both
+        # items unreachable.
         rec = await engine.recommend_root_model(
-            ["customers.name", "agents.name"], root_hint="products"
+            ["customers.name", "agents.name"], root_hint="logs"
         )
         assert rec.reachable is False
-        prod_rows = [c for c in rec.coverage if c.model_name == "products"]
-        assert len(prod_rows) == 1
-        assert prod_rows[0].reachable_items == []
-        assert prod_rows[0].unreachable_items == ["customers.name", "agents.name"]
+        log_rows = [c for c in rec.coverage if c.model_name == "logs"]
+        assert len(log_rows) == 1
+        assert log_rows[0].reachable_items == []
+        assert log_rows[0].unreachable_items == ["customers.name", "agents.name"]
         assert any("root_hint" in w and "cannot reach" in w for w in rec.warnings)
 
     async def test_no_root_frontier_hint_not_duplicated(self, engine) -> None:
@@ -720,6 +836,10 @@ class TestResultModels:
         ip = ItemPath(input_item="orders.revenue:sum", path="customers.revenue:sum")
         assert ip.input_item == "orders.revenue:sum"
         assert ip.path == "customers.revenue:sum"
+
+    def test_item_path_unrelated_defaults_false(self) -> None:
+        assert ItemPath(input_item="orders.status", path="status").unrelated is False
+        assert ItemPath(input_item="logs.id:count", path="count(logs.id)", unrelated=True).unrelated is True
 
     def test_candidate_coverage_fields(self) -> None:
         cc = CandidateCoverage(

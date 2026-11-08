@@ -1,4 +1,4 @@
-"""Tests for idempotent ``ingest_datasource_idempotent``. See DEV-1356.
+"""Tests for idempotent ``ingest_datasource_idempotent``.
 
 The function:
 
@@ -13,12 +13,16 @@ The function:
 
 from __future__ import annotations
 
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
+import io
+import logging as _logging
 import tempfile
 from pathlib import Path
 from typing import Any
 from collections.abc import Iterable
+from unittest.mock import patch
 
+import duckdb
 import pytest
 
 from slayer.core.enums import DataType
@@ -31,15 +35,18 @@ from slayer.core.models import (
 from slayer.core.query import SlayerQuery
 from slayer.embeddings import client as embedding_client
 from slayer.engine.ingestion import (
+    _print_ingest_addition,
     _refresh_datasource_embeddings,
     ingest_datasource_idempotent,
 )
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_drift import (
     IdempotentIngestResult,
     ModelAddition,
     WholeModelDelete,
     EditModelDelete,
 )
+from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -52,26 +59,33 @@ def workspace():
         tmp.cleanup()
 
 
+async def _ingest(*, datasource: DatasourceConfig, **kwargs: Any) -> IdempotentIngestResult:
+    client = SlayerSQLClient(datasource=datasource)
+    try:
+        return await ingest_datasource_idempotent(datasource=datasource, client=client, **kwargs)
+    finally:
+        await client.aclose()
+        client.close()
+
+
 def _create_schema(db_path: str) -> None:
-    conn = sqlite3.connect(db_path)
-    conn.executescript(
-        """
-        CREATE TABLE customers (
-            id INTEGER PRIMARY KEY,
-            region TEXT NOT NULL
-        );
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            amount REAL NOT NULL,
-            status TEXT NOT NULL,
-            customer_id INTEGER REFERENCES customers(id)
-        );
-        INSERT INTO customers VALUES (1, 'US'), (2, 'EU');
-        INSERT INTO orders VALUES (1, 100.0, 'completed', 1);
-        """
-    )
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE customers (
+                id INTEGER PRIMARY KEY,
+                region TEXT NOT NULL
+            );
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                amount REAL NOT NULL,
+                status TEXT NOT NULL,
+                customer_id INTEGER REFERENCES customers(id)
+            );
+            INSERT INTO customers VALUES (1, 'US'), (2, 'EU');
+            INSERT INTO orders VALUES (1, 100.0, 'completed', 1);
+            """
+        )
 
 
 async def _setup(workspace: Path, *, persist_models: bool = True) -> tuple:
@@ -82,7 +96,7 @@ async def _setup(workspace: Path, *, persist_models: bool = True) -> tuple:
     await storage.save_datasource(ds)
     if persist_models:
         # Run ingest once so that subsequent calls test idempotency.
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _ingest(datasource=ds, storage=storage)
     return storage, ds, db_path
 
 
@@ -99,7 +113,7 @@ def _addition_for(name: str, additions: Iterable[ModelAddition]):
 class TestIdempotency:
     async def test_re_run_on_identical_schema_is_no_op(self, workspace: Path) -> None:
         storage, ds, _ = await _setup(workspace)
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _ingest(datasource=ds, storage=storage)
         assert isinstance(result, IdempotentIngestResult)
         # Nothing new
         for addition in result.additions:
@@ -115,12 +129,10 @@ class TestAdditive:
         self, workspace: Path
     ) -> None:
         storage, ds, db_path = await _setup(workspace)
-        conn = sqlite3.connect(db_path)
-        conn.execute("ALTER TABLE orders ADD COLUMN delivery_address TEXT")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("ALTER TABLE orders ADD COLUMN delivery_address TEXT")
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _ingest(datasource=ds, storage=storage)
         addition = _addition_for("orders", result.additions)
         assert addition is not None
         assert "delivery_address" in addition.new_columns
@@ -132,15 +144,13 @@ class TestAdditive:
 
     async def test_new_table_creates_model(self, workspace: Path) -> None:
         storage, ds, db_path = await _setup(workspace)
-        conn = sqlite3.connect(db_path)
-        conn.execute(
-            "CREATE TABLE products (id INTEGER PRIMARY KEY, sku TEXT NOT NULL)"
-        )
-        conn.execute("INSERT INTO products VALUES (1, 'A1')")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE products (id INTEGER PRIMARY KEY, sku TEXT NOT NULL)"
+            )
+            conn.execute("INSERT INTO products VALUES (1, 'A1')")
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _ingest(datasource=ds, storage=storage)
         addition = _addition_for("products", result.additions)
         assert addition is not None
         assert addition.created is True
@@ -155,21 +165,19 @@ class TestAdditive:
         # builds a scenario where the orders.customer_id exists but no
         # FK was defined initially.
         db_path = str(workspace / "live.db")
-        conn = sqlite3.connect(db_path)
-        conn.executescript(
-            """
-            CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT NOT NULL);
-            CREATE TABLE orders (
-                id INTEGER PRIMARY KEY,
-                amount REAL NOT NULL,
-                customer_id INTEGER
-            );
-            INSERT INTO customers VALUES (1, 'US');
-            INSERT INTO orders VALUES (1, 100.0, 1);
-            """
-        )
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT NOT NULL);
+                CREATE TABLE orders (
+                    id INTEGER PRIMARY KEY,
+                    amount REAL NOT NULL,
+                    customer_id INTEGER
+                );
+                INSERT INTO customers VALUES (1, 'US');
+                INSERT INTO orders VALUES (1, 100.0, 1);
+                """
+            )
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
         ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
         await storage.save_datasource(ds)
@@ -208,23 +216,21 @@ class TestAdditive:
         )
         # Recreate orders with an FK now via DROP + CREATE (SQLite has no
         # ALTER to add FKs).
-        conn = sqlite3.connect(db_path)
-        conn.executescript(
-            """
-            CREATE TABLE orders_new (
-                id INTEGER PRIMARY KEY,
-                amount REAL NOT NULL,
-                customer_id INTEGER REFERENCES customers(id)
-            );
-            INSERT INTO orders_new SELECT * FROM orders;
-            DROP TABLE orders;
-            ALTER TABLE orders_new RENAME TO orders;
-            """
-        )
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE orders_new (
+                    id INTEGER PRIMARY KEY,
+                    amount REAL NOT NULL,
+                    customer_id INTEGER REFERENCES customers(id)
+                );
+                INSERT INTO orders_new SELECT * FROM orders;
+                DROP TABLE orders;
+                ALTER TABLE orders_new RENAME TO orders;
+                """
+            )
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _ingest(datasource=ds, storage=storage)
         loaded = await storage.get_model("orders", data_source="ds")
         assert loaded is not None
         assert any(j.target_model == "customers" for j in loaded.joins)
@@ -248,12 +254,10 @@ class TestPreservation:
         await storage.save_model(loaded)
 
         # Add a new live column to trigger the additive pass.
-        conn = sqlite3.connect(db_path)
-        conn.execute("ALTER TABLE orders ADD COLUMN extra TEXT")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("ALTER TABLE orders ADD COLUMN extra TEXT")
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _ingest(datasource=ds, storage=storage)
         loaded2 = await storage.get_model("orders", data_source="ds")
         assert loaded2 is not None
         amount = next(c for c in loaded2.columns if c.name == "amount")
@@ -283,7 +287,7 @@ class TestSkipNonSqlTableModes:
                 ],
             )
         )
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _ingest(datasource=ds, storage=storage)
         # custom_orders is sql-mode — additive pass must not touch it.
         loaded = await storage.get_model("custom_orders", data_source="ds")
         assert loaded is not None
@@ -294,8 +298,6 @@ class TestSkipNonSqlTableModes:
         storage, ds, _ = await _setup(workspace)
         # Save a query-backed model that references orders. Use the engine
         # so the cache populates correctly.
-        from slayer.engine.query_engine import SlayerQueryEngine
-
         engine = SlayerQueryEngine(storage=storage)
         await engine.create_model_from_query(
             query=SlayerQuery(
@@ -304,7 +306,7 @@ class TestSkipNonSqlTableModes:
             ),
             name="orders_summary",
         )
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _ingest(datasource=ds, storage=storage)
         assert _addition_for("orders_summary", result.additions) is None
         # And the persisted query-backed model is unchanged.
         loaded = await storage.get_model("orders_summary", data_source="ds")
@@ -313,42 +315,39 @@ class TestSkipNonSqlTableModes:
 
 
 class TestCombinedReturnShape:
-    async def test_type_drift_surfaces_in_to_delete_not_additions(
+    async def test_type_drift_is_neither_an_addition_nor_a_delete(
         self, workspace: Path
     ) -> None:
         storage, ds, db_path = await _setup(workspace)
         # Persisted orders.amount = NUMBER. Mutate live so it returns text:
         # SQLite has dynamic typing, so we drop and recreate as TEXT.
-        conn = sqlite3.connect(db_path)
-        conn.executescript(
-            """
-            CREATE TABLE orders_new (
-                id INTEGER PRIMARY KEY,
-                amount TEXT NOT NULL,
-                status TEXT NOT NULL,
-                customer_id INTEGER REFERENCES customers(id)
-            );
-            INSERT INTO orders_new (id, amount, status, customer_id)
-                SELECT id, CAST(amount AS TEXT), status, customer_id FROM orders;
-            DROP TABLE orders;
-            ALTER TABLE orders_new RENAME TO orders;
-            """
-        )
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE orders_new (
+                    id INTEGER PRIMARY KEY,
+                    amount TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    customer_id INTEGER REFERENCES customers(id)
+                );
+                INSERT INTO orders_new (id, amount, status, customer_id)
+                    SELECT id, CAST(amount AS TEXT), status, customer_id FROM orders;
+                DROP TABLE orders;
+                ALTER TABLE orders_new RENAME TO orders;
+                """
+            )
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _ingest(datasource=ds, storage=storage)
         # No additions for this drift — the additive pass simply skips the
         # name (it is taken in the persisted model) and lets validate_models
         # surface the bucket mismatch.
         addition = _addition_for("orders", result.additions)
         assert addition is None or "amount" not in addition.new_columns
-        # And the to_delete payload lists the bucket-mismatched column.
-        orders_drops = [
-            e for e in result.to_delete if e.model_name == "orders"
-        ]
-        assert orders_drops, "expected validate_models to flag orders.amount"
-        assert isinstance(orders_drops[0], (EditModelDelete, WholeModelDelete))
+        # Nor a delete: a type mismatch on an existing column is a re-type finding.
+        assert not any(
+            isinstance(e, WholeModelDelete) or (isinstance(e, EditModelDelete) and "amount" in e.remove.columns)
+            for e in result.to_delete if e.model_name == "orders"
+        ), result.to_delete
 
 
 class TestErrorIsolation:
@@ -357,30 +356,28 @@ class TestErrorIsolation:
     ) -> None:
         storage, ds, db_path = await _setup(workspace)
         # Add two new tables so the additive pass tries to save two models.
-        conn = sqlite3.connect(db_path)
-        conn.execute("CREATE TABLE a_new (id INTEGER PRIMARY KEY, x TEXT)")
-        conn.execute("CREATE TABLE b_new (id INTEGER PRIMARY KEY, y TEXT)")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("CREATE TABLE a_new (id INTEGER PRIMARY KEY, x TEXT)")
+            conn.execute("CREATE TABLE b_new (id INTEGER PRIMARY KEY, y TEXT)")
 
         # Patch save_model on the storage to fail for "a_new" only.
         original_save = storage.save_model
 
-        async def flaky_save(model):
+        async def flaky_save(model, **kwargs):
             if model.name == "a_new":
                 raise RuntimeError("disk full")
-            return await original_save(model)
+            return await original_save(model, **kwargs)
 
         monkeypatch.setattr(storage, "save_model", flaky_save)
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _ingest(datasource=ds, storage=storage)
         # One success (b_new), one failure (a_new)
         assert _addition_for("b_new", result.additions) is not None
         assert any(e.model_name == "a_new" for e in result.errors)
 
 
 class TestMemoryEmbeddingRefresh:
-    """DEV-1416: `_refresh_datasource_embeddings` must walk memories whose
+    """`_refresh_datasource_embeddings` must walk memories whose
     entities are rooted at the datasource, in addition to models and the
     datasource doc. Failures attribute to the offending memory by id."""
 
@@ -498,7 +495,7 @@ class TestMemoryEmbeddingRefresh:
             failing_refresh,
         )
 
-        result = await ingest_datasource_idempotent(
+        result = await _ingest(
             datasource=ds, storage=storage,
         )
         memory_errors = [
@@ -607,7 +604,7 @@ class TestMemoryEmbeddingRefresh:
 
         monkeypatch.setattr(storage, "save_embeddings", selective_save)
 
-        result = await ingest_datasource_idempotent(
+        result = await _ingest(
             datasource=ds, storage=storage,
         )
         memory_errors = [
@@ -630,7 +627,7 @@ class TestMemoryEmbeddingRefresh:
         storage, ds, _ = await _setup(workspace)
         self._enable_channel(monkeypatch)
 
-        async def boom(self, *, entities=None):  # NOSONAR(S7503) — async list_memories signature
+        async def boom(self, *, entities=None, failures=None):  # NOSONAR(S7503) — async list_memories signature
             raise RuntimeError("memories table missing")
 
         monkeypatch.setattr(
@@ -649,12 +646,10 @@ class TestExcludeTables:
     async def test_excluded_tables_not_touched(self, workspace: Path) -> None:
         storage, ds, db_path = await _setup(workspace)
         # Add a column to orders, but exclude orders from the pass.
-        conn = sqlite3.connect(db_path)
-        conn.execute("ALTER TABLE orders ADD COLUMN extra TEXT")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("ALTER TABLE orders ADD COLUMN extra TEXT")
 
-        result = await ingest_datasource_idempotent(
+        result = await _ingest(
             datasource=ds, storage=storage, exclude_tables=["orders"]
         )
         # No addition for orders
@@ -668,7 +663,7 @@ class TestExcludeTables:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1538: idempotent re-ingest widens persisted INT → DOUBLE / TEXT when
+# Idempotent re-ingest widens persisted INT → DOUBLE / TEXT when
 # the live SQLite probe disagrees with the SA-declared affinity.
 # ---------------------------------------------------------------------------
 
@@ -678,8 +673,7 @@ def _create_probe_workspace_db(
 ) -> None:
     """Build a SQLite DB with one INTEGER-declared column populated with
     per-row typed inserts so storage class is preserved."""
-    conn = sqlite3.connect(db_path)
-    try:
+    with transaction(db_path) as conn:
         conn.execute(
             f'CREATE TABLE sensordata (id INTEGER PRIMARY KEY, "{column}" INTEGER)'
         )
@@ -687,9 +681,6 @@ def _create_probe_workspace_db(
             conn.execute(
                 'INSERT INTO sensordata VALUES (?, ?)', (i, v),
             )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 async def _persist_int_model(
@@ -701,7 +692,7 @@ async def _persist_int_model(
     label: str | None = None,
 ) -> None:
     """Persist a model with the target column hard-coded as type=INT,
-    simulating a pre-DEV-1538 ingest."""
+    simulating an ingest from before SQLite widening."""
     col_kwargs: dict[str, Any] = {
         "name": column,
         "sql": column,
@@ -729,7 +720,7 @@ async def _persist_int_model(
 
 
 class TestSqliteProbeWideningOnReingest:
-    """DEV-1538: re-ingest widens persisted INT → probe verdict (DOUBLE/TEXT)
+    """Re-ingest widens persisted INT → probe verdict (DOUBLE/TEXT)
     when the SQLite affinity probe disagrees with the SA-declared type."""
 
     async def test_widens_persisted_int_to_double(self, workspace: Path) -> None:
@@ -743,7 +734,7 @@ class TestSqliteProbeWideningOnReingest:
         await storage.save_datasource(ds)
         await _persist_int_model(storage, "ds", "sensordata", "tempstabidx")
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _ingest(datasource=ds, storage=storage)
 
         loaded = await storage.get_model("sensordata", data_source="ds")
         col = next(c for c in loaded.columns if c.name == "tempstabidx")
@@ -761,7 +752,7 @@ class TestSqliteProbeWideningOnReingest:
         await storage.save_datasource(ds)
         await _persist_int_model(storage, "ds", "sensordata", "status")
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _ingest(datasource=ds, storage=storage)
 
         loaded = await storage.get_model("sensordata", data_source="ds")
         col = next(c for c in loaded.columns if c.name == "status")
@@ -808,7 +799,7 @@ class TestSqliteProbeWideningOnReingest:
             )
         )
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _ingest(datasource=ds, storage=storage)
 
         loaded = await storage.get_model("sensordata", data_source="ds")
         col = next(c for c in loaded.columns if c.name == "tempstabidx")
@@ -823,8 +814,6 @@ class TestSqliteProbeWideningOnReingest:
     async def test_no_widening_for_non_sqlite(self, workspace: Path) -> None:
         """DuckDB datasource: the probe must never fire on re-ingest."""
         pytest.importorskip("duckdb")
-        import duckdb
-
         db_path = str(workspace / "live.duckdb")
         con = duckdb.connect(db_path)
         con.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, qty INTEGER)")
@@ -836,12 +825,11 @@ class TestSqliteProbeWideningOnReingest:
         await storage.save_datasource(ds)
         await _persist_int_model(storage, "ds", "t", "qty")
 
-        from unittest.mock import patch
         with patch(
             "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
             side_effect=AssertionError("probe must not run on DuckDB"),
         ):
-            await ingest_datasource_idempotent(datasource=ds, storage=storage)
+            await _ingest(datasource=ds, storage=storage)
 
         loaded = await storage.get_model("t", data_source="ds")
         col = next(c for c in loaded.columns if c.name == "qty")
@@ -850,15 +838,13 @@ class TestSqliteProbeWideningOnReingest:
     async def test_non_sqlite_with_live_schema_drift_stays_strict_additive(
         self, workspace: Path
     ) -> None:
-        """DEV-1538: the widening branch must NOT fire on non-SQLite datasources
+        """The widening branch must NOT fire on non-SQLite datasources
         even when the fresh live schema disagrees with persisted (e.g. a DBA
         ran ``ALTER COLUMN qty TYPE DOUBLE`` on Postgres). On non-SQLite the
         additive contract stays strict — drift surfaces via ``slayer
         validate-models``, not via silent re-ingest overwrites.
         """
         pytest.importorskip("duckdb")
-        import duckdb
-
         db_path = str(workspace / "live.duckdb")
         # Live schema declares ``qty`` as DOUBLE; persisted will say INT.
         con = duckdb.connect(db_path)
@@ -872,7 +858,7 @@ class TestSqliteProbeWideningOnReingest:
         # Persist with stale INT type (e.g. left over from a prior schema).
         await _persist_int_model(storage, "ds", "t", "qty")
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _ingest(datasource=ds, storage=storage)
 
         loaded = await storage.get_model("t", data_source="ds")
         col = next(c for c in loaded.columns if c.name == "qty")
@@ -894,7 +880,7 @@ class TestSqliteProbeWideningOnReingest:
         await storage.save_datasource(ds)
         await _persist_int_model(storage, "ds", "sensordata", "tempstabidx")
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _ingest(datasource=ds, storage=storage)
         addition = _addition_for("sensordata", result.additions)
         assert addition is not None
         assert hasattr(addition, "widened_columns"), (
@@ -908,9 +894,6 @@ class TestSqliteProbeWideningOnReingest:
         """The CLI renderer (``_print_ingest_addition``) must include
         widened columns in user-visible output so re-ingest events are
         discoverable from the terminal."""
-        import io
-        from slayer.engine.ingestion import _print_ingest_addition
-
         db_path = str(workspace / "live.db")
         _create_probe_workspace_db(
             db_path, "tempstabidx", [1, 0.5, 0.7],
@@ -920,7 +903,7 @@ class TestSqliteProbeWideningOnReingest:
         await storage.save_datasource(ds)
         await _persist_int_model(storage, "ds", "sensordata", "tempstabidx")
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _ingest(datasource=ds, storage=storage)
         addition = _addition_for("sensordata", result.additions)
         assert addition is not None
 
@@ -959,7 +942,7 @@ class TestSqliteProbeWideningOnReingest:
             )
         )
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _ingest(datasource=ds, storage=storage)
 
         loaded = await storage.get_model("sensordata", data_source="ds")
         col = next(c for c in loaded.columns if c.name == "qty")
@@ -973,8 +956,6 @@ class TestSqliteProbeWideningOnReingest:
         auto-default INTEGER format. A user-set custom format (precision,
         currency) is preserved untouched on a widening pass and an INFO
         log is emitted as a hint."""
-        import logging as _logging
-
         db_path = str(workspace / "live.db")
         _create_probe_workspace_db(
             db_path, "amount", [1, 0.99, 0.5, 0.7],
@@ -995,7 +976,7 @@ class TestSqliteProbeWideningOnReingest:
         )
 
         with caplog.at_level(_logging.INFO, logger="slayer.engine.ingestion"):
-            await ingest_datasource_idempotent(datasource=ds, storage=storage)
+            await _ingest(datasource=ds, storage=storage)
 
         loaded = await storage.get_model("sensordata", data_source="ds")
         col = next(c for c in loaded.columns if c.name == "amount")

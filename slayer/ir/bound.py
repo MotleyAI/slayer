@@ -1,0 +1,122 @@
+"""Bound expression forms: the binder's output types, read by the renderer."""
+
+from __future__ import annotations
+
+from typing import Literal, Optional, Tuple
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from slayer.core.enums import DataType
+from slayer.core.format import NumberFormat
+from slayer.core.granularity import Granularity
+from slayer.core.keys import (
+    Phase,
+    ValueKey,
+    walk_value_keys,
+)
+
+
+class BoundFilter(BaseModel):
+    """A bound filter predicate: ``value_key`` (like ``BoundExpr``), ``phase``
+    (max phase any referenced slot reaches), and ``referenced_keys`` (every
+    ``ValueKey`` in the tree, for the cross-model planner's filter routing)."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    value_key: ValueKey
+    phase: Phase
+    referenced_keys: Tuple[ValueKey, ...] = Field(default_factory=tuple)
+    # A FILTER clause's condition on its producer: restricts rows, never a frame bound.
+    row_restriction: bool = False
+
+
+class BoundExpr(BaseModel):
+    """A bound expression — its leaves are resolved ``ValueKey``s. ``routed_dotted``
+    is the full routed dotted path when the whole field is a short-form
+    ``DottedRef`` that auto-routed, else ``None`` — the naming layer
+    surfaces a routed dimension under this full path, not the short form typed."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    value_key: ValueKey
+    routed_dotted: Optional[str] = None
+
+    @property
+    def phase(self) -> Phase:
+        return self.value_key.phase
+
+
+class BoundTimeDimension(BaseModel):
+    """A bound time dimension: the wrapped ``BoundExpr`` (``bound``) plus the facts the
+    checker judges — a column's ``column_type`` (an expression is typed by the checker)
+    and ``(leaf, granularity)`` per temporal leaf a bucketed stage column or a model
+    ``Column``'s ``granularity`` records."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    bound: BoundExpr
+    column_type: Optional[DataType] = None
+    bucketed_leaves: Tuple[Tuple[str, Granularity], ...] = ()
+    is_expression: bool = False
+
+
+def bound_filter_from_key(vk: ValueKey) -> BoundFilter:
+    """A ``BoundFilter`` over ``vk`` with phase and referenced keys recomputed."""
+    refs = tuple(walk_value_keys(vk))
+    phase = max((k.phase for k in refs), default=vk.phase)
+    return BoundFilter(value_key=vk, phase=phase, referenced_keys=refs)
+
+
+def row_restriction_from_key(vk: ValueKey) -> BoundFilter:
+    """A FILTER clause's condition as its producer's row restriction."""
+    return bound_filter_from_key(vk).model_copy(update={"row_restriction": True})
+
+
+class DeclaredMeasure(BaseModel):
+    """One declared measure; ``type`` follows the aggregation (count → INT, avg → DOUBLE, else source type)."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    bound: BoundExpr
+    declared_name: str
+    public_name: Optional[str] = None
+    label: Optional[str] = None
+    canonical_alias: Optional[str] = None
+    name_is_explicit: bool = False
+    type: Optional[DataType] = None
+    element_type: Optional[DataType] = None
+    type_is_explicit: bool = False
+    preserve_native_type: bool = False
+    format: Optional[NumberFormat] = None
+    description: Optional[str] = None
+    # A computed dimension is a ROW-phase composite projected AND grouped; the
+    # flag distinguishes it from a bare-measure expression.
+    is_dimension: bool = False
+
+
+class OrderSpec(BaseModel):
+    """One ORDER BY entry on a query."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    bound: BoundExpr
+    direction: str = "asc"
+    nulls: Literal["default", "first", "last"] = "default"
+
+
+class GranularityConflict(BaseModel):
+    """Two ``whole_periods_only`` granularities on one column that do not nest into each other."""
+
+    model_config = ConfigDict(frozen=True)
+
+    column: str
+    granularities: Tuple[Granularity, Granularity]
+
+
+class WholeListRead(BaseModel):
+    """A query reading the whole list ``list`` as its element set: grouping by it, or counting its distinct sets."""
+
+    model_config = ConfigDict(frozen=True)
+
+    operation: Literal["group", "count_distinct"]
+    list: str

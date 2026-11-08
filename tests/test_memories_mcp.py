@@ -17,7 +17,6 @@ MCP test suite.
 import json
 import os
 import shutil
-import sqlite3
 import tempfile
 from typing import Any
 from collections.abc import Generator
@@ -36,6 +35,7 @@ from slayer.core.models import (
 from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.sqlite_conn import transaction
 
 
 @pytest.fixture(scope="session")
@@ -74,7 +74,7 @@ def _reset_storage(storage: YAMLStorage) -> None:
     # CREATE TABLE having been run).
     emb_path = os.path.join(storage.base_dir, "embeddings.db")
     if os.path.exists(emb_path):
-        with sqlite3.connect(emb_path) as conn:
+        with transaction(emb_path) as conn:
             conn.execute("DELETE FROM embeddings")
 
 

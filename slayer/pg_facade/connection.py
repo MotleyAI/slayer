@@ -1,4 +1,4 @@
-"""Per-connection Postgres-protocol state machine (DEV-1486).
+"""Per-connection Postgres-protocol state machine.
 
 One :class:`PgConnection` per accepted TCP connection. ``run()`` drives the
 session: startup (SSLRequest / CancelRequest / protocol v3), cleartext-password
@@ -20,6 +20,7 @@ import re
 import struct
 import time
 from collections.abc import Awaitable, Callable, Iterable
+from typing import Iterator, List, Optional, Tuple, cast
 
 import sqlglot
 import sqlglot.errors
@@ -27,9 +28,13 @@ import sqlglot.expressions as exp
 from pydantic import BaseModel, ConfigDict
 from sqlglot.optimizer.scope import traverse_scope
 
+from slayer import usage_reporting
 from slayer.core.enums import DataType
 from slayer.core.models import SlayerModel
-from slayer.engine import timing
+from slayer.storage.base import StorageBackend
+from slayer.storage.document_loading import DocumentLoadFailures
+from slayer.storage.engine_view import EngineStorage
+from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine
 from slayer.facade.catalog import (
     FacadeCatalog,
     build_catalog_grouped_by_schema,
@@ -65,6 +70,7 @@ from slayer.pg_facade.types import (
     value_to_binary,
     value_to_text,
 )
+from slayer.core import timing
 
 logger = logging.getLogger(__name__)
 
@@ -72,12 +78,160 @@ _BACKEND_PID = 1
 _BACKEND_SECRET = 0
 _PARAM_PLACEHOLDER = re.compile(r"\$(\d+)")
 
+
+def _skip_line_comment(sql: str, i: int) -> int:
+    """``-- … newline`` (or EOF)."""
+    nl = sql.find("\n", i + 2)
+    return len(sql) if nl < 0 else nl + 1
+
+
+def _skip_block_comment(sql: str, i: int) -> int:
+    """``/* … */``, Postgres-style nested."""
+    n = len(sql)
+    depth = 1
+    i += 2
+    while i < n and depth > 0:
+        if sql[i] == "/" and i + 1 < n and sql[i + 1] == "*":
+            depth += 1
+            i += 2
+        elif sql[i] == "*" and i + 1 < n and sql[i + 1] == "/":
+            depth -= 1
+            i += 2
+        else:
+            i += 1
+    return i
+
+
+def _skip_unquoted_identifier(sql: str, i: int) -> int:
+    """Postgres: letter|_ then alnum|_|$. Treats ``metric$1`` as one token."""
+    n = len(sql)
+    i += 1
+    while i < n and (sql[i].isalnum() or sql[i] in ("_", "$")):
+        i += 1
+    return i
+
+
+def _skip_e_string(sql: str, i: int) -> int:
+    """``E'…'`` / ``e'…'`` — backslash escapes AND ``''`` escape."""
+    n = len(sql)
+    i += 2  # skip prefix + opening quote
+    while i < n:
+        if sql[i] == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if sql[i] == "'":
+            if i + 1 < n and sql[i + 1] == "'":
+                i += 2
+                continue
+            return i + 1
+        i += 1
+    return i
+
+
+def _skip_single_quoted_string(sql: str, i: int) -> int:
+    """``'…'`` — only the ``''`` doubled-quote escape (no backslash)."""
+    n = len(sql)
+    i += 1
+    while i < n:
+        if sql[i] == "'":
+            if i + 1 < n and sql[i + 1] == "'":
+                i += 2
+                continue
+            return i + 1
+        i += 1
+    return i
+
+
+def _skip_double_quoted_identifier(sql: str, i: int) -> int:
+    """``"…"`` — only the ``""`` escape."""
+    n = len(sql)
+    i += 1
+    while i < n:
+        if sql[i] == '"':
+            if i + 1 < n and sql[i + 1] == '"':
+                i += 2
+                continue
+            return i + 1
+        i += 1
+    return i
+
+
+def _try_skip_dollar_quoted(sql: str, i: int) -> Optional[int]:
+    """If sql[i:] opens a ``$tag$ … $tag$`` literal, return the index just
+    past the closing tag; otherwise return None (so the caller can fall
+    through to ``$N`` placeholder matching). Requires a word boundary
+    before the opening ``$`` — otherwise ``ident$1`` would be misread."""
+    n = len(sql)
+    prev = sql[i - 1] if i > 0 else ""
+    if prev.isalnum() or prev == "_":
+        return None
+    j = i + 1
+    while j < n and (sql[j].isalnum() or sql[j] == "_"):
+        j += 1
+    if j >= n or sql[j] != "$":
+        return None
+    tag = sql[i : j + 1]
+    end = sql.find(tag, j + 1)
+    return n if end < 0 else end + len(tag)
+
+
+def _handle_dollar(
+    sql: str, i: int,
+) -> Tuple[int, Optional[Tuple[int, int, int]]]:
+    """Resolve a ``$`` at ``i`` to either a dollar-quoted-string skip or a
+    ``$N`` placeholder match (or a single-char advance if neither). Returns
+    ``(new_i, placeholder_or_None)`` so the main walker stays a flat
+    dispatch."""
+    dq_end = _try_skip_dollar_quoted(sql, i)
+    if dq_end is not None:
+        return dq_end, None
+    m = _PARAM_PLACEHOLDER.match(sql, i)
+    if m:
+        return m.end(), (int(m.group(1)), m.start(), m.end())
+    return i + 1, None
+
+
+def _iter_param_placeholders(sql: str) -> Iterator[Tuple[int, int, int]]:
+    """Yield ``(param_index, start, end)`` for every ``$N`` placeholder in
+    ``sql`` that is **not** inside a string literal, quoted identifier,
+    dollar-quoted string, or line/block comment.
+
+    Mirrors Postgres' tokenizer well enough for standard-shape SQL coming
+    from libpq / asyncpg / psql / JDBC clients. Closes the regex-only path
+    that rewrote ``$N`` tokens inside literals and comments (Codex review on
+    PR #153). Per-lexical-context skip helpers (``_skip_*`` / ``_handle_*``)
+    own the state-machine; the main loop is a flat ``c → helper`` dispatch.
+    """
+    i = 0
+    n = len(sql)
+    while i < n:
+        c = sql[i]
+        if c == "-" and i + 1 < n and sql[i + 1] == "-":
+            i = _skip_line_comment(sql, i)
+        elif c == "/" and i + 1 < n and sql[i + 1] == "*":
+            i = _skip_block_comment(sql, i)
+        elif c in ("E", "e") and i + 1 < n and sql[i + 1] == "'":
+            i = _skip_e_string(sql, i)
+        elif c.isalpha() or c == "_":
+            i = _skip_unquoted_identifier(sql, i)
+        elif c == "'":
+            i = _skip_single_quoted_string(sql, i)
+        elif c == '"':
+            i = _skip_double_quoted_identifier(sql, i)
+        elif c == "$":
+            i, ph = _handle_dollar(sql, i)
+            if ph is not None:
+                yield ph
+        else:
+            i += 1
+
+
 # Strips characteristics off a statement-initial ``BEGIN`` / ``START
 # TRANSACTION`` (``READ ONLY``, ``ISOLATION LEVEL …``, ``DEFERRABLE`` …) so the
 # sqlglot-based simple-query splitter — which rejects those forms — can still
 # parse the statement list. Anchored to statement start (^ or after ``;``) so a
 # ``begin`` column reference elsewhere is never touched. The stripped statement
-# stays a plain transaction-open, handled as a no-op downstream (DEV-1594).
+# stays a plain transaction-open, handled as a no-op downstream.
 _TX_OPEN_STRIP_RE = re.compile(
     r"(?P<lead>^|;)(?P<ws>\s*)"
     r"(?P<verb>BEGIN(?:\s+WORK|\s+TRANSACTION)?|START\s+TRANSACTION)\b[^;]*",
@@ -103,12 +257,19 @@ StorageProvider = Callable[[object], Awaitable[object]]
 EngineFactory = Callable[[object], object]
 
 
-def _default_engine_factory(storage: object) -> object:
-    from slayer.engine.query_engine import SlayerQueryEngine
+def _default_engine_factory(storage: object, *, client_factory: "ClientFactory | None" = None) -> object:
+    return SlayerQueryEngine(storage=cast(StorageBackend, storage), client_factory=client_factory)
 
-    return SlayerQueryEngine(storage=storage)
 
-# DEV-1569: GUC_REPORT-class settings. After a successful SET / set_config /
+def _engine_view_of(*, engine: object, storage: object) -> object:
+    """``engine``'s storage view when it wraps ``storage`` (it refines stored models through the engine), else ``storage``."""
+    view = getattr(engine, "storage", None)
+    if isinstance(view, EngineStorage) and (view is storage or view.inner is storage):
+        return view
+    return storage
+
+
+# GUC_REPORT-class settings. After a successful SET / set_config /
 # RESET of one of these, the server pushes a ``ParameterStatus`` message so
 # drivers (asyncpg, pgjdbc, c3p0, …) see the new value out-of-band. The
 # lowercase key maps to the canonical Postgres wire-case name — real
@@ -129,7 +290,7 @@ _GUC_REPORT_NAMES: dict[str, str] = {
     "timezone": "TimeZone",
 }
 
-# DEV-1570 type aliases — populated by ``_build_column_type_index`` below and
+# Type aliases — populated by ``_build_column_type_index`` below and
 # cached per-connection. Declared here so the ``__init__`` annotation can
 # reference them without a forward-ref dance.
 ColumnTypeKey = tuple[str, str, str]  # (schema_lower, table_lower, column_lower)
@@ -164,6 +325,7 @@ class PgConnection:
         authenticator: Authenticator | None = None,
         storage_provider: "StorageProvider | None" = None,
         engine_factory: "EngineFactory | None" = None,
+        client_factory: "ClientFactory | None" = None,
         tls_ctx=None,
         catalog_extra_relations=None,
         catalog_ttl_seconds: float | None = None,
@@ -172,11 +334,14 @@ class PgConnection:
         self._writer = writer
         self._engine = engine
         self._storage = storage
+        # What the catalog reads: the engine's view when it wraps this store; a scoped engine's view after auth.
+        self._read_storage = _engine_view_of(engine=engine, storage=storage)
         # Optional per-connection scoping: when ``storage_provider`` is given the
         # storage (and engine, via ``engine_factory``) is resolved from the
         # authenticated principal after auth — e.g. a tenant-scoped store.
         self._storage_provider = storage_provider
         self._engine_factory = engine_factory
+        self._client_factory = client_factory
         # Tracks whether ``_resolve_scope`` actually built per-connection
         # storage + engine objects (so teardown disposes only what this
         # connection owns; an auth failure before the swap mustn't touch
@@ -214,19 +379,19 @@ class PgConnection:
         self._statements: dict[str, _PreparedStatement] = {}
         self._portals: dict[str, _Portal] = {}
         # Lazily-built (schema, table, column) -> DataType lookup, used by the
-        # DEV-1570 empty-string-vs-non-text Bind rewrite. Built once per
+        # Empty-string-vs-non-text Bind rewrite. Built once per
         # connection on first need; ``None`` until then so connections that
         # never bind candidates pay zero cost.
         self._column_type_index: ColumnTypeIndex | None = None
         # Extended protocol: after an error the backend discards every message
         # until the next Sync, then resumes with ReadyForQuery.
         self._skip_until_sync = False
-        # DEV-1569: per-connection session-settings mailbox. Captures SET /
+        # Per-connection session-settings mailbox. Captures SET /
         # set_config writes; consulted by SHOW / current_setting reads. Seeded
         # from the module-level SESSION_SETTING_SEED via dict(...) so each
         # connection owns its own copy (never aliasing the seed).
         self._session_settings: dict[str, str] = dict(SESSION_SETTING_SEED)
-        # DEV-1569: when True, ``_describe_sql`` is in flight — translator
+        # When True, ``_describe_sql`` is in flight — translator
         # calls must remain pure. Suppresses application of any session-
         # setting mutation hints surfaced by the probe matcher during a
         # Describe.
@@ -260,9 +425,9 @@ class PgConnection:
 
         Gated on ``_owns_scoped_resources`` so an auth failure before the
         swap leaves any static storage/engine the host wants to keep alive
-        untouched. Disposes the engine too (``SlayerQueryEngine.aclose``
-        releases the async SQL-client pools — without this a long-lived
-        facade with ``storage_provider`` leaks one engine per session).
+        untouched. Disposes the engine too (``aclose`` then ``close``, closing
+        its SQL clients — without this a long-lived facade with
+        ``storage_provider`` leaks one engine per session).
         """
         if not self._owns_scoped_resources:
             return
@@ -270,6 +435,12 @@ class PgConnection:
         if engine_aclose is not None:
             try:
                 await engine_aclose()
+            except Exception:  # noqa: BLE001 — teardown best-effort
+                logger.exception("pg facade: scoped engine aclose failed")
+        engine_close = getattr(self._engine, "close", None)
+        if engine_close is not None:
+            try:
+                engine_close()
             except Exception:  # noqa: BLE001 — teardown best-effort
                 logger.exception("pg facade: scoped engine close failed")
         storage_aclose = getattr(self._storage, "aclose", None)
@@ -404,29 +575,26 @@ class PgConnection:
         self._database = database or DEFAULT_DATABASE
         if self._storage_provider is not None:
             self._storage = await self._storage_provider(self._principal)
-            factory = self._engine_factory or _default_engine_factory
-            self._engine = factory(self._storage)
+            if self._engine_factory is not None:
+                self._engine = self._engine_factory(self._storage)
+            else:
+                self._engine = _default_engine_factory(self._storage, client_factory=self._client_factory)
+            self._read_storage = getattr(self._engine, "storage", self._storage)
             # Mark only after BOTH constructions succeed — partial state
             # would leave teardown unsure which side to dispose.
             self._owns_scoped_resources = True
 
     async def _build_catalog(self) -> FacadeCatalog:
+        storage = cast(StorageBackend, self._read_storage)
         models_by_datasource: dict[str, list[SlayerModel]] = {}
         schema_by_datasource: dict[str, str] = {}
-        for datasource in await self._storage.list_datasources():
-            names = await self._storage.list_models(data_source=datasource)
-            models = [
-                model
-                for name in names
-                if (model := await self._storage.get_model(
-                    name=name, data_source=datasource,
-                )) is not None
-            ]
-            models_by_datasource[datasource] = models
-            config = await self._storage.get_datasource(datasource)
+        failures = DocumentLoadFailures()
+        for datasource in await storage.list_datasources():
+            models_by_datasource[datasource] = failures.skip(await storage.load_models(data_source=datasource))
+            config = await storage.get_datasource(datasource)
             if config is not None and config.postgres_schema:
                 schema_by_datasource[datasource] = config.postgres_schema
-        priority = await self._storage.get_datasource_priority()
+        priority = await storage.get_datasource_priority()
         return build_catalog_grouped_by_schema(
             models_by_datasource=models_by_datasource,
             schema_by_datasource=schema_by_datasource,
@@ -444,7 +612,7 @@ class PgConnection:
         if self._catalog_ttl_seconds is None:
             return None
         try:
-            return await self._storage.graph_fingerprint()
+            return await cast(StorageBackend, self._read_storage).graph_fingerprint()
         except OSError:
             return None
 
@@ -456,9 +624,8 @@ class PgConnection:
         mid-transaction, to avoid a catalog shift inside a txn, (c) the TTL
         window has elapsed since the last check, and (d) the storage
         fingerprint has actually changed. When nothing changed the cost is a
-        single ``graph_fingerprint`` read per window. Backends that don't
-        implement a real fingerprint report a constant, so they never rebuild
-        and behave exactly as before.
+        single ``graph_fingerprint`` read per window. A backend reporting no
+        fingerprint (``None``) rebuilds every window.
 
         Best-effort: a transient storage failure during the fingerprint read
         or the rebuild must not propagate out of ``_run_statement`` and tear
@@ -580,7 +747,7 @@ class PgConnection:
     async def _handle_simple_query(self, sql: str) -> None:
         try:
             statements = [s for s in sqlglot.parse(sql, dialect="postgres") if s is not None]
-        except sqlglot.errors.ParseError as exc:
+        except sqlglot.errors.SqlglotError as exc:
             # BI tools (Metabase) wrap reads in ``BEGIN READ ONLY`` etc., which
             # sqlglot can't parse. Strip the transaction characteristics and
             # retry once before surfacing a syntax error.
@@ -589,7 +756,7 @@ class PgConnection:
                 statements = [
                     s for s in sqlglot.parse(stripped, dialect="postgres") if s is not None
                 ] if stripped != sql else None
-            except sqlglot.errors.ParseError:
+            except sqlglot.errors.SqlglotError:
                 statements = None
             if statements is None:
                 logger.warning("pg facade: cannot parse simple query %r: %s", sql, exc)
@@ -682,18 +849,24 @@ class PgConnection:
             )
             literals.append(literal_for_substitution(value))
 
-        def repl(match: "re.Match[str]") -> str:
-            idx = int(match.group(1))
+        # Walk placeholders in lexical order, skipping ones inside string
+        # literals / quoted identifiers / dollar-quoted strings / comments.
+        parts: List[str] = []
+        last = 0
+        for idx, start, end in _iter_param_placeholders(stmt.sql):
+            parts.append(stmt.sql[last:start])
             if 1 <= idx <= len(literals):
-                return literals[idx - 1]
-            return match.group(0)
-
-        return _PARAM_PLACEHOLDER.sub(repl, stmt.sql)
+                parts.append(literals[idx - 1])
+            else:
+                parts.append(stmt.sql[start:end])
+            last = end
+        parts.append(stmt.sql[last:])
+        return "".join(parts)
 
     def _empty_string_null_params_for_bind(
         self, *, sql: str, raw_values, oids: list[int],
     ) -> set[int]:
-        # DEV-1570: pre-classify $N indices whose bound value is an empty
+        # Pre-classify $N indices whose bound value is an empty
         # text-OID payload AND whose AST occurrence targets a non-TEXT catalog
         # column. Those positions emit ``NULL`` rather than ``''`` so DuckDB
         # doesn't trip a ``Could not convert string '' to INT64`` at Execute.
@@ -754,7 +927,7 @@ class PgConnection:
         self, sql: str, *, result_formats: list[int] | None,
         param_oids: list[int] | None = None,
     ) -> None:
-        # DEV-1558 fix: the catalog executor's Describe path runs the SQL
+        # The catalog executor's Describe path runs the SQL
         # against DuckDB to obtain the cursor's column description. When the
         # prepared-statement form still has ``$N`` placeholders (asyncpg
         # sends Parse + Describe-Statement BEFORE Bind), DuckDB raises a
@@ -765,7 +938,7 @@ class PgConnection:
         # real value substitution still happens in ``_handle_bind`` for
         # Execute (Codex round 13 review).
         describe_sql = _substitute_typed_sentinels(sql, param_oids or [])
-        # DEV-1569: ``_in_describe`` suppresses application of any
+        # ``_in_describe`` suppresses application of any
         # session-setting mutations surfaced by the translator during a
         # Describe pass. The Execute path applies them.
         self._in_describe = True
@@ -818,7 +991,7 @@ class PgConnection:
     def _portal_is_tx_end(sql: str) -> bool:
         try:
             parsed = sqlglot.parse_one(sql, dialect="postgres")
-        except sqlglot.errors.ParseError:
+        except sqlglot.errors.SqlglotError:
             return False
         return _is_tx_end(parsed)
 
@@ -866,7 +1039,7 @@ class PgConnection:
     def _probe_matcher(self, parsed: exp.Expression):
         """Wraps the PG-facade and shared probe matchers.
 
-        DEV-1569: ``SHOW`` / ``current_setting`` consult the per-connection
+        ``SHOW`` / ``current_setting`` consult the per-connection
         ``self._session_settings``. For ``set_config`` matches, the returned
         ``ProbeMatcherOutcome`` carries a mutation hint that
         ``_run_statement`` applies on Execute (Describe leaves it pending).
@@ -898,8 +1071,9 @@ class PgConnection:
             return False
 
         if isinstance(result, (ProbeResult, InfoSchemaResult, PgCatalogResult)):
+            usage_reporting.record(surface="pg", token="probe")
             self._emit_row_batch(result.batch, result_formats, send_row_description)
-            # DEV-1569: set_config(...) mutation hint surfaces on ProbeResult.
+            # set_config(...) mutation hint surfaces on ProbeResult.
             # Apply ONLY in the Execute path (not Describe). Pushes
             # ParameterStatus for reportable settings after CommandComplete.
             if isinstance(result, ProbeResult) and result.settings_mutation is not None:
@@ -907,8 +1081,8 @@ class PgConnection:
             return True
         if isinstance(result, NoOpResult):
             self._apply_tx_command(result.command_tag)
-            self._writer.write(proto.encode_command_complete(_command_tag(result.command_tag)))
-            # DEV-1569: apply SET / RESET captures AFTER CommandComplete so
+            self._writer.write(_no_op_command_complete(result.command_tag))
+            # Apply SET / RESET captures AFTER CommandComplete so
             # the post-SET ParameterStatus push lands between CC and
             # ReadyForQuery (any-time ordering OK per PG protocol). Skipped
             # during Describe per _describe_sql / _in_describe.
@@ -952,22 +1126,26 @@ class PgConnection:
                 for i in range(len(batch.columns))
             ]
             self._writer.write(proto.encode_data_row(values))
-        self._writer.write(proto.encode_command_complete(f"SELECT {len(batch.rows)}"))
+        self._writer.write(proto.encode_command_complete(command="SELECT", rows=len(batch.rows)))
 
     async def _run_query(
         self, result: QueryResult, result_formats: list[int] | None, send_row_description: bool,
     ) -> bool:
+        usage_reporting.observe_query(result.query)
         try:
             # The translator resolves the per-query datasource from the
             # referenced model(s) and rejects cross-datasource joins. A model
             # query always carries one; guard the impossible None rather than
             # passing it to the engine.
-            if result.data_source is None:
-                raise ValueError("could not resolve a datasource for the query")
-            with timing.open_query_profile():
-                response = await self._engine.execute(
-                    query=result.query, data_source=result.data_source,
-                )
+            with usage_reporting.counting(surface="pg", token="query"):
+                if result.data_source is None:
+                    raise ValueError("could not resolve a datasource for the query")
+                engine = cast(SlayerQueryEngine, self._engine)
+                with timing.open_query_profile():
+                    response = await engine.execute(
+                        query=result.query, data_source=result.data_source,
+                    )
+            usage_reporting.observe_executed(response)
         except Exception as exc:  # noqa: BLE001 — surface any engine error to the client
             code, message = _engine_error_fields(exc)
             await self._send_error(code=code, message=message)
@@ -992,7 +1170,7 @@ class PgConnection:
                 for i, (engine_alias, _projected) in enumerate(mapping)
             ]
             self._writer.write(proto.encode_data_row(values))
-        self._writer.write(proto.encode_command_complete(f"SELECT {len(response.data)}"))
+        self._writer.write(proto.encode_command_complete(command="SELECT", rows=len(response.data)))
         return True
 
     def _fields_for_result(
@@ -1031,7 +1209,7 @@ class PgConnection:
         if self._tx_state == proto.TX_IN_TRANSACTION:
             self._tx_state = proto.TX_FAILED
 
-    # ----- DEV-1569: per-connection session-settings application -----------
+    # ----- Per-connection session-settings application -----------
 
     def _apply_set_setting(self, op: SetSettingOp) -> None:
         """Mutate the per-connection session-settings map and (for reportable
@@ -1051,7 +1229,7 @@ class PgConnection:
         intent. Pushes ``ParameterStatus`` for each reportable name whose
         value changed back to seed.
 
-        DEV-1569 / Codex F2: multi-word names (``RESET TIME ZONE``,
+        Multi-word names (``RESET TIME ZONE``,
         ``RESET SESSION AUTHORIZATION``) are alias-resolved via the same
         ``SHOW_ALIASES`` table that ``SHOW`` consults; without the
         resolution the lookup against ``SESSION_SETTING_SEED`` would
@@ -1144,7 +1322,7 @@ def _substitute_typed_sentinels(sql: str, param_oids: list[int]) -> str:
     return _PARAM_PLACEHOLDER.sub(repl, sql)
 
 
-# DEV-1570: empty-string-vs-non-text Bind rewrite -----------------------------
+# Empty-string-vs-non-text Bind rewrite -----------------------------
 #
 # Symmetric with the Describe-side typed-NULL substitution above. pgjdbc /
 # Metabase binds an empty string (``b""``) for "null" against text-OID
@@ -1181,7 +1359,7 @@ def _build_column_type_index(
     extra_relations=None,
 ) -> ColumnTypeIndex:
     """Build the (schema_lower, table_lower, column_lower) -> DataType lookup
-    used by the Bind-time empty-string-to-NULL rewrite (DEV-1570).
+    used by the Bind-time empty-string-to-NULL rewrite.
 
     Covers pg_catalog.*, information_schema.* (via the ``_is_<name>``
     builder-name remap), and user-model tables under ``PUBLIC_SCHEMA``.
@@ -1248,14 +1426,14 @@ def _record_column_type(
     index lower-cases column names — last-writer-wins on the previous
     implementation could rewrite an empty-string text comparison to NULL.
     Skip the second occurrence and warn once. Same-type collisions are
-    silently ignored (no behaviour change). DEV-1570 / Codex CX-2."""
+    silently ignored (no behaviour change)."""
     existing = out.get(key)
     if existing is None:
         out[key] = dt
         return
     if existing != dt:
         logger.warning(
-            "DEV-1570 column-type index: case-distinct collision on %s "
+            "Column-type index: case-distinct collision on %s "
             "(existing=%s, new=%s); keeping existing. Empty-string rewrite "
             "may behave incorrectly if the case-distinct column is queried.",
             key, existing, dt,
@@ -1304,7 +1482,7 @@ def _classify_empty_string_param_targets(
             column_type_index=column_type_index,
         )
     except Exception:  # NOSONAR(S110) — defensive: never raise out of bind path
-        logger.debug("DEV-1570 classifier defensive catch", exc_info=True)
+        logger.debug("Classifier defensive catch", exc_info=True)
         return set()
 
 
@@ -1482,7 +1660,7 @@ def _resolve_param_oids(stmt: _PreparedStatement) -> list[int]:
     """
     declared = stmt.parameter_oids
     max_idx = max(
-        (int(m.group(1)) for m in _PARAM_PLACEHOLDER.finditer(stmt.sql)),
+        (idx for idx, _, _ in _iter_param_placeholders(stmt.sql)),
         default=0,
     )
     count = max(len(declared), max_idx)
@@ -1500,12 +1678,12 @@ def _is_tx_end(stmt: exp.Expression) -> bool:
     return False
 
 
-def _command_tag(command_tag: str | None) -> str:
-    if command_tag in ("BEGIN", "START TRANSACTION"):
-        return "BEGIN"
+def _no_op_command_complete(command_tag: str | None) -> bytes:
     if command_tag is None:
-        return "SELECT 0"
-    return command_tag
+        return proto.encode_command_complete(command="SELECT", rows=0)
+    return proto.encode_command_complete(
+        command="BEGIN" if command_tag in ("BEGIN", "START TRANSACTION") else command_tag,
+    )
 
 
 def _engine_error_fields(exc: BaseException) -> tuple[str, str]:

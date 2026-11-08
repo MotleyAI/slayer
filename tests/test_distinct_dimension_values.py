@@ -11,16 +11,27 @@ Layered validation:
 * Construction-time (Pydantic) — structural checks only: ``measures``
   non-empty rejected; both ``dimensions`` and ``time_dimensions`` empty
   rejected.
-* Enrichment-time — authoritative: ``filters`` / ``order`` parsed with
+* Compile-time — authoritative: ``filters`` / ``order`` parsed with
   full model context (custom aggregations, named measures, post-variable
   substitution); any measure-reference shape rejected here.
+
+Both halves are live on the typed pipeline: the structural half in
+``SlayerQuery``'s validator, the compile-time half in
+``stage_planner._reject_measure_refs_for_raw_rows`` plus the aggregate-bucket
+guard in ``plan_query``.
 """
 
-import sqlite3
+import json
+from slayer.storage.sqlite_conn import transaction
 import tempfile
 
 import pytest
+from fastapi.testclient import TestClient
+from mcp.server.fastmcp.exceptions import ToolError
 
+from slayer.api.server import QueryRequest, create_app
+from slayer.async_utils import run_sync
+from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType, JoinType
 from slayer.core.errors import DistinctDimensionValuesError, SlayerError
 from slayer.core.models import (
@@ -38,20 +49,28 @@ from slayer.core.query import (
     SlayerQuery,
     TimeDimension,
 )
-from slayer.engine.enrichment import enrich_query
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.generator import SQLGenerator
+from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
+
+from tests._engine_helpers import _engine_generate
+
+
+# ---------------------------------------------------------------------------
+# Known gap on the typed pipeline
+# ---------------------------------------------------------------------------
+
+# DEV-1703 Phase 3: the compile-time half of the DEV-1543 contract now has
+# a typed owner. ``stage_planner._reject_measure_refs_for_raw_rows`` runs
+# BEFORE binding (so the targeted error beats the binder's generic
+# "cannot resolve" / "function not allowed"), and a post-bind guard on
+# the aggregate bucket catches anything the pre-scan's text walk misses.
 
 
 # ---------------------------------------------------------------------------
 # Helpers (mirror tests/test_filter_renamed_measure.py and
 # tests/test_engine_namespacing.py).
 # ---------------------------------------------------------------------------
-
-
-async def _noop_async(**kw):  # NOSONAR(S7503) — async callback contract
-    return None
 
 
 def _orders_model(
@@ -90,17 +109,6 @@ def _customers_model() -> SlayerModel:
     )
 
 
-async def _generate(query: SlayerQuery, model: SlayerModel) -> str:
-    enriched = await enrich_query(
-        query=query,
-        model=model,
-        resolve_dimension_via_joins=_noop_async,
-        resolve_cross_model_measure=_noop_async,
-        resolve_join_target=_noop_async,
-    )
-    return SQLGenerator(dialect="postgres").generate(enriched=enriched)
-
-
 async def _engine_with_storage() -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
     """An engine backed by a YAML store seeded with one ``test_ds``
     datasource. Caller saves models then runs queries. ``tmp`` returned so
@@ -122,8 +130,8 @@ async def _engine_with_storage() -> tuple[SlayerQueryEngine, tempfile.TemporaryD
 
 class TestConstructionRejects:
     """Cheap structural checks. Deep filter/order parsing moves to
-    enrichment, so cases that need model context live in
-    ``TestEnrichmentRejects`` below."""
+    query compilation, so cases that need model context live in
+    ``TestCompileRejects`` below."""
 
     def test_measures_non_empty_rejected(self) -> None:
         """Case 1: ``measures`` non-empty + flag=False → reject at construct.
@@ -132,11 +140,13 @@ class TestConstructionRejects:
         ``DistinctDimensionValuesError`` is) raised in
         ``model_validator(mode="after")`` into a ``ValidationError``.
         The error message bubbles up unchanged either way."""
+        status_dim = ColumnRef(name="status")
+        count_measure = ModelMeasure(formula="*:count")
         with pytest.raises(ValueError) as exc:
             SlayerQuery(
                 source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="*:count")],
+                dimensions=[status_dim],
+                measures=[count_measure],
                 distinct_dimension_values=False,
             )
         msg = str(exc.value)
@@ -170,7 +180,7 @@ class TestConstructionRejects:
 
 class TestConstructionAccepts:
     """Cases that build cleanly at construction time even with
-    flag=False — deep validation happens at enrichment."""
+    flag=False — deep validation happens at compile time."""
 
     def test_dimensions_only(self) -> None:
         """Case 10: dims only, no filter, flag=False → builds."""
@@ -187,7 +197,7 @@ class TestConstructionAccepts:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity="day"),
+                TimeDimension(dimension="created_at", granularity="day"),
             ],
             distinct_dimension_values=False,
         )
@@ -198,7 +208,7 @@ class TestConstructionAccepts:
         q = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity="day"),
+                TimeDimension(dimension="created_at", granularity="day"),
             ],
             distinct_dimension_values=False,
         )
@@ -249,13 +259,13 @@ class TestConstructionAccepts:
         assert q.distinct_dimension_values is False
 
 
-class TestEnrichmentAccepts:
+class TestCompileAccepts:
     """The companion to ``TestConstructionAccepts``: queries that survive
-    full enrichment with flag=False."""
+    full compilation with flag=False."""
 
-    async def test_quoted_string_with_colon_survives_enrichment(self) -> None:
+    async def test_quoted_string_with_colon_survives_compile(self) -> None:
         """Case 14b (full path): the colon-in-quoted-string filter MUST
-        survive enrichment too — the post-substitution measure-ref check
+        survive compilation too — the post-substitution measure-ref check
         must not produce a false positive on literal text."""
         model = _orders_model()
         q = SlayerQuery(
@@ -264,12 +274,12 @@ class TestEnrichmentAccepts:
             filters=["status == 'a:b'"],
             distinct_dimension_values=False,
         )
-        sql = await _generate(q, model)
+        sql = await _engine_generate(query=q, model=model)
         assert "GROUP BY" not in _normalise_sql(sql), sql
 
     async def test_filter_with_var_placeholder_resolves_to_scalar(self) -> None:
         """Case 14a (full path): ``{var}`` resolves to a scalar comparison
-        and survives enrichment."""
+        and survives compilation."""
         model = _orders_model()
         q = SlayerQuery(
             source_model="orders",
@@ -278,22 +288,22 @@ class TestEnrichmentAccepts:
             variables={"threshold": 100},
             distinct_dimension_values=False,
         )
-        sql = await _generate(q, model)
+        sql = await _engine_generate(query=q, model=model)
         assert "GROUP BY" not in _normalise_sql(sql), sql
 
 
 # ---------------------------------------------------------------------------
-# Enrichment-time (semantic) — authoritative measure-reference check
+# Compile-time (semantic) — authoritative measure-reference check
 # ---------------------------------------------------------------------------
 
 
-class TestEnrichmentRejects:
-    """Each case: query passes Pydantic construction; then enrichment
+class TestCompileRejects:
+    """Each case: query passes Pydantic construction; then compilation
     raises ``DistinctDimensionValuesError``."""
 
     async def _expect_reject(self, query: SlayerQuery, model: SlayerModel) -> str:
         with pytest.raises(DistinctDimensionValuesError) as exc:
-            await _generate(query, model)
+            await _engine_generate(query=query, model=model)
         return str(exc.value)
 
     async def test_filter_colon_agg(self) -> None:
@@ -320,12 +330,12 @@ class TestEnrichmentRejects:
         await self._expect_reject(q, model)
 
     async def test_filter_transform_call(self) -> None:
-        """Case 5: ``"rank(amount:sum) <= 5"`` → reject."""
+        """Case 5: ``"rank(amount:sum, direction='desc') <= 5"`` → reject."""
         model = _orders_model()
         q = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            filters=["rank(amount:sum) <= 5"],
+            filters=["rank(amount:sum, direction='desc') <= 5"],
             distinct_dimension_values=False,
         )
         await self._expect_reject(q, model)
@@ -400,7 +410,7 @@ class TestEnrichmentRejects:
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError):
-            await _generate(q, model)
+            await _engine_generate(query=q, model=model)
 
     async def test_order_arithmetic_over_aggregations(self) -> None:
         """Codex + CodeRabbit (PR #172): ``raw_formula`` of arithmetic
@@ -416,7 +426,7 @@ class TestEnrichmentRejects:
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError):
-            await _generate(q, model)
+            await _engine_generate(query=q, model=model)
 
     async def test_order_function_style_aggregate(self) -> None:
         """Case 16b: ``order=[{"column": "sum(amount)"}]`` — function-style
@@ -429,12 +439,10 @@ class TestEnrichmentRejects:
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError):
-            await _generate(q, model)
+            await _engine_generate(query=q, model=model)
 
     async def test_filter_post_variable_substitution(self) -> None:
-        """Case 16d: ``{var}`` substitution reveals an aggregation. The check
-        MUST fire after substitution, not before — the construction-time
-        check is structural only."""
+        """Case 16d: a variable cannot inject an aggregation — values bind as literals."""
         model = _orders_model()
         q = SlayerQuery(
             source_model="orders",
@@ -443,8 +451,8 @@ class TestEnrichmentRejects:
             variables={"agg_filter": "amount:sum > 100"},
             distinct_dimension_values=False,
         )
-        with pytest.raises(DistinctDimensionValuesError):
-            await _generate(q, model)
+        with pytest.raises(ValueError, match="variables supply literal values"):
+            await _engine_generate(query=q, model=model)
 
 
 # ---------------------------------------------------------------------------
@@ -463,7 +471,7 @@ class TestErrorMessage:
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError) as exc:
-            await _generate(q, model)
+            await _engine_generate(query=q, model=model)
         # The offending filter text must appear in the message.
         assert "amount:sum > 100" in str(exc.value)
 
@@ -477,7 +485,7 @@ class TestErrorMessage:
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError) as exc:
-            await _generate(q, model)
+            await _engine_generate(query=q, model=model)
         msg = str(exc.value).lower()
         # Mention either "distinct_dimension_values=True" or "remove" / "drop".
         assert (
@@ -497,7 +505,7 @@ class TestErrorMessage:
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError) as exc:
-            await _generate(q, model)
+            await _engine_generate(query=q, model=model)
         msg = str(exc.value)
         # Either the offending raw_formula text or "order" must appear.
         assert "amount:sum" in msg or "order" in msg.lower()
@@ -505,11 +513,13 @@ class TestErrorMessage:
     def test_construction_message_names_offending_field(self) -> None:
         """Construction-time message points at ``measures`` or
         ``dimensions/time_dimensions``."""
+        status_dim = ColumnRef(name="status")
+        count_measure = ModelMeasure(formula="*:count")
         with pytest.raises(ValueError) as exc:
             SlayerQuery(
                 source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="*:count")],
+                dimensions=[status_dim],
+                measures=[count_measure],
                 distinct_dimension_values=False,
             )
         assert "measures" in str(exc.value).lower()
@@ -534,7 +544,7 @@ class TestSQLGeneration:
             dimensions=[ColumnRef(name="status"), ColumnRef(name="customer_id")],
             distinct_dimension_values=False,
         )
-        sql = await _generate(q, model)
+        sql = await _engine_generate(query=q, model=model)
         assert "GROUP BY" not in _normalise_sql(sql), sql
         # Both columns are projected.
         assert "status" in sql.lower()
@@ -547,11 +557,11 @@ class TestSQLGeneration:
         q = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity="day"),
+                TimeDimension(dimension="created_at", granularity="day"),
             ],
             distinct_dimension_values=False,
         )
-        sql = await _generate(q, model)
+        sql = await _engine_generate(query=q, model=model)
         assert "GROUP BY" not in _normalise_sql(sql), sql
         # The DATE_TRUNC expression should appear.
         assert "date_trunc" in sql.lower() or "datetrunc" in sql.lower()
@@ -565,7 +575,7 @@ class TestSQLGeneration:
             filters=["amount > 100"],
             distinct_dimension_values=False,
         )
-        sql = await _generate(q, model)
+        sql = await _engine_generate(query=q, model=model)
         norm = _normalise_sql(sql)
         assert "WHERE" in norm
         assert "GROUP BY" not in norm
@@ -580,7 +590,7 @@ class TestSQLGeneration:
             limit=10,
             distinct_dimension_values=False,
         )
-        sql = await _generate(q, model)
+        sql = await _engine_generate(query=q, model=model)
         norm = _normalise_sql(sql)
         assert "ORDER BY" in norm
         assert "LIMIT" in norm
@@ -594,7 +604,7 @@ class TestSQLGeneration:
             dimensions=[ColumnRef(name="status")],
             # No explicit flag — default True.
         )
-        sql = await _generate(q, model)
+        sql = await _engine_generate(query=q, model=model)
         assert "GROUP BY" in _normalise_sql(sql), sql
 
 
@@ -681,30 +691,28 @@ def _seed_orders_db_at(db_path) -> None:
     every end-to-end / surface test. Shape: 3 unique ``status`` values
     (``completed`` x3, ``pending`` x2, ``cancelled`` x1) so dim-only
     dedup is observable in the response row count."""
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            status TEXT NOT NULL,
-            amount REAL NOT NULL,
-            customer_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                status TEXT NOT NULL,
+                amount REAL NOT NULL,
+                customer_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
         )
-        """
-    )
-    rows = [
-        (1, "completed", 100.0, 1, "2025-01-15"),
-        (2, "completed", 200.0, 2, "2025-01-20"),
-        (3, "pending", 50.0, 1, "2025-02-10"),
-        (4, "cancelled", 75.0, 3, "2025-02-15"),
-        (5, "completed", 300.0, 2, "2025-03-05"),
-        (6, "pending", 25.0, 3, "2025-03-20"),
-    ]
-    cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?)", rows)
-    conn.commit()
-    conn.close()
+        rows = [
+            (1, "completed", 100.0, 1, "2025-01-15"),
+            (2, "completed", 200.0, 2, "2025-01-20"),
+            (3, "pending", 50.0, 1, "2025-02-10"),
+            (4, "cancelled", 75.0, 3, "2025-02-15"),
+            (5, "completed", 300.0, 2, "2025-03-05"),
+            (6, "pending", 25.0, 3, "2025-03-20"),
+        ]
+        cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?)", rows)
 
 
 def _orders_slayer_model_for(data_source: str) -> SlayerModel:
@@ -783,17 +791,16 @@ class TestMCPSurface:
 
         Uses ``mcp_server.call_tool(name=..., arguments=...)`` — same
         pattern as ``tests/test_mcp_server.py:_call``."""
-        import json
-
-        from slayer.mcp.server import create_mcp_server
         engine = sqlite_orders_env
         server = create_mcp_server(storage=engine.storage)
         content_blocks, _ = await server.call_tool(
             name="query",
             arguments={
-                "source_model": "orders",
-                "dimensions": ["status"],
-                "distinct_dimension_values": False,
+                "query": {
+                    "source_model": "orders",
+                    "dimensions": ["status"],
+                    "distinct_dimension_values": False,
+                },
                 "format": "json",
             },
         )
@@ -804,18 +811,15 @@ class TestMCPSurface:
         # Raw-row mode: 6 rows in the source table.
         assert len(payload) == 6
 
-    async def test_mcp_query_nested_inner_flag_false(self, sqlite_orders_env) -> None:
-        """Case 26a: ``query_nested`` with inner stage flag=False feeds
+    async def test_mcp_query_list_inner_flag_false(self, sqlite_orders_env) -> None:
+        """Case 26a: ``query`` with a list whose inner stage flag=False feeds
         raw rows into an outer stage that aggregates."""
-        import json
-
-        from slayer.mcp.server import create_mcp_server
         engine = sqlite_orders_env
         server = create_mcp_server(storage=engine.storage)
         content_blocks, _ = await server.call_tool(
-            name="query_nested",
+            name="query",
             arguments={
-                "queries": [
+                "query": [
                     {
                         "source_model": "orders",
                         "name": "raw_rows",
@@ -836,22 +840,19 @@ class TestMCPSurface:
         assert isinstance(payload, list)
         assert len(payload) == 3
 
-    async def test_mcp_query_nested_outer_flag_false_with_measure_rejects(
+    async def test_mcp_query_list_outer_flag_false_with_measure_rejects(
         self, sqlite_orders_env,
     ) -> None:
         """Case 26b: outer stage flag=False AND outer measure ref →
         rejected. The MCP tool surfaces the error (raises or returns an
         error-shaped result — either is acceptable)."""
-        from mcp.server.fastmcp.exceptions import ToolError
-
-        from slayer.mcp.server import create_mcp_server
         engine = sqlite_orders_env
         server = create_mcp_server(storage=engine.storage)
         with pytest.raises((ToolError, DistinctDimensionValuesError, ValueError)):
             await server.call_tool(
-                name="query_nested",
+                name="query",
                 arguments={
-                    "queries": [
+                    "query": [
                         {
                             "source_model": "orders",
                             "name": "raw_rows",
@@ -875,16 +876,10 @@ class TestRESTSurface:
         """OpenAPI documentation: ``QueryRequest`` must expose the field
         as an explicit Pydantic field (not just pass-through via
         ``extra="allow"``)."""
-        from slayer.api.server import QueryRequest
         assert "distinct_dimension_values" in QueryRequest.model_fields
 
     def test_post_query_with_flag_false(self, tmp_path) -> None:
         """Case 27: REST ``POST /query`` with ``"distinct_dimension_values": false``."""
-        from fastapi.testclient import TestClient
-
-        from slayer.api.server import create_app
-        from slayer.async_utils import run_sync
-
         storage = _seed_sqlite_storage_sync(tmp_path)
         app = create_app(storage=storage)
         client = TestClient(app)
@@ -899,13 +894,9 @@ class TestRESTSurface:
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["row_count"] == 6
-        del run_sync  # silence unused
 
     def test_post_query_list_shape_per_stage_flag(self, tmp_path) -> None:
         """Case 27a: REST list shape — per-stage flag passes through."""
-        from fastapi.testclient import TestClient
-
-        from slayer.api.server import create_app
         storage = _seed_sqlite_storage_sync(tmp_path)
         app = create_app(storage=storage)
         client = TestClient(app)
@@ -937,8 +928,6 @@ def _seed_sqlite_storage_sync(tmp_path):
     """Sync helper for non-async tests (REST ``TestClient`` runs sync).
     Re-uses the same SQLite seed + ``SlayerModel`` as ``sqlite_orders_env``;
     just swaps the async storage calls for ``run_sync`` wrappers."""
-    from slayer.async_utils import run_sync
-
     db_path = tmp_path / "orders_sync.db"
     _seed_orders_db_at(db_path)
     storage_dir = tmp_path / "storage_sync"
@@ -957,7 +946,6 @@ class TestSlayerClientBody:
     def test_build_body_includes_flag(self) -> None:
         """Case 28: ``SlayerClient._build_query_body`` includes the flag
         when the SlayerQuery sets it."""
-        from slayer.client.slayer_client import SlayerClient
         q = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
@@ -968,7 +956,6 @@ class TestSlayerClientBody:
 
     def test_build_body_list_shape_per_stage(self) -> None:
         """Case 28a: list-input body preserves per-stage flag."""
-        from slayer.client.slayer_client import SlayerClient
         inner = SlayerQuery(
             source_model="orders",
             name="raw_rows",

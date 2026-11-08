@@ -1,10 +1,10 @@
-"""Sample-value refresh hooks (DEV-1375).
+"""Sample-value refresh hooks.
 
 Pins the four refresh trigger paths from §7 of the spec:
 
 1. ``ingest`` populates ``Column.sampled`` for every column on every
    table-backed model in the touched datasource.
-2. ``slayer search refresh-samples`` does the same on demand.
+2. ``slayer datasources refresh-samples`` does the same on demand.
 3. ``edit_model`` invalidates and immediately recomputes:
    - column sql/filter/type/name change → just that column;
    - SlayerModel.filters / sql / source_queries change → every column.
@@ -15,29 +15,30 @@ Pins the four refresh trigger paths from §7 of the spec:
 
 from __future__ import annotations
 
-import sqlite3
-
 import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.engine.ingestion import ingest_datasource_idempotent
 from slayer.engine.profiling import refresh_all_table_backed_sampled
+from slayer.search.service import handle_edit_refresh
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.mcp.server import create_mcp_server
 from slayer.storage.base import resolve_storage
+from slayer.storage.sqlite_conn import transaction
 
 
 @pytest.fixture
 def sqlite_table_setup(tmp_path):
     """A real SQLite DB with a populated `orders` table + a storage backend."""
     db_file = str(tmp_path / "data.db")
-    conn = sqlite3.connect(db_file)
-    conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL, status TEXT)")
-    conn.executemany(
-        "INSERT INTO orders VALUES (?, ?, ?)",
-        [(1, 10.0, "paid"), (2, 5.5, "refunded"), (3, 99.9, "paid")],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(db_file) as conn:
+        conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL, status TEXT)")
+        conn.executemany(
+            "INSERT INTO orders VALUES (?, ?, ?)",
+            [(1, 10.0, "paid"), (2, 5.5, "refunded"), (3, 99.9, "paid")],
+        )
     storage_dir = str(tmp_path / "storage")
     storage = resolve_storage(storage_dir)
     yield storage, db_file
@@ -52,12 +53,16 @@ def sqlite_table_setup(tmp_path):
 async def test_ingest_does_not_profile_columns(sqlite_table_setup) -> None:
     """Ingest is fast: it no longer fires a per-column full-table scan.
     Column samples are populated lazily on the first ``inspect`` of the
-    column (or explicitly via ``slayer search refresh-samples``)."""
+    column (or explicitly via ``slayer datasources refresh-samples``)."""
     storage, db_file = sqlite_table_setup
     ds = DatasourceConfig(name="ds", type="sqlite", database=db_file)
     await storage.save_datasource(ds)
-    from slayer.engine.ingestion import ingest_datasource_idempotent
-    await ingest_datasource_idempotent(datasource=ds, storage=storage)
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        await ingest_datasource_idempotent(datasource=ds, storage=storage, client=engine.client_for(ds))
+    finally:
+        await engine.aclose()
+        engine.close()
     loaded = await storage.get_model("orders", data_source="ds")
     # Columns are ingested but NOT profiled — samples stay unpopulated.
     assert loaded.get_column("amount").sampled is None
@@ -66,7 +71,7 @@ async def test_ingest_does_not_profile_columns(sqlite_table_setup) -> None:
 
 
 # ---------------------------------------------------------------------------
-# (2) slayer search refresh-samples
+# (2) slayer datasources refresh-samples
 # ---------------------------------------------------------------------------
 
 
@@ -117,7 +122,6 @@ async def test_edit_model_column_change_recomputes_only_that_column(
     )
     await storage.save_model(model)
     engine = SlayerQueryEngine(storage=storage)
-    from slayer.engine.profiling import handle_edit_refresh
     await handle_edit_refresh(
         engine=engine,
         storage=storage,
@@ -151,7 +155,6 @@ async def test_edit_model_model_level_change_recomputes_all_columns(
     )
     await storage.save_model(model)
     engine = SlayerQueryEngine(storage=storage)
-    from slayer.engine.profiling import handle_edit_refresh
     await handle_edit_refresh(
         engine=engine,
         storage=storage,
@@ -187,7 +190,6 @@ async def test_inspect_model_writes_back_on_sampled_miss(
             Column(name="status", type=DataType.TEXT),    # NOSONAR(S125) — sampled=None test annotation
         ],
     ))
-    from slayer.mcp.server import create_mcp_server
     mcp = create_mcp_server(storage=storage)
     # First call: sampled is None → live profile + writeback
     result = await mcp.call_tool("inspect_model", {
@@ -205,8 +207,7 @@ async def test_inspect_model_writes_back_on_sampled_miss(
 async def test_inspect_model_reads_cached_sampled_without_recompute(
     sqlite_table_setup, monkeypatch,
 ) -> None:
-    """When Column.sampled is set, inspect_model uses it and does not call
-    profile_column."""
+    """When Column.sampled is set, inspect_model uses it and runs no profiling query."""
     storage, db_file = sqlite_table_setup
     await storage.save_datasource(DatasourceConfig(
         name="ds", type="sqlite", database=db_file,
@@ -218,16 +219,16 @@ async def test_inspect_model_reads_cached_sampled_without_recompute(
         ],
     ))
     profile_call_count = {"n": 0}
-    from slayer.engine import profiling
-    original = profiling.profile_column
+    original = SlayerQueryEngine.execute
 
-    async def counting_profile(*, model, column, engine):
-        profile_call_count["n"] += 1
-        return await original(model=model, column=column, engine=engine)
+    async def counting_execute(self, *args, **kwargs):
+        q = kwargs.get("query", args[0] if args else None)
+        if isinstance(q, SlayerQuery) and (q.dimensions or isinstance(q.source_model, ModelExtension)):
+            profile_call_count["n"] += 1
+        return await original(self, *args, **kwargs)
 
-    monkeypatch.setattr(profiling, "profile_column", counting_profile)
+    monkeypatch.setattr(SlayerQueryEngine, "execute", counting_execute)
 
-    from slayer.mcp.server import create_mcp_server
     mcp = create_mcp_server(storage=storage)
     await mcp.call_tool("inspect_model", {
         "model_name": "orders", "data_source": "ds",

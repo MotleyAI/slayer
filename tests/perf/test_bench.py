@@ -4,6 +4,8 @@ Run with: poetry run pytest tests/perf/ -v --benchmark-only
 Skip with: poetry run pytest --ignore=tests/perf/
 """
 
+import asyncio
+
 import pytest
 
 from slayer.core.enums import TimeGranularity
@@ -19,19 +21,19 @@ from .params import QUERY_DATE_RANGE, SCALES
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _execute(env: BenchEnv, **query_kwargs) -> SlayerResponse:
-    """Execute a query and return the response."""
+def _execute(env: BenchEnv, loop: asyncio.AbstractEventLoop, **query_kwargs) -> SlayerResponse:
+    """Execute a query on the persistent bench loop and return the response."""
     engine, _ = env
     query = SlayerQuery(source_model="orders", **query_kwargs)
-    return engine.execute(query=query)
+    return asyncio.run_coroutine_threadsafe(engine.execute(query=query), loop).result()
 
 
 MONTHLY_TD = [TimeDimension(
-    dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+    dimension="created_at", granularity=TimeGranularity.MONTH,
 )]
 
 WEEKLY_TD = [TimeDimension(
-    dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.WEEK,
+    dimension="created_at", granularity=TimeGranularity.WEEK,
 )]
 
 
@@ -86,7 +88,7 @@ QUERIES: dict[str, dict] = {
     "rank_by_category": dict(
         measures=[
             ModelMeasure(formula="total_cost:sum"),
-            ModelMeasure(formula="rank(total_cost:sum)", name="rnk"),
+            ModelMeasure(formula="rank(total_cost:sum, direction='desc')", name="rnk"),
         ],
         dimensions=[ColumnRef(name="category")],
         order=[OrderItem(column=ColumnRef(name="total_cost_sum"), direction="desc")],
@@ -119,7 +121,7 @@ QUERIES: dict[str, dict] = {
             ModelMeasure(formula="time_shift(total_cost:sum, -1, 'month')", name="prev"),
         ],
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=QUERY_DATE_RANGE,
         )],
@@ -162,9 +164,10 @@ def _make_test_class(scale_name: str) -> type:
     @pytest.mark.benchmark(group=scale_name)
     class _BenchClass:
         @pytest.mark.parametrize("query_name", QUERY_IDS)
-        def test_query(self, benchmark, request, query_name: str) -> None:
+        def test_query(self, benchmark, request, bench_loop, query_name: str) -> None:
             env: BenchEnv = request.getfixturevalue(fixture_name)
-            benchmark(lambda: _execute(env, **QUERIES[query_name]))
+            result = benchmark(lambda: _execute(env, bench_loop, **QUERIES[query_name]))
+            assert result.data  # a real response came back, not an un-awaited coroutine
 
     _BenchClass.__name__ = f"TestBench_{scale_name}"
     _BenchClass.__qualname__ = f"TestBench_{scale_name}"

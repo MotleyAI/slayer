@@ -1,0 +1,29 @@
+## Context
+
+See proposal.md — Why. Two builders turn a planned `StageSchema` into a `SlayerModel`: `ir/source_bundle.py::synthetic_model_from_stage_schema` (sibling stand-ins; used by `engine/plan.py`, `stage_bundle_with_siblings`, `sql/generator.py::_bundle_for_stage`) and the tail of `engine/query_engine.py::_expand_query_backed_model` (query-backed virtual models), which re-derives the grain from `row_slots` minus `REGROUP_LEAF_PREFIX` leaves. Probes on main showed that re-derivation drops aggregate-valued computed dimensions (their slot is a `__regroup__` ROW `ColumnKey` with `is_dimension=True`) and that stamping `primary_key` on grain dimensions triggers the primary-key aggregation gate (`binding.py`) and the inspect/profiling skips.
+
+Governing principles: engine P5 (stages compose only through schemas — the grain rides the schema), engine P1 (typed pipeline, no re-derivation from key shape), ir P1 (the builder is a pure function over representation), system P16 (grain members and key sets name columns by `Column.name`), semantics Axioms 1/4/6/7.
+
+## Goals / Non-Goals
+
+**Goals:** one typed grain fact per stage; one stage→model builder; uniqueness stamped without identifier side effects; one identifier predicate.
+
+**Non-Goals:** functional-dependency reduction (a join covering part of a composite grain stays unproven); proving joins onto single-row (zero-dimension) stages; a model-level key object (DEV-1968); DEV-1948's stage ordering (the issue's exact `x → c → b → root` repro lands as a DEV-1948 test).
+
+## Decisions
+
+**D1 — grain is typed schema data, from dimension positions.** `StageSchema.grain: Optional[List[str]]`: `None` iff the stage is raw rows (`distinct_dimension_values=False`, which already excludes measures); `[]` for a zero-dimension stage; else the flat column names of the stage's dimension / time-dimension occurrences. `_emit_stage_schema` receives the authoritative input — the ordered declared dimension and time-dimension occurrences (the `declared_measures[:n_dims + n_tds]` positions, or an equivalent typed list) plus `distinct_dimension_values` — and maps each occurrence to the alias it emits. It never infers membership from phase, key shape, the regroup prefix or `needs_column`: those are rewritten during compilation, and inferring from them is exactly the query-backed bug. A slot interned for both a dimension and a measure occurrence contributes only its dimension alias; a slot projected under several dimension aliases contributes the first. A validator requires every member to name a schema column. Alternatives: per-`StageColumn` bool (cannot tell `[]` from `None`); keep deriving at the call site (the bug class this removes).
+
+**D2 — one builder.** `model_from_stage_schema(*, name, schema, data_source, sql=None, column_sql=None, default_time_dimension=None)` in `ir/source_bundle.py` replaces `synthetic_model_from_stage_schema` at every call site (and in `tests/test_dev1929_column_granularity.py`, a mechanical rename). `sql=None` → `sql_table=name` (sibling CTE); else `sql=<wrapped>` (query-backed). `column_sql` maps a column name to its emitted (length-fitted) SQL. Every column carries type (default `DOUBLE`), granularity, label, format, description. The query-backed path keeps building the wrapper SQL and fit map, then calls the builder; its grain block is deleted. No compatibility alias.
+
+**D3 — uniqueness stamping.** Single-member grain → `Column.unique=True`; composite → `primary_key=True` on each member (`unique` stays `False` — a member is not unique alone); `[]`/`None` → nothing. `unique` for the single case keeps a lone grain dimension (`tier`, `discount_pct`) from becoming an identifier; the composite case relies on D4. Both flags already feed `join_safety._unique_key_sets`, so the to-one proof is unchanged. `apply_extension_overlay` copies base columns, so an extension over a sibling keeps the stamping; its added columns/joins do not change the host rows.
+
+**D4 — one identifier predicate.** In `core/models.py`, next to `Column`: a column is an identifier iff it is its model's only primary-key column. Every identifier-treatment site calls it instead of `c.primary_key`: the aggregation gate (`engine/binding.py` PK gate), the `allowed_aggregations` validator (`core/models.py`), `facade/catalog.py` allowed aggregations, `inspect/model_render.py` sample dims / sample measures / numeric-temporal picks / column profiling loop, `engine/query_engine.py` type probe (both sites), `engine/profiling.py` (`_collect_dim_profile` batched eligibility, `profile_column`, cache check, table-backed error scan). `engine/cardinality.py::declares_solo_unique` reuses it for its PK half. Sites that merely render the `primary_key` flag (MCP model summary, search render, inspect tables) are unchanged. `PRIMARY_KEY_AGGREGATIONS` gains `min` and `max`. Source docs are corrected: the `Column.unique` field comment ("primary_key implies it" → only a sole primary key) and the binding PK-gate docstring.
+
+**D5 — no persisted-schema change, no arc42 edit.** `StageSchema` is in-memory; the virtual query-backed model is rebuilt per resolve.
+
+## Risks / Trade-offs
+
+- [Sibling joins that broadcast today become exact; siblings now carry label/format] → golden or notebook drift is stop-and-ask, never a silent re-bless.
+- [Composite PK members of table models lose the identifier guardrail (`sum(order_id)` on an `order_lines(order_id, line_no)` key becomes legal by type default)] → accepted; a sole primary key keeps the guardrail.
+- [A consumer relying on PK-only stamping of a single-column query-backed grain] → the one existing assertion (`tests/test_dev1836_query_model_stamping.py::test_dimension_only_distinct_stamps_grain`) is amended to "`status` unique, not a primary key" (user-approved); other consumers read uniqueness through `_unique_key_sets`, which covers both flags.

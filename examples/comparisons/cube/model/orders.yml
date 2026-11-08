@@ -1,0 +1,21 @@
+cubes:
+  - name: orders
+    sql_table: orders
+    joins:
+      - name: customers
+        sql: "{CUBE}.customer_id = {customers.id}"
+        relationship: many_to_one
+    dimensions:
+      - {name: id, sql: id, type: number, primary_key: true, public: true}
+      - {name: customer_id, sql: customer_id, type: number}
+      - {name: amount, sql: amount, type: number}
+      - {name: status, sql: status, type: string}
+      - {name: order_date, sql: order_date, type: time}
+      - {name: order_month, sql: "date_trunc('month', order_date)", type: time}
+    measures:
+      - {name: count, type: count}
+      - {name: revenue, sql: amount, type: sum}
+      - {name: avg_amount, sql: amount, type: avg}
+      - {name: min_amount, sql: amount, type: min}
+      - {name: max_amount, sql: amount, type: max}
+      - {name: customer_count, sql: customer_id, type: count_distinct}

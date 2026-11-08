@@ -1,0 +1,10 @@
+# No join path to any other cube (Q26).
+cubes:
+  - name: events
+    sql_table: events
+    dimensions:
+      - {name: id, sql: id, type: number, primary_key: true, public: true}
+      - {name: amount, sql: amount, type: number}
+      - {name: event_ts, sql: event_ts, type: time}
+    measures:
+      - {name: count, type: count}

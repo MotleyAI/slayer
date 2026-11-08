@@ -1,0 +1,11 @@
+# No time column, to-one to both facts: two equally short routes to the time spine.
+name: order_links
+data_source: probe
+sql: "select id, id as order_id, id as return_id from orders"
+columns:
+  - {name: id, type: number, primary_key: true}
+  - {name: order_id, type: number}
+  - {name: return_id, type: number}
+joins:
+  - {target_model: orders, join_pairs: [[order_id, id]], cardinality: many_to_one}
+  - {target_model: returns, join_pairs: [[return_id, id]], cardinality: many_to_one}

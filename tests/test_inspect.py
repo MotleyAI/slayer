@@ -1,4 +1,4 @@
-"""DEV-1588: ``inspect`` — single-entity point-lookup primitive.
+"""``inspect`` — single-entity point-lookup primitive.
 
 These tests pin the contract of :class:`slayer.inspect.service.InspectService`
 (the shared core behind the MCP ``inspect`` tool + REST/CLI/SlayerClient
@@ -37,9 +37,10 @@ Design (settled in the spec interview + two Codex review passes):
 
 from __future__ import annotations
 
+import ast
 import json
 import os
-import sqlite3
+import pathlib
 import tempfile
 from typing import AsyncIterator, Tuple
 
@@ -63,6 +64,13 @@ from slayer.inspect.model_render import (  # noqa: E402
     render_model_skeleton,
 )
 from slayer.inspect.service import InspectService  # noqa: E402
+from slayer.storage.sqlite_conn import transaction
+
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.inspect import model_render as mr
+from slayer.inspect import service as service_mod
+from slayer.search.render import collect_model_entity_pairs
+from slayer.search.service import SearchService
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +249,7 @@ class TestCompact:
     async def test_model_compact_is_skeleton(
         self, svc: InspectService
     ) -> None:
-        # DEV-1588 follow-up: model compact is a cheap schema *skeleton* (names
+        # Model compact is a cheap schema *skeleton* (names
         # only, zero DB), NOT description-only and NOT the full renderer.
         out = await svc.inspect(
             reference="mydb.orders", entity_type="model", compact=True,
@@ -250,7 +258,8 @@ class TestCompact:
         assert "One row per placed order." in out
         # Skeleton lines present (all four, names only).
         assert "Columns: " in out
-        assert "amount" in out and "customer_id" in out
+        assert "amount" in out
+        assert "customer_id" in out
         assert "Measures: aov" in out
         assert "Aggregations: big" in out
         assert "Joins to: customers" in out
@@ -396,7 +405,7 @@ class TestEntityTypeMismatch:
     async def test_dotted_leaf_does_not_resolve_to_unrelated_model(
         self, storage: YAMLStorage
     ) -> None:
-        # DEV-1588 review: a model literally named like the leaf must NOT be
+        # A model literally named like the leaf must NOT be
         # returned for `inspect("mydb.orders.amount", "model")` — the dotted
         # leaf is a kind mismatch, not a bare-name fallback.
         await storage.save_model(SlayerModel(
@@ -749,7 +758,7 @@ class TestJsonShapes:
     async def test_column_json_compact_omits_text(
         self, svc: InspectService
     ) -> None:
-        # DEV-1588 follow-up: ``text`` is present iff non-empty, so compact
+        # ``text`` is present iff non-empty, so compact
         # JSON drops the key entirely (a consumer never sees ``text: ""``).
         out = await svc.inspect(
             reference="mydb.orders.amount", entity_type="column",
@@ -781,21 +790,17 @@ def _make_sqlite_storage_with_data(
     tmpdir: str,
 ) -> Tuple[YAMLStorage, str]:
     db_path = os.path.join(tmpdir, "data.db")
-    conn = sqlite3.connect(db_path)
-    conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL)")
-    conn.executemany(
-        "INSERT INTO orders VALUES (?, ?)",
-        [(1, 10.0), (2, 20.0), (3, 30.0)],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL)")
+        conn.executemany(
+            "INSERT INTO orders VALUES (?, ?)",
+            [(1, 10.0), (2, 20.0), (3, 30.0)],
+        )
     return YAMLStorage(base_dir=os.path.join(tmpdir, "store")), db_path
 
 
 class TestModelSamplesWithEngine:
     async def test_model_samples_render_with_engine(self) -> None:
-        from slayer.engine.query_engine import SlayerQueryEngine
-
         with tempfile.TemporaryDirectory() as tmp:
             st, db_path = _make_sqlite_storage_with_data(tmp)
             await st.save_datasource(
@@ -838,30 +843,22 @@ class TestCollectModelEntityPairsIncludeHidden:
         )
 
     def test_default_excludes_hidden_columns(self) -> None:
-        from slayer.search.render import collect_model_entity_pairs
-
         pairs = collect_model_entity_pairs(model=self._model())
         ids = {p.canonical_id for p in pairs}
         assert "mydb.m.visible" in ids
         assert "mydb.m.secret" not in ids
 
     def test_include_hidden_adds_hidden_columns(self) -> None:
-        from slayer.search.render import collect_model_entity_pairs
-
         pairs = collect_model_entity_pairs(model=self._model(), include_hidden=True)
         ids = {p.canonical_id for p in pairs}
         assert "mydb.m.secret" in ids
 
     def test_default_returns_empty_for_hidden_model(self) -> None:
-        from slayer.search.render import collect_model_entity_pairs
-
         hidden = self._model()
         hidden.hidden = True
         assert collect_model_entity_pairs(model=hidden) == []
 
     def test_include_hidden_emits_for_hidden_model(self) -> None:
-        from slayer.search.render import collect_model_entity_pairs
-
         hidden = self._model()
         hidden.hidden = True
         pairs = collect_model_entity_pairs(model=hidden, include_hidden=True)
@@ -877,8 +874,6 @@ class TestHiddenStaysOutOfSearch:
     async def test_hidden_column_absent_from_search_results(
         self, storage: YAMLStorage
     ) -> None:
-        from slayer.search.service import SearchService
-
         await storage.save_model(SlayerModel(
             name="leaky",
             sql_table="leaky",
@@ -898,7 +893,7 @@ class TestHiddenStaysOutOfSearch:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1588 follow-up: model/datasource compact skeleton
+# Model/datasource compact skeleton
 # ---------------------------------------------------------------------------
 
 
@@ -957,7 +952,8 @@ class TestModelSkeletonHelpers:
         assert "Aggregations: _(none)_" in md
         assert "Joins to: _(none)_" in md
         # No blank trailing-space "Measures: " line.
-        assert "Measures: \n" not in md and not md.endswith("Measures: ")
+        assert "Measures: \n" not in md
+        assert not md.endswith("Measures: ")
 
     def test_render_model_skeleton_hidden_only_columns_render_none(self) -> None:
 
@@ -1056,11 +1052,6 @@ class TestModelSkeletonHelpers:
     def test_model_render_module_does_not_import_slayer_mcp(self) -> None:
         # The skeleton helpers live in slayer.inspect.model_render, which
         # mcp/server.py imports — so the reverse would be a circular import.
-        import ast
-        import pathlib
-
-        import slayer.inspect.model_render as mr
-
         src = pathlib.Path(mr.__file__).read_text()
         tree = ast.parse(src)
         for node in ast.walk(tree):
@@ -1113,7 +1104,8 @@ class TestModelCompactSkeletonJson:
         out = await svc.inspect(
             reference="mydb.customers", entity_type="model", compact=True,
         )
-        assert "Columns: " in out and "region" in out
+        assert "Columns: " in out
+        assert "region" in out
         assert "Measures: _(none)_" in out
         assert "Aggregations: _(none)_" in out
         assert "Joins to: _(none)_" in out
@@ -1171,7 +1163,7 @@ class TestDatasourceCompactFalseSkeletons:
         assert p["description"] == "Primary analytics warehouse."
         assert "text" not in p
         names = [m["name"] for m in p["models"]]
-        assert names == ["customers", "orders"]   # sorted by name
+        assert names == ["customers", "orders", "time_spine"]   # sorted by name
         orders = next(m for m in p["models"] if m["name"] == "orders")
         assert orders["canonical_id"] == "mydb.orders"
         assert orders["column_names"] == ["id", "amount", "customer_id", "big"]
@@ -1213,7 +1205,7 @@ class TestDatasourceCompactFalseSkeletons:
             reference="emptyds", entity_type="datasource",
             format="json", compact=False,
         )
-        assert json.loads(outj)["models"] == []
+        assert [m["name"] for m in json.loads(outj)["models"]] == ["time_spine"]
         outmd = await svc.inspect(
             reference="emptyds", entity_type="datasource", compact=False,
         )
@@ -1316,7 +1308,8 @@ class TestCompactTextOmittedAllKinds:
             format="json", compact=True,
         )
         p = json.loads(out)
-        assert "text" in p and p["text"]
+        assert "text" in p
+        assert p["text"]
 
     @pytest.mark.parametrize(
         "reference,entity_type",
@@ -1334,7 +1327,8 @@ class TestCompactTextOmittedAllKinds:
             format="json", compact=False,
         )
         p = json.loads(out)
-        assert "text" in p and p["text"]
+        assert "text" in p
+        assert p["text"]
 
     async def test_memory_compact_json_omits_text(
         self, storage: YAMLStorage
@@ -1365,7 +1359,8 @@ class TestCompactTextOmittedAllKinds:
             format="json", compact=False,
         )
         p = json.loads(out)
-        assert "text" in p and "Full body text here." in p["text"]
+        assert "text" in p
+        assert "Full body text here." in p["text"]
 
 
 class TestSkeletonZeroDB:
@@ -1395,8 +1390,6 @@ class TestSkeletonZeroDB:
     ) -> None:
         # Direct proof the compact path short-circuits BEFORE the DB-hitting
         # full renderer: monkeypatch render_model_inspection to explode.
-        import slayer.inspect.service as service_mod
-
         async def _boom(*args, **kwargs):  # noqa: ANN002, ANN003
             raise AssertionError(
                 "render_model_inspection must not run for compact=True"
@@ -1417,7 +1410,7 @@ class TestSkeletonZeroDB:
 
 
 # ---------------------------------------------------------------------------
-# Ambiguous bare model name (DEV-1588 follow-up — Codex review)
+# Ambiguous bare model name
 # ---------------------------------------------------------------------------
 
 
@@ -1452,7 +1445,8 @@ class TestAmbiguousModelName:
             reference="orders", entity_type=entity_type, compact=False,
         )
         assert "multiple datasources" in out.lower()
-        assert "mydb" in out and "otherdb" in out
+        assert "mydb" in out
+        assert "otherdb" in out
 
     async def test_ambiguous_bare_model_json_does_not_crash(
         self, storage: YAMLStorage

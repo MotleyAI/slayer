@@ -12,17 +12,16 @@ import tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from seed import seed, ORDERS
+from seed import seed, ORDERS  # ALLOW(import-not-top): sys.path bootstrap for the shared examples/seed.py
 
-from slayer.async_utils import run_sync
-from slayer.core.models import DatasourceConfig
-from slayer.core.query import SlayerQuery
-from slayer.engine.ingestion import ingest_datasource
-from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.storage.yaml_storage import YAMLStorage
+from slayer.async_utils import run_sync  # ALLOW(import-not-top): sys.path bootstrap for the shared examples/seed.py
+from slayer.core.models import DatasourceConfig  # ALLOW(import-not-top): sys.path bootstrap for the shared examples/seed.py
+from slayer.core.query import SlayerQuery  # ALLOW(import-not-top): sys.path bootstrap for the shared examples/seed.py
+from slayer.engine.query_engine import SlayerQueryEngine  # ALLOW(import-not-top): sys.path bootstrap for the shared examples/seed.py
+from slayer.storage.yaml_storage import YAMLStorage  # ALLOW(import-not-top): sys.path bootstrap for the shared examples/seed.py
 
 # Repeated string literals hoisted to constants (Sonar python:S1192).
-COUNT_MEASURE = "*:count"
+COUNT_MEASURE = "count(*)"
 COUNT_KEY = "orders._count"
 CUMSUM_CHANGE_KEY = "orders.cumsum_change"
 CHG_KEY = "orders.chg"
@@ -48,13 +47,13 @@ def main():
     storage = YAMLStorage(base_dir=os.path.join(workdir, "slayer_data"))
     ds = DatasourceConfig(name="demo", type="sqlite", database=db_path)
     run_sync(storage.save_datasource(ds))
-    models = ingest_datasource(datasource=ds)
+    engine = SlayerQueryEngine(storage=storage)
+    models = engine.ingest_sync(ds)
     for m in models:
         if m.name == "orders":
             m.default_time_dimension = "created_at"
         run_sync(storage.save_model(m))
 
-    engine = SlayerQueryEngine(storage=storage)
     passed = 0
     failed = 0
 
@@ -152,8 +151,8 @@ def main():
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
             measures=[
                 COUNT_MEASURE,
-                "quantity:sum",
-                {"formula": "quantity:sum / *:count", "name": "avg_qty"},
+                "sum(quantity)",
+                {"formula": "sum(quantity) / count(*)", "name": "avg_qty"},
             ],
             order=[{"column": "created_at", "direction": "asc"}],
         )
@@ -170,7 +169,7 @@ def main():
         query=SlayerQuery(
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=[COUNT_MEASURE, {"formula": "cumsum(*:count)", "name": "cumulative"}],
+            measures=[COUNT_MEASURE, {"formula": "cumsum(count(*))", "name": "cumulative"}],
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
@@ -185,7 +184,7 @@ def main():
         query=SlayerQuery(
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=[COUNT_MEASURE, {"formula": "time_shift(*:count, -1)", "name": "prev"}],
+            measures=[COUNT_MEASURE, {"formula": "time_shift(count(*), -1)", "name": "prev"}],
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
@@ -197,7 +196,7 @@ def main():
         query=SlayerQuery(
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=[COUNT_MEASURE, {"formula": "change(*:count)", "name": "chg"}],
+            measures=[COUNT_MEASURE, {"formula": "change(count(*))", "name": "chg"}],
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
@@ -210,7 +209,7 @@ def main():
         query=SlayerQuery(
             source_model="orders",
             dimensions=["customers.name"],
-            measures=[COUNT_MEASURE, {"formula": "rank(*:count)", "name": "rnk"}],
+            measures=[COUNT_MEASURE, {"formula": "rank(count(*), direction='desc')", "name": "rnk"}],
             order=[{"column": "count", "direction": "desc"}],
         )
     )
@@ -226,8 +225,8 @@ def main():
             dimensions=["products.category"],
             measures=[
                 COUNT_MEASURE,
-                "quantity:sum",
-                {"formula": "quantity:sum / *:count", "name": "avg_qty"},
+                "sum(quantity)",
+                {"formula": "sum(quantity) / count(*)", "name": "avg_qty"},
             ],
         )
     )
@@ -242,8 +241,8 @@ def main():
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
             measures=[
                 COUNT_MEASURE,
-                {"formula": "cumsum(*:count)", "name": "running"},
-                {"formula": "change(*:count)", "name": "chg"},
+                {"formula": "cumsum(count(*))", "name": "running"},
+                {"formula": "change(count(*))", "name": "chg"},
             ],
             order=[{"column": "created_at", "direction": "asc"}],
         )
@@ -258,7 +257,7 @@ def main():
         query=SlayerQuery(
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=[COUNT_MEASURE, {"formula": "last(*:count)", "name": "latest"}],
+            measures=[COUNT_MEASURE, {"formula": "last(count(*))", "name": "latest"}],
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
@@ -278,7 +277,7 @@ def main():
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
             measures=[
                 COUNT_MEASURE,
-                {"formula": "cumsum(change(*:count))", "name": "cumsum_change"},
+                {"formula": "cumsum(change(count(*)))", "name": "cumsum_change"},
             ],
             order=[{"column": "created_at", "direction": "asc"}],
         )

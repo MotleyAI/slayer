@@ -6,16 +6,23 @@ Driven over an in-memory asyncio stream pair with a fake storage + engine.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import struct
 import time
 import types
+from typing import List, Tuple
 
 import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.pg_facade import protocol as proto
-from slayer.pg_facade.connection import PgConnection
+from slayer.pg_facade.connection import (
+    PgConnection,
+    _engine_error_fields,
+    _iter_param_placeholders,
+    _PreparedStatement,
+)
 from slayer.pg_facade.probes import SESSION_SETTING_SEED
 
 
@@ -58,6 +65,9 @@ class _FakeStorage:
             if m.name == name:
                 return m
         return None
+
+    async def load_models(self, *, data_source: str, exclude: str | None = None):  # NOSONAR(S7503) — async to satisfy the awaited interface
+        return [m for m in self._models_by_ds.get(data_source, []) if m.name != exclude], []
 
     async def get_datasource(self, datasource: str):  # NOSONAR(S7503) — async to satisfy the awaited interface
         schema = self._schema_by_ds.get(datasource)
@@ -221,7 +231,7 @@ async def _run(
     return writer
 
 
-def _messages(buf: bytes, *, leading_raw: int = 0) -> list[tuple[str, bytes]]:
+def _messages(buf: bytes | bytearray, *, leading_raw: int = 0) -> list[tuple[str, bytes]]:
     return proto.split_messages(bytes(buf[leading_raw:]))
 
 
@@ -622,7 +632,6 @@ def test_engine_error_fields_walks_exception_chain() -> None:
     """Unit: ``_engine_error_fields`` finds a driver SQLSTATE through
     ``.orig`` / ``__cause__`` / ``__context__`` and returns its message;
     accepts both ``sqlstate`` and ``pgcode`` attributes; is cycle-safe."""
-    from slayer.pg_facade.connection import _engine_error_fields
 
     # via .orig
     assert _engine_error_fields(
@@ -795,7 +804,6 @@ async def test_binary_int8_wire() -> None:
 
 
 async def test_binary_date_wire() -> None:
-    import datetime as dt
 
     raw = await _binary_value_bytes(
         "SELECT order_date FROM orders", [{"orders.order_date": dt.date(2000, 1, 2)}],
@@ -804,7 +812,6 @@ async def test_binary_date_wire() -> None:
 
 
 async def test_binary_timestamp_wire() -> None:
-    import datetime as dt
 
     raw = await _binary_value_bytes(
         "SELECT ordered_at FROM orders",
@@ -927,6 +934,99 @@ async def test_execute_with_max_rows_returns_all_rows_no_suspend() -> None:
     assert "s" not in type_seq
 
 
+# ----- lexer-aware $N walker --------------------------------------------------
+# Covers _iter_param_placeholders' disambiguation between $N placeholders and
+# Postgres lexical contexts that may contain literal $N tokens (string
+# literals, quoted identifiers, dollar-quoted strings, line/block comments,
+# unquoted identifiers with $ in them). See Codex review on PR #153.
+
+
+class TestIterParamPlaceholders:
+    @staticmethod
+    def _placeholders(sql: str) -> List[Tuple[int, int, int]]:
+        return list(_iter_param_placeholders(sql))
+
+    def test_plain_placeholder(self) -> None:
+        out = self._placeholders("SELECT $1, $2 FROM t WHERE id = $1")
+        assert [idx for idx, _, _ in out] == [1, 2, 1]
+
+    def test_placeholder_with_cast(self) -> None:
+        out = self._placeholders("SELECT $1::int FROM t")
+        assert [idx for idx, _, _ in out] == [1]
+
+    def test_unquoted_identifier_with_dollar(self) -> None:
+        # Postgres allows ``$`` in unquoted identifiers after the first
+        # character, so ``metric$1`` is ONE identifier, not metric + $1.
+        out = self._placeholders("SELECT metric$1 FROM t")
+        assert out == []
+
+    def test_e_prefix_identifier_not_e_string(self) -> None:
+        # ``Etable$1`` is an identifier; only ``E'`` opens an E-string.
+        out = self._placeholders("SELECT Etable$1 FROM t")
+        assert out == []
+
+    def test_e_string_blocks_placeholder(self) -> None:
+        out = self._placeholders("SELECT E'has $1 inside' FROM t")
+        assert out == []
+
+    def test_single_quoted_string_blocks_placeholder(self) -> None:
+        out = self._placeholders("SELECT 'has $1 inside' FROM t")
+        assert out == []
+
+    def test_doubled_quote_escape_in_string(self) -> None:
+        # ``'a''b $1 c'`` is one string with an embedded ``''`` escape.
+        out = self._placeholders("SELECT 'a''b $1 c' FROM t")
+        assert out == []
+
+    def test_double_quoted_identifier_blocks_placeholder(self) -> None:
+        out = self._placeholders('SELECT "col $1" FROM t')
+        assert out == []
+
+    def test_dollar_quoted_string_blocks_placeholder(self) -> None:
+        out = self._placeholders("SELECT $tag$ has $1 inside $tag$ FROM t")
+        assert out == []
+
+    def test_anonymous_dollar_quote_blocks_placeholder(self) -> None:
+        out = self._placeholders("SELECT $$ has $1 inside $$ FROM t")
+        assert out == []
+
+    def test_line_comment_blocks_placeholder(self) -> None:
+        out = self._placeholders("SELECT 1 -- has $1 inside\nFROM t WHERE id = $2")
+        assert [idx for idx, _, _ in out] == [2]
+
+    def test_block_comment_blocks_placeholder(self) -> None:
+        out = self._placeholders("SELECT 1 /* has $1 inside */ FROM t WHERE id = $2")
+        assert [idx for idx, _, _ in out] == [2]
+
+    def test_nested_block_comment_blocks_placeholder(self) -> None:
+        # Postgres allows nested ``/* ... */``.
+        sql = "SELECT 1 /* outer /* nested $1 */ still in $2 */ FROM t WHERE id = $3"
+        out = self._placeholders(sql)
+        assert [idx for idx, _, _ in out] == [3]
+
+    def test_mixed_literal_and_real_placeholder(self) -> None:
+        # The Codex-flagged repro: ``WHERE note = '$1' AND status = $1`` —
+        # only ONE real placeholder, the literal stays untouched.
+        out = self._placeholders("WHERE note = '$1' AND status = $1")
+        assert [idx for idx, _, _ in out] == [1]
+
+    def test_substitute_params_preserves_literal_dollar(self) -> None:
+        # End-to-end: the literal ``$1`` inside the quoted string must NOT
+        # be substituted; only the real placeholder gets bound.
+        conn = PgConnection.__new__(PgConnection)
+        stmt = _PreparedStatement(
+            sql="WHERE note = '$1' AND status = $1",
+            parameter_oids=[proto.OID_TEXT],
+        )
+        bind = proto.BindMessage(
+            portal="",
+            statement="",
+            parameter_format_codes=[],
+            parameter_values=[b"active"],
+            result_format_codes=[],
+        )
+        out = conn._substitute_params(stmt, bind)
+        assert out == "WHERE note = '$1' AND status = 'active'"
 # --- DEV-1558: catalog SQL via the DuckDB executor over the extended protocol
 
 
@@ -2342,6 +2442,22 @@ async def test_storage_provider_scopes_connection_after_auth() -> None:
     assert conn._storage is scoped_storage
 
 
+async def test_scoped_catalog_reads_the_scoped_engine_storage_view() -> None:
+    engine = _CapturingEngine([])
+    engine.storage = _FakeStorage({"hr": [_employees_model()]})  # type: ignore[attr-defined]
+
+    async def provider(principal):
+        return _FakeStorage({"jaffle": [_orders_model()]})
+
+    inp = _startup(user="u", database="acme") + _query("SELECT id FROM employees") + _terminate()
+    writer, _ = await _run_conn(
+        inp, storage=_storage(), engine=_CapturingEngine([]),
+        storage_provider=provider, engine_factory=lambda storage: engine,
+    )
+    assert not any(t == "E" for t, _ in _messages(writer.buffer))
+    assert engine.last_data_source == "hr"
+
+
 async def test_storage_provider_storage_closed_on_connection_end() -> None:
     scoped_storage = _FakeStorage({"hr": [_employees_model()]})
     closed = {"called": False}
@@ -2407,6 +2523,31 @@ async def test_storage_provider_engine_disposed_on_connection_end() -> None:
     )
     assert aclosed["engine"] is True, "engine.aclose must run on connection end"
     assert aclosed["storage"] is True, "storage.aclose must run on connection end"
+
+
+async def test_scoped_engine_closes_even_when_its_release_fails() -> None:
+    scoped_storage = _FakeStorage({"hr": [_employees_model()]})
+    closed = {"engine": False}
+
+    async def _failing_aclose():
+        raise RuntimeError("release failed")
+
+    def _close():
+        closed["engine"] = True
+
+    engine = _CapturingEngine([])
+    engine.aclose = _failing_aclose  # type: ignore[attr-defined]
+    engine.close = _close  # type: ignore[attr-defined]
+
+    async def provider(principal):
+        return scoped_storage
+
+    inp = _startup(user="u", database="acme") + _query("SELECT 1") + _terminate()
+    await _run_conn(
+        inp, storage=_storage(), engine=_CapturingEngine([]),
+        storage_provider=provider, engine_factory=lambda storage: engine,
+    )
+    assert closed["engine"] is True
 
 
 # --- Review #2: static aclose-able storage not touched on early auth failure
@@ -2622,3 +2763,25 @@ async def test_describe_pins_execute_to_same_catalog_within_window() -> None:
     await conn._maybe_refresh_catalog()
     assert conn._catalog is pinned
     assert conn._catalog_fingerprint == "v2"
+
+
+_UNTOKENIZABLE = "SELECT revenue_sum FROM orders WHERE status = 'x'\";--'"
+
+
+async def test_untokenizable_simple_query_is_a_syntax_error() -> None:
+    writer = await _run(_startup(user="u", database="jaffle") + _query(_UNTOKENIZABLE) + _query("SELECT 1") + _terminate())
+    msgs = _messages(writer.buffer)
+    err = next(body for t, body in msgs if t == "E")
+    assert _error_sqlstate(err) == proto.SQLSTATE_SYNTAX_ERROR
+    assert _types(msgs).count("Z") >= 3
+
+
+async def test_untokenizable_extended_query_errors_and_session_continues() -> None:
+    writer = await _run(
+        _startup(user="u", database="jaffle")
+        + _parse("", _UNTOKENIZABLE) + _bind("", "") + _execute("") + _sync()
+        + _query("SELECT 1") + _terminate(),
+    )
+    msgs = _messages(writer.buffer)
+    assert any(t == "E" for t, _ in msgs)
+    assert _types(msgs)[-1] == "Z"

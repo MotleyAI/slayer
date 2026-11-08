@@ -181,3 +181,18 @@ class TestJoinResolution:
         assert len(joins) == 2, f"Expected 2 peer joins, got {len(joins)}: {[(j.target_model, j.join_pairs) for j in joins]}"
         pairs = sorted([j.join_pairs[0] for j in joins])
         assert pairs == [["col_x", "bx"], ["col_y", "by"]]
+
+    def test_peer_join_declared_once_per_pair(self) -> None:
+        """DEV-1853: only the lexicographically smaller model declares the peer
+        edge — the exact-inverse twin would be rejected at save time."""
+        model_a = _make_model("model_a", [
+            DbtEntity(name="entity_x", type="primary", expr="col_x"),
+        ])
+        model_b = _make_model("model_b", [
+            DbtEntity(name="entity_x", type="primary", expr="bx"),
+        ])
+        reg = EntityRegistry()
+        reg.build([model_a, model_b])
+        assert reg.resolve_joins_for_model(model_b) == []
+        forward = reg.resolve_joins_for_model(model_a)
+        assert [j.target_model for j in forward] == ["model_b"]

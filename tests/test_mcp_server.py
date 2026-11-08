@@ -8,16 +8,26 @@ from typing import Any
 from collections.abc import Generator
 
 import pytest
+from mcp.server.fastmcp.exceptions import ToolError
+from mcp.shared.memory import create_connected_server_and_client_session
+from mcp.types import TextContent
+from sqlalchemy import exc as sa_exc
 
+import slayer.engine.ingestion as ingestion_mod
 from slayer.core.enums import DataType
+from slayer.core.query import SlayerQuery
 from slayer.core.models import (
     Aggregation,
+    AggregationParam,
     Column,
     DatasourceConfig,
     ModelJoin,
     ModelMeasure,
     SlayerModel,
 )
+from slayer.engine.ingestion import _is_id_column
+from slayer.sql.client import DatabaseUnavailable, ResultColumnType, SlayerSQLClient
+from slayer.storage.sqlite_conn import transaction
 from slayer.inspect.model_render import (
     _choose_sample_agg,
     render_model_inspection,
@@ -29,17 +39,19 @@ from slayer.mcp.server import (
     _friendly_db_error,
     _markdown_table,
     _md_code_span,
+    _render_inspect_footer,
+    _resolve_inspect_sections,
     _strip_model_prefix,
+    _truncate_description,
     create_mcp_server,
 )
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._usage_reporting_helpers import free_port
 
 
-# `create_mcp_server` is expensive (~35 ms each, dominated by FastMCP tool
-# registration / pydantic schema gen). With ~160 tests in this file that
-# was ~5–6s of pure fixture overhead per run. The MCP server captures the
-# storage instance at construction time, so we share *both* across the
-# session and reset the underlying YAML files in a per-test fixture.
+# create_mcp_server is expensive, so share it (and storage) session-wide and
+# reset the YAML files per-test.
 @pytest.fixture(scope="session")
 def _shared_storage() -> Generator[YAMLStorage, None, None]:
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -52,14 +64,8 @@ def _shared_mcp_server(_shared_storage: YAMLStorage):
 
 
 def _reset_yaml_storage(storage: YAMLStorage) -> None:
-    """Wipe model + datasource files between tests so the session-scoped
-    storage looks fresh to every test. v4 nests models under
-    ``models/<data_source>/`` so we recurse rather than just unlinking
-    top-level entries. Also clears the ``priority.yaml`` written by
-    ``set_datasource_priority`` — without this, priority leaks between
-    session-scoped tests and any ambiguity-related test would be
-    order-dependent (PR #92 thread #13).
-    """
+    """Wipe model/datasource files (recursively) plus ``priority.yaml`` so the
+    session-scoped storage looks fresh; priority leakage makes tests order-dependent."""
     for sub in ("models", "datasources"):
         d = os.path.join(storage.base_dir, sub)
         if os.path.isdir(d):
@@ -82,10 +88,19 @@ def storage(_shared_storage: YAMLStorage) -> YAMLStorage:
 
 @pytest.fixture
 def mcp_server(_shared_mcp_server, storage: YAMLStorage):
-    # Depending on `storage` ensures the per-test reset runs before any
-    # test exercises the MCP server. `mcp_server` itself is the same
-    # session-scoped instance every call.
+    # Depend on `storage` so the per-test reset runs first.
     return _shared_mcp_server
+
+
+async def _dry_run_sql(storage: YAMLStorage, name: str) -> str:
+    """The SQL a dry run of the saved model ``name`` renders."""
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        sql = (await engine.execute(name, dry_run=True)).sql
+    finally:
+        engine.close()
+    assert sql is not None
+    return sql
 
 
 async def _call(mcp_server, *, name: str, arguments: dict[str, Any] | None = None) -> str:
@@ -99,10 +114,11 @@ class TestModelsSummary:
         result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "nope"})
         assert "not found" in result
 
-    async def test_empty_when_datasource_has_no_models(self, mcp_server, storage: YAMLStorage) -> None:
+    async def test_only_the_spine_when_datasource_has_no_models(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="h"))
         result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "mydb"})
-        assert "has no models" in result
+        assert result.startswith("# Datasource: `mydb` — 1 model(s)")
+        assert "## `time_spine`" in result
 
     async def test_filters_by_datasource(self, mcp_server, storage: YAMLStorage) -> None:
         """Only models whose ``data_source`` matches the arg appear in the output."""
@@ -122,16 +138,16 @@ class TestModelsSummary:
             data_source="mydb",
             description="Orders fact table.",
             columns=[Column(name="status", type=DataType.TEXT, description="Order state"),
-Column(name="revenue", sql="amount", description="USD", type=DataType.DOUBLE)
+Column(name="revenue", sql="amount", description="USD", type=DataType.DOUBLE),
+                     Column(name="customer_id", type=DataType.INT, hidden=True),
             ],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         ))
-        # DEV-1549: pin the verbose markdown shape; compact-by-default
-        # drops the per-column table this test was written for.
+        # compact=False: compact-by-default drops the per-column table under test.
         result = await _call(mcp_server, name="models_summary", arguments={
             "datasource_name": "mydb", "compact": False,
         })
-        assert result.startswith("# Datasource: `mydb` — 1 model(s)")
+        assert result.startswith("# Datasource: `mydb` — 2 model(s)")
         assert "## `orders`" in result
         assert "Orders fact table." in result
         assert "**Columns (2):**" in result
@@ -152,7 +168,6 @@ Column(name="revenue", sql="amount", description="USD", type=DataType.DOUBLE)
     async def test_joins_none_marker(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="h"))
         await storage.save_model(SlayerModel(name="solo", sql_table="t", data_source="mydb"))
-        # DEV-1549: verbose markdown contract.
         result = await _call(mcp_server, name="models_summary", arguments={
             "datasource_name": "mydb", "compact": False,
         })
@@ -170,7 +185,6 @@ Column(name="revenue", sql="amount", description="USD", type=DataType.DOUBLE)
                 Column(name="y", type=DataType.DOUBLE),
             ],
         ))
-        # DEV-1549: verbose markdown contract.
         result = await _call(mcp_server, name="models_summary", arguments={
             "datasource_name": "mydb", "compact": False,
         })
@@ -194,7 +208,8 @@ class TestInspectModel:
             columns=[
                 Column(name="status", type=DataType.TEXT, label="Status", description="Order state"),
                 Column(name="id", type=DataType.DOUBLE, primary_key=True),
-Column(name="revenue", sql="amount", label="Revenue", description="USD total", type=DataType.DOUBLE)
+Column(name="revenue", sql="amount", label="Revenue", description="USD total", type=DataType.DOUBLE),
+                Column(name="customer_id", type=DataType.INT, hidden=True),
             ],
             filters=["deleted_at IS NULL"],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
@@ -216,7 +231,6 @@ Column(name="revenue", sql="amount", label="Revenue", description="USD total", t
         assert "customers" in result
         assert "customer_id = id" in result
 
-        # No longer JSON
         with pytest.raises(json.JSONDecodeError):
             json.loads(result)
 
@@ -259,6 +273,10 @@ Column(name="revenue", sql="amount", label="Revenue", description="USD total", t
         """Joins table renders direct joins without kind labels."""
         await storage.save_model(SlayerModel(
             name="order_items", sql_table="order_items", data_source="test",
+            columns=[
+                Column(name="order_id", type=DataType.INT, hidden=True),
+                Column(name="product_id", type=DataType.INT, hidden=True),
+            ],
             joins=[
                 ModelJoin(target_model="orders", join_pairs=[["order_id", "id"]]),
                 ModelJoin(target_model="products", join_pairs=[["product_id", "id"]]),
@@ -269,26 +287,19 @@ Column(name="revenue", sql="amount", label="Revenue", description="USD total", t
         assert "| products |" in result
         assert "kind" not in result
 
-    # --- meta rendering (DEV-1332) ---
+    # --- meta rendering ---
 
     async def test_inspect_renders_meta_on_columns(self, mcp_server, storage: YAMLStorage) -> None:
-        """Column.meta surfaces in both markdown and JSON inspect_model output.
-
-        Pins the user-visible bug from DEV-1332: the storage layer round-trips
-        meta correctly, but inspect_model never rendered it, so agents couldn't
-        verify their bookkeeping was persisted.
-        """
+        """Column.meta surfaces in both markdown and JSON inspect_model output."""
         await storage.save_model(SlayerModel(
             name="m", sql_table="t", data_source="test",
             columns=[Column(name="amount", type=DataType.DOUBLE, meta={"kb_id": 7})],
         ))
-        # Markdown
         md = await _call(mcp_server, name="inspect_model", arguments={
             "model_name": "m", "sections": ["columns"],
         })
         assert "kb_id" in md
         assert "7" in md
-        # JSON
         js = await _call(mcp_server, name="inspect_model", arguments={
             "model_name": "m", "sections": ["columns"], "format": "json",
         })
@@ -338,8 +349,7 @@ Column(name="revenue", sql="amount", label="Revenue", description="USD total", t
         assert payload["aggregations"][0]["meta"] == {"owner": "analytics"}
 
     async def test_inspect_renders_meta_on_model_header(self, mcp_server, storage: YAMLStorage) -> None:
-        """SlayerModel.meta surfaces in the markdown header bullets and at the
-        top level of the JSON payload."""
+        """SlayerModel.meta surfaces in the markdown header and the JSON payload."""
         await storage.save_model(SlayerModel(
             name="m", sql_table="t", data_source="test",
             meta={"source": "CRM"},
@@ -357,11 +367,7 @@ Column(name="revenue", sql="amount", label="Revenue", description="USD total", t
     async def test_inspect_omits_meta_column_when_no_entity_has_meta(
         self, mcp_server, storage: YAMLStorage,
     ) -> None:
-        """When no column/measure/aggregation has meta set, the meta column is
-        pruned from the markdown table — keeps existing output unchanged for
-        users who don't use meta. Relies on _markdown_table's all-empty-column
-        pruning.
-        """
+        """No entity with meta ⇒ the meta column is pruned from every table."""
         await storage.save_model(SlayerModel(
             name="m", sql_table="t", data_source="test",
             columns=[Column(name="amount", type=DataType.DOUBLE)],
@@ -372,7 +378,6 @@ Column(name="revenue", sql="amount", label="Revenue", description="USD total", t
             "model_name": "m", "sections": ["columns", "measures", "aggregations"],
             "show_sql": True,
         })
-        # No meta column header should be emitted in any of the three tables.
         assert "| meta |" not in md
         assert "**meta:**" not in md  # also no model-header meta bullet
 
@@ -411,14 +416,7 @@ class TestMdCodeSpan:
 
 
     async def test_measure_type_column_in_schema(self, mcp_server, storage: YAMLStorage) -> None:
-        """Measure type column is included when type inference succeeds.
-
-        Without a real DB, get_column_types returns {} and the type column
-        is auto-pruned. This test verifies the column appears in the schema
-        by checking _build_sample_query_args uses inferred types.
-        """
-        from slayer.mcp.server import _build_sample_query_args
-
+        """Inferred types drive the sample-query aggregations in _build_sample_query_args."""
         model = SlayerModel(
             name="typed",
             sql_table="t",
@@ -429,29 +427,23 @@ class TestMdCodeSpan:
                 Column(name="label", sql="label", type=DataType.DOUBLE),
             ],
         )
-        # Without types: both get avg (label has no matching dim to trigger heuristic)
+        # Without types, label falls back to avg (no dim to trigger the heuristic).
         args_no_types = _build_sample_query_args(model=model, num_rows=3)
         formulas = [f["formula"] for f in args_no_types["measures"]]
-        assert "label:avg" in formulas
+        assert "avg(label)" in formulas
 
-        # With inferred types: label is string → count_distinct
         args_with_types = _build_sample_query_args(
-            model=model, num_rows=3, measure_types={"amount": "number", "label": "string"},
+            model=model, num_rows=3,
+            measure_types={"amount": ResultColumnType(type=DataType.DOUBLE), "label": ResultColumnType(type=DataType.TEXT)},
         )
         formulas = [f["formula"] for f in args_with_types["measures"]]
-        assert "amount:avg" in formulas
-        assert "label:count_distinct" in formulas
+        assert "avg(amount)" in formulas
+        assert "count_distinct(label)" in formulas
 
 
 class TestInspectModelQueryBacked:
-    """inspect_model output for query-backed models — backing_query section,
-    source_type, and (with show_sql) backing_query_sql.
-    """
-
+    """inspect_model for query-backed models: backing_query, source_type, SQL."""
     async def _setup(self, storage: YAMLStorage) -> None:
-        from slayer.core.models import DatasourceConfig
-        from slayer.core.query import SlayerQuery
-        from slayer.engine.query_engine import SlayerQueryEngine
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
@@ -462,9 +454,7 @@ class TestInspectModelQueryBacked:
                 Column(name="region", sql="region", type=DataType.TEXT),
             ],
         ))
-        # Route the query-backed model through engine.save_model so the cache
-        # (columns + backing_query_sql) is populated at save time. Read paths
-        # never write to storage (issue #74), so cache must be warmed here.
+        # engine.save_model warms the cache (columns + SQL); read paths don't.
         engine = SlayerQueryEngine(storage=storage)
         await engine.save_model(SlayerModel(
             name="qb",
@@ -491,29 +481,21 @@ class TestInspectModelQueryBacked:
         assert bq["variables"] == {"threshold": 100}
         assert bq["required_variables"] == []  # threshold has a default
         assert len(bq["stages"]) == 1
-        # backing_query_sql is gated by show_sql
         assert "backing_query_sql" not in parsed
 
-    async def test_json_show_sql_includes_backing_query_sql(
+    async def test_json_show_sql_omits_backing_query_sql(
         self, mcp_server, storage: YAMLStorage
     ) -> None:
-        """After save populates the cache, ``backing_query_sql`` is included
-        when ``show_sql=True``.
-        """
-        await self._setup(storage)  # populates cache at save time
+        """No backing SQL even with ``show_sql=True``; a dry run renders it."""
+        await self._setup(storage)
         result = await _call(mcp_server, name="inspect_model", arguments={
             "model_name": "qb", "format": "json", "show_sql": True,
         })
-        parsed = json.loads(result)
-        assert "backing_query_sql" in parsed
-        assert parsed["backing_query_sql"]
-        assert "amount" in parsed["backing_query_sql"].lower()
+        assert "backing_query_sql" not in json.loads(result)
 
     async def test_required_variables_reported(
         self, mcp_server, storage: YAMLStorage
     ) -> None:
-        from slayer.core.models import DatasourceConfig
-        from slayer.core.query import SlayerQuery
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
@@ -591,7 +573,6 @@ Column(name="m", sql="val", type=DataType.DOUBLE)
 
 class TestInspectModelShowSQL:
     """show_sql parameter must control visibility of all SQL in inspect_model output."""
-
     async def test_hides_sql_by_default_markdown(self, mcp_server, storage: YAMLStorage) -> None:
         """Without show_sql, markdown output has no ## SQL section and no sql column."""
         await storage.save_model(SlayerModel(
@@ -607,7 +588,8 @@ Column(name="val", sql="val", type=DataType.DOUBLE)
         })
         assert "## SQL" not in result
         # Dimension table should not have an "sql" column header
-        assert "| sql " not in result and "| sql|" not in result
+        assert "| sql " not in result
+        assert "| sql|" not in result
 
     async def test_shows_sql_when_requested_markdown(self, mcp_server, storage: YAMLStorage) -> None:
         """With show_sql=True, markdown output includes ## SQL section and sql columns."""
@@ -672,7 +654,6 @@ Column(name="val", sql="val", filter="val > 0", type=DataType.DOUBLE)
 
 class TestInspectModelSectionGating:
     """``sections`` parameter on inspect_model — markdown rendering."""
-
     async def _save_rich_model(self, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
         await storage.save_model(SlayerModel(
@@ -682,6 +663,8 @@ class TestInspectModelSectionGating:
                 Column(name="id", type=DataType.DOUBLE, primary_key=True),
                 Column(name="status", type=DataType.TEXT, description="Order state"),
                 Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="customer_id", type=DataType.INT, hidden=True),
+                Column(name="product_id", type=DataType.INT, hidden=True),
             ],
             measures=[
                 ModelMeasure(name="aov", formula="amount:sum / *:count", description="Average order value"),
@@ -736,8 +719,8 @@ class TestInspectModelSectionGating:
         # Footer present
         assert "> Sections shown: columns." in result
         assert "> Names-only: measures, aggregations, joins." in result
-        assert "> Omitted: samples, learnings." in result
-        assert "Re-call inspect_model" in result
+        assert "> Omitted: samples, learnings, saved_queries." in result
+        assert "Re-call inspect with" in result
 
     async def test_omitted_sections_with_no_entities_render_nothing(self, mcp_server, storage: YAMLStorage) -> None:
         """A names-only section with no entities does not emit a heading."""
@@ -764,16 +747,12 @@ class TestInspectModelSectionGating:
             arguments={"model_name": "rich", "sections": ["columns", "fish"]},
         )
         assert "> Warning: ignored unknown sections: 'fish'." in result
-        assert "Valid: columns, measures, aggregations, joins, samples, learnings." in result
+        assert "Valid: columns, measures, aggregations, joins, samples, learnings, saved_queries." in result
         # Valid section still rendered
         assert "## Columns (3)" in result
 
     async def test_all_unknown_resolves_to_no_sections(self, mcp_server, storage: YAMLStorage) -> None:
-        """When every supplied section is unknown, no sections are selected
-        (the explicit ``None``/``[]`` form is reserved for "all six"). The
-        agent gets the always-on header + every gated section in either
-        names-only or fully-omitted form, plus the warning. They can correct
-        and re-call with valid names."""
+        """All-unknown sections ⇒ none selected (None/[] alone means "all six")."""
         await self._save_rich_model(storage)
         result = await _call(
             mcp_server, name="inspect_model",
@@ -790,15 +769,15 @@ class TestInspectModelSectionGating:
         assert "## Columns (3)\n\n|" not in result
         # samples and learnings are fully omitted (no heading at all)
         assert "## Sample" not in result
-        # Reachable-via-joins section was removed entirely in DEV-1560 — it
+        # Reachable-via-joins section was removed entirely — it
         # must never appear regardless of input.
         assert "## Reachable" not in result
         # Footer summarises what was dropped — caller can re-call with a
         # corrected sections= list.
         assert "Sections shown: (none)" in result
         assert "Names-only: columns, measures, aggregations, joins" in result
-        assert "Omitted: samples, learnings" in result
-        assert "Re-call inspect_model with `sections=[...]`" in result
+        assert "Omitted: samples, learnings, saved_queries" in result
+        assert "Re-call inspect with `sections=[...]`" in result
 
     async def test_canonical_order_regardless_of_input(self, mcp_server, storage: YAMLStorage) -> None:
         """Sections render in canonical order regardless of caller order."""
@@ -809,42 +788,27 @@ class TestInspectModelSectionGating:
         )
         assert result.find("## Columns (3)") < result.find("## Measures (2)")
 
-    # ---- DEV-1560: reachable_fields surface fully removed ----
+    # ---- reachable_fields surface fully removed ----
 
     async def test_old_reachable_fields_token_is_unknown(self, mcp_server, storage: YAMLStorage) -> None:
-        """``sections=["reachable_fields"]`` post-removal flows through the
-        existing unknown-section branch (NOT silently filtered with a
-        fallback to full output): footer warning lists the bad token with
-        the current ``Valid:`` set, the all-unknown-resolves-to-no-sections
-        semantics kick in (collapsible sections render as names-only,
-        ``samples``/``learnings`` are omitted), the markdown body emits no
-        ``## Reachable via joins`` heading, and the JSON payload has no
-        ``reachable_dimensions`` / ``reachable_measures`` keys regardless of
-        format."""
+        """Removed ``reachable_fields`` token flows through the unknown-section
+        branch: names-only collapse, no ## Reachable heading, no JSON reachable_* keys."""
         await self._save_rich_model(storage)
         result_md = await _call(
             mcp_server, name="inspect_model",
             arguments={"model_name": "rich", "sections": ["reachable_fields"]},
         )
-        # Exact one-line warning contract — fragments split could otherwise
-        # admit a malformed two-line footer.
         assert (
             "> Warning: ignored unknown sections: 'reachable_fields'. "
-            "Valid: columns, measures, aggregations, joins, samples, learnings."
+            "Valid: columns, measures, aggregations, joins, samples, learnings, saved_queries."
         ) in result_md
-        # The reachable-via-joins heading is gone for good — it can never
-        # render again, regardless of the section token.
         assert "## Reachable" not in result_md
-        # All-unknown ⇒ no full sections selected: collapsible sections
-        # render names-only, samples + learnings are fully omitted.
-        # A silent-drop implementation (filter the bad token, fall back to
-        # the full default) would emit the full Columns table — this
-        # assertion pins that the unknown-branch wins.
+        # Unknown-branch wins over a silent-drop fallback to the full Columns table.
         assert "## Columns (3)\n\n|" not in result_md
         assert "## Columns (3 — names only)" in result_md
         assert "> Sections shown: (none)" in result_md
         assert "> Names-only: columns, measures, aggregations, joins." in result_md
-        assert "> Omitted: samples, learnings." in result_md
+        assert "> Omitted: samples, learnings, saved_queries." in result_md
 
         result_json = await _call(
             mcp_server, name="inspect_model",
@@ -858,17 +822,13 @@ class TestInspectModelSectionGating:
         assert parsed["unknown_sections"] == ["reachable_fields"]
         assert "reachable_dimensions" not in parsed
         assert "reachable_measures" not in parsed
-        # Full "columns" key must NOT be present — that would mean the
-        # unknown-branch was silently bypassed.
-        assert "columns" not in parsed
-        # The collapsed names-only form lives under <section>_names siblings.
+        assert "columns" not in parsed  # full key absent ⇒ unknown-branch not bypassed
         assert parsed["names_only_sections"] == ["columns", "measures", "aggregations", "joins"]
-        assert parsed["omitted_sections"] == ["samples", "learnings"]
+        assert parsed["omitted_sections"] == ["samples", "learnings", "saved_queries"]
 
     async def test_old_reachable_fields_token_with_other_sections(self, mcp_server, storage: YAMLStorage) -> None:
-        """``sections=["reachable_fields", "columns"]`` renders the columns
-        table fully, warns about the unknown ``reachable_fields`` token, and
-        emits no reachable-via-joins markdown heading or JSON keys."""
+        """A mix of ``reachable_fields`` + ``columns`` renders columns fully and
+        still warns about the unknown token, with no reachable-via-joins output."""
         await self._save_rich_model(storage)
         result_md = await _call(
             mcp_server, name="inspect_model",
@@ -895,17 +855,8 @@ class TestInspectModelSectionGating:
         assert "reachable_measures" not in parsed
 
     async def test_reachable_fields_depth_kwarg_has_no_effect(self, mcp_server, storage: YAMLStorage) -> None:
-        """DEV-1560 removed the ``reachable_fields_depth`` kwarg from the
-        ``inspect_model`` signature. FastMCP's input-schema validation
-        uses pydantic's default ``extra="ignore"`` — unknown kwargs are
-        silently dropped at the tool boundary rather than raised. The
-        caller-facing regression-pin is therefore the descriptor schema
-        (see ``test_tool_descriptor_omits_reachable_fields_depth_arg``)
-        plus this companion test, which proves the silently-dropped
-        kwarg has no behavioural effect: the rendered output is
-        byte-identical to the call without it, AND no
-        ``## Reachable via joins`` heading sneaks back in via any code
-        path that might re-read the bogus value."""
+        """The removed ``reachable_fields_depth`` kwarg is silently dropped and has
+        no effect: output is byte-identical to the call without it, no ## Reachable."""
         await self._save_rich_model(storage)
         result_with = await _call(
             mcp_server, name="inspect_model",
@@ -920,10 +871,8 @@ class TestInspectModelSectionGating:
         assert "Reachable via joins" not in result_with
 
     async def test_no_reachable_via_joins_heading_anywhere(self, mcp_server, storage: YAMLStorage) -> None:
-        """Invariant: ``## Reachable via joins`` and the
-        ``reachable_dimensions`` / ``reachable_measures`` JSON keys never
-        appear in inspect_model output. Exercises the default
-        ``sections=None`` path and the explicit full-section-list path."""
+        """Invariant: ## Reachable via joins and reachable_* JSON keys never appear,
+        for both the default and explicit full-section-list paths."""
         await self._save_rich_model(storage)
         for sections_arg in (
             None,
@@ -945,7 +894,6 @@ class TestInspectModelSectionGating:
 
 class TestInspectModelDescriptionsMaxChars:
     """``descriptions_max_chars`` parameter — truncation behaviour."""
-
     async def _save_with_long_descriptions(self, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
         await storage.save_model(SlayerModel(
@@ -1007,10 +955,7 @@ class TestInspectModelDescriptionsMaxChars:
         assert "A" * 5 not in result
 
     async def test_negative_rejected(self, mcp_server, storage: YAMLStorage) -> None:
-        """Negative values would silently produce ``str[:-N] + marker`` (i.e.
-        "all but the last N chars" instead of "first N chars"). Rejected at
-        the tool boundary."""
-        from mcp.server.fastmcp.exceptions import ToolError
+        """Negative max_chars is rejected (would slice ``str[:-N]``, not first-N)."""
         await self._save_with_long_descriptions(storage)
         with pytest.raises(ToolError, match="descriptions_max_chars must be >= 0"):
             await _call(
@@ -1021,9 +966,7 @@ class TestInspectModelDescriptionsMaxChars:
 
 class TestInspectModelAggregationsShowSql:
     """show_sql gating on the aggregations section."""
-
     async def _save_with_aggs(self, storage: YAMLStorage) -> None:
-        from slayer.core.models import AggregationParam
         await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
         await storage.save_model(SlayerModel(
             name="m", sql_table="t", data_source="test",
@@ -1075,9 +1018,7 @@ class TestInspectModelAggregationsShowSql:
 
 class TestInspectModelJsonGating:
     """JSON parity for section gating, descriptions, and observability arrays."""
-
     async def _save_rich(self, storage: YAMLStorage) -> None:
-        from slayer.core.models import AggregationParam
         await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
         await storage.save_model(SlayerModel(
             name="rich", sql_table="t", data_source="test",
@@ -1085,6 +1026,7 @@ class TestInspectModelJsonGating:
             columns=[
                 Column(name="id", type=DataType.DOUBLE, primary_key=True),
                 Column(name="status", type=DataType.TEXT),
+                Column(name="customer_id", type=DataType.INT, hidden=True),
             ],
             measures=[ModelMeasure(name="aov", formula="*:count")],
             aggregations=[Aggregation(
@@ -1118,7 +1060,7 @@ class TestInspectModelJsonGating:
         assert "sample_data_error" not in parsed
         # Top-level state arrays
         assert parsed["names_only_sections"] == ["measures", "aggregations", "joins"]
-        assert parsed["omitted_sections"] == ["samples", "learnings"]
+        assert parsed["omitted_sections"] == ["samples", "learnings", "saved_queries"]
         assert "unknown_sections" not in parsed
 
     async def test_json_unknown_sections_array(self, mcp_server, storage: YAMLStorage) -> None:
@@ -1192,34 +1134,27 @@ class TestInspectModelJsonGating:
 
 class TestInspectModelHelpers:
     """Direct unit tests for the section-budgeting helpers."""
-
     def test_truncate_description_none(self) -> None:
-        from slayer.mcp.server import _truncate_description
         assert _truncate_description(None, 10) is None
         assert _truncate_description("anything", None) == "anything"
 
     def test_truncate_description_short_unchanged(self) -> None:
-        from slayer.mcp.server import _truncate_description
         assert _truncate_description("hello", 10) == "hello"
         # Boundary: exactly equal to max_chars should not truncate
         assert _truncate_description("hello", 5) == "hello"
 
     def test_truncate_description_marks_truncation(self) -> None:
-        from slayer.mcp.server import _truncate_description
         assert _truncate_description("hello world", 5) == "hello ... [truncated]"
 
     def test_truncate_description_zero_yields_marker(self) -> None:
-        from slayer.mcp.server import _truncate_description
         assert _truncate_description("hello", 0) == " ... [truncated]"
 
     def test_resolve_inspect_sections_none(self) -> None:
-        from slayer.mcp.server import _resolve_inspect_sections
         resolved, unknown = _resolve_inspect_sections(None)
-        assert resolved == ["columns", "measures", "aggregations", "joins", "samples", "learnings"]
+        assert resolved == ["columns", "measures", "aggregations", "joins", "samples", "learnings", "saved_queries"]
         assert unknown == []
 
     def test_resolve_inspect_sections_empty(self) -> None:
-        from slayer.mcp.server import _resolve_inspect_sections
         resolved, unknown = _resolve_inspect_sections([])
         # Same expansion as the ``None`` case — pin the order so a
         # missing or duplicated section name fails.
@@ -1230,40 +1165,30 @@ class TestInspectModelHelpers:
             "joins",
             "samples",
             "learnings",
+            "saved_queries",
         ]
         assert unknown == []
 
     def test_resolve_inspect_sections_subset_canonical_order(self) -> None:
-        from slayer.mcp.server import _resolve_inspect_sections
         resolved, unknown = _resolve_inspect_sections(["measures", "columns"])
         # Canonical order, not caller order
         assert resolved == ["columns", "measures"]
         assert unknown == []
 
     def test_resolve_inspect_sections_unknowns_filtered(self) -> None:
-        from slayer.mcp.server import _resolve_inspect_sections
         resolved, unknown = _resolve_inspect_sections(["columns", "fish", "samples"])
         assert resolved == ["columns", "samples"]
         assert unknown == ["fish"]
 
     def test_resolve_inspect_sections_all_unknown_returns_empty(self) -> None:
-        """A non-empty list of only-unknown names resolves to no sections.
-        Reserves "all six" for the explicit ``None`` / ``[]`` forms so a typo
-        like ``sections=["sample"]`` can't silently trigger the full expensive
-        payload. The footer's warning + names-only listing tells the caller
-        what they have to work with.
-        """
-        from slayer.mcp.server import _resolve_inspect_sections
+        """Only-unknown names resolve to no sections (a typo can't trigger the
+        full payload; None/[] alone means "all six")."""
         resolved, unknown = _resolve_inspect_sections(["fish", "bird"])
         assert resolved == []
         assert unknown == ["fish", "bird"]
 
     def test_render_inspect_footer_sanitizes_unknown_section_names(self) -> None:
-        """Caller-supplied unknown names containing newlines / quote-prefix
-        characters must not forge additional footer lines. ``repr()`` escapes
-        control chars so the warning stays a single line.
-        """
-        from slayer.mcp.server import _render_inspect_footer
+        """``repr()`` escapes control chars so unknown names can't forge extra footer lines."""
         result = _render_inspect_footer(
             included=["columns", "measures", "aggregations", "joins", "samples", "learnings"],
             names_only=[], omitted=[], unknown=["foo\n> evil-injected"],
@@ -1272,10 +1197,10 @@ class TestInspectModelHelpers:
         # Newline never reaches the rendered output
         assert "\n> evil" not in result
         # The escaped form does
-        assert "\\n" in result and "evil-injected" in result
+        assert "\\n" in result
+        assert "evil-injected" in result
 
     def test_render_inspect_footer_none_when_no_trim(self) -> None:
-        from slayer.mcp.server import _render_inspect_footer
         result = _render_inspect_footer(
             included=["columns", "measures", "aggregations", "joins", "samples", "learnings"],
             names_only=[], omitted=[], unknown=[],
@@ -1284,7 +1209,6 @@ class TestInspectModelHelpers:
 
     def test_render_inspect_footer_warning_only(self) -> None:
         """All sections shown but unknown names → warning line only, no other footer text."""
-        from slayer.mcp.server import _render_inspect_footer
         result = _render_inspect_footer(
             included=["columns", "measures", "aggregations", "joins", "samples", "learnings"],
             names_only=[], omitted=[], unknown=["fish"],
@@ -1294,7 +1218,6 @@ class TestInspectModelHelpers:
         assert "Sections shown:" not in result
 
     def test_render_inspect_footer_full(self) -> None:
-        from slayer.mcp.server import _render_inspect_footer
         result = _render_inspect_footer(
             included=["columns"],
             names_only=["measures", "joins"],
@@ -1306,7 +1229,7 @@ class TestInspectModelHelpers:
         assert "Sections shown: columns." in result
         assert "Names-only: measures, joins." in result
         assert "Omitted: samples." in result
-        assert "Re-call inspect_model" in result
+        assert "Re-call inspect with" in result
 
 
 class TestBuildSampleQueryArgs:
@@ -1322,7 +1245,7 @@ class TestBuildSampleQueryArgs:
             ],
         )
         args = _build_sample_query_args(model=model, num_rows=7)
-        assert [f["formula"] for f in args["measures"]] == ["*:count", "rev:avg", "qty:avg"]
+        assert [f["formula"] for f in args["measures"]] == ["count(*)", "avg(rev)", "avg(qty)"]
         assert [d["name"] for d in args["dimensions"]] == ["status", "region"]
         assert args["limit"] == 7
         assert args["source_model"] == "t"
@@ -1333,28 +1256,25 @@ class TestBuildSampleQueryArgs:
             columns=[Column(name="rev", sql="amt", allowed_aggregations=["sum", "max"], type=DataType.DOUBLE)],
         )
         args = _build_sample_query_args(model=model, num_rows=3)
-        assert [f["formula"] for f in args["measures"]] == ["*:count", "rev:sum"]
+        assert [f["formula"] for f in args["measures"]] == ["count(*)", "sum(rev)"]
 
     def test_prefers_safe_agg_over_first_allowed(self) -> None:
-        """When the allowed list starts with a non-safe aggregation (e.g. first,
-        last), _build_sample_query_args should skip it and pick the first safe
-        zero-arg aggregation from the list."""
+        """A non-safe first aggregation is skipped for the first safe zero-arg one."""
         model = SlayerModel(
             name="t", sql_table="t", data_source="ds",
             columns=[Column(name="rev", sql="amt", allowed_aggregations=["last", "first", "min", "max"], type=DataType.DOUBLE)],
         )
         args = _build_sample_query_args(model=model, num_rows=3)
-        assert [f["formula"] for f in args["measures"]] == ["*:count", "rev:min"]
+        assert [f["formula"] for f in args["measures"]] == ["count(*)", "min(rev)"]
 
     def test_falls_back_to_first_allowed_when_no_safe_agg(self) -> None:
-        """When the allowed list contains no safe aggregation, fall back to the
-        first entry (even if it requires extra context like a time column)."""
+        """No safe aggregation ⇒ fall back to the first allowed entry."""
         model = SlayerModel(
             name="t", sql_table="t", data_source="ds",
             columns=[Column(name="rev", sql="amt", allowed_aggregations=["last", "first"], type=DataType.DOUBLE)],
         )
         args = _build_sample_query_args(model=model, num_rows=3)
-        assert [f["formula"] for f in args["measures"]] == ["*:count", "rev:last"]
+        assert [f["formula"] for f in args["measures"]] == ["count(*)", "last(rev)"]
 
     def test_skip_when_allowed_is_empty(self) -> None:
         model = SlayerModel(
@@ -1362,7 +1282,7 @@ class TestBuildSampleQueryArgs:
             columns=[Column(name="rev", sql="amt", allowed_aggregations=[], type=DataType.DOUBLE)],
         )
         args = _build_sample_query_args(model=model, num_rows=3)
-        assert [f["formula"] for f in args["measures"]] == ["*:count"]
+        assert [f["formula"] for f in args["measures"]] == ["count(*)"]
 
     def test_dims_cap_at_two_and_exclude_pk_and_hidden(self) -> None:
         model = SlayerModel(
@@ -1387,12 +1307,10 @@ class TestBuildSampleQueryArgs:
             ],
         )
         args = _build_sample_query_args(model=model, num_rows=3)
-        assert [f["formula"] for f in args["measures"]] == ["*:count", "qty:avg"]
+        assert [f["formula"] for f in args["measures"]] == ["count(*)", "avg(qty)"]
 
     def test_count_distinct_fallback_for_non_numeric_columns(self) -> None:
-        """Non-numeric columns (string, boolean, date) get ``:count_distinct`` in
-        the sample query when not already used as group-by dimensions; numeric
-        columns get ``:avg``."""
+        """Non-numeric columns not used as dims get count_distinct; numeric get avg."""
         model = SlayerModel(
             name="order_items", sql_table="order_items", data_source="ds",
             columns=[
@@ -1404,22 +1322,18 @@ class TestBuildSampleQueryArgs:
             ],
         )
         args = _build_sample_query_args(model=model, num_rows=3)
-        # First two categorical columns (sku, is_flagged) become group-by dims.
-        # Remaining non-numeric (extra_string) is aggregated as count_distinct;
-        # numeric (quantity) is aggregated as avg.
         assert [d["name"] for d in args["dimensions"]] == ["sku", "is_flagged"]
         assert [f["formula"] for f in args["measures"]] == [
-            "*:count", "extra_string:count_distinct", "quantity:avg",
+            "count(*)", "count_distinct(extra_string)", "avg(quantity)",
         ]
 
     def test_opaque_column_excluded_from_data_profile(self) -> None:
-        """An opaque (``UNKNOWN``) column has no equality operator in the DB,
-        so ``count_distinct``/``min``/``max`` on it would take the whole Data
-        Profile query down. It must be skipped as both measure and dimension."""
+        """An opaque (UNKNOWN) column has no equality operator, so it's skipped as
+        both measure and dimension (else count_distinct/min/max sinks the profile)."""
         opaque = Column(name="loc", type=DataType.UNKNOWN, db_type="point")
         assert _choose_sample_agg(opaque, measure_types={}) is None
         # ...even when the driver reports a categorical-looking cursor type.
-        assert _choose_sample_agg(opaque, measure_types={"loc": "string"}) is None
+        assert _choose_sample_agg(opaque, measure_types={"loc": ResultColumnType(type=DataType.TEXT)}) is None
 
         model = SlayerModel(
             name="places", sql_table="places", data_source="ds",
@@ -1431,7 +1345,7 @@ class TestBuildSampleQueryArgs:
             ],
         )
         args = _build_sample_query_args(model=model, num_rows=3)
-        assert [f["formula"] for f in args["measures"]] == ["*:count", "area:avg"]
+        assert [f["formula"] for f in args["measures"]] == ["count(*)", "avg(area)"]
         assert [d["name"] for d in args["dimensions"]] == ["city"]
 
 
@@ -1476,8 +1390,7 @@ class TestMarkdownHelpers:
         ]
 
     def test_table_single_column_collapses_to_comma_list(self) -> None:
-        """After pruning, a lone remaining column renders as ``\\`a\\`, \\`b\\`
-        ... — no table scaffolding."""
+        """A lone remaining column renders as a comma list, no table scaffolding."""
         out = _markdown_table(
             rows=[
                 {"name": "x", "desc": None},
@@ -1489,8 +1402,7 @@ class TestMarkdownHelpers:
         assert out == "`x`, `y`, `z`"
 
     def test_single_column_escapes_backticks(self) -> None:
-        """Backticks inside values use a longer fence instead of backslash escaping,
-        per CommonMark inline code span rules."""
+        """Backticks in values use a longer fence (CommonMark code-span rules)."""
         out = _markdown_table(
             rows=[
                 {"name": "no`ticks", "desc": None},
@@ -1551,10 +1463,8 @@ class TestCreateModel:
         assert model.columns[0].allowed_aggregations == ["sum", "avg"]
 
     async def test_create_with_measure_meta_dict(self, mcp_server, storage: YAMLStorage) -> None:
-        # Pins create_model.measures' parameter type at List[Dict[str, Any]] —
-        # FastMCP introspects the annotation to build its tool schema, so a
-        # narrower Dict[str, str] would reject this dict-typed `meta` value at
-        # call time before the function body ever runs.
+        # Pins measures as List[Dict[str, Any]]: a narrower type would reject this
+        # dict-valued meta at the FastMCP schema boundary.
         result = await _call(mcp_server, name="create_model", arguments={
             "name": "orders",
             "sql_table": "public.orders",
@@ -1611,8 +1521,7 @@ class TestCreateModel:
         assert "Error:" not in result or "Datasource" in result
 
     async def test_create_from_query_routes_to_engine(self, mcp_server, storage: YAMLStorage) -> None:
-        # Without a real datasource/data, the engine will return a friendly error —
-        # but the error message proves we routed to the query path.
+        # The datasource error proves routing to the query path.
         await storage.save_model(SlayerModel(
             name="orders", sql_table="orders", data_source="test_ds",
             columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
@@ -1624,16 +1533,11 @@ class TestCreateModel:
         # Should fail on missing datasource, not on "missing sql_table"
         assert "Datasource" in result
 
-    async def test_create_from_query_populates_backing_query_sql(
+    async def test_create_from_query_populates_columns(
         self, mcp_server, storage: YAMLStorage
     ) -> None:
-        """End-to-end MCP write path: ``create_model(query=...)`` must route
-        through ``engine.save_model`` so the persisted query-backed model has
-        ``backing_query_sql`` populated. Read paths no longer warm the cache
-        (issue #74) — a regression that drops the engine routing in
-        ``slayer/mcp/server.py`` would silently leave the cache empty.
-        """
-        from slayer.core.models import DatasourceConfig
+        """create_model(query=...) routes through engine.save_model so the persisted
+        model has its columns populated (read paths don't warm the cache)."""
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
@@ -1651,16 +1555,12 @@ class TestCreateModel:
         assert "Error" not in result, result
         persisted = await storage.get_model("summary")
         assert persisted is not None
-        assert persisted.backing_query_sql, (
-            "MCP create_model(query=...) must populate backing_query_sql"
-        )
-        assert "amount" in persisted.backing_query_sql.lower()
+        assert "amount" in (await _dry_run_sql(storage, "summary")).lower()
         assert persisted.columns, "MCP create_model(query=...) must populate columns"
 
 
 class TestEditModel:
     """Tests for the edit_model MCP tool with upsert semantics."""
-
     # --- Measure upserts ---
 
     async def test_upsert_new_column(self, mcp_server, storage: YAMLStorage) -> None:
@@ -1693,6 +1593,22 @@ class TestEditModel:
         model = await storage.get_model("orders")
         total = next(c for c in model.columns if c.name == "total")
         assert total.allowed_aggregations == ["sum", "avg"]
+
+    async def test_upsert_list_column_with_element_type(self, mcp_server, storage: YAMLStorage) -> None:
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="t", data_source="test",
+            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "orders",
+            "columns": [{"name": "tags", "sql": "tags", "type": "ARRAY", "element_type": "TEXT"}],
+        })
+        parsed = json.loads(result)
+        assert parsed["success"] is True, result
+        stored = await storage.get_model("orders")
+        assert stored is not None
+        tags = next(c for c in stored.columns if c.name == "tags")
+        assert (tags.type, tags.element_type) == (DataType.ARRAY, DataType.TEXT)
 
     async def test_upsert_existing_column(self, mcp_server, storage: YAMLStorage) -> None:
         """Upserting an existing column updates it instead of erroring."""
@@ -1834,7 +1750,10 @@ class TestEditModel:
     # --- Join upserts ---
 
     async def test_upsert_new_join(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="t", data_source="test",
+            columns=[Column(name="customer_id", type=DataType.INT, hidden=True)],
+        ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "joins": [{"target_model": "customers", "join_pairs": [["customer_id", "id"]]}],
@@ -1848,6 +1767,10 @@ class TestEditModel:
     async def test_upsert_existing_join(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
+            columns=[
+                Column(name="customer_id", type=DataType.INT, hidden=True),
+                Column(name="buyer_id", type=DataType.INT, hidden=True),
+            ],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
@@ -1863,6 +1786,7 @@ class TestEditModel:
     async def test_remove_join(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
+            columns=[Column(name="customer_id", type=DataType.INT, hidden=True)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
@@ -2049,17 +1973,11 @@ class TestEditModel:
     async def test_edit_set_source_queries_makes_model_query_backed(
         self, mcp_server, storage: YAMLStorage
     ) -> None:
-        """Switching source mode via edit_model: sql_table → source_queries.
-        Persisted state must show source_queries set and sql_table cleared.
-        """
-        from slayer.core.models import DatasourceConfig
-        # Engine save path needs a datasource to dry-run validate the new
-        # backing query.
+        """edit_model switches source mode: source_queries set, sql_table cleared."""
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
-        # Separate upstream model so the edited model's backing query has a
-        # non-cyclic source.
+        # Separate upstream so the backing query has a non-cyclic source.
         await storage.save_model(SlayerModel(
             name="orders_source", sql_table="orders_t", data_source="test",
             columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
@@ -2077,31 +1995,21 @@ class TestEditModel:
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
-        # Persisted state: source_queries set, sql_table cleared.
         reloaded = await storage.get_model("orders")
         assert reloaded is not None
         assert reloaded.source_queries is not None
         assert len(reloaded.source_queries) == 1
         assert reloaded.source_queries[0].source_model == "orders_source"
         assert not reloaded.sql_table
-        # Cache must be populated by the MCP write path (issue #74) — read
-        # paths no longer warm it.
-        assert reloaded.backing_query_sql, (
-            "MCP edit_model(source_queries=...) must populate backing_query_sql"
-        )
-        assert "amount" in reloaded.backing_query_sql.lower()
+        assert reloaded.columns
+        assert "amount" in (await _dry_run_sql(storage, "orders")).lower()
 
     async def test_edit_query_variables_on_query_backed_model(
         self, mcp_server, storage: YAMLStorage
     ) -> None:
-        from slayer.core.models import DatasourceConfig
-        from slayer.core.query import SlayerQuery
-        # Engine save path resolves datasource during dry-run validation;
-        # provide one.
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
-        # Set up a query-backed model
         await storage.save_model(SlayerModel(
             name="upstream", sql_table="t", data_source="test",
             columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
@@ -2141,15 +2049,12 @@ class TestEditModel:
         })
         assert "mutually exclusive" in result or "Specify at most one" in result
 
-    # --- meta round-trip pins (DEV-1332) ---
+    # --- meta round-trip pins ---
 
     async def test_edit_persists_measure_meta_create_path(
         self, mcp_server, storage: YAMLStorage,
     ) -> None:
-        """Adding a brand-new measure with meta via edit_model — meta survives
-        storage round-trip. Mirrors the existing TestCreateModel pin but for
-        the edit_model surface that DEV-1332 reported as broken.
-        """
+        """New measure with meta via edit_model survives the storage round-trip."""
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
             columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
@@ -2168,8 +2073,7 @@ class TestEditModel:
     async def test_edit_persists_measure_meta_update_path(
         self, mcp_server, storage: YAMLStorage,
     ) -> None:
-        """Updating an existing measure to add meta — meta survives storage
-        round-trip. The existing measure had no meta; the edit adds it."""
+        """Adding meta to an existing measure via edit_model survives the round-trip."""
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
             columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
@@ -2189,11 +2093,7 @@ class TestEditModel:
     async def test_edit_persists_aggregation_meta_create_path(
         self, mcp_server, storage: YAMLStorage,
     ) -> None:
-        """Adding a brand-new aggregation with meta via edit_model — meta and
-        formula both survive storage round-trip. Uses a custom aggregation
-        name + formula so the test pins both fields, not just meta on a
-        built-in override.
-        """
+        """New aggregation with meta+formula via edit_model survives the round-trip."""
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
         ))
@@ -2213,8 +2113,7 @@ class TestEditModel:
     async def test_edit_persists_aggregation_meta_update_path(
         self, mcp_server, storage: YAMLStorage,
     ) -> None:
-        """Updating an existing aggregation to add meta — meta survives
-        storage round-trip."""
+        """Adding meta to an existing aggregation survives the round-trip."""
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
             aggregations=[Aggregation(name="my_agg", formula="SUM({expr})")],
@@ -2226,15 +2125,12 @@ class TestEditModel:
         assert json.loads(result)["success"] is True
         model = await storage.get_model("orders")
         assert model.aggregations[0].meta == {"owner": "x"}
-        # And the formula on the existing aggregation is preserved (partial update).
-        assert model.aggregations[0].formula == "SUM({expr})"
+        assert model.aggregations[0].formula == "SUM({expr})"  # preserved (partial update)
 
     async def test_edit_measure_meta_replaced_not_merged(
         self, mcp_server, storage: YAMLStorage,
     ) -> None:
-        """Updating meta replaces the whole dict (no deep merge), consistent
-        with the documented top-level model.meta replacement semantics.
-        """
+        """Updating meta replaces the whole dict (no deep merge)."""
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
             columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
@@ -2254,9 +2150,7 @@ class TestEditModel:
     async def test_edit_omitting_meta_key_preserves_existing_meta(
         self, mcp_server, storage: YAMLStorage,
     ) -> None:
-        """When the edit spec omits the `meta` key entirely, the existing
-        meta on the entity is preserved — _upsert_entity flat-merge semantics.
-        """
+        """Omitting the meta key preserves existing meta (flat-merge upsert)."""
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
             columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
@@ -2276,19 +2170,11 @@ class TestEditModel:
 
 
 class TestEditModelDatasourceMoveSafety:
-    """Moving a model to a different ``data_source`` must be atomic and
-    collision-safe (PR #92 thread #8). Failure modes to pin:
-    1. If a model with the same name already exists at the target
-       ``(new_data_source, name)`` key, the move must refuse and the
-       source model must remain intact.
-    2. If validation/save fails after the data_source is updated, the
-       source model must remain intact (no delete-before-save).
-    """
-
+    """Moving a model to a new data_source must be atomic and collision-safe:
+    refuse on a target collision or a save failure, leaving the source intact."""
     async def test_move_collision_with_target_refuses_and_preserves_source(
         self, mcp_server, storage: YAMLStorage
     ) -> None:
-        from slayer.core.models import DatasourceConfig
         for n in ("db_a", "db_b"):
             await storage.save_datasource(DatasourceConfig(
                 name=n, type="sqlite", database=":memory:"
@@ -2317,28 +2203,21 @@ class TestEditModelDatasourceMoveSafety:
         # Both models still in their original places, untouched.
         src = await storage.get_model("orders", data_source="db_a")
         tgt = await storage.get_model("orders", data_source="db_b")
-        assert src is not None and src.description == "source"
-        assert tgt is not None and tgt.description == "target"
+        assert src is not None
+        assert src.description == "source"
+        assert tgt is not None
+        assert tgt.description == "target"
 
     async def test_move_query_backed_when_engine_recomputes_data_source_back(
         self, mcp_server, storage: YAMLStorage,
     ) -> None:
-        """For query-backed models, ``engine.save_model`` recomputes
-        ``data_source`` from the backing query. If the user requests a move
-        but the query still resolves back to the *original* datasource, the
-        post-save delete must NOT remove the row we just saved at the
-        original key. See PR #92 thread (post-merge, critical).
-        """
-        from slayer.core.models import DatasourceConfig
-        from slayer.core.query import SlayerQuery
-        from slayer.engine.query_engine import SlayerQueryEngine
-
+        """A no-op move of a query-backed model (its query resolves back to the
+        original datasource) must not delete the row just saved at that key."""
         for n in ("db_a", "db_b"):
             await storage.save_datasource(DatasourceConfig(
                 name=n, type="sqlite", database=":memory:"
             ))
-        # Upstream lives in db_a. The query-backed model's backing query
-        # references this upstream, so its resolved data_source is db_a.
+        # Upstream in db_a ⇒ qb's backing query resolves to db_a.
         await storage.save_model(SlayerModel(
             name="orders", sql_table="orders", data_source="db_a",
             columns=[
@@ -2355,24 +2234,17 @@ class TestEditModelDatasourceMoveSafety:
                 measures=[{"formula": "amount:sum"}],
             )],
         ))
-        # Sanity: the model is at (db_a, qb).
         assert await storage.get_model("qb", data_source="db_a") is not None
         assert await storage.get_model("qb", data_source="db_b") is None
 
-        # Ask for a move qb: db_a -> db_b. The backing query still
-        # resolves to db_a, so the engine cache populator will overwrite
-        # ``new_data_source`` and the model should land back at db_a.
+        # Move db_a -> db_b, but the query still resolves to db_a, so the model
+        # should land back at db_a and never be deleted outright.
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "qb",
             "data_source": "db_a",
             "new_data_source": "db_b",
         })
-        # Edit either succeeds (engine silently rerouted) or returns a
-        # clear error explaining the override; either way, the model
-        # must NOT be deleted from storage entirely.
         del result
-        # If we silently deleted (db_a, qb) thinking the model moved to
-        # (db_b, qb), then both lookups would now miss.
         landed_a = await storage.get_model("qb", data_source="db_a")
         landed_b = await storage.get_model("qb", data_source="db_b")
         assert landed_a is not None or landed_b is not None, (
@@ -2383,7 +2255,6 @@ class TestEditModelDatasourceMoveSafety:
     async def test_move_save_failure_preserves_source(
         self, mcp_server, storage: YAMLStorage, monkeypatch
     ) -> None:
-        from slayer.core.models import DatasourceConfig
         for n in ("db_a", "db_b"):
             await storage.save_datasource(DatasourceConfig(
                 name=n, type="sqlite", database=":memory:"
@@ -2394,30 +2265,28 @@ class TestEditModelDatasourceMoveSafety:
             description="source",
         ))
 
-        # Force the save under the new datasource to fail. The implementation
-        # must not have deleted the source row by then.
-        original_save = storage.save_model
+        # Force the save under the new datasource to fail; the source row must survive.
+        # The engine's storage view writes through the store's ``_save_model_impl``.
+        original_save = storage._save_model_impl
 
         async def _failing_save(model):
             if model.data_source == "db_b":
                 raise RuntimeError("simulated storage failure on new key")
             return await original_save(model)
 
-        monkeypatch.setattr(storage, "save_model", _failing_save)
+        monkeypatch.setattr(storage, "_save_model_impl", _failing_save)
 
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "data_source": "db_a",
             "new_data_source": "db_b",
         })
-        # Some kind of error surfaces (the simulated failure).
         assert (
             "fail" in result.lower()
             or "error" in result.lower()
             or "simulated" in result.lower()
         ), f"expected save-failure to surface, got: {result}"
 
-        # The source model is still here.
         src = await storage.get_model("orders", data_source="db_a")
         assert src is not None
         assert src.data_source == "db_a"
@@ -2425,19 +2294,13 @@ class TestEditModelDatasourceMoveSafety:
 
 
 class TestEditModelMultiStageRename:
-    """DEV-1335: editing a multi-stage query-backed model so an inner stage's
-    measure is renamed (or the stage shape changes) must refresh the cached
-    SQL/columns to reflect the new names. Outer-stage references to the new
-    name must resolve cleanly.
-    """
-
+    """Editing an inner stage's measure (rename or shape change) must refresh the
+    cached SQL/columns so outer-stage references resolve."""
     async def _setup_orders_with_two_stage_model(
         self, storage: YAMLStorage, *, inner_measures: list, outer_measures: list,
     ) -> None:
-        """Save a datasource, an upstream `orders` table-model, and a saved
-        2-stage query-backed model whose inner stage is named ``raw``.
-        """
-        from slayer.core.query import SlayerQuery
+        """Save a datasource, an ``orders`` table-model, and a 2-stage qb model
+        (inner stage ``raw``)."""
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
@@ -2450,7 +2313,6 @@ class TestEditModelMultiStageRename:
         ))
         # Build initial source_queries via the engine save path so the cache
         # reflects the initial state.
-        from slayer.engine.query_engine import SlayerQueryEngine
         engine = SlayerQueryEngine(storage=storage)
         await engine.save_model(SlayerModel(
             name="qb",
@@ -2472,10 +2334,7 @@ class TestEditModelMultiStageRename:
     async def test_edit_model_renames_inner_stage_measure(
         self, mcp_server, storage: YAMLStorage,
     ) -> None:
-        """Initial: stage 1 names a measure ``old``. Edit replaces source_queries
-        with ``new`` everywhere. The cached SQL must reference the new name and
-        not the old one; cached columns must follow.
-        """
+        """Renaming an inner-stage measure old→new refreshes the cached SQL/columns."""
         await self._setup_orders_with_two_stage_model(
             storage,
             inner_measures=[{"formula": "amount:sum", "name": "old"}],
@@ -2484,8 +2343,7 @@ class TestEditModelMultiStageRename:
         # Sanity: initial cache reflects 'old'.
         before = await storage.get_model("qb")
         assert before is not None
-        assert before.backing_query_sql is not None
-        assert "old" in before.backing_query_sql
+        assert "old" in await _dry_run_sql(storage, "qb")
         assert "old_sum" in [c.name for c in before.columns]
 
         # Edit: rename inner-stage measure to 'new' (and update outer to match).
@@ -2509,7 +2367,6 @@ class TestEditModelMultiStageRename:
 
         after = await storage.get_model("qb")
         assert after is not None
-        assert after.backing_query_sql is not None
         col_names = [c.name for c in after.columns]
         assert "new_sum" in col_names, (
             f"cache must reflect renamed inner measure, got: {col_names}"
@@ -2517,20 +2374,20 @@ class TestEditModelMultiStageRename:
         assert "old_sum" not in col_names, (
             f"stale 'old_sum' must be evicted, got: {col_names}"
         )
-        sql = after.backing_query_sql
-        assert "new" in sql, f"backing_query_sql must contain new name:\n{sql}"
+        sql = await _dry_run_sql(storage, "qb")
+        assert "new" in sql, f"the SQL must contain the new name:\n{sql}"
         # The stale name must not survive in the wrap aliases or measure refs.
-        assert " AS old " not in sql and 'AS "old"' not in sql, (
-            f"backing_query_sql must not retain stale 'old' alias:\n{sql}"
+        assert " AS old " not in sql, (
+            f"the SQL must not retain the stale 'old' alias:\n{sql}"
+        )
+        assert 'AS "old"' not in sql, (
+            f"the SQL must not retain the stale 'old' alias:\n{sql}"
         )
 
     async def test_edit_model_stage_shape_change_drops_and_adds_measure(
         self, mcp_server, storage: YAMLStorage,
     ) -> None:
-        """Initial stage 1 has two measures (``rev``, ``n``). Edit drops ``n``
-        and adds ``avg_amount`` instead. Outer stage now references the new
-        name; cached SQL must reflect the swap.
-        """
+        """Dropping inner ``n`` and adding ``avg_amount`` refreshes the cached SQL."""
         await self._setup_orders_with_two_stage_model(
             storage,
             inner_measures=[
@@ -2544,9 +2401,9 @@ class TestEditModelMultiStageRename:
         before_cols = [c.name for c in before.columns]
         assert "rev_sum" in before_cols
         # Inner-stage `n` is not directly emitted on the outer model (the
-        # outer only takes rev:sum), but it must appear in backing_query_sql
+        # outer only takes rev:sum), but it must appear in the SQL
         # as the inner stage's wrap rename.
-        before_sql = before.backing_query_sql or ""
+        before_sql = await _dry_run_sql(storage, "qb")
         assert " AS n " in before_sql or 'AS "n"' in before_sql or before_sql.find("AS n\n") >= 0, (
             f"initial cache should expose inner 'n' alias:\n{before_sql}"
         )
@@ -2578,14 +2435,17 @@ class TestEditModelMultiStageRename:
 
         after = await storage.get_model("qb")
         assert after is not None
-        after_sql = after.backing_query_sql or ""
+        after_sql = await _dry_run_sql(storage, "qb")
         # Stale `n` must be gone from the inner wrap.
-        assert " AS n " not in after_sql and 'AS "n"' not in after_sql, (
+        assert " AS n " not in after_sql, (
+            f"stale inner 'n' alias must be evicted:\n{after_sql}"
+        )
+        assert 'AS "n"' not in after_sql, (
             f"stale inner 'n' alias must be evicted:\n{after_sql}"
         )
         # New `avg_amount` must be present.
         assert "avg_amount" in after_sql, (
-            f"new 'avg_amount' alias must appear in backing_query_sql:\n{after_sql}"
+            f"new 'avg_amount' alias must appear in the SQL:\n{after_sql}"
         )
         # Cached outer columns reflect the new outer measures.
         after_cols = [c.name for c in after.columns]
@@ -2596,15 +2456,10 @@ class TestEditModelMultiStageRename:
 
 
 class TestEditModelColumnsRejected:
-    """edit_model on a query-backed model must explicitly reject ``columns``
-    (which are engine-managed cache) instead of silently dropping them.
-    """
-
+    """edit_model must reject ``columns`` on a query-backed model (engine-managed cache)."""
     async def test_columns_on_query_backed_edit_returns_error(
         self, mcp_server, storage: YAMLStorage
     ) -> None:
-        from slayer.core.models import DatasourceConfig
-        from slayer.core.query import SlayerQuery
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
@@ -2642,15 +2497,10 @@ class TestEditModelColumnsRejected:
 
 
 class TestInspectModelRequiredVariables:
-    """``required_variables`` must exclude placeholders that have a default at
-    either ``model.query_variables`` OR a stage's own ``variables`` block.
-    """
-
+    """``required_variables`` excludes placeholders with a default at model- or stage-level."""
     async def test_stage_scoped_default_not_required(
         self, mcp_server, storage: YAMLStorage
     ) -> None:
-        from slayer.core.models import DatasourceConfig
-        from slayer.core.query import SlayerQuery
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
@@ -2680,15 +2530,10 @@ class TestInspectModelRequiredVariables:
 
 
 class TestRunByNamePlanFlagsMCP:
-    """``query(source_model="qb_model", dry_run=True)`` should return SQL
-    without executing the backing query.
-    """
-
+    """``query(query="qb", dry_run=True)`` returns SQL without executing."""
     async def test_dry_run_run_by_name_returns_sql_without_executing(
-        self, mcp_server, storage: YAMLStorage
+        self, mcp_server, storage: YAMLStorage, monkeypatch
     ) -> None:
-        from slayer.core.models import DatasourceConfig
-        from slayer.core.query import SlayerQuery
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
@@ -2705,7 +2550,6 @@ class TestRunByNamePlanFlagsMCP:
                 # NOTE: no dry_run on the stage; only the caller asks.
             )],
         ))
-        from slayer.sql.client import SlayerSQLClient
         execute_calls = 0
         real_execute = SlayerSQLClient.execute
 
@@ -2714,27 +2558,19 @@ class TestRunByNamePlanFlagsMCP:
             execute_calls += 1
             return await real_execute(self, *a, **kw)
 
-        SlayerSQLClient.execute = counting_execute  # type: ignore[method-assign]
-        try:
-            result = await _call(mcp_server, name="query", arguments={
-                "source_model": "qb_dr",
-                "dry_run": True,
-            })
-        finally:
-            SlayerSQLClient.execute = real_execute  # type: ignore[method-assign]
+        monkeypatch.setattr(SlayerSQLClient, "execute", counting_execute)
+        result = await _call(mcp_server, name="query", arguments={
+            "query": "qb_dr",
+            "dry_run": True,
+        })
         assert "SQL:" in result
         assert "amount" in result.lower()
         assert execute_calls == 0, "dry_run=True must not execute SQL"
 
 
 class TestQueryAcceptsInlineSourceModel:
-    """DEV-1372: the MCP ``query`` tool must accept ``source_model`` as a
-    string (model name), an inline ``ModelExtension`` dict, or an inline
-    ``SlayerModel`` dict — matching ``SlayerQuery.source_model``'s native
-    polymorphism. Previously typed ``str``, which forced agents to JSON-
-    encode dicts and tripped name validation.
-    """
-
+    """The MCP ``query`` tool accepts ``source_model`` as a name, an inline
+    ModelExtension dict, or an inline SlayerModel dict."""
     async def _setup_orders(self, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
@@ -2752,8 +2588,10 @@ class TestQueryAcceptsInlineSourceModel:
     ) -> None:
         await self._setup_orders(storage)
         result = await _call(mcp_server, name="query", arguments={
-            "source_model": "orders",
-            "measures": [{"formula": "*:count"}],
+            "query": {
+                "source_model": "orders",
+                "measures": [{"formula": "*:count"}],
+            },
             "dry_run": True,
         })
         assert "Invalid model name" not in result
@@ -2765,13 +2603,15 @@ class TestQueryAcceptsInlineSourceModel:
     ) -> None:
         await self._setup_orders(storage)
         result = await _call(mcp_server, name="query", arguments={
-            "source_model": {
-                "source_name": "orders",
-                "columns": [
-                    {"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"},
-                ],
+            "query": {
+                "source_model": {
+                    "source_name": "orders",
+                    "columns": [
+                        {"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"},
+                    ],
+                },
+                "measures": [{"formula": "double_amount:sum"}],
             },
-            "measures": [{"formula": "double_amount:sum"}],
             "dry_run": True,
         })
         assert "Invalid model name" not in result
@@ -2787,15 +2627,17 @@ class TestQueryAcceptsInlineSourceModel:
             name="test", type="sqlite", database=":memory:"
         ))
         result = await _call(mcp_server, name="query", arguments={
-            "source_model": {
-                "name": "ad_hoc",
-                "sql_table": "things",
-                "data_source": "test",
-                "columns": [
-                    {"name": "x", "sql": "x", "type": "DOUBLE"},
-                ],
+            "query": {
+                "source_model": {
+                    "name": "ad_hoc",
+                    "sql_table": "things",
+                    "data_source": "test",
+                    "columns": [
+                        {"name": "x", "sql": "x", "type": "DOUBLE"},
+                    ],
+                },
+                "measures": [{"formula": "x:sum"}],
             },
-            "measures": [{"formula": "x:sum"}],
             "dry_run": True,
         })
         assert "Invalid model name" not in result
@@ -2803,13 +2645,10 @@ class TestQueryAcceptsInlineSourceModel:
         assert "things" in result.lower()
 
 
-class TestQueryNested:
-    """MCP ``query_nested`` tool — DAG list of stages where earlier
-    entries are named sub-queries that later entries can reference via
-    ``source_model: "<sibling_name>"``. Mirrors ``engine.execute(list)``
-    1:1; the regular ``query`` tool stays single-stage.
-    """
-
+class TestQueryListMultiStage:
+    """MCP ``query`` with a list argument: a DAG of named stages later entries
+    reference by name; mirrors ``engine.execute(list)`` (the list form absorbed
+    the retired standalone nested-query tool)."""
     async def _setup_orders(self, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
@@ -2826,8 +2665,8 @@ class TestQueryNested:
     async def test_two_stage_dag_dry_run(self, mcp_server, storage: YAMLStorage) -> None:
         """Stage 2 references prior named sibling 'monthly' via source_model."""
         await self._setup_orders(storage)
-        result = await _call(mcp_server, name="query_nested", arguments={
-            "queries": [
+        result = await _call(mcp_server, name="query", arguments={
+            "query": [
                 {
                     "name": "monthly",
                     "source_model": "orders",
@@ -2849,24 +2688,18 @@ class TestQueryNested:
         assert "AVG(" in result.upper()
 
     async def test_empty_list_rejected(self, mcp_server, storage: YAMLStorage) -> None:
-        from mcp.server.fastmcp.exceptions import ToolError
         await self._setup_orders(storage)
-        with pytest.raises(ToolError, match="non-empty list"):
-            await _call(mcp_server, name="query_nested", arguments={
-                "queries": [],
+        with pytest.raises(ToolError, match="non-empty"):
+            await _call(mcp_server, name="query", arguments={
+                "query": [],
                 "dry_run": True,
             })
 
     async def test_out_of_order_dag_works(self, mcp_server, storage: YAMLStorage) -> None:
-        """Caller submits stages in non-topological order — engine auto-sorts.
-
-        Order here: 'a' references 'b' (forward in the input list), but
-        'b' has no deps. Topo-sort produces [b, a, final], and the SQL
-        emits cleanly.
-        """
+        """Stages submitted out of topological order are auto-sorted before emission."""
         await self._setup_orders(storage)
-        result = await _call(mcp_server, name="query_nested", arguments={
-            "queries": [
+        result = await _call(mcp_server, name="query", arguments={
+            "query": [
                 {
                     "name": "a",
                     "source_model": "b",
@@ -2889,11 +2722,10 @@ class TestQueryNested:
 
     async def test_cycle_raises(self, mcp_server, storage: YAMLStorage) -> None:
         """A cycle between stages must surface a clear error naming the cycle members."""
-        from mcp.server.fastmcp.exceptions import ToolError
         await self._setup_orders(storage)
         with pytest.raises(ToolError, match=r"[Cc]ycle"):
-            await _call(mcp_server, name="query_nested", arguments={
-                "queries": [
+            await _call(mcp_server, name="query", arguments={
+                "query": [
                     {"name": "a", "source_model": "b", "measures": [{"formula": "amount:sum"}]},
                     {"name": "b", "source_model": "a", "measures": [{"formula": "amount:sum"}]},
                     {"source_model": "orders", "measures": [{"formula": "amount:sum"}]},
@@ -2902,11 +2734,10 @@ class TestQueryNested:
             })
 
     async def test_invalid_format_rejected(self, mcp_server, storage: YAMLStorage) -> None:
-        from mcp.server.fastmcp.exceptions import ToolError
         await self._setup_orders(storage)
         with pytest.raises(ToolError, match="Invalid format"):
-            await _call(mcp_server, name="query_nested", arguments={
-                "queries": [
+            await _call(mcp_server, name="query", arguments={
+                "query": [
                     {"source_model": "orders", "measures": [{"formula": "*:count"}]},
                 ],
                 "format": "xml",
@@ -2948,6 +2779,28 @@ class TestDatasources:
         result = await _call(mcp_server, name="create_datasource", arguments={"name": "ds", "type": "sqlite", "database": ":memory:"})
         assert "replaced" in result
 
+    async def test_create_auto_ingest_imports_dataset_description(
+        self, mcp_server, storage: YAMLStorage, tmp_path, monkeypatch
+    ) -> None:
+        db_path = str(tmp_path / "live.db")
+        with transaction(db_path) as conn:
+            conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+
+        real = ingestion_mod.ingest_datasource_report_async
+
+        async def _fake(*args, **kwargs):
+            out = await real(*args, **kwargs)
+            return out.model_copy(update={"schema_description": "From the dataset"})
+
+        monkeypatch.setattr(ingestion_mod, "ingest_datasource_report_async", _fake)
+        result = await _call(mcp_server, name="create_datasource", arguments={
+            "name": "ds", "type": "sqlite", "database": db_path,
+        })
+        assert "ds" in result
+        loaded = await storage.get_datasource("ds")
+        assert loaded.description == "From the dataset"
+        assert await storage.get_model("t", data_source="ds") is not None
+
     async def test_list_with_malformed_datasource(self, mcp_server, storage: YAMLStorage) -> None:
         # A valid datasource alongside a malformed one
         await storage.save_datasource(DatasourceConfig(name="good", type="sqlite", database=":memory:"))
@@ -2960,8 +2813,7 @@ class TestDatasources:
         assert "ERROR" in result
 
     async def test_models_summary_with_malformed_datasource(self, mcp_server, storage: YAMLStorage) -> None:
-        """Asking for a datasource whose YAML config is broken surfaces the
-        invalid-config error rather than raising."""
+        """A broken datasource YAML surfaces the invalid-config error, not a raise."""
         path = os.path.join(storage.datasources_dir, "bad.yaml")
         with open(path, "w") as f:
             f.write("name: bad\ntype: [unclosed\n")
@@ -3016,7 +2868,6 @@ class TestDeleteTools:
 
 class TestIngestionIdSkipping:
     def test_id_columns_skip_sum_avg(self) -> None:
-        from slayer.engine.ingestion import _is_id_column
         assert _is_id_column("id") is True
         assert _is_id_column("user_id") is True
         assert _is_id_column("customer_key") is True
@@ -3066,7 +2917,7 @@ class TestFormatTable:
         assert "showing first 10" in result
 
 
-# DEV-1658: the `help` MCP tool was removed. Conceptual help now ships as
+# The `help` MCP tool was removed. Conceptual help now ships as
 # seeded `memory:help.*` memories read via `inspect(entity_type="memory")`;
 # see tests/test_help_seed.py.
 
@@ -3074,15 +2925,8 @@ class TestFormatTable:
 
 
 class TestDataProfileRetryScope:
-    """The Data Profile's count-only retry exists for exactly one failure: the
-    database cannot group/deduplicate a column type. Every other failure must
-    keep its own cause instead of being retried and relabeled as a type issue.
-
-    The renderer also issues dimension-less row-count / numeric-profiling
-    queries, so these fakes key off ``query.dimensions`` to hit only the full
-    profile, and the assertions are on outcomes rather than call counts.
-    """
-
+    """The count-only retry fires only for a grouping/dedup failure; other failures
+    keep their own cause. Fakes key off ``query.dimensions`` to target the full profile."""
     @staticmethod
     def _model() -> SlayerModel:
         return SlayerModel(
@@ -3116,7 +2960,7 @@ class TestDataProfileRetryScope:
         outer = self
 
         class _Engine:
-            async def get_column_types(self, **kwargs):
+            async def get_result_column_types(self, **kwargs):
                 return {}
 
             async def execute(self, *, query, **kwargs):
@@ -3136,7 +2980,7 @@ class TestDataProfileRetryScope:
         outer = self
 
         class _Engine:
-            async def get_column_types(self, **kwargs):
+            async def get_result_column_types(self, **kwargs):
                 return {}
 
             async def execute(self, *, query, **kwargs):
@@ -3155,12 +2999,11 @@ class TestDataProfileRetryScope:
         self, storage: YAMLStorage
     ) -> None:
         """When the reduced profile also fails, report the first cause."""
-
         class _Engine:
             def __init__(self) -> None:
                 self.dimensioned_seen = False
 
-            async def get_column_types(self, **kwargs):
+            async def get_result_column_types(self, **kwargs):
                 return {}
 
             async def execute(self, *, query, **kwargs):
@@ -3178,3 +3021,167 @@ class TestDataProfileRetryScope:
         assert "equality operator" in (payload["sample_data_error"] or "")
         assert "connection closed" not in (payload["sample_data_error"] or "")
         assert payload["sample_data_reduced"] is False
+
+
+def _seed_live_db(path: str) -> None:
+    """A real SQLite file with an ``orders`` table for save-time trial-execute."""
+    with transaction(path) as conn:
+        conn.executescript(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL, status TEXT);"
+            "INSERT INTO orders VALUES (1, 100.0, 'ok');"
+        )
+
+
+async def _register_live_ds(storage: YAMLStorage, db_path: str) -> None:
+    await storage.save_datasource(
+        DatasourceConfig(name="livedb", type="sqlite", database=db_path)
+    )
+
+
+class TestSaveTimeSqlValidationMcp:
+    """The MCP create/edit doors reroute through ``engine.save_model``
+    so a raw-sql model with backend-invalid SQL is rejected before it persists."""
+
+    async def test_create_sql_mode_valid_persists(
+        self, mcp_server, storage: YAMLStorage, tmp_path
+    ) -> None:
+        db = str(tmp_path / "live.db")
+        _seed_live_db(db)
+        await _register_live_ds(storage, db)
+        result = await _call(mcp_server, name="create_model", arguments={
+            "name": "good_model", "sql": "SELECT id FROM orders",
+            "data_source": "livedb",
+            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+        })
+        assert "created" in result
+        assert await storage.get_model("good_model", data_source="livedb") is not None
+
+    async def test_create_sql_mode_invalid_rejected(
+        self, mcp_server, storage: YAMLStorage, tmp_path
+    ) -> None:
+        db = str(tmp_path / "live.db")
+        _seed_live_db(db)
+        await _register_live_ds(storage, db)
+        result = await _call(mcp_server, name="create_model", arguments={
+            "name": "bad_model", "sql": "SELECT nope FROM ghosts",
+            "data_source": "livedb",
+            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+        })
+        assert "created" not in result
+        assert "bad_model" in result
+        assert await storage.get_model("bad_model", data_source="livedb") is None
+
+    async def test_edit_sql_to_invalid_rejected_and_original_intact(
+        self, mcp_server, storage: YAMLStorage, tmp_path
+    ) -> None:
+        db = str(tmp_path / "live.db")
+        _seed_live_db(db)
+        await _register_live_ds(storage, db)
+        await storage.save_model(SlayerModel(
+            name="m", sql="SELECT id FROM orders", data_source="livedb",
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE)],
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "m", "data_source": "livedb",
+            "sql": "SELECT nope FROM ghosts",
+        })
+        assert "error" in result.lower()
+        model = await storage.get_model("m", data_source="livedb")
+        assert model.sql == "SELECT id FROM orders"
+
+    async def test_edit_sql_to_valid_succeeds(
+        self, mcp_server, storage: YAMLStorage, tmp_path
+    ) -> None:
+        db = str(tmp_path / "live.db")
+        _seed_live_db(db)
+        await _register_live_ds(storage, db)
+        await storage.save_model(SlayerModel(
+            name="m", sql="SELECT id FROM orders", data_source="livedb",
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE)],
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "m", "data_source": "livedb",
+            "sql": "SELECT amount FROM orders",
+        })
+        assert '"success": true' in result
+        model = await storage.get_model("m", data_source="livedb")
+        assert model.sql == "SELECT amount FROM orders"
+
+
+class TestDatabaseFailuresAreToolErrors:
+    """A database failure in these tools is an MCP tool error carrying the friendly text."""
+
+    @pytest.fixture
+    async def db_storage(self, tmp_path) -> YAMLStorage:
+        db = str(tmp_path / "shop.db")
+        with transaction(db) as con:
+            con.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL)")
+            con.execute("INSERT INTO orders VALUES (1, 2.5)")
+        storage = YAMLStorage(base_dir=str(tmp_path / "store"))
+        await storage.save_datasource(DatasourceConfig(name="shop", type="sqlite", database=db))
+        await storage.save_datasource(DatasourceConfig(
+            name="down", type="postgres", host="127.0.0.1", port=free_port(), database="x", username="u", password="p",
+        ))
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="orders", data_source="shop",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="broken", sql="no_such_fn(amount)", type=DataType.DOUBLE),
+            ],
+        ))
+        await storage.save_model(SlayerModel(
+            name="remote", sql_table="remote", data_source="down",
+            columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        ))
+        return storage
+
+    async def _call_tool(self, storage: YAMLStorage, name: str, arguments: dict[str, Any]):
+        server = create_mcp_server(storage=storage, _seed_help=False)
+        async with create_connected_server_and_client_session(server) as session:
+            return await session.call_tool(name, arguments)
+
+    @staticmethod
+    def _assert_database_tool_error(result) -> None:
+        assert result.isError
+        assert "Database error:" in result.content[0].text
+
+    async def test_query_rejected_by_the_database(self, db_storage: YAMLStorage) -> None:
+        result = await self._call_tool(db_storage, "query", {"query": {"source_model": "orders", "measures": ["sum(broken)"]}})
+        self._assert_database_tool_error(result)
+
+    async def test_validate_models_database_unreachable(self, db_storage: YAMLStorage) -> None:
+        self._assert_database_tool_error(await self._call_tool(db_storage, "validate_models", {"data_source": "down"}))
+
+    async def test_validate_models_rejected_sql_is_a_finding(self, db_storage: YAMLStorage) -> None:
+        await db_storage.save_model(SlayerModel(
+            name="bad", sql="SELECT id, NO_SUCH_FUNCTION(amount) AS amount FROM orders", data_source="shop",
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True)],
+        ))
+        result = await self._call_tool(db_storage, "validate_models", {"data_source": "shop"})
+        assert not result.isError
+        content = result.content[0]
+        assert isinstance(content, TextContent)
+        causes = {entry.get("model_name"): entry.get("cause") for entry in json.loads(content.text)}
+        assert causes["bad"] == "invalid_sql"
+
+    async def test_ingest_database_unreachable(self, db_storage: YAMLStorage) -> None:
+        self._assert_database_tool_error(
+            await self._call_tool(db_storage, "ingest_datasource_models", {"datasource_name": "down"}),
+        )
+
+    @pytest.mark.parametrize(("method", "arguments"), [
+        ("save_model", {"name": "m", "sql_table": "orders", "data_source": "down",
+                        "columns": [{"name": "id", "sql": "id", "type": "number"}]}),
+        ("create_model_from_query", {"name": "m", "query": {"source_model": "orders", "measures": ["count(*)"]}}),
+    ], ids=["table", "query"])
+    async def test_create_model_database_unreachable(
+        self, db_storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch, method: str, arguments: dict[str, Any],
+    ) -> None:
+        async def unreachable(*args, **kwargs):
+            try:
+                raise sa_exc.OperationalError("SELECT 1", {}, Exception("connection refused"))
+            except sa_exc.OperationalError as exc:
+                raise DatabaseUnavailable("connection refused") from exc
+
+        monkeypatch.setattr(SlayerQueryEngine, method, unreachable)
+        self._assert_database_tool_error(await self._call_tool(db_storage, "create_model", arguments))

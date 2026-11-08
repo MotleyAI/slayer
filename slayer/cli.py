@@ -1,70 +1,115 @@
 """CLI entry point for SLayer."""
 
 import argparse
+import asyncio
+import contextlib
 import copy
 import json
 import os
+import signal
 import sys
-from typing import Any
+import threading
+from collections.abc import Callable
+from importlib.metadata import PackageNotFoundError, version
+from types import FrameType
+from typing import Any, ClassVar, Literal, NoReturn, TypedDict
+from urllib.parse import parse_qs, urlparse
 
+import yaml
 from pydantic import BaseModel, Field
 
+from slayer import usage_reporting
 from slayer.async_utils import run_sync
-from slayer.core.errors import (
-    AmbiguousModelError,
-    EntityResolutionError,
-    MemoryNotFoundError,
-    SlayerError,
+from slayer.core.deprecation import deprecations_on_one_line, warn_deprecated
+from slayer.core.errors import SlayerError
+from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.format import encode_json
+from slayer.core.recommend import render_recommendation_markdown
+from slayer.core.time_points import host_clock
+from slayer.cube.converter import CubeToSlayerConverter
+from slayer.cube.parser import parse_cube_project
+from slayer.cube.report import CubeConversionIssue, CubeIssueCategory
+from slayer.dbt.converter import DbtToSlayerConverter
+from slayer.dbt.parser import parse_dbt_project
+from slayer.demo import (
+    DEMO_NAME,
+    build_jaffle_shop,
+    ensure_demo_datasource,
+    ingest_demo_models,
+    resolve_demo_db_path,
 )
-from slayer.core.models import SlayerModel
+from slayer.engine.cardinality import CardinalityVerdict
+from slayer.engine import ingestion as engine_ingestion
 from slayer.engine.ingestion import (
+    _empty_ingest_message,
     _print_ingest_addition,
     _print_ingest_drift_and_errors,
 )
+from slayer.engine.join_safety import audit_join_safety
+from slayer.flight.cli import add_flight_serve_subparser, run_flight_serve
 from slayer.engine.profiling import (
     refresh_all_table_backed_sampled,
     refresh_table_backed_model_sampled,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.schema_drift import REPORT_ONLY_FINDINGS, NarrowedAccessFinding, RetypeFinding
 from slayer.inspect.service import InspectService
+from slayer.memories.service import MemoryService
+from slayer.osi.converter import OsiConversionError, OsiConversionResult, OsiToSlayerConverter
+from slayer.osi.exporter import OsiExportError, export_osi
+from slayer.ingest_report import ConversionWarning
+from slayer.osi.parser import parse_osi_path
+from slayer.pg_facade.cli import add_pg_serve_subparser
+from slayer.pg_facade.server import run_pg_serve
 from slayer.memories.help_seed import seed_help_memories
 from slayer.search.service import SearchService
 from slayer.storage import migrations as _mig
-from slayer.storage.base import default_storage_path
+from slayer.storage.base import StorageBackend, default_storage_path, resolve_storage
+from slayer.storage.document_loading import DocumentLoadFailures
 from slayer.storage.type_refinement import (
     has_refineable_columns,
     has_sqlite_widenable_columns,
     refine_dict_with_live_schema,
 )
+from slayer.usage_reporting import control as usage_reporting_control
 
-_STORAGE_DEFAULT = default_storage_path()
+_DATASOURCE_NAME_HELP = "Datasource name"
+_FORMAT_HELP = "Output format (default: text)."
 _STORAGE_HELP = (
     "Storage path: directory for YAML storage, or .db/.sqlite file for SQLite storage "
-    f"(default: {_STORAGE_DEFAULT})"
+    "(default: $SLAYER_STORAGE, else the platform data directory)"
 )
 _INGEST_ON_STARTUP_HELP = (
     "Walk every configured datasource and run idempotent auto-ingestion before "
     "starting the server. Per-datasource errors are logged to stderr and never "
     "abort startup. See docs/concepts/ingestion.md."
 )
+_ALWAYS_LOAD_QUERY_HELP = (
+    "Mark the MCP query tool with anthropic/alwaysLoad so Claude Code keeps it "
+    "loaded instead of deferring it behind tool search (env: SLAYER_MCP_ALWAYS_LOAD_QUERY)."
+)
 
 
-def _env_ingest_on_startup() -> bool:
-    """Truthy check for the ``SLAYER_INGEST_ON_STARTUP`` env var.
+def _env_flag(name: str) -> bool:
+    """Whether env var ``name`` is ``1`` / ``true`` / ``yes`` (case- and whitespace-insensitive)."""
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes"}
 
-    Truthy values (case-insensitive, with surrounding whitespace stripped):
-    ``1``, ``true``, ``yes``. Anything else — including unset, empty,
-    ``0``, ``false``, ``no``, ``garbage`` — returns False.
-    """
-    return os.environ.get("SLAYER_INGEST_ON_STARTUP", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
+
+class _ServerFlags(TypedDict):
+    ingest_on_startup: bool
+    always_load_query: bool
+
+
+def _server_flags(args) -> _ServerFlags:
+    """``ingest_on_startup`` / ``always_load_query`` from the CLI flag or its env var."""
+    return {
+        "ingest_on_startup": getattr(args, "ingest_on_startup", False) or _env_flag("SLAYER_INGEST_ON_STARTUP"),
+        "always_load_query": getattr(args, "always_load_query", False) or _env_flag("SLAYER_MCP_ALWAYS_LOAD_QUERY"),
     }
 
 
 class RefreshSamplesResult(BaseModel):
-    """Result envelope for ``slayer search refresh-samples``. ``errors``
+    """Result envelope for ``slayer datasources refresh-samples``. ``errors``
     accumulates per-column profile / persist failures (best-effort);
     ``unresolved_models`` lists any user-specified ``--model`` names
     that didn't resolve in the requested scope — those are reported as
@@ -84,15 +129,310 @@ def _add_storage_arg(parser):
     )
 
 
+def _storage_path(args) -> str:
+    """The storage location, resolved once per command: --storage, --models-dir, then ``default_storage_path``."""
+    resolved = getattr(args, "_resolved_storage_path", None)
+    if resolved is None:
+        if args.storage:
+            resolved = args.storage
+        elif args.models_dir:
+            warn_deprecated("--models-dir is deprecated; use --storage. It works until SLayer 2.0.", removal="2.0")
+            resolved = args.models_dir
+        else:
+            resolved = default_storage_path()
+        args._resolved_storage_path = resolved
+    return resolved
+
+
 def _resolve_storage(args):
     """Resolve storage backend from --storage or --models-dir flags."""
-    from slayer.storage.base import resolve_storage
+    storage = resolve_storage(_storage_path(args))
+    usage_reporting.observe_storage(storage)
+    return storage
 
-    path = args.storage or args.models_dir or _STORAGE_DEFAULT
-    return resolve_storage(path)
+
+def _assign_usage_tokens(parser: argparse.ArgumentParser, path: tuple[str, ...] = ()) -> None:
+    """Give every leaf command except ``slayer usage-reporting …`` a fixed usage token: its subcommand path."""
+    groups = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)]
+    for group in groups:
+        for name, sub in group.choices.items():
+            if (*path, name) != ("usage-reporting",):
+                _assign_usage_tokens(sub, (*path, name))
+    if path and not groups:
+        parser.set_defaults(usage_token=".".join(path))
 
 
-def main():  # NOSONAR(S3776) — linear top-level CLI command dispatch (one elif per subcommand); splitting the dispatch chain would not improve readability
+def _add_debug_flags(parser: argparse.ArgumentParser, *, root: bool = True) -> None:
+    """``--debug`` on every (sub)command; below the root it never resets a root-level ``--debug``."""
+    parser.add_argument(
+        "--debug", action="store_true", default=False if root else argparse.SUPPRESS,
+        help="Show the full traceback when the command fails",
+    )
+    for group in (a for a in parser._actions if isinstance(a, argparse._SubParsersAction)):
+        for sub in group.choices.values():
+            _add_debug_flags(sub, root=False)
+
+
+def _one_line(text: str) -> str:
+    return " ".join(line.strip() for line in text.splitlines() if line.strip())
+
+
+def _error_line(exc: Exception) -> str:
+    """One stderr line: a SLayer error's message, else class + message + the ``--debug`` hint."""
+    if isinstance(exc, SlayerError):
+        return "Error: " + _one_line(str(exc))
+    first = next((line.strip() for line in str(exc).splitlines() if line.strip()), "")
+    detail = f"{type(exc).__name__}: {first}" if first else type(exc).__name__
+    return f"Error: {detail} (rerun with --debug for the traceback)"
+
+
+class _CommandFailed(SlayerError):
+    """A command's own failure; raised inside an ``except``, it chains the cause for ``--debug``."""
+
+
+def _fail(message: str) -> NoReturn:
+    """Fail the command: the error door prints ``Error: <message>`` on one stderr line and exits 1."""
+    raise _CommandFailed(message)
+
+
+def main():
+    parser = _build_parser()
+    _assign_usage_tokens(parser)
+    _add_debug_flags(parser)
+    args = parser.parse_args()
+    token = getattr(args, "usage_token", None)
+    guard = _TerminationGuard(token=token) if args.command in _SERVER_COMMANDS else None
+    try:
+        with deprecations_on_one_line():
+            _run_command(parser, args, token=token, guard=guard)
+    except Exception as exc:
+        if args.debug:
+            raise
+        print(_error_line(exc), file=sys.stderr)
+        sys.exit(1)
+    finally:
+        if guard is not None:
+            guard.restore()
+
+
+def _run_command(
+    parser: argparse.ArgumentParser, args, *, token: str | None, guard: "_TerminationGuard | None",
+) -> None:
+    host_clock()  # Validates SLAYER_NOW before any command's side effects.
+    if args.command == "usage-reporting":
+        _run_usage_reporting(args)
+        return
+    if token is not None:
+        usage_reporting.start()
+    try:
+        with usage_reporting.counting(surface="cli", token=token):
+            _guarded_dispatch(parser, args, guard=guard)
+    finally:
+        usage_reporting.flush()
+    if guard is not None:
+        guard.finish()
+
+
+_SIGNAL_POLL_SECONDS = 0.1
+
+
+class _TerminationGuard:
+    """SIGTERM / SIGINT handling for a server command, through phases before → running → closing → after."""
+
+    active: ClassVar["_TerminationGuard | None"] = None  # the guard whose handlers are installed
+
+    def __init__(self, *, token: str | None) -> None:
+        self.phase: Literal["before", "running", "closing", "after"] = "before"
+        self.signum: int | None = None
+        self.signalled = threading.Event()
+        self.forcing = False
+        self.abandoned = False  # the command worker was left running on a signal
+        self.lock = threading.Lock()
+        self.stop: Callable[[], object] | None = None  # the running server's stop
+        self.token = token
+        self.prior: dict[int, Callable[[int, FrameType | None], Any]] = {}
+        self.replaced: dict[int, Callable[[int, FrameType | None], Any] | int | signal.Handlers] = {}
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            previous = signal.getsignal(signum)
+            if previous is signal.SIG_IGN or previous is None:
+                continue
+            self.replaced[signum] = previous
+            if callable(previous) and previous is not signal.default_int_handler:
+                self.prior[signum] = previous
+            signal.signal(signum, self._handle)
+        _TerminationGuard.active = self
+
+    def _handle(self, signum: int, frame: FrameType | None) -> None:
+        if self.forcing:
+            os._exit(128 + signum)
+        if self.signum is not None:
+            if self.phase != "closing":
+                self._force(signum)
+            return
+        self.signum = signum
+        prior = self.prior.get(signum)
+        if prior is not None:
+            with contextlib.suppress(BaseException):  # a failing prior handler must not skip spool or exit
+                prior(signum, frame)
+        self.signalled.set()
+
+    def _force(self, signum: int) -> NoReturn:
+        self.forcing = True
+        if self.phase in ("before", "running"):
+            usage_reporting.record(surface="cli", token=self.token)
+        _exit_now(128 + signum)
+
+    def register(self, stop: Callable[[], object] | None) -> bool:
+        """Register a server's ``stop``; False if a signal already arrived, so the server must not start."""
+        with self.lock:
+            if self.signum is not None:
+                return False
+            self.stop = stop
+            return True
+
+    def unregister(self) -> None:
+        with self.lock:
+            self.stop = None
+
+    def run(self, command: Callable[[], None]) -> None:
+        """Run ``command`` in a worker the main thread waits on; a signal stops its server or abandons it."""
+        self.phase = "running"
+        failure: list[BaseException] = []
+        began = threading.Event()
+        done = threading.Event()
+
+        def target() -> None:
+            try:
+                if self.signum is None:  # a signal can land during ``start()``
+                    began.set()
+                    command()
+            except BaseException as exc:  # noqa: BLE001  # NOSONAR(S5754) — re-raised on the main thread
+                failure.append(exc)
+            finally:
+                done.set()
+
+        if self.signum is not None:
+            return
+        threading.Thread(target=target, name="slayer-command", daemon=True).start()
+        _wait_for(done, interrupt=self.signalled)
+        if self.signum is not None:
+            _wait_for(done, interrupt=began)  # a worker that skipped the command ends at once
+            with self.lock:
+                stop = self.stop
+            if not done.is_set():
+                if _stop_server(stop):  # a failed stop may never release the worker
+                    _wait_for(done)
+                else:
+                    self.abandoned = True
+            return
+        if failure:
+            raise failure[0]
+
+    def close(self) -> None:
+        self.phase = "closing"
+
+    def finish(self) -> None:
+        """Turn a normal end into exit 128 + signal number if a signal arrived."""
+        self.phase = "after"
+        if self.signum is None:
+            self.restore()  # later signals go to the original handlers; re-check one that came first
+            if self.signum is None:
+                return
+            for signum in self.replaced:  # it raced the restore: keep forcing on further signals
+                signal.signal(signum, self._handle)
+        if self.abandoned:  # interpreter teardown with a live daemon worker is unsafe
+            self.forcing = True
+            _exit_now(128 + self.signum)
+        sys.exit(128 + self.signum)
+
+    def restore(self) -> None:
+        """Put back the handlers this guard replaced."""
+        for signum, handler in self.replaced.items():
+            signal.signal(signum, handler)
+        if _TerminationGuard.active is self:
+            _TerminationGuard.active = None
+
+
+def _guarded_dispatch(parser: argparse.ArgumentParser, args, *, guard: _TerminationGuard | None) -> None:
+    if guard is None:
+        _dispatch(parser, args)
+        return
+    try:
+        guard.run(lambda: _dispatch(parser, args))
+    finally:
+        guard.close()
+
+
+def _exit_now(code: int) -> NoReturn:
+    """Spool, wait (bounded) for an in-flight send, then exit without interpreter teardown."""
+    usage_reporting.flush()
+    usage_reporting.shutdown()
+    for stream in (sys.stdout, sys.stderr):
+        with contextlib.suppress(Exception):
+            stream.flush()
+    os._exit(code)
+
+
+def _serve_until_terminated(*, run: Callable[[], object], stop: Callable[[], object] | None) -> None:
+    """Run a server's blocking ``run`` with ``stop`` registered for a termination signal; none starts after one."""
+    guard = _TerminationGuard.active
+    if guard is None:
+        run()
+        return
+    if not guard.register(stop):
+        return
+    try:
+        run()
+    finally:
+        guard.unregister()
+
+
+def _stop_server(stop: Callable[[], object] | None) -> bool:
+    """Run ``stop`` in its own thread and wait for it; whether it returned normally."""
+    if stop is None:
+        return False
+    stopped = threading.Event()
+    done = threading.Event()
+
+    def stopping() -> None:
+        try:
+            stop()
+        except BaseException as exc:  # noqa: BLE001  # NOSONAR(S5754) — the signal still decides the exit
+            print(f"slayer: server stop failed: {exc!r}", file=sys.stderr)  # no traceback on a signal stop
+        else:
+            stopped.set()
+        finally:
+            done.set()
+
+    threading.Thread(target=stopping, name="slayer-server-stop", daemon=True).start()
+    _wait_for(done)
+    return stopped.is_set()
+
+
+def _wait_for(done: threading.Event, *, interrupt: threading.Event | None = None) -> None:
+    """Wait for ``done`` or ``interrupt``, waking periodically so a signal another thread took gets handled."""
+    while not done.is_set() and not (interrupt is not None and interrupt.is_set()):
+        done.wait(_SIGNAL_POLL_SECONDS)
+
+
+class _VersionAction(argparse.Action):
+    """``--version``: the package metadata is read only when asked, so its absence breaks no other command."""
+
+    def __init__(self, option_strings: list[str], dest: str = argparse.SUPPRESS, **kwargs: Any) -> None:
+        super().__init__(option_strings=option_strings, dest=dest, default=argparse.SUPPRESS, nargs=0,
+                         help="Show the version and exit.", **kwargs)
+
+    def __call__(self, parser: argparse.ArgumentParser, namespace: argparse.Namespace,
+                 values: Any, option_string: str | None = None) -> None:
+        try:
+            installed = version("motley-slayer")
+        except PackageNotFoundError:
+            installed = "unknown"
+        print(f"slayer {installed}")
+        parser.exit()
+
+
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="slayer",
         description="SLayer — a lightweight semantic layer for AI agents",
@@ -103,7 +443,7 @@ common workflows:
   slayer serve
 
   # 2. Query from the command line
-  slayer query '{"source_model": "orders", "measures": [{"formula": "*:count"}]}'
+  slayer query '{"source_model": "orders", "measures": [{"formula": "count(*)"}]}'
 
   # 3. Start the MCP server for AI agents
   slayer mcp
@@ -121,6 +461,7 @@ docs: https://docs.motley.ai/slayer/
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument("--version", action=_VersionAction)
     subparsers = parser.add_subparsers(dest="command")
 
     # ── serve ─────────────────────────────────────────────────────────
@@ -150,20 +491,19 @@ examples:
         action="store_true",
         help=_INGEST_ON_STARTUP_HELP,
     )
+    serve_parser.add_argument("--always-load-query", action="store_true", help=_ALWAYS_LOAD_QUERY_HELP)
     _add_storage_arg(serve_parser)
 
     # ── flight-serve ──────────────────────────────────────────────────
-    # DEV-1390: Arrow Flight SQL endpoint, wire-compatible with the
+    # Arrow Flight SQL endpoint, wire-compatible with the
     # dbt Semantic Layer JDBC driver.
-    from slayer.flight.cli import add_flight_serve_subparser
     add_flight_serve_subparser(subparsers)
     # Storage flag is shared with the rest of the subcommands.
     flight_parser = subparsers._name_parser_map["flight-serve"]
     _add_storage_arg(flight_parser)
 
     # ── pg-serve ──────────────────────────────────────────────────────
-    # DEV-1486: Postgres wire-protocol endpoint, BI-tool compatible.
-    from slayer.pg_facade.cli import add_pg_serve_subparser
+    # Postgres wire-protocol endpoint, BI-tool compatible.
     add_pg_serve_subparser(subparsers)
     pg_parser = subparsers._name_parser_map["pg-serve"]
     _add_storage_arg(pg_parser)
@@ -195,6 +535,7 @@ examples:
         action="store_true",
         help=_INGEST_ON_STARTUP_HELP,
     )
+    mcp_parser.add_argument("--always-load-query", action="store_true", help=_ALWAYS_LOAD_QUERY_HELP)
     _add_storage_arg(mcp_parser)
 
     # ── query ─────────────────────────────────────────────────────────
@@ -204,19 +545,22 @@ examples:
         epilog="""\
 examples:
   # Inline JSON
-  slayer query '{"source_model": "orders", "measures": [{"formula": "*:count"}]}'
+  slayer query '{"source_model": "orders", "measures": [{"formula": "count(*)"}]}'
 
   # From a file
   slayer query @query.json
 
   # Preview SQL without executing
-  slayer query '{"source_model": "orders", "measures": [{"formula": "*:count"}]}' --dry-run
+  slayer query '{"source_model": "orders", "measures": [{"formula": "count(*)"}]}' --dry-run
 
   # Show execution plan
   slayer query @query.json --explain
 
   # Output as JSON
   slayer query @query.json --format json
+
+  # Run a saved query by name, refined with an extra dimension
+  slayer query monthly_revenue --refine '{"dimensions": ["region"]}'
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -236,7 +580,16 @@ examples:
         help="Output format (default: table)",
     )
     query_parser.add_argument("--dry-run", action="store_true", help="Generate SQL without executing")
-    query_parser.add_argument("--explain", action="store_true", help="Run EXPLAIN ANALYZE on the query")
+    query_parser.add_argument("--explain", action="store_true", help="Run the database's EXPLAIN on the query")
+    query_parser.add_argument(
+        "--refine",
+        default=None,
+        metavar="JSON|@file",
+        help=(
+            "With a saved query name only: clauses (dimensions, measures, filters, order, "
+            "limit, ...) merged into the saved query's final stage."
+        ),
+    )
     query_parser.add_argument(
         "--variables",
         action="append",
@@ -267,7 +620,15 @@ examples:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ingest_parser.add_argument("--datasource", required=True, help="Name of the datasource to ingest from")
-    ingest_parser.add_argument("--schema", default=None, help="Database schema to introspect (e.g., public)")
+    ingest_scope = ingest_parser.add_mutually_exclusive_group()
+    ingest_scope.add_argument(
+        "--schema", default=None,
+        help="Schema(s) to introspect, comma-separated (e.g. public,analytics)",
+    )
+    ingest_scope.add_argument(
+        "--all-schemas", action="store_true", default=False,
+        help="Introspect every non-system schema (mutually exclusive with --schema)",
+    )
     ingest_parser.add_argument(
         "--include",
         default=None,
@@ -309,6 +670,9 @@ examples:
 examples:
   slayer validate-models                      # check every datasource
   slayer validate-models --datasource my_pg
+  slayer validate-models --cardinality        # + profile join arity (full scans)
+  slayer validate-models --cardinality --persist-cardinality
+  slayer validate-models --model orders --format json
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -316,6 +680,33 @@ examples:
         "--datasource",
         default=None,
         help="Datasource name. If omitted, every datasource is validated.",
+    )
+    validate_parser.add_argument(
+        "--model",
+        default=None,
+        help="Limit the whole report (and --force-clean) to a single model.",
+    )
+    validate_parser.add_argument(
+        "--cardinality",
+        action="store_true",
+        help=(
+            "Also profile each join's arity from the data. Full-scans both "
+            "sides of every join, so it is off by default."
+        ),
+    )
+    validate_parser.add_argument(
+        "--persist-cardinality",
+        action="store_true",
+        help=(
+            "Write the detected cardinality back onto each matching join. "
+            "Implies --cardinality."
+        ),
+    )
+    validate_parser.add_argument(
+        "--format",
+        default="text",
+        choices=["text", "json"],
+        help="Output format. json emits one {drift, join_safety, cardinality} document.",
     )
     validate_parser.add_argument(
         "--force-clean",
@@ -341,7 +732,7 @@ examples:
 examples:
   slayer recommend-root-model orders.revenue customers.name
   slayer recommend-root-model customers.name products.category --data-source my_pg
-  slayer recommend-root-model orders.revenue:sum regions.name --format json
+  slayer recommend-root-model sum(orders.revenue) regions.name --format json
   slayer recommend-root-model customers.name products.category --root-hint orders
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -371,7 +762,7 @@ examples:
         "--format",
         choices=["text", "json"],
         default="text",
-        help="Output format (default: text).",
+        help=_FORMAT_HELP,
     )
     _add_storage_arg(recommend_parser)
 
@@ -436,11 +827,33 @@ examples:
     import_osi_parser.add_argument("osi_path", help="Path to an OSI file or directory (YAML/JSON)")
     import_osi_parser.add_argument("--datasource", required=True, help="SLayer datasource name for the imported models")
     import_osi_parser.add_argument(
-        "--dialect", default="ANSI_SQL",
-        help="OSI expression dialect to read (default: ANSI_SQL). Falls back to "
-             "another SQL dialect when the requested one is absent.",
+        "--dialect", default=None,
+        help="OSI expression dialect to prefer over every other (default: none). Without it, "
+             "the order is top-level sql, OSSIE_SQL_2026, ANSI_SQL, the datasource's own "
+             "dialect, then any other readable SQL dialect.",
     )
     _add_storage_arg(import_osi_parser)
+
+    # ── export-osi ────────────────────────────────────────────────────
+    export_osi_parser = subparsers.add_parser(
+        "export-osi",
+        help="Export a datasource's models as an Ossie (OSI) document",
+        epilog="""\
+examples:
+  slayer export-osi --datasource my_postgres --out shop.osi.yaml
+  slayer export-osi --datasource my_pg --models orders customers --out shop.osi.json --no-extensions
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    export_osi_parser.add_argument("--datasource", required=True, help="SLayer datasource whose models to export")
+    export_osi_parser.add_argument("--models", nargs="+", default=None,
+                                   help="Export only these models (default: all of the datasource's models)")
+    export_osi_parser.add_argument("--out", required=True,
+                                   help="Output file: JSON when it ends in .json, YAML otherwise")
+    export_osi_parser.add_argument("--no-extensions", action="store_true",
+                                   help="Omit the SLAYER custom extensions (plain Ossie; SLayer-only content "
+                                        "is reported, not exported)")
+    _add_storage_arg(export_osi_parser)
 
     # ── models ────────────────────────────────────────────────────────
     models_parser = subparsers.add_parser(
@@ -495,6 +908,9 @@ examples:
 
   slayer datasources delete my_postgres
   slayer datasources test my_postgres
+
+  # Refresh persisted Column.sampled values for every table-backed model
+  slayer datasources refresh-samples --data-source my_postgres
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -506,7 +922,7 @@ examples:
     datasources_show_parser = datasources_subparsers.add_parser(
         "show", help="Show datasource config (passwords masked)"
     )
-    datasources_show_parser.add_argument("name", help="Datasource name")
+    datasources_show_parser.add_argument("name", help=_DATASOURCE_NAME_HELP)
 
     datasources_create_parser = datasources_subparsers.add_parser(
         "create",
@@ -527,12 +943,32 @@ examples:
         "--description", default=None, help="Human-readable description"
     )
     datasources_create_parser.add_argument(
+        "--granularities", default=None, type=json.loads,
+        help=(
+            "Custom time granularities as a JSON list of {name, base, multiple, origin}, "
+            'e.g. \'[{"name": "fiscal_year", "base": "year", "origin": "2000-04-01"}]\''
+        ),
+    )
+    datasources_create_parser.add_argument(
         "--ingest",
         action="store_true",
         help="Run auto-ingestion immediately after creating the datasource",
     )
-    datasources_create_parser.add_argument(
-        "--schema", default=None, help="(with --ingest) Schema to ingest from"
+    create_scope = datasources_create_parser.add_mutually_exclusive_group()
+    create_scope.add_argument(
+        "--schema", default=None,
+        help=(
+            "Persisted default schema (a single value is saved as the "
+            "datasource's schema_name); comma-separated values additionally "
+            "scope auto-ingestion when --ingest is passed"
+        ),
+    )
+    create_scope.add_argument(
+        "--all-schemas", action="store_true", default=False,
+        help=(
+            "With --ingest, ingest every non-system schema; persists no default "
+            "schema (mutually exclusive with --schema)"
+        ),
     )
     datasources_create_parser.add_argument(
         "--include",
@@ -577,10 +1013,34 @@ examples:
     )
 
     datasources_delete_parser = datasources_subparsers.add_parser("delete", help="Delete a datasource")
-    datasources_delete_parser.add_argument("name", help="Datasource name")
+    datasources_delete_parser.add_argument("name", help=_DATASOURCE_NAME_HELP)
 
     datasources_test_parser = datasources_subparsers.add_parser("test", help="Test datasource connectivity")
-    datasources_test_parser.add_argument("name", help="Datasource name")
+    datasources_test_parser.add_argument("name", help=_DATASOURCE_NAME_HELP)
+
+    refresh_parser = datasources_subparsers.add_parser(
+        "refresh-samples",
+        help="Re-profile and persist Column.sampled for table-backed models.",
+    )
+    refresh_parser.add_argument(
+        "--data-source",
+        default=None,
+        dest="data_source",
+        help="Limit refresh to one datasource (default: all).",
+    )
+    refresh_parser.add_argument(
+        "--model",
+        action="append",
+        default=None,
+        dest="models",
+        help="Model name(s) to refresh (repeatable; default: all in scope).",
+    )
+    refresh_parser.add_argument(
+        "--format",
+        choices=["json", "text"],
+        default="text",
+        help=_FORMAT_HELP,
+    )
 
     # ── memory ────────────────────────────────────────────────────────
     memory_parser = subparsers.add_parser(
@@ -640,7 +1100,7 @@ examples:
         default=None,
         help=(
             "Optional compact preview (<= 500 chars) surfaced by "
-            "`slayer search` and `inspect_model` when run in compact "
+            "`slayer search` and `slayer inspect` when run in compact "
             "mode (the default). Omit to let the renderer compute the "
             "preview from the first paragraph of --learning."
         ),
@@ -656,7 +1116,7 @@ examples:
     # ── storage ──────────────────────────────────────────────────────
     storage_parser = subparsers.add_parser(
         "storage",
-        help="Storage maintenance (DEV-1361: migrate-types refines DOUBLE→INT for legacy models)",
+        help="Storage maintenance (migrate-types refines DOUBLE→INT for legacy models)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     storage_subparsers = storage_parser.add_subparsers(dest="subcommand")
@@ -683,12 +1143,12 @@ examples:
     )
     _add_storage_arg(migrate_types_parser)
 
-    # ── inspect (DEV-1588) ───────────────────────────────────────────
+    # ── inspect ───────────────────────────────────────────
     inspect_parser = subparsers.add_parser(
         "inspect",
         help=(
             "Inspect one entity by reference and kind, or several of the same "
-            "kind at once (pass multiple references) (DEV-1588, DEV-1612)"
+            "kind at once (pass multiple references)"
         ),
     )
     inspect_parser.add_argument(
@@ -754,23 +1214,28 @@ examples:
     )
     _add_storage_arg(inspect_parser)
 
-    # ── search (DEV-1375) ────────────────────────────────────────────
+    # ── search ────────────────────────────────────────────
     search_parser = subparsers.add_parser(
         "search",
-        help="Semantic search over memories + canonical entities (DEV-1375)",
+        help="Semantic search over memories + canonical entities",
         epilog="""\
 examples:
-  # Two-channel search by entity overlap + tantivy full-text
-  poetry run slayer search --entity mydb.orders.amount_paid --question "paid revenue"
+  # Full-text search for a question
+  slayer search "paid revenue"
 
-  # Refresh persisted Column.sampled values for every table-backed model
-  poetry run slayer search refresh-samples --data-source mydb
+  # Two-channel search by entity overlap + tantivy full-text
+  slayer search "paid revenue" --entity mydb.orders.amount_paid
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_storage_arg(search_parser)
-    search_subparsers = search_parser.add_subparsers(dest="search_command")
-    # ``slayer search`` (no subcommand) runs the search query directly.
+    search_parser.add_argument(
+        "question_positional",
+        nargs="?",
+        default=None,
+        metavar="question",
+        help="Free-text query for the tantivy full-text channel (same as --question).",
+    )
     search_parser.add_argument(
         "--entity",
         action="append",
@@ -786,7 +1251,7 @@ examples:
     search_parser.add_argument(
         "--question",
         default=None,
-        help="Free-text query for the tantivy full-text channel.",
+        help="Free-text query for the tantivy full-text channel (alias of the positional question).",
     )
     search_parser.add_argument(
         "--datasource",
@@ -822,14 +1287,14 @@ examples:
         "--format",
         choices=["json", "text"],
         default="text",
-        help="Output format (default: text).",
+        help=_FORMAT_HELP,
     )
     search_parser.add_argument(
         "--verbose",
         action="store_true",
         default=False,
         help=(
-            "Opt out of compact rendering (DEV-1549). Default is "
+            "Opt out of compact rendering. Default is "
             "compact: memory hits surface ``description`` (or a "
             "first-paragraph fallback from ``learning``) and an "
             "empty ``text``; entity hits surface ``entity.description`` "
@@ -837,39 +1302,56 @@ examples:
             "text is restored."
         ),
     )
-    refresh_parser = search_subparsers.add_parser(
-        "refresh-samples",
-        help="Re-profile and persist Column.sampled for table-backed models.",
-    )
-    _add_storage_arg(refresh_parser)
-    refresh_parser.add_argument(
-        "--data-source",
-        default=None,
-        dest="data_source",
-        help="Limit refresh to one datasource (default: all).",
-    )
-    refresh_parser.add_argument(
-        "--model",
-        action="append",
-        default=None,
-        dest="models",
-        help="Model name(s) to refresh (repeatable; default: all in scope).",
-    )
 
-    # DEV-1658: the standalone `slayer help` subcommand is removed. SLayer's
+    # The standalone `slayer help` subcommand is removed. SLayer's
     # concepts ship as help memories — read them with
     # `slayer inspect memory:help.intro --type memory` (see the epilog above).
 
-    args = parser.parse_args()
+    # ── usage reporting ─────────────────────────────────────────────────────
+    usage_reporting_parser = subparsers.add_parser(
+        "usage-reporting",
+        help="Show or change anonymous usage reporting",
+        epilog="docs: https://docs.motley.ai/slayer/reference/usage-reporting/",
+    )
+    usage_reporting_subparsers = usage_reporting_parser.add_subparsers(dest="usage_reporting_command", required=True)
+    usage_reporting_subparsers.add_parser("status", help="Whether usage reporting is on, why, and the install ID")
+    usage_reporting_subparsers.add_parser("enable", help="Turn usage reporting on (persisted)")
+    usage_reporting_subparsers.add_parser(
+        "disable", help="Turn usage reporting off (persisted) and delete the install ID and unsent data",
+    )
+    usage_reporting_subparsers.add_parser("show", help="Print the report the next send would contain, without sending")
+    return parser
 
+
+def _run_usage_reporting(args) -> None:
+    if args.usage_reporting_command == "status":
+        print(usage_reporting_control.status())
+    elif args.usage_reporting_command == "enable":
+        usage_reporting_control.enable()
+        print("Usage reporting enabled.")
+    elif args.usage_reporting_command == "disable":
+        usage_reporting_control.disable()
+        print("Usage reporting disabled; the install ID and unsent data were deleted.")
+    else:
+        print(usage_reporting_control.pending_report().model_dump_json(indent=2))
+
+
+_SERVER_COMMANDS = frozenset({"serve", "flight-serve", "pg-serve", "mcp"})
+
+
+def _dispatch(parser: argparse.ArgumentParser, args) -> None:  # NOSONAR(S3776) — linear top-level CLI command dispatch (one elif per subcommand); splitting the dispatch chain would not improve readability
     if args.command == "serve":
         _run_serve(args)
     elif args.command == "flight-serve":
-        from slayer.flight.cli import run_flight_serve
-        run_flight_serve(args, resolve_storage=_resolve_storage, prepare_demo=_prepare_demo)
+        run_flight_serve(
+            args, resolve_storage=_resolve_storage, prepare_demo=_prepare_demo,
+            serve_until_terminated=_serve_until_terminated,
+        )
     elif args.command == "pg-serve":
-        from slayer.pg_facade.server import run_pg_serve
-        run_pg_serve(args, resolve_storage=_resolve_storage, prepare_demo=_prepare_demo)
+        run_pg_serve(
+            args, resolve_storage=_resolve_storage, prepare_demo=_prepare_demo,
+            serve_until_terminated=_serve_until_terminated,
+        )
     elif args.command == "mcp":
         _run_mcp(args)
     elif args.command == "query":
@@ -877,6 +1359,11 @@ examples:
     elif args.command == "ingest":
         _run_ingest(args)
     elif args.command == "validate-models":
+        if args.format == "json" and args.force_clean:
+            parser.error(
+                "--format json cannot be combined with --force-clean "
+                "(the apply flow is interactive and prints progress)"
+            )
         _run_validate_models(args)
     elif args.command == "recommend-root-model":
         _run_recommend_root_model(args)
@@ -886,6 +1373,8 @@ examples:
         _run_import_cube(args)
     elif args.command == "import-osi":
         _run_import_osi(args)
+    elif args.command == "export-osi":
+        _run_export_osi(args)
     elif args.command == "models":
         _run_models(args)
     elif args.command == "datasources":
@@ -904,16 +1393,15 @@ examples:
 
 
 def _run_inspect(*, args, storage) -> None:
-    """Run ``slayer inspect`` — a single-entity point-lookup (DEV-1588)."""
-    # DEV-1658: ensure the help.* memories exist so `inspect memory:help.intro`
+    """Run ``slayer inspect`` — a single-entity point-lookup."""
+    # Ensure the help.* memories exist so `inspect memory:help.intro`
     # works on a fresh store (idempotent / warm no-op).
     run_sync(seed_help_memories(storage=storage))
-    service = InspectService(
-        storage=storage, engine=SlayerQueryEngine(storage=storage),
-    )
+    engine = SlayerQueryEngine(storage=storage)
+    service = InspectService(storage=engine.storage, engine=engine)
     # argparse ``nargs="*"`` always yields a list; map zero positionals to
-    # ``None`` (the collection sentinel, DEV-1667) and a single positional back
-    # to a bare str so single-id output stays byte-for-byte (DEV-1612). A direct
+    # ``None`` (the collection sentinel) and a single positional back
+    # to a bare str so single-id output stays byte-for-byte. A direct
     # str (older callers / tests) is passed through unchanged.
     reference = args.reference
     if isinstance(reference, list):
@@ -921,38 +1409,34 @@ def _run_inspect(*, args, storage) -> None:
             reference = None
         elif len(reference) == 1:
             reference = reference[0]
-    try:
-        out = run_sync(service.inspect(
-            reference=reference,
-            entity_type=args.entity_type,
-            compact=args.compact,
-            format=args.format,
-            num_rows=args.num_rows,
-            show_sql=args.show_sql,
-            sections=args.sections,
-            descriptions_max_chars=args.descriptions_max_chars,
-        ))
-    except (SlayerError, ValueError) as exc:
-        _exit_with_error(exc)
-        return  # for type checkers; _exit_with_error never returns
+    out = engine.run_sync(service.inspect(
+        reference=reference,
+        entity_type=args.entity_type,
+        compact=args.compact,
+        format=args.format,
+        num_rows=args.num_rows,
+        show_sql=args.show_sql,
+        sections=args.sections,
+        descriptions_max_chars=args.descriptions_max_chars,
+    ))
     print(out)
 
 
-def _run_search(args) -> None:
-    """Dispatch ``slayer search [...]`` and ``slayer search refresh-samples``."""
-    storage = _resolve_storage(args)
-    sub = getattr(args, "search_command", None)
-    if sub == "refresh-samples":
-        _run_search_refresh_samples(args=args, storage=storage)
-        return
-    _run_search_query(args=args, storage=storage)
+def _search_question(args) -> str | None:
+    """The question from the positional or ``--question`` (never both)."""
+    positional, flag = args.question_positional, args.question
+    if positional is not None and flag is not None:
+        _fail("give the question positionally or as --question, not both.")
+    if positional == "refresh-samples":
+        _fail("'refresh-samples' moved: run 'slayer datasources refresh-samples'.")
+    return positional if positional is not None else flag
 
 
-async def _refresh_samples_async(*, args, storage) -> "RefreshSamplesResult":
-    """Async core of ``slayer search refresh-samples`` — loop datasources
+async def _refresh_samples_async(*, args, engine: SlayerQueryEngine) -> "RefreshSamplesResult":
+    """Async core of ``slayer datasources refresh-samples`` — loop datasources
     and (optional) model filters, accumulate per-column errors and the
     names of any user-specified models that didn't resolve."""
-    engine = SlayerQueryEngine(storage=storage)
+    storage = engine.storage
     errors: list[str] = []
     unresolved_models: list[str] = []
     data_source = args.data_source
@@ -981,19 +1465,12 @@ async def _refresh_samples_async(*, args, storage) -> "RefreshSamplesResult":
     return RefreshSamplesResult(errors=errors, unresolved_models=unresolved_models)
 
 
-def _run_search_refresh_samples(*, args, storage) -> None:
-    """``slayer search refresh-samples`` — re-profile + persist
-    ``Column.sampled`` for every table-backed model in scope. Exits
-    non-zero on unresolved user-specified ``--model`` names so typos
-    don't masquerade as a clean run.
-
-    Honors the shared ``--format`` flag: ``json`` emits the
-    ``RefreshSamplesResult`` envelope; otherwise the human-readable
-    text path runs.
-    """
-    result = run_sync(_refresh_samples_async(args=args, storage=storage))
-    fmt = getattr(args, "format", "text")
-    if fmt == "json":
+def _datasources_refresh_samples(storage, args) -> None:
+    """``slayer datasources refresh-samples`` — re-profile + persist ``Column.sampled``
+    for every table-backed model in scope; unresolved ``--model`` names exit 1."""
+    engine = SlayerQueryEngine(storage=storage)
+    result = engine.run_sync(_refresh_samples_async(args=args, engine=engine))
+    if args.format == "json":
         print(result.model_dump_json(indent=2))
         if result.unresolved_models:
             sys.exit(1)
@@ -1017,7 +1494,7 @@ def _run_search_refresh_samples(*, args, storage) -> None:
 def _print_search_response_text(response) -> None:
     """Pretty-print a ``SearchResponse`` for the default text format.
 
-    DEV-1549: under compact mode ``hit.text`` is empty and the preview
+    Under compact mode ``hit.text`` is empty and the preview
     lives in ``hit.description``; under ``--verbose`` (compact=False)
     ``hit.text`` carries the full body and is what the caller wants to
     see. Prefer ``text`` when non-empty so ``--verbose`` actually shows
@@ -1043,27 +1520,27 @@ def _print_search_response_text(response) -> None:
         print(f"    {preview_line}")
 
 
+def _run_search(args) -> None:
+    """Dispatch ``slayer search [question]``."""
+    args.question = _search_question(args)
+    _run_search_query(args=args, storage=_resolve_storage(args))
+
+
 def _run_search_query(args, storage) -> None:
-    """``slayer search [...]`` — call the SearchService and emit JSON or
-    pretty text."""
-    # DEV-1658: seed help.* memories so concept searches surface them on a
-    # fresh store. Only on the query path — NOT `search refresh-samples`.
+    """Call the SearchService and emit JSON or pretty text."""
+    # Seed help.* memories so concept searches surface them on a fresh store.
     run_sync(seed_help_memories(storage=storage))
     service = SearchService(storage=storage)
     query_input = _load_query_arg(args.query) if args.query else None
-    try:
-        response = run_sync(service.search(
-            entities=args.entities,
-            query=query_input,
-            question=args.question,
-            datasource=args.datasource,
-            max_results=args.max_results,
-            cypher_filter=args.cypher_filter,
-            compact=not getattr(args, "verbose", False),
-        ))
-    except (SlayerError, ValueError) as exc:
-        _exit_with_error(exc)
-        return
+    response = run_sync(service.search(
+        entities=args.entities,
+        query=query_input,
+        question=args.question,
+        datasource=args.datasource,
+        max_results=args.max_results,
+        cypher_filter=args.cypher_filter,
+        compact=not getattr(args, "verbose", False),
+    ))
     if args.format == "json":
         print(response.model_dump_json(indent=2))
     else:
@@ -1076,40 +1553,21 @@ def _run_storage(args) -> None:
     if subcommand == "migrate-types":
         _run_storage_migrate_types(args)
     else:
-        print(
-            "Usage: slayer storage <subcommand>\n  available: migrate-types"
-        )
-        sys.exit(1)
+        _fail("usage: slayer storage <subcommand>; available: migrate-types")
 
 
 def _run_storage_migrate_types(args) -> None:
-    """DEV-1361: refine DOUBLE → INT on every base column whose live SQL
+    """Refine DOUBLE → INT on every base column whose live SQL
     type is integer. Iterates models in storage, calls
     ``refine_dict_with_live_schema`` per model, optionally writes the
     refined v5 dict back. Hard-fails if a datasource is unreachable.
     """
-    storage = _resolve_storage(args)
-    # Unwrap JoinSyncStorage so we can list identities and read raw dicts
-    # without triggering the get_model auto-refinement path (which would
-    # rewrite the file before our dry-run gets to inspect it).
-    inner = getattr(storage, "_inner", storage)
-    data_source_filter = getattr(args, "data_source", None)
+    # Read identities and raw dicts from the raw store, not via get_model, so the
+    # auto-refinement path can't rewrite files before a dry-run inspects them.
+    inner = _resolve_storage(args)
+    engine = SlayerQueryEngine(storage=inner)
     dry_run = bool(getattr(args, "dry_run", False))
-
-    identities = run_sync(inner._list_all_model_identities())
-
-    refined_total = 0
-    for ds_name, model_name in identities:
-        if data_source_filter and ds_name != data_source_filter:
-            continue
-        if _refine_one_model_for_cli(
-            inner=inner,
-            ds_name=ds_name,
-            model_name=model_name,
-            dry_run=dry_run,
-        ):
-            refined_total += 1
-
+    refined_total = engine.run_sync(_migrate_types_workflow(args, engine=engine, inner=inner, dry_run=dry_run))
     if refined_total == 0:
         print("No models needed refinement.")
     elif dry_run:
@@ -1118,7 +1576,21 @@ def _run_storage_migrate_types(args) -> None:
         print(f"\nDone: refined {refined_total} model(s).")
 
 
-def _resolve_datasource_for_cli_refinement(
+async def _migrate_types_workflow(args, *, engine: SlayerQueryEngine, inner, dry_run: bool) -> int:
+    """Refine every in-scope model through the engine's clients; the number refined."""
+    data_source_filter = getattr(args, "data_source", None)
+    refined_total = 0
+    for ds_name, model_name in await inner._list_all_model_identities():
+        if data_source_filter and ds_name != data_source_filter:
+            continue
+        if await _refine_one_model_for_cli(
+            inner=inner, engine=engine, ds_name=ds_name, model_name=model_name, dry_run=dry_run,
+        ):
+            refined_total += 1
+    return refined_total
+
+
+async def _resolve_datasource_for_cli_refinement(
     *, inner, ds_name: str, model_name: str, needs_double: bool,
 ) -> Any | None:
     """Resolve the datasource for ``slayer storage migrate-types``.
@@ -1126,9 +1598,9 @@ def _resolve_datasource_for_cli_refinement(
     Returns the ``DatasourceConfig`` when present, ``None`` when missing
     and the model is SQLite-INT-only (best-effort skip — prints a stderr
     skip notice). Raises ``ValueError`` when the model has DOUBLE base
-    columns and the DS is missing (DEV-1361 hard-fail contract).
+    columns and the DS is missing (hard-fail contract).
     """
-    ds = run_sync(inner.get_datasource(ds_name))
+    ds = await inner.get_datasource(ds_name)
     if ds is not None:
         return ds
     if needs_double:
@@ -1161,8 +1633,8 @@ def _print_refinement_diff(
             print(f"  - {name}: {before or '?'} → {after}")
 
 
-def _refine_one_model_for_cli(
-    *, inner, ds_name: str, model_name: str, dry_run: bool,
+async def _refine_one_model_for_cli(
+    *, inner, engine: SlayerQueryEngine, ds_name: str, model_name: str, dry_run: bool,
 ) -> bool:
     """Per-model refinement loop body for ``slayer storage migrate-types``.
 
@@ -1174,15 +1646,15 @@ def _refine_one_model_for_cli(
     dict has refineable DOUBLE base columns AND the datasource entry is
     missing, raises ``ValueError`` rather than silently reporting "nothing
     to refine" for a model the CLI never had enough information to inspect.
-    DEV-1538 SQLite-INT widening is best-effort: a missing datasource for
+    SQLite-INT widening is best-effort: a missing datasource for
     an INT-only model logs a skip notice and returns False. Models with no
     refineable or widenable columns (text-only, query-backed, sql-mode,
     already-narrowed) skip silently and don't require a live datasource.
     """
-    raw = run_sync(_load_raw_model_dict(inner, ds_name, model_name))
+    raw = await _load_raw_model_dict(inner, ds_name, model_name)
     if raw is None:
         return False
-    upgraded = _mig.migrate("SlayerModel", copy.deepcopy(raw))
+    upgraded = _mig.migrate("SlayerModel", _mig.stamp_stored(copy.deepcopy(raw)))
     # Snapshot column types AFTER migration but BEFORE refinement so the
     # before/after diff reports only actual refinement changes — migration-
     # only aliases like ``number → DOUBLE`` are not refinement events.
@@ -1195,13 +1667,13 @@ def _refine_one_model_for_cli(
     needs_sqlite_int = has_sqlite_widenable_columns(upgraded)
     if not (needs_double or needs_sqlite_int):
         return False
-    ds = _resolve_datasource_for_cli_refinement(
+    ds = await _resolve_datasource_for_cli_refinement(
         inner=inner, ds_name=ds_name, model_name=model_name,
         needs_double=needs_double,
     )
     if ds is None:
         return False
-    if not refine_dict_with_live_schema(upgraded, ds):
+    if not await refine_dict_with_live_schema(upgraded, ds, engine.client_for(ds)):
         return False
     _print_refinement_diff(
         ds_name=ds_name, model_name=model_name,
@@ -1209,30 +1681,22 @@ def _refine_one_model_for_cli(
     )
     if not dry_run:
         model = SlayerModel.model_validate(upgraded)
-        # Save through inner so we don't re-trigger the load-time
-        # refinement / join-sync mirror loop.
-        run_sync(inner.save_model(model))
+        # Save-time validation loads peers, which may still need refining through the engine.
+        await engine.storage.save_model(model)
     return True
 
 
 async def _load_raw_model_dict(storage, data_source: str, name: str) -> dict | None:
     """Read a model's raw on-disk dict bypassing Pydantic's validator chain."""
-    import json as _json
-    import os as _os
-
-    import yaml as _yaml
-
     if hasattr(storage, "_model_path"):  # YAMLStorage
         path = storage._model_path(data_source, name)
-        if not _os.path.exists(path):
+        if not os.path.exists(path):
             return None
         with open(path) as f:  # NOSONAR(S7493) — sync I/O in async by design (CLAUDE.md, Async Architecture)
-            return _yaml.safe_load(f)
+            return yaml.safe_load(f)
     if hasattr(storage, "_get_model_sync"):  # SQLiteStorage
-        import asyncio as _asyncio
-
-        raw = await _asyncio.to_thread(storage._get_model_sync, data_source, name)
-        return _json.loads(raw) if raw else None
+        raw = await asyncio.to_thread(storage._get_model_sync, data_source, name)
+        return json.loads(raw) if raw else None
     return None
 
 
@@ -1265,56 +1729,74 @@ def _parse_cli_variables(args) -> dict:
     return out
 
 
-def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straight-line function reads better than threaded helpers
-    from slayer.engine.query_engine import SlayerQueryEngine
+def _print_query_warnings(result) -> None:
+    """Print query advisories to STDERR.
 
-    query_input = args.query_json
+    Stderr specifically, so a piped ``slayer query`` keeps emitting clean data
+    on stdout while the operator still sees the advisories.
+    """
+    for w in (getattr(result, "warnings", None) or []):
+        print(f"warning: {w.human_message()}", file=sys.stderr)
+
+
+def _read_at_file(value: str, *, label: str) -> tuple[str, bool]:
+    """``@path`` → ``(file text, True)``; anything else → ``(value, False)``."""
+    if not value.startswith("@"):
+        return value, False
+    filepath = value[1:]
+    try:
+        with open(filepath) as f:
+            return f.read(), True
+    except FileNotFoundError:
+        raise SystemExit(f"{label.capitalize()} file not found: {filepath}") from None
+    except OSError as e:
+        raise SystemExit(f"Error reading {label} file: {e}") from None
+
+
+def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straight-line function reads better than threaded helpers
     runtime_kwarg = _parse_cli_variables(args)
 
     storage = _resolve_storage(args)
     engine = SlayerQueryEngine(storage=storage)
 
-    if query_input.startswith("@"):
-        filepath = query_input[1:]
-        try:
-            with open(filepath) as f:
-                query_input = f.read()
-        except FileNotFoundError:
-            raise SystemExit(f"Query file not found: {filepath}") from None
-        except OSError as e:
-            raise SystemExit(f"Error reading query file: {e}") from None
-        is_json = True
-    else:
-        # Heuristic: a JSON query starts with '{' or '['; anything else
-        # is treated as a model name for run-by-name dispatch.
-        stripped = query_input.lstrip()
-        is_json = stripped.startswith(("{", "["))
+    query_input, from_file = _read_at_file(args.query_json, label="query")
+    # Heuristic: a JSON query starts with '{' or '['; anything else
+    # is treated as a model name for run-by-name dispatch.
+    is_json = from_file or query_input.lstrip().startswith(("{", "["))
 
+    refine = None
+    if args.refine is not None:
+        if is_json:
+            raise SystemExit("--refine applies only to a saved query name")
+        refine = json.loads(_read_at_file(args.refine, label="refine")[0])
+        if not isinstance(refine, dict):
+            raise SystemExit("--refine must decode to a JSON object.")
+
+    query: Any = query_input
     if is_json:
-        data = json.loads(query_input)
-        if isinstance(data, list) and not data:
+        query = json.loads(query_input)
+        if isinstance(query, list) and not query:
             raise SystemExit("Query list cannot be empty.")
-        result = engine.execute_sync(
-            query=data,
-            variables=runtime_kwarg or None,
-            dry_run=bool(args.dry_run),
-            explain=bool(args.explain),
-        )
-    else:
-        # Run-by-name: the positional arg is a model name.
-        result = engine.execute_sync(
-            query=query_input,
-            variables=runtime_kwarg or None,
-            dry_run=bool(args.dry_run),
-            explain=bool(args.explain),
-        )
+    if args.dry_run:
+        usage_reporting.mark_dry_run()
+    usage_reporting.observe_query(query)
+    result = engine.execute_sync(
+        query=query,
+        variables=runtime_kwarg or None,
+        dry_run=bool(args.dry_run),
+        explain=bool(args.explain),
+        refine=refine,
+    )
+    usage_reporting.observe_executed(result)
+
+    _print_query_warnings(result)
 
     if args.dry_run:
         print(result.sql)
         return
 
     if args.format == "json":
-        print(json.dumps(result.data, indent=2, default=str))
+        print(encode_json(result.data, indent=2))
     else:
         if args.explain:
             print(f"SQL:\n{result.sql}\n")
@@ -1327,7 +1809,7 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
         print(header)
         print(separator)
         for row in result.data:
-            print(" | ".join(str(row.get(c, "")) for c in result.columns))
+            print(" | ".join(result._format_value(column=c, value=row.get(c, "")) for c in result.columns))
         if not args.explain:
             print(f"\n{result.row_count} row(s)")
 
@@ -1338,10 +1820,8 @@ def _prepare_demo(args, storage, *, stream=None):
     Writes status messages to ``stream`` (default: stderr) so stdio-based
     transports (``slayer mcp``) remain protocol-safe.
     """
-    from slayer.demo import ensure_demo_datasource
-
     out = stream if stream is not None else sys.stderr
-    storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
+    storage_path = _storage_path(args)
     try:
         ds, models, db_built = ensure_demo_datasource(
             storage,
@@ -1351,8 +1831,7 @@ def _prepare_demo(args, storage, *, stream=None):
             stream=out,
         )
     except Exception as e:
-        print(f"Failed to set up the Jaffle Shop demo: {e}", file=out)
-        sys.exit(1)
+        _fail(f"Failed to set up the Jaffle Shop demo: {e}")
 
     state = "generated" if db_built else "reused"
     print(
@@ -1363,32 +1842,31 @@ def _prepare_demo(args, storage, *, stream=None):
 
 
 def _run_serve(args):
-    from slayer.api.server import create_app
+    from slayer.api.server import create_app  # ALLOW(import-not-top): boot-path seam — tests inject fakes via sys.modules at call time; keeps FastAPI off non-serve commands
 
     storage = _resolve_storage(args)
     if getattr(args, "demo", False):
         _prepare_demo(args, storage)
-    ingest_on_startup = (
-        getattr(args, "ingest_on_startup", False) or _env_ingest_on_startup()
-    )
-    app = create_app(storage=storage, ingest_on_startup=ingest_on_startup)
+    app = create_app(storage=storage, **_server_flags(args))
 
-    import uvicorn
+    import uvicorn  # ALLOW(import-not-top): boot-path seam — tests inject fakes via sys.modules at call time; keeps uvicorn off non-serve commands
 
-    uvicorn.run(app, host=args.host, port=args.port)
+    server = uvicorn.Server(uvicorn.Config(app, host=args.host, port=args.port))
+
+    def stop() -> None:
+        server.should_exit = True
+
+    _serve_until_terminated(run=server.run, stop=stop)
 
 
 def _run_mcp(args):
-    from slayer.mcp.server import create_mcp_server
+    from slayer.mcp.server import create_mcp_server  # ALLOW(import-not-top): boot-path seam — tests inject fakes via sys.modules at call time; keeps FastMCP off non-mcp commands
 
     storage = _resolve_storage(args)
     if getattr(args, "demo", False):
         _prepare_demo(args, storage)
-    ingest_on_startup = (
-        getattr(args, "ingest_on_startup", False) or _env_ingest_on_startup()
-    )
-    mcp = create_mcp_server(storage=storage, ingest_on_startup=ingest_on_startup)
-    mcp.run()
+    mcp = create_mcp_server(storage=storage, **_server_flags(args))
+    _serve_until_terminated(run=mcp.run, stop=None)
 
 
 def _parse_csv_arg(value):
@@ -1398,25 +1876,28 @@ def _parse_csv_arg(value):
 
 
 def _run_ingest(args):
-    from slayer.engine.ingestion import ingest_datasource_idempotent
+    engine = SlayerQueryEngine(storage=_resolve_storage(args))
+    engine.run_sync(_ingest_workflow(args, engine))
 
-    storage = _resolve_storage(args)
-    ds = run_sync(storage.get_datasource(args.datasource))
+
+async def _ingest_workflow(args, engine: SlayerQueryEngine) -> None:
+    storage = engine.storage
+    ds = await storage.get_datasource(args.datasource)
     if ds is None:
-        storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
-        print(f"Datasource '{args.datasource}' not found in {storage_path}")
-        sys.exit(1)
+        storage_path = _storage_path(args)
+        _fail(f"Datasource '{args.datasource}' not found in {storage_path}")
 
-    result = run_sync(
-        ingest_datasource_idempotent(
-            datasource=ds,
-            storage=storage,
-            schema=args.schema,
-            include_tables=_parse_csv_arg(args.include),
-            exclude_tables=_parse_csv_arg(args.exclude),
-            include_views=getattr(args, "include_views", True),
-            surface_internals=getattr(args, "surface_internals", False),
-        )
+    client = engine.client_for(ds)
+    result = await engine_ingestion.ingest_datasource_idempotent(
+        datasource=ds,
+        storage=storage,
+        client=client,
+        schemas=_parse_csv_arg(args.schema),
+        all_schemas=getattr(args, "all_schemas", False),
+        include_tables=_parse_csv_arg(args.include),
+        exclude_tables=_parse_csv_arg(args.exclude),
+        include_views=getattr(args, "include_views", True),
+        surface_internals=getattr(args, "surface_internals", False),
     )
 
     # Gate on ``objects``, not ``additions``: a schema whose objects are all
@@ -1429,12 +1910,10 @@ def _run_ingest(args):
         or result.skipped
         or result.objects
     ):
-        from slayer.engine.ingestion import _empty_ingest_message
-
         print(
-            _empty_ingest_message(
+            await _empty_ingest_message(
                 schema_name=args.schema or "",
-                ds=ds,
+                client=client,
                 retry_hint=(
                     "Try re-running with --schema set to one of these."
                 ),
@@ -1476,6 +1955,15 @@ def _format_validate_models_output(entries) -> str:
         return "No drift detected."
     lines: list[str] = []
     for entry in entries:
+        if isinstance(entry, NarrowedAccessFinding):
+            lines.append(
+                f"NARROWED ACCESS: {entry.model_name} (datasource: {entry.data_source}) "
+                f"reads {', '.join(entry.narrowed_by)}"
+            )
+            continue
+        if isinstance(entry, RetypeFinding):
+            lines.append(f"RE-TYPE: {entry.summary}")
+            continue
         if entry.tool == "delete_model":
             lines.append(
                 f"DELETE MODEL: {entry.model_name} (datasource: {entry.data_source})"
@@ -1487,34 +1975,175 @@ def _format_validate_models_output(entries) -> str:
     return "\n".join(lines)
 
 
-def _run_validate_models(args):
-    from slayer.engine.query_engine import SlayerQueryEngine
+def _format_cardinality_report_text(report, *, indent: str = "") -> str:
+    if not report.findings:
+        return f"{indent}No joins found."
+    lines: list[str] = []
+    for f in report.findings:
+        detected = f.detected.value if f.detected else "-"
+        stored = f.stored.value if f.stored else "-"
+        lines.append(
+            f"{indent}{f.model} -> {f.target_model}: detected={detected} "
+            f"stored={stored} verdict={f.verdict.value}"
+        )
+        for c in f.unique_contradictions:
+            lines.append(f"{indent}    ! {c}")
+        if f.note:
+            lines.append(f"{indent}    ({f.note})")
+    return "\n".join(lines)
 
-    storage = _resolve_storage(args)
+
+def _indent_block(text: str, *, indent: str = "  ") -> str:
+    return "\n".join(f"{indent}{line}" if line else line
+                     for line in text.split("\n"))
+
+
+def _resolve_validate_scope(args, storage) -> None:
+    """Fail fast on a typoed --datasource / --model.
+
+    Either would otherwise yield an empty report, indistinguishable from
+    "no drift" — and exit 0.
+    """
+    storage_path = _storage_path(args)
     if args.datasource:
-        # Fail fast on a typoed name. Without this check, ``validate_models``
-        # returns ``[]`` for an unknown datasource (no models match), which
-        # is indistinguishable from "no drift" and silently exits 0.
-        ds = run_sync(storage.get_datasource(args.datasource))
-        if ds is None:
-            storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
-            print(f"Datasource '{args.datasource}' not found in {storage_path}")
+        if run_sync(storage.get_datasource(args.datasource)) is None:
+            print(
+                f"Datasource '{args.datasource}' not found in {storage_path}",
+                file=sys.stderr,
+            )
             sys.exit(1)
-    engine = SlayerQueryEngine(storage=storage)
-    try:
-        entries = run_sync(engine.validate_models(data_source=args.datasource))
-    except Exception as exc:  # noqa: BLE001 — surface DB/auth/introspection failures cleanly
-        print(f"validate-models failed: {exc}")
+    model = getattr(args, "model", None)
+    if not model:
+        return
+    identities = run_sync(storage._list_all_model_identities())
+    # Models are keyed by (data_source, name), so an unscoped run matches the
+    # name in every datasource that has one.
+    if not any(
+        name == model and (not args.datasource or ds == args.datasource)
+        for ds, name in identities
+    ):
+        where = f"datasource '{args.datasource}'" if args.datasource else storage_path
+        print(f"Model '{model}' not found in {where}", file=sys.stderr)
         sys.exit(1)
-    print(_format_validate_models_output(entries))
 
-    force_clean = bool(getattr(args, "force_clean", False))
-    if not force_clean:
+
+async def _validate_each_datasource(engine: SlayerQueryEngine, ds_names: list[str]) -> list[tuple]:
+    """Validate every datasource concurrently, pairing each result with its name."""
+    results = await asyncio.gather(
+        *(engine.validate_models(data_source=name) for name in ds_names),
+        return_exceptions=True,
+    )
+    return list(zip(ds_names, results))
+
+
+async def _collect_drift(args, engine: SlayerQueryEngine, storage) -> tuple[list, list]:
+    """``(entries, failures)`` for the requested scope, filtered by ``--model``.
+
+    Datasources are validated concurrently but attributed one by one:
+    ``validate_models(None)`` swallows a per-datasource failure, and a
+    validation command must not report a clean bill for a datasource it never
+    reached.
+    """
+    if args.datasource:
+        ds_names = [args.datasource]
+    else:
+        ds_names = await storage.list_datasources()
+
+    entries: list = []
+    failures: list[tuple[str, BaseException]] = []
+    for ds_name, result in await _validate_each_datasource(engine, ds_names):
+        # gather() reports a cancelled child as a CancelledError value; that is
+        # cancellation, not a datasource that failed validation.
+        if isinstance(result, asyncio.CancelledError):
+            raise result
+        if isinstance(result, BaseException):
+            failures.append((ds_name, result))
+        else:
+            entries.extend(result)
+    return _filter_entries_by_model(entries, getattr(args, "model", None)), failures
+
+
+def _filter_entries_by_model(entries: list, model: str | None) -> list:
+    if not model:
+        return entries
+    return [e for e in entries if e.model_name == model]
+
+
+async def _collect_cardinality_report(args, engine: SlayerQueryEngine):
+    """Profile join arity, or ``None`` when neither cardinality flag is set."""
+    persist = bool(getattr(args, "persist_cardinality", False))
+    if not (persist or getattr(args, "cardinality", False)):
+        return None
+    try:
+        return await engine.detect_join_cardinality(
+            data_source=args.datasource,
+            model=getattr(args, "model", None),
+            persist=persist,
+        )
+    except Exception as exc:
+        _fail(f"validate-models: cardinality profiling failed: {exc}")
+
+
+async def _collect_all_models(args, storage) -> list:
+    """Every model in the requested datasource scope (for join-safety audit)."""
+    ds_names = [args.datasource] if args.datasource else await storage.list_datasources()
+    failures = DocumentLoadFailures()
+    return [m for ds in ds_names for m in failures.skip(await storage.load_models(data_source=ds))]
+
+
+async def _collect_join_safety_findings(args, storage) -> list:
+    """Joins whose arity is neither declared m:1/1:1 nor structurally proven —
+    metrics crossing them broadcast."""
+    findings = audit_join_safety(models=await _collect_all_models(args=args, storage=storage))
+    if getattr(args, "model", None):
+        findings = [f for f in findings if f.model == args.model]
+    return findings
+
+
+def _print_join_safety_section(findings) -> None:
+    if not findings:
         return
+    print("\nJoin safety")
+    for f in findings:
+        print(f"  [{f.data_source}] {f.model} → {f.target_model}: {f.message}")
 
-    if not entries:
+
+def _exit_on_scan_failures(report) -> None:
+    """A contained scan failure is still work the command did not do."""
+    if report is None:
         return
+    failed = [
+        f for f in report.findings if f.verdict is CardinalityVerdict.SCAN_FAILED
+    ]
+    if failed:
+        print(
+            f"{len(failed)} join(s) could not be profiled; see scan_failed above.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
+
+def _print_validate_json(*, entries, report, join_safety) -> None:
+    print(json.dumps({
+        "drift": [e.model_dump(mode="json") for e in entries],
+        "join_safety": [f.model_dump(mode="json") for f in join_safety],
+        "cardinality": report.model_dump(mode="json") if report else None,
+    }, indent=2))
+
+
+def _print_drift_section(entries, *, headed: bool) -> None:
+    """Headers only appear when a cardinality section follows."""
+    body = _format_validate_models_output(entries)
+    print("Schema drift\n" + _indent_block(body) if headed else body)
+
+
+def _print_cardinality_section(report) -> None:
+    print("\nJoin cardinality")
+    print(_format_cardinality_report_text(report, indent="  "))
+
+
+async def _apply_force_clean(args, engine: SlayerQueryEngine, entries) -> None:
+    """Prompt for and apply the drift deletes; exits 1 on residual/errors."""
     if not _confirm(
         f"\nApply {len(entries)} delete(s) to storage?",
         assume_yes=bool(getattr(args, "yes", False)),
@@ -1522,49 +2151,94 @@ def _run_validate_models(args):
         print("Aborted; storage unchanged.")
         return
 
-    result = run_sync(engine.apply_drift_deletes(entries))
+    result = await engine.apply_drift_deletes(entries)
     print(f"\nApplied {len(result.applied)} entry/entries.")
     if result.errors:
         print(f"Errors ({len(result.errors)}):")
         for err in result.errors:
             print(f"  - {err.tool} {err.model_name}: {err.error}")
-    if result.residual:
+    # apply_drift_deletes re-validates whole datasources, so scope the residual
+    # the same way the report was scoped — out-of-scope drift is not ours.
+    residual = _filter_entries_by_model(
+        result.residual, getattr(args, "model", None)
+    )
+    if residual:
         print("\nResidual drift after apply:")
-        print(_format_validate_models_output(result.residual))
+        print(_format_validate_models_output(residual))
         sys.exit(1)
     if result.errors:
         sys.exit(1)
     print("\n✓ no remaining drift")
 
 
+def _run_validate_models(args):
+    storage = _resolve_storage(args)
+    _resolve_validate_scope(args, storage)
+    engine = SlayerQueryEngine(storage=storage)
+    engine.run_sync(_validate_models_workflow(args, engine))
+
+
+async def _validate_models_workflow(args, engine: SlayerQueryEngine) -> None:
+    """Drift, join safety, the optional clean and cardinality profiling, all in one event loop."""
+    storage = engine.storage
+    entries, failures = await _collect_drift(args, engine, storage)
+    as_json = getattr(args, "format", "text") == "json"
+    wants_cardinality = bool(
+        getattr(args, "cardinality", False)
+        or getattr(args, "persist_cardinality", False)
+    )
+
+    if failures:
+        # Report what we did reach, on stdout in the requested format, then
+        # fail — profiling a set we could not fully validate would mislead.
+        # Join safety is skipped: auditing a partially-loaded model set lies.
+        if as_json:
+            _print_validate_json(entries=entries, report=None, join_safety=[])
+        else:
+            _print_drift_section(entries, headed=False)
+        for ds_name, exc in failures:
+            print(f"Datasource '{ds_name}' failed validation: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    join_safety = await _collect_join_safety_findings(args, storage)
+    if as_json:
+        report = await _collect_cardinality_report(args, engine)
+        _print_validate_json(entries=entries, report=report, join_safety=join_safety)
+        _exit_on_scan_failures(report)
+        return
+
+    _print_drift_section(entries, headed=wants_cardinality)
+    _print_join_safety_section(join_safety)
+    # Clean first: profiling a model we are about to repair is wasted work.
+    deletes = [e for e in entries if not isinstance(e, REPORT_ONLY_FINDINGS)]
+    if bool(getattr(args, "force_clean", False)) and deletes:
+        await _apply_force_clean(args, engine, deletes)
+    report = await _collect_cardinality_report(args, engine)
+    if report is not None:
+        _print_cardinality_section(report)
+    _exit_on_scan_failures(report)
+
+
 def _run_recommend_root_model(args):
-    import json as _json
-
-    from slayer.core.recommend import render_recommendation_markdown
-    from slayer.engine.query_engine import SlayerQueryEngine
-
     storage = _resolve_storage(args)
     engine = SlayerQueryEngine(storage=storage)
-    try:
-        rec = engine.recommend_root_model_sync(
-            args.items, data_source=args.data_source,
-            root_hint=getattr(args, "root_hint", None),
-        )
-    except Exception as exc:  # noqa: BLE001 — surface resolution/validation errors cleanly
-        print(f"recommend-root-model failed: {exc}")
-        sys.exit(1)
+    rec = engine.recommend_root_model_sync(
+        args.items, data_source=args.data_source,
+        root_hint=getattr(args, "root_hint", None),
+    )
     if args.format == "json":
-        print(_json.dumps(rec.model_dump(mode="json"), indent=2))
+        print(json.dumps(rec.model_dump(mode="json"), indent=2))
     else:
         print(render_recommendation_markdown(rec))
 
 
 def _run_import_dbt(args):
+    engine = SlayerQueryEngine(storage=_resolve_storage(args))
+    engine.run_sync(_import_dbt_workflow(args, engine))
 
-    from slayer.dbt.converter import DbtToSlayerConverter
-    from slayer.dbt.parser import parse_dbt_project
 
-    storage = _resolve_storage(args)
+async def _import_dbt_workflow(args, engine: SlayerQueryEngine) -> None:
+    storage = engine.storage
     include_hidden = bool(args.include_hidden_models)
     project = parse_dbt_project(
         args.dbt_project_path,
@@ -1572,48 +2246,29 @@ def _run_import_dbt(args):
     )
 
     if not project.semantic_models and not (include_hidden and project.regular_models):
-        print(f"No semantic models found in {args.dbt_project_path}")
-        sys.exit(1)
+        _fail(f"No semantic models found in {args.dbt_project_path}")
 
-    sa_engine = None
-    ds = run_sync(storage.get_datasource(args.datasource))
-    if include_hidden:
-        if ds is None:
-            storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
-            print(
-                f"Datasource '{args.datasource}' not found in {storage_path}; "
-                "required for --include-hidden-models."
-            )
-            sys.exit(1)
-        from slayer.sql import engine_factory
-        sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
-
-    # DEV-1595: pass the datasource dialect (best-effort) so the converter can
-    # emit percentile/median caveats for dialects that lack them (MySQL/T-SQL).
-    target_dialect = ds.type if ds is not None else None
+    ds, offline_reason = await _import_datasource(storage, args.datasource)
+    if include_hidden and ds is None:
+        storage_path = _storage_path(args)
+        _fail(
+            f"Datasource '{args.datasource}' not found in {storage_path}; "
+            "required for --include-hidden-models."
+        )
 
     converter = DbtToSlayerConverter(
         project=project,
         data_source=args.datasource,
-        sa_engine=sa_engine,
         include_hidden_models=include_hidden,
-        target_dialect=target_dialect,
+        target_dialect=ds.type if ds is not None else None,
+        offline_reason=offline_reason,
     )
+    if ds is not None:
+        await converter.collect_metadata(client=engine.client_for(ds))
     result = converter.convert()
-    # Cached engine — engine_factory owns its lifecycle; don't dispose.
+    hidden_count = await _save_imported_dbt_models(storage=storage, models=result.models)
 
-    hidden_count = 0
-    for model in result.models:
-        run_sync(storage.save_model(model))
-        suffix = " [hidden]" if model.hidden else ""
-        if model.hidden:
-            hidden_count += 1
-        print(
-            f"Imported model: {model.name}{suffix} "
-            f"({len(model.columns)} columns, {len(model.measures)} measures)"
-        )
-
-    # DEV-1595: grouped, category-keyed conversion report + a severity tally.
+    # Grouped, category-keyed conversion report + a severity tally.
     if result.unconverted_metrics or result.warnings:
         print("\nConversion report:")
         print(result.render_report())
@@ -1626,26 +2281,57 @@ def _run_import_dbt(args):
     )
 
 
-def _run_import_cube(args):
-    from slayer.cube.converter import CubeToSlayerConverter
-    from slayer.cube.parser import parse_cube_project
-    from slayer.cube.report import CubeConversionIssue, CubeIssueCategory
+async def _import_datasource(storage: StorageBackend, name: str) -> tuple[DatasourceConfig | None, str | None]:
+    """``(config, offline reason)`` for an importer's ``--datasource``, best-effort."""
+    try:
+        ds = await storage.get_datasource(name)
+    except Exception as exc:  # noqa: BLE001 — an import still completes without its datasource
+        return None, f"datasource {name!r} could not be resolved: {type(exc).__name__}"
+    if ds is None:
+        return None, f"datasource {name!r} is not configured"
+    return ds, None
 
-    storage = _resolve_storage(args)
+
+async def _save_imported_dbt_models(*, storage: StorageBackend, models: list[SlayerModel]) -> int:
+    """Save and report each imported model; returns the hidden count."""
+    hidden_count = 0
+    for model in models:
+        await storage.save_model(model)
+        suffix = " [hidden]" if model.hidden else ""
+        if model.hidden:
+            hidden_count += 1
+        print(
+            f"Imported model: {model.name}{suffix} "
+            f"({len(model.columns)} columns, {len(model.measures)} measures)"
+        )
+    return hidden_count
+
+
+def _run_import_cube(args):
+    engine = SlayerQueryEngine(storage=_resolve_storage(args))
+    engine.run_sync(_import_cube_workflow(args, engine))
+
+
+async def _import_cube_workflow(args, engine: SlayerQueryEngine) -> None:
+    storage = engine.storage
     project, parse_issues = parse_cube_project(args.cube_project_path)
 
     if not project.cubes and not project.views:
-        print(f"No cubes or views found in {args.cube_project_path}")
-        sys.exit(1)
+        _fail(f"No cubes or views found in {args.cube_project_path}")
 
-    result = CubeToSlayerConverter(
+    ds, offline_reason = await _import_datasource(storage, args.datasource)
+    converter = CubeToSlayerConverter(
         project=project, data_source=args.datasource, parse_issues=parse_issues,
         honor_required_meta=not args.ignore_required_meta,
-    ).convert()
+        target_dialect=ds.type if ds is not None else None, offline_reason=offline_reason,
+    )
+    if ds is not None:
+        await converter.collect_metadata(client=engine.client_for(ds))
+    result = converter.convert()
     saved = 0
     for model in result.models:
         try:
-            run_sync(storage.save_model(model))
+            await storage.save_model(model)
             saved += 1
         except Exception as exc:  # noqa: BLE001 — one bad model shouldn't abort the import
             result.report.add(CubeConversionIssue(
@@ -1678,9 +2364,7 @@ def _print_cube_import_summary(result, *, include_hidden):
 
 
 def _write_cube_report(result, args) -> str:
-    import os
-
-    storage_base = args.storage or args.models_dir or _STORAGE_DEFAULT
+    storage_base = _storage_path(args)
     if storage_base.endswith(".db"):
         storage_base = os.path.dirname(storage_base) or "."
     report_path = args.report or os.path.join(storage_base, "cube_import_report.json")
@@ -1692,49 +2376,87 @@ def _write_cube_report(result, args) -> str:
 
 
 def _run_import_osi(args):
-    from slayer.osi.converter import OsiConversionError, OsiToSlayerConverter
-    from slayer.osi.parser import parse_osi_path
-    from slayer.sql import engine_factory
+    engine = SlayerQueryEngine(storage=_resolve_storage(args))
+    engine.run_sync(_import_osi_workflow(args, engine))
 
-    storage = _resolve_storage(args)
+
+def _run_export_osi(args):
+    engine = SlayerQueryEngine(storage=_resolve_storage(args))
+    try:
+        result = engine.run_sync(export_osi(engine=engine, datasource=args.datasource, models=args.models,
+                                            extensions=not args.no_extensions))
+    except OsiExportError as exc:
+        _fail(str(exc))
+    if args.out.endswith(".json"):
+        text = json.dumps(result.document, indent=2, ensure_ascii=False) + "\n"
+    else:
+        text = yaml.safe_dump(result.document, sort_keys=False, allow_unicode=True)
+    # The output path is an intended, user-specified CLI location.
+    with open(args.out, "w", encoding="utf-8") as fh:  # NOSONAR(S8707)
+        fh.write(text)
+    print(f"Exported {len(result.document['datasets'])} datasets to {args.out}")
+    if result.entries:
+        print("\nExport report:")
+        print(result.render_report())
+
+
+async def _restore_query_backed(engine: SlayerQueryEngine, result: OsiConversionResult) -> None:
+    """Save each restored query-backed model through the engine, inputs first; a failure keeps the sql-mode model."""
+    pending = {model.name: model for model in result.query_backed}
+    while pending:
+        ready = [m for m in pending.values()
+                 if not {q.source_model for q in m.source_queries or [] if isinstance(q.source_model, str)} & set(pending)
+                 or len(pending) == 1]
+        for model in ready or list(pending.values()):
+            del pending[model.name]
+            try:
+                await engine.save_model(model)
+            except Exception as exc:  # noqa: BLE001 — per-model isolation; reported
+                result.warnings.append(ConversionWarning(
+                    model_name=model.name, category="extension", severity="info",
+                    message=f"Query-backed model {model.name!r} does not restore ({exc}); kept as a sql-mode "
+                            f"model over its source.",
+                    suggestion="Import every model its saved queries read.",
+                ))
+
+
+async def _import_osi_workflow(args, engine: SlayerQueryEngine) -> None:
+    storage = engine.storage
     try:
         documents = parse_osi_path(args.osi_path)
     except FileNotFoundError as exc:
-        print(str(exc))
-        sys.exit(1)
+        _fail(str(exc))
     if not documents:
-        print(f"No OSI documents found in {args.osi_path}")
-        sys.exit(1)
+        _fail(f"No OSI documents found in {args.osi_path}")
 
-    ds = run_sync(storage.get_datasource(args.datasource))
+    ds = await storage.get_datasource(args.datasource)
     if ds is None:
-        storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
+        storage_path = _storage_path(args)
         print(
             f"Datasource '{args.datasource}' not found in {storage_path}; "
             "a reachable datasource is required (types come from live introspection)."
         )
         sys.exit(1)
 
-    sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
     converter = OsiToSlayerConverter(
         documents=documents,
         data_source=args.datasource,
-        sa_engine=sa_engine,
         dialect=args.dialect,
         target_dialect=ds.type,
     )
     try:
+        await converter.collect_metadata(client=engine.client_for(ds))
         result = converter.convert()
     except OsiConversionError as exc:
-        print(str(exc))
-        sys.exit(1)
+        _fail(str(exc))
 
     for model in result.models:
-        run_sync(storage.save_model(model))
+        await storage.save_model(model)
         print(
             f"Imported model: {model.name} "
             f"({len(model.columns)} columns, {len(model.measures)} measures)"
         )
+    await _restore_query_backed(engine, result)
 
     if result.unconverted_metrics or result.warnings:
         print("\nConversion report:")
@@ -1747,120 +2469,125 @@ def _run_import_osi(args):
     )
 
 
+def _models_list(storage, args) -> None:
+    names = run_sync(storage.list_models())
+    usage_reporting.observe_model_count(len(names))
+    builtins = [m for ds in run_sync(storage.list_datasources()) for m in run_sync(storage.builtin_models(ds))]
+    if not names and not builtins:
+        print("No models found.")
+        return
+    models = {m.name: m for m in DocumentLoadFailures().skip(run_sync(storage.load_models()))}
+    for name in names:
+        model = models.get(name)
+        if model is None or model.hidden:
+            continue
+        desc = f"  — {model.description}" if model.description else ""
+        print(f"{name}{desc}")
+    for model in builtins:
+        print(f"{model.name}  — {model.description}")
+
+
+def _models_show(storage, args) -> None:
+    model = run_sync(storage.get_model_or_builtin(args.name))
+    if model is None:
+        _fail(f"Model '{args.name}' not found.")
+    data = model.model_dump(mode="json", exclude_none=True)
+    print(yaml.dump(data, sort_keys=False, default_flow_style=False).rstrip())
+
+
+def _models_create(storage, args) -> None:
+    with open(args.file) as f:
+        data = yaml.safe_load(f)
+    model = SlayerModel.model_validate(data)
+    # Route through engine.save_model so query-backed models get cache
+    # populated (and user-supplied cache fields are rejected).
+    engine = SlayerQueryEngine(storage=storage)
+    engine.run_sync(engine.save_model(model))
+    print(f"Created model '{model.name}'.")
+
+
+def _models_delete(storage, args) -> None:
+    if not run_sync(storage.delete_model(args.name)):
+        _fail(f"Model '{args.name}' not found.")
+    print(f"Deleted model '{args.name}'.")
+
+
+_MODELS_COMMANDS = {"list": _models_list, "show": _models_show, "create": _models_create, "delete": _models_delete}
+
+
 def _run_models(args):
-    import yaml
-
-    from slayer.core.models import SlayerModel
-
     storage = _resolve_storage(args)
+    handler = _MODELS_COMMANDS.get(args.models_command)
+    if handler is None:
+        _fail("usage: slayer models {list,show,create,delete}")
+    handler(storage, args)
 
-    if args.models_command == "list":
-        names = run_sync(storage.list_models())
-        if not names:
-            print("No models found.")
-            return
-        for name in names:
-            model = run_sync(storage.get_model(name))
-            if model and model.hidden:
-                continue
-            desc = f"  — {model.description}" if model and model.description else ""
-            print(f"{name}{desc}")
 
-    elif args.models_command == "show":
-        model = run_sync(storage.get_model(args.name))
-        if model is None:
-            print(f"Model '{args.name}' not found.")
-            sys.exit(1)
-        data = model.model_dump(mode="json", exclude_none=True)
-        print(yaml.dump(data, sort_keys=False, default_flow_style=False).rstrip())
+def _datasources_list(storage, args) -> None:
+    names = run_sync(storage.list_datasources())
+    if not names:
+        usage_reporting.observe_datasources([])
+        print("No datasources found.")
+        return
+    loaded = []
+    for name in names:
+        ds = run_sync(storage.get_datasource(name))
+        ds_type = ds.type if ds and ds.type else "unknown"
+        print(f"{name}  ({ds_type})")
+        if ds is not None:
+            loaded.append(ds)
+    usage_reporting.observe_datasources(loaded)
 
-    elif args.models_command == "create":
-        from slayer.engine.query_engine import SlayerQueryEngine
 
-        with open(args.file) as f:
-            data = yaml.safe_load(f)
-        model = SlayerModel.model_validate(data)
-        # Route through engine.save_model so query-backed models get cache
-        # populated (and user-supplied cache fields are rejected).
-        engine = SlayerQueryEngine(storage=storage)
-        try:
-            run_sync(engine.save_model(model))
-        except ValueError as e:
-            print(f"Error: {e}")
-            sys.exit(1)
-        print(f"Created model '{model.name}'.")
+def _datasource_or_exit(storage, name: str):
+    ds = run_sync(storage.get_datasource(name))
+    if ds is None:
+        _fail(f"Datasource '{name}' not found.")
+    return ds
 
-    elif args.models_command == "delete":
-        deleted = run_sync(storage.delete_model(args.name))
-        if deleted:
-            print(f"Deleted model '{args.name}'.")
-        else:
-            print(f"Model '{args.name}' not found.")
-            sys.exit(1)
 
-    else:
-        print("Usage: slayer models {list,show,create,delete}")
+def _datasources_show(storage, args) -> None:
+    data = _datasource_or_exit(storage, args.name).model_dump(mode="json", exclude_none=True)
+    for secret_field in ("password", "connection_string", "credentials_json"):
+        if secret_field in data:
+            data[secret_field] = "********"
+    print(yaml.dump(data, sort_keys=False, default_flow_style=False).rstrip())
+
+
+def _datasources_delete(storage, args) -> None:
+    if not run_sync(storage.delete_datasource(args.name)):
+        _fail(f"Datasource '{args.name}' not found.")
+    print(f"Deleted datasource '{args.name}'.")
+
+
+def _datasources_test(storage, args) -> None:
+    ds = _datasource_or_exit(storage, args.name)
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        engine.run_sync(engine.client_for(ds).ping())
+        print(f"OK — connected to '{args.name}' ({ds.type}).")
+    except Exception as e:
+        print(f"FAILED — {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def _datasources_create(storage, args) -> None:
+    _run_datasources_create(args, storage)
+
+
+_DATASOURCES_COMMANDS = {
+    "list": _datasources_list, "show": _datasources_show, "create": _datasources_create,
+    "delete": _datasources_delete, "test": _datasources_test,
+    "refresh-samples": _datasources_refresh_samples,
+}
 
 
 def _run_datasources(args):
-    import yaml
-
     storage = _resolve_storage(args)
-
-    if args.datasources_command == "list":
-        names = run_sync(storage.list_datasources())
-        if not names:
-            print("No datasources found.")
-            return
-        for name in names:
-            ds = run_sync(storage.get_datasource(name))
-            ds_type = ds.type if ds and ds.type else "unknown"
-            print(f"{name}  ({ds_type})")
-
-    elif args.datasources_command == "show":
-        ds = run_sync(storage.get_datasource(args.name))
-        if ds is None:
-            print(f"Datasource '{args.name}' not found.")
-            sys.exit(1)
-        data = ds.model_dump(mode="json", exclude_none=True)
-        for secret_field in ("password", "connection_string", "credentials_json"):
-            if secret_field in data:
-                data[secret_field] = "********"
-        print(yaml.dump(data, sort_keys=False, default_flow_style=False).rstrip())
-
-    elif args.datasources_command == "create":
-        _run_datasources_create(args, storage)
-
-    elif args.datasources_command == "delete":
-        deleted = run_sync(storage.delete_datasource(args.name))
-        if deleted:
-            print(f"Deleted datasource '{args.name}'.")
-        else:
-            print(f"Datasource '{args.name}' not found.")
-            sys.exit(1)
-
-    elif args.datasources_command == "test":
-        ds = run_sync(storage.get_datasource(args.name))
-        if ds is None:
-            print(f"Datasource '{args.name}' not found.")
-            sys.exit(1)
-        import sqlalchemy as sa
-        from slayer.sql import engine_factory
-
-        try:
-            engine = engine_factory.get_engine(ds.resolve_env_vars())
-            with engine.connect() as conn:
-                conn.execute(sa.text("SELECT 1"))
-            # Cached engine — engine_factory owns lifecycle; don't dispose.
-            print(f"OK — connected to '{args.name}' ({ds.type}).")
-        except Exception as e:
-            print(f"FAILED — {e}")
-            sys.exit(1)
-
-    else:
-        print("Usage: slayer datasources {list,show,create,delete,test}")
-        sys.exit(1)
+    handler = _DATASOURCES_COMMANDS.get(args.datasources_command)
+    if handler is None:
+        _fail("usage: slayer datasources {list,show,create,delete,test,refresh-samples}")
+    handler(storage, args)
 
 
 def _parse_connection_string(url: str) -> tuple[str, str]:
@@ -1873,8 +2600,6 @@ def _parse_connection_string(url: str) -> tuple[str, str]:
 
     Raises ``ValueError`` if the scheme is missing or no name can be derived.
     """
-    from urllib.parse import urlparse
-
     parsed = urlparse(url)
     if not parsed.scheme:
         raise ValueError(f"Connection string '{url}' is missing a scheme (e.g. postgresql://…)")
@@ -1897,7 +2622,7 @@ def _parse_connection_string(url: str) -> tuple[str, str]:
             )
         return ds_type, stem
 
-    # DEV-1551: Snowflake connection_name sentinel URL has no path segment —
+    # Snowflake connection_name sentinel URL has no path segment —
     # all routing lives in the query string + the TOML profile. Use the
     # connection_name itself as the derived datasource name fallback so
     # ``slayer datasources create "snowflake://?connection_name=default"``
@@ -1905,7 +2630,6 @@ def _parse_connection_string(url: str) -> tuple[str, str]:
     if ds_type == "snowflake":
         connection_name = ""
         if parsed.query:
-            from urllib.parse import parse_qs  # noqa: PLC0415
             params = parse_qs(parsed.query)
             connection_name = (params.get("connection_name") or [""])[0]
         if connection_name:
@@ -1940,14 +2664,8 @@ def _confirm(prompt: str, *, assume_yes: bool) -> bool:
     return answer in ("y", "yes")
 
 
-def _persist_ingested_models(models, storage, *, assume_yes: bool, pre_save=None) -> None:
-    """Persist freshly-ingested models, after a collision-confirmation prompt.
-
-    Used by both ``datasources create`` (with ``--ingest``) and
-    ``datasources create demo --ingest``. ``pre_save`` is an optional hook
-    called once per model just before saving — the demo path uses it to
-    apply ``default_time_dimension`` overrides.
-    """
+def _persist_ingested_models(models, storage, *, assume_yes: bool) -> None:
+    """Persist freshly-ingested models (``datasources create --ingest``), after a collision-confirmation prompt."""
     if not models:
         print("No models were generated.")
         return
@@ -1957,12 +2675,10 @@ def _persist_ingested_models(models, storage, *, assume_yes: bool, pre_save=None
         f"Models already exist and will be overwritten: {', '.join(colliding)}. Continue?",
         assume_yes=assume_yes,
     ):
-        print("Aborted before writing models.")
+        print("Aborted before writing models.", file=sys.stderr)
         sys.exit(1)
 
     for model in models:
-        if pre_save is not None:
-            pre_save(model)
         try:
             run_sync(storage.save_model(model))
         except ValueError as e:
@@ -1976,21 +2692,25 @@ def _run_datasources_create(args, storage):
         _run_datasources_create_demo(args, storage)
         return
 
-    from slayer.core.models import DatasourceConfig
-
     try:
         ds_type, derived_name = _parse_connection_string(args.connection_string)
     except ValueError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+        _fail(str(e))
 
     name = args.name or derived_name
+    schema_list = _parse_csv_arg(args.schema)
+    all_schemas = getattr(args, "all_schemas", False)
+    # Persist ``schema_name`` only for a single explicit schema — a multi-schema
+    # or --all-schemas request has no one default schema to record (D-7).
+    persisted_schema = schema_list[0] if (schema_list and len(schema_list) == 1) else None
     ds = DatasourceConfig.model_validate(
         {
             "name": name,
             "type": ds_type,
             "connection_string": args.connection_string,
             "description": args.description,
+            "schema_name": persisted_schema,
+            "granularities": getattr(args, "granularities", None) or [],
         }
     )
 
@@ -1998,57 +2718,84 @@ def _run_datasources_create(args, storage):
     if existing is not None and not _confirm(
         f"Datasource '{name}' already exists. Overwrite?", assume_yes=args.yes
     ):
-        print("Aborted.")
+        print("Aborted.", file=sys.stderr)
         sys.exit(1)
 
     try:
         run_sync(storage.save_datasource(ds))
     except ValueError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+        _fail(str(e))
     print(f"Created datasource '{ds.name}' ({ds.type}).")
 
     if not args.ingest:
         return
-
-    from slayer.engine.ingestion import (
-        _print_ingest_drift_and_errors,
-        ingest_datasource_report,
+    _create_ingest_and_report(
+        args=args, ds=ds, storage=storage,
+        schema_list=schema_list, all_schemas=all_schemas,
     )
 
+
+def _create_ingest_and_report(*, args, ds, storage, schema_list, all_schemas):
+    """Run auto-ingestion for a freshly-created datasource and print the report.
+
+    Extracted from ``_run_datasources_create`` so that function stays under the
+    cognitive-complexity limit. Exit stays 0 on skips/hidden — creating the
+    datasource already succeeded.
+    """
     include = [t for t in (s.strip() for s in args.include.split(",")) if t] if args.include else None
     exclude = [t for t in (s.strip() for s in args.exclude.split(",")) if t] if args.exclude else None
 
+    engine = SlayerQueryEngine(storage=storage)
+    # Re-read: storage resolves ${ENV_VAR} credentials.
+    live_ds = run_sync(storage.get_datasource(ds.name)) or ds
     try:
         # Report form, not models-only ``ingest_datasource``: otherwise this
         # path hides recognised internals and skips with no output at all.
-        report = ingest_datasource_report(
-            datasource=ds,
-            schema=args.schema,
+        report = engine.run_sync(engine_ingestion.ingest_datasource_report_async(
+            datasource=live_ds,
+            client=engine.client_for(live_ds),
+            schemas=schema_list,
+            all_schemas=all_schemas,
             include_tables=include,
             exclude_tables=exclude,
             include_views=getattr(args, "include_views", True),
             surface_internals=getattr(args, "surface_internals", False),
-        )
+        ))
     except Exception as e:
-        print(f"Ingestion failed: {e}")
-        sys.exit(1)
+        _fail(f"Ingestion failed: {e}")
 
     _persist_ingested_models(report.models, storage, assume_yes=args.yes)
-    # After persistence, so the sections comment on what was just written. Exit
-    # stays 0 — creating the datasource succeeded, whatever was skipped/hidden.
+
+    if report.schema_description and not ds.description:
+        ds = ds.model_copy(update={"description": report.schema_description})
+        try:
+            run_sync(storage.save_datasource(ds))
+            print("Datasource description imported.")
+        except Exception as e:
+            print(f"Could not save datasource description: {e}")
+
+    # After persistence, so the sections comment on what was just written.
     _print_ingest_drift_and_errors(report, data_source=ds.name)
 
 
-def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear demo-bootstrap flow (build → confirm → save → optional ingest); branches are sequential UX guards, not nested logic
-    from slayer.demo import (
-        DEFAULT_TIME_DIMENSIONS,
-        DEMO_NAME,
-        build_jaffle_shop,
-        resolve_demo_db_path,
-    )
+def _ingest_scope_flags(args) -> list[str]:
+    """The ingestion-scope flags given on ``datasources create``."""
+    given = {
+        "--schema": getattr(args, "schema", None) is not None,
+        "--all-schemas": getattr(args, "all_schemas", False),
+        "--include": getattr(args, "include", None) is not None,
+        "--exclude": getattr(args, "exclude", None) is not None,
+        "--no-views": not getattr(args, "include_views", True),
+        "--surface-internals": getattr(args, "surface_internals", False),
+    }
+    return [flag for flag, on in given.items() if on]
 
-    storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
+
+def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear demo-bootstrap flow (build → confirm → save → optional ingest); branches are sequential UX guards, not nested logic
+    scope = _ingest_scope_flags(args)
+    if scope:
+        _fail(f"{', '.join(scope)} cannot be used with the demo, which always ingests all of its tables.")
+    storage_path = _storage_path(args)
     name = args.name or DEMO_NAME
     db_path = resolve_demo_db_path(storage_path)
 
@@ -2057,15 +2804,12 @@ def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear dem
             db_path=db_path, years=max(1, args.years), stream=sys.stderr
         )
     except Exception as e:
-        print(f"Failed to build Jaffle Shop demo: {e}")
-        sys.exit(1)
+        _fail(f"Failed to build Jaffle Shop demo: {e}")
 
     if db_built:
         print(f"Generated Jaffle Shop DuckDB at {db_path}")
     else:
         print(f"Reusing existing Jaffle Shop DuckDB at {db_path}")
-
-    from slayer.core.models import DatasourceConfig
 
     ds = DatasourceConfig.model_validate(
         {
@@ -2073,6 +2817,7 @@ def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear dem
             "type": "duckdb",
             "database": db_path,
             "description": args.description or "Jaffle Shop demo (synthetic data via jafgen)",
+            "granularities": getattr(args, "granularities", None) or [],
         }
     )
 
@@ -2080,35 +2825,25 @@ def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear dem
     if existing is not None and not _confirm(
         f"Datasource '{name}' already exists. Overwrite?", assume_yes=args.yes
     ):
-        print("Aborted.")
+        print("Aborted.", file=sys.stderr)
         sys.exit(1)
 
     try:
         run_sync(storage.save_datasource(ds))
     except ValueError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+        _fail(str(e))
     print(f"Created datasource '{ds.name}' (duckdb).")
 
     if not args.ingest:
         print("Run with --ingest to also auto-generate models.")
         return
 
-    from slayer.engine.ingestion import ingest_datasource
-
     try:
-        models = ingest_datasource(datasource=ds)
+        models = ingest_demo_models(storage=storage, datasource=ds)
     except Exception as e:
-        print(f"Ingestion failed: {e}")
-        sys.exit(1)
-
-    def _apply_demo_time_dim(model):
-        if model.name in DEFAULT_TIME_DIMENSIONS:
-            model.default_time_dimension = DEFAULT_TIME_DIMENSIONS[model.name]
-
-    _persist_ingested_models(
-        models, storage, assume_yes=args.yes, pre_save=_apply_demo_time_dim
-    )
+        _fail(f"Ingestion failed: {e}")
+    for model in models:
+        print(f"Ingested: {model.name} ({len(model.columns)} columns, {len(model.measures)} measures)")
 
 
 def _load_query_arg(value):
@@ -2121,48 +2856,35 @@ def _load_query_arg(value):
     if value.startswith("@"):
         path = value[1:]
         if not os.path.exists(path):
-            print(f"Error: Query file not found: {path}")
-            sys.exit(1)
-        with open(path) as f:
+            _fail(f"Query file not found: {path}")
+        with open(path) as f:  # NOSONAR(S8707) — reading the file the CLI user names is the feature
             text = f.read()
     else:
         text = value
     try:
         return json.loads(text)
     except json.JSONDecodeError as exc:
-        print(f"Error: invalid JSON for query argument: {exc}")
-        sys.exit(1)
-
-
-def _exit_with_error(exc: Exception) -> None:
-    print(f"Error: {exc}")
-    sys.exit(1)
+        _fail(f"invalid JSON for query argument: {exc}")
 
 
 def _run_memory_save(args, service):
     if not args.entities and not args.query:
-        print("Error: --entities or --query must be supplied (one or the other).")
-        sys.exit(1)
+        _fail("--entities or --query must be supplied (one or the other).")
     if args.entities and args.query:
-        print("Error: --entities and --query are mutually exclusive.")
-        sys.exit(1)
+        _fail("--entities and --query are mutually exclusive.")
     linked = (
         [e.strip() for e in args.entities.split(",") if e.strip()]
         if args.entities
         else _load_query_arg(args.query)
     )
-    try:
-        response = run_sync(
-            service.save_memory(
-                learning=args.learning,
-                linked_entities=linked,
-                id=getattr(args, "id", None),
-                description=getattr(args, "description", None),
-            )
+    response = run_sync(
+        service.save_memory(
+            learning=args.learning,
+            linked_entities=linked,
+            id=getattr(args, "id", None),
+            description=getattr(args, "description", None),
         )
-    except (EntityResolutionError, AmbiguousModelError, ValueError) as exc:
-        _exit_with_error(exc)
-        return  # for type checkers; _exit_with_error never returns
+    )
     print(f"Saved memory {response.memory_id}.")
     if response.resolved_entities:
         print("Resolved entities: " + ", ".join(response.resolved_entities))
@@ -2171,11 +2893,7 @@ def _run_memory_save(args, service):
 
 
 def _run_memory_forget(args, service):
-    try:
-        response = run_sync(service.forget_memory(identifier=args.id))
-    except (MemoryNotFoundError, ValueError) as exc:
-        _exit_with_error(exc)
-        return
+    response = run_sync(service.forget_memory(identifier=args.id))
     print(f"Forgot memory {response.deleted_id}.")
 
 
@@ -2188,12 +2906,9 @@ _MEMORY_DISPATCH = {
 def _run_memory(args):
     """Dispatcher for ``slayer memory <save|forget>``. Memory retrieval
     is handled by ``slayer search``."""
-    from slayer.memories.service import MemoryService
-
     handler = _MEMORY_DISPATCH.get(args.memory_command)
     if handler is None:
-        print("Usage: slayer memory {save,forget}")
-        sys.exit(1)
+        _fail("usage: slayer memory {save,forget}")
     storage = _resolve_storage(args)
     handler(args, MemoryService(storage=storage))
 

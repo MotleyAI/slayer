@@ -1,6 +1,6 @@
 """YAML-based storage for models and datasources.
 
-v4 (DEV-1330): models live under ``<base_dir>/models/<data_source>/<name>.yaml``
+v4: models live under ``<base_dir>/models/<data_source>/<name>.yaml``
 so two datasources sharing a table name don't collide. The datasource priority
 list — used to disambiguate bare-name lookups — is stored at
 ``<base_dir>/priority.yaml``.
@@ -9,10 +9,10 @@ On open, ``migrate_yaml_layout`` walks the legacy flat layout and moves each
 file into the new subdirectory. See ``slayer/storage/v4_migration.py`` for the
 contract details.
 
-DEV-1405: embedding rows now live in a SQLite sidecar at
+Embedding rows now live in a SQLite sidecar at
 ``<base_dir>/embeddings.db`` (via :class:`SidecarEmbeddingStore`) instead of
 a single ``embeddings.yaml`` whose whole-file-rewrite-on-save bottlenecked
-``slayer ingest``. Any pre-DEV-1405 ``embeddings.yaml`` is silently renamed
+``slayer ingest``. Any legacy ``embeddings.yaml`` is silently renamed
 to ``embeddings.yaml.legacy`` on first open; re-run ``slayer ingest`` (or
 rely on ``--ingest-on-startup``) to repopulate ``embeddings.db``. Memory ids
 are now derived from ``memories.yaml`` itself (``last_row.id + 1``), so the
@@ -21,10 +21,11 @@ to ``counters.yaml.legacy`` if present. Both renames are idempotent: if a
 ``.legacy`` file already exists at upgrade time, both files are left alone.
 """
 
+import asyncio
 import contextlib
 import os
 from typing import Any
-from collections.abc import Iterator
+from collections.abc import Hashable, Iterator
 
 import yaml
 from pydantic import ValidationError
@@ -34,17 +35,23 @@ try:  # POSIX-only; Windows users get the no-op fallback.
 except ImportError:  # pragma: no cover — Windows
     _fcntl = None  # type: ignore[assignment]
 
+from slayer.core.errors import StoredDocumentLoadError
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.memories.models import Memory, _validate_memory_id_charset
+from slayer.storage.atomic_write import _atomic_write_text, _atomic_write_yaml
 from slayer.storage.base import (
     StorageBackend,
     _validate_path_component,
     _write_sample_fields,
+    without_none,
 )
+from slayer.storage.content_fingerprint import StatKey, stat_key, tree_fingerprint
+from slayer.storage.document_loading import Loaded, stored_document_boundary
 from slayer.storage.sidecar_embedding_store import (
     SidecarEmbeddingsMixin,
     SidecarEmbeddingStore,
 )
+from slayer.storage.migrations import stamp_stored
 from slayer.storage.v4_migration import migrate_yaml_layout
 
 
@@ -54,7 +61,14 @@ _YAML_EXTS = (".yaml", ".yml")  # NOSONAR(S1192) — full filenames in _LEGACY_R
 _MD_FENCE = "---\n"
 
 
-# ---- memory <-> .md (DEV-1658) --------------------------------------------
+# ---- memory <-> .md --------------------------------------------
+
+
+def _memory_dict_to_md(data: dict[str, Any]) -> str:
+    """A stored memory dict as ``.md`` text: ``id`` is the file name, ``learning`` the body."""
+    front = {k: v for k, v in data.items() if k not in ("id", "learning")}
+    fm = yaml.safe_dump(without_none(front), sort_keys=True, default_flow_style=False, allow_unicode=True)
+    return f"{_MD_FENCE}{fm}{_MD_FENCE}{data.get('learning', '')}"
 
 
 def _memory_to_md(memory: Memory) -> str:
@@ -73,16 +87,14 @@ def _memory_to_md(memory: Memory) -> str:
         data.pop("description", None)
     if not data.get("entities"):
         data.pop("entities", None)
-    if data.get("query") is None:
-        data.pop("query", None)
     fm = yaml.safe_dump(
-        data, sort_keys=True, default_flow_style=False, allow_unicode=True,
+        without_none(data), sort_keys=True, default_flow_style=False, allow_unicode=True,
     )
     return f"{_MD_FENCE}{fm}{_MD_FENCE}{learning}"
 
 
-def _md_to_memory(memory_id: str, text: str) -> Memory:
-    """Inverse of :func:`_memory_to_md`. Splits only the FIRST frontmatter
+def _md_to_memory_dict(memory_id: str, text: str) -> dict[str, Any]:
+    """Inverse of :func:`_memory_to_md`, as the raw stored dict. Splits only the FIRST frontmatter
     block, so a learning body that itself contains a ``---`` line survives.
     ``id`` is injected from the filename (single source of truth)."""
     if text.startswith(_MD_FENCE):
@@ -92,17 +104,22 @@ def _md_to_memory(memory_id: str, text: str) -> Memory:
             data = dict(fm) if isinstance(fm, dict) else {}
             data["id"] = memory_id
             data["learning"] = body
-            return Memory.model_validate(data)
+            return data
     # No frontmatter fence: whole text is the learning body.
-    return Memory.model_validate({"id": memory_id, "learning": text})
+    return {"id": memory_id, "learning": text}
 
 
-def _atomic_write_text(path: str, text: str) -> None:
-    """Crash-safe write: temp file + ``os.replace`` (atomic on POSIX)."""
-    tmp = f"{path}.tmp.{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as f:  # NOSONAR(S7493) — sync I/O in async by design
-        f.write(text)
-    os.replace(tmp, path)
+def _cache_admit(path: str, key_before: StatKey) -> StatKey | None:
+    """Stable-read admission: return the post-read stat key iff the file was
+    unchanged during the read, else ``None`` (a mid-read external edit — or a
+    legacy migration write-back, which rewrites the file — must not pin the
+    just-parsed object under a key that no longer matches its bytes). A file
+    removed mid-read (OSError) also yields ``None``."""
+    try:
+        key_after = stat_key(path)
+    except OSError:
+        return None
+    return key_after if key_after == key_before else None
 
 
 def _exact_entry_exists(dir_path: str, entry_name: str) -> bool:
@@ -110,7 +127,7 @@ def _exact_entry_exists(dir_path: str, entry_name: str) -> bool:
     ``entry_name`` — unlike ``os.path.exists``, which matches any case
     variant on a case-insensitive filesystem."""
     try:
-        return entry_name in os.listdir(dir_path)
+        return entry_name in os.listdir(dir_path)  # NOSONAR(S6549) — callers pass store dirs built from validated components
     except (FileNotFoundError, NotADirectoryError):
         return False
 
@@ -118,7 +135,7 @@ def _exact_entry_exists(dir_path: str, entry_name: str) -> bool:
 def _normalize_legacy_memory_rows(
     rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """DEV-1428 legacy dedupe (int/str id duplicates); fails loud on
+    """Legacy dedupe (int/str id duplicates); fails loud on
     divergent content. Used by the one-time ``memories.yaml`` migration."""
     seen: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -150,7 +167,7 @@ def _normalize_legacy_memory_rows(
 
 
 def migrate_memories_layout(base_dir: str) -> None:
-    """DEV-1658: one-time migration of a legacy flat ``memories.yaml`` into
+    """One-time migration of a legacy flat ``memories.yaml`` into
     per-id ``memories/<id>.md`` files, then delete the legacy file.
 
     Fails loud (raises, legacy file preserved) on invalid YAML, a non-list
@@ -219,9 +236,10 @@ def migrate_memories_layout(base_dir: str) -> None:
         id_by_key[rid.casefold()] = rid
     os.makedirs(mem_dir, exist_ok=True)
     for r in normalized:
-        mem = Memory.model_validate(r)
+        mem = Memory.model_validate(stamp_stored(r))
         _atomic_write_text(
-            os.path.join(mem_dir, f"{mem.id}.md"), _memory_to_md(mem),
+            path=os.path.join(mem_dir, f"{mem.id}.md"),
+            text=_memory_to_md(mem),
         )
     # Guard the removal against a concurrent migrator (two workers opening the
     # same fresh base_dir both run this once): the .md writes are atomic and
@@ -241,7 +259,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         self.models_dir = os.path.join(base_dir, "models")
         self.datasources_dir = os.path.join(base_dir, "datasources")
         self._priority_path = os.path.join(base_dir, "priority.yaml")
-        # DEV-1658: memories are one ``.md`` file per id under ``memories/``.
+        # Memories are one ``.md`` file per id under ``memories/``.
         # ``_memories_path`` still names the legacy flat file (used only by the
         # one-time migration below to find it).
         self._memories_path = os.path.join(base_dir, "memories.yaml")
@@ -251,16 +269,25 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         self._memories_lock_path = os.path.join(base_dir, "memories.lock")
         self._mem_lock_fh: Any = None
         self._mem_lock_depth = 0
+        # Opportunistic per-instance load caches keyed by path ->
+        # (stat_key, pristine_object). Best-effort — an external edit is caught
+        # by the os.stat check on the next read; a stale entry is never served
+        # because it is evicted on every write (and on an external delete), and
+        # the miss path verifies the file did not change under it (stable-read).
+        self._model_cache: dict[str, tuple[StatKey, SlayerModel]] = {}
+        self._datasource_cache: dict[
+            str, tuple[StatKey, DatasourceConfig]
+        ] = {}
         os.makedirs(self.models_dir, exist_ok=True)
         os.makedirs(self.datasources_dir, exist_ok=True)
         os.makedirs(self._memories_dir, exist_ok=True)
         # Idempotent — moves any pre-v4 flat files into <data_source>/ subdirs.
         migrate_yaml_layout(base_dir)
-        # DEV-1658: one-time migration of a legacy flat ``memories.yaml`` into
+        # One-time migration of a legacy flat ``memories.yaml`` into
         # per-id ``.md`` files. Fails loud on a corrupt/non-list legacy file
         # (never deletes it); a crash mid-migration re-runs cleanly.
         migrate_memories_layout(base_dir)
-        # Idempotent — rename pre-DEV-1405 sidecar files out of the way.
+        # Idempotent — rename legacy sidecar files out of the way.
         # If a ``.legacy`` companion already exists (user upgraded twice or
         # manually restored), leave both files in place so we never clobber
         # an existing backup.
@@ -273,34 +300,27 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             db_path=os.path.join(base_dir, "embeddings.db"),
         )
 
-    # ---- graph fingerprint -------------------------------------------------
+    # ---- cache keys --------------------------------------------------------
 
-    async def graph_fingerprint(self) -> str:
-        """(file_count, max_mtime) across all YAML files under base_dir.
+    async def cache_identity(self) -> Hashable:
+        return os.path.abspath(self.base_dir)
 
-        Including the file count ensures that deleting a YAML file (which
-        doesn't change the max mtime of the remaining files) still invalidates
-        the graph cache.  OSError propagates to the caller (treated as a
-        forced rebuild by ``slayer.search.graph._get_or_rebuild``).
-        """
-        file_count = 0
-        max_mtime = 0.0
-        for root, _dirs, files in os.walk(self.base_dir):
-            for fname in files:
-                # DEV-1658: memories are ``.md`` files now — count them too so
-                # a memory create/update/delete invalidates the graph cache.
-                if fname.endswith(_YAML_EXTS) or fname.endswith(".md"):
-                    max_mtime = max(
-                        max_mtime,
-                        os.path.getmtime(os.path.join(root, fname)),
-                    )
-                    file_count += 1
-        return f"{file_count}:{max_mtime}"
+    async def graph_fingerprint(self) -> str | None:
+        """Content digest of every YAML and memory ``.md`` file; ``OSError`` propagates (callers force a rebuild)."""
+        return await asyncio.to_thread(tree_fingerprint, self.base_dir, suffixes=(*_YAML_EXTS, ".md"))
 
     # ---- internal helpers --------------------------------------------------
 
     def _model_path(self, data_source: str, name: str) -> str:
+        """A model's YAML path; both components are validated where the path is composed."""
+        _validate_path_component(data_source, kind="datasource name")
+        _validate_path_component(name, kind="model name")
         return os.path.join(self.models_dir, data_source, f"{name}.yaml")
+
+    def _datasource_path(self, name: str) -> str:
+        """A datasource's YAML path; ``name`` is validated where the path is composed."""
+        _validate_path_component(name, kind="datasource name")
+        return os.path.join(self.datasources_dir, f"{name}.yaml")
 
     def _model_entry_exists(self, *, data_source: str, name: str) -> bool:
         """Exact-case existence check for both path components of a model."""
@@ -311,15 +331,59 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             entry_name=f"{name}.yaml",
         )
 
+    async def _load_raw_model_dict(
+        self, *, name: str, data_source: str,
+    ) -> dict | None:
+        """Read the on-disk YAML verbatim (no migration / no
+        validation) for sibling-hop resolution during the legacy-``__``
+        rewrite. Returns ``None`` when the file is absent or not a mapping."""
+        try:
+            path = self._model_path(data_source, name)
+        except ValueError:  # not a storable model name, e.g. a foreign ``orders.v1.yaml``
+            return None
+        if not self._model_entry_exists(data_source=data_source, name=name):
+            return None
+        try:
+            with open(path) as f:  # NOSONAR(S7493) — local read
+                raw = yaml.safe_load(f)
+        except (FileNotFoundError, yaml.YAMLError):
+            return None
+        return raw if isinstance(raw, dict) else None
+
+    async def _write_raw_model_dict(self, *, name: str, data_source: str, data: dict) -> None:
+        path = self._model_path(data_source, name)
+        self._model_cache.pop(path, None)
+        _atomic_write_yaml(path=path, data=data)
+        self._forget_raw(data_source=data_source, name=name)
+
+    async def _write_raw_datasource_dict(self, *, name: str, data: dict) -> None:
+        path = self._datasource_path(name)
+        self._datasource_cache.pop(path, None)
+        _atomic_write_yaml(path=path, data=data)
+
+    async def _raw_memory_dicts(self) -> dict[str, dict]:
+        out: dict[str, dict] = {}
+        for memory_id in self._memory_ids_on_disk():
+            try:
+                with open(self._memory_md_path(memory_id), encoding="utf-8") as f:  # NOSONAR(S7493) — local read
+                    out[memory_id] = _md_to_memory_dict(memory_id, f.read())
+            except (OSError, yaml.YAMLError):
+                continue
+        return out
+
+    async def _write_raw_memory_dict(self, *, memory_id: str, data: dict) -> None:
+        with self._memories_file_lock():
+            _atomic_write_text(path=self._memory_md_path(memory_id), text=_memory_dict_to_md(data))
+
     # ---- model CRUD --------------------------------------------------------
 
     async def _save_model_impl(self, model: SlayerModel) -> None:
         target_dir = os.path.join(self.models_dir, model.data_source)
         os.makedirs(target_dir, exist_ok=True)
         path = os.path.join(target_dir, f"{model.name}.yaml")
-        data = model.model_dump(mode="json", exclude_none=True)
-        with open(path, "w") as f:
-            yaml.dump(data, f, sort_keys=False)
+        data = without_none(model.model_dump(mode="json"))
+        self._model_cache.pop(path, None)  # Evict before the write
+        _atomic_write_yaml(path=path, data=data)
 
     async def _list_all_model_identities(self) -> list[tuple[str, str]]:
         result: list[tuple[str, str]] = []
@@ -345,24 +409,46 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         data_source, name = target
         path = self._model_path(data_source, name)  # NOSONAR(S6549) — name/data_source were sanitized by _resolve_target_or_none above (rejects '..', path separators, NULs); SlayerModel Pydantic validators sanitize the save path
         if not self._model_entry_exists(data_source=data_source, name=name):
+            self._model_cache.pop(path, None)  # Evict on external delete
             return None
         try:
-            with open(path) as f:
-                data = yaml.safe_load(f)
-        except yaml.YAMLError as exc:
-            # e.g. a file truncated mid-write by a full disk.
-            raise ValueError(
-                f"Model {name!r} in datasource {data_source!r}: invalid YAML in "
-                f"{path} — {exc}. Delete the file and re-run `slayer ingest` to "
-                f"recreate it."
-            ) from exc
-        return await self._migrate_and_refine_on_load(
-            name=name, data=data, data_source=data_source,
-        )
+            key_before = stat_key(path)
+        except FileNotFoundError:  # deleted between the existence check and the stat
+            self._model_cache.pop(path, None)
+            return None
+        cached = self._model_cache.get(path)
+        if cached is not None and cached[0] == key_before:
+            return cached[1].model_copy(deep=True)
+        try:
+            with open(path) as f:  # NOSONAR(S2083,S8707,S7493) — path from _model_path, which validates both components; sync I/O by design
+                text = f.read()
+        except FileNotFoundError:  # deleted between the stat and the open
+            self._model_cache.pop(path, None)
+            return None
+        with stored_document_boundary(kind="model", name=name, data_source=data_source):
+            try:
+                data = yaml.safe_load(text)
+            except yaml.YAMLError as exc:
+                # e.g. a file truncated mid-write by a full disk.
+                raise ValueError(
+                    f"invalid YAML in {path} — {exc}. Delete the file and re-run "
+                    f"`slayer ingest` to recreate it."
+                ) from exc
+            model = await self._migrate_and_refine_on_load(
+                name=name, data=data, data_source=data_source,
+            )
+        # Admit only a stable read. A legacy migration write-back rewrites the
+        # file, so its first load is (correctly) not cached — the next load
+        # reads the now-current file and caches it normally.
+        admit = _cache_admit(path=path, key_before=key_before)
+        if admit is not None:
+            self._model_cache[path] = (admit, model)
+        return model.model_copy(deep=True)
 
     async def _delete_model_row(
         self, *, data_source: str, name: str,
     ) -> bool:
+        self._model_cache.pop(self._model_path(data_source, name), None)
         # Exact match — os.remove would otherwise hit a case-variant sibling.
         if not self._model_entry_exists(data_source=data_source, name=name):
             return False
@@ -380,6 +466,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         distinct_count: int | None,
     ) -> None:
         path = self._model_path(data_source, model_name)
+        self._model_cache.pop(path, None)  # Evict before the write
         if not self._model_entry_exists(data_source=data_source, name=model_name):
             raise ValueError(
                 f"update_column_sampled: model {model_name!r} in datasource "
@@ -402,31 +489,49 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
                 f"update_column_sampled: column {column_name!r} not found "
                 f"on model {model_name!r} in datasource {data_source!r}."
             )
-        with open(path, "w") as f:  # NOSONAR(S7493)
-            yaml.dump(data, f, sort_keys=False)
+        _atomic_write_yaml(path=path, data=data)
+        self._forget_raw(data_source=data_source, name=model_name)
 
     # ---- datasource CRUD ---------------------------------------------------
 
-    async def save_datasource(self, datasource: DatasourceConfig) -> None:
+    async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
         await self.check_datasource_id_collision(datasource.name)
-        path = os.path.join(self.datasources_dir, f"{datasource.name}.yaml")
-        data = datasource.model_dump(mode="json", exclude_none=True)
-        with open(path, "w") as f:
-            yaml.dump(data, f, sort_keys=False)
+        path = self._datasource_path(datasource.name)
+        data = without_none(datasource.model_dump(mode="json"))
+        self._datasource_cache.pop(path, None)  # Evict before the write
+        _atomic_write_yaml(path=path, data=data)
 
     async def get_datasource(self, name: str) -> DatasourceConfig | None:
-        # DEV-1405: sanitize before composing the filesystem path.
-        _validate_path_component(name, kind="datasource name")
-        path = os.path.join(self.datasources_dir, f"{name}.yaml")
+        path = self._datasource_path(name)
         if not _exact_entry_exists(
             dir_path=self.datasources_dir, entry_name=f"{name}.yaml",
         ):
+            self._datasource_cache.pop(path, None)  # Evict on external delete
             return None
         try:
-            with open(path) as f:
-                data = yaml.safe_load(f)
-            ds = DatasourceConfig.model_validate(data)
+            key = stat_key(path)
+        except FileNotFoundError:  # deleted between the existence check and the stat
+            self._datasource_cache.pop(path, None)
+            return None
+        cached = self._datasource_cache.get(path)
+        try:
+            # Cache the UNRESOLVED config so env vars stay live and each
+            # handout is a fresh object; resolve_env_vars() stays inside this try
+            # so a ValidationError from its reconstruction is still wrapped.
+            if cached is not None and cached[0] == key:
+                ds = cached[1]
+            else:
+                with open(path) as f:  # NOSONAR(S2083,S8707,S7493) — path from _datasource_path, which validates the name; sync I/O by design
+                    data = yaml.safe_load(f)
+                data = await self._with_library_granularities_renamed(name=name, data=data)
+                ds = DatasourceConfig.model_validate(data)
+                admit = _cache_admit(path=path, key_before=key)  # skip if changed mid-read
+                if admit is not None:
+                    self._datasource_cache[path] = (admit, ds)
             return ds.resolve_env_vars()
+        except FileNotFoundError:  # deleted between the stat and the open
+            self._datasource_cache.pop(path, None)
+            return None
         except yaml.YAMLError as exc:
             raise ValueError(
                 f"Datasource '{name}': invalid YAML in {path} — {exc}"
@@ -444,11 +549,13 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         return result
 
     async def _delete_datasource_row(self, name: str) -> bool:
+        path = self._datasource_path(name)
+        self._datasource_cache.pop(path, None)  # Evict before the delete
         if not _exact_entry_exists(
             dir_path=self.datasources_dir, entry_name=f"{name}.yaml",
         ):
             return False
-        os.remove(os.path.join(self.datasources_dir, f"{name}.yaml"))
+        os.remove(path)
         return True
 
     # ---- datasource priority -----------------------------------------------
@@ -464,27 +571,16 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         return [str(p) for p in priority]
 
     async def _set_datasource_priority_raw(self, priority: list[str]) -> None:
-        with open(self._priority_path, "w") as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
-            yaml.dump({"priority": list(priority)}, f, sort_keys=False)
+        _atomic_write_yaml(
+            path=self._priority_path,
+            data={"priority": list(priority)},
+        )
 
-    # ---- memories (DEV-1357 v2) -------------------------------------------
-
-    def _read_yaml_list(self, path: str) -> list[dict[str, Any]]:
-        if not os.path.exists(path):
-            return []
-        with open(path) as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
-            data = yaml.safe_load(f) or []
-        if not isinstance(data, list):
-            return []
-        return [d for d in data if isinstance(d, dict)]
-
-    def _write_yaml_list(self, path: str, rows: list[dict[str, Any]]) -> None:
-        with open(path, "w") as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
-            yaml.dump(rows, f, sort_keys=False)
+    # ---- memories -------------------------------------------
 
     @staticmethod
     def _is_int_shaped_id(value: Any) -> bool:
-        """DEV-1428: pure-digit, no-leading-zero id form. ``"0"`` counts
+        """Pure-digit, no-leading-zero id form. ``"0"`` counts
         but ``"001"`` and ``"42abc"`` do not."""
         if not isinstance(value, str) or not value:
             return False
@@ -514,7 +610,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         ]
 
     async def _next_memory_seq(self) -> str:
-        """DEV-1658: next int-shaped id from the ``memories/`` dir stems.
+        """Next int-shaped id from the ``memories/`` dir stems.
         Non-int stems (``help.intro``, ``kb.policy.42``, ``001``) are ignored.
         Called under the memories lock via the ``save_memory`` override, so
         allocation + write is atomic.
@@ -528,19 +624,19 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
     def _normalize_legacy_rows(
         self, rows: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """DEV-1428 legacy dedupe — now used only by the one-time
+        """Legacy dedupe — now used only by the one-time
         ``memories.yaml`` → per-file migration. Delegates to the module-level
         implementation."""
         return _normalize_legacy_memory_rows(rows)
 
     @staticmethod
     def _rows_content_equal(a: dict[str, Any], b: dict[str, Any]) -> bool:
-        # DEV-1428: "content" excludes ``created_at`` — two legacy rows for
+        # "content" excludes ``created_at`` — two legacy rows for
         # the same logical memory may carry different timestamps (e.g. one
         # written on int-id v1, then re-saved as str on v2). The plan's
         # "fail loud if content differs" rule covers the actually-lossy
         # case (different learning / entities / attached query).
-        # DEV-1549: ``description`` is part of the persisted content too.
+        # ``description`` is part of the persisted content too.
         keys = ("learning", "description", "entities", "query")
         return all(a.get(k) == b.get(k) for k in keys)
 
@@ -553,7 +649,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         id: str | None = None,  # noqa: A002
         description: str | None = None,
     ) -> Memory:
-        # DEV-1658: hold the reentrant memories lock across the whole
+        # Hold the reentrant memories lock across the whole
         # allocate-and-write transaction. base.save_memory does
         # ``_next_memory_seq()`` then ``_save_memory_row()`` as two steps;
         # locking only the seq call would let two concurrent id=None saves
@@ -570,10 +666,14 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         with self._memories_file_lock():
             os.makedirs(self._memories_dir, exist_ok=True)
             _atomic_write_text(
-                self._memory_md_path(memory.id), _memory_to_md(memory),
+                path=self._memory_md_path(memory.id),
+                text=_memory_to_md(memory),
             )
 
     async def _get_memory_row(self, memory_id: str) -> Memory | None:
+        return await self._read_memory_file(memory_id)
+
+    async def _read_memory_file(self, memory_id: str) -> Memory | None:
         # Lock-free read: writes are atomic (temp + os.replace), so a reader
         # always sees a complete old-or-new file. A concurrent delete between
         # the check and the open surfaces as FileNotFoundError → treat as
@@ -587,29 +687,34 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             return None
         try:
             with open(path, encoding="utf-8") as f:  # NOSONAR(S7493) — sync I/O in async by design
-                return _md_to_memory(memory_id, f.read())
+                text = f.read()
         except FileNotFoundError:
             return None
+        return await self._memory_from_stored(memory_id=memory_id, decode=lambda: _md_to_memory_dict(memory_id, text))
+
+    async def _memory_ids(self) -> list[str]:
+        return self._memory_ids_on_disk()
 
     async def _list_memories_rows(
         self, *, entities: list[str] | None
-    ) -> list[Memory]:
+    ) -> Loaded[Memory]:
         memories: list[Memory] = []
+        errors: list[StoredDocumentLoadError] = []
         for mid in self._memory_ids_on_disk():
-            path = self._memory_md_path(mid)
             try:
-                with open(path, encoding="utf-8") as f:  # NOSONAR(S7493) — sync I/O in async by design
-                    memories.append(_md_to_memory(mid, f.read()))
-            except FileNotFoundError:
-                # Deleted between listdir and open (lock-free read) — skip.
+                memory = await self._read_memory_file(mid)
+            except StoredDocumentLoadError as exc:
+                errors.append(exc)
                 continue
+            if memory is not None:  # None: deleted between listdir and open (lock-free read)
+                memories.append(memory)
         # Deterministic order for the tantivy num_threads=1 doc-id tiebreak
         # and the search "newest" fallback (which re-sorts by recency anyway).
         memories.sort(key=lambda m: (m.created_at, m.id))
         if entities is None:
-            return memories
+            return memories, errors
         wanted = set(entities)
-        return [m for m in memories if wanted & set(m.entities)]
+        return [m for m in memories if wanted & set(m.entities)], errors
 
     async def _delete_memory_row(self, memory_id: str) -> bool:
         with self._memories_file_lock():
@@ -623,7 +728,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     @contextlib.contextmanager
     def _memories_file_lock(self) -> Iterator[None]:
-        """DEV-1658: reentrant advisory lock over ALL memory mutations
+        """Reentrant advisory lock over ALL memory mutations
         (allocate+save, save, delete, cascade-strip). A single ``flock`` on
         ``<base_dir>/memories.lock`` is held on one persistent fd; nested
         acquisitions (e.g. delete → cascade → per-row save) bump a depth

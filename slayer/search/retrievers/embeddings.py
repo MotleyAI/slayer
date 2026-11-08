@@ -192,10 +192,9 @@ class EmbeddingRetriever(Retriever):
         and entity rankings from a single ``fetch_corpus`` +
         ``embed_question`` + dim-check (Codex Finding 1).
 
-        Skipped (with a warning) when:
+        Skipped when ``question`` is blank or the ``advanced_search`` extra is
+        unavailable, and skipped with a warning when:
 
-        * ``question`` is blank,
-        * the ``advanced_search`` extra is not installed,
         * the active model has no embedding rows in storage,
         * the query embedding call fails,
         * dim mismatch between query vec and corpus.
@@ -203,11 +202,14 @@ class EmbeddingRetriever(Retriever):
         if corpus is None or not question or not question.strip():
             return RetrievalResult()
         if not embedding_client.is_available():
-            return RetrievalResult(warnings=[
+            # Deployment configuration, not something the caller can act on:
+            # log it for the operator rather than returning it as a warning.
+            _log.warning(
                 "embedding channel skipped: `advanced_search` extra not "
                 "installed or no API key configured for the active "
-                "embedding model.",
-            ])
+                "embedding model."
+            )
+            return RetrievalResult()
 
         rows = await self.fetch_corpus()
         if datasource is not None:
@@ -230,10 +232,9 @@ class EmbeddingRetriever(Retriever):
             ])
 
         # Inline imports: ``numpy`` and ``slayer.embeddings.ranker``
-        # require the optional ``advanced_search`` extra. When the extra
-        # is not installed, we fall through to a soft warning instead of
-        # raising at module import time so the rest of slayer keeps
-        # working without the extra.
+        # require the optional ``advanced_search`` extra. Importing here
+        # rather than at module scope keeps the rest of slayer working
+        # without the extra.
         try:
             import numpy as np
             from slayer.embeddings.ranker import (
@@ -242,10 +243,13 @@ class EmbeddingRetriever(Retriever):
                 top_k_cosine,
             )
         except ImportError:
-            return RetrievalResult(warnings=[
+            # Same packaging gap as the is_available() check above, reached by
+            # a different route: an operator concern, not a caller's.
+            _log.warning(
                 "embedding channel skipped: numpy not installed "
-                "(reinstall with the `advanced_search` extra).",
-            ])
+                "(reinstall with the `advanced_search` extra)."
+            )
+            return RetrievalResult()
 
         query_vec = await self.embed_question(question or "")
         if query_vec is None:

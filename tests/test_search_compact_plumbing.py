@@ -9,8 +9,6 @@ import asyncio
 import inspect
 import json
 import shutil
-import subprocess
-import sys
 import tempfile
 from types import SimpleNamespace
 from typing import Any
@@ -20,6 +18,7 @@ import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
 
+from tests._cli_inprocess import run_cli_in_process
 from tests.search_helpers import seed_warehouse_models
 
 from slayer.api.server import SearchRequest, create_app
@@ -207,19 +206,17 @@ def test_cli_search_verbose_flag_opts_out_of_compact(
     assert any("full body of memory" in h["text"] for h in mem_hits)
 
 
-def test_cli_argparse_subprocess_search_verbose_flag(
+def test_cli_argparse_search_verbose_flag(
     yaml_storage: YAMLStorage,
 ) -> None:
     """End-to-end smoke that the argparse spec accepts ``--verbose``."""
-    cmd = [
-        sys.executable, "-m", "slayer",
+    result = run_cli_in_process([
         "search",
         "--storage", yaml_storage.base_dir,
         "--entity", "warehouse.orders.amount_paid",
         "--format", "json",
         "--verbose",
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    ])
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     mem_hits = [h for h in payload["results"] if h["kind"] == "memory"]

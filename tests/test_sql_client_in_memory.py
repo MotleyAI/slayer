@@ -10,7 +10,7 @@ exist yet.
 
 import pytest
 
-from slayer.sql.client import _is_in_memory_sqlite
+from slayer.sql.engine_factory import _is_in_memory_sqlite
 
 
 @pytest.mark.parametrize(

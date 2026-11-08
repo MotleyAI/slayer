@@ -3,12 +3,17 @@
 Run with: pytest tests/integration/test_integration.py -m integration
 """
 
+import math
+import math as _math
+import os
 import re
-import sqlite3
+import statistics
+import tempfile
 
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.errors import AmbiguousJoinPathError, UnresolvableDimensionJoinError
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
@@ -25,8 +30,14 @@ from slayer.core.query import (
     SlayerQuery,
     TimeDimension,
 )
+from slayer.engine import ingestion
+from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.engine.profiling import refresh_all_table_backed_sampled
+from slayer.search.service import handle_edit_refresh
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
-from slayer.sql.client import _sync_engines
+from slayer.search.service import SearchService
+from slayer.sql import engine_factory
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 pytestmark = pytest.mark.integration
@@ -38,50 +49,48 @@ async def integration_env(tmp_path):
 
     # -- SQLite database --
     db_path = tmp_path / "test.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
 
-    cur.execute(
-        """
-        CREATE TABLE customers (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            region TEXT NOT NULL
+        cur.execute(
+            """
+            CREATE TABLE customers (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                region TEXT NOT NULL
+            )
+            """
         )
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            status TEXT NOT NULL,
-            amount REAL NOT NULL,
-            customer_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (customer_id) REFERENCES customers(id)
+        cur.execute(
+            """
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                status TEXT NOT NULL,
+                amount REAL NOT NULL,
+                customer_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (customer_id) REFERENCES customers(id)
+            )
+            """
         )
-        """
-    )
 
-    customers = [
-        (1, "Alice", "US"),
-        (2, "Bob", "EU"),
-        (3, "Charlie", "US"),
-    ]
-    cur.executemany("INSERT INTO customers VALUES (?, ?, ?)", customers)
+        customers = [
+            (1, "Alice", "US"),
+            (2, "Bob", "EU"),
+            (3, "Charlie", "US"),
+        ]
+        cur.executemany("INSERT INTO customers VALUES (?, ?, ?)", customers)
 
-    orders = [
-        (1, "completed", 100.0, 1, "2025-01-15"),
-        (2, "completed", 200.0, 2, "2025-01-20"),
-        (3, "pending", 50.0, 1, "2025-02-10"),
-        (4, "cancelled", 75.0, 3, "2025-02-15"),
-        (5, "completed", 300.0, 2, "2025-03-05"),
-        (6, "pending", 25.0, 3, "2025-03-20"),
-    ]
-    cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?)", orders)
+        orders = [
+            (1, "completed", 100.0, 1, "2025-01-15"),
+            (2, "completed", 200.0, 2, "2025-01-20"),
+            (3, "pending", 50.0, 1, "2025-02-10"),
+            (4, "cancelled", 75.0, 3, "2025-02-15"),
+            (5, "completed", 300.0, 2, "2025-03-05"),
+            (6, "pending", 25.0, 3, "2025-03-20"),
+        ]
+        cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?)", orders)
 
-    conn.commit()
-    conn.close()
 
     # -- YAML storage --
     storage_dir = tmp_path / "storage"
@@ -162,6 +171,54 @@ async def test_sum_measure(integration_env):
     assert response.data[0]["orders.total_amount_sum"] == pytest.approx(750.0)
 
 
+async def test_functional_aggregation_parity(integration_env):
+    """sum(total_amount) returns the same rows as total_amount:sum."""
+    engine = integration_env
+
+    colon = await engine.execute(SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="total_amount:sum")],
+    ))
+    func = await engine.execute(SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="sum(total_amount)")],
+    ))
+
+    assert func.data[0]["orders.total_amount_sum"] == pytest.approx(750.0)
+    assert func.data == colon.data
+    assert list(func.columns) == list(colon.columns)
+
+
+async def test_functional_star_count_parity(integration_env):
+    """count(*) returns the same rows as *:count."""
+    engine = integration_env
+
+    colon = await engine.execute(SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="*:count")],
+    ))
+    func = await engine.execute(SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="count(*)")],
+    ))
+
+    assert func.data[0]["orders._count"] == 6
+    assert func.data == colon.data
+
+
+async def test_expression_aggregation_executes(integration_env):
+    """sum(amount + amount) aggregates the row-level expression."""
+    engine = integration_env
+
+    response = await engine.execute(SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="sum(amount + amount)")],
+    ))
+
+    assert response.row_count == 1
+    assert response.data[0]["orders.amount_amount_sum"] == pytest.approx(1500.0)
+
+
 async def test_dimensions_groupby(integration_env):
     """Count orders grouped by status."""
     engine = integration_env
@@ -209,6 +266,45 @@ async def test_filter_gt(integration_env):
     assert response.row_count == 1
     # Orders with amount > 50: 100, 200, 75, 300 = 4
     assert response.data[0]["orders._count"] == 4
+
+
+async def test_filter_in_tuple(integration_env):
+    """``IN`` filter with literal-tuple RHS.
+
+    Smoke test for the typed-pipeline ``InKey`` render path against a
+    real SQLite engine. Orders with status in ('completed', 'pending')
+    matches 5 of 6 rows (everything except the single cancelled one).
+    """
+    engine = integration_env
+
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="*:count")],
+        filters=["status in ('completed', 'pending')"],
+    )
+    response = await engine.execute(query)
+
+    assert response.row_count == 1
+    assert response.data[0]["orders._count"] == 5
+
+
+async def test_filter_not_in_tuple(integration_env):
+    """``NOT IN`` filter with literal-tuple RHS.
+
+    Inverse smoke test: status NOT IN ('cancelled') matches the same 5
+    rows.
+    """
+    engine = integration_env
+
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="*:count")],
+        filters=["status not in ('cancelled',)"],
+    )
+    response = await engine.execute(query)
+
+    assert response.row_count == 1
+    assert response.data[0]["orders._count"] == 5
 
 
 async def test_order_by(integration_env):
@@ -276,7 +372,7 @@ async def test_cumsum_change_identity(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -307,7 +403,7 @@ async def test_nested_cumsum_of_cumsum(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -334,7 +430,7 @@ async def test_consecutive_periods_counts_trailing_true_run(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -362,7 +458,7 @@ async def test_consecutive_periods_with_non_boolean_argument(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -387,7 +483,7 @@ async def test_consecutive_periods_partitions_by_dimension(integration_env):
         source_model="orders",
         dimensions=[ColumnRef(name="status")],
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -405,7 +501,8 @@ async def test_consecutive_periods_partitions_by_dimension(integration_env):
     for row in response.data:
         by_status.setdefault(row["orders.status"], []).append(row["orders.status_run"])
 
-    assert by_status["completed"] == [1, 2]
+    # completed: 2025-01 and 2025-03; the empty February breaks the run.
+    assert by_status["completed"] == [1, 1]
     assert by_status["pending"] == [1, 2]
     assert by_status["cancelled"] == [1]
 
@@ -417,7 +514,7 @@ async def test_consecutive_periods_comparison_is_selectable(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -437,7 +534,7 @@ async def test_consecutive_periods_comparison_is_filterable(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="total_amount:sum")],
@@ -483,7 +580,7 @@ async def test_time_shift_default_granularity_calendar(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -522,7 +619,7 @@ async def test_time_shift_calendar_based(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -545,7 +642,7 @@ async def test_time_shift_calendar_based(integration_env):
 
 
 async def test_multiple_time_shifts_in_one_query(integration_env):
-    """DEV-1692: two arithmetic-wrapped time_shifts in one query.
+    """Two arithmetic-wrapped time_shifts in one query.
 
     Used to fail outright with a duplicate-CTE error; the offsets are kept
     distinct here (-1 vs -2) so a regression that re-collapses them onto one
@@ -556,7 +653,7 @@ async def test_multiple_time_shifts_in_one_query(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -598,7 +695,7 @@ async def test_time_shift_with_date_range(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2025-03-01", "2025-03-31"],
         )],
@@ -625,7 +722,7 @@ async def test_change_with_date_range(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2025-03-01", "2025-03-31"],
         )],
@@ -649,7 +746,7 @@ async def test_change_pct_with_date_range(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2025-03-01", "2025-03-31"],
         )],
@@ -674,7 +771,7 @@ async def test_multiple_date_range_shifts(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2025-02-01", "2025-02-28"],
         )],
@@ -703,7 +800,7 @@ async def test_forward_row_shift_with_date_range(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2025-02-01", "2025-02-28"],
         )],
@@ -731,7 +828,7 @@ async def test_post_filter_on_change(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -763,7 +860,7 @@ async def test_post_filter_with_base_filter(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -790,7 +887,7 @@ async def test_inline_transform_filter(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="total_amount:sum")],
@@ -814,7 +911,7 @@ async def test_inline_last_change_filter(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="total_amount:sum")],
@@ -830,7 +927,7 @@ async def test_inline_last_change_filter(integration_env):
     query2 = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="total_amount:sum")],
@@ -852,7 +949,7 @@ async def test_arithmetic_transform_filter(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="total_amount:sum")],
@@ -877,7 +974,7 @@ async def test_transform_on_filter_rhs(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="total_amount:sum")],
@@ -901,7 +998,7 @@ async def test_last_measure_type(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -931,7 +1028,7 @@ async def test_last_function(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -991,22 +1088,25 @@ async def test_having_filter_with_sum(integration_env):
     assert response.data[0]["orders.total_amount_sum"] == pytest.approx(600.0)
 
 
-async def test_having_with_non_groupby_dimension_raises(integration_env):
-    """HAVING filter referencing a dimension not in GROUP BY should error early."""
+async def test_filter_mixing_measure_and_row_conjuncts_splits(integration_env):
+    """A top-level AND splits: the row conjunct masks before aggregation, the
+    measure conjunct prunes result cells."""
     engine = integration_env
 
-    # Filter mixes measure (count) and dimension (status), but status is not in dimensions
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="*:count")],
         filters=["_count > 1 and status == 'completed'"],
     )
-    with pytest.raises(ValueError, match="not in the query's dimensions"):
-        await engine.execute(query)
+    response = await engine.execute(query)
+
+    # Completed orders: Jan x2, Mar x1 — only January's count survives > 1.
+    assert response.row_count == 1
+    assert response.data[0]["orders._count"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -1020,24 +1120,22 @@ async def joined_time_env(tmp_path):
     Tests that type=last resolves through join paths correctly.
     """
     db_path = tmp_path / "test.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("CREATE TABLE stores (id INTEGER PRIMARY KEY, name TEXT, opened_at TEXT)")
-    conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, store_id INTEGER, amount REAL, created_at TEXT)")
-    conn.execute("CREATE TABLE order_items (id INTEGER PRIMARY KEY, order_id INTEGER, qty INTEGER)")
-    conn.executemany("INSERT INTO stores VALUES (?, ?, ?)", [
-        (1, "Downtown", "2020-01-01"), (2, "Uptown", "2021-06-15"),
-    ])
-    conn.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", [
-        (1, 1, 100.0, "2025-01-15"), (2, 1, 200.0, "2025-01-20"),
-        (3, 2, 50.0, "2025-02-10"), (4, 2, 75.0, "2025-02-15"),
-        (5, 1, 300.0, "2025-03-05"), (6, 2, 25.0, "2025-03-20"),
-    ])
-    conn.executemany("INSERT INTO order_items VALUES (?, ?, ?)", [
-        (1, 1, 2), (2, 2, 3), (3, 3, 1),
-        (4, 4, 5), (5, 5, 4), (6, 6, 1),
-    ])
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        conn.execute("CREATE TABLE stores (id INTEGER PRIMARY KEY, name TEXT, opened_at TEXT)")
+        conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, store_id INTEGER, amount REAL, created_at TEXT)")
+        conn.execute("CREATE TABLE order_items (id INTEGER PRIMARY KEY, order_id INTEGER, qty INTEGER)")
+        conn.executemany("INSERT INTO stores VALUES (?, ?, ?)", [
+            (1, "Downtown", "2020-01-01"), (2, "Uptown", "2021-06-15"),
+        ])
+        conn.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", [
+            (1, 1, 100.0, "2025-01-15"), (2, 1, 200.0, "2025-01-20"),
+            (3, 2, 50.0, "2025-02-10"), (4, 2, 75.0, "2025-02-15"),
+            (5, 1, 300.0, "2025-03-05"), (6, 2, 25.0, "2025-03-20"),
+        ])
+        conn.executemany("INSERT INTO order_items VALUES (?, ?, ?)", [
+            (1, 1, 2), (2, 2, 3), (3, 3, 1),
+            (4, 4, 5), (5, 5, 4), (6, 6, 1),
+        ])
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -1093,7 +1191,7 @@ async def test_last_with_joined_time_dimension(joined_time_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="stores.opened_at"),
+            dimension="stores.opened_at",
             granularity=TimeGranularity.YEAR,
         )],
         measures=[
@@ -1122,7 +1220,7 @@ async def test_last_with_multihop_joined_time_dimension(joined_time_env):
     query = SlayerQuery(
         source_model="order_items",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="orders.created_at"),
+            dimension="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -1151,19 +1249,17 @@ async def test_last_with_multihop_joined_time_dimension(joined_time_env):
 async def cross_model_env(tmp_path):
     """SQLite env with orders + customers models and an explicit join."""
     db_path = tmp_path / "test.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT, score REAL)")
-    conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL, created_at TEXT)")
-    conn.executemany("INSERT INTO customers VALUES (?, ?, ?)", [
-        (1, "Alice", 90.0), (2, "Bob", 60.0), (3, "Charlie", 80.0),
-    ])
-    conn.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", [
-        (1, 1, 100.0, "2025-01-15"), (2, 1, 200.0, "2025-01-20"),
-        (3, 2, 50.0, "2025-02-10"), (4, 2, 75.0, "2025-02-15"),
-        (5, 3, 300.0, "2025-03-05"), (6, 1, 25.0, "2025-03-20"),
-    ])
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        conn.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT, score REAL)")
+        conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL, created_at TEXT)")
+        conn.executemany("INSERT INTO customers VALUES (?, ?, ?)", [
+            (1, "Alice", 90.0), (2, "Bob", 60.0), (3, "Charlie", 80.0),
+        ])
+        conn.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", [
+            (1, 1, 100.0, "2025-01-15"), (2, 1, 200.0, "2025-01-20"),
+            (3, 2, 50.0, "2025-02-10"), (4, 2, 75.0, "2025-02-15"),
+            (5, 3, 300.0, "2025-03-05"), (6, 1, 25.0, "2025-03-20"),
+        ])
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -1203,7 +1299,7 @@ async def test_cross_model_measure_monthly(cross_model_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            dimension="created_at", granularity=TimeGranularity.MONTH,
         )],
         measures=[
             ModelMeasure(formula="*:count"),
@@ -1224,14 +1320,15 @@ async def test_cross_model_measure_monthly(cross_model_env):
 
 
 async def test_cross_model_measure_no_join_raises(cross_model_env):
-    """Referencing a model with no join should raise."""
+    """An unreachable cross-model measure target is route-aware-rejected:
+    ``UnresolvableDimensionJoinError`` (a ``ValueError``) with no route to target."""
     engine = cross_model_env
 
     query = SlayerQuery(
         source_model="orders",
         measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="nonexistent.some_measure:sum")],
     )
-    with pytest.raises(ValueError, match="has no join to"):
+    with pytest.raises(UnresolvableDimensionJoinError, match="no route to target"):
         await engine.execute(query)
 
 
@@ -1245,36 +1342,32 @@ async def test_cross_model_measure_with_target_join_filters(cross_model_env):
     would be stripped from the cross-model CTE, producing wrong aggregates.
     """
     engine = cross_model_env
-    import os
-    import tempfile
     tmp = tempfile.mkdtemp()
     db_path = f"{tmp}/test.db"
-    conn = sqlite3.connect(db_path)
-    conn.execute("CREATE TABLE policy (policy_identifier INTEGER PRIMARY KEY, policy_number TEXT)")
-    conn.execute("CREATE TABLE policy_amount (policy_amount_identifier INTEGER PRIMARY KEY, policy_identifier INTEGER, policy_amount REAL)")
-    conn.execute("CREATE TABLE premium (policy_amount_identifier INTEGER PRIMARY KEY)")
-    conn.execute("CREATE TABLE agreement_party_role (agreement_identifier INTEGER, party_role_code TEXT)")
+    with transaction(db_path) as conn:
+        conn.execute("CREATE TABLE policy (policy_identifier INTEGER PRIMARY KEY, policy_number TEXT)")
+        conn.execute("CREATE TABLE policy_amount (policy_amount_identifier INTEGER PRIMARY KEY, policy_identifier INTEGER, policy_amount REAL)")
+        conn.execute("CREATE TABLE premium (policy_amount_identifier INTEGER PRIMARY KEY)")
+        conn.execute("CREATE TABLE agreement_party_role (agreement_identifier INTEGER, party_role_code TEXT)")
 
-    # Policy 1: 2 amounts (100, 200), both have premium rows, PH role
-    # Policy 2: 2 amounts (300, 400), only 300 has a premium row, PH role
-    # Policy 3: 1 amount (500), has premium, but AG role (not PH)
-    conn.executemany("INSERT INTO policy VALUES (?, ?)", [
-        (1, "POL-001"), (2, "POL-002"), (3, "POL-003"),
-    ])
-    conn.executemany("INSERT INTO policy_amount VALUES (?, ?, ?)", [
-        (10, 1, 100.0), (11, 1, 200.0),
-        (20, 2, 300.0), (21, 2, 400.0),
-        (30, 3, 500.0),
-    ])
-    # Premium rows: existence = is a premium. Amount 21 has no premium row.
-    conn.executemany("INSERT INTO premium VALUES (?)", [
-        (10,), (11,), (20,), (30,),
-    ])
-    conn.executemany("INSERT INTO agreement_party_role VALUES (?, ?)", [
-        (1, "PH"), (2, "PH"), (3, "AG"),
-    ])
-    conn.commit()
-    conn.close()
+        # Policy 1: 2 amounts (100, 200), both have premium rows, PH role
+        # Policy 2: 2 amounts (300, 400), only 300 has a premium row, PH role
+        # Policy 3: 1 amount (500), has premium, but AG role (not PH)
+        conn.executemany("INSERT INTO policy VALUES (?, ?)", [
+            (1, "POL-001"), (2, "POL-002"), (3, "POL-003"),
+        ])
+        conn.executemany("INSERT INTO policy_amount VALUES (?, ?, ?)", [
+            (10, 1, 100.0), (11, 1, 200.0),
+            (20, 2, 300.0), (21, 2, 400.0),
+            (30, 3, 500.0),
+        ])
+        # Premium rows: existence = is a premium. Amount 21 has no premium row.
+        conn.executemany("INSERT INTO premium VALUES (?)", [
+            (10,), (11,), (20,), (30,),
+        ])
+        conn.executemany("INSERT INTO agreement_party_role VALUES (?, ?)", [
+            (1, "PH"), (2, "PH"), (3, "AG"),
+        ])
 
     storage_dir = f"{tmp}/storage"
     os.makedirs(storage_dir)
@@ -1297,10 +1390,10 @@ async def test_cross_model_measure_with_target_join_filters(cross_model_env):
         name="policy_amount", sql_table="policy_amount", data_source="db",
         columns=[
             Column(name="policy_amount_identifier", type=DataType.DOUBLE, primary_key=True),
+            Column(name="policy_identifier", type=DataType.DOUBLE),
 Column(name="total_policy_amount", sql="policy_amount", type=DataType.DOUBLE)
         ],
         joins=[
-            ModelJoin(target_model="policy", join_pairs=[["policy_identifier", "policy_identifier"]], join_type="inner"),
             ModelJoin(target_model="premium", join_pairs=[["policy_amount_identifier", "policy_amount_identifier"]], join_type="inner"),
             ModelJoin(target_model="agreement_party_role", join_pairs=[["policy_identifier", "agreement_identifier"]], join_type="inner"),
         ],
@@ -1355,7 +1448,7 @@ async def test_transform_on_cross_model(cross_model_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            dimension="created_at", granularity=TimeGranularity.MONTH,
         )],
         measures=[
             ModelMeasure(formula="customers.avg_score:avg"),
@@ -1377,7 +1470,7 @@ async def test_transform_on_cross_model(cross_model_env):
 # Query as model (multistage queries)
 # ---------------------------------------------------------------------------
 
-async def test_query_as_model_count(integration_env):
+async def test_query_backed_model_count(integration_env):
     """A named query can be used as the model for another query via list."""
     engine = integration_env
 
@@ -1386,7 +1479,7 @@ async def test_query_as_model_count(integration_env):
         name="monthly",
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            dimension="created_at", granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total_amount:sum")],
     )
@@ -1399,7 +1492,7 @@ async def test_query_as_model_count(integration_env):
     assert response.data[0]["monthly._count"] == 3
 
 
-async def test_query_as_model_aggregate(integration_env):
+async def test_query_backed_model_aggregate(integration_env):
     """Outer query can aggregate over inner query's computed values."""
     engine = integration_env
 
@@ -1407,7 +1500,7 @@ async def test_query_as_model_aggregate(integration_env):
         name="monthly",
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            dimension="created_at", granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="total_amount:sum")],
     )
@@ -1427,7 +1520,7 @@ async def test_create_model_from_query(integration_env):
     source_query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            dimension="created_at", granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total_amount:sum")],
     )
@@ -1470,14 +1563,13 @@ async def test_query_list_with_joins(cross_model_env):
     # Main query: monthly orders joined to customer_scores
     # In the virtual model, inner measures become dimensions with auto-generated
     # SUM/AVG measures. Use avg_score_avg to re-average the inner avg_score.
-    from slayer.core.query import ModelExtension
     main = SlayerQuery(
-        source_model=ModelExtension(
-            source_name="orders",
-            joins=[{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}],
-        ),
+        source_model=ModelExtension.model_validate({
+            "source_name": "orders",
+            "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}],
+        }),
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            dimension="created_at", granularity=TimeGranularity.MONTH,
         )],
         measures=[
             ModelMeasure(formula="*:count"),
@@ -1499,18 +1591,16 @@ async def test_query_list_with_joins(cross_model_env):
 async def test_sibling_stage_joins_dag(cross_model_env):
     """3-stage DAG: a non-final named stage joins a prior named stage.
 
-    Regression for DEV-1340. ``kpis`` aggregates per customer; ``tagged``
+    ``kpis`` aggregates per customer; ``tagged``
     is a non-final named stage whose source is ``customers`` extended with
     a join back to ``kpis`` and pulls the kpis sum in as a join-traversed
     dimension; the final stage re-aggregates ``tagged`` across the
     population.
 
     Pre-fix this raises ``ValueError: Model 'kpis' not found`` at
-    enrichment time because ``_query_as_model`` dropped the named_queries
+    enrichment time because ``the legacy query-backed wrap`` dropped the named_queries
     dict when enriching a non-final stage.
     """
-    from slayer.core.query import ModelExtension
-
     engine = cross_model_env
     queries = [
         SlayerQuery(
@@ -1521,10 +1611,10 @@ async def test_sibling_stage_joins_dag(cross_model_env):
         ),
         SlayerQuery(
             name="tagged",
-            source_model=ModelExtension(
-                source_name="customers",
-                joins=[{"target_model": "kpis", "join_pairs": [["id", "customer_id"]]}],
-            ),
+            source_model=ModelExtension.model_validate({
+                "source_name": "customers",
+                "joins": [{"target_model": "kpis", "join_pairs": [["id", "customer_id"]]}],
+            }),
             # ``kpis.total_amount_sum`` is a join-traversed dimension, so
             # each customer row carries their own kpis sum.
             dimensions=[ColumnRef(name="name"), ColumnRef(name="kpis.total_amount_sum")],
@@ -1553,10 +1643,10 @@ async def test_sql_dimension_via_model_extension(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model=ModelExtension(
-            source_name="orders",
-            columns=[{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
-        ),
+        source_model=ModelExtension.model_validate({
+            "source_name": "orders",
+            "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
+        }),
         dimensions=[ColumnRef(name="tier")],
         measures=[ModelMeasure(formula="*:count")],
     )
@@ -1572,10 +1662,10 @@ async def test_sql_dimension_with_regular(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model=ModelExtension(
-            source_name="orders",
-            columns=[{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
-        ),
+        source_model=ModelExtension.model_validate({
+            "source_name": "orders",
+            "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
+        }),
         dimensions=[ColumnRef(name="status"), ColumnRef(name="tier")],
         measures=[ModelMeasure(formula="*:count")],
     )
@@ -1596,18 +1686,18 @@ async def test_formula_dimension_via_query_list(integration_env):
         name="monthly",
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            dimension="created_at", granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="total_amount:sum")],
     )
 
     # Outer: group by amount tier via ModelExtension on the inner query's result
     outer = SlayerQuery(
-        source_model=ModelExtension(
-            source_name="monthly",
-            columns=[{"name": "amount_tier",
+        source_model=ModelExtension.model_validate({
+            "source_name": "monthly",
+            "columns": [{"name": "amount_tier",
                          "sql": "CASE WHEN total_amount_sum > 200 THEN 'high' ELSE 'low' END"}],
-        ),
+        }),
         dimensions=[ColumnRef(name="amount_tier")],
         measures=[ModelMeasure(formula="*:count")],
     )
@@ -1621,7 +1711,7 @@ async def test_formula_dimension_via_query_list(integration_env):
 
 
 async def test_multistage_renamed_measure_returns_non_null(integration_env):
-    """DEV-1335 canary. A 2-stage query-backed model where the inner stage
+    """A 2-stage query-backed model where the inner stage
     renames its aggregated measure via ``name=`` must return non-NULL values
     for the renamed column when executed end-to-end.
 
@@ -1672,7 +1762,7 @@ async def test_multistage_renamed_measure_returns_non_null(integration_env):
 
 async def test_circular_query_reference_raises(integration_env):
     """Mutually-referential named queries should error clearly. The
-    runtime list path auto-sorts via Kahn's algorithm (DEV-1340 follow-up);
+    runtime list path auto-sorts via Kahn's algorithm;
     when two stages reference each other neither can ever drop to in-degree
     zero, so the cycle surfaces as a ``ValueError`` naming both stages and
     explaining the rule rather than a generic "Circular reference" trace.
@@ -1686,30 +1776,27 @@ async def test_circular_query_reference_raises(integration_env):
         await engine.execute(query=[q1, q2, main])
 
 
-async def test_circular_join_graph_raises(tmp_path):
-    """Circular joins between stored models should error when walking the join graph."""
+async def _mutual_join_engine(tmp_path, *, ab_name=None, ba_name=None):
+    """Engine over models a/b with mutual declared joins (optionally named)."""
     db_path = tmp_path / "test.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("CREATE TABLE a (id INTEGER PRIMARY KEY, b_id INTEGER)")
-    conn.execute("CREATE TABLE b (id INTEGER PRIMARY KEY, a_id INTEGER)")
-    conn.executemany("INSERT INTO a VALUES (?, ?)", [(1, 1)])
-    conn.executemany("INSERT INTO b VALUES (?, ?)", [(1, 1)])
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        conn.execute("CREATE TABLE a (id INTEGER PRIMARY KEY, b_id INTEGER)")
+        conn.execute("CREATE TABLE b (id INTEGER PRIMARY KEY, a_id INTEGER)")
+        conn.executemany("INSERT INTO a VALUES (?, ?)", [(1, 1)])
+        conn.executemany("INSERT INTO b VALUES (?, ?)", [(1, 1)])
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
     storage = YAMLStorage(base_dir=str(storage_dir))
     await storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
 
-    # Circular joins: a → b → a
     await storage.save_model(SlayerModel(
         name="a", sql_table="a", data_source="db",
         columns=[Column(name="id", sql="id", type=DataType.DOUBLE),
                     Column(name="b_id", sql="b_id", type=DataType.DOUBLE),
 
         ],
-        joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
+        joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]], name=ab_name)],
     ))
     await storage.save_model(SlayerModel(
         name="b", sql_table="b", data_source="db",
@@ -1718,18 +1805,33 @@ async def test_circular_join_graph_raises(tmp_path):
                     Column(name="unique_b_field", sql="id", type=DataType.DOUBLE),
 
         ],
-        joins=[ModelJoin(target_model="a", join_pairs=[["a_id", "id"]])],
+        joins=[ModelJoin(target_model="a", join_pairs=[["a_id", "id"]], name=ba_name)],
     ))
+    return SlayerQueryEngine(storage=storage)
 
-    engine = SlayerQueryEngine(storage=storage)
 
-    # Trying to resolve b.a.unique_b_field — walks a→b→a which is a cycle.
-    # "unique_b_field" only exists on model b, so __ translation can't short-circuit.
-    query = SlayerQuery(
+def _b_a_unique_field_query(hop1: str, hop2: str) -> SlayerQuery:
+    # "unique_b_field" only exists on model b, so translation can't short-circuit.
+    return SlayerQuery(
         source_model="a",
-        dimensions=[ColumnRef(name="b.a.unique_b_field")],
+        dimensions=[ColumnRef(name=f"{hop1}.{hop2}.unique_b_field")],
         measures=[ModelMeasure(formula="*:count")],
     )
+
+
+async def test_unnamed_parallel_edges_fail_closed(tmp_path):
+    """Two unnamed edges between the same pair make the hop ambiguous."""
+    engine = await _mutual_join_engine(tmp_path)
+    query = _b_a_unique_field_query("b", "a")
+    with pytest.raises(AmbiguousJoinPathError, match="2 edges"):
+        await engine.execute(query)
+
+
+async def test_circular_join_graph_raises(tmp_path):
+    """A named-edge path that revisits a model is rejected as a circular join."""
+    engine = await _mutual_join_engine(tmp_path, ab_name="fwd", ba_name="back")
+    # fwd.back walks a→b→a — a cycle.
+    query = _b_a_unique_field_query("fwd", "back")
     with pytest.raises(ValueError, match="Circular join"):
         await engine.execute(query)
 
@@ -1741,15 +1843,13 @@ async def test_circular_join_graph_raises(tmp_path):
 async def test_model_filter_on_joined_column(tmp_path):
     """Model-level filter on a joined column applies WHERE correctly."""
     db_path = tmp_path / "test.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT, region TEXT)")
-    conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL)")
-    conn.executemany("INSERT INTO customers VALUES (?, ?, ?)", [
-        (1, "Alice", "US"), (2, "Bob", "EU"), (3, "Charlie", "US")])
-    conn.executemany("INSERT INTO orders VALUES (?, ?, ?)", [
-        (1, 1, 100), (2, 1, 200), (3, 2, 50), (4, 3, 300)])
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        conn.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT, region TEXT)")
+        conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL)")
+        conn.executemany("INSERT INTO customers VALUES (?, ?, ?)", [
+            (1, "Alice", "US"), (2, "Bob", "EU"), (3, "Charlie", "US")])
+        conn.executemany("INSERT INTO orders VALUES (?, ?, ?)", [
+            (1, 1, 100), (2, 1, 200), (3, 2, 50), (4, 3, 300)])
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -1803,46 +1903,42 @@ async def diamond_env(tmp_path):
     Two paths to regions, requiring path-based aliases to disambiguate.
     """
     db_path = tmp_path / "diamond.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT)")
-    conn.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT, region_id INTEGER REFERENCES regions(id))")
-    conn.execute("CREATE TABLE warehouses (id INTEGER PRIMARY KEY, name TEXT, region_id INTEGER REFERENCES regions(id))")
-    conn.execute("""
-        CREATE TABLE shipments (
-            id INTEGER PRIMARY KEY,
-            amount REAL,
-            customer_id INTEGER REFERENCES customers(id),
-            warehouse_id INTEGER REFERENCES warehouses(id)
-        )
-    """)
-    conn.executemany("INSERT INTO regions VALUES (?, ?)", [
-        (1, "US"), (2, "EU"), (3, "Asia"),
-    ])
-    conn.executemany("INSERT INTO customers VALUES (?, ?, ?)", [
-        (1, "Alice", 1), (2, "Bob", 2),
-    ])
-    conn.executemany("INSERT INTO warehouses VALUES (?, ?, ?)", [
-        (1, "WH-East", 1), (2, "WH-West", 3),
-    ])
-    conn.executemany("INSERT INTO shipments VALUES (?, ?, ?, ?)", [
-        (1, 100, 1, 1),  # Alice(US) from WH-East(US)
-        (2, 200, 1, 2),  # Alice(US) from WH-West(Asia)
-        (3, 50, 2, 1),   # Bob(EU) from WH-East(US)
-        (4, 150, 2, 2),  # Bob(EU) from WH-West(Asia)
-    ])
-    conn.commit()
-    conn.close()
-
-    from slayer.engine.ingestion import ingest_datasource
+    with transaction(str(db_path)) as conn:
+        conn.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT)")
+        conn.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT, region_id INTEGER REFERENCES regions(id))")
+        conn.execute("CREATE TABLE warehouses (id INTEGER PRIMARY KEY, name TEXT, region_id INTEGER REFERENCES regions(id))")
+        conn.execute("""
+            CREATE TABLE shipments (
+                id INTEGER PRIMARY KEY,
+                amount REAL,
+                customer_id INTEGER REFERENCES customers(id),
+                warehouse_id INTEGER REFERENCES warehouses(id)
+            )
+        """)
+        conn.executemany("INSERT INTO regions VALUES (?, ?)", [
+            (1, "US"), (2, "EU"), (3, "Asia"),
+        ])
+        conn.executemany("INSERT INTO customers VALUES (?, ?, ?)", [
+            (1, "Alice", 1), (2, "Bob", 2),
+        ])
+        conn.executemany("INSERT INTO warehouses VALUES (?, ?, ?)", [
+            (1, "WH-East", 1), (2, "WH-West", 3),
+        ])
+        conn.executemany("INSERT INTO shipments VALUES (?, ?, ?, ?)", [
+            (1, 100, 1, 1),  # Alice(US) from WH-East(US)
+            (2, 200, 1, 2),  # Alice(US) from WH-West(Asia)
+            (3, 50, 2, 1),   # Bob(EU) from WH-East(US)
+            (4, 150, 2, 2),  # Bob(EU) from WH-West(Asia)
+        ])
 
     storage = YAMLStorage(base_dir=str(tmp_path / "slayer_data"))
     ds = DatasourceConfig(name="diamond_db", type="sqlite", database=str(db_path))
     await storage.save_datasource(ds)
-    models = ingest_datasource(datasource=ds)
+    engine = SlayerQueryEngine(storage=storage)
+    models = await ingestion.ingest_datasource_async(ds, client=engine.client_for(ds))
     for m in models:
         await storage.save_model(m)
 
-    engine = SlayerQueryEngine(storage=storage)
     return engine, storage
 
 
@@ -1882,6 +1978,14 @@ async def test_diamond_joins_both_paths(diamond_env):
     # SQL must have two different aliases for regions
     assert "customers__regions" in result.sql
     assert "warehouses__regions" in result.sql
+
+
+async def test_sqlite_ingest_has_no_descriptions(diamond_env):
+    """SQLite has no table/column comments — ingested descriptions stay None."""
+    _, storage = diamond_env
+    shipments = await storage.get_model("shipments")
+    assert shipments.description is None
+    assert all(c.description is None for c in shipments.columns)
 
 
 async def test_query_filter_on_joined_dimension(diamond_env):
@@ -1998,8 +2102,9 @@ async def test_filtered_measure_with_dimensions(integration_env):
 
 
 async def test_filtered_last_picks_correct_row(integration_env):
-    """Filtered last measure picks the latest row that matches the filter,
-    not the globally latest row.
+    """A ``Column.filter`` masks the value and never restricts the ranking: ``last``
+    picks the globally latest row and reads its masked value (NULL when that row
+    fails the filter).
 
     Fixture: orders (1..6), Order 6 (pending, Mar-20) is globally latest,
     Order 5 (completed, 300.0, Mar-5) is the latest completed.
@@ -2018,7 +2123,7 @@ async def test_filtered_last_picks_correct_row(integration_env):
         source_model="orders",
         time_dimensions=[
             TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             ),
         ],
@@ -2028,11 +2133,11 @@ async def test_filtered_last_picks_correct_row(integration_env):
         ],
     ))
     rows_by_month = {row["orders.created_at"]: row for row in result.data}
-    # March: globally latest is Order 6 (pending, 25.0), but the latest
-    # completed is Order 5 (completed, 300.0). The filter must participate
-    # in ranking so the correct row is picked.
+    # March: the globally latest row is Order 6 (pending) — its masked value is
+    # NULL; the older completed Order 5 (300.0) is not reached (a WHERE belongs
+    # in the query).
     mar = rows_by_month["2025-03-01"]
-    assert mar["orders.completed_latest_last"] == pytest.approx(300.0)
+    assert mar["orders.completed_latest_last"] is None
     assert mar["orders.latest_amount_last"] == pytest.approx(25.0)  # unfiltered picks Order 6
 
     # January: latest is Order 2 (completed, 200.0) — passes filter
@@ -2060,7 +2165,7 @@ async def test_time_dimension_label_fallback(integration_env):
         source_model="orders",
         time_dimensions=[
             TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             ),
         ],
@@ -2180,53 +2285,50 @@ async def test_sqlite_udf_pool_reuse(integration_env):
     engine = integration_env
     q = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="total_amount:median")])
     r1 = await engine.execute(q)
-    for sa_engine in _sync_engines.values():
-        sa_engine.dispose()
+    # Dispose the cached engine so the second execute opens a fresh physical
+    # connection and the connect listener (UDF registration) fires again.
+    engine_factory.reset_cache()
     r2 = await engine.execute(q)
     assert r1.data[0]["orders.total_amount_median"] == pytest.approx(87.5)
     assert r2.data[0]["orders.total_amount_median"] == pytest.approx(87.5)
 
 
 # ---------------------------------------------------------------------------
-# DEV-1317 — math/stat UDFs end-to-end on SQLite
+# Math/stat UDFs end-to-end on SQLite
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
 async def stat_env(tmp_path):
     """Independent fixture with a richer numeric dataset for stat UDFs."""
-    import statistics
-
     db_path = tmp_path / "stat.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE samples (
-            id INTEGER PRIMARY KEY,
-            x REAL NOT NULL,
-            y REAL NOT NULL,
-            bucket TEXT NOT NULL
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE samples (
+                id INTEGER PRIMARY KEY,
+                x REAL NOT NULL,
+                y REAL NOT NULL,
+                bucket TEXT NOT NULL
+            )
+            """
         )
-        """
-    )
-    rows = [
-        # bucket "a": linearly correlated x,y (corr ≈ 1)
-        (1, 1.0, 2.0, "a"),
-        (2, 2.0, 4.0, "a"),
-        (3, 3.0, 6.0, "a"),
-        (4, 4.0, 8.0, "a"),
-        (5, 5.0, 10.0, "a"),
-        # bucket "b": noisy positive correlation
-        (6, 1.0, 1.9, "b"),
-        (7, 2.0, 4.2, "b"),
-        (8, 3.0, 5.7, "b"),
-        (9, 4.0, 8.1, "b"),
-        (10, 5.0, 10.3, "b"),
-    ]
-    cur.executemany("INSERT INTO samples VALUES (?, ?, ?, ?)", rows)
-    conn.commit()
-    conn.close()
+        rows = [
+            # bucket "a": linearly correlated x,y (corr ≈ 1)
+            (1, 1.0, 2.0, "a"),
+            (2, 2.0, 4.0, "a"),
+            (3, 3.0, 6.0, "a"),
+            (4, 4.0, 8.0, "a"),
+            (5, 5.0, 10.0, "a"),
+            # bucket "b": noisy positive correlation
+            (6, 1.0, 1.9, "b"),
+            (7, 2.0, 4.2, "b"),
+            (8, 3.0, 5.7, "b"),
+            (9, 4.0, 8.1, "b"),
+            (10, 5.0, 10.3, "b"),
+        ]
+        cur.executemany("INSERT INTO samples VALUES (?, ?, ?, ?)", rows)
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -2391,8 +2493,6 @@ async def test_scalar_ln_in_column_sql(stat_env):
     """A Column.sql containing `ln(x)` must execute on SQLite (UDF lookup)
     and return the math.log of every row.
     """
-    import math
-
     engine, _ = stat_env
     response = await engine.execute(
         SlayerQuery(
@@ -2405,8 +2505,6 @@ async def test_scalar_ln_in_column_sql(stat_env):
 
 
 async def test_scalar_sqrt_in_column_sql(stat_env):
-    import math
-
     engine, _ = stat_env
     response = await engine.execute(
         SlayerQuery(
@@ -2435,12 +2533,10 @@ async def test_n_one_bucket_returns_postgres_semantics(tmp_path):
     """With a single sample, stddev_samp/var_samp must be NULL and
     stddev_pop/var_pop must be 0 — matching Postgres."""
     db_path = tmp_path / "single.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute("CREATE TABLE one (id INTEGER PRIMARY KEY, x REAL NOT NULL)")
-    cur.execute("INSERT INTO one VALUES (1, 42.0)")
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE one (id INTEGER PRIMARY KEY, x REAL NOT NULL)")
+        cur.execute("INSERT INTO one VALUES (1, 42.0)")
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -2483,7 +2579,7 @@ async def test_n_one_bucket_returns_postgres_semantics(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1336 — window functions in filters (single-stage)
+# Window functions in filters (single-stage)
 # ---------------------------------------------------------------------------
 
 
@@ -2491,32 +2587,30 @@ async def test_n_one_bucket_returns_postgres_semantics(tmp_path):
 async def planets_env(tmp_path):
     """Planets fixture: a Column.sql with `row_number() over (...)` for top-N."""
     db_path = tmp_path / "planets.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE planets (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            mass REAL NOT NULL
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE planets (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                mass REAL NOT NULL
+            )
+            """
         )
-        """
-    )
-    cur.executemany(
-        "INSERT INTO planets VALUES (?, ?, ?)",
-        [
-            (1, "Mercury", 0.33),
-            (2, "Venus", 4.87),
-            (3, "Earth", 5.97),
-            (4, "Mars", 0.642),
-            (5, "Jupiter", 1898.0),
-            (6, "Saturn", 568.0),
-            (7, "Uranus", 86.8),
-            (8, "Neptune", 102.0),
-        ],
-    )
-    conn.commit()
-    conn.close()
+        cur.executemany(
+            "INSERT INTO planets VALUES (?, ?, ?)",
+            [
+                (1, "Mercury", 0.33),
+                (2, "Venus", 4.87),
+                (3, "Earth", 5.97),
+                (4, "Mars", 0.642),
+                (5, "Jupiter", 1898.0),
+                (6, "Saturn", 568.0),
+                (7, "Uranus", 86.8),
+                (8, "Neptune", 102.0),
+            ],
+        )
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -2547,9 +2641,9 @@ async def planets_env(tmp_path):
 
 async def test_filter_on_windowed_column_sqlite_raises(planets_env):
     """End-to-end: filtering on a `Column.sql` with a window function used to
-    auto-promote to a post-aggregation outer WHERE (DEV-1336). DEV-1369
-    removes that escape hatch — users must use rank-family transforms
-    (`rank(<measure>) <= 3`) or factor the windowed column into a
+    auto-promote to a post-aggregation outer WHERE. That escape
+    hatch is removed — users must use rank-family transforms
+    (`rank(<measure>, direction='desc') <= 3`) or factor the windowed column into a
     multi-stage `source_queries` model instead. The engine raises a
     clear error with that suggestion."""
     engine = planets_env
@@ -2563,30 +2657,26 @@ async def test_filter_on_windowed_column_sqlite_raises(planets_env):
 
 
 async def test_json_extract_case_when_matches_in_sqlite(tmp_path):
-    """DEV-1331 reproduction.
-
-    A derived ``Column.sql`` that uses ``json_extract`` inside a CASE WHEN
+    """A derived ``Column.sql`` that uses ``json_extract`` inside a CASE WHEN
     must return the expected aggregate. Pre-fix the SQLite emitter rewrites
     ``json_extract(...)`` to ``col -> '$.path'``, which returns the
     JSON-quoted form (``'"Owned"'``); CASE WHEN against the bare-string
     ``'owned'`` therefore never matches and the sum is 0.
     """
     db_path = tmp_path / "households.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        "CREATE TABLE households (id INTEGER PRIMARY KEY, socioeconomic TEXT NOT NULL)"
-    )
-    cur.executemany(
-        "INSERT INTO households VALUES (?, ?)",
-        [
-            (1, '{"Tenure_Type": "Owned"}'),
-            (2, '{"Tenure_Type": "Rented"}'),
-            (3, '{"Tenure_Type": "Owned"}'),
-        ],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "CREATE TABLE households (id INTEGER PRIMARY KEY, socioeconomic TEXT NOT NULL)"
+        )
+        cur.executemany(
+            "INSERT INTO households VALUES (?, ?)",
+            [
+                (1, '{"Tenure_Type": "Owned"}'),
+                (2, '{"Tenure_Type": "Rented"}'),
+                (3, '{"Tenure_Type": "Owned"}'),
+            ],
+        )
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -2625,7 +2715,7 @@ async def test_json_extract_case_when_matches_in_sqlite(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1333: cross-model and local derived ``Column.sql`` chaining (SQLite)
+# Cross-model and local derived ``Column.sql`` chaining (SQLite)
 # ---------------------------------------------------------------------------
 
 
@@ -2635,22 +2725,20 @@ async def derived_chain_env(tmp_path):
     derived columns. Used to verify recursive expansion at execution time.
     """
     db_path = tmp_path / "derived_chain.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute("CREATE TABLE B (id INTEGER PRIMARY KEY, foo_raw REAL)")
-    cur.execute(
-        "CREATE TABLE A (id INTEGER PRIMARY KEY, bar REAL, b_id INTEGER, raw_a REAL)"
-    )
-    cur.executemany(
-        "INSERT INTO B VALUES (?, ?)",
-        [(1, 200.0), (2, 50.0)],
-    )
-    cur.executemany(
-        "INSERT INTO A VALUES (?, ?, ?, ?)",
-        [(10, 4.0, 1, 100.0), (11, 1.0, 2, 5.0)],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE B (id INTEGER PRIMARY KEY, foo_raw REAL)")
+        cur.execute(
+            "CREATE TABLE A (id INTEGER PRIMARY KEY, bar REAL, b_id INTEGER, raw_a REAL)"
+        )
+        cur.executemany(
+            "INSERT INTO B VALUES (?, ?)",
+            [(1, 200.0), (2, 50.0)],
+        )
+        cur.executemany(
+            "INSERT INTO A VALUES (?, ?, ?, ?)",
+            [(10, 4.0, 1, 100.0), (11, 1.0, 2, 5.0)],
+        )
 
     storage_dir = tmp_path / "storage_derived"
     storage_dir.mkdir()
@@ -2703,11 +2791,11 @@ async def derived_chain_env(tmp_path):
     )
     engine = SlayerQueryEngine(storage=storage)
     yield engine
-    _sync_engines.clear()
+    engine_factory.reset_cache()
 
 
 async def test_integration_cross_model_derived_columnsql(derived_chain_env):
-    """The original DEV-1333 repro must execute and produce the expected ratios."""
+    """The original repro must execute and produce the expected ratios."""
     engine = derived_chain_env
     response = await engine.execute(
         SlayerQuery(
@@ -2741,7 +2829,7 @@ async def test_integration_local_derived_chain(derived_chain_env):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1334: filter-only references to derived columns whose sql crosses a
+# Filter-only references to derived columns whose sql crosses a
 # join must auto-add the join (no need to also list the column in
 # ``dimensions``).
 # ---------------------------------------------------------------------------
@@ -2754,20 +2842,18 @@ async def orders_customers_env(tmp_path):
     auto-join behavior end-to-end.
     """
     db_path = tmp_path / "orders_customers.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT)")
-    cur.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER)")
-    cur.executemany(
-        "INSERT INTO customers VALUES (?, ?)",
-        [(1, "EU"), (2, "US"), (3, "EU"), (4, "APAC")],
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?, ?)",
-        [(10, 1), (11, 2), (12, 1), (13, 3), (14, 4)],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT)")
+        cur.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER)")
+        cur.executemany(
+            "INSERT INTO customers VALUES (?, ?)",
+            [(1, "EU"), (2, "US"), (3, "EU"), (4, "APAC")],
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?, ?)",
+            [(10, 1), (11, 2), (12, 1), (13, 3), (14, 4)],
+        )
 
     storage_dir = tmp_path / "storage_oc"
     storage_dir.mkdir()
@@ -2797,7 +2883,7 @@ async def orders_customers_env(tmp_path):
     ))
     engine = SlayerQueryEngine(storage=storage)
     yield engine
-    _sync_engines.clear()
+    engine_factory.reset_cache()
 
 
 async def test_filter_on_derived_column_with_cross_table_ref_executes(
@@ -2821,28 +2907,24 @@ async def test_filter_on_derived_column_with_cross_table_ref_executes(
 
 
 # ---------------------------------------------------------------------------
-# DEV-1337: log10 / log2 round-trip preservation (SQLite)
+# log10 / log2 round-trip preservation (SQLite)
 # ---------------------------------------------------------------------------
 
 
 async def test_log10_round_trip_sqlite(tmp_path):
-    """DEV-1337: a user-written `log10(x)` formula must (a) execute correctly
+    """A user-written `log10(x)` formula must (a) execute correctly
     end-to-end on SQLite (via the registered `log10` UDF) and (b) appear
     verbatim as `log10(...)` in the emitted SQL — not the canonicalised
     `LOG(10, ...)` form. Same shape for `log2(x)` (which depends on the
     `log2` UDF added in this change)."""
-    import math as _math
-
     db_path = tmp_path / "log_round_trip.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute("CREATE TABLE players (id INTEGER PRIMARY KEY, raw_score REAL NOT NULL)")
-    cur.executemany(
-        "INSERT INTO players VALUES (?, ?)",
-        [(1, 100.0), (2, 1000.0), (3, 10000.0), (4, 8.0)],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE players (id INTEGER PRIMARY KEY, raw_score REAL NOT NULL)")
+        cur.executemany(
+            "INSERT INTO players VALUES (?, ?)",
+            [(1, 100.0), (2, 1000.0), (3, 10000.0), (4, 8.0)],
+        )
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -2906,7 +2988,7 @@ async def test_log10_round_trip_sqlite(tmp_path):
 
 
 async def test_dev1341_count_over_nullif_max_executes(integration_env):
-    """DEV-1341: a multistage final stage combining ``*:count`` with another
+    """A multistage final stage combining ``*:count`` with another
     aggregation inside a ``nullif`` wrapper must emit clean SQL — no
     ``__aggN__`` placeholder leak — and execute successfully.
     """
@@ -2945,7 +3027,7 @@ async def test_dev1341_count_over_nullif_max_executes(integration_env):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1361: type-aware CAST emission — json_extract over JSON-stored numeric
+# Type-aware CAST emission — json_extract over JSON-stored numeric
 # data must produce REAL result tuples (matching a hand-written gold using
 # CAST AS REAL), not the TEXT that SQLite's json_extract returns by default.
 # ---------------------------------------------------------------------------
@@ -2954,25 +3036,23 @@ async def test_dev1341_count_over_nullif_max_executes(integration_env):
 async def test_json_extract_double_casts_to_real_in_sqlite(tmp_path):
     """A ``Column(sql="json_extract(...)", type=DataType.DOUBLE)`` over JSON-
     encoded numeric data must produce native float result tuples on SQLite.
-    Without the DEV-1361 cast emission, json_extract returns TEXT and the
+    Without the cast emission, json_extract returns TEXT and the
     benchmark's tuple comparison fails (TEXT '"1.5"' != REAL 1.5).
     """
     db_path = tmp_path / "blobs.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        "CREATE TABLE blobs (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)"
-    )
-    cur.executemany(
-        "INSERT INTO blobs VALUES (?, ?)",
-        [
-            (1, '{"score": 1.5}'),
-            (2, '{"score": 2.5}'),
-            (3, '{"score": 3.0}'),
-        ],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "CREATE TABLE blobs (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)"
+        )
+        cur.executemany(
+            "INSERT INTO blobs VALUES (?, ?)",
+            [
+                (1, '{"score": 1.5}'),
+                (2, '{"score": 2.5}'),
+                (3, '{"score": 3.0}'),
+            ],
+        )
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -3013,25 +3093,22 @@ async def test_json_extract_double_casts_to_real_in_sqlite(tmp_path):
     # generator must produce a CAST(... AS REAL). SQLite's json_extract
     # already returns numerics on this fixture, so the runtime assertions
     # above pass with or without the CAST — the dry-run check is what
-    # actually fails if DEV-1361 emission regresses.
+    # actually fails if the CAST emission regresses.
     dry = await engine.execute(query, dry_run=True)
     sql_lower = dry.sql.lower() if dry.sql else ""
     assert "cast(" in sql_lower
     assert "real" in sql_lower
 
     # Hand-written gold using CAST AS REAL produces the same value.
-    gold_conn = sqlite3.connect(str(db_path))
-    try:
+    with transaction(str(db_path)) as gold_conn:
         gold = gold_conn.execute(
             "SELECT SUM(CAST(json_extract(payload, '$.score') AS REAL)) FROM blobs"
         ).fetchone()[0]
         assert total == pytest.approx(gold)
-    finally:
-        gold_conn.close()
 
 
 async def test_dense_rank_partition_by_customer_executes(integration_env):
-    """DEV-1353: dense_rank with partition_by= must execute on SQLite and produce
+    """dense_rank with partition_by= must execute on SQLite and produce
     per-partition ranks.
 
     The integration_env has 6 orders across 3 customers and 3 months. We rank
@@ -3042,12 +3119,12 @@ async def test_dense_rank_partition_by_customer_executes(integration_env):
         source_model="orders",
         dimensions=[ColumnRef(name="customer_id")],
         time_dimensions=[
-            TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+            TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)
         ],
         measures=[
             ModelMeasure(formula="amount:sum"),
             ModelMeasure(
-                formula="dense_rank(amount:sum, partition_by=customer_id)",
+                formula="dense_rank(amount:sum, partition_by=customer_id, direction='desc')",
                 name="amt_rank",
             ),
         ],
@@ -3077,7 +3154,7 @@ async def test_dense_rank_partition_by_customer_executes(integration_env):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1375 — semantic search end-to-end on SQLite
+# Semantic search end-to-end on SQLite
 # ---------------------------------------------------------------------------
 
 
@@ -3087,53 +3164,49 @@ async def search_env(tmp_path):
     ``ingest_datasource_idempotent`` path so every column gets a real
     ``Column.sampled`` snapshot, plus one seeded memory tagged on
     ``test_sqlite.orders`` for the entity-channel test."""
-    from slayer.engine.ingestion import ingest_datasource_idempotent
-
     db_path = tmp_path / "search.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE customers (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            region TEXT NOT NULL
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE customers (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                region TEXT NOT NULL
+            )
+            """
         )
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            status TEXT NOT NULL,
-            amount REAL NOT NULL,
-            customer_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (customer_id) REFERENCES customers(id)
+        cur.execute(
+            """
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                status TEXT NOT NULL,
+                amount REAL NOT NULL,
+                customer_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (customer_id) REFERENCES customers(id)
+            )
+            """
         )
-        """
-    )
-    cur.executemany(
-        "INSERT INTO customers VALUES (?, ?, ?)",
-        [
-            (1, "Alice", "US"),
-            (2, "Bob", "EU"),
-            (3, "Charlie", "US"),
-        ],
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?, ?, ?, ?, ?)",
-        [
-            (1, "completed", 100.0, 1, "2025-01-15"),
-            (2, "completed", 200.0, 2, "2025-01-20"),
-            (3, "pending", 50.0, 1, "2025-02-10"),
-            (4, "cancelled", 75.0, 3, "2025-02-15"),
-            (5, "completed", 300.0, 2, "2025-03-05"),
-            (6, "pending", 25.0, 3, "2025-03-20"),
-        ],
-    )
-    conn.commit()
-    conn.close()
+        cur.executemany(
+            "INSERT INTO customers VALUES (?, ?, ?)",
+            [
+                (1, "Alice", "US"),
+                (2, "Bob", "EU"),
+                (3, "Charlie", "US"),
+            ],
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?, ?, ?, ?, ?)",
+            [
+                (1, "completed", 100.0, 1, "2025-01-15"),
+                (2, "completed", 200.0, 2, "2025-01-20"),
+                (3, "pending", 50.0, 1, "2025-02-10"),
+                (4, "cancelled", 75.0, 3, "2025-02-15"),
+                (5, "completed", 300.0, 2, "2025-03-05"),
+                (6, "pending", 25.0, 3, "2025-03-20"),
+            ],
+        )
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -3143,16 +3216,16 @@ async def search_env(tmp_path):
     )
     await storage.save_datasource(datasource)
 
+    engine = SlayerQueryEngine(storage=storage)
     # Live ingest — populates Column.sampled on every non-pk column via the
     # production code path.
-    await ingest_datasource_idempotent(datasource=datasource, storage=storage)
+    await ingest_datasource_idempotent(datasource=datasource, storage=storage, client=engine.client_for(datasource))
 
     await storage.save_memory(
         learning="orders.amount is gross of refunds.",
         entities=["test_sqlite.orders"],
     )
 
-    engine = SlayerQueryEngine(storage=storage)
     return engine, storage
 
 
@@ -3161,8 +3234,6 @@ async def test_refresh_samples_populates_sampled(search_env):
     ``refresh-samples`` pass writes ``Column.sampled`` for every non-pk
     column. Categorical and numeric columns get different formats —
     spot-check one of each."""
-    from slayer.engine.profiling import refresh_all_table_backed_sampled
-
     engine, storage = search_env
     # After ingest alone, samples are unpopulated.
     orders = await storage.get_model("orders", data_source="test_sqlite")
@@ -3197,8 +3268,6 @@ async def test_refresh_samples_populates_sampled(search_env):
 async def test_search_question_finds_column(search_env):
     """``search(question="amount")`` returns a column hit pointing at
     one of the seeded ``amount``-named columns."""
-    from slayer.search.service import SearchService
-
     _engine, storage = search_env
     response = await SearchService(storage=storage).search(
         question="amount",
@@ -3221,10 +3290,8 @@ async def test_search_question_finds_column(search_env):
 async def test_search_entity_filter_finds_memory(search_env):
     """``search(entities=["test_sqlite.orders"])`` returns the seeded
     memory with ``matched_entities`` listing the orders canonical id."""
-    from slayer.search.service import SearchService
-
     _engine, storage = search_env
-    # DEV-1549: opt out of compact-by-default — this test pins the full
+    # Opt out of compact-by-default — this test pins the full
     # learning body in ``hit.text``.
     response = await SearchService(storage=storage).search(
         entities=["test_sqlite.orders"],
@@ -3243,8 +3310,6 @@ async def test_search_edit_model_filter_refreshes_sampled(search_env):
     ``handle_edit_refresh(model_level_change=True)`` which re-profiles
     every column. After the mutation, every column still has a
     ``sampled`` snapshot."""
-    from slayer.engine.profiling import handle_edit_refresh
-
     engine, storage = search_env
     orders_before = await storage.get_model("orders", data_source="test_sqlite")
     assert orders_before is not None
@@ -3280,23 +3345,21 @@ async def test_search_edit_model_filter_refreshes_sampled(search_env):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1378 — Mode A SQL filter end-to-end via parse_sql_predicate
+# Mode A SQL filter end-to-end via parse_sql_predicate
 # ---------------------------------------------------------------------------
 
 
 async def _setup_items_db(tmp_path) -> YAMLStorage:
     """Build the shared SQLite ``items`` table + storage used by the
-    DEV-1378 ``lower(...)`` filter tests below."""
+    ``lower(...)`` filter tests below."""
     db_path = tmp_path / "ds.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, status TEXT NOT NULL, amount REAL NOT NULL)")
-    cur.executemany(
-        "INSERT INTO items VALUES (?, ?, ?)",
-        [(1, "Active", 10.0), (2, "ACTIVE", 20.0), (3, "inactive", 5.0), (4, "active", 30.0)],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, status TEXT NOT NULL, amount REAL NOT NULL)")
+        cur.executemany(
+            "INSERT INTO items VALUES (?, ?, ?)",
+            [(1, "Active", 10.0), (2, "ACTIVE", 20.0), (3, "inactive", 5.0), (4, "active", 30.0)],
+        )
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -3307,8 +3370,8 @@ async def _setup_items_db(tmp_path) -> YAMLStorage:
 
 async def test_model_filter_with_lower_function_runs(tmp_path):
     """Mode A: ``SlayerModel.filters`` with arbitrary SQL function call
-    (``lower(...)``) must execute end-to-end against SQLite. Before
-    DEV-1378 the engine raised ``Unknown filter function 'lower'`` at
+    (``lower(...)``) must execute end-to-end against SQLite. Previously
+    the engine raised ``Unknown filter function 'lower'`` at
     enrichment time."""
     storage = await _setup_items_db(tmp_path)
 
@@ -3369,25 +3432,23 @@ async def test_model_filter_with_double_underscore_join_path_runs(tmp_path):
     (``customers__regions.name = 'EU'``) must drive the join planner
     correctly so the filter is applied against the joined table."""
     db_path = tmp_path / "ds.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
-    cur.execute(
-        "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER NOT NULL,"
-        " FOREIGN KEY(region_id) REFERENCES regions(id))"
-    )
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL, amount REAL NOT NULL,"
-        " FOREIGN KEY(customer_id) REFERENCES customers(id))"
-    )
-    cur.executemany("INSERT INTO regions VALUES (?, ?)", [(1, "US"), (2, "EU")])
-    cur.executemany("INSERT INTO customers VALUES (?, ?)", [(1, 1), (2, 2), (3, 1)])
-    cur.executemany(
-        "INSERT INTO orders VALUES (?, ?, ?)",
-        [(1, 1, 100.0), (2, 2, 50.0), (3, 3, 75.0), (4, 2, 25.0)],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+        cur.execute(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER NOT NULL,"
+            " FOREIGN KEY(region_id) REFERENCES regions(id))"
+        )
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL, amount REAL NOT NULL,"
+            " FOREIGN KEY(customer_id) REFERENCES customers(id))"
+        )
+        cur.executemany("INSERT INTO regions VALUES (?, ?)", [(1, "US"), (2, "EU")])
+        cur.executemany("INSERT INTO customers VALUES (?, ?)", [(1, 1), (2, 2), (3, 1)])
+        cur.executemany(
+            "INSERT INTO orders VALUES (?, ?, ?)",
+            [(1, 1, 100.0), (2, 2, 50.0), (3, 3, 75.0), (4, 2, 25.0)],
+        )
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -3418,7 +3479,7 @@ async def test_model_filter_with_double_underscore_join_path_runs(tmp_path):
         sql_table="orders",
         data_source="ds",
         # Mode A SQL filter with __-delimited join path through customers→regions.
-        filters=["customers__regions.name = 'EU'"],
+        filters=["customers.regions.name = 'EU'"],
         columns=[
             Column(name="id", sql="id", type=DataType.INT, primary_key=True),
             Column(name="customer_id", sql="customer_id", type=DataType.INT),
@@ -3440,24 +3501,22 @@ async def test_model_filter_with_double_underscore_join_path_runs(tmp_path):
 
 async def test_model_filter_with_json_extract_runs(tmp_path):
     """Mode A: ``SlayerModel.filters`` with ``json_extract(...)`` (a SQLite
-    built-in function) executes end-to-end. Pre-DEV-1378 this raised
+    built-in function) executes end-to-end. Previously this raised
     ``Unknown filter function 'json_extract'`` at enrichment time."""
     db_path = tmp_path / "ds.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        "CREATE TABLE items (id INTEGER PRIMARY KEY, metadata TEXT NOT NULL, amount REAL NOT NULL)"
-    )
-    cur.executemany(
-        "INSERT INTO items VALUES (?, ?, ?)",
-        [
-            (1, '{"active": 1}', 10.0),
-            (2, '{"active": 0}', 20.0),
-            (3, '{"active": 1}', 30.0),
-        ],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, metadata TEXT NOT NULL, amount REAL NOT NULL)"
+        )
+        cur.executemany(
+            "INSERT INTO items VALUES (?, ?, ?)",
+            [
+                (1, '{"active": 1}', 10.0),
+                (2, '{"active": 0}', 20.0),
+                (3, '{"active": 1}', 30.0),
+            ],
+        )
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -3505,7 +3564,7 @@ async def test_query_filter_with_lower_function_runs(integration_env):
 
 
 async def test_query_filter_with_replace_runs(integration_env):
-    """DEV-1378: ``replace(...)`` in a ``SlayerQuery.filters`` predicate
+    """``replace(...)`` in a ``SlayerQuery.filters`` predicate
     runs end-to-end on SQLite. Pre-fix, ``sqlglot.parse_one`` falls back
     to a ``Command`` (REPLACE INTO) parse and the emitted SQL is
     malformed; ``SQLGenerator._parse_predicate`` wraps in SELECT
@@ -3524,7 +3583,7 @@ async def test_query_filter_with_replace_runs(integration_env):
 
 
 async def test_filter_renamed_measure_colon_syntax(integration_env):
-    """DEV-1443: filter on the raw colon-syntax formula must resolve to the
+    """Filter on the raw colon-syntax formula must resolve to the
     user alias when the measure is renamed on the same node. Without the
     fix the query fails at execution time (column-not-found on the inner
     SELECT). With the fix it executes correctly as HAVING on the aggregate.
@@ -3550,10 +3609,181 @@ async def test_filter_renamed_measure_colon_syntax(integration_env):
     )
 
 
+async def test_dev1501_order_by_two_last_with_different_time_cols(tmp_path):
+    """ORDER BY two ``last()`` aggregates over
+    different explicit time columns must execute end-to-end against real
+    SQLite and return rows ordered by the correct distinct rank keys
+    (no dangling ``_last_rn``, no collapsed ranks). Uses a tied primary
+    rank so the secondary ASC tie-break actually engages.
+    """
+
+    db_path = tmp_path / "dev1501.db"
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                status TEXT NOT NULL,
+                amount REAL NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        # Per-group last(created_at) is tied at 50 across A and B; the
+        # secondary ORDER BY last(updated_at) ASC must break the tie with
+        # B (10) before A (99). The expected order intentionally CONTRADICTS
+        # natural alphabetical status ordering so a silently-dropped secondary
+        # ORDER BY would surface as a test failure.
+        rows = [
+            # Status A: last(created_at)=50, last(updated_at)=99.
+            (1, "A", 50.0, "2025-03-01", "2025-01-01"),
+            (2, "A", 99.0, "2025-02-01", "2025-04-01"),
+            # Status B: last(created_at)=50 (tied), last(updated_at)=10.
+            (3, "B", 50.0, "2025-03-01", "2025-02-01"),
+            (4, "B", 10.0, "2025-01-15", "2025-04-01"),
+        ]
+        cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?)", rows)
+
+    storage_dir = tmp_path / "storage_dev1501"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    await storage.save_datasource(
+        DatasourceConfig(name="dev1501_sqlite", type="sqlite", database=str(db_path))
+    )
+    orders_model = SlayerModel(
+        name="orders", sql_table="orders", data_source="dev1501_sqlite",
+        # Intentionally no default_time_dimension — exercises the
+        # no-default + explicit-time-arg branch end-to-end.
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
+        ],
+    )
+    await storage.save_model(orders_model)
+    engine = SlayerQueryEngine(storage=storage)
+
+    query = SlayerQuery(
+        source_model="orders",
+        measures=["*:count"],
+        dimensions=[ColumnRef(name="status")],
+        order=[
+            OrderItem(column="amount:last(created_at)", direction="desc"),
+            OrderItem(column="amount:last(updated_at)", direction="asc"),
+        ],
+    )
+    response: SlayerResponse = await engine.execute(query)
+
+    # Hidden materialised aliases must not leak into result columns.
+    assert set(response.columns) == {"orders.status", "orders._count"}, (
+        f"Hidden last() aliases leaked: {response.columns!r}"
+    )
+    # Two rows, both count 2; B before A because primary lc is tied (50)
+    # and secondary lu ASC puts B (lu=10) before A (lu=99). Expected order
+    # contradicts natural alphabetical so any drop of the secondary key fails.
+    assert len(response.data) == 2, response.data
+    assert response.data[0]["orders.status"] == "B", response.data
+    assert response.data[1]["orders.status"] == "A", response.data
+    assert response.data[0]["orders._count"] == 2, response.data
+    assert response.data[1]["orders._count"] == 2, response.data
+
+
 # ---------------------------------------------------------------------------
-# DEV-1538: end-to-end SQLite affinity probe — vaccine-style fixture.
+# Measure-source Column.sql with __-delimited path alias must
+# (a) execute end-to-end on SQLite (no `no such column` error from a
+# missing JOIN) and (b) return the right cardinality.
+# ---------------------------------------------------------------------------
+
+
+async def test_measure_source_sql_with_path_alias_executes_sqlite(tmp_path):
+    """orders → customers → regions chain; a derived column on orders
+    references the deep ``customers__regions.population`` path. The
+    typed pipeline must pull both LEFT JOINs so the aggregate evaluates
+    against real columns.
+    """
+    db_path = tmp_path / "orders_customers_regions.db"
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, population REAL)")
+        cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER)")
+        cur.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER)")
+        cur.executemany(
+            "INSERT INTO regions VALUES (?, ?)",
+            [(1, 100.0), (2, 50.0)],
+        )
+        cur.executemany(
+            "INSERT INTO customers VALUES (?, ?)",
+            # 3 customers; 2 in region 1 (pop 100), 1 in region 2 (pop 50).
+            [(1, 1), (2, 1), (3, 2)],
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?, ?)",
+            # 4 orders: 2 by customer 1 (region 1), 1 by customer 2 (region 1),
+            # 1 by customer 3 (region 2).
+            [(10, 1), (11, 1), (12, 2), (13, 3)],
+        )
+
+    storage_dir = tmp_path / "storage_ocr"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    await storage.save_datasource(
+        DatasourceConfig(name="ds", type="sqlite", database=str(db_path))
+    )
+    await storage.save_model(SlayerModel(
+        name="regions", data_source="ds", sql_table="regions",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="population", sql="population", type=DataType.DOUBLE),
+        ],
+    ))
+    await storage.save_model(SlayerModel(
+        name="customers", data_source="ds", sql_table="customers",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+    ))
+    await storage.save_model(SlayerModel(
+        name="orders", data_source="ds", sql_table="orders",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+            Column(
+                name="region_pop",
+                sql="customers.regions.population",
+                type=DataType.DOUBLE,
+            ),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    ))
+    engine = SlayerQueryEngine(storage=storage)
+
+    # SUM over per-order region populations:
+    #   order 10 → customer 1 → region 1 (100)
+    #   order 11 → customer 1 → region 1 (100)
+    #   order 12 → customer 2 → region 1 (100)
+    #   order 13 → customer 3 → region 2 (50)
+    # Total: 350.
+    response = await engine.execute(SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="region_pop:sum")],
+    ))
+    assert response.row_count == 1
+    assert response.data[0]["orders.region_pop_sum"] == pytest.approx(350.0), (
+        f"expected SUM=350 over per-order regions, got "
+        f"{response.data[0].get('orders.region_pop_sum')!r}; row: "
+        f"{response.data[0]!r}"
+    )
+    engine_factory.reset_cache()
+# ---------------------------------------------------------------------------
+# End-to-end SQLite affinity probe — vaccine-style fixture.
 #
-# Reproduces the Linear issue's vaccine_3 failure mode: a column declared
+# Reproduces the vaccine_3 failure mode: a column declared
 # ``INTEGER`` storing mostly REAL values. Pre-fix, the auto-ingested
 # Column.type=INT propagates through downstream SQL generation and produces
 # AVG values ~0 instead of ~0.9. Post-fix, the affinity probe widens to
@@ -3565,35 +3795,31 @@ async def test_sqlite_mixed_real_int_ingest_query_no_truncation(tmp_path):
     """End-to-end vaccine-style: ingest a SQLite DB whose INTEGER-declared
     column actually stores REAL values, then run a SUM/AVG measure and
     confirm the result reflects the REAL values (not zero-truncated)."""
-    from slayer.engine.ingestion import ingest_datasource_idempotent
-
     db_path = tmp_path / "vaccine.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        "CREATE TABLE sensordata ("
-        "  id INTEGER PRIMARY KEY,"
-        "  tempstabidx INTEGER"  # declared INTEGER affinity
-        ")"
-    )
-    # 3 INT rows + 9 REAL rows. AVG of the actual stored values is
-    # (1+2+3 + 0.99+0.943+0.969+0.85+0.92+0.91+0.83+0.96+0.88) / 12 ≈ 1.10.
-    rows = [
-        (1, 1), (2, 2), (3, 3),
-        (4, 0.99), (5, 0.943), (6, 0.969),
-        (7, 0.85), (8, 0.92), (9, 0.91),
-        (10, 0.83), (11, 0.96), (12, 0.88),
-    ]
-    for r in rows:
-        cur.execute("INSERT INTO sensordata VALUES (?, ?)", r)
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "CREATE TABLE sensordata ("
+            "  id INTEGER PRIMARY KEY,"
+            "  tempstabidx INTEGER"  # declared INTEGER affinity
+            ")"
+        )
+        # 3 INT rows + 9 REAL rows. AVG of the actual stored values is
+        # (1+2+3 + 0.99+0.943+0.969+0.85+0.92+0.91+0.83+0.96+0.88) / 12 ≈ 1.10.
+        rows = [
+            (1, 1), (2, 2), (3, 3),
+            (4, 0.99), (5, 0.943), (6, 0.969),
+            (7, 0.85), (8, 0.92), (9, 0.91),
+            (10, 0.83), (11, 0.96), (12, 0.88),
+        ]
+        for r in rows:
+            cur.execute("INSERT INTO sensordata VALUES (?, ?)", r)
 
     storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
     ds = DatasourceConfig(name="vac", type="sqlite", database=str(db_path))
     await storage.save_datasource(ds)
-    await ingest_datasource_idempotent(datasource=ds, storage=storage)
     engine = SlayerQueryEngine(storage=storage)
+    await ingest_datasource_idempotent(datasource=ds, storage=storage, client=engine.client_for(ds))
 
     # Persisted model carries Column.type=DOUBLE for tempstabidx.
     persisted = await storage.get_model("sensordata", data_source="vac")
@@ -3619,27 +3845,25 @@ async def test_sqlite_mixed_real_int_ingest_query_no_truncation(tmp_path):
 
 @pytest.fixture
 async def composite_score_env(tmp_path):
-    """DEV-1539 fixture: a model whose ``Column.sql`` is a multi-term
+    """A model whose ``Column.sql`` is a multi-term
     arithmetic expression. Used by both the WHERE-side and HAVING-side
     paren-wrap integration tests.
     """
     db_path = tmp_path / "score.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        "CREATE TABLE entities (id INTEGER PRIMARY KEY, a REAL, b REAL, c REAL, d REAL)"
-    )
-    rows = [
-        # Two rows engineered so that the weighted-sum semantics and the
-        # "compare binds to last term" misreading would return different
-        # row sets — defending against precedence regression even on
-        # dialects that handle the unparenthesised form correctly today.
-        (1, 10.0, 10.0, 10.0, 10.0),  # weighted sum = 10 → passes > 7
-        (2, 0.0, 0.0, 0.0, 5.0),      # weighted sum = 1 → fails > 7
-    ]
-    cur.executemany("INSERT INTO entities VALUES (?, ?, ?, ?, ?)", rows)
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "CREATE TABLE entities (id INTEGER PRIMARY KEY, a REAL, b REAL, c REAL, d REAL)"
+        )
+        rows = [
+            # Two rows engineered so that the weighted-sum semantics and the
+            # "compare binds to last term" misreading would return different
+            # row sets — defending against precedence regression even on
+            # dialects that handle the unparenthesised form correctly today.
+            (1, 10.0, 10.0, 10.0, 10.0),  # weighted sum = 10 → passes > 7
+            (2, 0.0, 0.0, 0.0, 5.0),      # weighted sum = 1 → fails > 7
+        ]
+        cur.executemany("INSERT INTO entities VALUES (?, ?, ?, ?, ?)", rows)
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -3672,7 +3896,7 @@ async def composite_score_env(tmp_path):
 
 
 async def test_dev1539_where_multiterm_filter_emits_outer_parens(composite_score_env):
-    """DEV-1539: the SQL emitted for a filter on a multi-term Column.sql
+    """The SQL emitted for a filter on a multi-term Column.sql
     must wrap the inlined arithmetic expression in outer parens.
 
     Asserts both:
@@ -3704,18 +3928,25 @@ async def test_dev1539_where_multiterm_filter_emits_outer_parens(composite_score
     dry = await engine.execute(query, dry_run=True)
     assert dry.sql is not None
     norm = " ".join(dry.sql.split())
-    # The LHS of `> 7` must be a parenthesised arithmetic expression.
-    # Single bounded quantifier (`[^)]+`) avoids the multi-quantifier
-    # backtracking pattern flagged by Sonar's S5852.
-    m = re.search(r"\( entities\.a \* 0\.4[^)]+\) > 7", norm)
+    # The multi-term LHS of `> 7` must be enclosed so the comparator binds to
+    # the whole arithmetic sum. The typed pipeline qualifies the refs and
+    # encloses the derived expression in its type CAST — precedence-safe.
+    # Single bounded quantifier (`[^)]+`) avoids the S5852 backtracking shape.
+    m = re.search(r"CAST\(\s*entities\.a \* 0\.4[^)]+\)\s*>\s*7", norm)
     assert m is not None, (
-        f"Expected `( entities.a * 0.4 ... ) > 7` in emitted WHERE; "
+        f"Expected the multi-term derived LHS enclosed before `> 7`; "
         f"got:\n{dry.sql}"
     )
+    # All four weighted terms must survive inside the enclosed LHS (CodeRabbit) —
+    # plain substring checks keep the S5852-safe single-quantifier regex shape.
+    for _term in ("entities.a", "entities.b", "entities.c", "entities.d"):
+        assert _term in m.group(0), (
+            f"Expected weighted term {_term} inside the enclosed LHS; got:\n{dry.sql}"
+        )
 
 
 async def test_dev1539_having_multiterm_measure_emits_outer_parens(composite_score_env):
-    """DEV-1539 HAVING-side: when a custom multi-term aggregation is
+    """HAVING-side: when a custom multi-term aggregation is
     referenced by name in a HAVING filter, the substituted SQL must be
     wrapped in outer parens before the comparator.
     """
@@ -3770,13 +4001,19 @@ async def test_dev1539_having_multiterm_measure_emits_outer_parens(composite_sco
     assert having.startswith("("), (
         f"Expected HAVING body to start with `(` (outer wrap); got:\n{having}"
     )
-    assert "SUM(" in having.upper() and "/" in having and "NULLIF" in having.upper(), (
+    assert "SUM(" in having.upper(), (
+        f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
+    )
+    assert "/" in having, (
+        f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
+    )
+    assert "NULLIF" in having.upper(), (
         f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
     )
 
 
 # ---------------------------------------------------------------------------
-# DEV-1576 — round()/abs() execution + aggregation-alias healing (SQLite)
+# round()/abs() execution + aggregation-alias healing (SQLite)
 # ---------------------------------------------------------------------------
 
 
@@ -3844,7 +4081,7 @@ async def test_round_over_bare_measure_raises(integration_env):
         source_model="orders",
         measures=[ModelMeasure(formula="round(amount, 2)", name="r")],
     )
-    with pytest.raises(ValueError, match="Bare measure name"):
+    with pytest.raises(ValueError, match="needs an aggregation inside an expression"):
         await engine.execute(query)
 
 
@@ -3855,5 +4092,5 @@ async def test_abs_over_bare_measure_raises(integration_env):
         source_model="orders",
         measures=[ModelMeasure(formula="abs(amount)", name="a")],
     )
-    with pytest.raises(ValueError, match="Bare measure name"):
+    with pytest.raises(ValueError, match="needs an aggregation inside an expression"):
         await engine.execute(query)

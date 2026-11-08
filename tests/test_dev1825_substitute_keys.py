@@ -1,0 +1,143 @@
+"""``substitute_value_keys``: the total, fail-closed structural
+rewriter the regroup desugar substitutes placeholders with.
+
+Mirrors the ``reroot_value_key`` totality contract: every
+``ValueKey`` union member has an explicit case, an unhandled kind RAISES, and
+a matched subtree is replaced ATOMICALLY (its children are never recursed —
+"by key identity, never text").
+"""
+from __future__ import annotations
+
+from decimal import Decimal
+from typing import get_args
+
+import pytest
+
+from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.keys import (
+    AggregateKey,
+    ArithmeticKey,
+    ArrayLiteralKey,
+    CastKey,
+    ListSetKey,
+    ColumnKey,
+    ColumnSqlKey,
+    InKey,
+    LiteralKey,
+    ScalarCallKey,
+    StarKey,
+    TimePointCmpKey,
+    TimeTruncKey,
+    TransformKey,
+    ValueKey,
+    substitute_value_keys,
+    SqlFragmentKey,
+)
+from slayer.core.keys import Grain
+
+CITY = ColumnKey(path=(), leaf="city")
+AMOUNT = ColumnKey(path=(), leaf="amount")
+AGG = AggregateKey(source=AMOUNT, agg="sum", partition_keys=Grain.of({CITY}))
+PLACEHOLDER = ColumnKey(path=(), leaf="__regroup__0__amount_sum")
+MAPPING = {AGG: PLACEHOLDER}
+
+
+class TestDirectAndNestedHits:
+    def test_direct_hit_replaces_whole_key(self) -> None:
+        assert substitute_value_keys(AGG, MAPPING) == PLACEHOLDER
+
+    def test_no_hit_returns_equal_key(self) -> None:
+        assert substitute_value_keys(AGG, {}) == AGG
+
+    def test_nested_in_arithmetic(self) -> None:
+        tree = ArithmeticKey(op=">", operands=(AGG, LiteralKey(value=Decimal("5000"))))
+        out = substitute_value_keys(tree, MAPPING)
+        assert out.operands[0] == PLACEHOLDER
+        assert out.operands[1] == LiteralKey(value=Decimal("5000"))
+
+    def test_nested_in_scalar_call(self) -> None:
+        tree = ScalarCallKey(name="iif", args=(
+            ArithmeticKey(op=">", operands=(AGG, LiteralKey(value=Decimal("0")))),
+            Decimal("1"),
+            Decimal("0"),
+        ))
+        out = substitute_value_keys(tree, MAPPING)
+        assert isinstance(out.args[0], ArithmeticKey)
+        assert out.args[0].operands[0] == PLACEHOLDER
+        assert out.args[1] == Decimal("1")
+
+    def test_nested_in_transform_input(self) -> None:
+        tree = TransformKey(op="cumsum", input=AGG)
+        assert substitute_value_keys(tree, MAPPING).input == PLACEHOLDER
+
+    def test_nested_in_time_point_and_in(self) -> None:
+        tp = TimePointCmpKey(op=">=", operand=AGG, point="last month")
+        assert substitute_value_keys(tp, MAPPING).operand == PLACEHOLDER
+        ik = InKey(column=AGG, values=(LiteralKey(value="gold"),))
+        assert substitute_value_keys(ik, MAPPING).column == PLACEHOLDER
+
+    def test_column_to_column_inside_time_trunc(self) -> None:
+        # TimeTruncKey.source is typed ColumnKey/ColumnSqlKey — a column-to-
+        # column mapping must reach through it.
+        other = ColumnKey(path=(), leaf="shipped_at")
+        tt = TimeTruncKey(source=ColumnKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.MONTH)
+        out = substitute_value_keys(tt, {ColumnKey(path=(), leaf="ordered_at"): other})
+        assert out.source == other
+
+
+class TestAtomicity:
+    def test_matched_subtree_children_are_not_recursed(self) -> None:
+        # CITY appears both inside AGG (partition_keys) and as a sibling
+        # operand. The AGG match is atomic: its inner CITY must survive, while
+        # the sibling CITY is replaced.
+        other = ColumnKey(path=(), leaf="region")
+        tree = ArithmeticKey(op="+", operands=(AGG, CITY))
+        out = substitute_value_keys(tree, {AGG: PLACEHOLDER, CITY: other})
+        assert out.operands == (PLACEHOLDER, other)
+
+    def test_aggregate_internals_reachable_when_agg_itself_unmatched(self) -> None:
+        # Without an AGG-level match the rewriter descends into source /
+        # partition_keys, so a producer-side rewrite can retarget them.
+        other = ColumnKey(path=(), leaf="city2")
+        out = substitute_value_keys(AGG, {CITY: other})
+        assert out.partition_keys == Grain.of({other})
+        assert out.source == AMOUNT
+
+
+class TestTotality:
+    def test_every_union_member_has_a_sample(self) -> None:
+        samples = {
+            ColumnKey: CITY,
+            ColumnSqlKey: ColumnSqlKey(path=(), model="orders", column_name="margin"),
+            TimeTruncKey: TimeTruncKey(
+                source=ColumnKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.MONTH,
+            ),
+            StarKey: StarKey(),
+            LiteralKey: LiteralKey(value=Decimal("1")),
+            AggregateKey: AGG,
+            TransformKey: TransformKey(op="cumsum", input=AGG),
+            ArithmeticKey: ArithmeticKey(op="+", operands=(CITY, AMOUNT)),
+            ScalarCallKey: ScalarCallKey(name="coalesce", args=(CITY, "x")),
+            TimePointCmpKey: TimePointCmpKey(op="=", operand=CITY, point="2025-Q1"),
+            InKey: InKey(column=CITY, values=(LiteralKey(value="gold"),)),
+            SqlFragmentKey: SqlFragmentKey(template="{r0} * 2", refs=(CITY,)),
+            CastKey: CastKey(source=CITY, type_text="TEXT", data_type=DataType.TEXT),
+            ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),
+            ListSetKey: ListSetKey(source=CITY),
+        }
+        members = set(get_args(ValueKey))
+        missing = members - set(samples)
+        assert not missing, (
+            f"ValueKey grew {sorted(m.__name__ for m in missing)}; add a sample "
+            f"here and a case to substitute_value_keys (totality)."
+        )
+        for member in members:
+            assert substitute_value_keys(samples[member], {}) == samples[member]
+
+    def test_unknown_kind_raises(self) -> None:
+        class NotAKey:
+            pass
+
+        not_a_key = NotAKey()
+        with pytest.raises(TypeError):
+            substitute_value_keys(not_a_key, MAPPING)  # type: ignore[arg-type]

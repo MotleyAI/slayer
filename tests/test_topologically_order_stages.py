@@ -1,0 +1,165 @@
+"""``topologically_order_stages``: surface, engine shim, input-order invariance, and sibling edges."""
+from __future__ import annotations
+
+import pytest
+
+from slayer.core.models import ModelJoin
+from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.stage_ordering import topologically_order_stages
+
+
+# ---------------------------------------------------------------------------
+# Surface
+# ---------------------------------------------------------------------------
+
+
+def test_module_surface_exists() -> None:
+    """``topologically_order_stages`` is a public callable."""
+    assert callable(topologically_order_stages)
+
+
+def test_engine_shim_delegates() -> None:
+    """``SlayerQueryEngine._topologically_order_queries`` delegates to the module helper."""
+    a = SlayerQuery(name="a", source_model="orders")
+    b = SlayerQuery(
+        name="b",
+        source_model=ModelExtension.model_validate({
+            "source_name": "orders",
+            "joins": [{"target_model": "a", "join_pairs": [["id", "id"]]}],
+        }),
+    )
+    root = SlayerQuery(source_model="b")
+    queries = [b, a, root]
+
+    expected = topologically_order_stages(queries)
+    via_shim = SlayerQueryEngine._topologically_order_queries(queries)
+    assert [q.name for q in expected] == [q.name for q in via_shim]
+    assert expected[-1] is root  # root stays last
+
+
+# ---------------------------------------------------------------------------
+# Basic semantics (mirror engine-method tests already pinned via
+# tests/test_query_backed_models.py runtime-list cases)
+# ---------------------------------------------------------------------------
+
+
+def test_reorders_simple_forward_reference() -> None:
+    # b depends on a via joins.target_model; input order is [b, a, root].
+    a = SlayerQuery(name="a", source_model="orders")
+    b = SlayerQuery(
+        name="b",
+        source_model=ModelExtension.model_validate({
+            "source_name": "orders",
+            "joins": [{"target_model": "a", "join_pairs": [["id", "id"]]}],
+        }),
+    )
+    root = SlayerQuery(source_model="b")
+    ordered = topologically_order_stages([b, a, root])
+    assert [q.name for q in ordered] == ["a", "b", None]
+
+
+def test_non_root_input_order_is_invariant() -> None:
+    """Both input orderings of the non-root stages yield the same order."""
+    a = SlayerQuery(name="a", source_model="orders")
+    b = SlayerQuery(
+        name="b",
+        source_model=ModelExtension.model_validate({
+            "source_name": "orders",
+            "joins": [{"target_model": "a", "join_pairs": [["id", "id"]]}],
+        }),
+    )
+    root = SlayerQuery(source_model="b")
+
+    ordered_ab = topologically_order_stages([a, b, root])
+    ordered_ba = topologically_order_stages([b, a, root])
+    assert [q.name for q in ordered_ab] == ["a", "b", None]
+    assert [q.name for q in ordered_ba] == ["a", "b", None]
+    assert ordered_ab[-1] is root
+    assert ordered_ba[-1] is root
+
+
+def test_cycle_raises() -> None:
+    a = SlayerQuery(
+        name="a",
+        source_model=ModelExtension.model_validate({
+            "source_name": "orders",
+            "joins": [{"target_model": "b", "join_pairs": [["id", "id"]]}],
+        }),
+    )
+    b = SlayerQuery(
+        name="b",
+        source_model=ModelExtension.model_validate({
+            "source_name": "orders",
+            "joins": [{"target_model": "a", "join_pairs": [["id", "id"]]}],
+        }),
+    )
+    root = SlayerQuery(source_model="a")
+    with pytest.raises(ValueError, match=r"[Cc]ycle"):
+        topologically_order_stages([a, b, root])
+
+
+def test_root_referenced_raises() -> None:
+    """The final entry is the DAG root and must not be referenced by another stage."""
+    a = SlayerQuery(name="a", source_model="root_stage")
+    root = SlayerQuery(name="root_stage", source_model="orders")
+    with pytest.raises(ValueError, match="root"):
+        topologically_order_stages([a, root])
+
+
+def test_self_reference_raises() -> None:
+    a = SlayerQuery(name="a", source_model="a")
+    root = SlayerQuery(source_model="a")
+    with pytest.raises(ValueError, match="self"):
+        topologically_order_stages([a, root])
+
+
+def test_duplicate_name_raises() -> None:
+    a1 = SlayerQuery(name="a", source_model="orders")
+    a2 = SlayerQuery(name="a", source_model="orders")
+    root = SlayerQuery(source_model="a")
+    with pytest.raises(ValueError, match="[Dd]uplicate"):
+        topologically_order_stages([a1, a2, root])
+
+
+# ---------------------------------------------------------------------------
+# Sibling edges through inline specs
+# ---------------------------------------------------------------------------
+
+
+def test_typed_modelextension_nested_join_contributes_to_edges() -> None:
+    """A ``ModelExtension`` join to a sibling adds an edge."""
+    a = SlayerQuery(name="a", source_model="orders")
+    b = SlayerQuery(
+        name="b",
+        source_model=ModelExtension(
+            source_name="orders",
+            joins=[ModelJoin(
+                target_model="a",
+                join_pairs=[["id", "id"]],
+            )],
+        ),
+    )
+    root = SlayerQuery(source_model="b")
+    ordered = topologically_order_stages([b, a, root])
+    names = [q.name for q in ordered]
+    assert names.index("a") < names.index("b"), names
+
+
+def test_dict_modelextension_nested_join_contributes_to_edges() -> None:
+    """A raw-dict ``ModelExtension`` adds the same edge as the typed shape."""
+    a = SlayerQuery(name="a", source_model="orders")
+    b = SlayerQuery.model_validate({
+        "name": "b",
+        "source_model": {
+            "source_name": "orders",
+            "joins": [{
+                "target_model": "a",
+                "join_pairs": [["id", "id"]],
+            }],
+        },
+    })
+    root = SlayerQuery(source_model="b")
+    ordered = topologically_order_stages([b, a, root])
+    names = [q.name for q in ordered]
+    assert names.index("a") < names.index("b"), names

@@ -21,7 +21,7 @@ Also pins:
 from __future__ import annotations
 
 import asyncio
-import sqlite3
+import contextlib
 import tempfile
 from collections.abc import AsyncIterator
 
@@ -30,8 +30,7 @@ import pytest_asyncio
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelMeasure, SlayerModel
-from slayer.core.query import SlayerQuery
-from slayer.engine import profiling as _profiling_mod
+from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.search.service import (
     SearchHit,
@@ -39,6 +38,7 @@ from slayer.search.service import (
     SearchService,
 )
 from slayer.storage.base import DatasourceConfig, StorageBackend, resolve_storage
+from slayer.storage.sqlite_conn import open_connection, transaction
 
 from tests.search_helpers import seed_warehouse_models
 
@@ -512,18 +512,16 @@ async def stale_setup() -> AsyncIterator[tuple[StorageBackend, SlayerQueryEngine
     sample-value data (``sampled_values=None``)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_file = f"{tmpdir}/data.db"
-        conn = sqlite3.connect(db_file)
-        conn.execute(
-            "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL, status TEXT)"
-        )
-        # Populate with two distinct statuses so distinct_count is meaningful.
-        rows = [
-            (i, float(i), "paid" if i % 2 == 0 else "refunded")
-            for i in range(1, 21)
-        ]
-        conn.executemany("INSERT INTO orders VALUES (?, ?, ?)", rows)
-        conn.commit()
-        conn.close()
+        with transaction(db_file) as conn:
+            conn.execute(
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL, status TEXT)"
+            )
+            # Populate with two distinct statuses so distinct_count is meaningful.
+            rows = [
+                (i, float(i), "paid" if i % 2 == 0 else "refunded")
+                for i in range(1, 21)
+            ]
+            conn.executemany("INSERT INTO orders VALUES (?, ?, ?)", rows)
 
         storage = resolve_storage(f"{tmpdir}/storage")
         await storage.save_datasource(DatasourceConfig(
@@ -641,7 +639,10 @@ async def test_search_refreshes_stale_column_hit_via_question_corpus(
     )
     text = column_hits[0].text
     # Refreshed text must include the live values.
-    assert "paid" in text and "refunded" in text, (
+    assert "paid" in text, (
+        "question-path column hit must also receive the post-fusion refresh"
+    )
+    assert "refunded" in text, (
         "question-path column hit must also receive the post-fusion refresh"
     )
     # And the refresh persisted to storage.
@@ -681,7 +682,7 @@ async def test_search_no_refresh_when_engine_is_none(
 async def test_search_stale_text_preserved_when_profile_raises(
     stale_setup: tuple[StorageBackend, SlayerQueryEngine], monkeypatch,
 ) -> None:
-    """If the helper's profile_column raises, the search hit falls back to
+    """If the profiling query raises, the search hit falls back to
     the original (stale) rendered text. No crash. Storage stays untouched.
 
     Codex round-3 finding #6: assert the hit text itself survives (not just
@@ -690,7 +691,7 @@ async def test_search_stale_text_preserved_when_profile_raises(
     storage, engine = stale_setup
     svc = SearchService(storage=storage, engine=engine)
 
-    async def explodes(**_kwargs):
+    async def explodes(*_args, **_kwargs):
         raise RuntimeError("simulated profile failure")
 
     persist_calls: list = []
@@ -700,7 +701,7 @@ async def test_search_stale_text_preserved_when_profile_raises(
         persist_calls.append(kwargs)
         return await original_persist(**kwargs)
 
-    monkeypatch.setattr("slayer.engine.profiling.profile_column", explodes)
+    monkeypatch.setattr(engine, "execute", explodes)
     monkeypatch.setattr(storage, "update_column_sampled", tracking_persist)
 
     response = await svc.search(
@@ -740,33 +741,28 @@ async def test_search_stale_text_preserved_when_profile_raises(
 async def test_search_numeric_column_hit_is_refreshed(
     stale_setup: tuple[StorageBackend, SlayerQueryEngine], monkeypatch,
 ) -> None:
-    """DEV-1615: the helper's categorical-only early-return was removed, so a
-    genuinely-unsampled NUMERIC column hit IS back-filled by the search refresh
-    path (min/max range), matching ``inspect``'s behavior. This inverts the
-    DEV-1516 assertion that search skipped numeric hits."""
+    """A genuinely-unsampled NUMERIC column hit is back-filled by the search
+    refresh path (min/max range), matching ``inspect``'s behavior."""
     storage, engine = stale_setup
     svc = SearchService(storage=storage, engine=engine)
 
-    profile_call_columns: list = []
-    real_profile = _profiling_mod.profile_column
+    numeric_queries: list = []
+    real_execute = engine.execute
 
-    async def counting_profile(*, model, column, engine):
-        profile_call_columns.append(column.name)
-        return await real_profile(model=model, column=column, engine=engine)
+    async def counting_execute(*args, **kwargs):
+        q = kwargs.get("query", args[0] if args else None)
+        if isinstance(q, SlayerQuery) and isinstance(q.source_model, ModelExtension):
+            numeric_queries.append(q)
+        return await real_execute(*args, **kwargs)
 
-    monkeypatch.setattr(
-        "slayer.engine.profiling.profile_column", counting_profile,
-    )
+    monkeypatch.setattr(engine, "execute", counting_execute)
 
     response = await svc.search(
         entities=["warehouse.orders.amount"],
         max_results=10,
     )
-    # profile_column IS invoked for the uncached numeric ``amount`` column.
-    assert "amount" in profile_call_columns, (
-        f"numeric column must trigger profile_column from search refresh; "
-        f"got calls for columns: {profile_call_columns}"
-    )
+    # A min/max query IS run for the uncached numeric ``amount`` column.
+    assert numeric_queries, "numeric column must trigger a min/max query from search refresh"
     # And the min/max range is persisted for later reads.
     reloaded = await storage.get_model("orders", data_source="warehouse")
     assert reloaded is not None
@@ -803,12 +799,9 @@ async def test_search_per_model_serialization_concurrent_hits(
     ds = await storage.get_datasource("warehouse")
     assert ds is not None
     assert ds.database is not None
-    conn = sqlite3.connect(ds.database)
-    try:
+    with open_connection(ds.database) as conn:
         conn.execute("ALTER TABLE orders ADD COLUMN region TEXT DEFAULT 'EMEA'")
         conn.commit()
-    finally:
-        conn.close()
     # Track the order of update_column_sampled calls per model. Capture
     # the column name and a start/stop marker so we can detect overlap.
     persist_events: list = []
@@ -892,8 +885,7 @@ async def test_search_cross_model_concurrency_is_allowed(
     ds = await storage.get_datasource("warehouse")
     assert ds is not None
     assert ds.database is not None
-    conn = sqlite3.connect(ds.database)
-    try:
+    with open_connection(ds.database) as conn:
         conn.execute(
             "CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT)"
         )
@@ -902,8 +894,6 @@ async def test_search_cross_model_concurrency_is_allowed(
             [(i, "EMEA" if i % 2 == 0 else "APAC") for i in range(1, 11)],
         )
         conn.commit()
-    finally:
-        conn.close()
     await storage.save_model(SlayerModel(
         name="customers",
         sql_table="customers",
@@ -917,17 +907,20 @@ async def test_search_cross_model_concurrency_is_allowed(
     ))
 
     persist_events: list = []
+    started: set = set()
+    both_started = asyncio.Event()
     original = storage.update_column_sampled
 
     async def tracking_persist(**kwargs):
         persist_events.append(
             ("start", kwargs.get("model_name"), kwargs.get("column_name"))
         )
-        # Force overlap: hold the write open. If implementation does NOT
-        # parallelize across models, both writes still complete sequentially
-        # — which would pass the "no overlap" test but fail this one's
-        # "must overlap" check.
-        await asyncio.sleep(0.05)
+        started.add(kwargs.get("model_name"))
+        if len(started) >= 2:
+            both_started.set()
+        # Hold the write open until the other model's write starts; a sequential refresh times out and never overlaps.
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(both_started.wait(), timeout=5)
         result = await original(**kwargs)
         persist_events.append(
             ("stop", kwargs.get("model_name"), kwargs.get("column_name"))

@@ -1,4 +1,4 @@
-"""DEV-1667: ``inspect`` null-reference collection views.
+"""``inspect`` null-reference collection views.
 
 A null/omitted ``reference`` (``None`` or ``[]``) with ``entity_type`` in
 ``{model, datasource}`` renders the *collection* at that kind:
@@ -16,7 +16,7 @@ A null/omitted ``reference`` (``None`` or ``[]``) with ``entity_type`` in
 
 ``[]`` is normalized to ``None`` (no more "reference list must not be empty").
 Null/``[]`` with ``{column, measure, aggregation, memory}`` → ``ValueError``.
-Non-null ``str`` / ``list[str]`` keep their DEV-1588 / DEV-1612 behaviour.
+Non-null ``str`` / ``list[str]`` keep their existing behaviour.
 
 The collection path is DB-free (no engine needed).
 """
@@ -28,6 +28,7 @@ import contextlib
 import io
 import json
 import os
+import sys
 import tempfile
 from types import SimpleNamespace
 from typing import AsyncIterator, Iterator
@@ -36,6 +37,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
+from slayer.cli import _run_inspect, main
+from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Column,
@@ -45,7 +48,9 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.inspect.service import InspectService
+from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._cli_inprocess import run_cli_in_process
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +74,7 @@ async def _seed_two_ds(storage: YAMLStorage) -> None:
             Column(name="id", type=DataType.INT, primary_key=True),
             Column(name="status", type=DataType.TEXT, description="Order state."),
             Column(name="amount", type=DataType.DOUBLE, description="USD amount."),
+            Column(name="customer_id", type=DataType.INT, hidden=True),
         ],
         measures=[
             ModelMeasure(name="revenue", formula="amount:sum"),
@@ -107,6 +113,7 @@ async def _seed_single_ds(storage: YAMLStorage) -> None:
             Column(name="id", type=DataType.INT, primary_key=True),
             Column(name="status", type=DataType.TEXT, description="Order state."),
             Column(name="amount", type=DataType.DOUBLE, description="USD amount."),
+            Column(name="customer_id", type=DataType.INT, hidden=True),
         ],
         measures=[ModelMeasure(name="revenue", formula="amount:sum")],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
@@ -169,13 +176,14 @@ class TestModelCollectionCompactMarkdown:
         self, two_ds: YAMLStorage
     ) -> None:
         out = await _svc(two_ds).inspect(reference=None, entity_type="model")
-        assert "# Datasource: `mydb` — 2 model(s)" in out
-        assert "# Datasource: `otherdb` — 1 model(s)" in out
+        assert "# Datasource: `mydb` — 3 model(s)" in out
+        assert "# Datasource: `otherdb` — 2 model(s)" in out
 
     async def test_oneliner_per_model(self, two_ds: YAMLStorage) -> None:
         out = await _svc(two_ds).inspect(reference=None, entity_type="model")
         assert "- `orders` (3 cols; joins: `customers`)" in out
-        assert "- `customers` (1 cols; joins: _(none)_)" in out
+        # Reverse-reachable joins show in Markdown like in JSON.
+        assert "- `customers` (1 cols; joins: `orders`)" in out
         assert "- `events` (2 cols; joins: _(none)_)" in out
 
     async def test_no_verbose_block(self, two_ds: YAMLStorage) -> None:
@@ -188,8 +196,8 @@ class TestModelCollectionCompactMarkdown:
     async def test_hidden_model_excluded(self, two_ds: YAMLStorage) -> None:
         out = await _svc(two_ds).inspect(reference=None, entity_type="model")
         assert "secret" not in out
-        # mydb model count reflects only the 2 visible models.
-        assert "# Datasource: `mydb` — 2 model(s)" in out
+        # mydb model count reflects only the visible models (2 + the built-in spine).
+        assert "# Datasource: `mydb` — 3 model(s)" in out
 
     async def test_models_sorted_by_name_within_ds(
         self, two_ds: YAMLStorage
@@ -236,7 +244,7 @@ class TestModelCollectionCompactJson:
         )
         data = json.loads(out)
         mydb = next(d for d in data["datasources"] if d["data_source"] == "mydb")
-        assert mydb["model_count"] == 2
+        assert mydb["model_count"] == 3
         orders = next(m for m in mydb["models"] if m["name"] == "orders")
         assert orders["column_count"] == 3
         assert orders["joins_to"] == ["customers"]
@@ -254,7 +262,6 @@ class TestModelCollectionVerbose:
     async def test_single_ds_byte_identical_to_models_summary_md(
         self, single_ds: YAMLStorage
     ) -> None:
-        from slayer.mcp.server import create_mcp_server
 
         server = create_mcp_server(storage=single_ds)
         blocks, _ = await server.call_tool(
@@ -270,7 +277,6 @@ class TestModelCollectionVerbose:
     async def test_single_ds_byte_identical_to_models_summary_json(
         self, single_ds: YAMLStorage
     ) -> None:
-        from slayer.mcp.server import create_mcp_server
 
         server = create_mcp_server(storage=single_ds)
         blocks, _ = await server.call_tool(
@@ -298,7 +304,7 @@ class TestModelCollectionVerbose:
         # Full models_summary verbose markers, both datasources.
         assert "**Columns (3):**" in out          # orders in mydb
         assert "amount:sum" in out
-        assert "# Datasource: `otherdb` — 1 model(s)" in out
+        assert "# Datasource: `otherdb` — 2 model(s)" in out
 
     async def test_descriptions_max_chars_truncates(
         self, single_ds: YAMLStorage
@@ -341,7 +347,8 @@ class TestModelCollectionEdges:
                 DatasourceConfig(name="emptyds", type="postgres", host="h")
             )
             out = await _svc(st).inspect(reference=None, entity_type="model")
-            assert "# Datasource: `emptyds` — 0 model(s)" in out
+            assert "# Datasource: `emptyds` — 1 model(s)" in out
+            assert "- `time_spine` (1 cols; joins: _(none)_)" in out
 
     async def test_compact_false_empty_ds_json_is_valid(self) -> None:
         # CodeRabbit: an empty datasource must be a valid JSON object (not a
@@ -358,8 +365,8 @@ class TestModelCollectionEdges:
             )
             entry = json.loads(out)["datasources"][0]
             assert entry["datasource_name"] == "emptyds"
-            assert entry["model_count"] == 0
-            assert entry["models"] == []
+            assert entry["model_count"] == 1
+            assert [m["name"] for m in entry["models"]] == ["time_spine"]
 
 
 # ===========================================================================
@@ -371,7 +378,6 @@ class TestDatasourceCollection:
     async def test_compact_true_byte_identical_to_list_datasources(
         self, two_ds: YAMLStorage
     ) -> None:
-        from slayer.mcp.server import create_mcp_server
 
         server = create_mcp_server(storage=two_ds)
         blocks, _ = await server.call_tool(
@@ -424,7 +430,6 @@ class TestDatasourceCollection:
     async def test_empty_storage_message(
         self, empty_store: YAMLStorage
     ) -> None:
-        from slayer.mcp.server import create_mcp_server
 
         server = create_mcp_server(storage=empty_store)
         blocks, _ = await server.call_tool(
@@ -475,7 +480,7 @@ class TestKindGuard:
         self, two_ds: YAMLStorage, kind: str
     ) -> None:
         # [] must produce the SAME collection-unsupported error as None — NOT
-        # the old DEV-1612 "reference list must not be empty" message.
+        # the old "reference list must not be empty" message.
         svc = _svc(two_ds)
         with pytest.raises(ValueError, match="[Cc]ollection view") as exc:
             await svc.inspect(reference=[], entity_type=kind)
@@ -525,20 +530,18 @@ class TestMcpCollection:
     async def test_inspect_omitted_reference_is_collection(
         self, two_ds: YAMLStorage
     ) -> None:
-        from slayer.mcp.server import create_mcp_server
 
         server = create_mcp_server(storage=two_ds)
         blocks, _ = await server.call_tool(
             name="inspect", arguments={"entity_type": "model"},
         )
         out = blocks[0].text
-        assert "# Datasource: `mydb` — 2 model(s)" in out
+        assert "# Datasource: `mydb` — 3 model(s)" in out
         assert "- `orders` (3 cols; joins: `customers`)" in out
 
     async def test_inspect_reference_accepts_null_in_schema(
         self, two_ds: YAMLStorage
     ) -> None:
-        from slayer.mcp.server import create_mcp_server
 
         server = create_mcp_server(storage=two_ds)
         tool = {t.name: t for t in await server.list_tools()}["inspect"]
@@ -552,7 +555,6 @@ class TestMcpCollection:
     async def test_inspect_datasource_collection(
         self, two_ds: YAMLStorage
     ) -> None:
-        from slayer.mcp.server import create_mcp_server
 
         server = create_mcp_server(storage=two_ds)
         listing_blocks, _ = await server.call_tool(
@@ -579,7 +581,7 @@ class TestRestCollection:
     def test_no_reference_is_collection(self, rest_client: TestClient) -> None:
         r = rest_client.post("/inspect", json={"entity_type": "model"})
         assert r.status_code == 200
-        assert "# Datasource: `mydb` — 2 model(s)" in r.json()["result"]
+        assert "# Datasource: `mydb` — 3 model(s)" in r.json()["result"]
 
     def test_null_reference_is_collection(self, rest_client: TestClient) -> None:
         r = rest_client.post(
@@ -645,7 +647,6 @@ class TestCliCollection:
     ) -> None:
         # argparse nargs="*" yields [] with no positionals; the adapter maps it
         # to None → collection.
-        from slayer.cli import _run_inspect
 
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
@@ -654,28 +655,26 @@ class TestCliCollection:
                 storage=cli_storage,
             )
         out = buf.getvalue()
-        assert "# Datasource: `mydb` — 2 model(s)" in out
+        assert "# Datasource: `mydb` — 3 model(s)" in out
 
     def test_no_positional_unsupported_kind_exits_nonzero(
         self, cli_storage: YAMLStorage
     ) -> None:
-        from slayer.cli import _run_inspect
 
-        args = _inspect_args(reference=[], entity_type="column")
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf), pytest.raises(SystemExit) as exc:
-            _run_inspect(args=args, storage=cli_storage)
-        assert exc.value.code == 1
+        result = run_cli_in_process(
+            ["inspect", "--type", "column", "--storage", cli_storage.base_dir],
+        )
+        assert result.returncode == 1
         # Must fail with the collection-unsupported message, NOT the old
-        # DEV-1612 empty-list rejection (so it can't pass for the wrong reason).
-        out = buf.getvalue()
-        assert "Collection view" in out
-        assert "must not be empty" not in out
+        # empty-list rejection (so it can't pass for the wrong reason).
+        assert len(result.stderr.splitlines()) == 1
+        assert result.stderr.startswith("Error: ")
+        assert "Collection view" in result.stderr
+        assert "must not be empty" not in result.stderr
 
     def test_single_positional_still_bare(
         self, cli_storage: YAMLStorage
     ) -> None:
-        from slayer.cli import _run_inspect
 
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
@@ -695,9 +694,7 @@ class TestCliCollection:
     ) -> None:
         # End-to-end: ``slayer inspect --type model`` (no positional) must parse
         # and dispatch to the collection view (nargs="*").
-        import sys
 
-        from slayer.cli import main
 
         storage_dir = os.path.join(str(tmp_path), "store")
         os.makedirs(storage_dir, exist_ok=True)
@@ -708,7 +705,7 @@ class TestCliCollection:
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             main()
-        assert "# Datasource: `mydb` — 2 model(s)" in buf.getvalue()
+        assert "# Datasource: `mydb` — 3 model(s)" in buf.getvalue()
 
 
 # ---- SlayerClient ----------------------------------------------------------
@@ -726,16 +723,14 @@ class TestSlayerClientCollection:
     async def test_local_none_reference_collection(
         self, client_storage: YAMLStorage
     ) -> None:
-        from slayer.client.slayer_client import SlayerClient
 
         client = SlayerClient(storage=client_storage)
         out = await client.inspect(reference=None, entity_type="model")
-        assert "# Datasource: `mydb` — 2 model(s)" in out
+        assert "# Datasource: `mydb` — 3 model(s)" in out
 
     def test_remote_posts_null_reference(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from slayer.client.slayer_client import SlayerClient
 
         client = SlayerClient(url="http://localhost:5143")
         assert client._engine is None  # remote mode
@@ -756,7 +751,7 @@ class TestSlayerClientCollection:
 
 
 # ===========================================================================
-# DEV-1667 follow-ups from the test-plan Codex review
+# Follow-ups from the test-plan Codex review
 # ===========================================================================
 
 _BLOCK_SEP = "\n\n---\n\n"
@@ -800,7 +795,7 @@ class TestInvalidConfigTolerance:
             out = await _svc(st).inspect(reference=None, entity_type="model")
             assert "# Datasource: `zzz_broken` — (ERROR: invalid config)" in out
             # The healthy datasources still render.
-            assert "# Datasource: `mydb` — 2 model(s)" in out
+            assert "# Datasource: `mydb` — 3 model(s)" in out
 
     async def test_model_json_error_entry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -875,7 +870,7 @@ class TestHiddenColumnCount:
             js = json.loads(await _svc(st).inspect(
                 reference=None, entity_type="model", format="json",
             ))
-            widgets = js["datasources"][0]["models"][0]
+            widgets = next(m for m in js["datasources"][0]["models"] if m["name"] == "widgets")
             assert widgets["column_count"] == 2
 
 
@@ -890,7 +885,11 @@ class TestSortedJoins:
             )
             await st.save_model(SlayerModel(
                 name="hub", sql_table="h", data_source="ds",
-                columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+                columns=[
+                    Column(name="id", type=DataType.INT, primary_key=True),
+                    Column(name="z_id", type=DataType.INT, hidden=True),
+                    Column(name="a_id", type=DataType.INT, hidden=True),
+                ],
                 joins=[
                     ModelJoin(target_model="zebra", join_pairs=[["z_id", "id"]]),
                     ModelJoin(target_model="alpha", join_pairs=[["a_id", "id"]]),
@@ -928,7 +927,8 @@ class TestVerboseEmptyDsInheritance:
             out = await _svc(st).inspect(
                 reference=None, entity_type="model", compact=False,
             )
-            assert "Datasource 'emptyds' has no models." in out
+            assert "# Datasource: `emptyds` — 1 model(s)" in out
+            assert "## `time_spine`" in out
 
 
 class TestExactUnsupportedMessage:

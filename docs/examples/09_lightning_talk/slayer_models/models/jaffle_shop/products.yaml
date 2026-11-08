@@ -1,6 +1,7 @@
-version: 7
+version: 18
 name: products
 sql_table: products
+source_kind: table
 query_variables: {}
 data_source: jaffle_shop
 columns:
@@ -8,6 +9,7 @@ columns:
   sql: sku
   type: TEXT
   primary_key: true
+  unique: false
   description: Product identifier.
   label: SKU
   hidden: false
@@ -15,6 +17,7 @@ columns:
   sql: name
   type: TEXT
   primary_key: false
+  unique: false
   description: Product name.
   label: Product
   hidden: false
@@ -22,13 +25,16 @@ columns:
   sql: type
   type: TEXT
   primary_key: false
+  unique: false
   description: Product category (jaffle or beverage).
   label: Category
   hidden: false
 - name: price
   sql: price
   type: DOUBLE
+  db_type: DECIMAL(12,2)
   primary_key: false
+  unique: false
   description: List price, in dollars.
   label: Price
   hidden: false
@@ -40,16 +46,27 @@ columns:
   sql: description
   type: TEXT
   primary_key: false
+  unique: false
   description: Product description.
   label: Description
   hidden: false
+- name: ingredients
+  sql: ingredients
+  type: ARRAY
+  element_type: TEXT
+  db_type: VARCHAR[]
+  primary_key: false
+  unique: false
+  description: The supplies the product is made from, a list sorted by name.
+  label: Ingredients
+  hidden: false
 measures:
-- formula: sku:count_distinct
+- formula: count_distinct(sku)
   name: product_count
   label: Products
   description: Number of distinct products.
   type: INT
-- formula: price:avg
+- formula: avg(price)
   name: avg_price
   label: Average Price
   description: Average list price, in dollars.
@@ -59,3 +76,4 @@ joins: []
 filters: []
 description: "Menu items sold at the Jaffle Shop \u2014 jaffles and beverages."
 hidden: false
+access_tags: []

@@ -1,0 +1,359 @@
+"""Stage 7a.1 — typed plan shapes.
+
+`PlannedQuery` is the final output of the planning pipeline that the
+SQL generator (stage 7b) consumes. The shapes here are the typed
+containers; the planning logic that fills them lives in
+`planning.py` and `stage_planner.py`
+(other 7a substages).
+
+This file pins the field surface so downstream substages have a
+stable target.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from slayer.core.enums import DataType
+from slayer.core.keys import (
+    AggregateKey,
+    ArithmeticKey,
+    ColumnKey,
+    Phase,
+    StarKey,
+)
+from slayer.core.scope import StageColumn, StageSchema
+from slayer.ir.bound import BoundExpr
+from slayer.ir.planned import (
+    MaskEntry,
+    MaskTyping,
+    OrderEntry,
+    PlannedQuery,
+    Stage,
+    StageKind,
+    TransformLayer,
+    ValueSlot,
+)
+
+_BASE = Stage(kind=StageKind.BASE)
+
+
+# ---------------------------------------------------------------------------
+# ValueSlot
+# ---------------------------------------------------------------------------
+
+
+class TestValueSlot:
+    def test_minimal(self):
+        key = ColumnKey(path=(), leaf="status")
+        s = ValueSlot(id="s1", key=key, declared_name="status", phase=Phase.ROW)
+        assert s.id == "s1"
+        assert s.key == key
+        assert s.declared_name == "status"
+        assert s.public_name is None
+        assert s.public_aliases == []
+        assert s.hidden is False
+        assert s.label is None
+        assert s.type is None
+
+    def test_with_metadata(self):
+        key = AggregateKey(source=ColumnKey(path=(), leaf="rev"), agg="sum")
+        s = ValueSlot(
+            id="a1",
+            key=key,
+            declared_name="revenue_sum",
+            public_name="revenue_sum",
+            public_aliases=["revenue_sum"],
+            phase=Phase.AGGREGATE,
+            label="Total revenue",
+            type=DataType.DOUBLE,
+        )
+        assert s.public_name == "revenue_sum"
+        assert s.public_aliases == ["revenue_sum"]
+        assert s.label == "Total revenue"
+        assert s.type is DataType.DOUBLE
+
+    def test_hidden_no_public_alias(self):
+        # Order-only / filter-only refs intern as hidden slots with no
+        # public alias (P11).
+        key = AggregateKey(source=ColumnKey(path=(), leaf="rev"), agg="sum")
+        s = ValueSlot(
+            id="h1",
+            key=key,
+            declared_name="_h_revenue_sum",
+            phase=Phase.AGGREGATE,
+            hidden=True,
+        )
+        assert s.hidden is True
+        assert s.public_name is None
+        assert s.public_aliases == []
+
+    def test_multi_alias(self):
+        # P4: two measures with the same structural key but different
+        # declared `name`s share one slot internally; both aliases appear
+        # in the public projection.
+        key = AggregateKey(source=ColumnKey(path=(), leaf="rev"), agg="sum")
+        s = ValueSlot(
+            id="m1",
+            key=key,
+            declared_name="revenue_sum",
+            public_name="rev",
+            public_aliases=["rev", "revenue_sum"],
+            phase=Phase.AGGREGATE,
+        )
+        assert s.public_aliases == ["rev", "revenue_sum"]
+
+    def test_hidden_with_public_name_rejected(self):
+        key = AggregateKey(source=ColumnKey(path=(), leaf="rev"), agg="sum")
+        with pytest.raises(ValueError, match="hidden but carries"):
+            ValueSlot(
+                id="h",
+                key=key,
+                declared_name="_h",
+                phase=Phase.AGGREGATE,
+                hidden=True,
+                public_name="rev",
+            )
+
+    def test_hidden_with_public_aliases_rejected(self):
+        key = AggregateKey(source=ColumnKey(path=(), leaf="rev"), agg="sum")
+        with pytest.raises(ValueError, match="hidden but carries"):
+            ValueSlot(
+                id="h",
+                key=key,
+                declared_name="_h",
+                phase=Phase.AGGREGATE,
+                hidden=True,
+                public_aliases=["rev"],
+            )
+
+    def test_with_expression_payload(self):
+        # ValueSlot carries a BoundExpr so the SQL generator can
+        # render without a side map. After 7b.6 the planned-side
+        # BoundExpr is a re-export of the binder's class; the
+        # ``sql_text`` cache field is gone (rendering walks the
+        # ``value_key`` against the slot registry instead of a
+        # cached string).
+        key = ColumnKey(path=(), leaf="status")
+        expr = BoundExpr(value_key=key)
+        s = ValueSlot(
+            id="s1",
+            key=key,
+            declared_name="status",
+            phase=Phase.ROW,
+            expression=expr,
+        )
+        assert s.expression is expr
+        assert s.expression.value_key == key
+
+
+# ---------------------------------------------------------------------------
+# TransformLayer
+# ---------------------------------------------------------------------------
+
+
+class TestTransformLayer:
+    def test_basic(self):
+        layer = TransformLayer(op="cumsum", slot_ids=["t1", "t2"])
+        assert layer.op == "cumsum"
+        assert layer.slot_ids == ["t1", "t2"]
+
+    def test_time_shift_layer(self):
+        # time_shift transforms are emitted as self-join CTEs; the
+        # layer struct only carries the slot ids — generator picks the
+        # render strategy per op.
+        layer = TransformLayer(op="time_shift", slot_ids=["t1"])
+        assert layer.op == "time_shift"
+
+
+# ---------------------------------------------------------------------------
+# MaskEntry
+# ---------------------------------------------------------------------------
+
+
+class TestMaskEntry:
+    def test_field_mask(self):
+        m = MaskEntry(slot_id="s1", typing=MaskTyping.FIELD, stratum=0)
+        assert m.typing is MaskTyping.FIELD
+        assert m.stratum == 0
+
+    def test_measure_mask(self):
+        m = MaskEntry(slot_id="s2", typing=MaskTyping.MEASURE, stratum=1)
+        assert m.typing is MaskTyping.MEASURE
+
+
+# ---------------------------------------------------------------------------
+# OrderEntry
+# ---------------------------------------------------------------------------
+
+
+class TestOrderEntry:
+    # ``phase`` is required with no default; the
+    # producing scope is classified at emission-side lowering, not on the plan.
+
+    def test_asc(self):
+        o = OrderEntry(slot_id="s1", direction="asc", phase=Phase.ROW)
+        assert o.direction == "asc"
+
+    def test_desc(self):
+        o = OrderEntry(slot_id="s1", direction="desc", phase=Phase.ROW)
+        assert o.direction == "desc"
+
+    def test_phase_is_required(self):
+        with pytest.raises(ValueError):
+            OrderEntry(slot_id="s1", direction="asc")  # type: ignore[call-arg]
+
+    def test_scope_is_not_a_plan_field(self):
+        assert "scope" not in OrderEntry.model_fields
+
+    def test_nulls_defaults_to_the_dialect_default(self):
+        o = OrderEntry(slot_id="s1", direction="asc", phase=Phase.ROW)
+        assert o.nulls == "default"
+
+    def test_invalid_direction_rejected(self):
+        with pytest.raises(ValueError):
+            OrderEntry(
+                slot_id="s1", direction="random",  # type: ignore[arg-type]
+                phase=Phase.ROW,
+            )
+
+    def test_uppercase_direction_rejected(self):
+        # OrderEntry is planner-produced — strict lowercase is intentional.
+        # If user input ever feeds it directly, the caller must lowercase.
+        with pytest.raises(ValueError):
+            OrderEntry(
+                slot_id="s1", direction="ASC",  # type: ignore[arg-type]
+                phase=Phase.ROW,
+            )
+        with pytest.raises(ValueError):
+            OrderEntry(
+                slot_id="s1", direction="DESC",  # type: ignore[arg-type]
+                phase=Phase.ROW,
+            )
+
+
+# ---------------------------------------------------------------------------
+# PlannedQuery
+# ---------------------------------------------------------------------------
+
+
+class TestPlannedQuery:
+    def test_minimal_zero_dimension_count(self):
+        # The simplest possible PlannedQuery: just *:count on a model.
+        agg_key = AggregateKey(source=StarKey(), agg="count")
+        slot = ValueSlot(
+            id="a1",
+            key=agg_key,
+            declared_name="_count",
+            public_name="_count",
+            public_aliases=["_count"],
+            phase=Phase.AGGREGATE,
+            stage=_BASE,
+        )
+        pq = PlannedQuery(
+            source_relation="orders",
+            aggregate_slots=[slot],
+            projection=["a1"],
+        )
+        assert pq.source_relation == "orders"
+        assert pq.aggregate_slots == [slot]
+        assert pq.row_slots == []
+        assert pq.projection == ["a1"]
+        assert pq.transform_layers == []
+        assert pq.masks == []
+        assert pq.order == []
+        assert pq.limit is None
+        assert pq.offset is None
+        assert pq.stage_schema is None
+
+    def test_with_dimension_and_filter(self):
+        dim_key = ColumnKey(path=(), leaf="status")
+        dim_slot = ValueSlot(
+            id="d1",
+            key=dim_key,
+            declared_name="status",
+            public_name="status",
+            public_aliases=["status"],
+            phase=Phase.ROW,
+            stage=_BASE,
+        )
+        agg_key = AggregateKey(source=ColumnKey(path=(), leaf="rev"), agg="sum")
+        agg_slot = ValueSlot(
+            id="a1",
+            key=agg_key,
+            declared_name="revenue_sum",
+            public_name="revenue_sum",
+            public_aliases=["revenue_sum"],
+            phase=Phase.AGGREGATE,
+            stage=_BASE,
+        )
+        mask_key = ArithmeticKey(op="!=", operands=(dim_key, dim_key))
+        mask_slot = ValueSlot(
+            id="m1",
+            key=mask_key,
+            declared_name="__slayer_mask_0",
+            hidden=True,
+            phase=Phase.ROW,
+            stage=_BASE,
+        )
+        mask = MaskEntry(slot_id="m1", typing=MaskTyping.FIELD, stratum=0)
+        pq = PlannedQuery(
+            source_relation="orders",
+            row_slots=[dim_slot, mask_slot],
+            aggregate_slots=[agg_slot],
+            masks=[mask],
+            projection=["d1", "a1"],
+        )
+        assert len(pq.row_slots) == 2
+        assert len(pq.aggregate_slots) == 1
+        assert pq.masks == [mask]
+
+    def test_with_combined_expression(self):
+        # An ArithmeticKey-keyed slot at aggregate phase (max of operands).
+        a = AggregateKey(source=ColumnKey(path=(), leaf="rev"), agg="sum")
+        b = AggregateKey(source=StarKey(), agg="count")
+        arith = ArithmeticKey(op="/", operands=(a, b))
+        slot = ValueSlot(
+            id="e1",
+            key=arith,
+            declared_name="aov",
+            phase=Phase.AGGREGATE,
+            stage=_BASE,
+        )
+        pq = PlannedQuery(
+            source_relation="orders",
+            combined_expression_slots=[slot],
+        )
+        assert pq.combined_expression_slots == [slot]
+
+    def test_with_stage_schema(self):
+        # The planner emits a StageSchema so downstream stages can bind
+        # against it (P6).
+        ss = StageSchema(
+            relation_name="stage_a",
+            columns=[StageColumn(name="rev", sql_alias="rev")],
+        )
+        pq = PlannedQuery(source_relation="orders", stage_schema=ss)
+        assert pq.stage_schema is ss
+
+    def test_limit_offset(self):
+        pq = PlannedQuery(source_relation="orders", limit=10, offset=20)
+        assert pq.limit == 10
+        assert pq.offset == 20
+
+
+# ---------------------------------------------------------------------------
+# Smoke: types compose
+# ---------------------------------------------------------------------------
+
+
+class TestCompose:
+    def test_transform_layer_in_planned(self):
+        layer = TransformLayer(op="cumsum", slot_ids=["t1"])
+        pq = PlannedQuery(source_relation="orders", transform_layers=[layer])
+        assert pq.transform_layers == [layer]
+
+    def test_order_in_planned(self):
+        oe = OrderEntry(slot_id="s1", direction="desc", phase=Phase.AGGREGATE)
+        pq = PlannedQuery(source_relation="orders", order=[oe])
+        assert pq.order == [oe]

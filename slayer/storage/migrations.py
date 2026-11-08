@@ -11,26 +11,51 @@ Per-entity versions evolve independently. ``CURRENT_VERSIONS[entity]`` is the
 version that ``.save_*()`` will write today.
 """
 
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
-from collections.abc import Callable
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
-    "SlayerModel": 8,
-    "SlayerQuery": 3,
-    "DatasourceConfig": 2,
-    "Memory": 2,
+    "SlayerModel": 18,
+    "SlayerQuery": 9,
+    "DatasourceConfig": 3,
+    "Memory": 7,
     "Embedding": 1,
 }
 
+_document: ContextVar[str | None] = ContextVar("slayer_migrated_document", default=None)
+
+
+@contextmanager
+def migrating_document(label: str | None) -> Iterator[None]:
+    """Name the stored document whose nested documents migrate inside the block."""
+    token = _document.set(label or _document.get())
+    try:
+        yield
+    finally:
+        _document.reset(token)
+
+
+def document_label(data: dict) -> str | None:
+    """``data``'s own name, else the enclosing stored document's."""
+    name = data.get("name")
+    return name if isinstance(name, str) and name else _document.get()
+
 # Registry: (entity_name, source_version) -> converter producing source_version+1.
 _REGISTRY: dict[tuple[str, int], Callable[[dict], dict]] = {}
+# Registry keys whose converter runs only on stored (explicitly versioned) dicts.
+_STORED_ONLY: set[tuple[str, int]] = set()
 
 
 def register_migration(
-    entity: str, source_version: int
+    entity: str, source_version: int, stored_only: bool = False,
 ) -> Callable[[Callable[[dict], dict]], Callable[[dict], dict]]:
     """Register a converter from ``source_version`` to ``source_version+1``.
+
+    A ``stored_only`` converter runs only on a dict that carries an explicit
+    ``version`` (a stored document); a version-less fresh payload skips it.
 
     Used as a decorator::
 
@@ -47,9 +72,107 @@ def register_migration(
                 f"Duplicate migration for {entity} v{source_version}"
             )
         _REGISTRY[key] = fn
+        if stored_only:
+            _STORED_ONLY.add(key)
         return fn
 
     return deco
+
+
+def stamp_stored(data: Any) -> Any:
+    """Mark a stored dict without ``version`` as v1, so stored-only steps run on it."""
+    if isinstance(data, dict) and "version" not in data:
+        return {**data, "version": 1}
+    return data
+
+
+def migrate_nested(entity: str, data: Any) -> Any:
+    """``migrate`` a nested document, keeping an absent ``version`` absent for the stored-only gate."""
+    out = migrate(entity, data)
+    if isinstance(data, dict) and "version" not in data:
+        out.pop("version", None)
+    return out
+
+
+@register_migration("SlayerModel", 9)
+def _model_v9_to_v10(data: dict) -> dict:
+    """v10: per-doc no-op; the cross-document exact-inverse join dedup runs in
+    the storage load path (``_migrate_and_refine_on_load``)."""
+    return data
+
+
+@register_migration("SlayerModel", 10)
+def _model_v10_to_v11(data: dict) -> dict:
+    """v11: per-doc no-op; join-key canonicalisation needs the peer, so it runs
+    in the storage load path (``_migrate_and_refine_on_load``)."""
+    return data
+
+
+@register_migration(entity="DatasourceConfig", source_version=2)
+def _datasource_v2_to_v3(data: dict) -> dict:
+    """v3: per-doc no-op; the library-name granularity rename rewrites dependants, so it runs in the
+    storage load path on every load."""
+    return data
+
+
+def _blank(v: Any) -> bool:
+    return isinstance(v, str) and not v.strip()
+
+
+@register_migration(entity="SlayerModel", source_version=11)
+def _model_v11_to_v12(data: dict) -> dict:
+    """v12: drop blank formulas / param defaults ("absent") and params named `value` (now reserved)."""
+    aggs = data.get("aggregations")
+    if isinstance(aggs, list):
+        data["aggregations"] = [_drop_blank_agg_fields(a) if isinstance(a, dict) else a for a in aggs]
+    return data
+
+
+@register_migration(entity="SlayerModel", source_version=14)
+def _model_v14_to_v15(data: dict) -> dict:
+    """v15: drop the cached ``backing_query_sql`` (a ``dry_run`` query renders it); ``access_tags`` defaults to public."""
+    data.pop("backing_query_sql", None)
+    return data
+
+
+def _dead_param(p: Any) -> bool:
+    # Blank default = none; a `value` param could only clobber the aggregated column.
+    return isinstance(p, dict) and (_blank(p.get("sql")) or p.get("name") == "value")
+
+
+def _drop_blank_agg_fields(agg: dict) -> dict:
+    out = {k: v for k, v in agg.items() if not (k == "formula" and _blank(v))}
+    if isinstance(out.get("params"), list):
+        out["params"] = [p for p in out["params"] if not _dead_param(p)]
+    return out
+
+
+# Legacy quoted ``strict`` tokens; blank/whitespace counts as false. Anything
+# outside both sets fails closed rather than silently reading as broadcast.
+_STRICT_TRUE_TOKENS = frozenset({"1", "true", "t", "yes", "y", "on"})
+_STRICT_FALSE_TOKENS = frozenset({"0", "false", "f", "no", "n", "off", ""})
+
+
+@register_migration(entity="SlayerQuery", source_version=3)
+def _query_v3_to_v4(data: dict) -> dict:
+    """v4: retire ``strict`` — ``strict: true`` → ``to_many_handling: "error"``;
+    ``false``/absent drops to the ``"broadcast"`` default."""
+    if "strict" not in data:
+        return data
+    strict = data.pop("strict")
+    if isinstance(strict, str):
+        token = strict.strip().lower()
+        if token in _STRICT_TRUE_TOKENS:
+            strict = True
+        elif token in _STRICT_FALSE_TOKENS:
+            strict = False
+        else:
+            raise ValueError(
+                f"Unrecognized legacy strict value {strict!r}; use to_many_handling instead"
+            )
+    if strict:
+        data.setdefault("to_many_handling", "error")
+    return data
 
 
 def migrate(entity: str, data: Any) -> Any:
@@ -67,6 +190,7 @@ def migrate(entity: str, data: Any) -> Any:
         raise KeyError(f"Unknown entity '{entity}' in migrate()")
     data = dict(data)  # never mutate caller's payload
     target = CURRENT_VERSIONS[entity]
+    stored = "version" in data
     current = int(data.get("version", 1))
     while current < target:
         fn = _REGISTRY.get((entity, current))
@@ -74,7 +198,8 @@ def migrate(entity: str, data: Any) -> Any:
             raise RuntimeError(
                 f"No migration registered for {entity} v{current} → v{current + 1}"
             )
-        data = fn(dict(data))
+        if stored or (entity, current) not in _STORED_ONLY:
+            data = fn(dict(data))
         current += 1
         data["version"] = current
     data.setdefault("version", target)
@@ -85,12 +210,18 @@ def migrate(entity: str, data: Any) -> Any:
 # module to avoid a circular import (the v2 module imports BUILTIN_AGGREGATIONS
 # from slayer.core.enums and must register against the register_migration
 # decorator defined above).
-from slayer.storage import v2_migration  # noqa: E402, F401
-from slayer.storage import v2_memory_migration  # noqa: E402, F401
-from slayer.storage import v2_datasource_migration  # noqa: E402, F401
-from slayer.storage import v3_migration  # noqa: E402, F401
-from slayer.storage import v4_migration  # noqa: E402, F401
-from slayer.storage import v5_migration  # noqa: E402, F401
-from slayer.storage import v6_migration  # noqa: E402, F401
-from slayer.storage import v7_migration  # noqa: E402, F401
-from slayer.storage import v8_migration  # noqa: E402, F401
+from slayer.storage import v2_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import v2_memory_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import v2_datasource_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import v3_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import v4_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import v5_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import v6_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import v7_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import v8_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import v9_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import rank_direction_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import stored_repair_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import sql_string_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import time_dimension_text_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import distinct_column_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here

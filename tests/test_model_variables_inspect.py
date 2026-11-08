@@ -6,7 +6,8 @@ bump), so an agent can learn the query contract without reading the SQL.
 """
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.query import extract_model_variables
 from slayer.inspect.model_render import (
     model_skeleton_fields,
     render_model_skeleton,
@@ -53,3 +54,24 @@ def test_variables_are_derived_not_persisted_no_schema_bump():
     dumped = model.model_dump()
     assert "variables" not in dumped
     assert dumped["version"] == SlayerModel.model_fields["version"].default
+
+
+def _measure_model(**kw) -> SlayerModel:
+    return SlayerModel(
+        name="orders", sql_table="orders", data_source="ds",
+        columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
+        measures=[ModelMeasure(name="amt_scaled", formula="amount:sum * {k}")],
+        **kw,
+    )
+
+
+def test_saved_measure_placeholder_required():
+    assert extract_model_variables(_measure_model()).required == ["k"]
+    assert model_skeleton_fields(model=_measure_model())["variables"]["required"] == ["k"]
+
+
+def test_defaulted_saved_measure_placeholder_optional():
+    model = _measure_model(query_variables={"k": 2})
+    variables = extract_model_variables(model)
+    assert variables.required == []
+    assert variables.optional == ["k"]

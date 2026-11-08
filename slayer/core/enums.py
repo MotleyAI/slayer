@@ -1,8 +1,8 @@
 """Core enums for SLayer."""
 
-import datetime  # noqa: F401  (kept for downstream imports of TimeGranularity)
+import datetime
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 
 class StrEnum(str, Enum):
@@ -11,26 +11,9 @@ class StrEnum(str, Enum):
 
 
 class DataType(StrEnum):
-    """SLayer data types — values match sqlglot's ``exp.DataType.Type``
-    byte-for-byte so SQL generation can ``CAST`` to the declared type without
-    a translation map. (DEV-1361.)
-
-    ``UNKNOWN`` is the explicit *opaque* type: the column's database type was
-    detected but SLayer cannot operate on it — it has no default btree/hash
-    operator class, which is exactly what ``GROUP BY`` / ``DISTINCT`` require
-    (``json``, ``xml``, the geometric / PostGIS types, range types, ...).
-    Comparable types keep working as ``TEXT`` even when unmapped — ``jsonb``,
-    ``uuid``, ``bytea``, arrays and ``tsvector`` are all groupable and are
-    deliberately *not* opaque. ``slayer.engine.ingestion._OPAQUE_SA_TYPE_NAMES``
-    is the source of truth for that classification. Such a column is
-    **stored and displayed** — its raw DB type string is kept on
-    ``Column.db_type`` — but it is never used in ``GROUP BY``, ``DISTINCT``,
-    aggregation, or ``CAST``, because those operations fail at the database
-    (e.g. "could not identify an equality operator for type point"). Use the
-    :attr:`is_opaque` property rather than comparing against the member
-    directly. ``UNKNOWN`` is also a real ``sqlglot`` type name, so the
-    byte-equality invariant above still holds.
-    """
+    # No docstring on purpose — it would ship to agents in the MCP query schema.
+    # Values match sqlglot exp.DataType.Type byte-for-byte. UNKNOWN = opaque
+    # (no DB equality operator): stored/displayed, never grouped/aggregated/CAST — see is_opaque.
 
     TEXT = "TEXT"
     INT = "INT"
@@ -39,17 +22,32 @@ class DataType(StrEnum):
     DATE = "DATE"
     TIMESTAMP = "TIMESTAMP"
     UNKNOWN = "UNKNOWN"
+    ARRAY = "ARRAY"
 
     @property
     def is_opaque(self) -> bool:
         """True when SLayer can store/display the column but not operate on it."""
         return self is DataType.UNKNOWN
 
+    @property
+    def is_list(self) -> bool:
+        return self is DataType.ARRAY
 
-# DEV-1361: lenient before-validator absorbs legacy lowercase type spellings
-# from older agent input (MCP/REST/CLI), pseudo-types (count/sum/...) drop to
-# None so the field falls through to its default. Used by both Column and
-# ModelMeasure validators in slayer/core/models.py.
+
+#: The types a list's elements may have (``UNKNOWN``: opaque elements).
+ELEMENT_TYPES: frozenset[DataType] = frozenset(t for t in DataType if t is not DataType.ARRAY)
+
+
+def type_display(data_type: Optional[DataType], element_type: Optional[DataType] = None) -> str:
+    """``ARRAY<TEXT>`` for a list, else the type's value (``?`` when unknown)."""
+    if data_type is None:
+        return "?"
+    if data_type is DataType.ARRAY:
+        return f"ARRAY<{element_type.value if element_type is not None else 'UNKNOWN'}>"
+    return data_type.value
+
+
+# Legacy lowercase type spellings; pseudo-types drop to None (field default fires).
 _LEGACY_DATATYPE_ALIASES: dict[str, str | None] = {
     # Pre-rename canonical values.
     "string": "TEXT",
@@ -71,13 +69,8 @@ _LEGACY_DATATYPE_ALIASES: dict[str, str | None] = {
 
 
 def _coerce_legacy_datatype(v: Any) -> Any:
-    """Map legacy lowercase ``DataType`` strings to current canonical values.
-
-    Pseudo-types resolve to ``None`` so the calling validator can drop them
-    and let the field default fire. Already-canonical values, enum instances,
-    and unknown strings pass through untouched (Pydantic's enum coercion will
-    raise on unknown).
-    """
+    """Map legacy lowercase ``DataType`` strings to canonical values; pseudo-types
+    -> None; everything else passes through (enum coercion raises on unknown)."""
     if isinstance(v, str):
         mapped = _LEGACY_DATATYPE_ALIASES.get(v)
         if v in _LEGACY_DATATYPE_ALIASES:
@@ -92,9 +85,7 @@ class TimeGranularity(StrEnum):
     HOUR = "hour"
     DAY = "day"
     WEEK = "week"
-    # DEV-1572: Sunday-anchored week (weeks start on Sunday, end on Saturday).
-    # WEEK is Monday-anchored (ISO-8601); WEEK_SUNDAY exists so Metabase week
-    # breakouts — which use Sunday weeks — bucket the way Metabase asked for.
+    # Sunday-anchored week (Metabase convention); WEEK is Monday-anchored ISO-8601.
     WEEK_SUNDAY = "week_sunday"
     MONTH = "month"
     QUARTER = "quarter"
@@ -146,6 +137,98 @@ class TimeGranularity(StrEnum):
             return date.replace(month=12, day=31)
         raise ValueError(f"Unexpected granularity: {self}")
 
+    def nests_into(self, other: "TimeGranularity") -> bool:
+        """True iff every ``other`` boundary is a boundary of this bucket."""
+        return boundaries_nest(
+            fine=(self, 1, natural_origin(self)), coarse=(other, 1, natural_origin(other)),
+        )
+
+
+GRANULARITY_NAMES: frozenset[str] = frozenset(g.value for g in TimeGranularity)
+
+
+class DatePart(StrEnum):
+    """A ``date_part`` extraction; ``week``/``iso_year``/``day_of_week`` follow ISO-8601 (Mon=1…Sun=7)."""
+
+    YEAR = "year"
+    ISO_YEAR = "iso_year"
+    QUARTER = "quarter"
+    MONTH = "month"
+    WEEK = "week"
+    DAY = "day"
+    DAY_OF_WEEK = "day_of_week"
+    DAY_OF_YEAR = "day_of_year"
+    HOUR = "hour"
+    MINUTE = "minute"
+    SECOND = "second"
+
+
+# Lowercased spellings meaning one ``date_part`` part, as ``<alias>(x)`` and as a part word.
+DATE_PART_ALIASES: dict[str, DatePart] = {
+    "isodow": DatePart.DAY_OF_WEEK, "day_of_week": DatePart.DAY_OF_WEEK,
+    "doy": DatePart.DAY_OF_YEAR, "dayofyear": DatePart.DAY_OF_YEAR, "day_of_year": DatePart.DAY_OF_YEAR,
+    "isoyear": DatePart.ISO_YEAR, "iso_year": DatePart.ISO_YEAR,
+    "isoweek": DatePart.WEEK, "iso_week": DatePart.WEEK, "weekofyear": DatePart.WEEK,
+    "dayofmonth": DatePart.DAY, "day_of_month": DatePart.DAY,
+}
+# Weekday names whose numbering differs across databases.
+AMBIGUOUS_WEEKDAY_NAMES: frozenset[str] = frozenset({"dow", "dayofweek", "weekday"})
+# Date spellings a custom aggregation or granularity may not take (lowercased).
+RESERVED_DATE_SYNTAX_NAMES: frozenset[str] = frozenset({*DATE_PART_ALIASES, "extract"})
+
+
+def ambiguous_weekday_message(name: str) -> str:
+    return (
+        f"{name!r} has conflicting weekday numberings across databases; write "
+        f"date_part('day_of_week', x) (ISO, Monday = 1 … Sunday = 7) or "
+        f"date_part('day_of_week', x) % 7 (Sunday = 0 … Saturday = 6)."
+    )
+
+
+SUB_DAY_GRANULARITIES: frozenset[TimeGranularity] = frozenset({
+    TimeGranularity.SECOND, TimeGranularity.MINUTE, TimeGranularity.HOUR,
+})
+
+
+_EPOCH = datetime.datetime(2000, 1, 1)
+_NATURAL_ORIGINS: dict[TimeGranularity, datetime.datetime] = {
+    TimeGranularity.WEEK: datetime.datetime(2000, 1, 3),         # a Monday
+    TimeGranularity.WEEK_SUNDAY: datetime.datetime(2000, 1, 2),  # a Sunday
+}
+UNIT_SECONDS: dict[TimeGranularity, int] = {
+    TimeGranularity.SECOND: 1, TimeGranularity.MINUTE: 60, TimeGranularity.HOUR: 3600,
+    TimeGranularity.DAY: 86400, TimeGranularity.WEEK: 604800, TimeGranularity.WEEK_SUNDAY: 604800,
+}
+UNIT_MONTHS: dict[TimeGranularity, int] = {
+    TimeGranularity.MONTH: 1, TimeGranularity.QUARTER: 3, TimeGranularity.YEAR: 12,
+}
+
+# (base, multiple, origin): boundaries at origin + k × multiple × base.
+GranularityParts = tuple[TimeGranularity, int, datetime.datetime]
+
+
+def natural_origin(unit: TimeGranularity) -> datetime.datetime:
+    """A boundary of ``unit``'s natural alignment."""
+    return _NATURAL_ORIGINS.get(unit, _EPOCH)
+
+
+def boundaries_nest(*, fine: GranularityParts, coarse: GranularityParts) -> bool:
+    """Every ``coarse`` boundary is a ``fine`` boundary, decided arithmetically."""
+    b1, m1, o1 = fine
+    b2, m2, o2 = coarse
+    if b1 in UNIT_MONTHS and b2 in UNIT_MONTHS:
+        l1, l2 = UNIT_MONTHS[b1] * m1, UNIT_MONTHS[b2] * m2
+        months = (o2.year * 12 + o2.month) - (o1.year * 12 + o1.month)
+        same_day = (o1.day, o1.time()) == (o2.day, o2.time())
+        return l2 % l1 == 0 and same_day and months % l1 == 0
+    if b1 not in UNIT_SECONDS:
+        return False
+    l1 = UNIT_SECONDS[b1] * m1
+    offset = int((o2 - o1).total_seconds())
+    if b2 in UNIT_SECONDS:
+        return (UNIT_SECONDS[b2] * m2) % l1 == 0 and offset % l1 == 0
+    return UNIT_SECONDS[TimeGranularity.DAY] % l1 == 0 and offset % l1 == 0
+
 
 class OrderDirection(StrEnum):
     ASC = "asc"
@@ -155,6 +238,31 @@ class OrderDirection(StrEnum):
 class JoinType(StrEnum):
     LEFT = "left"
     INNER = "inner"
+
+
+class JoinCardinality(StrEnum):
+    """Arity of a join, read source->target ("many orders -> one customer").
+
+    Descriptive metadata, orthogonal to ``JoinType`` — it does not change the
+    emitted join.
+    """
+    ONE_TO_ONE = "one_to_one"
+    ONE_TO_MANY = "one_to_many"
+    MANY_TO_ONE = "many_to_one"
+    MANY_TO_MANY = "many_to_many"
+
+
+def invert_cardinality(
+    cardinality: "JoinCardinality | None",
+) -> "JoinCardinality | None":
+    """Cardinality of the reverse edge; one_to_one / many_to_many / None are
+    self-inverse.
+    """
+    if cardinality is JoinCardinality.MANY_TO_ONE:
+        return JoinCardinality.ONE_TO_MANY
+    if cardinality is JoinCardinality.ONE_TO_MANY:
+        return JoinCardinality.MANY_TO_ONE
+    return cardinality
 
 
 # The kind of database object a ``sql_table``-mode model points at. A plain
@@ -177,17 +285,109 @@ BUILTIN_AGGREGATIONS: frozenset[str] = frozenset({
     "stddev_samp", "stddev_pop",
     "var_samp", "var_pop",
     "corr", "covar_samp", "covar_pop",
+    "collect",
 })
 
-# DEV-1576: unambiguous aggregation-name aliases that LLM agents routinely
-# emit. ``normalize_aggregation_name`` lowercases the incoming token and maps
-# it through this table; the result is only adopted when it lands in
-# ``BUILTIN_AGGREGATIONS``. ``stddev``/``var``/``variance`` map to the *sample*
-# variants, matching Postgres' bare ``stddev``/``variance`` defaults.
+# Aggregations whose result is a list of their input's type.
+LIST_AGGREGATIONS: frozenset[str] = frozenset({"collect"})
+
+# Named once so classifier, planner and renderer agree.
+RANKED_AGGREGATIONS = ("first", "last")
+
+# Transforms that require a time dimension for ORDER BY
+TIME_TRANSFORMS = {
+    "cumsum",
+    "change",
+    "change_pct",
+    "time_shift",
+    "first",
+    "last",
+    "lag",
+    "lead",
+    "consecutive_periods",
+}
+
+# Transforms that don't need time ordering
+TIMELESS_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}
+
+ALL_TRANSFORMS = TIME_TRANSFORMS | TIMELESS_TRANSFORMS
+
+# Default partition is the whole result set, not the group-by dimensions;
+# ``partition_by=`` opts into per-partition ranking.
+RANK_FAMILY_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}
+
+# Time-ordered transforms that reduce along the axis: one value per partition
+# (Axiom 11.3b). As an aggregation-source constituent they collapse to an exact
+# per-partition pick.
+AXIS_COLLAPSING_TRANSFORMS = frozenset({"first", "last"})
+
+# ``classify_aggregation`` buckets each aggregation by result-vs-source relation;
+# slot type and display format both read the bucket, so the axes cannot drift.
+
+# Result is always an integer count, independent of the source column.
+INTEGER_AGGREGATIONS: frozenset[str] = frozenset({
+    "count", "count_distinct", "count_distinct_approx",
+})
+
+
+def builtin_empty_value(aggregation: str) -> Optional[int]:
+    """A built-in aggregation's value over no rows: 0 for the count family, else NULL."""
+    return 0 if aggregation in INTEGER_AGGREGATIONS else None
+# Result is a float in the SAME units as the source (display format inherited).
+FLOAT_SOURCE_UNIT_AGGREGATIONS: frozenset[str] = frozenset({
+    "avg", "weighted_avg", "median", "percentile",
+    "stddev_samp", "stddev_pop",
+})
+# Result is a float in different units (dimensionless / squared / product), so it
+# carries a plain FLOAT format, not the source's units.
+FLOAT_PLAIN_AGGREGATIONS: frozenset[str] = frozenset({
+    "corr", "var_samp", "var_pop", "covar_samp", "covar_pop",
+})
+# Result preserves the source column's type AND format.
+PRESERVING_AGGREGATIONS: frozenset[str] = frozenset({
+    "sum", "min", "max", "first", "last",
+})
+
+
+class AggregationValueClass(StrEnum):
+    """How an aggregation's result relates to its source column, for slot-type
+    and display-format inference."""
+
+    COUNT = "count"                            # INT type, INTEGER format
+    PRESERVING = "preserving"                  # source type & format
+    FLOAT_SOURCE_UNITS = "float_source_units"  # DOUBLE type, source format (else FLOAT)
+    FLOAT_PLAIN = "float_plain"                # DOUBLE type, plain FLOAT format
+    LIST = "list"                              # ARRAY of the source type, no format
+
+
+def classify_aggregation(
+    *, measure_name: Optional[str], aggregation: str, source_type: Optional[DataType],
+) -> AggregationValueClass:
+    """Bucket an aggregation for slot-type / display-format inference.
+
+    ``measure_name == "*"`` (``count(*)``) and a boolean ``sum`` (a count of trues) are
+    COUNT; custom/unknown aggregations fall through to PRESERVING (inherit source type & format).
+    """
+    if measure_name == "*":
+        return AggregationValueClass.COUNT
+    if aggregation in INTEGER_AGGREGATIONS:
+        return AggregationValueClass.COUNT
+    if aggregation in LIST_AGGREGATIONS:
+        return AggregationValueClass.LIST
+    if source_type is DataType.BOOLEAN and aggregation == "sum":
+        return AggregationValueClass.COUNT
+    if aggregation in FLOAT_SOURCE_UNIT_AGGREGATIONS:
+        return AggregationValueClass.FLOAT_SOURCE_UNITS
+    if aggregation in FLOAT_PLAIN_AGGREGATIONS:
+        return AggregationValueClass.FLOAT_PLAIN
+    return AggregationValueClass.PRESERVING
+
+# Aliases agents routinely emit; ``stddev``/``var``/``variance`` map to the
+# sample variants, matching Postgres defaults.
 AGGREGATION_ALIASES: dict[str, str] = {
     "countd": "count_distinct",
     "countdistinct": "count_distinct",  # also matches "countDistinct" once lowercased
-    # DEV-1595: approximate-distinct spellings agents / dbt-to-cube emit.
+    # Approximate-distinct spellings agents / dbt-to-cube emit.
     "approx_count_distinct": "count_distinct_approx",
     "countdistinctapprox": "count_distinct_approx",  # matches "countDistinctApprox" lowercased
     "stddev": "stddev_samp",
@@ -197,21 +397,9 @@ AGGREGATION_ALIASES: dict[str, str] = {
 
 
 def normalize_aggregation_name(name: str) -> str:
-    """Coerce an aggregation token to its canonical SLayer spelling.
-
-    Lowercases the token and applies :data:`AGGREGATION_ALIASES`. The
-    normalized form is only adopted when it is a real built-in aggregation;
-    otherwise the **original** string is returned unchanged so genuinely
-    unknown names still raise downstream (and custom aggregation names keep
-    their exact casing). Examples::
-
-        "countd"        -> "count_distinct"
-        "countDistinct" -> "count_distinct"
-        "stddev"        -> "stddev_samp"
-        "SUM"           -> "sum"
-        "myCustomAgg"   -> "myCustomAgg"  (unchanged — not a builtin)
-        "bogus"         -> "bogus"        (unchanged — still raises later)
-    """
+    """Lowercase + alias-map to the canonical spelling; adopted only when the
+    result is a builtin, else the original returns unchanged (custom names keep
+    casing, unknown names still raise downstream)."""
     lowered = name.lower()
     candidate = AGGREGATION_ALIASES.get(lowered, lowered)
     return candidate if candidate in BUILTIN_AGGREGATIONS else name
@@ -220,13 +408,14 @@ def normalize_aggregation_name(name: str) -> str:
 # Built-in aggregation SQL formulas (for aggregations that use a template).
 # {value} = measure's SQL expression; {param_name} = parameter values.
 # Note: percentile is dialect-dependent (no single template works on
-# SQLite/ClickHouse/MySQL) and lives in generator._build_percentile instead.
+# SQLite/ClickHouse/MySQL) and lives in render_aggregate instead.
 BUILTIN_AGGREGATION_FORMULAS: dict[str, str] = {
-    "weighted_avg": "SUM({value} * {weight}) / NULLIF(SUM({weight}), 0)",
+    # A NULL value's weight is skipped like the value; ``* 1.0`` keeps integer inputs from dividing as integers.
+    "weighted_avg": "SUM({value} * {weight}) * 1.0 / NULLIF(SUM(CASE WHEN {value} IS NOT NULL THEN {weight} END), 0)",
 }
 
 # Built-in aggregations that require specific parameters.
-# Percentile's required-param check lives in generator._build_percentile.
+# Percentile's required-param check lives in render_aggregate.
 BUILTIN_AGGREGATION_REQUIRED_PARAMS: dict[str, list[str]] = {
     "weighted_avg": ["weight"],
     "corr": ["other"],
@@ -234,50 +423,55 @@ BUILTIN_AGGREGATION_REQUIRED_PARAMS: dict[str, list[str]] = {
     "covar_pop": ["other"],
 }
 
-# Aggregations that only make sense on numeric-valued measures. Applying them
-# to a non-numeric measure (e.g. AVG on a VARCHAR column) is always invalid
-# and is rejected during query enrichment rather than at SQL execution time.
-# min, max, count, count_distinct, first, last work on any type and are NOT
-# in this set.
+# Declared parameter order for built-in parametric aggregations: positional
+# call values fold onto these names at binding (`percentile(x, 0.9)` ≡ `p=0.9`).
+# first/last are absent on purpose — their positional arg is the ranking column.
+BUILTIN_AGGREGATION_PARAM_ORDER: dict[str, list[str]] = {
+    "percentile": ["p"],
+    **BUILTIN_AGGREGATION_REQUIRED_PARAMS,
+}
+
+# Rejected at binding on non-numeric measures; min/max/count*/first/last
+# work on any type and are deliberately absent.
 NUMERIC_ONLY_AGGREGATIONS: frozenset[str] = frozenset({
     "sum", "avg", "median", "weighted_avg", "percentile",
     "stddev_samp", "stddev_pop", "var_samp", "var_pop",
     "corr", "covar_samp", "covar_pop",
 })
 
+# Aggregations that read a boolean input as its integer (true 1, false 0); min / max
+# convert the result back to BOOLEAN.
+BOOLEAN_RESTORED_AGGREGATIONS: frozenset[str] = frozenset({"min", "max"})
+BOOLEAN_LOWERED_AGGREGATIONS: frozenset[str] = NUMERIC_ONLY_AGGREGATIONS | BOOLEAN_RESTORED_AGGREGATIONS
 
-# Default aggregations applicable to a column based on its data type, when the
-# column has no explicit ``allowed_aggregations`` whitelist. Used by the engine
-# to gate ``column:agg`` expressions (e.g., ``revenue:sum`` requires ``sum`` to
-# be eligible for the ``revenue`` column's data type).
+
+# Per-type default whitelist, used when a column declares no explicit
+# ``allowed_aggregations``.
 _NUMERIC_AGGREGATIONS: frozenset[str] = frozenset({
     "sum", "avg", "min", "max", "count", "count_distinct", "count_distinct_approx",
     "median", "weighted_avg", "percentile", "first", "last",
     "stddev_samp", "stddev_pop", "var_samp", "var_pop",
-    "corr", "covar_samp", "covar_pop",
+    "corr", "covar_samp", "covar_pop", "collect",
+})
+_ORDERED_AGGREGATIONS: frozenset[str] = frozenset({
+    "count", "count_distinct", "count_distinct_approx", "first", "last", "min", "max", "collect",
 })
 
 DEFAULT_AGGREGATIONS_BY_TYPE: dict[DataType, frozenset[str]] = {
     # INT and DOUBLE share the same numeric aggregation set — the type
-    # narrowing is for CAST emission, not for what's aggregable. (DEV-1361.)
+    # narrowing is for CAST emission, not for what's aggregable.
     DataType.INT: _NUMERIC_AGGREGATIONS,
     DataType.DOUBLE: _NUMERIC_AGGREGATIONS,
-    DataType.TEXT: frozenset({
-        "count", "count_distinct", "count_distinct_approx", "first", "last", "min", "max",
-    }),
-    DataType.BOOLEAN: frozenset({
-        "count", "count_distinct", "count_distinct_approx", "sum", "min", "max", "first", "last",
-    }),
-    DataType.DATE: frozenset({
-        "count", "count_distinct", "count_distinct_approx", "first", "last", "min", "max",
-    }),
-    DataType.TIMESTAMP: frozenset({
-        "count", "count_distinct", "count_distinct_approx", "first", "last", "min", "max",
-    }),
+    DataType.TEXT: _ORDERED_AGGREGATIONS,
+    # A boolean is its integer inside a numeric aggregation.
+    DataType.BOOLEAN: _NUMERIC_AGGREGATIONS,
+    DataType.DATE: _ORDERED_AGGREGATIONS,
+    DataType.TIMESTAMP: _ORDERED_AGGREGATIONS,
+    # A list counts as a whole or by distinct element sets; its elements aggregate through ``<column>.value``.
+    DataType.ARRAY: frozenset({"count", "count_distinct"}),
 }
 
-# Primary-key columns are always restricted to row-counting aggregations,
-# regardless of data type. (You can ``count`` customer_ids, but not ``sum`` them.)
+# A sole primary key is restricted to counting and min/max, regardless of data type.
 PRIMARY_KEY_AGGREGATIONS: frozenset[str] = frozenset({
-    "count", "count_distinct", "count_distinct_approx",
+    "count", "count_distinct", "count_distinct_approx", "min", "max",
 })

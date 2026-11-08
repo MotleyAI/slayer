@@ -1,6 +1,7 @@
-version: 7
+version: 18
 name: items
 sql_table: items
+source_kind: table
 query_variables: {}
 data_source: jaffle_shop
 columns:
@@ -8,12 +9,14 @@ columns:
   sql: id
   type: TEXT
   primary_key: true
+  unique: false
   label: Item ID
   hidden: false
 - name: order_id
   sql: order_id
   type: TEXT
   primary_key: false
+  unique: false
   description: Order this line belongs to.
   label: Order
   hidden: false
@@ -21,11 +24,12 @@ columns:
   sql: sku
   type: TEXT
   primary_key: false
+  unique: false
   description: Product sold on this line.
   label: Product
   hidden: false
 measures:
-- formula: id:count
+- formula: count(id)
   name: units_sold
   label: Units Sold
   description: Number of item units sold.
@@ -37,11 +41,14 @@ joins:
   - - order_id
     - id
   join_type: left
+  cardinality: many_to_one
 - target_model: products
   join_pairs:
   - - sku
     - sku
   join_type: left
+  cardinality: many_to_one
 filters: []
 description: "Order line items \u2014 one row per unit sold on an order."
 hidden: false
+access_tags: []

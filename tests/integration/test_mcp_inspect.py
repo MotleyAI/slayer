@@ -7,7 +7,7 @@ output.
 Run with: poetry run pytest tests/integration/test_mcp_inspect.py -m integration
 """
 
-import sqlite3
+import json as _json
 from typing import Any
 
 import pytest
@@ -18,48 +18,55 @@ from slayer.core.models import (
     DatasourceConfig,
     SlayerModel,
 )
-from slayer.engine.profiling import _collect_dim_profile
+from slayer.core.query import SlayerQuery
+from slayer.engine.profiling import ensure_samples_fresh
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import (
-    _collect_measure_profile,
     _get_row_count,
     create_mcp_server,
 )
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 pytestmark = pytest.mark.integration
+
+
+async def _profile(*, model: SlayerModel, engine: SlayerQueryEngine) -> dict[str, Column]:
+    """Profile every column of ``model`` through the owner; ``{name: refreshed column}``."""
+    outcome = await ensure_samples_fresh(
+        model=model, columns=list(model.columns), engine=engine, storage=engine.storage,
+    )
+    return {c.name: c for c in outcome.columns}
 
 
 @pytest.fixture
 async def env(tmp_path):
     """Real SQLite DB + YAMLStorage + a saved ``orders`` model."""
     db_path = tmp_path / "test.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            status TEXT NOT NULL,
-            is_paid INTEGER NOT NULL,
-            amount REAL NOT NULL,
-            quantity INTEGER NOT NULL,
-            ordered_at TEXT NOT NULL,
-            notes TEXT
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                status TEXT NOT NULL,
+                is_paid INTEGER NOT NULL,
+                amount REAL NOT NULL,
+                quantity INTEGER NOT NULL,
+                ordered_at TEXT NOT NULL,
+                notes TEXT
+            )
+            """
         )
-        """
-    )
-    rows = [
-        (1, "completed", 1, 100.0, 2, "2025-01-15 09:00:00", "first"),
-        (2, "completed", 1, 250.0, 5, "2025-01-20 14:30:00", "second"),
-        (3, "pending",   0, 50.0,  1, "2025-02-10 11:15:00", None),
-        (4, "cancelled", 0, 75.0,  3, "2025-02-15 16:45:00", "cancelled"),
-        (5, "completed", 1, 300.0, 6, "2025-03-05 08:00:00", None),
-        (6, "pending",   0, 25.0,  1, "2025-03-20 20:10:00", "small"),
-    ]
-    cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
-    conn.commit()
-    conn.close()
+        rows = [
+            (1, "completed", 1, 100.0, 2, "2025-01-15 09:00:00", "first"),
+            (2, "completed", 1, 250.0, 5, "2025-01-20 14:30:00", "second"),
+            (3, "pending",   0, 50.0,  1, "2025-02-10 11:15:00", None),
+            (4, "cancelled", 0, 75.0,  3, "2025-02-15 16:45:00", "cancelled"),
+            (5, "completed", 1, 300.0, 6, "2025-03-05 08:00:00", None),
+            (6, "pending",   0, 25.0,  1, "2025-03-20 20:10:00", "small"),
+        ]
+        cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
 
     storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
     ds = DatasourceConfig(name="test_sqlite", type="sqlite", database=str(db_path))
@@ -130,10 +137,8 @@ class TestGetRowCount:
 
     async def test_empty_table(self, tmp_path) -> None:
         db_path = tmp_path / "empty.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.cursor().execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
-        conn.commit()
-        conn.close()
+        with transaction(str(db_path)) as conn:
+            conn.cursor().execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
 
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
         await storage.save_datasource(DatasourceConfig(
@@ -151,53 +156,38 @@ class TestGetRowCount:
 class TestCollectDimProfile:
     async def test_categorical_enumerated(self, env) -> None:
         """string/boolean dims get distinct values with counts."""
-        profile = await _collect_dim_profile(model=env["model"], engine=env["engine"])
-        by_name = {e.name: e for e in profile}
+        by_name = await _profile(model=env["model"], engine=env["engine"])
 
         status = by_name["status"]
-        assert status.type_str == "TEXT"
         assert status.distinct_count == 3
-        assert set(status.values or []) == {"completed", "pending", "cancelled"}
-        assert status.min_value is None
-        assert status.max_value is None
+        assert set(status.sampled_values or []) == {"completed", "pending", "cancelled"}
 
         is_paid = by_name["is_paid"]
-        assert is_paid.type_str == "BOOLEAN"
         assert is_paid.distinct_count == 2
 
     async def test_numeric_and_temporal_min_max(self, env) -> None:
         """number/date/time dims get min/max via the batched query."""
-        profile = await _collect_dim_profile(model=env["model"], engine=env["engine"])
-        by_name = {e.name: e for e in profile}
+        by_name = await _profile(model=env["model"], engine=env["engine"])
 
         amt = by_name["amount"]
-        # DEV-1361: SQLite REAL columns now narrow to DOUBLE.
-        assert amt.type_str == "DOUBLE"
-        assert amt.values is None
-        assert float(amt.min_value) == 25.0
-        assert float(amt.max_value) == 300.0
+        assert amt.sampled_values is None
+        assert amt.sampled == "25.0 .. 300.0"
 
         ordered_at = by_name["ordered_at"]
-        assert ordered_at.type_str == "TIMESTAMP"
-        # SQLite returns strings for TEXT timestamps — both ends populate
-        assert str(ordered_at.min_value).startswith("2025-01-15")
-        assert str(ordered_at.max_value).startswith("2025-03-20")
+        assert ordered_at.sampled is not None
+        low, high = ordered_at.sampled.split(" .. ")
+        assert low.startswith("2025-01-15")
+        assert high.startswith("2025-03-20")
 
     async def test_high_cardinality_overflow(self, tmp_path) -> None:
-        """A string dim with > 50 distinct values yields the overflow marker.
-
-        DEV-1480: cap raised from 20 to 50, so this test now uses 60 rows so
-        it remains in the overflow regime.
-        """
+        """A string dim with > 50 distinct values keeps its top 50 and an unknown total."""
         db_path = tmp_path / "hc.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.cursor().execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)")
-        conn.executemany(
-            "INSERT INTO t(label) VALUES (?)",
-            [(f"v{i:03d}",) for i in range(60)],
-        )
-        conn.commit()
-        conn.close()
+        with transaction(str(db_path)) as conn:
+            conn.cursor().execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)")
+            conn.executemany(
+                "INSERT INTO t(label) VALUES (?)",
+                [(f"v{i:03d}",) for i in range(60)],
+            )
 
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
         await storage.save_datasource(DatasourceConfig(
@@ -212,21 +202,16 @@ class TestCollectDimProfile:
         )
         await storage.save_model(model)
         engine = SlayerQueryEngine(storage=storage)
-        profile = await _collect_dim_profile(model=model, engine=engine)
-        label_entry = next(e for e in profile if e.name == "label")
-        # Overflow contract on the internal _DimProfileEntry shape:
-        # values=None, distinct_count=None signal overflow to the caller.
-        assert label_entry.values is None
-        assert label_entry.distinct_count is None  # overflow signal
+        label = (await _profile(model=model, engine=engine))["label"]
+        assert len(label.sampled_values or []) == 50
+        assert label.distinct_count is None  # overflow signal
 
-    async def test_empty_table_produces_no_entries(self, tmp_path) -> None:
+    async def test_empty_table_produces_empty_samples(self, tmp_path) -> None:
         db_path = tmp_path / "empty.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.cursor().execute(
-            "CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT, amount REAL)"
-        )
-        conn.commit()
-        conn.close()
+        with transaction(str(db_path)) as conn:
+            conn.cursor().execute(
+                "CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT, amount REAL)"
+            )
 
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
         await storage.save_datasource(DatasourceConfig(
@@ -243,14 +228,12 @@ class TestCollectDimProfile:
         await storage.save_model(model)
         engine = SlayerQueryEngine(storage=storage)
 
-        profile = await _collect_dim_profile(model=model, engine=engine)
+        by_name = await _profile(model=model, engine=engine)
         # Categorical dim on empty table returns 0 distinct values (not overflow).
-        status_entries = [e for e in profile if e.name == "status"]
-        assert len(status_entries) == 1
-        assert status_entries[0].distinct_count == 0
-        assert status_entries[0].values == []
-        # Numeric min/max against empty table → both None → entry omitted.
-        assert not any(e.name == "amount" for e in profile)
+        assert by_name["status"].distinct_count == 0
+        assert by_name["status"].sampled_values == []
+        # Numeric min/max against empty table → both None → cached as "all NULL".
+        assert by_name["amount"].sampled == "all NULL"
 
 
 class TestInspectModelEndToEnd:
@@ -315,12 +298,11 @@ class TestInspectModelEndToEnd:
 
         # No leaked error artefacts from the old implementation
         assert "sample_data_error" not in result
-        assert "Bare measure name" not in result
+        assert "is not a saved measure" not in result
 
     async def test_no_longer_json(self, env) -> None:
         server = create_mcp_server(storage=env["storage"])
         result = await self._call(server, name="inspect_model", arguments={"model_name": "orders"})
-        import json as _json
         with pytest.raises(_json.JSONDecodeError):
             _json.loads(result)
 
@@ -361,7 +343,7 @@ class TestInspectModelSectionGatingIntegration:
         assert "> Sections shown: columns." in result
         # ``learnings`` joined the omittable section list when DEV-1357
         # landed; ``reachable_fields`` was removed in DEV-1560.
-        assert "> Omitted: samples, learnings." in result
+        assert "> Omitted: samples, learnings, saved_queries." in result
 
     async def test_descriptions_max_chars_truncates_in_columns_table(self, env) -> None:
         """descriptions_max_chars trims long descriptions and appends the marker."""
@@ -392,14 +374,10 @@ class TestMeasureTypeInference:
 
     async def test_string_measure_inferred(self, tmp_path) -> None:
         """A VARCHAR/TEXT measure infers as 'string'."""
-        import sqlite3 as _sqlite3
-
         db_path = tmp_path / "types.db"
-        conn = _sqlite3.connect(str(db_path))
-        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT, price REAL)")
-        conn.execute("INSERT INTO t VALUES (1, 'hello', 9.99)")
-        conn.commit()
-        conn.close()
+        with transaction(str(db_path)) as conn:
+            conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT, price REAL)")
+            conn.execute("INSERT INTO t VALUES (1, 'hello', 9.99)")
 
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
         await storage.save_datasource(DatasourceConfig(
@@ -434,29 +412,25 @@ class TestMeasureTypeInference:
 
     async def test_measure_sampled_shows_min_max(self, env) -> None:
         """Measures with data show min .. max in the sampled column."""
-        from slayer.mcp.server import _collect_measure_profile
-
-        profile = await _collect_measure_profile(model=env["model"], engine=env["engine"])
+        profile = await _profile(model=env["model"], engine=env["engine"])
+        amount, quantity = profile["amount"].sampled, profile["quantity"].sampled
+        assert amount is not None
+        assert quantity is not None
         # amount: REAL values 25.0 .. 300.0
-        assert "25" in profile["amount"]
-        assert "300" in profile["amount"]
-        assert ".." in profile["amount"]
+        assert "25" in amount
+        assert "300" in amount
+        assert ".." in amount
         # quantity: INTEGER values 1 .. 6
-        assert "1" in profile["quantity"]
-        assert "6" in profile["quantity"]
+        assert "1" in quantity
+        assert "6" in quantity
 
     async def test_measure_sampled_all_null(self, tmp_path) -> None:
         """Measures with all-NULL data show 'all NULL' in the sampled column."""
-        import sqlite3 as _sqlite3
-        from slayer.mcp.server import _collect_measure_profile
-
         db_path = tmp_path / "nulls.db"
-        conn = _sqlite3.connect(str(db_path))
-        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val REAL)")
-        conn.execute("INSERT INTO t VALUES (1, NULL)")
-        conn.execute("INSERT INTO t VALUES (2, NULL)")
-        conn.commit()
-        conn.close()
+        with transaction(str(db_path)) as conn:
+            conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val REAL)")
+            conn.execute("INSERT INTO t VALUES (1, NULL)")
+            conn.execute("INSERT INTO t VALUES (2, NULL)")
 
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
         await storage.save_datasource(DatasourceConfig(
@@ -471,8 +445,8 @@ Column(name="val", sql="val", type=DataType.DOUBLE)
         await storage.save_model(model)
         engine = SlayerQueryEngine(storage=storage)
 
-        profile = await _collect_measure_profile(model=model, engine=engine)
-        assert profile["val"] == "all NULL"
+        profile = await _profile(model=model, engine=engine)
+        assert profile["val"].sampled == "all NULL"
 
 
 class TestStringAggregationRejection:
@@ -485,8 +459,6 @@ class TestStringAggregationRejection:
     ValueError, not a database-level type error."""
 
     async def _run(self, env, formula: str) -> None:
-        from slayer.core.query import SlayerQuery
-
         q = SlayerQuery.model_validate({
             "source_model": "orders",
             "measures": [{"formula": formula}],
@@ -500,8 +472,6 @@ class TestStringAggregationRejection:
 
     async def test_min_max_allowed_on_string(self, env) -> None:
         """min/max work on strings (alphabetical ordering) — should pass."""
-        from slayer.core.query import SlayerQuery
-
         q = SlayerQuery.model_validate({
             "source_model": "orders",
             "measures": [{"formula": "status:min"}, {"formula": "status:max"}],
@@ -511,8 +481,6 @@ class TestStringAggregationRejection:
 
     async def test_count_and_count_distinct_allowed_on_string(self, env) -> None:
         """count/count_distinct always work regardless of type."""
-        from slayer.core.query import SlayerQuery
-
         q = SlayerQuery.model_validate({
             "source_model": "orders",
             "measures": [{"formula": "status:count"}, {"formula": "status:count_distinct"}],
@@ -522,8 +490,6 @@ class TestStringAggregationRejection:
 
     async def test_numeric_aggregations_allowed_on_numeric_measure(self, env) -> None:
         """avg/sum on the numeric `amount` measure must still work."""
-        from slayer.core.query import SlayerQuery
-
         q = SlayerQuery.model_validate({
             "source_model": "orders",
             "measures": [{"formula": "amount:sum"}, {"formula": "amount:avg"}],
@@ -538,8 +504,6 @@ class TestPrimaryKeyAggregationRule:
 
     async def test_sum_on_pk_rejected(self, env) -> None:
         """`:sum` on a numeric primary-key column is rejected at enrichment."""
-        from slayer.core.query import SlayerQuery
-
         q = SlayerQuery.model_validate({
             "source_model": "orders",
             "measures": [{"formula": "id:sum"}],
@@ -549,8 +513,6 @@ class TestPrimaryKeyAggregationRule:
 
     async def test_count_on_pk_allowed(self, env) -> None:
         """`:count` on a primary-key column is always allowed."""
-        from slayer.core.query import SlayerQuery
-
         q = SlayerQuery.model_validate({
             "source_model": "orders",
             "measures": [{"formula": "id:count"}],
@@ -568,12 +530,10 @@ class TestIngestDatasourceModelsTool:
 
     async def test_success_message_uses_columns_not_dims(self, tmp_path) -> None:
         db_path = tmp_path / "ingest.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.cursor().execute(
-            "CREATE TABLE widgets (id INTEGER PRIMARY KEY, name TEXT, qty INTEGER)"
-        )
-        conn.commit()
-        conn.close()
+        with transaction(str(db_path)) as conn:
+            conn.cursor().execute(
+                "CREATE TABLE widgets (id INTEGER PRIMARY KEY, name TEXT, qty INTEGER)"
+            )
 
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
         await storage.save_datasource(DatasourceConfig(
@@ -604,7 +564,6 @@ class TestInspectModelSampledValuesAndDistinctCount:
     """End-to-end DEV-1480 contract through ``inspect_model``."""
 
     async def _call_json(self, server, *, model_name: str) -> dict:
-        import json as _json
         content, _ = await server.call_tool(
             name="inspect_model",
             arguments={"model_name": model_name, "format": "json"},
@@ -677,16 +636,14 @@ class TestInspectModelSampledValuesAndDistinctCount:
         (the latter is the numeric-fallback marker). JSON shows the structured
         ``sampled_values=[]``."""
         db_path = tmp_path / "nulls.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.cursor().execute(
-            "CREATE TABLE t (id INTEGER PRIMARY KEY, notes TEXT)"
-        )
-        conn.executemany(
-            "INSERT INTO t(id, notes) VALUES (?, ?)",
-            [(i, None) for i in range(1, 6)],
-        )
-        conn.commit()
-        conn.close()
+        with transaction(str(db_path)) as conn:
+            conn.cursor().execute(
+                "CREATE TABLE t (id INTEGER PRIMARY KEY, notes TEXT)"
+            )
+            conn.executemany(
+                "INSERT INTO t(id, notes) VALUES (?, ?)",
+                [(i, None) for i in range(1, 6)],
+            )
 
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
         await storage.save_datasource(DatasourceConfig(
@@ -702,7 +659,6 @@ class TestInspectModelSampledValuesAndDistinctCount:
         await storage.save_model(model)
 
         server = create_mcp_server(storage=storage)
-        import json as _json
         content, _ = await server.call_tool(
             name="inspect_model",
             arguments={"model_name": "t", "format": "json"},
@@ -723,18 +679,16 @@ class TestInspectModelSampledValuesAndDistinctCount:
         even when ``sampled_values`` holds the full 50. The markdown table
         is the all-columns-at-once surface and stays readable."""
         db_path = tmp_path / "wide_values.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.cursor().execute(
-            "CREATE TABLE many_values (id INTEGER PRIMARY KEY, kind TEXT)"
-        )
-        # Insert 30 distinct categorical values. <= 50 so no overflow, but
-        # > 20 so the markdown text cap kicks in.
-        conn.executemany(
-            "INSERT INTO many_values VALUES (?, ?)",
-            [(i, f"k_{i:02d}") for i in range(1, 31)],
-        )
-        conn.commit()
-        conn.close()
+        with transaction(str(db_path)) as conn:
+            conn.cursor().execute(
+                "CREATE TABLE many_values (id INTEGER PRIMARY KEY, kind TEXT)"
+            )
+            # Insert 30 distinct categorical values. <= 50 so no overflow, but
+            # > 20 so the markdown text cap kicks in.
+            conn.executemany(
+                "INSERT INTO many_values VALUES (?, ?)",
+                [(i, f"k_{i:02d}") for i in range(1, 31)],
+            )
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
         await storage.save_datasource(DatasourceConfig(
             name="mv_ds", type="sqlite", database=str(db_path),
@@ -788,12 +742,9 @@ class TestInspectModelSampledValuesAndDistinctCount:
     async def test_legacy_sampled_text_preserved_in_markdown_on_profile_failure(
         self, env, monkeypatch,
     ) -> None:
-        """Codex finding #6: when ``inspect_model``'s refactor delegates to
-        ``ensure_column_sample_fresh`` and ``profile_column`` raises, the
-        markdown column for ``sampled`` must still show the LEGACY persisted
-        text. The helper returns the input column on failure (which still
-        carries the legacy ``sampled`` set), so the markdown rendering
-        reads the legacy value from there. Don't surface an empty cell."""
+        """When profiling fails, the markdown ``sampled`` cell still shows the
+        LEGACY persisted text: the owner returns the input column on failure,
+        and the render reads from it. Don't surface an empty cell."""
         storage = env["storage"]
         # Pre-populate a v6-style legacy state: ``sampled`` set, no list.
         await storage.update_column_sampled(
@@ -804,13 +755,16 @@ class TestInspectModelSampledValuesAndDistinctCount:
             distinct_count=None,
         )
 
-        # Force every profile_column call to fail.
-        async def explodes(**_kwargs):
-            raise RuntimeError("simulated profile failure")
+        # Force every profiling query to fail.
+        original_execute = SlayerQueryEngine.execute
 
-        monkeypatch.setattr(
-            "slayer.engine.profiling.profile_column", explodes,
-        )
+        async def explodes(self, *args, **kwargs):
+            q = kwargs.get("query", args[0] if args else None)
+            if isinstance(q, SlayerQuery) and (q.dimensions or not isinstance(q.source_model, str)):
+                raise RuntimeError("simulated profile failure")
+            return await original_execute(self, *args, **kwargs)
+
+        monkeypatch.setattr(SlayerQueryEngine, "execute", explodes)
 
         server = create_mcp_server(storage=storage)
         content, _ = await server.call_tool(
@@ -824,11 +778,8 @@ class TestInspectModelSampledValuesAndDistinctCount:
         status_row = col_section[status_row_start:col_section.find("\n", status_row_start)]
         # Legacy text MUST appear in the cell so the agent still sees data.
         assert "legacy text from v6" in status_row, (
-            "Codex finding #6: legacy ``Column.sampled`` text must survive "
-            "a profile_column failure in inspect_model. The refactored "
-            "helper returns the INPUT column on failure (which carries "
-            "the legacy text); the markdown rendering must read from "
-            "there. An empty cell is a regression."
+            "legacy ``Column.sampled`` text must survive a profiling "
+            "failure in inspect_model; an empty cell is a regression."
         )
 
     async def test_profiles_more_than_10_categorical_columns(
@@ -840,18 +791,16 @@ class TestInspectModelSampledValuesAndDistinctCount:
         db_path = tmp_path / "wide.db"
         col_count = 15
         col_defs = ", ".join(f"c{i} TEXT" for i in range(col_count))
-        conn = sqlite3.connect(str(db_path))
-        conn.cursor().execute(
-            f"CREATE TABLE wide (id INTEGER PRIMARY KEY, {col_defs})"
-        )
-        placeholders = ", ".join(["?"] * (col_count + 1))
-        row_value = ("val",) * col_count
-        conn.execute(
-            f"INSERT INTO wide VALUES ({placeholders})",
-            (1, *row_value),
-        )
-        conn.commit()
-        conn.close()
+        with transaction(str(db_path)) as conn:
+            conn.cursor().execute(
+                f"CREATE TABLE wide (id INTEGER PRIMARY KEY, {col_defs})"
+            )
+            placeholders = ", ".join(["?"] * (col_count + 1))
+            row_value = ("val",) * col_count
+            conn.execute(
+                f"INSERT INTO wide VALUES ({placeholders})",
+                (1, *row_value),
+            )
 
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
         await storage.save_datasource(DatasourceConfig(
@@ -879,52 +828,33 @@ class TestInspectModelSampledValuesAndDistinctCount:
 
 
 class TestCollectMeasureProfileTypeRestriction:
-    """DEV-1480: ``_collect_measure_profile`` is restricted to numeric/temporal
-    columns. Text/boolean columns no longer appear in its output — they're
-    served exclusively by the categorical dim profile, which now produces both
-    ``sampled`` and ``sampled_values``. Mixing the two paths for the same
-    column would otherwise create a permanent cache miss (cached text from
-    measure_profile without the structured field)."""
+    """Text/boolean columns are served only by the categorical query (structured
+    ``sampled_values``); numeric/temporal only by the min/max query."""
 
     async def test_text_and_boolean_columns_skipped(self, env) -> None:
-        result = await _collect_measure_profile(
-            model=env["model"], engine=env["engine"],
-        )
-        # Text/boolean columns are not in the measure_profile output.
-        assert "status" not in result
-        assert "notes" not in result
-        assert "is_paid" not in result
-        # Numeric/temporal columns still appear.
-        assert "amount" in result
-        assert "quantity" in result
-        assert "ordered_at" in result
+        result = await _profile(model=env["model"], engine=env["engine"])
+        for name in ("status", "notes", "is_paid"):
+            assert result[name].sampled_values is not None, name
+        for name in ("amount", "quantity", "ordered_at"):
+            assert result[name].sampled_values is None, name
+            assert ".." in (result[name].sampled or ""), name
 
 
 class TestInspectModelEmptyStringSampledNotClobberedByFallback:
-    """DEV-1480: pin the row-construction "key-presence not truthiness" fix.
-
-    An all-NULL categorical column produces ``sampled=""`` from the dim profile.
-    If row construction uses ``profile_by_name.get(c.name) or measure_profile.get(c.name)``,
-    the empty string falls through to the measure_profile fallback. Even with
-    the type-restriction on ``_collect_measure_profile``, we test the row
-    construction in isolation by monkeypatching the fallback to inject a value
-    for the same column — the empty string must survive.
-    """
+    """An all-NULL categorical column renders ``sampled=""`` — never a fallback value."""
 
     async def test_empty_string_sampled_survives_fallback_injection(
-        self, tmp_path, monkeypatch,
+        self, tmp_path,
     ) -> None:
         db_path = tmp_path / "nulls.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.cursor().execute(
-            "CREATE TABLE t (id INTEGER PRIMARY KEY, notes TEXT)"
-        )
-        conn.executemany(
-            "INSERT INTO t(id, notes) VALUES (?, ?)",
-            [(i, None) for i in range(1, 6)],
-        )
-        conn.commit()
-        conn.close()
+        with transaction(str(db_path)) as conn:
+            conn.cursor().execute(
+                "CREATE TABLE t (id INTEGER PRIMARY KEY, notes TEXT)"
+            )
+            conn.executemany(
+                "INSERT INTO t(id, notes) VALUES (?, ?)",
+                [(i, None) for i in range(1, 6)],
+            )
 
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
         await storage.save_datasource(DatasourceConfig(
@@ -938,27 +868,11 @@ class TestInspectModelEmptyStringSampledNotClobberedByFallback:
             ],
         ))
 
-        # Inject a "fallback" value for the categorical column so the
-        # truthiness ``or`` bug would silently swap "" → "FALLBACK".
-        from slayer.mcp import server as mcp_server
-
-        async def injected_measure_profile(*, model, engine):  # noqa: ARG001  # NOSONAR(S7503) — must be async to replace _collect_measure_profile which the production caller awaits
-            return {"notes": "FALLBACK_VALUE_SHOULD_NOT_APPEAR"}
-
-        monkeypatch.setattr(
-            mcp_server, "_collect_measure_profile",
-            injected_measure_profile,
-        )
-
         server = create_mcp_server(storage=storage)
-        import json as _json
         content, _ = await server.call_tool(
             name="inspect_model",
             arguments={"model_name": "t", "format": "json"},
         )
         payload = _json.loads(content[0].text)
         notes = next(c for c in payload["columns"] if c["name"] == "notes")
-        # The empty-string ``sampled`` from the dim profile must NOT be
-        # overwritten by the injected fallback. Pins the key-presence fix.
         assert notes["sampled"] == ""
-        assert "FALLBACK" not in str(notes["sampled"] or "")

@@ -1,4 +1,4 @@
-"""Setup helper for the DEV-1473 lightning-talk notebook.
+"""Setup helper for the lightning-talk notebook.
 
 Like ``docs/examples/jaffle_data/setup_jaffle.py``, but with an isolated
 ``YAMLStorage`` rooted next to the notebook so ``save_memory`` calls in

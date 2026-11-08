@@ -34,7 +34,7 @@ curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
   -d '{
     "source_model": "orders",
-    "measures": ["*:count"],
+    "measures": ["count(*)"],
     "dimensions": ["status"],
     "limit": 10
   }'
@@ -45,18 +45,41 @@ Response:
 ```json
 {
   "data": [
-    {"orders.status": "completed", "orders._count": 42},
-    {"orders.status": "pending", "orders._count": 15}
+    {"orders.status": "completed", "orders._count": 248238},
+    {"orders.status": "refunded", "orders._count": 19288},
+    {"orders.status": "cancelled", "orders._count": 8315}
   ],
-  "row_count": 2,
-  "columns": ["orders.status", "orders._count"]
+  "row_count": 3,
+  "columns": ["orders.status", "orders._count"],
+  "warnings": []
 }
 ```
 
+Cell values use SLayer's one JSON encoding: a list is a JSON array, a decimal a number with its exact digits, a
+UUID its string, bytes `\x` + lowercase hex, an interval an ISO-8601 duration and NaN / ±Infinity `null`;
+`"distinct_dimension_values": false` returns one row per record, list columns included.
+
+`warnings` carries advisories about the query itself; it is `[]` for a clean
+query. Every entry has a `kind` discriminator — switch on it rather than on the
+presence of a field:
+
+| `kind` | Meaning | Extra fields |
+| -- | -- | -- |
+| `normalization` | The input was rewritten to canonical form | `rule_id`, `original`, `normalized`, `location`, `rule_doc_url` (nullable) |
+
 The body accepts the same fields as a `SlayerQuery`, plus `dry_run`, `explain`, and `variables`. Notable optional fields:
 
-- `whole_periods_only` (bool) — snap date filters to bucket boundaries.
+- `whole_periods_only` (bool) — snap time bounds to bucket boundaries; see [Time](../concepts/time.md#whole_periods_only).
 - `distinct_dimension_values` (bool, default `true`) — set `false` to emit raw rows (no top-level `GROUP BY`); rejects any measure reference in `measures` / `filters` / `order`.
+- `to_many_handling` (str, default `"broadcast"`) — how an aggregate resolves query dimensions [unattributable from its root](../concepts/queries.md#cross-model-measures): `broadcast` (repeat the safe-grain value and warn), `associate` (per-cell value over the distinct associated entities), or `error` (refuse). Rejected on run-by-name bodies (`{"name": ...}`) — declare it on the stored query instead; the retired `strict` flag is rejected with this remedy.
+
+Run-by-name bodies (`{"name": ...}`) run a query-backed model's stored query and allow only `name`, `variables`, `dry_run`, `explain` and `refine`; query clauses go inside `refine`, which merges them into the saved query's final stage ([Refining a saved query](../concepts/queries.md#refining-a-saved-query)).
+
+```bash
+curl -X POST http://localhost:5143/query \
+  -H "Content-Type: application/json" \
+  -d '{"name": "monthly_revenue", "variables": {"region": "US"}}'
+```
 
 Multi-stage DAG bodies use `{"queries": [...]}` — each stage in the list honours its own `distinct_dimension_values`.
 
@@ -81,7 +104,23 @@ curl http://localhost:5143/models/orders
 curl -X POST http://localhost:5143/models \
   -H "Content-Type: application/json" \
   -d '{"name": "orders", "sql_table": "public.orders", "data_source": "mydb", ...}'
+
+# Create a query-backed model
+curl -X POST http://localhost:5143/models \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "monthly_revenue",
+    "data_source": "mydb",
+    "source_queries": [{
+      "source_model": "orders",
+      "measures": ["sum(order_total)"],
+      "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"}]
+    }],
+    "query_variables": {"region": "US"}
+  }'
 ```
+
+A query-backed model's `columns` are generated at save, so supplying them returns 400.
 
 ### Datasources
 
@@ -99,6 +138,23 @@ curl http://localhost:5143/datasources
 # Get datasource (credential fields shown as ***)
 curl http://localhost:5143/datasources/my_postgres
 ```
+
+### Datasource priority
+
+```
+GET /datasources/priority   # {"priority": [...]}, most preferred first
+PUT /datasources/priority   # body {"priority": [...]}; [] clears it
+```
+
+A bare model name that exists in several datasources resolves to the first listed datasource that has it; a name in the list that is not a registered datasource returns 400.
+
+### Validate models
+
+`POST /validate-models` with body `{"data_source": null}` (or a datasource name) diffs the stored models against the live schemas, read-only, and returns the drift findings: the deletes needed to keep them valid plus report-only `retype` and `narrowed_access` entries; an unknown datasource returns 404 and an introspection failure 422. See [Schema Drift](../concepts/schema-drift.md).
+
+### Recommend a root model
+
+`POST /recommend-root-model` with body `{"items": [...], "data_source": null, "root_hint": null}` returns the recommended query root and each item's reference path from it; unresolvable, wrong-kind or cross-datasource items return 400. See [Choosing a root model](../concepts/queries.md#choosing-a-root-model).
 
 ### Ingestion
 
@@ -123,15 +179,15 @@ Response:
 
 ### Inspect (single-entity point lookup)
 
-`POST /inspect` returns the rendered detail for **exactly one** entity by `reference` + required `entity_type` (DEV-1588). Unlike `POST /search`, there is no fusion / ranking / `cypher_filter` and no bundled memories — use `/search` when you want an entity surfaced *in context*.
+`POST /inspect` returns the rendered detail for **exactly one** entity by `reference` + required `entity_type`. Unlike `POST /search`, there is no fusion / ranking / `cypher_filter` and no bundled memories — use `/search` when you want an entity surfaced *in context*.
 
 **`POST /inspect` body:**
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `reference` | str \| array[str] \| null | Canonical id (`mydb.orders.amount`), bare name, join path (`orders.customers.region` → resolved to the owning model), or `memory:<id>`. Normalised via the shared resolver; the normalised id is echoed in the result. **A list is a homogeneous-kind batch** (DEV-1612): one `entity_type` for every id; `result` is one block per id in input order (a `## <canonical>` header per block in markdown, a JSON-array string under `format="json"`). Per-id resolution errors are isolated; a non-string member returns HTTP 422. **`null` / omitted (or `[]`) is the collection view** (DEV-1667): lists the whole kind at `entity_type` — `model` (all models grouped by datasource) or `datasource` (all datasources); other kinds return HTTP 400. `compact` toggles verbosity; the JSON `result` is a `{"entity_type", "collection": true, "datasources": [...], "warnings": []}` envelope string. Subsumes `models_summary` / `list_datasources`. |
+| `reference` | str \| array[str] \| null | Canonical id (`mydb.orders.amount`), bare name, join path (`orders.customers.region` → resolved to the owning model), or `memory:<id>`. Normalised via the shared resolver; the normalised id is echoed in the result. **A list is a homogeneous-kind batch**: one `entity_type` for every id; `result` is one block per id in input order (a `## <canonical>` header per block in markdown, a JSON-array string under `format="json"`). Per-id resolution errors are isolated; a non-string member returns HTTP 422. **`null` / omitted (or `[]`) is the collection view**: lists the whole kind at `entity_type` — `model` (all models grouped by datasource) or `datasource` (all datasources); other kinds return HTTP 400. `compact` toggles verbosity; the JSON `result` is a `{"entity_type", "collection": true, "datasources": [...], "warnings": []}` envelope string. Subsumes `models_summary` / `list_datasources`. |
 | `entity_type` | str | **Required.** One of `datasource`, `model`, `column`, `measure`, `aggregation`, `memory`. Disambiguates the 3-part canonical collision (a name shared by, e.g., a column and an aggregation) and asserts the kind — a mismatch returns HTTP 400. |
-| `compact` | bool | Default `true`. Description-only for column / measure / aggregation / datasource / memory; a cheap schema **skeleton** (column / measure / aggregation names + join targets, zero DB calls) for `model`. `false` returns the full render, and a per-model skeleton for each visible model for `datasource`. |
+| `compact` | bool | Default `true`. Description-only for column / measure / aggregation / datasource / memory (`compact` never shortens a `help.*` memory; `descriptions_max_chars` still does); a cheap schema **skeleton** (column / measure / aggregation names + join targets, zero DB calls) for `model`. `false` returns the full render, and a per-model skeleton for each visible model for `datasource`. |
 | `format` | str | `"markdown"` (default) or `"json"`. |
 | `num_rows` | int | Sample-data rows for `entity_type="model"`. Ignored (with a warning) for other kinds. Default `3`. |
 | `show_sql` | bool | Include generated SQL for `entity_type="model"`. Ignored (with a warning) for datasource / memory; a silent no-op for column / measure / aggregation. |
@@ -166,7 +222,7 @@ DELETE /memories/{id}         # Delete a memory (cascade-strips memory:<id> refs
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `entities` | array[str] | Canonical entity strings (`mydb.orders.amount`, `memory:42`, …). Aggregation suffixes are stripped (`revenue:sum` → `mydb.orders.revenue`). Drives the BM25 channel. Unresolved tokens emit warnings rather than errors. |
+| `entities` | array[str] | Canonical entity strings (`mydb.orders.amount`, `memory:42`, …). Aggregation suffixes are stripped (`sum(revenue)` → `mydb.orders.revenue`). Drives the BM25 channel. Unresolved tokens emit warnings rather than errors. |
 | `query` | object | Inline SLayer query; its `source_model` / dimensions / measures / time dims / filters are walked for canonical entities. |
 | `question` | str | Free-text question. Drives the Tantivy channel and (when available) the embedding channel. |
 | `datasource` | str | Pre-narrows every channel to ids rooted at the named datasource. Unknown name → HTTP 400. |
@@ -202,9 +258,9 @@ Response (`SearchResponse`):
 
 ```json
 {
-  "learning": "orders.is_returned in {0,1,NULL}; treat NULL as not returned",
-  "linked_entities": ["mydb.orders.is_returned"],
-  "id": "kb.returns.null-handling"
+  "learning": "Refunded and cancelled orders keep their order_total; count only completed orders for net revenue",
+  "linked_entities": ["jaffle_shop.orders.status", "jaffle_shop.orders.order_total"],
+  "id": "kb.orders.refunds"
 }
 ```
 
@@ -213,13 +269,13 @@ Response (`SearchResponse`):
 Response:
 
 ```json
-{"memory_id": "kb.returns.null-handling", "entities": ["mydb.orders.is_returned"], "warnings": []}
+{"memory_id": "kb.orders.refunds", "entities": ["jaffle_shop.orders.status", "jaffle_shop.orders.order_total"], "warnings": []}
 ```
 
 **`DELETE /memories/{id}`:**
 
 ```bash
-curl -X DELETE http://localhost:5143/memories/kb.returns.null-handling
+curl -X DELETE http://localhost:5143/memories/kb.orders.refunds
 ```
 
 Removes the memory and the matching embedding row, and strips every `memory:<id>` reference to it from every other memory's `entities` list (exact-match only — `memory:42` does not strip `memory:421`).

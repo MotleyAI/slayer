@@ -21,13 +21,14 @@ pip install motley-slayer[client]        # httpx + pandas for remote mode
 Use SLayer directly in your Python code — no HTTP, no server process:
 
 ```python
+from slayer.async_utils import run_sync
 from slayer.core.models import DatasourceConfig
-from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
-# Set up storage
+# Set up storage and an engine over it
 storage = YAMLStorage(base_dir="./slayer_data")
+engine = SlayerQueryEngine(storage=storage)
 
 # Connect a database
 ds = DatasourceConfig(
@@ -38,32 +39,38 @@ ds = DatasourceConfig(
     username="analyst",
     password="${DB_PASSWORD}",  # resolved from env vars
 )
-storage.save_datasource(ds)
+run_sync(storage.save_datasource(ds))
 
-# Auto-generate models from schema
-models = ingest_datasource(datasource=ds, schema="public")
+# Auto-generate models from schema, reading the database through the engine's client
+models = engine.ingest_sync(ds, schema="public")
 for model in models:
-    storage.save_model(model)
+    run_sync(storage.save_model(model))
     print(f"  {model.name}: {len(model.columns)} columns, {len(model.measures)} measures")
 ```
+
+Storage methods are async: `await` them inside async code, or wrap them with `run_sync` as above.
+
+Code written for SLayer 1.5.0 — `ingest_datasource(ds)` without a `client`, or a dbt / OSI converter given `sa_engine=` — still runs, with a `FutureWarning`, until SLayer 2.0.
 
 ## Query
 
 ```python
-from slayer.core.query import SlayerQuery
-
 engine = SlayerQueryEngine(storage=storage)
 
-result = engine.execute_sync(query=SlayerQuery(
-    source_model="orders",
-    measures=["*:count", "revenue:sum"],
-    dimensions=["status"],
-))
+result = engine.execute_sync(query={
+    "source_model": "orders",
+    "measures": ["count(*)", "sum(order_total)"],
+    "dimensions": ["status"],
+})
 
 for row in result.data:
     print(row)
-# {"orders.status": "completed", "orders._count": 42, "orders.revenue_sum": 12345.67}
+# {"orders.status": "completed", "orders._count": 248238, "orders.order_total_sum": 2822104.17}
 ```
+
+Call `engine.close()` when you are done with an engine over an in-memory SQLite datasource (`":memory:"`) to dispose its private connection.
+
+Pass `client_factory=` to `SlayerQueryEngine` (or the local-mode client) to run every database access through your own client, such as a credential-holding gateway — see [SQL Clients](../configuration/sql-clients.md).
 
 The response object:
 
@@ -97,17 +104,16 @@ Connect to a running SLayer server:
 
 ```python
 from slayer.client.slayer_client import SlayerClient
-from slayer.core.query import SlayerQuery
 
 # Connect to remote server
 client = SlayerClient(url="http://localhost:5143")
 
 # Query — returns SlayerResponse (same as embedded mode)
-result = client.query(SlayerQuery(
-    source_model="orders",
-    measures=["*:count"],
-    dimensions=["status"],
-))
+result = client.query_sync({
+    "source_model": "orders",
+    "measures": ["count(*)"],
+    "dimensions": ["status"],
+})
 print(result.data)
 ```
 
@@ -115,11 +121,11 @@ print(result.data)
 
 ```python
 # With pandas (requires motley-slayer[client] extra)
-df = client.query_df(SlayerQuery(
-    source_model="orders",
-    measures=["*:count", "revenue:sum"],
-    dimensions=["status"],
-))
+df = client.query_df({
+    "source_model": "orders",
+    "measures": ["count(*)", "sum(order_total)"],
+    "dimensions": ["status"],
+})
 print(df)
 ```
 
@@ -146,6 +152,7 @@ storage = resolve_storage("slayer.db")       # SQLite
 ## Verify it works
 
 ```python
+from slayer.async_utils import run_sync
 from slayer.storage.base import resolve_storage
 from slayer.engine.query_engine import SlayerQueryEngine
 
@@ -153,10 +160,10 @@ storage = resolve_storage("./slayer_data")
 engine = SlayerQueryEngine(storage=storage)
 
 # Should list your ingested models
-print(storage.list_models())
+print(run_sync(storage.list_models()))
 
 # Should return data
-result = engine.execute_sync(query={"source_model": "orders", "measures": ["*:count"]})
+result = engine.execute_sync(query={"source_model": "orders", "measures": ["count(*)"]})
 print(f"{result.row_count} row(s), columns: {result.columns}")
 ```
 
@@ -169,15 +176,15 @@ from slayer.async_utils import run_sync
 
 # Save a learning so the next session inherits it
 run_sync(client.save_memory(
-    learning="orders.is_returned in {0,1,NULL}; treat NULL as not returned",
-    linked_entities=["mydb.orders.is_returned"],
-    id="kb.returns.null-handling",   # optional; auto-allocated if omitted
+    learning="Refunded and cancelled orders keep their order_total; count only completed orders for net revenue",
+    linked_entities=["jaffle_shop.orders.status", "jaffle_shop.orders.order_total"],
+    id="kb.orders.refunds",   # optional; auto-allocated if omitted
 ))
 
 # Three retrieval channels (BM25 + Tantivy + optional dense embeddings)
 # fused into one flat ranked list:
 resp = run_sync(client.search(
-    question="What should I know about returns?",
+    question="What should I know about refunds?",
     max_results=10,
 ))
 

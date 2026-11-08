@@ -1,0 +1,15 @@
+cubes:
+  - name: returns
+    sql_table: returns
+    joins:
+      - name: customers
+        sql: "{CUBE}.customer_id = {customers.id}"
+        relationship: many_to_one
+    dimensions:
+      - {name: id, sql: id, type: number, primary_key: true, public: true}
+      - {name: customer_id, sql: customer_id, type: number}
+      - {name: amount, sql: amount, type: number}
+      - {name: return_date, sql: return_date, type: time}
+    measures:
+      - {name: count, type: count}
+      - {name: total, sql: amount, type: sum}

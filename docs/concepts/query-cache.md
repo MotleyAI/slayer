@@ -3,7 +3,7 @@
 SLayer has an optional, in-memory, per-query result cache **local to a single
 `SlayerQueryEngine` instance**. It is opt-in per call via `cache=True`, modelled
 on [Cube's in-memory cache](https://cube.dev/docs/product/caching). This is a
-**Python-API-only** feature — there is no REST / MCP / CLI / Flight / pg-facade
+**Python-API-only** feature — there is no REST / MCP / CLI / Flight / SQL API
 surface, and no `SlayerClient` plumbing.
 
 Two engines with different connection settings keep separate caches, so a cached
@@ -31,7 +31,7 @@ engine = SlayerQueryEngine(
 # Any input shape works — SlayerQuery / dict, a multi-stage list, or a
 # run-by-name string. Each funnels into one final SQL that is cached.
 resp = await engine.execute({"source_model": "orders",
-                             "measures": [{"formula": "amount:sum"}]},
+                             "measures": [{"formula": "sum(amount)"}]},
                             cache=True)
 ```
 
@@ -39,7 +39,7 @@ resp = await engine.execute({"source_model": "orders",
 Reassigning `engine.cache_config = CacheConfig(...)` **clears the cache**.
 
 `cache=True` is ignored (no caching, no error) when `dry_run` or `explain` is
-set.
+set, or when any stage of the query calls `now()` / `current_date()` (a refresh drops such an entry).
 
 ### `CacheConfig`
 
@@ -117,6 +117,17 @@ re-snap and model/schema edits are picked up. If the freshly-prepared SQL differ
 `refresh()` is continue-on-failure: a failed refresh-key scan or re-execution
 leaves the existing entry unchanged and records a `RefreshError`.
 
+`refresh()` scans and re-executes each entry against the **datasource identity
+it was cached under** (its SQL-client fingerprint), reusing the client created
+at write time — so a `datasource`-priority change or a same-name connection edit
+between caching and `refresh()` can never migrate a table-backed entry or read
+from a different database. One residual: a run-by-name **query-backed** model
+resolves its inner `source_queries` metadata through the current datasource
+priority, so if the same backing-model name lives in two datasources and the
+priority changes between caching and `refresh()`, the inner SQL may be shaped
+from the other datasource. After repointing or re-prioritising a datasource
+while a cache is live, call `clear_cache()`.
+
 The synchronous wrappers `execute_sync(..., cache=True, data_source=...)`,
 `refresh_sync()`, and `evict_sync(...)` are available for CLI / notebook /
 script use.
@@ -129,5 +140,5 @@ script use.
   (last-writer-wins on store).
 - **Unbounded.** There is no LRU or size cap; manage memory with `evict` /
   `clear_cache`.
-- **Python API only.** No REST / MCP / CLI / Flight / pg-facade / `SlayerClient`
+- **Python API only.** No REST / MCP / CLI / Flight / SQL API / `SlayerClient`
   surface.

@@ -2,30 +2,61 @@
 from __future__ import annotations
 
 import sqlite3
+import sys
 import tempfile
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, TypeVar
 
 import pytest
+from fastapi.testclient import TestClient
 
+from slayer.api.server import IngestRequest, create_app
+from slayer.async_utils import run_sync
+from slayer.cli import _run_datasources_create, _run_ingest, main
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.enums import DataType
 from slayer.core.query import SlayerQuery
+from slayer.engine import ingestion as ing
 from slayer.engine.ingestion import (
+    IntrospectedColumn,
     InternalTable,
     SkippedTable,
+    _bare_table_name,
+    _columns_to_model,
     _print_ingest_drift_and_errors,
-    ingest_datasource,
     ingest_datasource_idempotent,
-    ingest_datasource_report,
 )
 from slayer.engine.internal_tables import internal_table_rule
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_drift import (
     IdempotentIngestResult,
     ModelAddition,
     validate_datasource,
 )
+from slayer.facade.catalog import build_catalog
+from slayer.mcp.server import (
+    _render_hidden_internals_section,
+    _render_skipped_section,
+    create_mcp_server,
+)
+from slayer.search.index import build_in_memory_corpus
+from slayer.sql.client import SlayerSQLClient
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
+
+
+_T = TypeVar("_T")
+
+
+async def _with_client(fn: Callable[..., Awaitable[_T]], /, *, datasource: DatasourceConfig, **kwargs: Any) -> _T:
+    client = SlayerSQLClient(datasource=datasource)
+    try:
+        return await fn(datasource=datasource, client=client, **kwargs)
+    finally:
+        await client.aclose()
+        client.close()
 
 
 @pytest.fixture
@@ -39,10 +70,8 @@ def workspace():
 
 def _ds(workspace: Path, script: str, name: str = "live.db") -> tuple[str, DatasourceConfig]:
     db_path = str(workspace / name)
-    conn = sqlite3.connect(db_path)
-    conn.executescript(script)
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        conn.executescript(script)
     return db_path, DatasourceConfig(name="ds", type="sqlite", database=db_path)
 
 
@@ -189,12 +218,11 @@ class TestNoSqlitePrefixRule:
             INSERT INTO orders (amount) VALUES (1.0);
             """,
         )
-        conn = sqlite3.connect(db_path)
-        live = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
-        conn.close()
+        with transaction(db_path) as conn:
+            live = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
         assert "sqlite_sequence" in live  # the engine really did create it
 
-        report = ingest_datasource_report(datasource=ds)
+        report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds))
         assert {o.name for o in report.objects} == {"orders"}
         assert {m.name for m in report.models} == {"orders"}
         assert report.hidden_internals == []
@@ -218,7 +246,7 @@ class TestScanClassification:
         self, workspace: Path
     ) -> None:
         _, ds = _ds(workspace, _MIXED)
-        by_name = {m.name: m for m in ingest_datasource(datasource=ds)}
+        by_name = {m.name: m for m in run_sync(_with_client(ing.ingest_datasource_async, datasource=ds))}
 
         # Nothing is omitted — hidden, not skipped.
         assert set(by_name) == {"orders"} | _INTERNAL_NAMES
@@ -229,7 +257,7 @@ class TestScanClassification:
 
     def test_breadcrumb_records_the_matching_tool(self, workspace: Path) -> None:
         _, ds = _ds(workspace, _MIXED)
-        by_name = {m.name: m for m in ingest_datasource(datasource=ds)}
+        by_name = {m.name: m for m in run_sync(_with_client(ing.ingest_datasource_async, datasource=ds))}
 
         assert by_name["_dlt_loads"].meta == {"internal_table": "dlt"}
         assert by_name["alembic_version"].meta == {"internal_table": "alembic"}
@@ -237,12 +265,12 @@ class TestScanClassification:
     def test_real_tables_get_no_breadcrumb(self, workspace: Path) -> None:
         """A non-matching model must not grow an empty meta dict that would show up in every ingested YAML."""
         _, ds = _ds(workspace, _MIXED)
-        by_name = {m.name: m for m in ingest_datasource(datasource=ds)}
+        by_name = {m.name: m for m in run_sync(_with_client(ing.ingest_datasource_async, datasource=ds))}
         assert by_name["orders"].meta is None
 
     def test_report_lists_each_hidden_internal(self, workspace: Path) -> None:
         _, ds = _ds(workspace, _MIXED)
-        report = ingest_datasource_report(datasource=ds)
+        report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds))
 
         assert {h.table_name for h in report.hidden_internals} == _INTERNAL_NAMES
         by_table = {h.table_name: h for h in report.hidden_internals}
@@ -252,7 +280,7 @@ class TestScanClassification:
 
     def test_report_omits_real_tables(self, workspace: Path) -> None:
         _, ds = _ds(workspace, _MIXED)
-        report = ingest_datasource_report(datasource=ds)
+        report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds))
         assert "orders" not in {h.table_name for h in report.hidden_internals}
 
     def test_matching_view_is_hidden_and_labelled_view(
@@ -266,7 +294,7 @@ class TestScanClassification:
             CREATE VIEW _dlt_v AS SELECT id FROM orders;
             """,
         )
-        report = ingest_datasource_report(datasource=ds)
+        report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds))
         by_name = {m.name: m for m in report.models}
 
         assert by_name["_dlt_v"].hidden is True
@@ -276,23 +304,25 @@ class TestScanClassification:
 
 
 class TestMatchesTheLiveObjectName:
-    def test_sanitized_model_name_does_not_decide_the_match(
+    def test_dunder_internal_keeps_its_faithful_name(
         self, workspace: Path
     ) -> None:
-        """The rule must match the live object name, not the `__`-sanitized model name; the report carries both."""
+        """The internal-table rule matches the live object name, and the
+        model keeps that faithful ``__`` name (no sanitization); the report carries
+        both, now equal."""
         _, ds = _ds(
             workspace,
             "CREATE TABLE _dlt_loads__x (id INTEGER PRIMARY KEY, v TEXT);",
         )
-        report = ingest_datasource_report(datasource=ds)
+        report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds))
         by_name = {m.name: m for m in report.models}
 
-        assert "_dlt_loads_x" in by_name
-        assert by_name["_dlt_loads_x"].hidden is True
+        assert "_dlt_loads__x" in by_name
+        assert by_name["_dlt_loads__x"].hidden is True
 
         entry = next(iter(report.hidden_internals))
         assert entry.table_name == "_dlt_loads__x"
-        assert entry.model_name == "_dlt_loads_x"
+        assert entry.model_name == "_dlt_loads__x"
 
 
 class TestSqlitePrefixOnAnotherEngine:
@@ -300,8 +330,7 @@ class TestSqlitePrefixOnAnotherEngine:
         self, workspace: Path
     ) -> None:
         """On DuckDB `sqlite_backup` stays visible while a sibling dlt table is still hidden."""
-        pytest.importorskip("duckdb")
-        import duckdb
+        duckdb = pytest.importorskip("duckdb")
 
         db_path = str(workspace / "live.duckdb")
         con = duckdb.connect(db_path)
@@ -310,7 +339,7 @@ class TestSqlitePrefixOnAnotherEngine:
         con.close()
 
         ds = DatasourceConfig(name="ds", type="duckdb", database=db_path)
-        report = ingest_datasource_report(datasource=ds)
+        report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds))
         by_name = {m.name: m for m in report.models}
 
         assert by_name["sqlite_backup"].hidden is False
@@ -324,8 +353,6 @@ class TestSkipAndHideAreDisjoint:
         self, workspace: Path, monkeypatch
     ) -> None:
         """A per-object build failure lands in `skipped`, not `hidden_internals` — no model was produced to hide."""
-        from slayer.engine import ingestion as ing
-
         real = ing._build_one_model
 
         def _boom(**kwargs):
@@ -336,7 +363,7 @@ class TestSkipAndHideAreDisjoint:
         monkeypatch.setattr(ing, "_build_one_model", _boom)
 
         _, ds = _ds(workspace, _MIXED)
-        report = ing.ingest_datasource_report(datasource=ds)
+        report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds))
 
         assert "_dlt_version" in {s.table_name for s in report.skipped}
         assert "_dlt_version" not in {h.table_name for h in report.hidden_internals}
@@ -344,10 +371,12 @@ class TestSkipAndHideAreDisjoint:
         # A sibling internal still classifies — the failure is isolated.
         assert "_dlt_loads" in {h.table_name for h in report.hidden_internals}
 
-    def test_collision_skipped_object_is_not_also_reported_hidden(
+    def test_distinct_dunder_internals_are_both_hidden_not_skipped(
         self, workspace: Path
     ) -> None:
-        """A name-collision skip must not also appear in `hidden_internals` — the two verdicts are mutually exclusive."""
+        """``_dlt_loads_x`` and ``_dlt_loads__x`` no longer collapse, so
+        both are distinct hidden internals — neither is skipped, and skip/hide
+        stay disjoint (nothing skipped)."""
         _, ds = _ds(
             workspace,
             """
@@ -355,15 +384,13 @@ class TestSkipAndHideAreDisjoint:
             CREATE TABLE _dlt_loads__x (id INTEGER PRIMARY KEY, v TEXT);
             """,
         )
-        report = ingest_datasource_report(datasource=ds)
+        report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds))
 
         skipped_names = {s.table_name for s in report.skipped}
         hidden_names = {h.table_name for h in report.hidden_internals}
 
-        assert "_dlt_loads__x" in skipped_names
+        assert {"_dlt_loads_x", "_dlt_loads__x"} <= hidden_names
         assert not (skipped_names & hidden_names)
-        # The winner still classifies normally.
-        assert "_dlt_loads_x" in hidden_names
 
 
 # ---------------------------------------------------------------------------
@@ -376,15 +403,12 @@ class TestLiveNameSurvivesToTheReport:
 
     def test_dotted_schema_still_classifies(self, workspace: Path) -> None:
         _, ds = _ds(workspace, _MIXED)
-        report = ingest_datasource_report(datasource=ds)
+        report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds))
         # Simulate the dotted-schema shape and re-check what a consumer sees.
         entry = next(
             t for t in report.internal_tables if t.table_name == "_dlt_loads"
         )
         assert entry.tool == "dlt"
-
-        from slayer.engine.ingestion import _bare_table_name
-        from slayer.engine.internal_tables import internal_table_rule
 
         # The reconstruction that used to back the idempotent report loses it.
         assert internal_table_rule(
@@ -399,7 +423,7 @@ class TestLiveNameSurvivesToTheReport:
         """A hidden internal reaches the idempotent report even when its persisted ``sql_table`` is multi-part."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
         loaded = await storage.get_model("_dlt_loads", data_source="ds")
         assert loaded is not None
@@ -407,8 +431,30 @@ class TestLiveNameSurvivesToTheReport:
             loaded.model_copy(update={"sql_table": "project.dataset._dlt_loads"})
         )
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
         assert "_dlt_loads" in {h.table_name for h in result.hidden_internals}
+
+    async def test_adopted_internal_name_still_reported(
+        self, workspace: Path
+    ) -> None:
+        """FAIL-FIRST (CR): when a fresh dlt internal ``_dlt_loads__x`` adopts a
+        stored sanitized ``_dlt_loads_x`` (stored-name-wins), the internal-table
+        entry's ``model_name`` must be re-pointed onto the adopted name — else the
+        hidden-internal re-check looks up the stale ``__`` name and drops it."""
+        _, ds = _ds(
+            workspace,
+            "CREATE TABLE _dlt_loads__x (id INTEGER PRIMARY KEY, v TEXT);",
+        )
+        storage = await _storage_with(workspace, ds)
+        # Seed the old-world sanitized model pointing at the live __ object.
+        await storage.save_model(SlayerModel(
+            name="_dlt_loads_x", data_source="ds", sql_table="_dlt_loads__x",
+            hidden=True, meta={"internal_table": "dlt"},
+            columns=[Column(name="id", type=DataType.INT, primary_key=True),
+                     Column(name="v", type=DataType.TEXT)],
+        ))
+        result = await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
+        assert "_dlt_loads__x" in {h.table_name for h in result.hidden_internals}
 
 
 class TestSurfaceInternals:
@@ -417,7 +463,7 @@ class TestSurfaceInternals:
     ) -> None:
         """`internal_tables` is populated regardless of the flag, so a surfaced run can still report an earlier run's hidden model."""
         _, ds = _ds(workspace, _MIXED)
-        report = ingest_datasource_report(datasource=ds, surface_internals=True)
+        report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds, surface_internals=True))
 
         assert {t.table_name for t in report.internal_tables} == _INTERNAL_NAMES
         assert all(t.hidden is False for t in report.internal_tables)
@@ -426,7 +472,7 @@ class TestSurfaceInternals:
         _, ds = _ds(workspace, _MIXED)
         by_name = {
             m.name: m
-            for m in ingest_datasource(datasource=ds, surface_internals=True)
+            for m in run_sync(_with_client(ing.ingest_datasource_async, datasource=ds, surface_internals=True))
         }
         for name in _INTERNAL_NAMES:
             assert by_name[name].hidden is False, name
@@ -435,22 +481,22 @@ class TestSurfaceInternals:
         _, ds = _ds(workspace, _MIXED)
         by_name = {
             m.name: m
-            for m in ingest_datasource(datasource=ds, surface_internals=True)
+            for m in run_sync(_with_client(ing.ingest_datasource_async, datasource=ds, surface_internals=True))
         }
         assert by_name["_dlt_loads"].meta is None
 
     def test_flag_empties_the_scan_report_list(self, workspace: Path) -> None:
         """The list means "what we hid" — nothing was hidden, so it is empty."""
         _, ds = _ds(workspace, _MIXED)
-        report = ingest_datasource_report(datasource=ds, surface_internals=True)
+        report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds, surface_internals=True))
         assert report.hidden_internals == []
 
     def test_flag_does_not_change_which_models_exist(self, workspace: Path) -> None:
         _, ds = _ds(workspace, _MIXED)
-        hidden_run = {m.name for m in ingest_datasource(datasource=ds)}
+        hidden_run = {m.name for m in run_sync(_with_client(ing.ingest_datasource_async, datasource=ds))}
         surfaced_run = {
             m.name
-            for m in ingest_datasource(datasource=ds, surface_internals=True)
+            for m in run_sync(_with_client(ing.ingest_datasource_async, datasource=ds, surface_internals=True))
         }
         assert hidden_run == surfaced_run
 
@@ -465,18 +511,18 @@ class TestIncludeExclude:
         self, workspace: Path
     ) -> None:
         _, ds = _ds(workspace, _MIXED)
-        report = ingest_datasource_report(
+        report = run_sync(_with_client(ing.ingest_datasource_report_async,
             datasource=ds, exclude_tables=["_dlt_loads"]
-        )
+        ))
         assert "_dlt_loads" not in {m.name for m in report.models}
         assert "_dlt_loads" not in {h.table_name for h in report.hidden_internals}
 
     def test_explicit_include_still_hides(self, workspace: Path) -> None:
         """`--include`/`--exclude` choose which objects are scanned; visibility is a separate axis, so an explicit include still hides."""
         _, ds = _ds(workspace, _MIXED)
-        report = ingest_datasource_report(
+        report = run_sync(_with_client(ing.ingest_datasource_report_async,
             datasource=ds, include_tables=["orders", "_dlt_loads"]
-        )
+        ))
         by_name = {m.name: m for m in report.models}
 
         assert set(by_name) == {"orders", "_dlt_loads"}
@@ -485,11 +531,11 @@ class TestIncludeExclude:
 
     def test_include_plus_surface_internals_shows_it(self, workspace: Path) -> None:
         _, ds = _ds(workspace, _MIXED)
-        report = ingest_datasource_report(
+        report = run_sync(_with_client(ing.ingest_datasource_report_async,
             datasource=ds,
             include_tables=["_dlt_loads"],
             surface_internals=True,
-        )
+        ))
         assert report.models[0].hidden is False
 
 
@@ -503,8 +549,8 @@ class TestIdempotencyAndReporting:
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
         loaded = await storage.get_model("_dlt_loads", data_source="ds")
         assert loaded is not None
@@ -517,8 +563,8 @@ class TestIdempotencyAndReporting:
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
-        second = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
+        second = await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
         assert {h.table_name for h in second.hidden_internals} == _INTERNAL_NAMES
 
@@ -528,13 +574,13 @@ class TestIdempotencyAndReporting:
         """The report describes the post-merge model, so a user-unhidden internal is not reported as hidden."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
         loaded = await storage.get_model("_dlt_loads", data_source="ds")
         assert loaded is not None
         await storage.save_model(loaded.model_copy(update={"hidden": False}))
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
         reported = {h.table_name for h in result.hidden_internals}
         assert "_dlt_loads" not in reported
@@ -547,13 +593,13 @@ class TestIdempotencyAndReporting:
         """Re-ingest must never fight a deliberate un-hide; the model stays visible."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
         loaded = await storage.get_model("_dlt_loads", data_source="ds")
         assert loaded is not None
         await storage.save_model(loaded.model_copy(update={"hidden": False}))
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
         again = await storage.get_model("_dlt_loads", data_source="ds")
         assert again is not None
@@ -574,7 +620,7 @@ class TestIdempotencyAndReporting:
             )
         )
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
         loaded = await storage.get_model("_dlt_loads", data_source="ds")
         assert loaded is not None
@@ -597,7 +643,7 @@ class TestIdempotencyAndReporting:
             )
         )
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
         loaded = await storage.get_model("_dlt_loads", data_source="ds")
         assert loaded is not None
@@ -605,23 +651,24 @@ class TestIdempotencyAndReporting:
         assert loaded.hidden is False
         assert "_dlt_loads" not in {h.table_name for h in result.hidden_internals}
 
-    async def test_sanitized_model_is_reported_with_both_names(
+    async def test_dunder_internal_model_uses_faithful_name(
         self, workspace: Path
     ) -> None:
-        """The post-merge re-derivation keys on `model_name`, so a `__`-sanitized table is reported with both names."""
+        """A ``__``-named internal table keeps its faithful model name
+        (no sanitization), so table_name == model_name in the report."""
         _, ds = _ds(
             workspace,
             "CREATE TABLE _dlt_loads__x (id INTEGER PRIMARY KEY, v TEXT);",
         )
         storage = await _storage_with(workspace, ds)
 
-        first = await ingest_datasource_idempotent(datasource=ds, storage=storage)
-        second = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        first = await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
+        second = await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
         for result in (first, second):
             entry = next(iter(result.hidden_internals))
             assert entry.table_name == "_dlt_loads__x"
-            assert entry.model_name == "_dlt_loads_x"
+            assert entry.model_name == "_dlt_loads__x"
 
     async def test_surface_internals_does_not_unhide_an_existing_model(
         self, workspace: Path
@@ -629,9 +676,9 @@ class TestIdempotencyAndReporting:
         """The flag controls creation, not mutation, so it does not unhide an existing model and still lists it."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
-        result = await ingest_datasource_idempotent(
+        result = await _with_client(ingest_datasource_idempotent,
             datasource=ds, storage=storage, surface_internals=True
         )
 
@@ -646,7 +693,7 @@ class TestIdempotencyAndReporting:
         """The breadcrumb must not clobber a user's own meta keys on merge."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
         loaded = await storage.get_model("_dlt_loads", data_source="ds")
         assert loaded is not None
@@ -659,7 +706,7 @@ class TestIdempotencyAndReporting:
             )
         )
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
         again = await storage.get_model("_dlt_loads", data_source="ds")
         assert again is not None
@@ -672,11 +719,9 @@ class TestIdempotencyAndReporting:
 class TestColumnsToModelKwargs:
     def test_meta_is_propagated_verbatim(self) -> None:
         """`_columns_to_model` passes `meta` through untouched, since the caller merges the breadcrumb."""
-        from slayer.engine.ingestion import _columns_to_model
-
         model = _columns_to_model(
             name="t",
-            columns=[("id", DataType.INT, True, False, None)],
+            columns=[IntrospectedColumn(name="id", type=DataType.INT, primary_key=True)],
             data_source="ds",
             sql_table="t",
             hidden=True,
@@ -687,11 +732,9 @@ class TestColumnsToModelKwargs:
 
     def test_defaults_leave_the_model_untouched(self) -> None:
         """The dbt hidden-import path calls this without the new kwargs."""
-        from slayer.engine.ingestion import _columns_to_model
-
         model = _columns_to_model(
             name="t",
-            columns=[("id", DataType.INT, True, False, None)],
+            columns=[IntrospectedColumn(name="id", type=DataType.INT, primary_key=True)],
             data_source="ds",
             sql_table="t",
         )
@@ -727,7 +770,7 @@ def _result_with_hidden(**overrides) -> IdempotentIngestResult:
         ],
     )
     base.update(overrides)
-    return IdempotentIngestResult(**base)
+    return IdempotentIngestResult.model_validate(base)
 
 
 class TestRenderer:
@@ -798,7 +841,7 @@ class TestRenderer:
     def test_accepts_a_scan_report(self, workspace: Path, capsys) -> None:
         """The renderer accepts an `IngestionScanReport`, which lacks `to_delete` and `errors` entirely."""
         _, ds = _ds(workspace, _MIXED)
-        report = ingest_datasource_report(datasource=ds)
+        report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds))
 
         _print_ingest_drift_and_errors(report)
 
@@ -858,7 +901,7 @@ def _patch_ingest(monkeypatch, result, captured: dict | None = None) -> None:
         "slayer.cli._resolve_storage",
         lambda _args: SimpleNamespace(
             get_datasource=_async_return(
-                SimpleNamespace(name="ds", type="sqlite", database=":memory:")
+                DatasourceConfig(name="ds", type="sqlite", database=":memory:")
             )
         ),
     )
@@ -869,8 +912,6 @@ class TestCliExitCodes:
         self, workspace: Path, monkeypatch, capsys
     ) -> None:
         """Hiding is the intended outcome with nothing for the user to fix, so it exits 0 unlike a skip."""
-        from slayer.cli import _run_ingest
-
         _patch_ingest(monkeypatch, _result_with_hidden())
         _run_ingest(_args(workspace))
 
@@ -880,8 +921,6 @@ class TestCliExitCodes:
     def test_skipped_alongside_hidden_still_exits_one(
         self, workspace: Path, monkeypatch
     ) -> None:
-        from slayer.cli import _run_ingest
-
         _patch_ingest(
             monkeypatch,
             _result_with_hidden(
@@ -901,8 +940,6 @@ class TestCliFlagThreading:
     def test_flag_defaults_to_false(
         self, workspace: Path, monkeypatch
     ) -> None:
-        from slayer.cli import _run_ingest
-
         captured: dict = {}
         _patch_ingest(monkeypatch, _result_with_hidden(), captured)
         _run_ingest(_args(workspace))
@@ -911,8 +948,6 @@ class TestCliFlagThreading:
     def test_flag_reaches_the_engine(
         self, workspace: Path, monkeypatch
     ) -> None:
-        from slayer.cli import _run_ingest
-
         captured: dict = {}
         _patch_ingest(monkeypatch, _result_with_hidden(), captured)
         _run_ingest(_args(workspace, surface_internals=True))
@@ -924,8 +959,6 @@ class TestParserWiring:
 
     @staticmethod
     def _capture(monkeypatch, argv: list[str], handler: str) -> SimpleNamespace:
-        import sys
-
         captured: dict[str, SimpleNamespace] = {}
 
         def _stub(args, *_rest, **_kwargs):
@@ -933,8 +966,6 @@ class TestParserWiring:
 
         monkeypatch.setattr(f"slayer.cli.{handler}", _stub)
         monkeypatch.setattr(sys, "argv", ["slayer", *argv])
-
-        from slayer.cli import main
 
         main()
         return captured["args"]
@@ -988,8 +1019,6 @@ class TestDatasourcesCreateReporting:
         return SimpleNamespace(**base)
 
     def test_hidden_section_printed(self, workspace: Path, capsys) -> None:
-        from slayer.cli import _run_datasources_create
-
         db_path, _ = _ds(workspace, _MIXED)
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
 
@@ -1001,14 +1030,14 @@ class TestDatasourcesCreateReporting:
         assert "alembic_version" in out
 
     def test_skipped_section_printed(self, workspace: Path, capsys) -> None:
-        """The report form closes the pre-existing gap where this path swallowed skips entirely."""
-        from slayer.cli import _run_datasources_create
-
+        """The report form closes the pre-existing gap where this path swallowed
+        skips entirely. ``__`` is no longer a skip cause, so the skip
+        is driven by the reserved ``__slayer_`` prefix instead."""
         db_path, _ = _ds(
             workspace,
             """
-            CREATE TABLE a_b (id INTEGER PRIMARY KEY);
-            CREATE TABLE a__b (id INTEGER PRIMARY KEY);
+            CREATE TABLE orders (id INTEGER PRIMARY KEY);
+            CREATE TABLE __slayer_reserved (id INTEGER PRIMARY KEY);
             """,
         )
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
@@ -1017,11 +1046,9 @@ class TestDatasourcesCreateReporting:
 
         out = capsys.readouterr().out
         assert "Skipped (1)" in out
-        assert "a__b" in out
+        assert "__slayer_reserved" in out
 
     def test_flag_surfaces_them(self, workspace: Path, capsys) -> None:
-        from slayer.cli import _run_datasources_create
-
         db_path, _ = _ds(workspace, _MIXED)
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
 
@@ -1038,10 +1065,6 @@ class TestDatasourcesCreateReporting:
 
 
 def _api_client(workspace: Path, db_path: str):
-    from fastapi.testclient import TestClient
-
-    from slayer.api.server import create_app
-
     storage = YAMLStorage(base_dir=str(workspace / "storage"))
     client = TestClient(create_app(storage=storage))
     client.post(
@@ -1053,13 +1076,9 @@ def _api_client(workspace: Path, db_path: str):
 
 class TestRest:
     def test_request_defaults_the_flag_off(self) -> None:
-        from slayer.api.server import IngestRequest
-
         assert IngestRequest(datasource="ds").surface_internals is False
 
     def test_request_accepts_the_flag(self) -> None:
-        from slayer.api.server import IngestRequest
-
         assert (
             IngestRequest(datasource="ds", surface_internals=True).surface_internals
             is True
@@ -1140,7 +1159,7 @@ class TestRest:
         client.post("/ingest", json={"datasource": "ds"})
 
         listed = {m["name"] for m in client.get("/models").json()}
-        assert listed == {"orders"}
+        assert listed == {"orders", "time_spine"}
 
 
 # ---------------------------------------------------------------------------
@@ -1162,7 +1181,7 @@ class TestVisibilitySurfaces:
         """Hidden, not skipped — every object still becomes a model."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
         assert {m.name for m in await _models_in(storage)} == (
             {"orders"} | _INTERNAL_NAMES
@@ -1170,11 +1189,9 @@ class TestVisibilitySurfaces:
 
     async def test_absent_from_mcp_models_summary(self, workspace: Path) -> None:
         """Hidden internals are absent from the real MCP `models_summary` tool."""
-        from slayer.mcp.server import create_mcp_server
-
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
         mcp = create_mcp_server(storage=storage)
         blocks, _ = await mcp.call_tool(
@@ -1188,11 +1205,9 @@ class TestVisibilitySurfaces:
 
     async def test_absent_from_the_bi_catalog(self, workspace: Path) -> None:
         """pg_facade and Flight both build through ``FacadeCatalog``, so one assertion covers both."""
-        from slayer.facade.catalog import build_catalog
-
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
         catalog = build_catalog(
             models_by_datasource={"ds": await _models_in(storage)}
@@ -1201,11 +1216,9 @@ class TestVisibilitySurfaces:
         assert exposed == {"orders"}
 
     async def test_absent_from_the_search_index(self, workspace: Path) -> None:
-        from slayer.search.index import build_in_memory_corpus
-
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
         corpus = build_in_memory_corpus(
             memories=[], models=await _models_in(storage), datasources=["ds"],
@@ -1218,11 +1231,9 @@ class TestVisibilitySurfaces:
         self, workspace: Path
     ) -> None:
         """A hidden internal is still queryable when deliberately targeted by name — the point of hidden over skipped."""
-        from slayer.engine.query_engine import SlayerQueryEngine
-
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
         engine = SlayerQueryEngine(storage=storage)
         resp = await engine.execute(
@@ -1240,8 +1251,6 @@ class TestJoinsIntoHiddenModels:
         self, workspace: Path
     ) -> None:
         """Hiding must not filter join targets, since a silent drop would return different rows without raising."""
-        from slayer.engine.query_engine import SlayerQueryEngine
-
         _, ds = _ds(
             workspace,
             """
@@ -1259,7 +1268,7 @@ class TestJoinsIntoHiddenModels:
             """,
         )
         storage = await _storage_with(workspace, ds)
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
         hidden = await storage.get_model("_dlt_loads", data_source="ds")
         assert hidden is not None
@@ -1292,12 +1301,10 @@ class TestDriftScope:
         """A hidden internal is still validated like any other model, so its schema drift is surfaced."""
         _, ds = _ds(workspace, _MIXED)
         storage = await _storage_with(workspace, ds)
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
-        conn = sqlite3.connect(str(workspace / "live.db"))
-        conn.execute("DROP TABLE _dlt_version")
-        conn.commit()
-        conn.close()
+        with transaction(str(workspace / "live.db")) as conn:
+            conn.execute("DROP TABLE _dlt_version")
 
         names = await storage.list_models(data_source="ds")
         models = [
@@ -1305,7 +1312,7 @@ class TestDriftScope:
             for n in names
             if (m := await storage.get_model(n, data_source="ds")) is not None
         ]
-        to_delete = await validate_datasource(datasource=ds, models=models)
+        to_delete = await _with_client(validate_datasource, datasource=ds, models=models)
 
         entry = next(e for e in to_delete if e.model_name == "_dlt_version")
         assert entry.tool == "delete_model"
@@ -1321,8 +1328,6 @@ class TestMcpIngestReporting:
     """`ingest_datasource_models` has its own renderer, which must report hidden internals and skips to the agent that ran the ingest."""
 
     async def _ingest_via_mcp(self, storage, *, schema_name: str = "") -> str:
-        from slayer.mcp.server import create_mcp_server
-
         mcp = create_mcp_server(storage=storage)
         blocks, _ = await mcp.call_tool(
             name="ingest_datasource_models",
@@ -1358,10 +1363,12 @@ class TestMcpIngestReporting:
         assert "Hidden (4)" in second
         assert "- _dlt_version: dlt" in second
 
-    async def test_report_names_the_model_when_it_differs(
+    async def test_report_uses_the_faithful_dunder_name(
         self, workspace: Path
     ) -> None:
-        """The report names the MODEL for a `__`-sanitized table, since the live name alone is not actionable."""
+        """A ``__``-named internal table keeps its faithful model name,
+        so the report shows the bare name with no ``(model: …)`` annotation (the
+        model no longer differs from the live object)."""
         _, ds = _ds(
             workspace, "CREATE TABLE _dlt_loads__x (id INTEGER PRIMARY KEY);"
         )
@@ -1369,7 +1376,8 @@ class TestMcpIngestReporting:
 
         out = await self._ingest_via_mcp(storage)
 
-        assert "- _dlt_loads__x (model: _dlt_loads_x): dlt" in out
+        assert "- _dlt_loads__x: dlt" in out
+        assert "(model:" not in out
 
     async def test_report_points_at_the_escape_hatch(
         self, workspace: Path
@@ -1401,24 +1409,21 @@ class TestMcpIngestReporting:
         """Two dlt pipelines in one store both produce `_dlt_loads`, so the hint must name which one was ingested."""
         _, ds_a = _ds(workspace, _MIXED, name="a.db")
         db_b = str(workspace / "b.db")
-        conn = sqlite3.connect(db_b)
-        conn.executescript(_MIXED)
-        conn.commit()
-        conn.close()
+        with transaction(db_b) as conn:
+            conn.executescript(_MIXED)
         ds_b = DatasourceConfig(name="second", type="sqlite", database=db_b)
 
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
         await storage.save_datasource(ds_a)
         await storage.save_datasource(ds_b)
-        await ingest_datasource_idempotent(datasource=ds_a, storage=storage)
-        await ingest_datasource_idempotent(datasource=ds_b, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds_a, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds_b, storage=storage)
 
         # Same model name really does exist under both datasources.
         for name in ("ds", "second"):
             model = await storage.get_model("_dlt_loads", data_source=name)
-            assert model is not None and model.hidden is True, name
-
-        from slayer.mcp.server import create_mcp_server
+            assert model is not None, name
+            assert model.hidden is True, name
 
         mcp = create_mcp_server(storage=storage)
         blocks, _ = await mcp.call_tool(
@@ -1433,12 +1438,13 @@ class TestMcpIngestReporting:
     async def test_skipped_objects_are_reported_too(
         self, workspace: Path
     ) -> None:
-        """Skips are reported here too: `_dlt_loads_x` reserves the name, so `_dlt_loads__x` is skipped rather than modelled."""
+        """Skips are reported here too. ``__`` no longer causes a skip,
+        so the reserved ``__slayer_`` prefix drives the skip instead."""
         _, ds = _ds(
             workspace,
             """
-            CREATE TABLE _dlt_loads_x (id INTEGER PRIMARY KEY);
-            CREATE TABLE _dlt_loads__x (id INTEGER PRIMARY KEY);
+            CREATE TABLE orders (id INTEGER PRIMARY KEY);
+            CREATE TABLE __slayer_reserved (id INTEGER PRIMARY KEY);
             """,
         )
         storage = await _storage_with(workspace, ds)
@@ -1446,7 +1452,7 @@ class TestMcpIngestReporting:
         out = await self._ingest_via_mcp(storage)
 
         assert "Skipped (1)" in out
-        assert "_dlt_loads__x" in out
+        assert "__slayer_reserved" in out
         # No `--exclude` in sight: this tool has no such argument.
         assert "--exclude" not in out
 
@@ -1465,10 +1471,8 @@ class TestMcpIngestReporting:
         """Widening the early-return guard must not cost the empty-schema hint that tells an agent to try another schema."""
         _, ds = _ds(workspace, "CREATE TABLE placeholder (id INTEGER);")
         storage = await _storage_with(workspace, ds)
-        conn = sqlite3.connect(str(workspace / "live.db"))
-        conn.execute("DROP TABLE placeholder")
-        conn.commit()
-        conn.close()
+        with transaction(str(workspace / "live.db")) as conn:
+            conn.execute("DROP TABLE placeholder")
 
         out = await self._ingest_via_mcp(storage)
 
@@ -1477,11 +1481,6 @@ class TestMcpIngestReporting:
 
     def test_renderer_tolerates_a_result_lacking_the_attributes(self) -> None:
         """The renderer tolerates a result lacking the attributes, mirroring the CLI renderer's defensiveness."""
-        from slayer.mcp.server import (
-            _render_hidden_internals_section,
-            _render_skipped_section,
-        )
-
         legacy = SimpleNamespace(additions=[], to_delete=[], errors=[])
         assert _render_skipped_section(
             list(getattr(legacy, "skipped", None) or [])
@@ -1492,8 +1491,6 @@ class TestMcpIngestReporting:
 
     def test_section_renders_whole_lines(self) -> None:
         """Asserted as whole lines: a substring check on `dlt` would pass even if the `tool` field were dropped."""
-        from slayer.mcp.server import _render_hidden_internals_section
-
         lines = _render_hidden_internals_section([
             InternalTable(
                 table_name="_dlt_loads", model_name="_dlt_loads",

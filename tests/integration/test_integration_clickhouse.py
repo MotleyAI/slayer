@@ -1,6 +1,6 @@
 """Integration tests using a real ClickHouse database via testcontainers.
 
-DEV-1564: mirror of test_integration_postgres.py focused on ClickHouse's
+Mirror of test_integration_postgres.py focused on ClickHouse's
 distinguishing characteristics:
 
 * Parametric ``quantile(p)(x)`` syntax (pinned via dry_run SQL inspection).
@@ -8,8 +8,8 @@ distinguishing characteristics:
 * Native ``stddev_*`` / ``var_*`` / ``corr`` / ``covar_*`` (sqlglot
   transpiles to the dialect-correct spellings).
 * Native ``LOG10`` / ``LOG2``.
-* ``DateTime`` columns must round-trip as ``DataType.TIMESTAMP`` (issue #62
-  regression — auto-ingestion).
+* ``DateTime`` columns must round-trip as ``DataType.TIMESTAMP`` (auto-ingestion
+  regression).
 
 Rollup-ingestion tests are intentionally omitted: ClickHouse exposes no
 foreign-key metadata via SQLAlchemy's Inspector. Cross-model coverage
@@ -20,19 +20,25 @@ Skipped silently when:
 - The Docker daemon is unreachable (autouse session fixture)
 """
 
+import contextlib
+import math as _math
+import statistics
 import tempfile
 import uuid
+from typing import Any
+import warnings
+from collections.abc import Generator
+from datetime import datetime, timezone
+from decimal import Decimal
 
 import pytest
-
-pytest.importorskip("testcontainers.clickhouse")
-pytest.importorskip("clickhouse_sqlalchemy")
-
+import requests
 import sqlalchemy as sa
-from testcontainers.clickhouse import ClickHouseContainer
+from sqlalchemy.exc import DBAPIError
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.errors import SlayerError
 from slayer.core.models import (
     Column,
     DatasourceConfig,
@@ -40,11 +46,60 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.ingestion import ingest_datasource
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.core.policy import JoinFilterRule, JoinFilterRuleset, SessionPolicy
+from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
+from slayer.engine import ingestion
+from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine
 from slayer.sql import engine_factory
+from slayer.sql.client import DelegatingSqlClient, ExecutionResult, SlayerSQLClient, SqlClient
+from slayer.sql.dialects.base import ServerProfile
 from slayer.storage.yaml_storage import YAMLStorage
+from tests.integration._dev2015_server import (
+    check_all,
+    server_models,
+    server_models_ts,
+    server_statements,
+    with_granularities,
+)
+from tests.integration._consecutive_periods_calendar import (
+    CALENDAR_CASES,
+    assert_calendar_streak,
+    seed_statements,
+    streak_model,
+)
+
+from tests._dev1737_fixtures import (
+    DateCase,
+    all_models,
+    assert_case,
+    check_server_scenarios,
+    matrix_cases,
+    matrix_query,
+    server_seed_statements,
+)
+from tests._dev2120_fixtures import (
+    DOCS_ROWS,
+    LIB,
+    check_library,
+    check_native_json,
+    contractors_model,
+    contractors_statements,
+    lib_model,
+    server_literal,
+    server_table_statements as dev2120_table_statements,
+)
+from tests._cast_fixtures import check_try_cast_targets
+from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
+from tests._engine_helpers import disposable_engine
+from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_model, mixed_numbers_statements
+from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
+
+pytest.importorskip("testcontainers.clickhouse")
+pytest.importorskip("clickhouse_sqlalchemy")
+
+import docker  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
+from testcontainers.clickhouse import ClickHouseContainer  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +110,6 @@ from slayer.storage.yaml_storage import YAMLStorage
 @pytest.fixture(scope="session", autouse=True)
 def _docker_available_or_skip():
     try:
-        import docker  # noqa: PLC0415
         docker.from_env().ping()
     except Exception as exc:  # pragma: no cover — exercised on local dev
         pytest.skip(f"Docker not available: {exc}")
@@ -69,7 +123,10 @@ def _docker_available_or_skip():
 @pytest.fixture(scope="session")
 def clickhouse_container():
     """Session-scoped ClickHouse 24 container."""
-    container = ClickHouseContainer("clickhouse/clickhouse-server:24-alpine")
+    # Access management lets tests create a readonly user.
+    container = ClickHouseContainer("clickhouse/clickhouse-server:24-alpine").with_env(
+        "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT", "1"
+    )
     with container as c:
         yield c
 
@@ -99,10 +156,9 @@ def _ds_url_for_db(clickhouse_container, db_name: str) -> str:
 def _create_module_db(clickhouse_container) -> str:
     """Create a fresh per-module database; return its name."""
     db_name = f"test_{uuid.uuid4().hex[:12]}"
-    engine = sa.create_engine(_admin_url(clickhouse_container))
-    with engine.begin() as conn:
-        conn.execute(sa.text(f"CREATE DATABASE {db_name}"))
-    engine.dispose()
+    with disposable_engine(_admin_url(clickhouse_container)) as engine:
+        with engine.begin() as conn:
+            conn.execute(sa.text(f"CREATE DATABASE {db_name}"))
     return db_name
 
 
@@ -112,10 +168,18 @@ def _drop_module_db(clickhouse_container, db_name: str) -> None:
         engine.dispose()
     engine_factory.reset_cache()
 
-    engine = sa.create_engine(_admin_url(clickhouse_container))
-    with engine.begin() as conn:
-        conn.execute(sa.text(f"DROP DATABASE IF EXISTS {db_name}"))
-    engine.dispose()
+    with disposable_engine(_admin_url(clickhouse_container)) as engine:
+        with engine.begin() as conn:
+            conn.execute(sa.text(f"DROP DATABASE IF EXISTS {db_name}"))
+
+
+async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
+    sql_client = SlayerSQLClient(datasource=ds)
+    try:
+        return await ingestion.ingest_datasource_async(ds, client=sql_client, **kwargs)
+    finally:
+        await sql_client.aclose()
+        sql_client.close()
 
 
 def _ds_config(clickhouse_container, db_name: str) -> DatasourceConfig:
@@ -144,8 +208,7 @@ def _clickhouse_env_storage(clickhouse_container, tmp_path_factory):
     """Module-scoped: seeded ClickHouse orders + customers tables + storage."""
     db_name = _create_module_db(clickhouse_container)
     try:
-        engine = sa.create_engine(_ds_url_for_db(clickhouse_container, db_name))
-        try:
+        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
             with engine.begin() as conn:
                 conn.execute(sa.text("""
                     CREATE TABLE customers (
@@ -178,8 +241,12 @@ def _clickhouse_env_storage(clickhouse_container, tmp_path_factory):
                         (5, 'cancelled', 75, 3, '2024-03-01 08:00:00'),
                         (6, 'pending', 300, 3, '2024-03-10 16:00:00')
                 """))
-        finally:
-            engine.dispose()
+                for stmt in seed_statements(
+                    date_type="Date", timestamp_type="DateTime", int_type="Int32",
+                    text_type="String", float_type="Float64",
+                    table_options="ENGINE = MergeTree() ORDER BY id",
+                ):
+                    conn.execute(sa.text(stmt))
 
         tmpdir = str(tmp_path_factory.mktemp("clickhouse_env"))
         storage = YAMLStorage(base_dir=tmpdir)
@@ -207,6 +274,7 @@ def _clickhouse_env_storage(clickhouse_container, tmp_path_factory):
                 Column(name="region", sql="region", type=DataType.TEXT),
             ],
         )))
+        run_sync(storage.save_model(streak_model("testclickhouse")))
         yield storage
     finally:
         _drop_module_db(clickhouse_container, db_name)
@@ -220,16 +288,98 @@ def clickhouse_env(_clickhouse_env_storage) -> SlayerQueryEngine:
 
 @pytest.mark.integration
 class TestClickHouseQueries:
+    async def test_try_cast_integer_targets(self, clickhouse_env: SlayerQueryEngine) -> None:
+        await check_try_cast_targets(clickhouse_env, model="orders")
+
     async def test_count_all(self, clickhouse_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", measures=[{"formula": "*:count"}])
         result = await clickhouse_env.execute(query=query)
         assert result.row_count == 1
         assert result.data[0]["orders._count"] == 6
 
+    async def test_dev1933_regex_literal_extension_column(self, clickhouse_env: SlayerQueryEngine) -> None:
+        """An ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
+        LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
+        query = SlayerQuery(
+            source_model=ModelExtension(
+                source_name="orders",
+                columns=[Column(
+                    name="rx",
+                    sql="CASE WHEN status LIKE '%pend%' "
+                        "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END",
+                    type=DataType.DOUBLE,
+                )],
+            ),
+            dimensions=[ColumnRef(name="rx")],
+            measures=[ModelMeasure(formula="*:count")],
+        )
+        result = await clickhouse_env.execute(query=query)
+        by_rx = {int(r["orders.rx"]): r["orders._count"] for r in result.data}
+        assert by_rx == {1: 2, 0: 4}
+
     async def test_sum_measure(self, clickhouse_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", measures=[{"formula": "total:sum"}])
         result = await clickhouse_env.execute(query=query)
         assert float(result.data[0]["orders.total_sum"]) == 875.0  # NOSONAR(S1244) — sum of integer cents, exact-representable
+
+    async def test_functional_aggregation_parity(self, clickhouse_env: SlayerQueryEngine) -> None:
+        colon = await clickhouse_env.execute(
+            query=SlayerQuery(source_model="orders", measures=[{"formula": "total:sum"}])
+        )
+        func = await clickhouse_env.execute(
+            query=SlayerQuery(source_model="orders", measures=[{"formula": "sum(total)"}])
+        )
+        assert float(func.data[0]["orders.total_sum"]) == float(colon.data[0]["orders.total_sum"])
+
+    async def test_string_hygiene_functions_execute(
+        self, clickhouse_env: SlayerQueryEngine
+    ) -> None:
+        """``lower`` / ``substr`` reach ClickHouse as its character-counting ``lowerUTF8`` /
+        ``substringUTF8``; ClickHouse names are case-sensitive, so this pins that they resolve live."""
+        lowered = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "*:count"}],
+            filters=["lower(status) = 'completed'"],
+        )
+        result = await clickhouse_env.execute(query=lowered)
+        assert result.data[0]["orders._count"] > 0
+        assert "lowerUTF8(" in (result.sql or ""), result.sql
+
+        subs = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "*:count"}],
+            filters=["substr(status, 1, 4) = 'comp'"],
+        )
+        result = await clickhouse_env.execute(query=subs)
+        assert result.data[0]["orders._count"] > 0
+        assert "substringUTF8(" in (result.sql or ""), result.sql
+
+    async def test_trunc_executes_lowercase(
+        self, clickhouse_env: SlayerQueryEngine
+    ) -> None:
+        """Sqlglot emits ClickHouse ``trunc`` LOWERCASE while every
+        other backend uppercases it. ClickHouse function names are case-sensitive
+        in general, so this pins that the lowercase spelling really resolves on a
+        live server — and that ``trunc`` truncates toward zero rather than
+        rounding: ``trunc(total / 40.0)`` is 2.5 -> 2 only for total = 100.
+        """
+        acceptance = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "*:count"}],
+            filters=["trunc(total) >= 100"],
+        )
+        result = await clickhouse_env.execute(query=acceptance)
+        assert result.data[0]["orders._count"] > 0
+        assert "trunc(" in (result.sql or ""), result.sql
+        assert "TRUNC(" not in (result.sql or ""), result.sql
+
+        truncates = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "*:count"}],
+            filters=["trunc(total / 40.0) == 2"],
+        )
+        result = await clickhouse_env.execute(query=truncates)
+        assert result.data[0]["orders._count"] == 1, result.sql
 
     async def test_avg_measure(self, clickhouse_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", measures=[{"formula": "avg_amount:avg"}])
@@ -334,7 +484,7 @@ class TestClickHouseQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[
@@ -352,7 +502,7 @@ class TestClickHouseQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[
                 ModelMeasure(formula="total:sum"),
@@ -363,11 +513,17 @@ class TestClickHouseQueries:
         result = await clickhouse_env.execute(query=query)
         assert [r["orders.positive_run"] for r in result.data] == [1, 0, 1]
 
+    @pytest.mark.parametrize("column,granularity", CALENDAR_CASES)
+    async def test_consecutive_periods_breaks_on_calendar_gap(
+        self, clickhouse_env: SlayerQueryEngine, column: str, granularity: str,
+    ) -> None:
+        await assert_calendar_streak(clickhouse_env, column=column, granularity=granularity)
+
     async def test_change_with_date_range(self, clickhouse_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[
@@ -384,7 +540,7 @@ class TestClickHouseQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[
@@ -401,7 +557,7 @@ class TestClickHouseQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-02-01", "2024-02-29"],
             )],
             measures=[
@@ -428,8 +584,7 @@ def clickhouse_cross_model_env(clickhouse_container):
     """ClickHouse env with orders + customers (with score) and explicit join.
     No FK metadata is exposed by ClickHouse — the join is hand-declared."""
     db_name = _create_module_db(clickhouse_container)
-    engine = sa.create_engine(_ds_url_for_db(clickhouse_container, db_name))
-    try:
+    with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
         with engine.begin() as conn:
             conn.execute(sa.text("""
                 CREATE TABLE customers (
@@ -463,8 +618,6 @@ def clickhouse_cross_model_env(clickhouse_container):
                     (5, 'completed', 300, 3, '2024-03-01 08:00:00'),
                     (6, 'pending', 25, 1, '2024-03-10 16:00:00')
             """))
-    finally:
-        engine.dispose()
 
     tmpdir = tempfile.mkdtemp()
     storage = YAMLStorage(base_dir=tmpdir)
@@ -500,7 +653,7 @@ class TestCrossModelAndMultistageClickHouse:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="customers.avg_score:avg")],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
@@ -516,7 +669,7 @@ class TestCrossModelAndMultistageClickHouse:
         inner = SlayerQuery(
             name="monthly", source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total:sum")],
         )
@@ -528,7 +681,7 @@ class TestCrossModelAndMultistageClickHouse:
         source = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total:sum")],
         )
@@ -540,12 +693,11 @@ class TestCrossModelAndMultistageClickHouse:
         assert result.data[0]["ch_monthly._count"] == 3
 
     async def test_sql_dimension(self, clickhouse_cross_model_env: SlayerQueryEngine) -> None:
-        from slayer.core.query import ModelExtension
         query = SlayerQuery(
-            source_model=ModelExtension(
-                source_name="orders",
-                columns=[{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
-            ),
+            source_model=ModelExtension.model_validate({
+                "source_name": "orders",
+                "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
+            }),
             dimensions=[ColumnRef(name="tier")],
             measures=[ModelMeasure(formula="*:count")],
         )
@@ -652,7 +804,7 @@ class TestClickHouseMedianPercentile:
 
 
 # ---------------------------------------------------------------------------
-# Native stat aggregations (DEV-1317 cross-dialect parity)
+# Native stat aggregations (cross-dialect parity)
 # ---------------------------------------------------------------------------
 
 
@@ -665,7 +817,6 @@ class TestClickHouseStatAggregations:
     implementations (no UDF, no decomposition formula)."""
 
     async def test_stddev_samp_native_clickhouse(self, clickhouse_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:stddev_samp"}],
@@ -677,7 +828,6 @@ class TestClickHouseStatAggregations:
         )
 
     async def test_stddev_pop_native_clickhouse(self, clickhouse_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:stddev_pop"}],
@@ -689,7 +839,6 @@ class TestClickHouseStatAggregations:
         )
 
     async def test_var_samp_native_clickhouse(self, clickhouse_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:var_samp"}],
@@ -701,7 +850,6 @@ class TestClickHouseStatAggregations:
         )
 
     async def test_var_pop_native_clickhouse(self, clickhouse_env: SlayerQueryEngine) -> None:
-        import statistics
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "total:var_pop"}],
@@ -718,7 +866,6 @@ class TestClickHouseStatAggregations:
             measures=[{"formula": "total:corr(other=customer_id)"}],
         )
         result = await clickhouse_env.execute(query=query)
-        import statistics
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         ys = [1.0, 1.0, 2.0, 2.0, 3.0, 3.0]
         expected = statistics.correlation(xs, ys)
@@ -758,7 +905,7 @@ class TestClickHouseStatAggregations:
 
 
 # ---------------------------------------------------------------------------
-# log10 round-trip (DEV-1337 — ClickHouse has native log10)
+# log10 round-trip (ClickHouse has native log10)
 # ---------------------------------------------------------------------------
 
 
@@ -767,8 +914,7 @@ def clickhouse_log10_env(clickhouse_container):
     """Dedicated env for the log10 round-trip so the Column-add doesn't
     leak into the shared module-scoped storage."""
     db_name = _create_module_db(clickhouse_container)
-    engine = sa.create_engine(_ds_url_for_db(clickhouse_container, db_name))
-    try:
+    with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
         with engine.begin() as conn:
             conn.execute(sa.text("""
                 CREATE TABLE orders (
@@ -779,8 +925,6 @@ def clickhouse_log10_env(clickhouse_container):
             conn.execute(sa.text(
                 "INSERT INTO orders VALUES (1, 100), (2, 200), (3, 300)"
             ))
-    finally:
-        engine.dispose()
 
     tmpdir = tempfile.mkdtemp()
     storage = YAMLStorage(base_dir=tmpdir)
@@ -801,8 +945,6 @@ def clickhouse_log10_env(clickhouse_container):
 async def test_log10_round_trip_clickhouse(clickhouse_log10_env: SlayerQueryEngine) -> None:
     """ClickHouse has native LOG10 (ClickhouseDialect.log10_native=True).
     The emitted SQL must preserve ``log10(...)``."""
-    import math as _math
-
     result = await clickhouse_log10_env.execute(
         SlayerQuery(source_model="orders", measures=[{"formula": "log_amount:max"}])
     )
@@ -825,15 +967,14 @@ async def test_log10_round_trip_clickhouse(clickhouse_log10_env: SlayerQueryEngi
 
 
 # ---------------------------------------------------------------------------
-# Window-in-filter raises (DEV-1369 parity)
+# Window-in-filter raises (parity)
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
 def planets_clickhouse_env(clickhouse_container):
     db_name = _create_module_db(clickhouse_container)
-    engine = sa.create_engine(_ds_url_for_db(clickhouse_container, db_name))
-    try:
+    with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
         with engine.begin() as conn:
             conn.execute(sa.text("""
                 CREATE TABLE planets (
@@ -853,8 +994,6 @@ def planets_clickhouse_env(clickhouse_container):
                     (7, 'Uranus', 86.8),
                     (8, 'Neptune', 102.0)
             """))
-    finally:
-        engine.dispose()
 
     tmpdir = tempfile.mkdtemp()
     storage = YAMLStorage(base_dir=tmpdir)
@@ -893,15 +1032,14 @@ async def test_filter_on_windowed_column_clickhouse_raises(planets_clickhouse_en
 
 
 # ---------------------------------------------------------------------------
-# Cross-model derived Column.sql (DEV-1333)
+# Cross-model derived Column.sql
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
 def clickhouse_derived_chain_env(clickhouse_container):
     db_name = _create_module_db(clickhouse_container)
-    engine = sa.create_engine(_ds_url_for_db(clickhouse_container, db_name))
-    try:
+    with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
         with engine.begin() as conn:
             conn.execute(sa.text(
                 "CREATE TABLE b_tbl (id Int32, foo_raw Float64) "
@@ -915,8 +1053,6 @@ def clickhouse_derived_chain_env(clickhouse_container):
             conn.execute(sa.text(
                 "INSERT INTO a_tbl VALUES (10, 4, 1, 100), (11, 1, 2, 5)"
             ))
-    finally:
-        engine.dispose()
 
     tmpdir = tempfile.mkdtemp()
     storage = YAMLStorage(base_dir=tmpdir)
@@ -976,7 +1112,7 @@ async def test_integration_clickhouse_cross_model_derived_columnsql(
 
 
 # ---------------------------------------------------------------------------
-# Dialect-specific: DateTime column type round-trip (issue #62 regression)
+# Dialect-specific: DateTime column type round-trip
 # ---------------------------------------------------------------------------
 
 
@@ -985,25 +1121,22 @@ def clickhouse_ingest_for_types_env(clickhouse_container):
     """Seed a ClickHouse table with each scalar type we care about,
     then auto-ingest. The test asserts the inferred DataType vocabulary."""
     db_name = _create_module_db(clickhouse_container)
-    engine = sa.create_engine(_ds_url_for_db(clickhouse_container, db_name))
-    try:
+    with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
         with engine.begin() as conn:
             conn.execute(sa.text("""
                 CREATE TABLE orders (
                     id Int32,
                     customer_id Int32,
                     quantity Int32,
-                    amount Float64,
+                    amount Float64 COMMENT 'Order amount',
                     status String,
                     created_at DateTime
-                ) ENGINE = MergeTree() ORDER BY id
+                ) ENGINE = MergeTree() ORDER BY id COMMENT 'All orders'
             """))
             conn.execute(sa.text("""
                 INSERT INTO orders VALUES
                     (1, 1, 5, 100.0, 'completed', '2024-01-01 00:00:00')
             """))
-    finally:
-        engine.dispose()
     ds = _ds_config(clickhouse_container, db_name)
     yield ds
     _drop_module_db(clickhouse_container, db_name)
@@ -1011,11 +1144,11 @@ def clickhouse_ingest_for_types_env(clickhouse_container):
 
 @pytest.mark.integration
 def test_clickhouse_datetime_typed_correctly(clickhouse_ingest_for_types_env) -> None:
-    """Regression for issue #62: auto-ingesting a ClickHouse DateTime
+    """Regression: auto-ingesting a ClickHouse DateTime
     column must produce ``DataType.TIMESTAMP``, not STRING. Int32 / Float64
     must map to INT / DOUBLE."""
     ds = clickhouse_ingest_for_types_env
-    models = ingest_datasource(datasource=ds, schema=None)
+    models = run_sync(_ingest(ds, schema=None))
     orders = next(m for m in models if m.name == "orders")
     by_name = {c.name: c for c in orders.columns}
 
@@ -1030,11 +1163,20 @@ def test_clickhouse_datetime_typed_correctly(clickhouse_ingest_for_types_env) ->
     )
 
 
+@pytest.mark.integration
+def test_clickhouse_comments_imported(clickhouse_ingest_for_types_env) -> None:
+    ds = clickhouse_ingest_for_types_env
+    models = run_sync(_ingest(ds, schema=None))
+    orders = next(m for m in models if m.name == "orders")
+    assert orders.description == "All orders"
+    by_name = {c.name: c for c in orders.columns}
+    assert by_name["amount"].description == "Order amount"
+    assert by_name["status"].description is None
+
+
 # ---------------------------------------------------------------------------
-# DEV-1727 — dialect-aware Mode-A {var} escaping (ClickHouse is a Tier-1
-# backslash dialect with C-style string literals: the naive '' quote-doubling
-# from DEV-1625 mis-parses a backslash-bearing value; the hardened escaping
-# must round-trip end-to-end).
+# Dialect-aware Mode-A {var} escaping: ClickHouse's C-style literals break naive
+# '' quote-doubling on a backslash-bearing value; escaping must round-trip.
 # ---------------------------------------------------------------------------
 
 # Distinct amounts per tricky status so a correct match is provable via the sum.
@@ -1052,8 +1194,7 @@ def _clickhouse_esc_storage(clickhouse_container, tmp_path_factory):
     a model whose Mode-A filter carries a ``{v}`` placeholder."""
     db_name = _create_module_db(clickhouse_container)
     try:
-        engine = sa.create_engine(_ds_url_for_db(clickhouse_container, db_name))
-        try:
+        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
             with engine.begin() as conn:
                 conn.execute(sa.text("""
                     CREATE TABLE esc (
@@ -1072,8 +1213,6 @@ def _clickhouse_esc_storage(clickhouse_container, tmp_path_factory):
                     sa.Column("amount", sa.Float),
                 )
                 conn.execute(esc.insert(), _CH_ESC_ROWS)
-        finally:
-            engine.dispose()
 
         tmpdir = str(tmp_path_factory.mktemp("clickhouse_esc"))
         storage = YAMLStorage(base_dir=tmpdir)
@@ -1132,3 +1271,768 @@ class TestClickHouseModeAEscaping:
             variables={"v": "x\\' OR '1'='1"},
         ))
         assert int(resp.data[0]["esc._count"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# Decimal native-type preservation
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def _clickhouse_decimal_storage(clickhouse_container, tmp_path_factory):
+    """Module-scoped: ingested table with wrapped and short decimal columns."""
+    db_name = _create_module_db(clickhouse_container)
+    try:
+        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
+            with engine.begin() as conn:
+                conn.execute(sa.text("""
+                    CREATE TABLE decimal_orders (
+                        id Int32,
+                        amount Nullable(Decimal(18, 2)),
+                        short_amount Decimal64(4)
+                    ) ENGINE = MergeTree() ORDER BY id
+                """))
+                conn.execute(sa.text("""
+                    INSERT INTO decimal_orders VALUES
+                        (1, '90071992547409.91', '900719925474.0992'),
+                        (2, '0.02', '0.0001')
+                """))
+
+        datasource = _ds_config(clickhouse_container, db_name)
+        model = next(
+            m for m in run_sync(_ingest(datasource))
+            if m.name == "decimal_orders"
+        )
+        amount = model.get_column("amount")
+        short_amount = model.get_column("short_amount")
+        assert amount is not None
+        assert short_amount is not None
+        # Bare inner type retained — wrapper text must not defeat preservation.
+        assert amount.db_type == "Decimal(18, 2)"
+        assert short_amount.db_type is not None
+        assert "Decimal" in short_amount.db_type
+
+        tmpdir = str(tmp_path_factory.mktemp("clickhouse_decimal"))
+        storage = YAMLStorage(base_dir=tmpdir)
+        run_sync(storage.save_datasource(datasource))
+        run_sync(storage.save_model(model))
+        yield storage
+    finally:
+        _drop_module_db(clickhouse_container, db_name)
+
+
+@pytest.fixture
+def clickhouse_decimal_env(_clickhouse_decimal_storage) -> SlayerQueryEngine:
+    return SlayerQueryEngine(storage=_clickhouse_decimal_storage)
+
+
+@pytest.mark.integration
+class TestClickHouseDecimalPreservation:
+    @pytest.mark.parametrize(
+        "measure,result_key,expected",
+        [
+            (
+                "amount:sum",
+                "decimal_orders.amount_sum",
+                Decimal("90071992547409.93"),
+            ),
+            (
+                "short_amount:sum",
+                "decimal_orders.short_amount_sum",
+                Decimal("900719925474.0993"),
+            ),
+        ],
+    )
+    async def test_inferred_decimal_sum_preserves_exact_value(
+        self, clickhouse_decimal_env: SlayerQueryEngine, measure, result_key, expected
+    ) -> None:
+        query = SlayerQuery(source_model="decimal_orders", measures=[{"formula": measure}])
+        result = await clickhouse_decimal_env.execute(query=query)
+        sql = (await clickhouse_decimal_env.execute(query=query, dry_run=True)).sql
+
+        assert " AS DOUBLE" not in sql, sql
+        assert "Float64" not in sql, sql
+        value = result.data[0][result_key]
+        assert isinstance(value, Decimal)
+        assert value == expected
+
+
+# ---------------------------------------------------------------------------
+# Per-statement timeout (max_execution_time)
+# ---------------------------------------------------------------------------
+
+
+def _admin_rows(clickhouse_container, sql: str) -> list[tuple]:
+    with disposable_engine(_admin_url(clickhouse_container)) as engine:
+        with engine.connect() as conn:
+            conn.exec_driver_sql("SYSTEM FLUSH LOGS")
+            rows = conn.exec_driver_sql(sql, execution_options={"no_parameters": True}).fetchall()
+            return [tuple(r) for r in rows]
+
+
+def _readonly_level_datasource(clickhouse_container, level: int):
+    """A datasource whose user has ``readonly = <level>``."""
+    user = f"ro{level}_{uuid.uuid4().hex[:8]}"
+    with disposable_engine(_admin_url(clickhouse_container)) as engine:
+        with engine.begin() as conn:
+            conn.execute(sa.text(
+                f"CREATE USER {user} IDENTIFIED WITH plaintext_password BY 'pw' "
+                f"SETTINGS readonly = {level}"
+            ))
+            conn.execute(sa.text(f"GRANT SELECT ON *.* TO {user}"))
+    yield DatasourceConfig(
+        name="readonly_clickhouse",
+        type="clickhouse",
+        host=clickhouse_container.get_container_host_ip(),
+        port=int(clickhouse_container.get_exposed_port(8123)),
+        database="default",
+        username=user,
+        password="pw",
+    )
+    with disposable_engine(_admin_url(clickhouse_container)) as engine:
+        with engine.begin() as conn:
+            conn.execute(sa.text(f"DROP USER IF EXISTS {user}"))
+
+
+@pytest.fixture
+def clickhouse_readonly_datasource(clickhouse_container):
+    """A datasource whose user has ``readonly = 1`` and may change no settings."""
+    yield from _readonly_level_datasource(clickhouse_container, 1)
+
+
+@pytest.fixture
+def clickhouse_readonly2_datasource(clickhouse_container):
+    """A datasource whose user has ``readonly = 2``: read-only, but may change settings."""
+    yield from _readonly_level_datasource(clickhouse_container, 2)
+
+
+def _pooled_max_execution_time(client: SlayerSQLClient) -> str:
+    with client._get_sync_engine_for_client().connect() as conn:
+        return str(conn.exec_driver_sql("SELECT getSetting('max_execution_time')").scalar())
+
+
+@pytest.mark.integration
+class TestClickHouseStatementTimeout:
+    async def test_timeout_stops_long_query(self, clickhouse_container) -> None:
+        client = SlayerSQLClient(datasource=_ds_config(clickhouse_container, "default"))
+        with pytest.raises(Exception, match="TIMEOUT_EXCEEDED"):
+            await client.execute(sql="SELECT sleep(3)", timeout_seconds=1)
+
+    async def test_statement_reaches_server_byte_identical(self, clickhouse_container) -> None:
+        marker = f"slayer_{uuid.uuid4().hex[:12]}"
+        sql = (
+            "SELECT toStartOfMonth(d) AS m, x::Int32 AS y "
+            f"FROM (SELECT toDate('2024-03-15') AS d, '7' AS x) -- {marker}"
+        )
+        client = SlayerSQLClient(datasource=_ds_config(clickhouse_container, "default"))
+        rows = (await client.execute(sql=sql, timeout_seconds=30)).rows
+        assert [(str(r["m"]), int(r["y"])) for r in rows] == [("2024-03-01", 7)]
+        logged = _admin_rows(
+            clickhouse_container,
+            "SELECT query FROM system.query_log WHERE type = 'QueryFinish' "
+            f"AND query LIKE '%{marker}%' AND query NOT LIKE '%system.query_log%'",
+        )
+        assert logged == [(sql,)]
+
+    async def test_sql_own_setting_wins(self, clickhouse_container) -> None:
+        client = SlayerSQLClient(datasource=_ds_config(clickhouse_container, "default"))
+        result = await client.execute(
+            sql="SELECT sleep(2) AS s SETTINGS max_execution_time = 5", timeout_seconds=1,
+        )
+        assert len(result.rows) == 1
+
+    def test_setting_restored_on_pooled_connection(self, clickhouse_container) -> None:
+        client = SlayerSQLClient(datasource=_ds_config(clickhouse_container, "default"))
+        prior = _pooled_max_execution_time(client)
+        client.execute_sync("SELECT 1", timeout_seconds=1)
+        assert _pooled_max_execution_time(client) == prior
+
+    def test_setting_restored_after_timed_query_raised(self, clickhouse_container) -> None:
+        client = SlayerSQLClient(datasource=_ds_config(clickhouse_container, "default"))
+        prior = _pooled_max_execution_time(client)
+        with pytest.raises(Exception, match="TIMEOUT_EXCEEDED"):
+            client.execute_sync("SELECT sleep(3)", timeout_seconds=1)
+        assert _pooled_max_execution_time(client) == prior
+
+    async def test_readonly_user_runs_queries(self, clickhouse_readonly_datasource) -> None:
+        client = SlayerSQLClient(datasource=clickhouse_readonly_datasource)
+        for _ in range(2):  # second call takes the cached no-setting path
+            rows = (await client.execute(sql="SELECT 1 AS x")).rows
+            assert [int(r["x"]) for r in rows] == [1]
+
+    async def test_readonly_user_warned_and_checked_once(
+        self, clickhouse_container, clickhouse_readonly_datasource,
+    ) -> None:
+        client = SlayerSQLClient(datasource=clickhouse_readonly_datasource)
+        expected = StatementTimeoutSkippedWarning(
+            datasource="readonly_clickhouse", timeout_seconds=120, reason="readonly_user",
+        )
+        for _ in range(2):
+            with pytest.warns(SlayerStatementTimeoutSkippedWarning, match="readonly = 2"):
+                result = await client.execute(sql="SELECT 1 AS x")
+            assert result.warnings == [expected]
+        (checks,) = _admin_rows(
+            clickhouse_container,
+            "SELECT count() FROM system.query_log WHERE type = 'QueryFinish' "
+            f"AND user = '{clickhouse_readonly_datasource.username}' "
+            "AND query LIKE '%getSetting(%readonly%'",
+        )
+        assert checks == (1,)
+
+    async def test_readonly_user_own_setting_fails_without_retry(
+        self, clickhouse_container, clickhouse_readonly_datasource,
+    ) -> None:
+        client = SlayerSQLClient(datasource=clickhouse_readonly_datasource)
+        marker = f"slayer_{uuid.uuid4().hex[:12]}"
+        with pytest.raises(Exception, match="READONLY"):
+            await client.execute(
+                sql=f"SELECT number FROM system.numbers LIMIT 1 SETTINGS max_execution_time = 5 -- {marker}",
+            )
+        (attempts,) = _admin_rows(
+            clickhouse_container,
+            "SELECT count() FROM system.query_log WHERE type != 'QueryStart' "
+            f"AND user = '{clickhouse_readonly_datasource.username}' AND query LIKE '%{marker}%'",
+        )
+        assert attempts == (1,)
+
+    async def test_readonly_2_user_gets_timeout(self, clickhouse_readonly2_datasource) -> None:
+        client = SlayerSQLClient(datasource=clickhouse_readonly2_datasource)
+        with pytest.raises(Exception, match="TIMEOUT_EXCEEDED"):
+            await client.execute(sql="SELECT sleep(3)", timeout_seconds=1)
+
+    async def test_readonly_2_user_not_warned(self, clickhouse_readonly2_datasource) -> None:
+        client = SlayerSQLClient(datasource=clickhouse_readonly2_datasource)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", SlayerStatementTimeoutSkippedWarning)
+            result = await client.execute(sql="SELECT 1 AS x")
+        assert result.warnings == []
+
+
+# ---------------------------------------------------------------------------
+# Join-based session policy + semi-join gate for readonly users
+# ---------------------------------------------------------------------------
+
+_CORRELATED_SETTING = "allow_experimental_correlated_subqueries"
+
+_RLS_DDL = [
+    "CREATE TABLE customers (id Nullable(Int32), org String) ENGINE = MergeTree() ORDER BY tuple()",
+    "CREATE TABLE orders (id Int32, customer_id Nullable(Int32)) ENGINE = MergeTree() ORDER BY id",
+    "CREATE TABLE line_items (id Int32, order_id Nullable(Int32)) ENGINE = MergeTree() ORDER BY id",
+    "INSERT INTO customers VALUES (1, 'A'), (2, 'B'), (NULL, 'A')",
+    "INSERT INTO orders VALUES (10, 1), (11, 2), (12, NULL), (13, 1)",
+    "INSERT INTO line_items VALUES (100, 10), (101, 11), (102, 12), (103, NULL), (104, 13)",
+    "CREATE TABLE sj_customers (id Int32, org String, spend Float64) ENGINE = MergeTree() ORDER BY id",
+    "CREATE TABLE sj_orders (id Int32, customer_id Int32, channel String, amount Float64) "
+    "ENGINE = MergeTree() ORDER BY id",
+    "INSERT INTO sj_customers VALUES (1, 'A', 100), (2, 'B', 50), (3, 'A', 30)",
+    "INSERT INTO sj_orders VALUES (10, 1, 'app', 5), (11, 1, 'web', 6), (12, 2, 'web', 7), (13, 3, 'web', 8)",
+]
+
+
+def _distributed_ddl(db_name: str) -> list[str]:
+    return [
+        f"CREATE TABLE customers_dist AS customers ENGINE = Distributed('default', '{db_name}', 'customers')",
+        f"CREATE TABLE orders_dist AS orders ENGINE = Distributed('default', '{db_name}', 'orders')",
+    ]
+
+
+def _seed_rls_db(container, *, distributed: bool) -> str:
+    if distributed:
+        assert _admin_rows(container, "SELECT count() FROM system.clusters WHERE cluster = 'default'") != [(0,)], (
+            "image lacks the stock 'default' cluster the Distributed tables need"
+        )
+    db_name = _create_module_db(container)
+    with disposable_engine(_ds_url_for_db(container, db_name)) as engine:
+        with engine.begin() as conn:
+            for statement in [*_RLS_DDL, *(_distributed_ddl(db_name) if distributed else [])]:
+                conn.exec_driver_sql(statement)
+    return db_name
+
+
+def _rls_models() -> list[SlayerModel]:
+    def _ids(name: str, key: str | None = None) -> SlayerModel:
+        columns = [Column(name="id", type=DataType.INT, primary_key=True)]
+        if key:
+            columns.append(Column(name=key, type=DataType.INT))
+        return SlayerModel(name=name, sql_table=name, data_source="rls_ch", columns=columns)
+
+    return [
+        _ids("customers"), _ids("orders", "customer_id"), _ids("line_items", "order_id"),
+        _ids("customers_dist"), _ids("orders_dist", "customer_id"), _ids("line_items_dist", "order_id"),
+        SlayerModel(name="sj_customers", sql_table="sj_customers", data_source="rls_ch", columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="org", type=DataType.TEXT),
+            Column(name="spend", type=DataType.DOUBLE),
+        ]),
+        SlayerModel(
+            name="sj_orders", sql_table="sj_orders", data_source="rls_ch",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="customer_id", type=DataType.INT),
+                Column(name="channel", type=DataType.TEXT),
+                Column(name="amount", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="sj_customers", join_pairs=[["customer_id", "id"]])],
+        ),
+    ]
+
+
+@contextlib.contextmanager
+def _user_datasource(
+    container, db_name: str, *, settings: str, extra_dbs: tuple[str, ...] = (),
+) -> Generator[DatasourceConfig]:
+    user = f"rls_{uuid.uuid4().hex[:8]}"
+    with disposable_engine(_admin_url(container)) as engine:
+        with engine.begin() as conn:
+            conn.exec_driver_sql(f"CREATE USER {user} IDENTIFIED WITH plaintext_password BY 'pw' SETTINGS {settings}")
+            for db in (db_name, *extra_dbs):
+                conn.exec_driver_sql(f"GRANT SELECT ON {db}.* TO {user}")
+    try:
+        yield DatasourceConfig(
+            name="rls_ch", type="clickhouse",
+            host=container.get_container_host_ip(), port=int(container.get_exposed_port(8123)),
+            database=db_name, username=user, password="pw",
+        )
+    finally:
+        engine_factory.reset_cache()
+        with disposable_engine(_admin_url(container)) as engine:
+            with engine.begin() as conn:
+                conn.exec_driver_sql(f"DROP USER IF EXISTS {user}")
+
+
+def _rls_engine(
+    datasource: DatasourceConfig, *, policy: SessionPolicy | None = None, client_factory: ClientFactory | None = None,
+) -> SlayerQueryEngine:
+    storage = YAMLStorage(base_dir=tempfile.mkdtemp(prefix="rls_ch_"))
+    run_sync(storage.save_datasource(datasource))
+    for model in _rls_models():
+        run_sync(storage.save_model(model))
+    return SlayerQueryEngine(storage=storage, policy=policy, client_factory=client_factory)
+
+
+class _RecordingGateway(DelegatingSqlClient):
+    """A factory client over the default one, recording what reaches it."""
+
+    def __init__(self, inner: SqlClient) -> None:
+        super().__init__(inner)
+        self.profile_requests = 0
+        self.statements: list[str] = []
+
+    async def server_profile(self) -> ServerProfile:
+        self.profile_requests += 1
+        return await self.inner.server_profile()
+
+    async def execute(self, sql: str, *args: Any, **kwargs: Any) -> ExecutionResult:
+        self.statements.append(sql)
+        return await self.inner.execute(sql, *args, **kwargs)
+
+
+_TENANT_POLICY = SessionPolicy(ruleset=JoinFilterRuleset(
+    table="customers", column="org", value="A",
+    joins=(
+        JoinFilterRule(target_table="orders", join_path=("orders.customer_id = customers.id",)),
+        JoinFilterRule(
+            target_table="line_items",
+            join_path=("line_items.order_id = orders.id", "orders.customer_id = customers.id"),
+        ),
+    ),
+))
+
+_DIST_POLICY = SessionPolicy(ruleset=JoinFilterRuleset(
+    table="customers_dist", column="org", value="A",
+    joins=(
+        JoinFilterRule(target_table="orders_dist", join_path=("orders_dist.customer_id = customers_dist.id",)),
+        JoinFilterRule(
+            target_table="line_items_dist",
+            join_path=("line_items_dist.order_id = orders_dist.id", "orders_dist.customer_id = customers_dist.id"),
+        ),
+    ),
+))
+
+# Each order / line item sits on the other shard from its customer / order.
+_SHARD_ROWS = {
+    "customers": ["(1, 'A')", "(2, 'B'), (NULL, 'A')"],
+    "orders": ["(13, 1)", "(10, 1), (11, 2), (12, NULL)"],
+    "line_items": ["(100, 10), (103, NULL)", "(101, 11), (102, 12), (104, 13)"],
+}
+
+_SEMI_JOIN_QUERY = SlayerQuery.model_validate({
+    "source_model": "sj_orders", "dimensions": ["sj_customers.org"],
+    "measures": [{"formula": "amount:sum", "name": "m"}, {"formula": "sj_customers.spend:sum", "name": "cm"}],
+    "filters": ["channel = 'app'"],
+})
+_SEMI_JOIN_ROWS = [{"sj_orders.sj_customers.org": "A", "sj_orders.m": 5.0, "sj_orders.cm": 100.0}]
+
+
+async def _ids(engine: SlayerQueryEngine, model: str) -> list[int]:
+    resp = await engine.execute(SlayerQuery.model_validate({"source_model": model, "dimensions": ["id"]}))
+    return sorted(int(row[f"{model}.id"]) for row in resp.data)
+
+
+async def _assert_semi_join_runs_with_setting(engine: SlayerQueryEngine) -> None:
+    dry = await engine.execute(_SEMI_JOIN_QUERY, dry_run=True)
+    assert dry.sql is not None
+    assert f"{_CORRELATED_SETTING} = 1" in dry.sql
+    assert (await engine.execute(_SEMI_JOIN_QUERY)).data == _SEMI_JOIN_ROWS
+
+
+@pytest.fixture(scope="module")
+def rls_sharded_db(clickhouse_container):
+    """Distributed tables over a two-shard cluster (one server, a database per shard)."""
+    uid = uuid.uuid4().hex[:8]
+    cluster, shards = f"rls_{uid}", tuple(f"rls_{uid}_s{i}" for i in (1, 2))
+    replicas = "".join(
+        f"<shard><replica><host>127.0.0.{i}</host><port>9000</port><user>{clickhouse_container.username}</user>"
+        f"<password>{clickhouse_container.password}</password><default_database>{db}</default_database></replica></shard>"
+        for i, db in enumerate(shards, start=1)
+    )
+    config = f"/etc/clickhouse-server/config.d/{cluster}.xml"
+    xml = f"<clickhouse><remote_servers><{cluster}>{replicas}</{cluster}></remote_servers></clickhouse>"
+    assert clickhouse_container.exec(["sh", "-c", f"cat > {config} <<'EOF'\n{xml}\nEOF"]).exit_code == 0
+    db_name = _create_module_db(clickhouse_container)
+    with disposable_engine(_admin_url(clickhouse_container)) as engine:
+        with engine.begin() as conn:
+            conn.exec_driver_sql("SYSTEM RELOAD CONFIG")
+            for i, shard in enumerate(shards):
+                conn.exec_driver_sql(f"CREATE DATABASE {shard}")
+                for create in _RLS_DDL[:3]:
+                    conn.exec_driver_sql(create.replace("CREATE TABLE ", f"CREATE TABLE {shard}.", 1))
+                for table, rows in _SHARD_ROWS.items():
+                    conn.exec_driver_sql(f"INSERT INTO {shard}.{table} VALUES {rows[i]}")
+            for table in _SHARD_ROWS:
+                conn.exec_driver_sql(
+                    f"CREATE TABLE {db_name}.{table}_dist AS {shards[0]}.{table} "
+                    f"ENGINE = Distributed('{cluster}', '', '{table}')"
+                )
+    yield db_name, shards
+    _drop_module_db(clickhouse_container, db_name)
+    with disposable_engine(_admin_url(clickhouse_container)) as engine:
+        with engine.begin() as conn:
+            for shard in shards:
+                conn.exec_driver_sql(f"DROP DATABASE IF EXISTS {shard}")
+    clickhouse_container.exec(["rm", "-f", config])
+
+
+@pytest.fixture(scope="module")
+def rls_db(clickhouse_container):
+    db_name = _seed_rls_db(clickhouse_container, distributed=True)
+    yield db_name
+    _drop_module_db(clickhouse_container, db_name)
+
+
+@pytest.mark.integration
+class TestJoinPolicyReadonly:
+    async def test_single_and_multi_hop_scope(self, clickhouse_container, rls_db) -> None:
+        with _user_datasource(clickhouse_container, rls_db, settings="readonly = 1") as ds:
+            engine = _rls_engine(ds, policy=_TENANT_POLICY)
+            assert await _ids(engine, "orders") == [10, 13]
+            assert await _ids(engine, "line_items") == [100, 104]
+
+    async def test_no_setting_reaches_the_server(self, clickhouse_container, rls_db) -> None:
+        with _user_datasource(clickhouse_container, rls_db, settings="readonly = 1") as ds:
+            engine = _rls_engine(ds, policy=_TENANT_POLICY)
+            dry = await engine.execute(SlayerQuery.model_validate({"source_model": "line_items", "dimensions": ["id"]}), dry_run=True)
+        assert dry.sql is not None
+        assert _CORRELATED_SETTING not in dry.sql
+        assert "EXISTS" not in dry.sql.upper()
+
+    async def test_null_keys_never_admit_a_row(self, clickhouse_container, rls_db) -> None:
+        """Scenario: NULL keys never admit a row (``transform_null_in = 1``)."""
+        settings = "readonly = 1, transform_null_in = 1"
+        with _user_datasource(clickhouse_container, rls_db, settings=settings) as ds:
+            engine = _rls_engine(ds, policy=_TENANT_POLICY)
+            assert await _ids(engine, "orders") == [10, 13]
+            assert await _ids(engine, "line_items") == [100, 104]
+
+    async def test_distributed_tables(self, clickhouse_container, rls_db) -> None:
+        with _user_datasource(clickhouse_container, rls_db, settings="readonly = 1") as ds:
+            engine = _rls_engine(ds, policy=_DIST_POLICY)
+            assert await _ids(engine, "orders_dist") == [10, 13]
+
+    @pytest.mark.parametrize("product_mode", ["deny", "local"])
+    async def test_sharded_distributed_tables(self, clickhouse_container, rls_sharded_db, product_mode) -> None:
+        """Scenario: Distributed tables — rows and their join partners on different shards."""
+        db_name, shards = rls_sharded_db
+        settings = f"readonly = 1, transform_null_in = 1, distributed_product_mode = '{product_mode}'"
+        with _user_datasource(clickhouse_container, db_name, settings=settings, extra_dbs=shards) as ds:
+            engine = _rls_engine(ds, policy=_DIST_POLICY)
+            assert await _ids(engine, "orders_dist") == [10, 13]
+            assert await _ids(engine, "line_items_dist") == [100, 104]
+
+
+@pytest.fixture(scope="module", params=["25.4", "25.8"])
+def versioned_clickhouse(request):
+    """A ClickHouse server of the given version with the RLS / semi-join dataset seeded."""
+    container = ClickHouseContainer(f"clickhouse/clickhouse-server:{request.param}").with_env(
+        "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT", "1"
+    )
+    with container as c:
+        db_name = _seed_rls_db(c, distributed=False)
+        yield request.param, c, db_name
+        _drop_module_db(c, db_name)
+
+
+def _user_queries_touching(container, *, user: str, table: str) -> int:
+    (count,) = _admin_rows(
+        container,
+        "SELECT count() FROM system.query_log WHERE type != 'QueryStart' "
+        f"AND user = '{user}' AND query LIKE '%{table}%'",
+    )
+    return int(count[0])
+
+
+@pytest.mark.integration
+class TestVersionedReadonly:
+    async def test_readonly_join_policy_scopes(self, versioned_clickhouse) -> None:
+        """Scenario: Readonly user on a server with correlated subqueries off."""
+        _, container, db_name = versioned_clickhouse
+        with _user_datasource(container, db_name, settings="readonly = 1") as ds:
+            engine = _rls_engine(ds, policy=_TENANT_POLICY)
+            assert await _ids(engine, "orders") == [10, 13]
+            assert await _ids(engine, "line_items") == [100, 104]
+
+    async def test_readonly_semi_join(self, versioned_clickhouse) -> None:
+        version, container, db_name = versioned_clickhouse
+        with _user_datasource(container, db_name, settings="readonly = 1") as ds:
+            engine = _rls_engine(ds)
+            if version == "25.4":
+                with pytest.raises(SlayerError) as ei:
+                    await engine.execute(_SEMI_JOIN_QUERY)
+                assert _CORRELATED_SETTING in str(ei.value)
+                assert "channel" in str(ei.value)
+                assert _user_queries_touching(container, user=ds.username or "", table="sj_orders") == 0
+            else:
+                await _assert_semi_join_runs_with_setting(engine)
+
+    async def test_readonly_2_semi_join_runs(self, versioned_clickhouse) -> None:
+        _, container, db_name = versioned_clickhouse
+        with _user_datasource(container, db_name, settings="readonly = 2") as ds:
+            await _assert_semi_join_runs_with_setting(_rls_engine(ds))
+
+    async def test_semi_join_and_profile_reach_the_factory_client(self, versioned_clickhouse) -> None:
+        """Scenario: Engine-internal statements reach the factory client (ClickHouse server profile)."""
+        _, container, db_name = versioned_clickhouse
+        built: list[_RecordingGateway] = []
+
+        def factory(datasource: DatasourceConfig) -> _RecordingGateway:
+            built.append(_RecordingGateway(SlayerSQLClient(datasource=datasource)))
+            return built[-1]
+
+        with _user_datasource(container, db_name, settings="readonly = 2") as ds:
+            engine = _rls_engine(ds, client_factory=factory)
+            try:
+                assert (await engine.execute(_SEMI_JOIN_QUERY)).data == _SEMI_JOIN_ROWS
+            finally:
+                await engine.aclose()
+                engine.close()
+        assert len(built) == 1
+        assert built[0].profile_requests >= 1
+        assert any("EXISTS" in sql.upper() for sql in built[0].statements), built[0].statements
+
+    async def test_setting_enabled_in_profile_runs(self, versioned_clickhouse) -> None:
+        _, container, db_name = versioned_clickhouse
+        settings = f"readonly = 1, {_CORRELATED_SETTING} = 1"
+        with _user_datasource(container, db_name, settings=settings) as ds:
+            await _assert_semi_join_runs_with_setting(_rls_engine(ds))
+
+
+# ---------------------------------------------------------------------------
+# Mode-B date functions (the shared oracle matrix + spec scenarios)
+# ---------------------------------------------------------------------------
+
+_DATE_CASES = matrix_cases()
+
+
+@pytest.fixture(scope="module")
+def _clickhouse_dates_storage(clickhouse_container, tmp_path_factory):
+    db_name = _create_module_db(clickhouse_container)
+    try:
+        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in server_seed_statements("clickhouse", today=datetime.now(timezone.utc).date()):
+                    conn.execute(sa.text(stmt))
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("clickhouse_dates")))
+        run_sync(storage.save_datasource(_ds_config(clickhouse_container, db_name)))
+        for model in all_models(data_source="testclickhouse"):
+            run_sync(storage.save_model(model))
+        yield storage
+    finally:
+        _drop_module_db(clickhouse_container, db_name)
+
+
+@pytest.fixture
+def clickhouse_dates(_clickhouse_dates_storage) -> SlayerQueryEngine:
+    return SlayerQueryEngine(storage=_clickhouse_dates_storage)
+
+
+@pytest.mark.integration
+class TestClickHouseDateFunctions:
+    @pytest.mark.parametrize("case", _DATE_CASES, ids=[c.case_id for c in _DATE_CASES])
+    async def test_matrix(self, clickhouse_dates: SlayerQueryEngine, case: DateCase) -> None:
+        assert_case((await clickhouse_dates.execute(matrix_query(case))).data, case)
+
+    async def test_scenarios(self, clickhouse_dates: SlayerQueryEngine) -> None:
+        await check_server_scenarios(clickhouse_dates)
+
+
+# ---------------------------------------------------------------------------
+# Time spine and custom granularities
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def _clickhouse_spine_storage(clickhouse_container, tmp_path_factory):
+    db_name = _create_module_db(clickhouse_container)
+    try:
+        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in server_statements("clickhouse"):
+                    conn.execute(sa.text(stmt))
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("clickhouse_spine")))
+        base = _ds_config(clickhouse_container, db_name)
+        for name, models in (("ch", server_models(data_source="ch")), ("ch_ts", server_models_ts(data_source="ch_ts"))):
+            run_sync(storage.save_datasource(with_granularities(base, name=name)))
+            for model in models:
+                run_sync(storage.save_model(model))
+        yield storage
+    finally:
+        _drop_module_db(clickhouse_container, db_name)
+
+
+@pytest.mark.integration
+class TestClickHouseTimeSpine:
+    async def test_scenarios(self, _clickhouse_spine_storage) -> None:
+        await check_all(SlayerQueryEngine(storage=_clickhouse_spine_storage), data_source="ch", ts_data_source="ch_ts")
+
+
+@pytest.mark.integration
+def test_every_clickhouse_alias_failure_is_quoted(clickhouse_container) -> None:
+    db_name = _create_module_db(clickhouse_container)
+    try:
+        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
+            with engine.begin() as conn:
+                conn.execute(sa.text("CREATE TABLE kw_probe (a Int32) ENGINE = Memory"))
+            try:
+                with engine.connect() as conn:
+                    own = [r[0] for r in conn.execute(sa.text("SELECT keyword FROM system.keywords"))]
+            except DBAPIError:
+                own = []  # system.keywords is newer than some server versions
+            assert unquoted_alias_failures(
+                dialect="clickhouse", words=keyword_universe(own), table="kw_probe", column="a",
+                fails=sa_statement_fails(engine), workers=8,
+            ) == []
+    finally:
+        _drop_module_db(clickhouse_container, db_name)
+
+
+# ---------------------------------------------------------------------------
+# Portable Mode-B library (spec: queries/scalar-functions, regex, json, mixed-type-coercion, string-matching)
+# ---------------------------------------------------------------------------
+
+def _http(clickhouse_container, db_name: str, sql: str, **settings: str) -> None:
+    """Run one statement over HTTP, where per-query server settings ride as URL parameters."""
+    host = clickhouse_container.get_container_host_ip()
+    port = int(clickhouse_container.get_exposed_port(8123))
+    user = getattr(clickhouse_container, "username", "default") or "default"
+    password = getattr(clickhouse_container, "password", "") or ""
+    resp = requests.post(f"http://{host}:{port}/", params={"database": db_name, **settings}, data=sql.encode(),
+                         auth=(user, password), timeout=60)
+    assert resp.ok, resp.text
+
+
+@pytest.fixture(scope="module")
+def _clickhouse_dev2120_storage(clickhouse_container, tmp_path_factory):
+    db_name = _create_module_db(clickhouse_container)
+    try:
+        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in dev2120_table_statements(LIB, dialect="clickhouse"):
+                    conn.execute(sa.text(stmt))
+        _http(clickhouse_container, db_name, "CREATE TABLE docs (id Int32, payload JSON) ENGINE = MergeTree ORDER BY id",
+              allow_experimental_json_type="1")
+        rows = ", ".join(f"({rid}, {server_literal(doc or '{}', kind='TEXT', dialect='clickhouse')})"
+                         for rid, doc in DOCS_ROWS)
+        _http(clickhouse_container, db_name, f"INSERT INTO docs VALUES {rows}", allow_experimental_json_type="1")
+        ds = _ds_config(clickhouse_container, db_name)
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("clickhouse_dev2120")))
+        run_sync(storage.save_datasource(ds))
+        run_sync(storage.save_model(lib_model(data_source="testclickhouse")))
+        for model in ingestion.ingest_datasource(datasource=ds, include_tables=["docs"]):
+            run_sync(storage.save_model(model))
+        yield storage
+    finally:
+        _drop_module_db(clickhouse_container, db_name)
+
+
+@pytest.mark.integration
+class TestClickHousePortableLibrary:
+    async def test_library(self, _clickhouse_dev2120_storage) -> None:
+        await check_library(SlayerQueryEngine(storage=_clickhouse_dev2120_storage))
+
+    async def test_native_json_column(self, _clickhouse_dev2120_storage) -> None:
+        await check_native_json(SlayerQueryEngine(storage=_clickhouse_dev2120_storage))
+
+
+# ---------------------------------------------------------------------------
+# List columns (spec: models/list-columns, queries/list-functions, queries/list-children, aggregations/collect)
+# ---------------------------------------------------------------------------
+
+
+_TAGGED = ("CREATE TABLE tagged (id Int32, tags Array(LowCardinality(Nullable(String)))) "
+           "ENGINE = MergeTree ORDER BY id")
+
+
+@contextlib.contextmanager
+def _seeded_lists(container, base_dir: str):
+    db_name = _create_module_db(container)
+    try:
+        with disposable_engine(_ds_url_for_db(container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in [*contractors_statements(dialect="clickhouse"),
+                             *assignments_statements(dialect="clickhouse"),
+                             *mixed_numbers_statements(dialect="clickhouse"), _TAGGED]:
+                    conn.execute(sa.text(stmt))
+        ds = _ds_config(container, db_name)
+        storage = YAMLStorage(base_dir=base_dir)
+        run_sync(storage.save_datasource(ds))
+        run_sync(storage.save_model(contractors_model(data_source=ds.name)))
+        run_sync(storage.save_model(assignments_model(data_source=ds.name)))
+        run_sync(storage.save_model(mixed_numbers_model(data_source=ds.name)))
+        yield storage, ds
+    finally:
+        _drop_module_db(container, db_name)
+
+
+@pytest.fixture(scope="module")
+def _clickhouse_lists(clickhouse_container, tmp_path_factory):
+    with _seeded_lists(clickhouse_container, str(tmp_path_factory.mktemp("clickhouse_lists"))) as seeded:
+        yield seeded
+
+
+@pytest.fixture(scope="module")
+def _versioned_clickhouse_lists(versioned_clickhouse, tmp_path_factory):
+    _, container, _ = versioned_clickhouse
+    with _seeded_lists(container, str(tmp_path_factory.mktemp("clickhouse_lists_versioned"))) as seeded:
+        yield seeded
+
+
+@pytest.mark.integration
+class TestClickHouseLists:
+    async def test_lists(self, _clickhouse_lists) -> None:
+        # Below 25.4 a filter across a to-many hop is refused, a list reached through a to-one join included.
+        await check_lists(SlayerQueryEngine(storage=_clickhouse_lists[0]), dialect="clickhouse",
+                          refused={"through-to-one": "25.4", "elements-filtered-across-another-to-many": "25.4"})
+
+    async def test_lists_on_a_correlating_server(self, _versioned_clickhouse_lists, versioned_clickhouse) -> None:
+        # Before 25.8 a correlated EXISTS beside a list's ARRAY JOIN is refused.
+        refused = {"elements-filtered-across-another-to-many": "25.8"} if versioned_clickhouse[0] == "25.4" else None
+        await check_lists(SlayerQueryEngine(storage=_versioned_clickhouse_lists[0]), dialect="clickhouse",
+                          refused=refused)
+
+    async def test_mixed_numeric_lists(self, _clickhouse_lists) -> None:
+        await check_mixed_numbers(SlayerQueryEngine(storage=_clickhouse_lists[0]))
+
+    def test_wrapped_element_ingested(self, _clickhouse_lists) -> None:
+        (model,) = ingestion.ingest_datasource(datasource=_clickhouse_lists[1], include_tables=["tagged"])
+        tags = model.get_column("tags")
+        assert tags is not None
+        assert (tags.type, tags.element_type) == (DataType.ARRAY, DataType.TEXT)

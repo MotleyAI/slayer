@@ -5,14 +5,19 @@ These tests run against an in-process SQLite datasource (dry_run=False would
 need real data; we use ``dry_run=True`` plus assertions on the generated SQL
 to keep tests hermetic and fast).
 """
+import asyncio
+import re
 import tempfile
 
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
+import slayer.engine.query_engine as qe
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql.client import SlayerSQLClient
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -47,6 +52,25 @@ async def _engine_with_orders(*extra_models: SlayerModel) -> tuple:
         await storage.save_model(m)
     engine = SlayerQueryEngine(storage=storage)
     return engine, tmp
+
+
+async def _expand_stage_as_model(
+    *,
+    engine: SlayerQueryEngine,
+    stage: SlayerQuery,
+    name: str,
+    data_source: str = "ds",
+) -> SlayerModel:
+    """Expand a single ``SlayerQuery`` stage into its virtual ``sql``-mode
+    model via the typed query-backed expansion
+    (``engine._expand_query_backed_model``, the DEV-1452 Stage B replacement
+    for the legacy join-target renderer).
+    """
+    model = SlayerModel(name=name, source_queries=[stage], data_source=data_source)
+    return await engine._expand_query_backed_model(
+        model=model,
+        runtime_kwarg=None,
+    )
 
 
 class TestExecuteByName:
@@ -196,7 +220,7 @@ class TestVariablePrecedence:
 
 
 class TestCreateModelFromQuery:
-    async def test_caches_columns_and_sql(self) -> None:
+    async def test_caches_columns(self) -> None:
         engine, tmp = await _engine_with_orders()
         try:
             saved = await engine.create_model_from_query(
@@ -212,13 +236,13 @@ class TestCreateModelFromQuery:
             col_names = {c.name for c in saved.columns}
             assert "region" in col_names
             assert "amount_sum" in col_names
-            assert saved.backing_query_sql is not None
-            assert "amount" in saved.backing_query_sql.lower()
             # Reload from storage and confirm cache persisted
             from_storage = await engine.storage.get_model("rev_by_region")
             assert from_storage is not None
-            assert from_storage.backing_query_sql == saved.backing_query_sql
             assert [c.name for c in from_storage.columns] == [c.name for c in saved.columns]
+            sql = (await engine.execute("rev_by_region", dry_run=True)).sql
+            assert sql is not None
+            assert "amount" in sql.lower()
         finally:
             tmp.cleanup()
 
@@ -250,7 +274,6 @@ class TestCreateModelFromQuery:
                 name="not_persisted",
                 save=False,
             )
-            assert built.backing_query_sql is not None
             assert built.columns
             # Storage doesn't have it
             from_storage = await engine.storage.get_model("not_persisted")
@@ -258,23 +281,18 @@ class TestCreateModelFromQuery:
         finally:
             tmp.cleanup()
 
-    async def test_save_time_placeholder_fill_for_unresolved_var(self) -> None:
-        """Save succeeds when filters reference an unresolved {var} — '0' is
-        substituted at save-time so SQL generation doesn't fail."""
+    async def test_save_refused_for_undefaulted_var(self) -> None:
+        """An undefaulted {var} refuses the save; nothing is persisted."""
         engine, tmp = await _engine_with_orders()
         try:
-            saved = await engine.create_model_from_query(
-                query=SlayerQuery(
-                    source_model="orders",
-                    measures=[{"formula": "amount:sum"}],
-                    filters=["amount > {threshold}"],
-                ),
-                name="filtered_no_default",
-                # No variables= → {threshold} will be filled with '0' at save
-            )
-            # Cache populated despite unresolved variable
-            assert saved.backing_query_sql is not None
-            assert saved.query_variables == {}
+            query = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "amount:sum"}],
+                "filters": ["amount > {threshold}"],
+            })
+            with pytest.raises(ValueError, match="Undefined variable 'threshold'"):
+                await engine.create_model_from_query(query=query, name="filtered_no_default")
+            assert await engine.storage.get_model("filtered_no_default") is None
         finally:
             tmp.cleanup()
 
@@ -299,9 +317,6 @@ class TestSaveModelGuards:
     async def test_rejects_user_columns_on_query_backed(self) -> None:
         engine, tmp = await _engine_with_orders()
         try:
-            from slayer.core.enums import DataType
-            from slayer.core.models import Column
-
             m = SlayerModel(
                 name="bad",
                 data_source="ds",
@@ -309,20 +324,6 @@ class TestSaveModelGuards:
                 columns=[Column(name="x", sql="x", type=DataType.TEXT)],
             )
             with pytest.raises(ValueError, match="auto-generated and must not be supplied"):
-                await engine.save_model(m)
-        finally:
-            tmp.cleanup()
-
-    async def test_rejects_user_backing_query_sql(self) -> None:
-        engine, tmp = await _engine_with_orders()
-        try:
-            m = SlayerModel(
-                name="bad2",
-                data_source="ds",
-                source_queries=[SlayerQuery(source_model="orders")],
-                backing_query_sql="SELECT 1",
-            )
-            with pytest.raises(ValueError, match="backing_query_sql.*auto-managed"):
                 await engine.save_model(m)
         finally:
             tmp.cleanup()
@@ -350,7 +351,7 @@ def _wrap_save_counter(storage):
 
 class TestCacheRefreshOnExecute:
     """Read paths must never write to storage. Cache (`columns`,
-    `backing_query_sql`, `data_source`) is populated only by
+    `data_source`) is populated only by
     ``engine.save_model`` / ``create_model_from_query(save=True)``.
     Lost-update race fix: see issue #74.
     """
@@ -375,13 +376,11 @@ class TestCacheRefreshOnExecute:
             stored = await engine.storage.get_model("rev_by_region")
             assert stored is not None
             assert stored.columns == []
-            assert stored.backing_query_sql is None
 
             await engine.execute("rev_by_region", dry_run=True)
             refreshed = await engine.storage.get_model("rev_by_region")
             assert refreshed is not None
             assert refreshed.columns == []
-            assert refreshed.backing_query_sql is None
         finally:
             tmp.cleanup()
 
@@ -423,7 +422,6 @@ class TestCacheRefreshOnExecute:
             base = await engine.storage.get_model("rev_by_region")
             assert base is not None
             assert not any(c.name == "is_high_rev" for c in base.columns)
-            assert "is_high_rev" not in (base.backing_query_sql or "")
         finally:
             tmp.cleanup()
 
@@ -518,27 +516,6 @@ class TestCacheRefreshOnExecute:
                 assert calls == [], f"empty-cache execute wrote: {calls}"
             finally:
                 restore()
-
-            # Case 4: stale cache (persisted SQL doesn't match what would now
-            # resolve). We forge a stale entry by hand-saving with a bogus
-            # backing_query_sql; execute still must not rewrite it.
-            stale = (await engine.storage.get_model("rev_by_region"))
-            assert stale is not None
-            stale_sql = "SELECT 'stale' AS region"
-            await engine.storage.save_model(
-                stale.model_copy(update={"backing_query_sql": stale_sql})
-            )
-            calls, restore = _wrap_save_counter(engine.storage)
-            try:
-                await engine.execute("rev_by_region", dry_run=True)
-                assert calls == [], f"stale-cache execute wrote: {calls}"
-            finally:
-                restore()
-            after = await engine.storage.get_model("rev_by_region")
-            assert after is not None
-            assert after.backing_query_sql == stale_sql, (
-                "execute must not overwrite even an obviously stale cache"
-            )
         finally:
             tmp.cleanup()
 
@@ -550,9 +527,6 @@ class TestQueryBackedColumnTypes:
     """
 
     async def test_get_column_types_uses_resolved_datasource(self) -> None:
-        from slayer.core.enums import DataType
-        from slayer.core.models import Column, DatasourceConfig
-
         tmp = tempfile.TemporaryDirectory()
         try:
             storage = YAMLStorage(base_dir=tmp.name)
@@ -567,13 +541,10 @@ class TestQueryBackedColumnTypes:
             engine = SlayerQueryEngine(storage=storage)
 
             # Pre-create the table so the type probe can run.
-            # SlayerSQLClient.execute() expects rowsets, so use sqlite3 directly for DDL.
-            import sqlite3
-            conn = sqlite3.connect(ds_path)
-            conn.execute("CREATE TABLE orders_t (amount NUMERIC)")
-            conn.execute("INSERT INTO orders_t (amount) VALUES (1)")
-            conn.commit()
-            conn.close()
+            # SlayerSQLClient.execute() expects rowsets, so use the sqlite door for DDL.
+            with transaction(ds_path) as conn:
+                conn.execute("CREATE TABLE orders_t (amount NUMERIC)")
+                conn.execute("INSERT INTO orders_t (amount) VALUES (1)")
 
             # Register a second, deliberately-stale datasource and pin the
             # query-backed model to it. Saving via raw storage skips the
@@ -590,7 +561,10 @@ class TestQueryBackedColumnTypes:
                 )],
             ))
             stored = await storage.get_model("qb")
-            assert stored is not None and stored.data_source == "ds_stale", (
+            assert stored is not None, (
+                "test setup expects stale data_source on the raw-saved model"
+            )
+            assert stored.data_source == "ds_stale", (
                 "test setup expects stale data_source on the raw-saved model"
             )
 
@@ -603,14 +577,7 @@ class TestQueryBackedColumnTypes:
             tmp.cleanup()
 
     async def test_get_column_types_with_required_unbound_variable(self) -> None:
-        """A query-backed model with a required-but-undefaulted ``{var}``
-        placeholder should still produce a column-type map (the type probe
-        runs with placeholder fill, not with caller variables). Codex review
-        of PR #67 commit 73f69b0.
-        """
-        from slayer.core.enums import DataType
-        from slayer.core.models import Column, DatasourceConfig
-
+        """A stored query-backed model with an undefaulted ``{var}`` probes no types."""
         tmp = tempfile.TemporaryDirectory()
         try:
             storage = YAMLStorage(base_dir=tmp.name)
@@ -620,44 +587,36 @@ class TestQueryBackedColumnTypes:
                 name="t", sql_table="orders_t", data_source="ds",
                 columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
             ))
-            import sqlite3
-            conn = sqlite3.connect(ds_path)
-            conn.execute("CREATE TABLE orders_t (amount NUMERIC)")
-            conn.execute("INSERT INTO orders_t (amount) VALUES (1)")
-            conn.commit()
-            conn.close()
+            with transaction(ds_path) as conn:
+                conn.execute("CREATE TABLE orders_t (amount NUMERIC)")
+                conn.execute("INSERT INTO orders_t (amount) VALUES (1)")
 
-            # `{threshold}` is referenced in the filter but no default is set
-            # at either model.query_variables or stage.variables.
+            # Stored directly: the engine refuses to save an undefaulted variable.
             engine = SlayerQueryEngine(storage=storage)
-            await engine.save_model(SlayerModel(
+            await storage.save_model(SlayerModel(
                 name="qb_unbound",
+                data_source="ds",
                 source_queries=[SlayerQuery(
                     source_model="t",
                     measures=[{"formula": "amount:sum"}],
                     filters=["amount > {threshold}"],
                 )],
-                # NO query_variables — threshold is required at run time.
             ))
-            types = await engine.get_column_types("qb_unbound")
-            assert types, (
-                "type probing must succeed for query-backed models with "
-                "unbound required variables (placeholder fill applies)"
-            )
+            stored = await storage.get_model("qb_unbound")
+            assert stored is not None
+            with pytest.raises(ValueError, match="Undefined variable 'threshold'"):
+                await engine._expand_query_backed_model(model=stored)
+            assert await engine.get_column_types("qb_unbound") == {}
         finally:
             tmp.cleanup()
 
 
-class TestBackingQuerySQLCacheHygiene:
-    """``backing_query_sql`` is the canonical placeholder-fill render produced
-    by ``engine.save_model`` and must not capture per-request runtime
-    variables. After issue #74, read paths can no longer write to storage at
-    all — so the per-request leak is structurally impossible. These tests
-    pin both invariants: the save-time render is canonical, AND no execute
-    call (with runtime kwargs or outer-query variables) can modify it.
+class TestRequestVariableHygiene:
+    """Per-request variables (runtime kwargs or outer-query variables) never
+    persist: a later plain run renders the saved defaults again.
     """
 
-    async def test_runtime_variables_do_not_leak_into_persisted_sql(
+    async def test_runtime_variables_do_not_persist(
         self,
     ) -> None:
         engine, tmp = await _engine_with_orders()
@@ -672,29 +631,24 @@ class TestBackingQuerySQLCacheHygiene:
                 )],
                 query_variables={"r": "DEFAULT_R"},
             ))
-            initial = await engine.storage.get_model("rev_filtered")
-            initial_sql = initial.backing_query_sql
-            # Save-time canonical render should already have the default value.
+            initial_sql = (await engine.execute("rev_filtered", dry_run=True)).sql
             assert initial_sql is not None
             assert "'DEFAULT_R'" in initial_sql
 
-            # Execute with a runtime variable that overrides the default —
-            # must not modify the persisted cache.
-            await engine.execute("rev_filtered", variables={"r": "REQUEST_VAL"}, dry_run=True)
+            request_sql = (await engine.execute("rev_filtered", variables={"r": "REQUEST_VAL"}, dry_run=True)).sql
+            assert "'REQUEST_VAL'" in (request_sql or "")
 
             after = await engine.storage.get_model("rev_filtered")
             assert after is not None
-            assert "'REQUEST_VAL'" not in (after.backing_query_sql or "")
-            assert after.backing_query_sql == initial_sql
+            assert after.query_variables == {"r": "DEFAULT_R"}
+            assert (await engine.execute("rev_filtered", dry_run=True)).sql == initial_sql
         finally:
             tmp.cleanup()
 
-    async def test_outer_query_variables_do_not_leak_into_persisted_sql(
+    async def test_outer_query_variables_do_not_persist(
         self,
     ) -> None:
-        """Variables from an enclosing ``SlayerQuery.variables`` must also not
-        modify ``backing_query_sql``.
-        """
+        """Variables from an enclosing ``SlayerQuery.variables`` must also not persist."""
         engine, tmp = await _engine_with_orders()
         try:
             await engine.save_model(SlayerModel(
@@ -708,8 +662,9 @@ class TestBackingQuerySQLCacheHygiene:
                 )],
                 query_variables={"r": "DEFAULT_R"},
             ))
-            initial_sql = (await engine.storage.get_model("rev_filtered")).backing_query_sql
-            assert initial_sql and "'DEFAULT_R'" in initial_sql
+            initial_sql = (await engine.execute("rev_filtered", dry_run=True)).sql
+            assert initial_sql
+            assert "'DEFAULT_R'" in initial_sql
 
             # Outer query supplies r via SlayerQuery.variables (NOT runtime kwarg).
             outer = SlayerQuery(
@@ -719,7 +674,10 @@ class TestBackingQuerySQLCacheHygiene:
                 variables={"r": "OUTER_VAL"},
             )
             await engine.execute(outer, dry_run=True)
-            after_sql = (await engine.storage.get_model("rev_filtered")).backing_query_sql
+            after = await engine.storage.get_model("rev_filtered")
+            assert after is not None
+            assert after.query_variables == {"r": "DEFAULT_R"}
+            after_sql = (await engine.execute("rev_filtered", dry_run=True)).sql
             assert "'OUTER_VAL'" not in (after_sql or ""), (
                 f"outer query variables must not be persisted, got:\n{after_sql}"
             )
@@ -733,9 +691,6 @@ class TestBackingQuerySQLCacheHygiene:
         when the caller still passes the old one — otherwise
         ``get_column_types()`` opens the wrong client.
         """
-        from slayer.core.enums import DataType
-        from slayer.core.models import Column, DatasourceConfig
-
         tmp = tempfile.TemporaryDirectory()
         try:
             storage = YAMLStorage(base_dir=tmp.name)
@@ -781,40 +736,30 @@ class TestBackingQuerySQLCacheHygiene:
 
 
 class TestInlineQueryBackedSourceModel:
-    """``source_model`` may be an inline ``SlayerModel(source_queries=[...])`` —
-    that model must be expanded into a virtual model with executable SQL,
-    same as a stored query-backed model.
-    """
+    """An inline ``SlayerModel(source_queries=[...])`` as ``source_model`` is rejected at construction."""
 
-    async def test_inline_slayermodel_with_source_queries_executes(self) -> None:
-        engine, tmp = await _engine_with_orders()
-        try:
-            inline = SlayerModel(
-                name="inline_qb",
-                data_source="ds",
-                source_queries=[SlayerQuery(
-                    source_model="orders",
-                    measures=[{"formula": "amount:sum"}],
-                    dimensions=["region"],
-                )],
-            )
-            outer = SlayerQuery(
-                source_model=inline,
-                dimensions=["region"],
-                measures=[{"formula": "amount_sum:max"}],
-            )
-            resp = await engine.execute(outer, dry_run=True)
-            assert resp.sql is not None
-            # The outer query references amount_sum (the inner result column).
-            assert "amount_sum" in resp.sql.lower()
-            assert "region" in resp.sql.lower()
-        finally:
-            tmp.cleanup()
+    def test_inline_slayermodel_with_source_queries_rejected(self) -> None:
+        inline = SlayerModel(
+            name="inline_qb",
+            data_source="ds",
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "amount:sum"}],
+                "dimensions": ["region"],
+            })],
+        )
+        with pytest.raises(ValueError, match=r"(?is)inline_qb.*named stages?|named stages?.*inline_qb"):
+            SlayerQuery.model_validate({
+                "source_model": inline,
+                "dimensions": ["region"],
+                "measures": [{"formula": "amount_sum:max"}],
+            })
 
-    async def test_inline_dict_slayermodel_with_source_queries_executes(self) -> None:
-        engine, tmp = await _engine_with_orders()
-        try:
-            outer = SlayerQuery.model_validate({
+    def test_inline_dict_slayermodel_with_source_queries_rejected(self) -> None:
+        with pytest.raises(
+            ValueError, match=r"(?is)inline_qb_dict.*named stages?|named stages?.*inline_qb_dict",
+        ):
+            SlayerQuery.model_validate({
                 "source_model": {
                     "name": "inline_qb_dict",
                     "data_source": "ds",
@@ -827,11 +772,6 @@ class TestInlineQueryBackedSourceModel:
                 "dimensions": ["region"],
                 "measures": [{"formula": "amount_sum:max"}],
             })
-            resp = await engine.execute(outer, dry_run=True)
-            assert resp.sql is not None
-            assert "amount_sum" in resp.sql.lower()
-        finally:
-            tmp.cleanup()
 
 
 class TestJoinTargetIsQueryBacked:
@@ -845,8 +785,6 @@ class TestJoinTargetIsQueryBacked:
         must see the enclosing query's runtime ``variables`` — not the cached
         placeholder-fill or model defaults.
         """
-        from slayer.core.models import ModelJoin
-
         engine, tmp = await _engine_with_orders()
         try:
             # Save a query-backed rollup whose stage filter references {threshold}.
@@ -887,49 +825,55 @@ class TestJoinTargetIsQueryBacked:
         finally:
             tmp.cleanup()
 
-    async def test_join_target_resolving_set_is_per_context(self) -> None:
-        """The recursion guard set must be isolated per asyncio task / request,
-        not shared on the engine instance. Two tasks each push a unique name
-        into the set and assert they only see their own.
-        """
-        import asyncio
+    async def test_concurrent_expansions_do_not_share_recursion_state(self) -> None:
+        """Two concurrent expansions must not see each other's in-flight names.
 
+        DEV-1485 Stage D: this replaces
+        ``test_join_target_resolving_set_is_per_context``, which asserted the
+        legacy ``_join_target_resolving_var`` ContextVar was per-task rather
+        than an engine instance attribute. That guard is deleted with the
+        legacy stack — the typed path threads its ``_resolving`` set through
+        the call as an explicit PARAMETER, so isolation is structural rather
+        than something a ContextVar has to provide.
+
+        The property that actually matters is unchanged and is what this pins:
+        two expansions running concurrently on ONE engine each produce their
+        own correct SQL. If recursion state were shared, the second would
+        either short-circuit on the first's name or deadlock.
+        """
         engine, tmp = await _engine_with_orders()
         try:
-            both_started = asyncio.Event()
-            checked = asyncio.Event()
-
-            async def task(my_name: str, started: asyncio.Event) -> set:
-                s = engine._get_join_target_resolving()
-                s.add(my_name)
-                started.set()
-                # Wait until both tasks have populated their own sets, then
-                # observe — if the set were instance-shared, each task would
-                # see both names.
-                await both_started.wait()
-                snapshot = set(engine._get_join_target_resolving())
-                checked.set()
-                return snapshot
-
-            e1 = asyncio.Event()
-            e2 = asyncio.Event()
-
-            async def gate():
-                await asyncio.gather(e1.wait(), e2.wait())
-                both_started.set()
-
-            t1 = asyncio.create_task(task("alpha", e1))
-            t2 = asyncio.create_task(task("beta", e2))
-            await gate()
-            s1, s2 = await asyncio.gather(t1, t2)
-            assert s1 == {"alpha"}, f"task 1 leaked sibling state: {s1}"
-            assert s2 == {"beta"}, f"task 2 leaked sibling state: {s2}"
+            alpha, beta = await asyncio.gather(
+                _expand_stage_as_model(
+                    engine=engine,
+                    stage=SlayerQuery(
+                        source_model="orders",
+                        measures=[{"formula": "amount:sum"}],
+                        dimensions=["region"],
+                    ),
+                    name="alpha",
+                ),
+                _expand_stage_as_model(
+                    engine=engine,
+                    stage=SlayerQuery(
+                        source_model="orders",
+                        measures=[{"formula": "*:count"}],
+                        dimensions=["status"],
+                    ),
+                    name="beta",
+                ),
+            )
+            assert "SUM(" in alpha.sql.upper(), alpha.sql
+            assert "region" in alpha.sql, alpha.sql
+            assert "COUNT(" in beta.sql.upper(), beta.sql
+            assert "status" in beta.sql, beta.sql
+            # Neither expansion leaked the other's projection into its own.
+            assert "status" not in alpha.sql, alpha.sql
+            assert "region" not in beta.sql, beta.sql
         finally:
             tmp.cleanup()
 
     async def test_join_target_is_query_backed_model(self) -> None:
-        from slayer.core.models import ModelJoin
-
         engine, tmp = await _engine_with_orders()
         try:
             # Create a saved query-backed "rollup" model joinable from orders.
@@ -970,7 +914,7 @@ class TestRunByNamePlanFlags:
     so REST/MCP/CLI run-by-name doesn't silently execute when plan-only was asked.
     """
 
-    async def test_dry_run_kwarg_returns_sql_without_executing(self) -> None:
+    async def test_dry_run_kwarg_returns_sql_without_executing(self, monkeypatch) -> None:
         """Caller passes dry_run=True on a stored stage that has dry_run=False."""
         saved = SlayerModel(
             name="rev_by_region",
@@ -986,7 +930,6 @@ class TestRunByNamePlanFlags:
         try:
             # Track whether a SQL execute was attempted.
             execute_calls = 0
-            from slayer.sql.client import SlayerSQLClient
             real_execute = SlayerSQLClient.execute
 
             async def counting_execute(self, *a, **kw):
@@ -994,18 +937,15 @@ class TestRunByNamePlanFlags:
                 execute_calls += 1
                 return await real_execute(self, *a, **kw)
 
-            SlayerSQLClient.execute = counting_execute  # type: ignore[method-assign]
-            try:
-                resp = await engine.execute("rev_by_region", dry_run=True)
-            finally:
-                SlayerSQLClient.execute = real_execute  # type: ignore[method-assign]
+            monkeypatch.setattr(SlayerSQLClient, "execute", counting_execute)
+            resp = await engine.execute("rev_by_region", dry_run=True)
             assert resp.sql is not None
             assert "amount" in resp.sql.lower()
             assert execute_calls == 0, "dry_run=True must not execute SQL"
         finally:
             tmp.cleanup()
 
-    async def test_explain_kwarg_routes_through_explain_builder(self) -> None:
+    async def test_explain_kwarg_routes_through_explain_builder(self, monkeypatch) -> None:
         """Caller passes explain=True; engine should invoke the EXPLAIN-SQL
         builder rather than executing the raw query.
         """
@@ -1020,7 +960,6 @@ class TestRunByNamePlanFlags:
         )
         engine, tmp = await _engine_with_orders(saved)
         try:
-            import slayer.engine.query_engine as qe
             real_explain = qe._build_explain_sql
             calls: list = []
 
@@ -1028,14 +967,11 @@ class TestRunByNamePlanFlags:
                 calls.append(sql)
                 return real_explain(dialect=dialect, sql=sql)
 
-            qe._build_explain_sql = tracking_explain  # type: ignore[assignment]
-            try:
-                # Don't care about the actual EXPLAIN output (no table created);
-                # we just want to confirm the explain path was reached.
-                with pytest.raises(Exception):  # noqa: BLE001 — DB error is fine
-                    await engine.execute("rev_by_region", explain=True)
-            finally:
-                qe._build_explain_sql = real_explain  # type: ignore[assignment]
+            monkeypatch.setattr(qe, "_build_explain_sql", tracking_explain)
+            # Don't care about the actual EXPLAIN output (no table created);
+            # we just want to confirm the explain path was reached.
+            with pytest.raises(Exception):  # noqa: BLE001 — DB error is fine
+                await engine.execute("rev_by_region", explain=True)
             assert calls, "explain=True must route through _build_explain_sql"
         finally:
             tmp.cleanup()
@@ -1331,8 +1267,6 @@ class TestSiblingStageJoins:
 
     async def test_named_stage_self_ref_raises_clear_error(self) -> None:
         """A stage referencing its own name must raise a clear error."""
-        import re
-
         engine, tmp = await self._engine()
         try:
             queries = [
@@ -1417,16 +1351,14 @@ class TestMultiStageMeasureRename:
             assert "rev_sum" in col_names, (
                 f"expected 'rev_sum' in cached columns, got: {col_names}"
             )
-            sql = loaded.backing_query_sql or ""
-            # Inner-stage wrap renames `"orders.rev" AS rev`; an all-lowercase
-            # short stays bare so it folds like the bare downstream reference.
-            import re
-            assert re.search(r"\bAS\s+rev\b", sql), (
+            sql = (await engine.execute("renamed_metric", dry_run=True)).sql or ""
+            # The inner stage names its column ``rev``, quoted or bare.
+            assert re.search(r'\bAS\s+"?rev"?(?:\s|$)', sql), (
                 f"expected inner-stage 'AS rev' rename in SQL:\n{sql}"
             )
             # The canonical name must not leak into the wrapped subquery's
-            # exposed alias.
-            assert not re.search(r'\bAS\s+"?amount_sum"?', sql), (
+            # exposed alias (quoted or unquoted).
+            assert not re.search(r'\bAS\s+"?amount_sum"?(?:\s|$)', sql), (
                 f"canonical 'amount_sum' must not be the surfaced inner alias:\n{sql}"
             )
         finally:
@@ -1443,7 +1375,7 @@ class TestMultiStageMeasureRename:
                 dimensions=["region"],
                 measures=[{"formula": "amount:sum"}],  # no name
             )
-            virtual = await engine._query_as_model(inner_query=stage)
+            virtual = await _expand_stage_as_model(engine=engine, stage=stage, name="qb_default")
             col_names = [c.name for c in virtual.columns]
             assert "amount_sum" in col_names, (
                 f"unnamed measure must keep canonical 'amount_sum', got: {col_names}"
@@ -1462,7 +1394,7 @@ class TestMultiStageMeasureRename:
                 dimensions=["region"],
                 measures=[{"formula": "amount:sum", "name": "amount_sum"}],
             )
-            virtual = await engine._query_as_model(inner_query=stage)
+            virtual = await _expand_stage_as_model(engine=engine, stage=stage, name="qb_collide")
             col_names = [c.name for c in virtual.columns]
             assert col_names.count("amount_sum") == 1, (
                 f"name=canonical must not duplicate the column, got: {col_names}"
@@ -1470,9 +1402,10 @@ class TestMultiStageMeasureRename:
         finally:
             tmp.cleanup()
 
-    async def test_query_as_model_emits_user_alias_unit(self) -> None:
-        """Direct unit test on ``_query_as_model``: the wrap subquery and the
-        virtual model's ``columns`` must use the user-supplied ``name``.
+    async def test_query_backed_expansion_emits_user_alias_unit(self) -> None:
+        """Direct unit test on the query-backed expansion: the wrap subquery
+        and the virtual model's ``columns`` must use the user-supplied
+        ``name``.
         """
         engine, tmp = await _engine_with_orders()
         try:
@@ -1481,7 +1414,7 @@ class TestMultiStageMeasureRename:
                 dimensions=["region"],
                 measures=[{"formula": "amount:sum", "name": "rev"}],
             )
-            virtual = await engine._query_as_model(inner_query=stage)
+            virtual = await _expand_stage_as_model(engine=engine, stage=stage, name="qb_alias")
             col_names = [c.name for c in virtual.columns]
             assert "rev" in col_names, (
                 f"user-supplied 'name' must surface as a virtual column, got: {col_names}"
@@ -1490,9 +1423,7 @@ class TestMultiStageMeasureRename:
                 f"canonical 'amount_sum' must be replaced when user supplies "
                 f"'name', got: {col_names}"
             )
-            import re
-            # DEV-1756: an all-lowercase short stays bare (see above).
-            assert re.search(r"\bAS\s+rev\b", virtual.sql), (
+            assert re.search(r'\bAS\s+"?rev"?(?:\s|$)', virtual.sql or ""), (
                 f"wrapped SQL must rename to user alias 'rev':\n{virtual.sql}"
             )
         finally:

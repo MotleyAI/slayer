@@ -1,11 +1,19 @@
 """Unit tests for ingestion fallback functions (SQL injection prevention)."""
 
+import logging
 import os
 import tempfile
-from unittest.mock import MagicMock, patch
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+from typing import Any, NoReturn
+from unittest.mock import patch
 
+import duckdb
 import pytest
 import sqlalchemy as sa
+import sqlglot
+from sqlglot import exp
 from sqlalchemy.dialects.mssql import (
     BIT,
     DATETIME2,
@@ -18,137 +26,320 @@ from sqlalchemy.dialects.mssql import (
     SMALLMONEY,
     TIMESTAMP as MSSQL_TIMESTAMP,
     TINYINT,
+    UNIQUEIDENTIFIER,
 )
-from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 from sqlalchemy.dialects.postgresql import JSON as PG_JSON
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
 from slayer.core.enums import DataType
+from slayer.core.format import NumberFormatType
 from slayer.core.models import DatasourceConfig
+from slayer.engine import ingestion
+from slayer.engine.schema_drift import _live_schema_for_datasource
 from slayer.engine.ingestion import (
-    ingest_datasource,
-    _generate_joins,
-    _get_columns_fallback,
-    _get_pk_constraint_fallback,
-    _parse_info_schema_is_float,
-    _safe_get_pk_constraint,
+    IntrospectedColumn,
+    _sqlite_probe_integer_columns,
+)
+from slayer.sql.client import SlayerSQLClient
+from slayer.sql.dialects import (
+    BigqueryDialect,
+    ClickhouseDialect,
+    PostgresDialect,
+    ReflectedColumn,
+    ReflectedForeignKey,
+    SqlDialect,
+    SqliteDialect,
+    TableKeys,
+    dialect_for_sa_backend,
+)
+from slayer.sql.dialects import reflection
+from slayer.sql.dialects.reflection import (
     _sa_type_is_float,
     _sa_type_to_data_type,
+    info_schema_type,
+    parse_info_schema_is_float,
 )
+from slayer.storage.sqlite_conn import transaction
+from tests._engine_helpers import disposable_engine
 
 
-def _setup_mock_engine(rows):
-    """Create a mock SQLAlchemy engine with stubbed connection/execute."""
-    engine = MagicMock(spec=sa.Engine)
-    conn = MagicMock()
-    engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
-    engine.connect.return_value.__exit__ = MagicMock(return_value=False)
-    conn.execute.return_value.fetchall.return_value = rows
-    return engine, conn
+class _Rows:
+    def __init__(self, rows: list[tuple]) -> None:
+        self._rows = rows
+
+    def fetchall(self) -> list[tuple]:
+        return list(self._rows)
+
+    def all(self) -> list[tuple]:
+        return list(self._rows)
+
+    def __iter__(self) -> Iterator[tuple]:
+        return iter(self._rows)
 
 
-class TestGetColumnsFallback:
-    """Tests for _get_columns_fallback parameterized queries."""
+class _CatalogConnection:
+    """Records every catalog statement; answers each through ``respond``."""
+
+    def __init__(self, *, backend: str, respond: Callable[[str], list[tuple]]) -> None:
+        self.dialect = SimpleNamespace(name=backend)
+        self.statements: list[str] = []
+        self._respond = respond
+
+    def exec_driver_sql(self, statement: str, *args: Any, **kwargs: Any) -> _Rows:
+        assert not args, "catalog queries carry no bind parameters"
+        assert not kwargs, "catalog queries carry no bind parameters"
+        self.statements.append(statement)
+        return _Rows(self._respond(statement))
+
+    def rollback(self) -> None:
+        pass
+
+
+class _Inspector:
+    """Inspector double: ``get_columns`` raises; PK as given; no FK / UNIQUE / index evidence."""
+
+    default_schema_name: str | None = None
+
+    def __init__(self, *, pk: object = None) -> None:
+        self._pk = pk
+
+    def get_columns(self, *_args: Any, **_kwargs: Any) -> NoReturn:
+        raise RuntimeError("pg_collation does not exist")
+
+    def get_pk_constraint(self, *_args: Any, **_kwargs: Any) -> object:
+        return self._pk
+
+    def get_foreign_keys(self, *_args: Any, **_kwargs: Any) -> list:
+        return []
+
+    def get_unique_constraints(self, *_args: Any, **_kwargs: Any) -> list:
+        return []
+
+    def get_indexes(self, *_args: Any, **_kwargs: Any) -> list:
+        return []
+
+
+def _columns_connection(rows: list[tuple], *, backend: str = "firebird") -> _CatalogConnection:
+    return _CatalogConnection(
+        backend=backend, respond=lambda sql: rows if "data_type" in sql.lower() else [],
+    )
+
+
+def _pk_connection(rows: list[tuple] | Exception, *, backend: str = "firebird") -> _CatalogConnection:
+    def _respond(sql: str) -> list[tuple]:
+        if "key_column_usage" not in sql.lower():
+            return []
+        if isinstance(rows, Exception):
+            raise rows
+        return rows
+
+    return _CatalogConnection(backend=backend, respond=_respond)
+
+
+def _pk_queries(conn: _CatalogConnection) -> list[str]:
+    return [s for s in conn.statements if "key_column_usage" in s.lower()]
+
+
+@asynccontextmanager
+async def _client(ds: DatasourceConfig) -> AsyncIterator[SlayerSQLClient]:
+    client = SlayerSQLClient(datasource=ds)
+    try:
+        yield client
+    finally:
+        await client.aclose()
+        client.close()
+
+
+async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list:
+    async with _client(ds) as client:
+        return await ingestion.ingest_datasource_async(ds, client=client, **kwargs)
+
+
+def _literals(sql: str, *, read: str = "postgres") -> dict[str, str]:
+    """``column = 'literal'`` predicates of one parsed statement."""
+    statements = sqlglot.parse(sql, read=read)
+    assert len(statements) == 1, sql
+    out: dict[str, str] = {}
+    (statement,) = statements
+    assert statement is not None, sql
+    for eq in statement.find_all(exp.EQ):
+        col, lit = eq.this, eq.expression
+        if isinstance(col, exp.Column) and isinstance(lit, exp.Literal) and lit.is_string:
+            out[col.name.lower()] = lit.this
+    return out
+
+
+def _reflect_columns(
+    conn: _CatalogConnection, *, dialect: SqlDialect | None = None, table: str = "orders",
+    schema: str | None = None,
+) -> list[ReflectedColumn]:
+    return (dialect or SqlDialect()).reflect_columns(
+        connection=conn, inspector=_Inspector(), table=table, schema=schema, catalog=None,
+    )
+
+
+_NO_PK = object()
+
+
+def _reflect_pk(
+    conn: _CatalogConnection, *, dialect: SqlDialect | None = None, pk: object = _NO_PK,
+    table: str = "orders", schema: str | None = None,
+) -> list[str]:
+    inspector = _Inspector(pk={"constrained_columns": []} if pk is _NO_PK else pk)
+    return (dialect or SqlDialect()).reflect_table_keys(
+        connection=conn, inspector=inspector, table=table, schema=schema, catalog=None,
+    ).primary_key
+
+
+class TestInfoSchemaTypeMapping:
+    """The INFORMATION_SCHEMA fallback maps PostgreSQL
+    multi-word type names, not just single-word ones, before the TEXT fallback."""
+
+    @pytest.mark.parametrize(
+        ("data_type", "expected_type", "expected_float"),
+        [
+            ("DOUBLE PRECISION", DataType.DOUBLE, True),
+            ("double precision", DataType.DOUBLE, True),
+            ("TIMESTAMP WITHOUT TIME ZONE", DataType.TIMESTAMP, False),
+            ("timestamp with time zone", DataType.TIMESTAMP, False),
+            # A float name containing "INT" (POINT) must NOT read as INT (Codex).
+            ("FLOATING POINT", DataType.DOUBLE, True),
+            # INTERVAL contains "INT" but is temporal → TEXT, not INT.
+            ("INTERVAL", DataType.TEXT, False),
+            ("interval day to second", DataType.TEXT, False),
+            ("character varying", DataType.TEXT, False),
+            ("integer", DataType.INT, False),
+            ("bigint", DataType.INT, False),
+            ("numeric(10,2)", DataType.DOUBLE, True),
+            ("numeric(10,0)", DataType.INT, False),
+        ],
+    )
+    def test_multi_word_types(self, data_type, expected_type, expected_float):
+        sa_type, is_float = info_schema_type(data_type)
+        assert sa_type is expected_type
+        assert is_float is expected_float
+
+
+class TestBaseColumnsFallback:
+    """The base ``reflect_columns`` falls back to INFORMATION_SCHEMA when the Inspector raises."""
 
     def test_without_schema(self):
-        engine, conn = _setup_mock_engine([("id", "INTEGER"), ("name", "VARCHAR")])
-        result = _get_columns_fallback(sa_engine=engine, table_name="orders", schema=None)
+        engine = _columns_connection([("id", "INTEGER"), ("name", "VARCHAR")])
+        result = _reflect_columns(engine)
 
-        assert len(result) == 2
-        assert result[0]["name"] == "id"
-        assert result[1]["name"] == "name"
-
-        # Verify parameterized query was used
-        args, kwargs = conn.execute.call_args
-        sql_text = args[0]
-        assert isinstance(sql_text, sa.TextClause)
-        sql_str = str(sql_text)
-        assert ":table_name" in sql_str
-        assert "table_schema" not in sql_str
-
-        params = args[1] if len(args) > 1 else kwargs
-        assert params == {"table_name": "orders"}
+        assert [c.name for c in result] == ["id", "name"]
+        (sql,) = [s for s in engine.statements if "data_type" in s.lower()]
+        literals = _literals(sql)
+        assert literals["table_name"] == "orders"
+        assert "table_schema" not in literals
 
     def test_with_schema(self):
-        engine, conn = _setup_mock_engine([("id", "INTEGER")])
-        result = _get_columns_fallback(sa_engine=engine, table_name="orders", schema="public")
+        engine = _columns_connection([("id", "INTEGER")])
+        result = _reflect_columns(engine, schema="public")
 
-        assert len(result) == 1
-        assert result[0]["name"] == "id"
+        assert [c.name for c in result] == ["id"]
+        (sql,) = [s for s in engine.statements if "data_type" in s.lower()]
+        literals = _literals(sql)
+        assert literals["table_name"] == "orders"
+        assert literals["table_schema"] == "public"
 
-        args, kwargs = conn.execute.call_args
-        sql_text = args[0]
-        assert isinstance(sql_text, sa.TextClause)
-        sql_str = str(sql_text)
-        assert ":table_name" in sql_str
-        assert ":schema" in sql_str
+    def test_bigquery_uses_dataset_qualified_information_schema(self):
+        """A dataset-scoped BigQuery account cannot read the project-level view."""
+        engine = _columns_connection([("id", "INTEGER")], backend="bigquery")
+        _reflect_columns(engine, dialect=BigqueryDialect(), table="core.mart__kpis")
 
-        params = args[1] if len(args) > 1 else kwargs
-        assert params == {"table_name": "orders", "schema": "public"}
+        (sql,) = [s for s in engine.statements if "data_type" in s.lower()]
+        assert "`core`.INFORMATION_SCHEMA.COLUMNS" in sql
+        assert _literals(sql, read="bigquery")["table_name"] == "mart__kpis"
 
-    def test_no_fstring_interpolation(self):
-        """Ensure table_name/schema values never appear literally in the SQL text."""
-        engine, conn = _setup_mock_engine([])
-        _get_columns_fallback(sa_engine=engine, table_name="'; DROP TABLE users;--", schema="'; DROP TABLE users;--")
-
-        args, _ = conn.execute.call_args
-        sql_str = str(args[0])
-        assert "DROP TABLE" not in sql_str
-        assert "'; DROP TABLE" not in sql_str
-
-
-class TestGetPkConstraintFallback:
-    """Tests for _get_pk_constraint_fallback parameterized queries."""
-
-    def test_without_schema(self):
-        engine, conn = _setup_mock_engine([("id",)])
-        result = _get_pk_constraint_fallback(sa_engine=engine, table_name="orders", schema=None)
-
-        assert result == {"constrained_columns": ["id"]}
-
-        args, kwargs = conn.execute.call_args
-        sql_text = args[0]
-        assert isinstance(sql_text, sa.TextClause)
-        sql_str = str(sql_text)
-        assert ":table_name" in sql_str
-        assert "tc.table_schema = :schema" not in sql_str
-
-        params = args[1] if len(args) > 1 else kwargs
-        assert params == {"table_name": "orders"}
-
-    def test_with_schema(self):
-        engine, conn = _setup_mock_engine([("id",), ("tenant_id",)])
-        result = _get_pk_constraint_fallback(sa_engine=engine, table_name="orders", schema="public")
-
-        assert result == {"constrained_columns": ["id", "tenant_id"]}
-
-        args, kwargs = conn.execute.call_args
-        sql_text = args[0]
-        assert isinstance(sql_text, sa.TextClause)
-        sql_str = str(sql_text)
-        assert ":table_name" in sql_str
-        assert ":schema" in sql_str
-
-        params = args[1] if len(args) > 1 else kwargs
-        assert params == {"table_name": "orders", "schema": "public"}
-
-    def test_empty_result(self):
-        engine, conn = _setup_mock_engine([])
-        result = _get_pk_constraint_fallback(sa_engine=engine, table_name="no_pk_table", schema=None)
-        assert result.get("constrained_columns") == []
-
-    def test_no_fstring_interpolation(self):
-        """Ensure table_name/schema values never appear literally in the SQL text."""
-        engine, conn = _setup_mock_engine([])
-        _get_pk_constraint_fallback(
-            sa_engine=engine, table_name="'; DROP TABLE users;--", schema="'; DROP TABLE users;--"
+    def test_bigquery_dataset_is_quoted_and_escaped(self):
+        """A hostile dataset name cannot break out of the identifier."""
+        engine = _columns_connection([], backend="bigquery")
+        _reflect_columns(
+            engine, dialect=BigqueryDialect(), schema="evil` UNION SELECT 1,2 FROM `x",
         )
 
-        args, _ = conn.execute.call_args
-        sql_str = str(args[0])
-        assert "DROP TABLE" not in sql_str
-        assert "'; DROP TABLE" not in sql_str
+        (sql,) = engine.statements
+        # The payload stays inside ONE quoted identifier, its backticks doubled.
+        assert (
+            "FROM `evil`` UNION SELECT 1,2 FROM ``x`.INFORMATION_SCHEMA.COLUMNS"
+            in sql
+        ), sql
+        assert len(list(sqlglot.parse_one(sql, read="bigquery").find_all(exp.Table))) == 1
+
+    def test_hostile_names_stay_escaped_literals(self):
+        """table/schema values only ever appear as escaped string literals."""
+        payload = "'; DROP TABLE users;--"
+        engine = _columns_connection([])
+        _reflect_columns(engine, table=payload, schema=payload)
+
+        (sql,) = [s for s in engine.statements if "data_type" in s.lower()]
+        literals = _literals(sql)
+        assert literals["table_name"] == payload
+        assert literals["table_schema"] == payload
+
+    def test_decimal_variants_capture_db_type_and_map_numeric(self):
+        """Decimal64/BIGNUMERIC must keep db_type and map numeric, not TEXT."""
+        engine = _columns_connection([("short_amount", "Decimal64(4)"), ("big_amount", "BIGNUMERIC")])
+        by_name = {c.name: c for c in _reflect_columns(engine)}
+
+        assert by_name["short_amount"].type is DataType.DOUBLE
+        assert by_name["short_amount"].db_type == "Decimal64(4)"
+        assert by_name["big_amount"].type is DataType.DOUBLE
+        assert by_name["big_amount"].db_type == "BIGNUMERIC"
+
+    def test_wrapped_decimals_unwrap_and_capture_db_type(self):
+        """ClickHouse wrapper text must not defeat the fallback mapping (CodeRabbit)."""
+        engine = _columns_connection(
+            [
+                ("amount", "Nullable(Decimal(18, 2))"),
+                ("ratio", "LowCardinality(Nullable(Decimal(10, 4)))"),
+            ],
+            backend="clickhouse",
+        )
+        by_name = {c.name: c for c in _reflect_columns(engine, dialect=ClickhouseDialect())}
+
+        assert by_name["amount"].type is DataType.DOUBLE
+        assert by_name["amount"].db_type == "Decimal(18, 2)"
+        assert by_name["ratio"].type is DataType.DOUBLE
+        assert by_name["ratio"].db_type == "Decimal(10, 4)"
+
+
+class TestBasePkFallback:
+    """The base ``reflect_table_keys`` reads the PK from INFORMATION_SCHEMA when the Inspector has none."""
+
+    def test_without_schema(self):
+        engine = _pk_connection([("id",)])
+        assert _reflect_pk(engine) == ["id"]
+
+        (sql,) = _pk_queries(engine)
+        literals = _literals(sql)
+        assert literals["table_name"] == "orders"
+        assert "table_schema" not in literals
+
+    def test_with_schema(self):
+        engine = _pk_connection([("id",), ("tenant_id",)])
+        assert _reflect_pk(engine, schema="public") == ["id", "tenant_id"]
+
+        (sql,) = _pk_queries(engine)
+        literals = _literals(sql)
+        assert literals["table_name"] == "orders"
+        assert literals["table_schema"] == "public"
+
+    def test_empty_result(self):
+        assert _reflect_pk(_pk_connection([]), table="no_pk_table") == []
+
+    def test_hostile_names_stay_escaped_literals(self):
+        """table/schema values only ever appear as escaped string literals."""
+        payload = "'; DROP TABLE users;--"
+        engine = _pk_connection([])
+        _reflect_pk(engine, table=payload, schema=payload)
+
+        (sql,) = _pk_queries(engine)
+        literals = _literals(sql)
+        assert literals["table_name"] == payload
+        assert literals["table_schema"] == payload
 
 
 class TestSaTypeIsFloat:
@@ -179,75 +370,136 @@ class TestSaTypeIsFloat:
 
 
 class TestParseInfoSchemaIsFloat:
-    """Tests for _parse_info_schema_is_float scale parsing from type strings."""
+    """Tests for parse_info_schema_is_float scale parsing from type strings."""
 
     def test_decimal_with_scale(self):
-        assert _parse_info_schema_is_float("DECIMAL(10,2)") is True
+        assert parse_info_schema_is_float("DECIMAL(10,2)") is True
 
     def test_decimal_with_zero_scale(self):
-        assert _parse_info_schema_is_float("DECIMAL(10,0)") is False
+        assert parse_info_schema_is_float("DECIMAL(10,0)") is False
 
     def test_numeric_with_scale(self):
-        assert _parse_info_schema_is_float("NUMERIC(18,4)") is True
+        assert parse_info_schema_is_float("NUMERIC(18,4)") is True
 
     def test_numeric_with_zero_scale(self):
-        assert _parse_info_schema_is_float("NUMERIC(18,0)") is False
+        assert parse_info_schema_is_float("NUMERIC(18,0)") is False
 
     def test_no_precision_info(self):
         """Bare 'DECIMAL' without parens defaults to float."""
-        assert _parse_info_schema_is_float("DECIMAL") is True
+        assert parse_info_schema_is_float("DECIMAL") is True
 
     def test_no_scale_in_parens(self):
         """DECIMAL(10) with only precision defaults to float."""
-        assert _parse_info_schema_is_float("DECIMAL(10)") is True
+        assert parse_info_schema_is_float("DECIMAL(10)") is True
+
+
+def _fk(column: str) -> ReflectedForeignKey:
+    return ReflectedForeignKey(
+        columns=[column], referred_schema=None, referred_table="users", referred_columns=["id"],
+    )
 
 
 class TestGenerateJoinsDedup:
-    """Tests for _generate_joins FK deduplication logic."""
+    """FK deduplication when joins are generated from the reflected keys."""
 
-    def test_multiple_fks_to_same_target_preserved(self):
-        """Two distinct FKs to the same target table should both produce joins."""
-        inspector = MagicMock(spec=sa.engine.Inspector)
-        fk_rels = [
-            ("buyer_id", "users", "id"),
-            ("seller_id", "users", "id"),
-        ]
-        with patch(
-            "slayer.engine.ingestion._get_fk_relationships", return_value=fk_rels,
-        ):
-            joins = _generate_joins(
-                inspector=inspector,
-                source_table="orders",
-                referenced_tables={"users"},
-                schema=None,
-                table_set={"orders", "users"},
+    @staticmethod
+    async def _ingest(tmp_path, monkeypatch, fks: list[ReflectedForeignKey]):
+        db = str(tmp_path / "dedup.db")
+        with transaction(db) as conn:
+            conn.executescript(
+                "CREATE TABLE users (id INTEGER PRIMARY KEY);"
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, buyer_id INTEGER, seller_id INTEGER);"
             )
+
+        def _keys(self, *, connection, inspector, table, schema, catalog) -> TableKeys:
+            return TableKeys(
+                primary_key=["id"], foreign_keys=fks if table == "orders" else [],
+                unique_key_sets=[],
+            )
+
+        monkeypatch.setattr(SqliteDialect, "reflect_table_keys", _keys)
+        ds = DatasourceConfig(name="ds", type="sqlite", database=db)
+        async with _client(ds) as client:
+            report = await ingestion.ingest_datasource_report_async(datasource=ds, client=client)
+        return next(m for m in report.models if m.name == "orders").joins
+
+    async def test_multiple_fks_to_same_target_preserved(self, tmp_path, monkeypatch):
+        """Two distinct FKs to the same target table should both produce joins."""
+        joins = await self._ingest(tmp_path, monkeypatch, [_fk("buyer_id"), _fk("seller_id")])
         assert len(joins) == 2
         pairs = [j.join_pairs for j in joins]
         assert [["buyer_id", "id"]] in pairs
         assert [["seller_id", "id"]] in pairs
 
-    def test_exact_duplicate_fk_deduplicated(self):
+    async def test_exact_duplicate_fk_deduplicated(self, tmp_path, monkeypatch):
         """Identical FK pair to the same target should be deduplicated."""
-        inspector = MagicMock(spec=sa.engine.Inspector)
-        fk_rels = [
-            ("buyer_id", "users", "id"),
-            ("buyer_id", "users", "id"),
-        ]
-        with patch(
-            "slayer.engine.ingestion._get_fk_relationships", return_value=fk_rels,
-        ):
-            joins = _generate_joins(
-                inspector=inspector,
-                source_table="orders",
-                referenced_tables={"users"},
-                schema=None,
-                table_set={"orders", "users"},
-            )
+        joins = await self._ingest(tmp_path, monkeypatch, [_fk("buyer_id"), _fk("buyer_id")])
         assert len(joins) == 1
 
 
-class TestSqliteSafeGetters:
+class TestPkFallbackNeverSinksTheTable:
+    """A failing PK lookup must not take the table down with it.
+
+    BigQuery skipped every table: its inspector reports no primary keys, the
+    empty result was read as failure, and the unqualified INFORMATION_SCHEMA
+    fallback raised from both branches — the second time uncaught.
+    """
+
+    def test_bigquery_skips_the_fallback_entirely(self):
+        """It can only fail there, and each attempt is a billed query."""
+        engine = _pk_connection([("id",)], backend="bigquery")
+        pk = _reflect_pk(
+            engine, dialect=BigqueryDialect(), pk={"constrained_columns": []}, schema="core",
+        )
+        assert pk == []
+        assert _pk_queries(engine) == []
+
+    def test_failing_fallback_yields_no_pk_instead_of_raising(self):
+        engine = _pk_connection(Exception("403 Access Denied: information_schema"), backend="postgresql")
+        pk = _reflect_pk(
+            engine, dialect=PostgresDialect(), pk={"constrained_columns": []}, schema="public",
+        )
+        assert pk == []
+        # Once, not twice: the old except branch re-ran the failing call.
+        assert len(_pk_queries(engine)) == 1
+
+    def test_fallback_still_answers_when_the_inspector_is_empty(self):
+        """The reason the fallback exists."""
+        engine = _pk_connection([("id",)])
+        assert _reflect_pk(engine, pk={"constrained_columns": []}) == ["id"]
+        assert len(_pk_queries(engine)) == 1
+
+    @pytest.mark.parametrize(
+        "malformed",
+        [
+            {"constrained_columns": None},
+            {"constrained_columns": "id"},
+            {"constrained_columns": [1, 2]},
+            {},
+            None,
+        ],
+        ids=["none", "bare-string", "non-str-items", "missing-key", "not-a-dict"],
+    )
+    def test_malformed_inspector_pk_normalizes(self, malformed):
+        """Callers feed the value to set(): None raises, a string splits to chars."""
+        engine = _pk_connection([], backend="bigquery")
+        assert _reflect_pk(engine, dialect=BigqueryDialect(), pk=malformed) == []
+
+    def test_malformed_pk_still_reaches_the_fallback(self):
+        """Unusable is not an answer — try INFORMATION_SCHEMA, as for empty."""
+        engine = _pk_connection([("id",)], backend="postgresql")
+        pk = _reflect_pk(engine, dialect=PostgresDialect(), pk={"constrained_columns": "id"})
+        assert pk == ["id"]
+        assert len(_pk_queries(engine)) == 1
+
+    def test_inspector_pk_short_circuits_the_fallback(self):
+        engine = _pk_connection([("other",)], backend="postgresql")
+        pk = _reflect_pk(engine, dialect=PostgresDialect(), pk={"constrained_columns": ["id"]})
+        assert pk == ["id"]
+        assert _pk_queries(engine) == []
+
+
+class TestSqliteKeyReads:
     """Regression tests: SQLite engines must not hit information_schema fallback.
 
     Reproduces an issue found when ingesting a SQLite DB whose tables had
@@ -257,53 +509,48 @@ class TestSqliteSafeGetters:
     'no such table: information_schema.table_constraints'.
     """
 
-    def test_safe_get_pk_constraint_sqlite_no_pk(self):
+    @staticmethod
+    def _pk(engine: sa.Engine, table: str) -> list[str]:
+        with engine.connect() as conn:
+            return dialect_for_sa_backend(engine.dialect.name).reflect_table_keys(
+                connection=conn, inspector=sa.inspect(conn), table=table, schema=None, catalog=None,
+            ).primary_key
+
+    def test_sqlite_no_pk(self):
         """Empty inspector PK on SQLite returns empty without info_schema query."""
-        engine = sa.create_engine("sqlite:///:memory:")
-        with engine.connect() as conn:
-            conn.execute(sa.text("CREATE TABLE t (a TEXT, b INTEGER)"))
-            conn.commit()
-        insp = sa.inspect(engine)
-        result = _safe_get_pk_constraint(
-            inspector=insp, sa_engine=engine, table_name="t", schema=None
-        )
-        assert result.get("constrained_columns") == []
+        with disposable_engine("sqlite:///:memory:") as engine:
+            with engine.connect() as conn:
+                conn.execute(sa.text("CREATE TABLE t (a TEXT, b INTEGER)"))
+                conn.commit()
+            assert self._pk(engine, "t") == []
 
-    def test_safe_get_pk_constraint_sqlite_fk_only(self):
+    def test_sqlite_fk_only(self):
         """Tables with FK but no PK (the robot DB pattern) — must not crash."""
-        engine = sa.create_engine("sqlite:///:memory:")
-        with engine.connect() as conn:
-            conn.execute(sa.text("CREATE TABLE parent (id INTEGER PRIMARY KEY)"))
-            conn.execute(
-                sa.text(
-                    "CREATE TABLE child (parent_ref INTEGER, "
-                    "FOREIGN KEY (parent_ref) REFERENCES parent(id))"
+        with disposable_engine("sqlite:///:memory:") as engine:
+            with engine.connect() as conn:
+                conn.execute(sa.text("CREATE TABLE parent (id INTEGER PRIMARY KEY)"))
+                conn.execute(
+                    sa.text(
+                        "CREATE TABLE child (parent_ref INTEGER, "
+                        "FOREIGN KEY (parent_ref) REFERENCES parent(id))"
+                    )
                 )
-            )
-            conn.commit()
-        insp = sa.inspect(engine)
-        result = _safe_get_pk_constraint(
-            inspector=insp, sa_engine=engine, table_name="child", schema=None
-        )
-        assert result.get("constrained_columns") == []
+                conn.commit()
+            assert self._pk(engine, "child") == []
 
-    def test_safe_get_pk_constraint_sqlite_real_pk(self):
+    def test_sqlite_real_pk(self):
         """SQLite tables with declared PK still report it correctly."""
-        engine = sa.create_engine("sqlite:///:memory:")
-        with engine.connect() as conn:
-            conn.execute(
-                sa.text("CREATE TABLE u (id INTEGER PRIMARY KEY, name TEXT)")
-            )
-            conn.commit()
-        insp = sa.inspect(engine)
-        result = _safe_get_pk_constraint(
-            inspector=insp, sa_engine=engine, table_name="u", schema=None
-        )
-        assert result.get("constrained_columns") == ["id"]
+        with disposable_engine("sqlite:///:memory:") as engine:
+            with engine.connect() as conn:
+                conn.execute(
+                    sa.text("CREATE TABLE u (id INTEGER PRIMARY KEY, name TEXT)")
+                )
+                conn.commit()
+            assert self._pk(engine, "u") == ["id"]
 
 
 # ---------------------------------------------------------------------------
-# DEV-1361: auto-ingestion INT vs DOUBLE distinction.
+# Auto-ingestion INT vs DOUBLE distinction.
 # ---------------------------------------------------------------------------
 
 
@@ -399,6 +646,37 @@ class TestSaTypeToDataTypeIntDouble:
         assert _sa_type_to_data_type(MSSQL_TIMESTAMP()) is DataType.TEXT
 
 
+_UUID_JSONB_TYPES = [
+    sa.Uuid(),
+    PG_UUID(),
+    UNIQUEIDENTIFIER(),
+    JSONB(),  # jsonb HAS ``=`` in Postgres, unlike json
+]
+_UUID_JSONB_IDS = ["uuid", "pg_uuid", "mssql_uniqueidentifier", "jsonb"]
+
+
+class TestSaTypeToDataTypeUuidJsonb:
+    """UUID-family types and JSONB are comparable: mapped to TEXT, not via the fallback."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_warning_dedup(self):
+        reflection._logged_unmapped_sa_types.clear()
+        yield
+        reflection._logged_unmapped_sa_types.clear()
+
+    @pytest.mark.parametrize("sa_type", _UUID_JSONB_TYPES, ids=_UUID_JSONB_IDS)
+    def test_maps_to_text(self, sa_type) -> None:
+        mapped = _sa_type_to_data_type(sa_type)
+        assert mapped is DataType.TEXT
+        assert mapped.is_opaque is False
+
+    @pytest.mark.parametrize("sa_type", _UUID_JSONB_TYPES, ids=_UUID_JSONB_IDS)
+    def test_no_unmapped_warning_logged(self, sa_type, caplog) -> None:
+        with caplog.at_level(logging.WARNING, logger="slayer.sql.dialects.reflection"):
+            _sa_type_to_data_type(sa_type)
+        assert "Unrecognized SQLAlchemy type" not in caplog.text
+
+
 class TestUnmappedTypeBecomesOpaque:
     """DB types with no equality operator map to the explicit opaque
     ``UNKNOWN`` type, and the raw type string is retained on
@@ -412,12 +690,9 @@ class TestUnmappedTypeBecomesOpaque:
     @pytest.mark.parametrize(
         "sa_type",
         [
-            JSONB(),  # jsonb HAS ``=`` in Postgres, unlike json
-            PG_UUID(),
             sa.LargeBinary(),  # bytea
-            PG_ARRAY(sa.Text()),
         ],
-        ids=["jsonb", "uuid", "bytea", "array"],
+        ids=["bytea"],
     )
     def test_comparable_unmapped_types_stay_text(self, sa_type) -> None:
         """Regression: these are groupable/joinable and must not be marked
@@ -433,27 +708,31 @@ class TestUnmappedTypeBecomesOpaque:
         # The explicit isinstance guard must survive the UNKNOWN fallback.
         assert _sa_type_to_data_type(MSSQL_TIMESTAMP()) is DataType.TEXT
 
-    def test_ingest_populates_db_type_only_for_opaque_columns(self) -> None:
+    async def test_ingest_retains_db_type_when_logical_type_loses_information(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "opaque.db")
-            engine = sa.create_engine(f"sqlite:///{db_path}")
-            with engine.connect() as c:
-                c.execute(sa.text(
-                    "CREATE TABLE t (id INTEGER PRIMARY KEY, "
-                    "name VARCHAR(64), payload JSON, blob_col BLOB)"
-                ))
-                c.commit()
-            engine.dispose()
+            with disposable_engine(f"sqlite:///{db_path}") as engine:
+                with engine.connect() as c:
+                    c.execute(sa.text(
+                        "CREATE TABLE t (id INTEGER PRIMARY KEY, "
+                        "name VARCHAR(64), amount NUMERIC(18,2), payload JSON, blob_col BLOB)"
+                    ))
+                    c.commit()
 
             ds = DatasourceConfig(name="opaque_ds", type="sqlite", database=db_path)
-            model = next(m for m in ingest_datasource(datasource=ds) if m.name == "t")
+            model = next(m for m in await _ingest(ds) if m.name == "t")
             by_name = {c.name: c for c in model.columns}
 
             # Opaque: explicit UNKNOWN + raw DB type retained.
             assert by_name["payload"].type is DataType.UNKNOWN
             assert by_name["payload"].db_type == "JSON"
 
-            # Mapped types are untouched and carry no db_type.
+            # Exact NUMERIC is represented by logical DOUBLE, so retain the
+            # physical type needed to avoid lossy inferred aggregate casts.
+            assert by_name["amount"].type is DataType.DOUBLE
+            assert by_name["amount"].db_type == "NUMERIC(18, 2)"
+
+            # Fully represented mapped types carry no db_type.
             assert by_name["name"].type is DataType.TEXT
             assert by_name["name"].db_type is None
             assert by_name["id"].type is DataType.INT
@@ -466,21 +745,19 @@ class TestUnmappedTypeBecomesOpaque:
 class TestSqliteIngestionRoundTrip:
     """End-to-end: introspect a real SQLite table and confirm narrow types."""
 
-    def test_int_double_text_distinction_via_inspector(self) -> None:
-        from slayer.core.models import DatasourceConfig
-        from slayer.engine.schema_drift import _live_schema_for_datasource
-
+    async def test_int_double_text_distinction_via_inspector(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "live.db")
-            conn = sa.create_engine(f"sqlite:///{db_path}")
-            with conn.connect() as c:
-                c.execute(sa.text(
-                    "CREATE TABLE t (id INTEGER PRIMARY KEY, amt REAL, "
-                    "n VARCHAR(64), q INTEGER, ts TIMESTAMP, d DATE, b BOOLEAN)"
-                ))
-                c.commit()
+            with disposable_engine(f"sqlite:///{db_path}") as conn:
+                with conn.connect() as c:
+                    c.execute(sa.text(
+                        "CREATE TABLE t (id INTEGER PRIMARY KEY, amt REAL, "
+                        "n VARCHAR(64), q INTEGER, ts TIMESTAMP, d DATE, b BOOLEAN)"
+                    ))
+                    c.commit()
             ds = DatasourceConfig(name="live", type="sqlite", database=db_path)
-            schema = _live_schema_for_datasource(datasource=ds)
+            async with _client(ds) as client:
+                schema = await _live_schema_for_datasource(client=client, datasource=ds)
             cols = schema["t"].columns
             assert cols["id"] is DataType.INT
             assert cols["q"] is DataType.INT
@@ -492,7 +769,7 @@ class TestSqliteIngestionRoundTrip:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1538: SQLite affinity probe — fresh-ingest path
+# SQLite affinity probe — fresh-ingest path
 # ---------------------------------------------------------------------------
 
 
@@ -503,30 +780,20 @@ def _create_sqlite_db_with_typed_data(
     inserts. ``inserts`` is a list of ``(insert_sql, [params, ...])`` pairs
     executed one row at a time so SQLite preserves the storage class.
     """
-    import sqlite3
-
     db_path = os.path.join(tmpdir, "live.db")
-    conn = sqlite3.connect(db_path)
-    try:
+    with transaction(db_path) as conn:
         conn.executescript(schema_sql)
         for sql, rows in inserts:
             for row in rows:
                 conn.execute(sql, row if isinstance(row, tuple) else (row,))
-        conn.commit()
-    finally:
-        conn.close()
     return db_path
 
 
 class TestSqliteIngestionProbe:
-    """DEV-1538: ingest-time probe widens INT → DOUBLE/TEXT based on actual
+    """Ingest-time probe widens INT → DOUBLE/TEXT based on actual
     stored values, not declared affinity."""
 
-    def test_widens_int_to_double_on_mixed_real_storage(self) -> None:
-        from slayer.core.format import NumberFormatType
-        from slayer.core.models import DatasourceConfig
-        from slayer.engine.ingestion import ingest_datasource
-
+    async def test_widens_int_to_double_on_mixed_real_storage(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = _create_sqlite_db_with_typed_data(
                 tmpdir,
@@ -539,18 +806,14 @@ class TestSqliteIngestionProbe:
                 ],
             )
             ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
-            models = ingest_datasource(datasource=ds)
+            models = await _ingest(ds)
             model = next(m for m in models if m.name == "sensordata")
             col = next(c for c in model.columns if c.name == "tempstabidx")
             assert col.type is DataType.DOUBLE
             assert col.format is not None
             assert col.format.type is NumberFormatType.FLOAT
 
-    def test_keeps_int_on_pure_integer_storage(self) -> None:
-        from slayer.core.format import NumberFormatType
-        from slayer.core.models import DatasourceConfig
-        from slayer.engine.ingestion import ingest_datasource
-
+    async def test_keeps_int_on_pure_integer_storage(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = _create_sqlite_db_with_typed_data(
                 tmpdir,
@@ -562,17 +825,14 @@ class TestSqliteIngestionProbe:
                 ],
             )
             ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
-            models = ingest_datasource(datasource=ds)
+            models = await _ingest(ds)
             model = next(m for m in models if m.name == "t")
             col = next(c for c in model.columns if c.name == "qty")
             assert col.type is DataType.INT
             assert col.format is not None
             assert col.format.type is NumberFormatType.INTEGER
 
-    def test_widens_int_to_text_on_non_coercible_text_storage(self) -> None:
-        from slayer.core.models import DatasourceConfig
-        from slayer.engine.ingestion import ingest_datasource
-
+    async def test_widens_int_to_text_on_non_coercible_text_storage(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = _create_sqlite_db_with_typed_data(
                 tmpdir,
@@ -584,17 +844,13 @@ class TestSqliteIngestionProbe:
                 ],
             )
             ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
-            models = ingest_datasource(datasource=ds)
+            models = await _ingest(ds)
             model = next(m for m in models if m.name == "t")
             col = next(c for c in model.columns if c.name == "status")
             assert col.type is DataType.TEXT
             assert col.format is None
 
-    def test_widens_int_to_double_on_coercible_text_storage(self) -> None:
-        from slayer.core.format import NumberFormatType
-        from slayer.core.models import DatasourceConfig
-        from slayer.engine.ingestion import ingest_datasource
-
+    async def test_widens_int_to_double_on_coercible_text_storage(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = _create_sqlite_db_with_typed_data(
                 tmpdir,
@@ -606,28 +862,20 @@ class TestSqliteIngestionProbe:
                 ],
             )
             ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
-            models = ingest_datasource(datasource=ds)
+            models = await _ingest(ds)
             model = next(m for m in models if m.name == "t")
             col = next(c for c in model.columns if c.name == "v")
             assert col.type is DataType.DOUBLE
             assert col.format is not None
             assert col.format.type is NumberFormatType.FLOAT
 
-    def test_non_sqlite_ingest_skips_probe(self) -> None:
+    async def test_non_sqlite_ingest_skips_probe(self) -> None:
         """For a DuckDB-backed datasource the probe must never fire, even
         when the SA-derived type lands on INT. We assert this by patching
         the probe helper to raise — if the probe runs, the test errors;
         if it's correctly skipped, ingest succeeds."""
-        from unittest.mock import patch
-
-        from slayer.core.models import DatasourceConfig
-        from slayer.engine.ingestion import ingest_datasource
-
-        pytest.importorskip("duckdb")
-
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "live.duckdb")
-            import duckdb
             con = duckdb.connect(db_path)
             con.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, qty INTEGER)")
             con.execute("INSERT INTO t VALUES (1, 10), (2, 20)")
@@ -640,10 +888,10 @@ class TestSqliteIngestionProbe:
                 "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
                 side_effect=AssertionError("probe must not run on DuckDB"),
             ):
-                models = ingest_datasource(datasource=ds)
+                models = await _ingest(ds)
             assert any(m.name == "t" for m in models)
 
-    def test_probe_failure_keeps_int_logs_warning(self, caplog) -> None:
+    async def test_probe_failure_keeps_int_logs_warning(self, caplog) -> None:
         """If the probe raises for any reason, fall back to the SA-derived
         INT type and log one WARNING. Ingest does not abort.
 
@@ -651,12 +899,6 @@ class TestSqliteIngestionProbe:
         exceptions and returns None after logging WARNING. We exercise that
         path by patching the inner query executor so the probe SQL raises.
         """
-        from unittest.mock import patch
-        import logging as _logging
-
-        from slayer.core.models import DatasourceConfig
-        from slayer.engine.ingestion import ingest_datasource
-
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = _create_sqlite_db_with_typed_data(
                 tmpdir,
@@ -674,9 +916,9 @@ class TestSqliteIngestionProbe:
                 "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
                 side_effect=RuntimeError("simulated probe failure"),
             ):
-                with caplog.at_level(_logging.WARNING):
+                with caplog.at_level(logging.WARNING):
                     try:
-                        models = ingest_datasource(datasource=ds)
+                        models = await _ingest(ds)
                     except RuntimeError as exc:
                         pytest.fail(
                             f"ingest_datasource must tolerate probe exceptions "
@@ -685,57 +927,47 @@ class TestSqliteIngestionProbe:
             model = next(m for m in models if m.name == "t")
             col = next(c for c in model.columns if c.name == "qty")
             assert col.type is DataType.INT
-            warnings = [r for r in caplog.records if r.levelno == _logging.WARNING]
+            warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
             assert any("probe" in r.getMessage().lower() for r in warnings)
 
-    def test_dotted_alias_not_passed_to_probe(self) -> None:
+    async def test_dotted_alias_not_passed_to_probe(self) -> None:
         """``_sqlite_probe_integer_columns`` must skip aliases containing
         '.' — dotted aliases are joined-column references that belong to
         the target model's own probe pass, not the source table's."""
-        from unittest.mock import patch
+        # A real SQLite client, so the integer-affinity gate lets the probe run.
+        async with _client(DatasourceConfig(name="mem", type="sqlite", database=":memory:")) as client:
+            await client.execute("CREATE TABLE t (qty INTEGER)")
 
-        from slayer.engine.ingestion import _sqlite_probe_integer_columns
+            seen_columns: list[str] = []
 
-        # Build a dummy SA engine just so the helper's dialect check passes.
-        sa_engine = sa.create_engine("sqlite:///:memory:")
-        with sa_engine.connect() as conn:
-            conn.execute(sa.text('CREATE TABLE t (qty INTEGER)'))
-            conn.commit()
+            def _capture(*, client, table, column, schema=None):
+                seen_columns.append(column)
+                return DataType.INT
 
-        seen_columns: list[str] = []
+            with patch(
+                "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
+                side_effect=_capture,
+            ):
+                # Mixed bag: one base column (no '.') and one dotted alias.
+                columns = [
+                    IntrospectedColumn(name="qty", type=DataType.INT),
+                    IntrospectedColumn(name="customers.region_id", type=DataType.INT),
+                ]
+                await _sqlite_probe_integer_columns(
+                    client=client,
+                    sql_table="t",
+                    columns=columns,
+                )
 
-        def _capture(*, conn, table, column, schema=None):
-            seen_columns.append(column)
-            return DataType.INT
+            # The dotted alias must never be passed to the probe.
+            assert "qty" in seen_columns
+            assert "customers.region_id" not in seen_columns
 
-        with patch(
-            "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
-            side_effect=_capture,
-        ):
-            # Mixed bag: one base column (no '.') and one dotted alias.
-            columns = [
-                ("qty", DataType.INT, False, False, None),
-                ("customers.region_id", DataType.INT, False, False, None),
-            ]
-            _sqlite_probe_integer_columns(
-                sa_engine=sa_engine,
-                sql_table="t",
-                columns=columns,
-            )
-
-        # The dotted alias must never be passed to the probe.
-        assert "qty" in seen_columns
-        assert "customers.region_id" not in seen_columns
-        sa_engine.dispose()
-
-    def test_joined_column_probed_via_owning_model(self) -> None:
-        """DEV-1538 + Codex #9 restated: each table's columns are probed
+    async def test_joined_column_probed_via_owning_model(self) -> None:
+        """Each table's columns are probed
         when that table is ingested as its own model. Joined references to
         another table's column inherit the probed type via the FK target's
         persisted column — they aren't re-probed on the source side."""
-        from slayer.core.models import DatasourceConfig
-        from slayer.engine.ingestion import ingest_datasource
-
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = _create_sqlite_db_with_typed_data(
                 tmpdir,
@@ -759,8 +991,45 @@ class TestSqliteIngestionProbe:
                 ],
             )
             ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
-            models = ingest_datasource(datasource=ds)
+            models = await _ingest(ds)
             measurements = next(m for m in models if m.name == "measurements")
             weight_col = next(c for c in measurements.columns if c.name == "weight")
             # FK target's own model carries the probed type.
             assert weight_col.type is DataType.DOUBLE
+
+
+class TestCountColumnRenameInJoinKeys:
+    """Ingestion's ``_count`` → ``count_col`` rename applies to join keys too."""
+
+    async def _ingest(self, ddl: list[str]):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "cnt.db")
+            with disposable_engine(f"sqlite:///{db_path}") as engine:
+                with engine.connect() as c:
+                    for stmt in ddl:
+                        c.execute(sa.text(stmt))
+                    c.commit()
+            ds = DatasourceConfig(name="cnt_ds", type="sqlite", database=db_path)
+            return {m.name: m for m in await _ingest(ds)}
+
+    async def test_source_fk_named_count(self) -> None:
+        models = await self._ingest([
+            "CREATE TABLE parents (id INTEGER PRIMARY KEY)",
+            "CREATE TABLE children (id INTEGER PRIMARY KEY, "
+            "_count INTEGER REFERENCES parents(id))",
+        ])
+        children = models["children"]
+        col = children.get_column("count_col")
+        assert col is not None
+        assert col.sql == "_count"
+        (join,) = children.joins
+        assert join.join_pairs == [["count_col", "id"]]
+
+    async def test_target_key_named_count(self) -> None:
+        models = await self._ingest([
+            "CREATE TABLE tallies (_count INTEGER PRIMARY KEY)",
+            "CREATE TABLE events (id INTEGER PRIMARY KEY, "
+            "tally INTEGER REFERENCES tallies(_count))",
+        ])
+        (join,) = models["events"].joins
+        assert join.join_pairs == [["tally", "count_col"]]

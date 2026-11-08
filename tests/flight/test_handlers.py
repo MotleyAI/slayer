@@ -6,7 +6,7 @@ Covers:
   return correctly-shaped pa.Tables built from a real ``FlightCatalog``.
 * Stubbed commands return well-typed empty pa.Tables.
 * The Any-wrapped command/ticket decoder round-trips against the
-  capture-corpus fixtures (DEV-1390 §1.1).
+  capture-corpus fixtures.
 * Prepared-statement creation produces a ``dataset_schema`` derived
   from the LIMIT-0 schema (with an in-memory mock engine).
 """
@@ -14,7 +14,10 @@ Covers:
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import json
+import threading
+import time
 from pathlib import Path
 
 import pyarrow as pa
@@ -22,6 +25,7 @@ import pyarrow.flight as fl
 import pytest
 from google.protobuf.any_pb2 import Any as PbAny
 
+from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
 from slayer.engine.query_engine import SlayerResponse
@@ -62,15 +66,22 @@ class _FakeStorage:
                 return m
         return None
 
+    async def load_models(self, *, data_source: str | None = None, exclude: str | None = None):  # NOSONAR(S7503) — must match async interface (called via await in production)
+        return [m for m in self._by_ds.get(data_source or "", []) if m.name != exclude], []
+
 
 class _FakeEngine:
     """Returns a fixed response — enough for LIMIT-0 schema derivation."""
 
-    def __init__(self, *, response: SlayerResponse) -> None:
+    def __init__(self, *, response: SlayerResponse, storage: _FakeStorage) -> None:
         self._response = response
+        self.storage = storage
 
     async def execute(self, *, query):  # noqa: ARG002  # NOSONAR(S7503) — must match async interface (called via await in production)
         return self._response
+
+    def run_sync(self, workflow):
+        return run_sync(workflow)
 
 
 def _orders_model() -> SlayerModel:
@@ -90,8 +101,8 @@ def _make_handlers(*, response: SlayerResponse | None = None) -> FlightHandlers:
     storage = _FakeStorage({"jaffle": [_orders_model()]})
     if response is None:
         response = SlayerResponse(data=[], columns=[])
-    engine = _FakeEngine(response=response)
-    return FlightHandlers(engine=engine, storage=storage)  # type: ignore[arg-type]
+    engine = _FakeEngine(response=response, storage=storage)
+    return FlightHandlers(engine=engine)  # type: ignore[arg-type]
 
 
 # --- catalog handlers --------------------------------------------------------
@@ -352,3 +363,54 @@ def test_do_get_for_dml_raises_translation_error_propagating() -> None:
     handlers = _make_handlers()
     with pytest.raises(TranslationError):
         handlers.do_get_for_sql("INSERT INTO orders VALUES (1)")
+
+
+class _OverlapEngine(_FakeEngine):
+    """Records the peak number of engine workflows running at once."""
+
+    def __init__(self, *, response: SlayerResponse) -> None:
+        super().__init__(response=response, storage=_FakeStorage({"jaffle": [_orders_model()]}))
+        self._guard = threading.Lock()
+        self.active = 0
+        self.peak = 0
+        self.calls = 0
+
+    def run_sync(self, workflow):
+        with self._guard:
+            self.calls += 1
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+        try:
+            time.sleep(0.05)
+            return run_sync(workflow)
+        finally:
+            with self._guard:
+                self.active -= 1
+
+
+def test_concurrent_queries_run_engine_workflows_one_at_a_time() -> None:
+    engine = _OverlapEngine(response=SlayerResponse(data=[], columns=["orders.revenue_sum"]))
+    handlers = FlightHandlers(engine=engine)  # type: ignore[arg-type]
+    sql = "SELECT revenue_sum FROM jaffle.orders"
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(lambda _: handlers.do_get_for_sql(sql), range(4)))
+    assert engine.peak == 1
+
+
+def test_catalog_loading_runs_as_an_engine_workflow() -> None:
+    engine = _OverlapEngine(response=SlayerResponse(data=[], columns=[]))
+    handlers = FlightHandlers(engine=engine)  # type: ignore[arg-type]
+    handlers._build_catalog()
+    assert engine.calls == 1
+
+
+def test_catalog_reads_the_engine_storage_view() -> None:
+    engine = _FakeEngine(response=SlayerResponse(data=[], columns=[]), storage=_FakeStorage({"hr": [_orders_model()]}))
+    handlers = FlightHandlers(engine=engine)  # type: ignore[arg-type]
+    assert [s.name for s in handlers._build_catalog().schemas] == ["hr"]
+
+
+def test_do_get_for_untokenizable_sql_raises_translation_error() -> None:
+    handlers = _make_handlers()
+    with pytest.raises(TranslationError):
+        handlers.do_get_for_sql("SELECT revenue_sum FROM jaffle.orders WHERE status = 'x'\";--'")

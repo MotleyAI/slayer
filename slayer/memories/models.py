@@ -1,12 +1,12 @@
-"""Persisted Pydantic models for the unified Memory entity (DEV-1357 v2).
+"""Persisted Pydantic models for the unified Memory entity.
 
 A ``Memory`` carries a free-form ``learning`` text, the canonical
 entities it is indexed under, and an optional ``query`` (a fully-
 materialised ``SlayerQuery``). Memories without a ``query`` are surfaced
-in ``inspect_model``'s Learnings section; query-bearing memories appear
+in a model ``inspect``'s Learnings section; query-bearing memories appear
 only via ``search`` (in the ``example_queries`` bucket).
 
-DEV-1428: ids are non-empty strings. The default ``id=""`` is the
+Ids are non-empty strings. The default ``id=""`` is the
 "unassigned" sentinel the storage layer recognises (it allocates a
 monotonic int-shaped id then). Auto-allocation only counts pure-digit,
 no-leading-zero ids when picking the next value, so ``"001"`` and
@@ -21,17 +21,17 @@ must use the ``memory:<id>`` prefix.
 from datetime import datetime, timezone
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ModelWrapValidatorHandler, field_validator, model_validator
 
 from slayer.core.query import SlayerQuery
-from slayer.storage.migrations import migrate as _migrate_schema
+from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema, migrating_document
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-# DEV-1658: ``\`` is forbidden too so a memory id is a safe single path
+# ``\`` is forbidden too so a memory id is a safe single path
 # segment on every platform (YAMLStorage writes ``memories/<id>.md``).
 _FORBIDDEN_ID_CHARS = (":", "/", "?", "#", "\\")
 
@@ -76,7 +76,7 @@ def is_valid_memory_id(value: str) -> bool:
     return True
 
 
-#: DEV-1549: hard cap on Memory.description length. The compact-mode
+#: Hard cap on Memory.description length. The compact-mode
 #: first-paragraph fallback of learning shares the same cap so the two
 #: code paths never disagree on payload size.
 MEMORY_DESCRIPTION_MAX_CHARS = 500
@@ -86,13 +86,20 @@ class Memory(BaseModel):
     """A single agent memory: a note plus its canonical entity tags,
     optionally bundled with a ``SlayerQuery`` example."""
 
-    version: int = 2
+    version: int = CURRENT_VERSIONS["Memory"]
     id: str = ""
     learning: str
     description: str | None = None
     entities: list[str] = Field(default_factory=list)
     query: SlayerQuery | None = None
     created_at: datetime = Field(default_factory=_utcnow)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _name_nested_migrations(cls, data: Any, handler: ModelWrapValidatorHandler["Memory"]) -> "Memory":
+        memory_id = data.get("id") if isinstance(data, dict) else None
+        with migrating_document(None if memory_id is None else str(memory_id)):
+            return handler(data)
 
     @model_validator(mode="before")
     @classmethod
@@ -123,9 +130,7 @@ class Memory(BaseModel):
     @field_validator("learning")
     @classmethod
     def _check_learning_non_whitespace(cls, value: str) -> str:
-        """DEV-1549 Codex#4: reject whitespace-only learning at the model
-        layer so direct construction can never persist an unusable
-        memory."""
+        """Reject whitespace-only learning so direct construction never persists an unusable memory."""
         if not value.strip():
             raise ValueError("learning must be a non-empty string.")
         return value
@@ -133,10 +138,7 @@ class Memory(BaseModel):
     @field_validator("description", mode="before")
     @classmethod
     def _normalise_description(cls, value: Any) -> Any:
-        """DEV-1549 Codex#1: empty / whitespace-only ``description`` is
-        not a deliberate empty preview — coerce to ``None`` so the
-        downstream compact-mode renderer falls back to the first
-        paragraph of ``learning``."""
+        """Coerce an empty / whitespace-only ``description`` to ``None``, so compact mode previews ``learning``."""
         if value is None:
             return None
         if isinstance(value, str) and not value.strip():
@@ -146,8 +148,7 @@ class Memory(BaseModel):
     @field_validator("description")
     @classmethod
     def _check_description_length(cls, value: str | None) -> str | None:
-        """DEV-1549: hard cap so a single memory hit can never balloon
-        the search payload."""
+        """Hard cap so a single memory hit never balloons the search payload."""
         if value is not None and len(value) > MEMORY_DESCRIPTION_MAX_CHARS:
             raise ValueError(
                 f"description must be <= {MEMORY_DESCRIPTION_MAX_CHARS} "

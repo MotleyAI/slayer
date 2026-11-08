@@ -1,6 +1,7 @@
-version: 7
+version: 18
 name: supplies
 sql_table: supplies
+source_kind: table
 query_variables: {}
 data_source: jaffle_shop
 columns:
@@ -8,19 +9,23 @@ columns:
   sql: id
   type: TEXT
   primary_key: true
+  unique: false
   label: Supply ID
   hidden: false
 - name: name
   sql: name
   type: TEXT
   primary_key: false
+  unique: false
   description: Supply name.
   label: Supply
   hidden: false
 - name: cost
   sql: cost
   type: DOUBLE
+  db_type: DECIMAL(12,2)
   primary_key: false
+  unique: false
   description: Cost per unit, in dollars.
   label: Unit Cost
   hidden: false
@@ -32,6 +37,7 @@ columns:
   sql: perishable
   type: TEXT
   primary_key: false
+  unique: false
   description: Whether the supply is perishable.
   label: Perishable
   hidden: false
@@ -39,16 +45,17 @@ columns:
   sql: sku
   type: TEXT
   primary_key: true
+  unique: false
   description: Product this supply is used for.
   label: Product
   hidden: false
 measures:
-- formula: cost:sum
+- formula: sum(cost)
   name: total_supply_cost
   label: Total Supply Cost
   description: Total supply cost, in dollars.
   type: DOUBLE
-- formula: cost:avg
+- formula: avg(cost)
   name: avg_unit_cost
   label: Avg Unit Cost
   description: Average supply unit cost, in dollars.
@@ -60,7 +67,9 @@ joins:
   - - sku
     - sku
   join_type: left
+  cardinality: many_to_one
 filters: []
 description: Supplies (ingredients and packaging) used per product, with unit costs
   in dollars.
 hidden: false
+access_tags: []
