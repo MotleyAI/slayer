@@ -5,8 +5,8 @@ Free of ``ingestion`` so ``query_engine`` (which ``ingestion`` imports) can use 
 
 from __future__ import annotations
 
-from slayer.engine.schema_scope import SchemaRef
-from slayer.sql.client import SqlClient
+from slayer.live_schema.schema_scope import SchemaRef
+from slayer.database.client import SqlClient
 from slayer.sql.dialects import ReflectedColumn, SqlDialect, TableKeys, dialect_for_ds_type
 from slayer.sql.dialects.reflection import TableLocation
 

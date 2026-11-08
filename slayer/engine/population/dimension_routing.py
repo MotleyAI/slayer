@@ -17,7 +17,7 @@ from slayer.core.join_search import HopFilter, blocking_pairs, count_routes, rou
 from slayer.core.join_walker import reverse_token
 from slayer.core.models import SlayerModel
 from slayer.core.time_spine import is_spine
-from slayer.engine.join_safety import spine_route_error, spine_routes
+from slayer.engine.cardinality.join_safety import spine_route_error, spine_routes
 
 __all__ = [
     "resolve_route",

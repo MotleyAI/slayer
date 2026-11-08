@@ -28,17 +28,18 @@ from slayer.core.models import (
 )
 from slayer.core.join_edges import edge_reference
 from slayer.core.query import extract_variable_refs
-from slayer.engine import query_engine, schema_drift
-from slayer.engine.broken_dependents import broken_dependents, report_broken
-from slayer.engine.cardinality import infer_structural_cardinality
-from slayer.engine.fk_edges import FkEdgePlan, plan_fk_edges
-from slayer.engine.internal_tables import internal_table_rule
-from slayer.engine.introspect_utils import dialect_of, reflect_columns, reflect_table_keys, table_location
-from slayer.sql import sqlite_introspect
-from slayer.sql.client import ObjectNotFound, SqlClient, render_type_probe, sql_model_trial_query
+from slayer.engine import query_engine
+from slayer.live_schema import schema_drift
+from slayer.live_schema.broken_dependents import broken_dependents, report_broken
+from slayer.engine.cardinality.inference import infer_structural_cardinality
+from slayer.live_schema.fk_edges import FkEdgePlan, plan_fk_edges
+from slayer.live_schema.internal_tables import internal_table_rule
+from slayer.live_schema.introspect_utils import dialect_of, reflect_columns, reflect_table_keys, table_location
+from slayer.database import sqlite_introspect
+from slayer.database.client import ObjectNotFound, SqlClient, render_type_probe, sql_model_trial_query
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.dialects.reflection import ReflectedColumn, ResultColumnType, TableKeys
-from slayer.engine.schema_scope import (
+from slayer.live_schema.schema_scope import (
     IngestScopeArgs,
     SchemaRef,
     UNREACHABLE,

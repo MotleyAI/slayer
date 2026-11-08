@@ -20,7 +20,7 @@ from decimal import Decimal
 
 from slayer.core.keys import AggregateKey, ArithmeticKey, ColumnKey, Grain, LiteralKey
 from slayer.core.models import SlayerModel
-from slayer.engine.join_safety import grain_determines
+from slayer.engine.cardinality.join_safety import grain_determines
 
 from tests._dev1840_fixtures import dev1840_models
 from tests._dev1847_fixtures import dev1847_models

@@ -16,7 +16,7 @@ from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.engine_factory import client_cache_key
+from slayer.database.engine_factory import client_cache_key
 from slayer.sql.dialects import (
     BigqueryDialect,
     PostgresDialect,
@@ -25,7 +25,7 @@ from slayer.sql.dialects import (
     dialect_for_ds_type,
     get_dialect,
 )
-from slayer.sql.client import DelegatingSqlClient, ExecutionResult, ResultColumnType, SlayerSQLClient
+from slayer.database.client import DelegatingSqlClient, ExecutionResult, ResultColumnType, SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests import _emitted_reparse_law as emitted_reparse_law

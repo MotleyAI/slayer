@@ -29,10 +29,10 @@ import pytest
 import sqlalchemy as sa
 
 from slayer.core.models import DatasourceConfig
-from slayer.engine import schema_drift
+from slayer.live_schema import schema_drift
 from slayer.engine.query_engine import _sql_client_cache_key
-from slayer.sql import client as sql_client
-from slayer.sql import engine_factory
+from slayer.database import client as sql_client
+from slayer.database import engine_factory
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.drivers import load_driver
 from tests._engine_helpers import disposable_engine

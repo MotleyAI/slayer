@@ -11,9 +11,9 @@ from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine import ingestion
+from slayer.live_schema import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 duckdb = pytest.importorskip("duckdb")

@@ -23,11 +23,11 @@ import sqlalchemy as sa
 import sqlalchemy.ext.asyncio as sa_asyncio
 from pydantic import BaseModel, ConfigDict, Field
 
-import slayer.sql.client as client_module
+import slayer.database.client as client_module
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 

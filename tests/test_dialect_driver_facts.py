@@ -10,7 +10,8 @@ import pytest
 from sqlalchemy.engine.url import make_url
 
 from slayer.core.models import DatasourceConfig
-from slayer.sql import client, dialects, engine_factory
+from slayer.database import client, engine_factory
+from slayer.sql import dialects
 from slayer.sql.dialects import PostgresDialect, dialect_for_ds_type
 from slayer.sql.dialects.base import DriverFacts, SqlDialect
 

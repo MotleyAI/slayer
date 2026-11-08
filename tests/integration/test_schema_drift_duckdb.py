@@ -17,7 +17,7 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import EditModelDelete, WholeModelDelete
+from slayer.live_schema.schema_drift import EditModelDelete, WholeModelDelete
 from slayer.storage.yaml_storage import YAMLStorage
 
 duckdb = pytest.importorskip("duckdb")

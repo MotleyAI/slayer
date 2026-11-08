@@ -22,8 +22,8 @@ from sqlalchemy.engine.url import make_url
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.sql import client
-from slayer.sql.client import ResultColumnType
+from slayer.database import client
+from slayer.database.client import ResultColumnType
 from slayer.sql.dialects import SnowflakeDialect
 
 

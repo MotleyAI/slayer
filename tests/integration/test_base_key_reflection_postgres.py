@@ -10,8 +10,8 @@ from pytest_postgresql import factories
 
 from slayer.core.enums import JoinCardinality
 from slayer.core.models import DatasourceConfig
-from slayer.engine import ingestion
-from slayer.sql.client import SlayerSQLClient
+from slayer.live_schema import ingestion
+from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects import PostgresDialect, ReflectedForeignKey, TableKeys
 from tests._engine_helpers import disposable_engine
 

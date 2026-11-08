@@ -18,7 +18,7 @@ from slayer.async_utils import run_sync
 from slayer.engine.cache import CacheConfig
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import naming, scope_check
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from tests import _emitted_reparse_law as law
 from tests import _statement_render_law as render_law
 from tests._dev2189_fixtures import POLICIES, SHAPES, ClientSpy, file_engine

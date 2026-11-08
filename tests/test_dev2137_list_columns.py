@@ -18,18 +18,18 @@ from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
 from slayer.core.models import Aggregation, Column, DatasourceConfig, SlayerModel
-from slayer.engine.ingestion import (
+from slayer.live_schema.ingestion import (
     IntrospectedColumn, _inferred_elements, _retyped_list, ingest_datasource,
     ingest_datasource_idempotent,
 )
-from slayer.engine.schema_scope import SchemaRef
+from slayer.live_schema.schema_scope import SchemaRef
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.inspect.collection_render import render_models_summary
 from slayer.inspect.model_render import render_model_inspection
 from slayer.search.render import render_column_text
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.sql.dialects import get_dialect
-from slayer.sql.client import ExecutionResult
+from slayer.database.client import ExecutionResult
 from slayer.sql.dialects.reflection import column_from_sa_type, column_from_type_string
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2120_fixtures import contractors_engine, contractors_model, emit_contractors

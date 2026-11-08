@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-import slayer.engine.ingestion as ingestion_mod
+import slayer.live_schema.ingestion as ingestion_mod
 from slayer.core.models import ModelJoin
 
 from tests._dev1853_fixtures import rows_set

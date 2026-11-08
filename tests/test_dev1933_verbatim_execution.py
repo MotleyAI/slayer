@@ -20,9 +20,9 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import client as sql_client
-from slayer.sql import engine_factory
-from slayer.sql.client import ResultColumnType, SlayerSQLClient, TypeProbe, render_type_probe
+from slayer.database import client as sql_client
+from slayer.database import engine_factory
+from slayer.database.client import ResultColumnType, SlayerSQLClient, TypeProbe, render_type_probe
 from slayer.sql.dialects import SqliteDialect
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction

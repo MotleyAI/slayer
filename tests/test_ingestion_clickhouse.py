@@ -13,8 +13,8 @@ import sqlalchemy as sa
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
-from slayer.engine.ingestion import _introspect_table_columns
-from slayer.sql.client import DelegatingSqlClient, SlayerSQLClient
+from slayer.live_schema.ingestion import _introspect_table_columns
+from slayer.database.client import DelegatingSqlClient, SlayerSQLClient
 from slayer.sql.dialects import ReflectedColumn, SqlDialect, TableKeys
 from slayer.sql.dialects import reflection
 from slayer.sql.dialects.reflection import (

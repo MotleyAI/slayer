@@ -11,8 +11,8 @@ from sqlalchemy import event
 
 from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects.reflection import TableLocation
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._gateway_harness import COUNT_ORDERS_MEM, mem_count_model

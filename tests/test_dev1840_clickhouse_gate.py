@@ -28,7 +28,7 @@ from slayer.core.policy import (
 from slayer.engine.plan import plan_query, plan_stages
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.planned import plan_has_semi_join_filters
-from slayer.sql.client import ExecutionResult, SlayerSQLClient
+from slayer.database.client import ExecutionResult, SlayerSQLClient
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.clickhouse import _attach_ch_correlated_setting
 from slayer.sql.generator import generate_planned_stages

@@ -30,13 +30,13 @@ from slayer.core.query import (
     SlayerQuery,
     TimeDimension,
 )
-from slayer.engine import ingestion
-from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.live_schema import ingestion
+from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.profiling import refresh_all_table_backed_sampled
 from slayer.search.service import handle_edit_refresh
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.search.service import SearchService
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 

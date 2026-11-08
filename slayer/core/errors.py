@@ -11,7 +11,7 @@ from slayer.core.enums import TimeGranularity
 
 if TYPE_CHECKING:
     from slayer.core.join_walker import OrientedJoin  # noqa: F401
-    from slayer.engine.schema_drift import ToDeleteEntry  # noqa: F401
+    from slayer.live_schema.schema_drift import ToDeleteEntry  # noqa: F401
 
 
 class SlayerError(ValueError):

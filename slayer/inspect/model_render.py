@@ -21,11 +21,11 @@ from slayer.core.query import (
     extract_model_variables,
     extract_placeholder_names,
 )
-from slayer.engine.ingestion import _friendly_db_error
+from slayer.live_schema.ingestion import _friendly_db_error
 from slayer.engine.profiling import ensure_samples_fresh
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.search.render import compact_description_from_learning
-from slayer.sql.client import ResultColumnType
+from slayer.database.client import ResultColumnType
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
 

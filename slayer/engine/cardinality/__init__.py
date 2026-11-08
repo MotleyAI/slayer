@@ -1,0 +1,1 @@
+"""Join cardinality and association."""

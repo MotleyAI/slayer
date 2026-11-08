@@ -64,7 +64,7 @@ from slayer.core.scope import (
     root_spelling,
     stale_spelling_position,
 )
-from slayer.engine import dimension_routing
+from slayer.engine.population import dimension_routing
 from slayer.engine.binding import bind_expr, bind_filter, bind_time_dimension, spelled_aggregate_key
 from slayer.engine.elaborate_env import (
     check_computed_dim_name_collision,
@@ -103,8 +103,8 @@ from slayer.engine.elaborate_env import (
     coerce_zoned_comparisons,
     resolve_time_points,
 )
-from slayer.engine.home import row_expression_crossing
-from slayer.engine.join_safety import assert_partition_key_attributable
+from slayer.engine.population.home import row_expression_crossing
+from slayer.engine.cardinality.join_safety import assert_partition_key_attributable
 from slayer.engine.key_metadata import (
     bundle_dialect,
     key_element_type,

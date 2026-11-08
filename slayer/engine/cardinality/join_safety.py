@@ -54,10 +54,10 @@ from slayer.engine.reference_closure import (
     key_closure,
 )
 from slayer.engine.elaborate_env import check_partition_key_attributable
-from slayer.engine.unrelated import crosses_product_hop
+from slayer.engine.cardinality.unrelated import crosses_product_hop
 from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.cardinality import (
+from slayer.engine.cardinality.inference import (
     CardinalityVerdict,
     JoinCardinalityReport,
 )

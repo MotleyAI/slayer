@@ -11,8 +11,8 @@ from sqlglot import exp
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
-from slayer.sql import client as sql_client
-from slayer.sql.client import (
+from slayer.database import client as sql_client
+from slayer.database.client import (
     _execute_with_retry_async,
     _execute_with_retry_sync,
     _execute_with_retry_threaded,

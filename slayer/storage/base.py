@@ -61,10 +61,10 @@ from slayer.storage.legacy_alias_rewrite import (
     extract_dunder_chains,
     mode_a_surface_texts,
 )
-from slayer.sql.client import SqlClient
+from slayer.database.client import SqlClient
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.sql_template import check_aggregation_definition
-from slayer.storage.type_refinement import (
+from slayer.live_schema.type_refinement import (
     has_refineable_columns,
     has_sqlite_widenable_columns,
     refine_dict_with_live_schema,

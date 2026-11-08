@@ -29,8 +29,8 @@ from slayer.engine.query_engine import SlayerQueryEngine, run_over_caller_engine
 from slayer.ingest_report import ConversionResult, ConversionWarning
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.models import OSIDocument
-from slayer.sql.client import SqlClient
-from slayer.sql import engine_factory
+from slayer.database.client import SqlClient
+from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import build_exec_engine, disposable_engine
 

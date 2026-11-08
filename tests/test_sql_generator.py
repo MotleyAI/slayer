@@ -15,9 +15,9 @@ from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
-from slayer.sql.client import ResultColumnType
+from slayer.database.client import ResultColumnType
 from slayer.sql.dialects import get_dialect
-from slayer.sql.engine_factory import client_cache_key
+from slayer.database.engine_factory import client_cache_key
 from slayer.sql.generator import (
     SQLGenerator,
     _wrap_cast_for_type,

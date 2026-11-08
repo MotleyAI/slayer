@@ -9,7 +9,7 @@ from typing import get_args
 import pytest
 
 from slayer.core.models import DatasourceConfig
-from slayer.sql.client import DatabaseUnavailable, SqlClientError
+from slayer.database.client import DatabaseUnavailable, SqlClientError
 from slayer.sql.dialects import SQLGLOT_NAMES
 from slayer.usage_reporting import features, recorder
 from slayer.usage_reporting.payload import CLIENTS, DIALECTS, EXTRAS, ErrorToken

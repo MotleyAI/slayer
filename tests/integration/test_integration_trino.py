@@ -26,11 +26,11 @@ from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine import ingestion
-from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.live_schema import ingestion
+from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient, get_column_types_sync, render_type_probe
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient, get_column_types_sync, render_type_probe
 from slayer.sql.dialects import TrinoDialect, dialect_for_ds_type
 from slayer.sql.dialects import trino as trino_dialect_module
 from slayer.storage.yaml_storage import YAMLStorage

@@ -34,12 +34,12 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery, TimeDimension
-from slayer.engine import ingestion
-from slayer.engine.ingestion import ingest_datasource, ingest_datasource_idempotent
+from slayer.live_schema import ingestion
+from slayer.live_schema.ingestion import ingest_datasource, ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine, run_over_caller_engine
 from slayer.importers.column_types import LiveDatasource, LiveSource
-from slayer.sql import client, engine_factory
-from slayer.sql.client import ResultColumnType
+from slayer.database import client, engine_factory
+from slayer.database.client import ResultColumnType
 from slayer.sql.dialects import SnowflakeDialect
 from slayer.sql.dialects.reflection import TableLocation
 from slayer.storage.yaml_storage import YAMLStorage

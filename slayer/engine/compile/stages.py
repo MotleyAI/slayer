@@ -53,7 +53,7 @@ from slayer.core.join_walker import (
     reverse_token,
     unique_key_sets,
 )
-from slayer.engine.join_safety import (
+from slayer.engine.cardinality.join_safety import (
     UNREACHABLE_NO_PATH,
     attributable_from_root,
     broadcast_reason,
@@ -108,7 +108,7 @@ from slayer.ir.bound import BoundExpr, BoundFilter, DeclaredMeasure, OrderSpec, 
 from slayer.engine.compile.discovery import RootDisposition, discover_roots, row_attach_inputs
 from slayer.ir.elaborated import ConjunctTyping, ElaboratedProducer, ElaboratedQuery, ElaboratedStage
 from slayer.ir.terms import Aggregate
-from slayer.engine.filter_reachability import (
+from slayer.engine.population.filter_reachability import (
     key_has_host_local_ref,
 )
 from slayer.ir.planned import (
@@ -147,7 +147,7 @@ from slayer.engine.compile.spine import (
     spine_column,
 )
 from slayer.engine.compile.shift import carried_placeholders
-from slayer.engine.unrelated import crosses_product_hop
+from slayer.engine.cardinality.unrelated import crosses_product_hop
 from slayer.engine.compile.staging import stage_slots
 from slayer.engine.key_metadata import (
     dimension_key_metadata,

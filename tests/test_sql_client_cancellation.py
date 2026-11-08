@@ -17,9 +17,9 @@ import sqlalchemy as sa
 import sqlalchemy.exc
 
 from slayer.core.models import DatasourceConfig
-from slayer.sql import client as client_module
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.database import client as client_module
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import open_connection, transaction
 
 # Seconds a blocked call waits for its release before giving up (the stall a broken fix shows).

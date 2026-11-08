@@ -23,12 +23,12 @@ from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject, DbtRegularModel
-from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.models import OSIDocument
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage

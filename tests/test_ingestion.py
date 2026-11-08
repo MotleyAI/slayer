@@ -35,13 +35,13 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormatType
 from slayer.core.models import DatasourceConfig
-from slayer.engine import ingestion
-from slayer.engine.schema_drift import _live_schema_for_datasource
-from slayer.engine.ingestion import (
+from slayer.live_schema import ingestion
+from slayer.live_schema.schema_drift import _live_schema_for_datasource
+from slayer.live_schema.ingestion import (
     IntrospectedColumn,
     _sqlite_probe_integer_columns,
 )
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects import (
     BigqueryDialect,
     ClickhouseDialect,

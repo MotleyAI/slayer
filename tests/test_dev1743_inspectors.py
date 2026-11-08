@@ -19,7 +19,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column
 
 from slayer.engine.column_dependency import _column_dependencies
-from slayer.engine.schema_drift import (
+from slayer.live_schema.schema_drift import (
     EditModelDelete,
     RemoveSpec,
     compute_datasource_drops,

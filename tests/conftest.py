@@ -18,7 +18,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.demo import jaffle_shop
 from slayer.embeddings import client as embedding_client
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests import _emitted_reparse_law as emitted_reparse_law

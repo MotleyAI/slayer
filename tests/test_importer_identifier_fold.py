@@ -24,13 +24,13 @@ from slayer.cube.models import CubeProject
 from slayer.cube.report import CubeConversionResult
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject
-from slayer.engine.ingestion import IntrospectedColumn
+from slayer.live_schema.ingestion import IntrospectedColumn
 from slayer.engine.query_engine import run_over_caller_engine
 from slayer.importers import column_types
 from slayer.importers.column_types import LiveDatasource
 from slayer.importers.physical import UndecidableIdentifierCaseError
 from slayer.osi import converter as osi_converter
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.sql.dialects import get_dialect
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2171_fixtures import (

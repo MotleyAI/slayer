@@ -13,23 +13,23 @@ from sqlalchemy.exc import OperationalError
 from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.engine import ingestion
+from slayer.live_schema import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import (
+from slayer.live_schema.schema_drift import (
     DriftSnapshot,
     EditModelDelete,
     validate_datasource,
 )
 from slayer.engine.statement_reads import StatementReads
-from slayer.engine.schema_scope import (
+from slayer.live_schema.schema_scope import (
     default_schema_ref,
     resolve_ingest_scope,
 )
-from slayer.sql.client import DelegatingSqlClient, ObjectListing, ObjectNotFound, SlayerSQLClient
+from slayer.database.client import DelegatingSqlClient, ObjectListing, ObjectNotFound, SlayerSQLClient
 from slayer.sql.dialects import dialect_for_ds_type
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.sql.dialects.reflection import ReflectedColumn, ReflectedForeignKey, TableKeys, TableLocation
-from slayer.sql.engine_factory import client_cache_key
+from slayer.database.engine_factory import client_cache_key
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import disposable_engine
 

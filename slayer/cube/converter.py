@@ -63,7 +63,7 @@ from slayer.importers.measures import measure_problems, unreachable_columns
 from slayer.importers.physical import (
     PhysicalIndex, UndecidableIdentifierCaseError, physical_identifier, root_physical_columns, unreadable_columns,
 )
-from slayer.sql.client import SqlClient
+from slayer.database.client import SqlClient
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 
 logger = logging.getLogger(__name__)

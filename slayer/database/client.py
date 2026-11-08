@@ -31,7 +31,7 @@ from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.dialects.base import ServerProfile, describe_type_name_code
 from slayer.sql.dialects.drivers import load_driver, plugin_errors

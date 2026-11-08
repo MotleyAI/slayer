@@ -16,22 +16,22 @@ from sqlglot import exp
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.ingestion import (
+from slayer.live_schema.ingestion import (
     IntrospectedColumn, _columns_to_model, _sql_table_identity, ingest_datasource_idempotent, list_ingestable_objects,
 )
-from slayer.engine.introspect_utils import table_location
-from slayer.engine import schema_drift
-from slayer.engine.schema_drift import DriftSnapshot, LiveTable, _list_live_objects
-from slayer.engine.schema_scope import SchemaRef, is_quoted_name, table_schema_ref
+from slayer.live_schema.introspect_utils import table_location
+from slayer.live_schema import schema_drift
+from slayer.live_schema.schema_drift import DriftSnapshot, LiveTable, _list_live_objects
+from slayer.live_schema.schema_scope import SchemaRef, is_quoted_name, table_schema_ref
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.importers.physical import PhysicalIndex
-from slayer.sql import engine_factory
-from slayer.sql.client import DelegatingSqlClient, ExecutionResult, ObjectListing, SlayerSQLClient
+from slayer.database import engine_factory
+from slayer.database.client import DelegatingSqlClient, ExecutionResult, ObjectListing, SlayerSQLClient
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.reflection import ReflectedColumn, TableLocation
 from slayer.sql.naming import denoted_name, render_table_name
 from slayer.sql.render.parse import parse_table
-from slayer.storage.type_refinement import refine_dict_with_live_schema
+from slayer.live_schema.type_refinement import refine_dict_with_live_schema
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import _engine_generate, disposable_engine
 

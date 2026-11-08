@@ -37,8 +37,8 @@ from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
 from slayer.core.refs import IDENTIFIER_RE
 from slayer.core.warnings import BrokenDependentWarning
 from slayer.sql.sql_predicate import parse_sql_predicate
-from slayer.engine.introspect_utils import reflect_columns
-from slayer.engine.schema_scope import (
+from slayer.live_schema.introspect_utils import reflect_columns
+from slayer.live_schema.schema_scope import (
     UNREACHABLE,
     SchemaEnumerationError,
     SchemaRef,
@@ -51,13 +51,14 @@ from slayer.engine.schema_scope import (
     sql_table_parts,
     table_schema_ref,
 )
-from slayer.engine import ingestion, query_engine
+from slayer.live_schema import ingestion
+from slayer.engine import query_engine
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError, StoredDocumentLoadError
 from slayer.core.join_edges import JoinEdgeRef, edge_reference, is_addressable
 from slayer.core.join_search import reachable
 from slayer.core.join_walker import OrientedJoin, resolve_hop, walk
 from slayer.sql.column_expansion import resolve_ref_target
-from slayer.engine.dimension_routing import short_form_route_or_none
+from slayer.engine.population.dimension_routing import short_form_route_or_none
 from slayer.core.syntax import (
     AggCall,
     DottedRef,
@@ -67,11 +68,11 @@ from slayer.core.syntax import (
     parse_expr,
     walk_parsed_refs,
 )
-from slayer.sql import sqlite_introspect
-from slayer.sql.client import SqlClient, adapt_client, render_type_probe
+from slayer.database import sqlite_introspect
+from slayer.database.client import SqlClient, adapt_client, render_type_probe
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.dialects.reflection import ResultColumnType
-from slayer.sql.engine_factory import ClientCacheKey, client_cache_key
+from slayer.database.engine_factory import ClientCacheKey, client_cache_key
 from slayer.sql.naming import render_table_name
 from slayer.ir.source_bundle import added_joins
 

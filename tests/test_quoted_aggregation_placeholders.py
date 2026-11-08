@@ -17,7 +17,7 @@ from slayer.core.models import (
     Aggregation, AggregationParam, Column, DatasourceConfig, ModelMeasure, SlayerModel,
 )
 from slayer.core.query import SlayerQuery
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.sql.sql_template import (
     SqlTemplateError, aggregation_reads, check_aggregation_definition, placeholder_names, sql_template,
 )

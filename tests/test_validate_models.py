@@ -38,7 +38,7 @@ from slayer.core.models import (
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import (
+from slayer.live_schema.schema_drift import (
     EditModelDelete,
     LiveTable,
     RemoveSpec,

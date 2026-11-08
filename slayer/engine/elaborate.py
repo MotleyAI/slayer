@@ -25,10 +25,10 @@ from slayer.engine.elaborate_env import (
     position_typing_context,
     type_and_split_filters,
 )
-from slayer.engine.home import resolve_aggregate_homes
-from slayer.engine.join_safety import crossing_local_root_predicate
+from slayer.engine.population.home import resolve_aggregate_homes
+from slayer.engine.cardinality.join_safety import crossing_local_root_predicate
 from slayer.engine.model_reads import models_read_closure
-from slayer.engine.unrelated import ProductSides
+from slayer.engine.cardinality.unrelated import ProductSides
 from slayer.ir.elaborated import ConjunctTyping, ElaboratedProducer, ElaboratedQuery, ElaboratedStage
 from slayer.ir.planned import MaskTyping
 from slayer.ir.prebound import (

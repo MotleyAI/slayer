@@ -22,7 +22,7 @@ from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType
-from slayer.sql.client import AuthenticationRefused, DatabaseUnavailable, SqlClient
+from slayer.database.client import AuthenticationRefused, DatabaseUnavailable, SqlClient
 from slayer.sql.dialects import sqlite as _sqlite
 from slayer.sql.dialects.sqlite import StorageCensus, census_counts
 

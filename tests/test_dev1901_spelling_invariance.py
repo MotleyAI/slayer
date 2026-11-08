@@ -17,7 +17,7 @@ from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, SqlFragmentK
 from slayer.core.models import ModelMeasure
 from slayer.core.query import SlayerQuery
 from slayer.engine.compile.stages import _first_unattributable_arg_leaf
-from slayer.engine.home import home_path_for
+from slayer.engine.population.home import home_path_for
 from slayer.engine.reference_closure import aggregate_input_closure
 from slayer.sql.generator import SQLGenerator
 from tests._dev1901_fixtures import bundle1901, dev1901_models

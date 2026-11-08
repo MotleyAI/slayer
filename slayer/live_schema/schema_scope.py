@@ -27,7 +27,7 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
 from slayer.core.models import DatasourceConfig
-from slayer.sql.client import AuthenticationRefused, DatabaseUnavailable, SqlClient
+from slayer.database.client import AuthenticationRefused, DatabaseUnavailable, SqlClient
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, dialect_for_sa_backend
 from slayer.sql.dialects.reflection import TableLocation
 from slayer.sql.naming import denoted_name, render_table_name

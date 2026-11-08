@@ -13,13 +13,13 @@ import pytest
 import sqlalchemy as sa
 
 from slayer.core.models import DatasourceConfig, SlayerModel, sanitize_model_name
-from slayer.sql import engine_factory
-from slayer.engine import ingestion as ingestion_module
-from slayer.engine.ingestion import (
+from slayer.database import engine_factory
+from slayer.live_schema import ingestion as ingestion_module
+from slayer.live_schema.ingestion import (
     IngestionScanReport,
     _introspect_table_columns,
 )
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
 from sqlalchemy.pool import QueuePool
 

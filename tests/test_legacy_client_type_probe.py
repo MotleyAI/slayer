@@ -13,11 +13,11 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import validate_datasource
+from slayer.live_schema.schema_drift import validate_datasource
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.models import OSIDocument
-from slayer.sql import engine_factory
-from slayer.sql.client import (
+from slayer.database import engine_factory
+from slayer.database.client import (
     DelegatingSqlClient,
     ExecutionResult,
     ObjectListing,

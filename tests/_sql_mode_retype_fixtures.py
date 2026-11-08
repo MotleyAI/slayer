@@ -14,7 +14,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 
 MODEL = "stale_sql"

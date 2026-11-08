@@ -18,7 +18,7 @@ from slayer.core.models import DatasourceConfig
 from slayer.core.query import SlayerQuery
 from slayer.engine.cache import CacheConfig, NormalizedTable, QueryCache
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects import SqlDialect
 from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.dialects.clickhouse import ClickhouseDialect

@@ -26,7 +26,7 @@ from slayer.core.keys import (
 )
 from slayer.core.models import SlayerModel
 from slayer.core.refs import key_display
-from slayer.engine.join_safety import attributable_from_root, key_host_path, safe_reachable
+from slayer.engine.cardinality.join_safety import attributable_from_root, key_host_path, safe_reachable
 from slayer.engine.reference_closure import key_closure
 from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle

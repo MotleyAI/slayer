@@ -42,7 +42,7 @@ from slayer.core.errors import (
     SlayerError,
     StoredDocumentLoadError,
 )
-from slayer.engine.cardinality import (
+from slayer.engine.cardinality.inference import (
     CardinalityVerdict,
     JoinCardinalityFinding,
     JoinCardinalityReport,
@@ -76,7 +76,7 @@ from slayer.core.query import (
 )
 from slayer.core.join_search import blocking_pairs, shortest_routes, unreachable_target
 from slayer.engine.column_dependency import check_definition_ambiguity, check_definition_reach, check_model_filters
-from slayer.engine.population import (
+from slayer.engine.population.inference import (
     ambiguity_resolved_path,
     determined_path,
     infer_population,
@@ -134,9 +134,9 @@ from slayer.ir.planned import (
     plans_read_clock,
     planned_keys,
 )
-from slayer.engine import ingestion, schema_drift
+from slayer.live_schema import ingestion, schema_drift
 from slayer.engine.model_reads import narrowing_models
-from slayer.engine.schema_scope import IngestScopeArgs
+from slayer.live_schema.schema_scope import IngestScopeArgs
 from slayer.engine.response_meta import (
     FieldMetadata as FieldMetadata,  # re-export for slayer_client / tests
     ResponseAttributes,
@@ -158,7 +158,7 @@ from slayer.memories.resolver import (
     _all_models_in_datasource,
     resolve_entity,
 )
-from slayer.sql.client import (
+from slayer.database.client import (
     ExecutionResult,
     ResultColumnType,
     SlayerSQLClient,
@@ -179,7 +179,7 @@ from slayer.sql.naming import key_identifier
 from slayer.sql.render.parse import parse_table
 from slayer.sql.sql_template import SqlTemplateError, sql_template
 from slayer.sql.dialects.reflection import TableLocation
-from slayer.sql.engine_factory import ClientCacheKey, _sql_client_cache_key, client_cache_key
+from slayer.database.engine_factory import ClientCacheKey, _sql_client_cache_key, client_cache_key
 from slayer.sql.generator import (
     PlannedStatement,
     _finish_statement,

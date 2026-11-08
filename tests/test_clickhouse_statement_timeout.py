@@ -10,7 +10,7 @@ import pytest
 import sqlglot
 
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
-from slayer.sql.client import SlayerSQLClient, TypeProbe, _TYPE_PROBE_TIMEOUT_SECONDS, render_type_probe
+from slayer.database.client import SlayerSQLClient, TypeProbe, _TYPE_PROBE_TIMEOUT_SECONDS, render_type_probe
 from slayer.sql.dialects import ClickhouseDialect
 from tests._ch_fake_http import (
     CH_TIMEOUT_KEY,

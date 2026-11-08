@@ -25,7 +25,7 @@ from __future__ import annotations
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery
-from slayer.engine.schema_drift import (
+from slayer.live_schema.schema_drift import (
     _attribute_ref_to_base,
     _build_stage_graph,
     _filter_refs_dsl,

@@ -12,7 +12,7 @@ from slayer.core.errors import SlayerError
 from slayer.core.models import DatasourceConfig
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.client import ExecutionResult, SlayerSQLClient
+from slayer.database.client import ExecutionResult, SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._ch_fake_http import CORRELATED_SETTING, FakeClickHouse, fake_ch_engine, route_engine
 from tests._dev2210_fixtures import table_models

@@ -19,11 +19,11 @@ from slayer.client.slayer_client import SlayerClient
 from slayer.core.errors import SlayerError
 from slayer.core.models import DatasourceConfig, ModelMeasure
 from slayer.engine.cache import CacheConfig
-from slayer.engine.cardinality import CardinalityVerdict
+from slayer.engine.cardinality.inference import CardinalityVerdict
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from slayer.pg_facade.connection import PgConnection
-from slayer.sql.client import ExecutionResult, ResultColumnType, SlayerSQLClient
+from slayer.database.client import ExecutionResult, ResultColumnType, SlayerSQLClient
 from slayer.sql.dialects.base import ServerProfile
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1840_fixtures import dev1840_models, q

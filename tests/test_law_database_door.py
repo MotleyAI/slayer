@@ -16,10 +16,10 @@ import duckdb
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.profiling import ensure_samples_fresh
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.client import ExecutionResult, ObjectListing
+from slayer.database.client import ExecutionResult, ObjectListing
 from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.dialects.reflection import ReflectedColumn, TableKeys, TableLocation
 from slayer.storage.yaml_storage import YAMLStorage

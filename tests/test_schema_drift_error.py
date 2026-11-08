@@ -29,13 +29,13 @@ from slayer.core.models import (
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import (
+from slayer.live_schema.schema_drift import (
     IntrospectionUnavailable,
     WholeModelDelete,
     _collect_sql_table_diffs,
     _live_schema_for_datasource,
 )
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import disposable_engine

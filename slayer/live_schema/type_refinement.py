@@ -17,10 +17,10 @@ import logging
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig, is_base_column_sql, physical_column_sql
-from slayer.engine.introspect_utils import table_location
-from slayer.engine.schema_scope import UNREACHABLE, schema_ref_from_token, sql_table_location, table_schema_ref
-from slayer.sql import sqlite_introspect
-from slayer.sql.client import ObjectNotFound, SqlClient
+from slayer.live_schema.introspect_utils import table_location
+from slayer.live_schema.schema_scope import UNREACHABLE, schema_ref_from_token, sql_table_location, table_schema_ref
+from slayer.database import sqlite_introspect
+from slayer.database.client import ObjectNotFound, SqlClient
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.reflection import TableLocation
 

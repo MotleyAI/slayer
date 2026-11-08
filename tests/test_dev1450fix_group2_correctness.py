@@ -27,7 +27,7 @@ from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import _measure_formula_refs
+from slayer.live_schema.schema_drift import _measure_formula_refs
 from slayer.storage.sqlite_conn import transaction
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.core.syntax import parse_expr, parse_expr as _parse

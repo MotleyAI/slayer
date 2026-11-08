@@ -19,8 +19,8 @@ from slayer.core.models import DatasourceConfig
 from slayer.core.policy import SessionPolicy
 from slayer.engine.cache import CacheConfig
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2189_fixtures import (
     EMITTED_DIALECTS,

@@ -27,9 +27,9 @@ import sqlalchemy as sa
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
-from slayer.sql import sqlite_introspect
-from slayer.sql.client import DelegatingSqlClient, ExecutionResult, SlayerSQLClient
-from slayer.sql.sqlite_introspect import (
+from slayer.database import sqlite_introspect
+from slayer.database.client import DelegatingSqlClient, ExecutionResult, SlayerSQLClient
+from slayer.database.sqlite_introspect import (
     COERCE_DISTINCT_LIMIT,
     PROBE_SCAN_CAP,
     probe_sqlite_integer_column,

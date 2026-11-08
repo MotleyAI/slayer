@@ -22,11 +22,11 @@ from slayer.core.models import (
     SlayerModel,
     sanitize_model_name,
 )
-from slayer.engine import ingestion
-from slayer.engine.ingestion import (
+from slayer.live_schema import ingestion
+from slayer.live_schema.ingestion import (
     ingest_datasource_idempotent,
 )
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 

@@ -22,8 +22,8 @@ from slayer.core.errors import ModelSqlValidationError, SlayerError
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import _live_columns_for_sql_model
-from slayer.sql.client import ResultColumnType, SlayerSQLClient, TypeProbe, render_type_probe, sql_model_trial_query
+from slayer.live_schema.schema_drift import _live_columns_for_sql_model
+from slayer.database.client import ResultColumnType, SlayerSQLClient, TypeProbe, render_type_probe, sql_model_trial_query
 from slayer.sql.dialects import SqliteDialect
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction

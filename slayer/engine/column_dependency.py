@@ -36,7 +36,7 @@ from slayer.core.join_walker import OrientedJoin, provably_to_one, walk, walk_mi
 from slayer.core.models import Column, SlayerModel
 from slayer.core.syntax import drop_root_hop
 from slayer.engine.elaborate_env import validate_model_filter
-from slayer.engine.join_safety import provably_fans
+from slayer.engine.cardinality.join_safety import provably_fans
 from slayer.sql.column_expansion import (
     is_trivial_base,
     reference_sites,

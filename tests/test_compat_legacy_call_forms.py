@@ -26,14 +26,14 @@ from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.dbt import converter as dbt_converter
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject, DbtRegularModel
-from slayer.engine import ingestion, schema_drift
+from slayer.live_schema import ingestion, schema_drift
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ingest_report import ConversionResult
 from slayer.osi import converter as osi_converter
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.models import OSIDocument
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._compat_helpers import assert_one_deprecation, future_warnings, next_line, recorded
 from tests._engine_helpers import disposable_engine

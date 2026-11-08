@@ -29,10 +29,10 @@ from slayer.core.enums import DataType
 from slayer.core.errors import StoredDocumentLoadError
 from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import engine_factory
-from slayer.sql.client import DatabaseUnavailable, SlayerSQLClient
+from slayer.database import engine_factory
+from slayer.database.client import DatabaseUnavailable, SlayerSQLClient
 from slayer.storage import migrations as mig
-from slayer.storage.type_refinement import (
+from slayer.live_schema.type_refinement import (
     has_refineable_columns,
     has_sqlite_widenable_columns,
     refine_dict_with_live_schema,

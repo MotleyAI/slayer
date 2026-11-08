@@ -54,9 +54,9 @@ from slayer.dbt.models import (
 )
 from slayer.dbt.relations import RelationNames
 from slayer.dbt.sql_resolver import JINJA_RE, referenced_models, resolve_refs, strip_config
-from slayer.engine.ingestion import introspect_table_to_model
+from slayer.live_schema.ingestion import introspect_table_to_model
 from slayer.engine.query_engine import run_over_caller_engine
-from slayer.engine.schema_scope import requested_schema_ref
+from slayer.live_schema.schema_scope import requested_schema_ref
 from slayer.importers.aggregates import dialect_refusal
 from slayer.importers.column_types import (
     LiveSource,
@@ -73,7 +73,7 @@ from slayer.importers.column_types import (
 )
 from slayer.importers.measures import measure_problems
 from slayer.importers.physical import UndecidableIdentifierCaseError, physical_identifier, unreadable_columns
-from slayer.sql.client import SqlClient
+from slayer.database.client import SqlClient
 # The conversion-report types are shared with the OSI importer. They
 # live in the neutral ``slayer.ingest_report`` module and are re-exported here so
 # existing ``from slayer.dbt.converter import ConversionResult`` imports keep

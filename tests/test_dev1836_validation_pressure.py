@@ -19,13 +19,13 @@ from slayer.async_utils import run_sync
 from slayer.cli import _run_validate_models
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.engine.cardinality import (
+from slayer.engine.cardinality.inference import (
     CardinalityVerdict,
     JoinCardinalityFinding,
     JoinCardinalityReport,
     SideStats,
 )
-from slayer.engine.join_safety import audit_join_safety
+from slayer.engine.cardinality.join_safety import audit_join_safety
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
 

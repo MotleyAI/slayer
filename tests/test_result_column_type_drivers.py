@@ -15,8 +15,8 @@ import sqlalchemy.exc
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig
-from slayer.sql import client as sql_client
-from slayer.sql.client import ResultColumnType, SlayerSQLClient, get_result_column_types_sync
+from slayer.database import client as sql_client
+from slayer.database.client import ResultColumnType, SlayerSQLClient, get_result_column_types_sync
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.reflection import info_schema_type
 from slayer.sql.render.value_expr import keeps_native_type

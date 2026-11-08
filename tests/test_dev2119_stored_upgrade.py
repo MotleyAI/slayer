@@ -11,7 +11,7 @@ import yaml
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import Memory
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage import migrations as mig
 from slayer.storage.sqlite_conn import transaction
 from tests._stored_upgrade_fixtures import (

@@ -14,17 +14,17 @@ from slayer.api.server import create_app
 from slayer.async_utils import run_sync
 from slayer.cli import _run_datasources_create, _run_ingest, main
 from slayer.core.models import DatasourceConfig
-from slayer.engine.ingestion import (
+from slayer.live_schema.ingestion import (
     SkippedTable,
     _empty_ingest_message,
     _print_ingest_drift_and_errors,
 )
-from slayer.engine.schema_drift import (
+from slayer.live_schema.schema_drift import (
     IdempotentIngestResult,
     IngestionError,
     ModelAddition,
 )
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import open_connection
 from slayer.storage.yaml_storage import YAMLStorage
 

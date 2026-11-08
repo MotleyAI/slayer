@@ -12,7 +12,7 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy.sql.elements import quoted_name
 
-from slayer.engine.schema_scope import (
+from slayer.live_schema.schema_scope import (
     IngestScope,
     SchemaRef,
     SkippedSchema,

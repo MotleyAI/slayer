@@ -18,7 +18,7 @@ import pytest
 
 from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.sqlite_conn import transaction
 from tests._stored_upgrade_fixtures import DS, raw_store
 

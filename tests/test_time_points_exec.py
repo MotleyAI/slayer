@@ -10,7 +10,7 @@ import pytest
 from slayer.core.enums import TimeGranularity
 from slayer.core.errors import DateOperandTypeError, GranularityCallError, QueryTypeError, TimeLiteralError
 from slayer.core.query import SlayerQuery
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 
 from tests._time_points_fixtures import (
     BACKENDS, EV_TS, SHIPPED_NEXT_MONTH, UNSHIPPED, bucket_text, code_of, ev_dt, ids, ids_in, ids_where,

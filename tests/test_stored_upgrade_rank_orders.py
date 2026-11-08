@@ -6,7 +6,7 @@ import pytest
 
 from slayer.core.models import DatasourceConfig
 from slayer.memories.models import Memory
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage import migrations as mig
 from tests._stored_upgrade_fixtures import (
     BACKENDS,

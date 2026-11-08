@@ -16,9 +16,9 @@ from sqlalchemy.engine.url import make_url
 
 from slayer.core.errors import UnsupportedDriverError
 from slayer.core.models import DatasourceConfig
-from slayer.sql import client as client_module
-from slayer.sql import engine_factory
-from slayer.sql.client import ObjectNotFound, SlayerSQLClient
+from slayer.database import client as client_module
+from slayer.database import engine_factory
+from slayer.database.client import ObjectNotFound, SlayerSQLClient
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.reflection import TableLocation
 

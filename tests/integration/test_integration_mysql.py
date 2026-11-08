@@ -47,11 +47,11 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine import ingestion
+from slayer.live_schema import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import client as client_module
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.database import client as client_module
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects.reflection import TableLocation
 from slayer.storage.yaml_storage import YAMLStorage
 from tests.integration._dev2015_server import (

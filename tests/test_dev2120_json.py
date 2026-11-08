@@ -21,10 +21,10 @@ from slayer.core.query import SlayerQuery
 from slayer.core.scope import ModelScope
 from slayer.core.syntax import parse_expr
 from slayer.engine.binding import bind_expr
-from slayer.engine.ingestion import ingest_datasource
+from slayer.live_schema.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.sql.dialects import clickhouse as clickhouse_dialect
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.reflection import column_from_sa_type

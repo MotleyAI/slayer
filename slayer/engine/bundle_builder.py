@@ -13,7 +13,7 @@ from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
 from slayer.core.scope import StageDisplay
 from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine, query_host, spine_model
 from slayer.engine.column_dependency import definition_heads
-from slayer.engine.unrelated import first_hop_names
+from slayer.engine.cardinality.unrelated import first_hop_names
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
     apply_extension_overlay,

@@ -12,7 +12,7 @@ from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.demo import jaffle_shop
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 
 

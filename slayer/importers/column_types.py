@@ -9,10 +9,10 @@ from sqlglot.expressions.core import Expression
 from sqlglot.errors import SqlglotError
 
 from slayer.core.enums import DataType
-from slayer.engine.ingestion import introspect_table_columns
-from slayer.engine.schema_scope import live_name, table_live_parts, table_schema_ref
+from slayer.live_schema.ingestion import introspect_table_columns
+from slayer.live_schema.schema_scope import live_name, table_live_parts, table_schema_ref
 from slayer.importers.physical import PhysicalIndex, live_exact_name
-from slayer.sql.client import ResultColumnType, SqlClient, render_type_probe
+from slayer.database.client import ResultColumnType, SqlClient, render_type_probe
 from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, get_dialect
 from slayer.sql.dialects.base import slayer_type_of
 from slayer.sql.render.parse import parse_expression, parse_query, parse_table

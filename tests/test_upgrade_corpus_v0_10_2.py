@@ -13,9 +13,9 @@ import pytest
 
 from slayer.core.models import SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage

@@ -12,8 +12,8 @@ from slayer.core.join_walker import edges_between, provably_to_one, unique_key_s
 from slayer.core.keys import ColumnKey, Grain
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.cardinality import CardinalityVerdict
-from slayer.engine.join_safety import grain_determines
+from slayer.engine.cardinality.inference import CardinalityVerdict
+from slayer.engine.cardinality.join_safety import grain_determines
 from slayer.engine.query_engine import SlayerQueryEngine
 
 from tests._dev1902_fixtures import (

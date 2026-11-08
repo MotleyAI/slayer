@@ -9,7 +9,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column
-from slayer.sql.client import _fetch_rows, _types_from_cursor
+from slayer.database.client import _fetch_rows, _types_from_cursor
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.reflection import is_exact_numeric_db_type
 from slayer.sql.render.value_expr import keeps_native_type

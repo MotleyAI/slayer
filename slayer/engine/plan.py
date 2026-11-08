@@ -28,7 +28,7 @@ from slayer.core.scope import (
 from slayer.engine.compile import compile_query
 from slayer.engine.elaborate import elaborate_query
 from slayer.engine.normalization import normalize_query
-from slayer.engine.unrelated import stamp_unrelated
+from slayer.engine.cardinality.unrelated import stamp_unrelated
 from slayer.engine.stage_ordering import (
     localize_stages,
     stage_sibling_reads,

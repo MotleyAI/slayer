@@ -18,10 +18,10 @@ from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.engine import ingestion
-from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.live_schema import ingestion
+from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._sql_mode_retype_fixtures import (
     MODEL,

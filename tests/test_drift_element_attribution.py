@@ -18,10 +18,10 @@ from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
 from slayer.core.join_edges import JoinEdgeRef
 from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
-from slayer.engine import schema_drift
+from slayer.live_schema import schema_drift
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import DeleteReason, EditModelDelete, RemoveSpec, RetypeFinding, WholeModelDelete
-from slayer.sql import engine_factory
+from slayer.live_schema.schema_drift import DeleteReason, EditModelDelete, RemoveSpec, RetypeFinding, WholeModelDelete
+from slayer.database import engine_factory
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 

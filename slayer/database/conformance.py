@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from pydantic import BaseModel, Field
 
 from slayer.core.enums import DataType
-from slayer.sql.client import ObjectNotFound, SqlClient, SqlClientError
+from slayer.database.client import ObjectNotFound, SqlClient, SqlClientError
 from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.dialects.reflection import TableLocation
 

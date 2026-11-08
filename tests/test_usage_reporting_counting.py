@@ -28,10 +28,10 @@ from sqlalchemy import exc as sa_exc
 
 from slayer import usage_reporting
 from slayer.api.server import create_app
-from slayer.engine import ingestion as engine_ingestion
+from slayer.live_schema import ingestion as engine_ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
-from slayer.sql.client import DatabaseUnavailable
+from slayer.database.client import DatabaseUnavailable
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.usage_reporting import settings
 from slayer.usage_reporting.payload import USAGE_KEYS

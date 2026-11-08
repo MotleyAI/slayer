@@ -6,7 +6,7 @@ from pytest_postgresql import factories
 from sqlglot import exp
 
 from slayer.core.models import DatasourceConfig
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from tests._stored_upgrade_fixtures import (
     CUSTOMERS_ROWS,
     ORDERS_ROWS,

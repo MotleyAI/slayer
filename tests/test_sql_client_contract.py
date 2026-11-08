@@ -18,11 +18,11 @@ from slayer.core.errors import ForcedFilterError
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import DatasourceConfig
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
-from slayer.engine import ingestion
+from slayer.live_schema import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import WholeModelDelete
-from slayer.sql import engine_factory
-from slayer.sql.client import (
+from slayer.live_schema.schema_drift import WholeModelDelete
+from slayer.database import engine_factory
+from slayer.database.client import (
     AuthenticationRefused,
     DatabaseUnavailable,
     DelegatingSqlClient,

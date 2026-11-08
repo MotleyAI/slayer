@@ -11,7 +11,7 @@ import pytest
 
 from slayer.core.models import DatasourceConfig
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects.base import ServerProfile
 from tests._ch_fake_http import (
     CH_TIMEOUT_KEY,

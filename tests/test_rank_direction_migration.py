@@ -21,7 +21,7 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from slayer.memories.models import Memory
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage import migrations as mig
 from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_conn import transaction

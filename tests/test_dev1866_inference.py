@@ -13,7 +13,7 @@ import pytest
 
 from slayer.core.enums import TimeGranularity
 from slayer.core.query import ComputedDimension, SlayerQuery, TimeDimension
-from slayer.engine.population import (
+from slayer.engine.population.inference import (
     PopulationChoice,
     determination_items,
     infer_population,

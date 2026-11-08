@@ -12,8 +12,9 @@ from pydantic import BaseModel, Field
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.warnings import BrokenDependentWarning, SlayerBrokenDependentWarning
-from slayer.engine import query_engine, schema_drift
-from slayer.sql.client import BorrowedSqlClient, SqlClient
+from slayer.engine import query_engine
+from slayer.live_schema import schema_drift
+from slayer.database.client import BorrowedSqlClient, SqlClient
 from slayer.storage.base import StorageBackend
 from slayer.storage.model_overlay import ModelOverlayStorage
 

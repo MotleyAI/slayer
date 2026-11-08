@@ -8,7 +8,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.client import DelegatingSqlClient
+from slayer.database.client import DelegatingSqlClient
 from tests._osi_export_fixtures import (
     BASIC_MEASURES, col, customers, measure, monthly_revenue, orders, rich_orders, visits,
 )
