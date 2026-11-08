@@ -9,7 +9,7 @@ Scenarios use the `orders` table of `importers/meaning-preservation`: rows `(1, 
 
 ### Requirement: Cube reference forms
 
-In every Cube SQL surface of a cube (dimension `sql`, CASE `when` predicates, measure `sql` and `filters`, segments, join `ON`), `{CUBE}.x`, `{<own cube>}.x` and a bare `x` SHALL denote the physical column `x` of the cube's source; `{other}.x` SHALL denote the physical column `x` of the joined cube `other`'s source, and a construct naming a cube that is not joined SHALL be dropped with a report naming that cube; `{member}`, `{CUBE.member}` and `{<own cube>.member}` SHALL denote that member of the cube, under the name it was imported as; `{other.member}` SHALL denote the member of the joined cube `other`. The cube's own `sql` body SHALL be imported as written.
+In every Cube SQL surface of a cube (dimension `sql`, CASE `when` predicates, measure `sql` and `filters`, segments, join `ON`), `{CUBE}.x`, `{<own cube>}.x` and a bare `x` SHALL denote the physical column `x` of the cube's source; `{other}.x` SHALL denote the physical column `x` of the joined cube `other`'s source, and a construct naming a cube that is not joined SHALL be dropped with a report naming that cube; `{member}`, `{CUBE.member}` and `{<own cube>.member}` SHALL denote that member of the cube, under the name it was imported as; `{other.member}` SHALL denote the member of the joined cube `other`. The cube's own `sql` body SHALL be imported as written, its unquoted identifiers read with the datasource's identifier folding (importers/meaning-preservation).
 
 #### Scenario: Same-cube dotted reference
 - **WHEN** cube `orders` declares measure `paid_sum` (`sum`, `sql: {CUBE}.amount`, filter `{CUBE}.status = 'paid'`) and calculated measures `a: {orders.paid_sum}` and `b: {CUBE.paid_sum}`
@@ -77,7 +77,7 @@ The column references inside a FILTER_PARAMS pushdown body SHALL follow the same
 
 ### Requirement: The datasource is used whenever it resolves
 
-`slayer import-cube` SHALL resolve its `--datasource` and use it for column typing whenever it is configured and reachable; an import whose datasource is not configured, cannot be resolved or cannot be reached SHALL still complete.
+`slayer import-cube` SHALL resolve its `--datasource` and use it for column typing whenever it is configured and reachable; an import whose datasource is not configured, cannot be resolved or cannot be reached SHALL still complete, unless it is refused because its identifier case cannot be determined (importers/meaning-preservation).
 
 #### Scenario: Import against a reachable datasource
 - **WHEN** `import-cube` runs against a reachable DuckDB datasource whose `orders.tags` is a text list, and a dimension reads `{CUBE}.tags`

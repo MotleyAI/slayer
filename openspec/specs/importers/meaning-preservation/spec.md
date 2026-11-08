@@ -181,7 +181,7 @@ Each importer SHALL read every unquoted identifier of the source's physical SQL 
 
 ### Requirement: An import whose identifier case cannot be determined is refused
 
-When a Cube or dbt import has no datasource dialect (its datasource is not configured) and its physical SQL holds an unquoted identifier with an upper-case letter, or a dbt relation name part the quoting policy leaves unquoted or undetermined, the import SHALL be refused before any model is produced or saved, with an error listing those identifiers and saying to configure the datasource (it need not be reachable) or to quote the names. An import whose physical identifiers are all lowercase or quoted SHALL import without a dialect as before.
+When a Cube or dbt import has no datasource dialect (its datasource is not configured) and its physical SQL holds an unquoted identifier with an upper-case letter, or a dbt relation name part with an upper-case letter that the quoting policy leaves unquoted or undetermined, the import SHALL be refused before any model is produced or saved, with an error listing those identifiers and saying to configure the datasource (it need not be reachable) or to quote the names. An import whose physical identifiers are all lowercase or quoted SHALL import without a dialect as before.
 
 #### Scenario: Offline mixed-case Cube
 - **WHEN** `slayer import-cube` runs with a datasource that is not configured and a cube whose `sql_table` is `Sales.OrderItems`

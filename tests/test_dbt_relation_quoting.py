@@ -119,8 +119,8 @@ async def test_snowflake_with_identifier_quoting_on(tmp_path: Path) -> None:
     {}, {"database": False}, {"schema": False}, {"identifier": False},
     {"database": True}, {"schema": True}, {"identifier": True}, {"database": True, "identifier": False},
 ])
-def test_flags_apply_part_by_part(tmp_path: Path, dialect: str, quoting: dict[str, bool]) -> None:
-    result = _import(tmp_path, dialect=dialect, semantic_models=[SRC], quoting=quoting, sources=[ORDERS_SOURCE],
+def test_source_flags_apply_part_by_part(tmp_path: Path, dialect: str, quoting: dict[str, bool]) -> None:
+    result = _import(tmp_path, dialect=dialect, semantic_models=[SRC], sources=[ORDERS_SOURCE | {"quoting": quoting}],
                      sql={"src": "SELECT * FROM {{ source('raw', 'orders') }}"})
     fold = str.lower if dialect == "postgres" else str.upper
     expected = [name if quoting.get(part, DEFAULT_QUOTING[dialect]) else fold(name)
@@ -128,9 +128,20 @@ def test_flags_apply_part_by_part(tmp_path: Path, dialect: str, quoting: dict[st
     assert _relation(models_of(result)["m"], dialect=dialect) == expected
 
 
-def test_schema_quoting_off_on_postgres(tmp_path: Path) -> None:
-    source = {"name": "raw", "schema": "Raw", "tables": [{"name": "orders", "identifier": "Orders"}]}
-    result = _import(tmp_path, dialect="postgres", semantic_models=[SRC], quoting={"schema": False}, sources=[source],
+@pytest.mark.parametrize("dialect", ["postgres", "snowflake"])
+def test_project_quoting_does_not_reach_a_source(tmp_path: Path, dialect: str) -> None:
+    flip = {part: not DEFAULT_QUOTING[dialect] for part in ("database", "schema", "identifier")}
+    result = _import(tmp_path, dialect=dialect, semantic_models=[SRC], quoting=flip, sources=[ORDERS_SOURCE],
+                     sql={"src": "SELECT * FROM {{ source('raw', 'orders') }}"})
+    fold = str.lower if dialect == "postgres" else str.upper
+    expected = [name if DEFAULT_QUOTING[dialect] else fold(name) for name in ("Analytics", "Raw", "Orders")]
+    assert _relation(models_of(result)["m"], dialect=dialect) == expected
+
+
+def test_source_schema_quoting_off_on_postgres(tmp_path: Path) -> None:
+    source = {"name": "raw", "schema": "Raw", "quoting": {"schema": False},
+              "tables": [{"name": "orders", "identifier": "Orders"}]}
+    result = _import(tmp_path, dialect="postgres", semantic_models=[SRC], sources=[source],
                      sql={"src": "SELECT * FROM {{ source('raw', 'orders') }}"})
     assert _relation(models_of(result)["m"], dialect="postgres") == ["raw", "Orders"]
 
@@ -143,12 +154,13 @@ def test_per_model_override_is_reported(tmp_path: Path) -> None:
     assert _relation(models_of(result)["m"], dialect="postgres") == ["raw", "Orders"]
 
 
-def test_per_source_override_is_reported(tmp_path: Path) -> None:
-    source = {"name": "raw", "quoting": {"identifier": False}, "tables": [{"name": "orders", "identifier": "Orders"}]}
+def test_table_quoting_overrides_its_source(tmp_path: Path) -> None:
+    source = {"name": "raw", "quoting": {"identifier": True},
+              "tables": [{"name": "orders", "identifier": "Orders", "quoting": {"identifier": False}}]}
     result = _import(tmp_path, dialect="postgres", semantic_models=[SRC], sources=[source],
                      sql={"src": "SELECT * FROM {{ source('raw', 'orders') }}"})
-    assert [e for e in entries(result, "raw") if "quoting" in e.message.lower()]
-    assert _relation(models_of(result)["m"], dialect="postgres") == ["raw", "Orders"]
+    assert _relation(models_of(result)["m"], dialect="postgres") == ["raw", "orders"]
+    assert not [e for e in entries(result, "raw") if "not applied" in e.message]
 
 
 def test_non_boolean_flag_is_reported(tmp_path: Path) -> None:

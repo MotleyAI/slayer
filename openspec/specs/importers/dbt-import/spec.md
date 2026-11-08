@@ -31,7 +31,7 @@ A `data_type` declared for a column of the dbt model a semantic model reads (in 
 
 ### Requirement: Relations follow dbt's quoting policy
 
-A relation name dbt renders — a semantic model's `model` that has no SQL file, a `ref()` to such a model, a `source()` — and the table a hidden regular model is read from SHALL be read as dbt renders it: each part (database, schema, identifier) quoted when its quoting flag is on, else read with the datasource's identifier folding. The flags SHALL be the dbt adapter's defaults for the datasource dialect — off for Snowflake and Oracle, on for every other dialect — each overridden by the project's `dbt_project.yml` `quoting:` when it sets that flag. A flag value that is not a boolean SHALL be reported and the default used. A per-model `config(quoting=…)` or a per-source `quoting:` SHALL be reported and not applied.
+A relation name dbt renders — a semantic model's `model` that has no SQL file, a `ref()` to such a model, a `source()` — and the table a hidden regular model is read from SHALL be read as dbt renders it: each part (database, schema, identifier) quoted when its quoting flag is on, else read with the datasource's identifier folding. The flags SHALL be the dbt adapter's defaults for the datasource dialect — off for Snowflake and Oracle, on for every other dialect. For a model's relation each flag is overridden by the project's `dbt_project.yml` `quoting:` when it sets that flag; for a `source()`, as in dbt, by the source's `quoting:` and then its table's, never by the project's. A flag value that is not a boolean SHALL be reported and ignored. A per-model `config(quoting=…)` SHALL be reported and not applied.
 
 #### Scenario: Postgres default keeps the case
 - **WHEN** a Postgres datasource holds `"OrderItems"` with an integer `qty` and the row `(4)` and `orderitems` with a text `qty` and the row `('t')`, and a semantic model's `model` is `ref('OrderItems')` with no SQL file
@@ -50,7 +50,11 @@ A relation name dbt renders — a semantic model's `model` that has no SQL file,
 - **THEN** the generated SQL reads the table `"OrderItems"`
 
 #### Scenario: Flags apply part by part
-- **WHEN** on Postgres the project sets `quoting: {schema: false}` and a model's SQL reads `{{ source('raw', 'orders') }}` declared with `schema: Raw` and `identifier: Orders`
+- **WHEN** on Postgres the source `raw` declares `quoting: {schema: false}`, `schema: Raw` and a table `orders` with `identifier: Orders`, and a model's SQL reads `{{ source('raw', 'orders') }}`
+- **THEN** the model reads the relation `raw."Orders"`
+
+#### Scenario: Project quoting does not reach a source
+- **WHEN** on Postgres the project sets `quoting: {identifier: false}` and a model's SQL reads `{{ source('raw', 'orders') }}` declared with `identifier: Orders`
 - **THEN** the model reads the relation `raw."Orders"`
 
 #### Scenario: A per-model override is reported

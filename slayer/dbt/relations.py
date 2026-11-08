@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Literal
+from collections.abc import Callable, Mapping
+from typing import Any, Literal
 
 from sqlalchemy.sql.elements import quoted_name
 from sqlglot import exp
@@ -30,13 +30,8 @@ class RelationNames:
         self._read = dialect.sqlglot_name if dialect is not None else None
         self._warn = warn
         default = None if dialect is None else dialect.sqlglot_name not in _UNQUOTED_BY_DEFAULT
-        self.quoted: dict[Part, bool | None] = {}
-        for part in _PARTS:
-            value = project.quoting.get(part)
-            if value is not None and not isinstance(value, bool):
-                warn(ConversionWarning(category="quoting", severity="info", message=(
-                    f"dbt_project.yml quoting flag {part!r} is {value!r}, not a boolean; using the adapter default.")))
-            self.quoted[part] = value if isinstance(value, bool) else default
+        self.defaults: dict[Part, bool | None] = dict.fromkeys(_PARTS, default)
+        self.quoted = self._overridden(self.defaults, project.quoting, where="dbt_project.yml")
         self.sources: dict[str, DbtSource] = {}
         for source in project.sources:
             if source.name in self.sources:
@@ -44,27 +39,38 @@ class RelationNames:
                     f"Source {source.name!r} is declared more than once; using its first declaration.")))
                 continue
             self.sources[source.name] = source
-            if source.quoting or any(t.quoting for t in source.tables):
-                warn(ConversionWarning(category="quoting", severity="info", message=(
-                    f"Source {source.name!r} sets its own quoting, which is not applied; its relations follow the "
-                    f"project's quoting policy.")))
         self.undecidable: list[str] = []
         self._undeclared: set[str] = set()
 
-    def live_name(self, part: Part, name: str) -> str:
-        """``name`` as the live object it names: quoted exactly, else folded (SQLAlchemy's spelling)."""
-        if self.quoted[part]:
+    def _overridden(self, flags: Mapping[Part, bool | None], quoting: Mapping[str, Any] | None, *,
+                    where: str) -> dict[Part, bool | None]:
+        """``flags`` with each boolean flag ``quoting`` sets; a non-boolean one is reported and ignored."""
+        out = dict(flags)
+        for part in _PARTS:
+            value = (quoting or {}).get(part)
+            if value is not None and not isinstance(value, bool):
+                self._warn(ConversionWarning(category="quoting", severity="info", message=(
+                    f"{where} quoting flag {part!r} is {value!r}, not a boolean; ignoring it.")))
+            elif value is not None:
+                out[part] = value
+        return out
+
+    def live_name(self, part: Part, name: str, *, quoted: Mapping[Part, bool | None] | None = None) -> str:
+        """``name`` as the live object it names under ``quoted`` (default: the project's flags): quoted exactly,
+        else folded (SQLAlchemy's spelling)."""
+        flag = (quoted or self.quoted)[part]
+        if flag:
             return quoted_name(name, True)
         if not any(c.isupper() for c in name):
             return name
-        if self.quoted[part] is None or self.dialect is None:
+        if flag is None or self.dialect is None:
             self.undecidable.append(name)
             return name
         return stored_identifier(name, dialect=self.dialect)
 
-    def relation(self, *parts: tuple[Part, str]) -> str:
+    def relation(self, *parts: tuple[Part, str], quoted: Mapping[Part, bool | None] | None = None) -> str:
         """The stored ``sql_table`` of the relation dbt renders from ``parts``."""
-        return render_table_name(parts=[self.live_name(part, name) for part, name in parts],
+        return render_table_name(parts=[self.live_name(part, name, quoted=quoted) for part, name in parts],
                                  dialect=self.dialect or dialect_for_ds_type(None))
 
     def ref(self, model: str) -> str:
@@ -81,7 +87,8 @@ class RelationNames:
         return render_table_name(parts=names, dialect=self.dialect or dialect_for_ds_type(None))
 
     def source(self, source: str, table: str) -> str:
-        """The relation ``{{ source(source, table) }}`` names."""
+        """The relation ``{{ source(source, table) }}`` names; as in dbt, its quoting is the adapter's defaults
+        overridden by the source's and then the table's own ``quoting:``, never the project's."""
         declared = self.sources.get(source)
         entry = next((t for t in declared.tables if t.name == table), None) if declared is not None else None
         if declared is None or entry is None:
@@ -90,7 +97,10 @@ class RelationNames:
                 self._warn(ConversionWarning(category="sources", severity="info", message=(
                     f"source('{source}', '{table}') is not declared in the project's sources; reading "
                     f"{source}.{table}.")))
-            return self.relation(("schema", source), ("identifier", table))
+            return self.relation(("schema", source), ("identifier", table), quoted=self.defaults)
+        where = f"Source {source!r}"
+        quoted = self._overridden(self._overridden(self.defaults, declared.quoting, where=where), entry.quoting,
+                                  where=f"{where} table {table!r}")
         database: list[tuple[Part, str]] = [("database", declared.database)] if declared.database else []
         return self.relation(*database, ("schema", declared.schema_name or source),
-                             ("identifier", entry.identifier or table))
+                             ("identifier", entry.identifier or table), quoted=quoted)
