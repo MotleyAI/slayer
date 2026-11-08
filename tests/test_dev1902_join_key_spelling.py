@@ -30,6 +30,7 @@ from tests._dev1902_fixtures import (
     renamed_graph,
     warnings_of,
 )
+from slayer.sql.naming import key_identifier
 from tests._engine_helpers import models_bundle
 
 AMT = ModelMeasure(formula="sum(amount)", name="amt")
@@ -134,16 +135,16 @@ class TestDetectionProfilesRenamedKeys:
 
 
 def _side_stats_sql(**kwargs) -> tuple[str, str]:
-    """The two profiling statements, rendered with quoted identifiers."""
+    """The two profiling statements, rendered as ``_side_stats`` executes them."""
     rows, dist = SlayerQueryEngine._side_stats_sql(**kwargs)
     dialect = kwargs["sqlglot_name"]
-    return rows.sql(dialect=dialect, identify=True), dist.sql(dialect=dialect, identify=True)
+    return rows.sql(dialect=dialect), dist.sql(dialect=dialect)
 
 
 class TestProfilingSql:
     def test_mixed_case_physical_key_is_quoted(self):
         rows_sql, dist_sql = _side_stats_sql(
-            table="customers", key_cols=["CustPK"], sqlglot_name="postgres")
+            table="customers", key_cols=[key_identifier("CustPK", quoted=False)], sqlglot_name="postgres")
         assert '"CustPK"' in rows_sql
         assert '"CustPK"' in dist_sql
 

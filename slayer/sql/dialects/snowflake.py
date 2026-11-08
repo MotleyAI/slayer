@@ -20,7 +20,8 @@ from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
     LegacyTypeCategories,
-    LIST_VALUE, PORTABLE_LIBRARY, ExtremumFn, NativeFn, ListRelation, SqlDialect, TextFn, anon, as_text, case, either,
+    LIST_VALUE, PORTABLE_LIBRARY, ExtremumFn, IdentifierFolding, NativeFn, ListRelation, SqlDialect, TextFn, anon, as_text,
+    case, either,
     element_lambda, lit, operand_copy, setting, text_try_cast,
 )
 from slayer.sql.dialects.patterns import POSIX, RegexFlavour
@@ -156,6 +157,9 @@ class SnowflakeDialect(SqlDialect):
     aliased_integer_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.TINYINT, exp.DataType.Type.SMALLINT})
     array_cast_types: ClassVar[bool] = True
     ilike_native: ClassVar[bool] = True
+    identifier_folding: ClassVar[IdentifierFolding] = "upper"
+    # INFORMATION_SCHEMA has no KEY_COLUMN_USAGE.
+    primary_key_inspector_only: bool = True
     ds_type_aliases: frozenset[str] = frozenset({"snowflake"})
     legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories(
         names={

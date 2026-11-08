@@ -258,6 +258,8 @@ class SemiJoinHop(BaseModel):
 
     target_model: str
     join_pairs: Tuple[Tuple[str, str], ...]
+    #: Per pair, whether each key's stored SQL quotes its physical name (``Column.physical_quoted``).
+    quoted: Tuple[Tuple[bool, bool], ...] = ()
     node_path: Tuple[str, ...]
     #: The declared edge is LEFT (default) rather than INNER — the null-rejection
     #: analysis's input (a declared-INNER hop is never null-extended).

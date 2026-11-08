@@ -33,6 +33,11 @@ Each dbt semantic model becomes one SLayer model:
 - `label` and `description` preserved directly
 - an `expr` reading a physical column whose name another dimension holds, or transforming the one of its own name (`status: UPPER(status)`),
   is dropped with a report
+- unquoted names in model SQL and member `expr`s are read as the datasource's database folds them (on Postgres,
+  Redshift, Snowflake and Oracle `OrderAmount` is stored as `orderamount`), relation names follow dbt's quoting policy
+  (the adapter default, overridden by `dbt_project.yml` `quoting:` for models and by a source's own `quoting:` for its
+  relations; per-model overrides are reported, not applied), `{{ source('s', 't') }}` reads the relation `sources:` declares for it, and an import whose
+  datasource is not configured is refused when a name's case cannot be determined
 - a column's type is the live database type when `--datasource` resolves (with or without
   `--include-hidden-models`), else the `data_type` declared for it in `schema.yml` or the manifest (`array<string>`,
   `text[]` and `ARRAY<INT64>` become lists of their element type), else the measure's aggregation; a `min`/`max`

@@ -17,9 +17,9 @@ def dialect_of(client: SqlClient) -> SqlDialect:
 
 
 def table_location(table_name: str, ref: SchemaRef | None) -> TableLocation:
-    """``table_name`` in ``ref``'s schema; an unset part is the connection's current one."""
+    """``table_name`` (in SQLAlchemy's spelling) in ``ref``'s schema; an unset part is the connection's current one."""
     return TableLocation(
-        name=table_name, schema_name=ref.name if ref else None, catalog=ref.catalog if ref else None,
+        name=table_name, schema_name=ref.live_name if ref else None, catalog=ref.catalog if ref else None,
     )
 
 

@@ -17,7 +17,6 @@ from typing import Any, Callable, Coroutine, Dict, Iterator, List, Optional, Set
 import sqlalchemy as sa
 from sqlglot import exp
 from sqlglot.expressions.core import Expr
-from sqlglot.optimizer.qualify_columns import quote_identifiers
 from pydantic import (
     BaseModel,
     ConfigDict as PydanticConfigDict,
@@ -176,6 +175,7 @@ from slayer.sql.client import (
 from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, dialect_for_sa_backend, get_dialect
 from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.render.library import check_library_support
+from slayer.sql.naming import key_identifier
 from slayer.sql.render.parse import parse_table
 from slayer.sql.sql_template import SqlTemplateError, sql_template
 from slayer.sql.dialects.reflection import TableLocation
@@ -2713,9 +2713,10 @@ class SlayerQueryEngine:
 
     @staticmethod
     def _side_stats_sql(*, table, key_cols, sqlglot_name) -> tuple[exp.Select, exp.Select]:
-        """(row-count, distinct-count) profiling statements, every identifier quoted; NULL key rows excluded from both."""
+        """(row-count, distinct-count) profiling statements reading the table and keys as SLayer reads them; NULL key
+        rows excluded from both."""
         tbl = parse_table(name=table, dialect=get_dialect(sqlglot_name))
-        cols = [exp.column(c, quoted=True) for c in key_cols]
+        cols = [exp.column(c) for c in key_cols]
         predicate = None
         for col in cols:
             term = exp.Not(this=exp.Is(this=col.copy(), expression=exp.null()))
@@ -2733,8 +2734,8 @@ class SlayerQueryEngine:
         )
         dist_q = exp.select(count_star.copy()).from_(inner.subquery("d"))
         return (
-            quote_identifiers(rows_q, dialect=sqlglot_name, identify=True),
-            quote_identifiers(dist_q, dialect=sqlglot_name, identify=True),
+            rows_q,
+            dist_q,
         )
 
     async def _side_stats(
@@ -3292,9 +3293,9 @@ def _detection_skip_reason(*, model, target, src_cols, tgt_cols) -> str | None:
     return None
 
 
-def _physical_keys(*, model: SlayerModel, keys: List[str]) -> List[str]:
+def _physical_keys(*, model: SlayerModel, keys: List[str]) -> List[exp.Identifier]:
     by_name = {c.name: c for c in model.columns}
-    return [by_name[k].physical_name for k in keys]
+    return [key_identifier(by_name[k].physical_name, quoted=by_name[k].physical_quoted) for k in keys]
 
 
 def _validate_join_keys(
