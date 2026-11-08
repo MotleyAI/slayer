@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 import sqlglot
 from sqlglot import exp
-from sqlglot.expressions.core import Expression
+from sqlglot.expressions.core import Expr, Expression
 
 from slayer.sql.dialects import SqlDialect, _ALL_DIALECTS, _DS_TYPE_ONLY_DIALECTS
 from slayer.sql.dialects.base import ServerProfile
@@ -21,6 +21,13 @@ _EXISTS = "EXISTS(SELECT 1 FROM a WHERE a.c = p.id)"
 _EXISTS_BESIDE_ARRAY_JOIN = f"SELECT s.value FROM p ARRAY JOIN p.l AS s WHERE {_EXISTS}"
 _EXISTS_ALONE = f"SELECT p.id FROM p WHERE {_EXISTS}"
 _ARRAY_JOIN_ALONE = "SELECT s.value FROM p ARRAY JOIN p.l AS s WHERE p.id > 1"
+
+
+def _tree(sql: str) -> Expr:
+    return sqlglot.parse_one(sql, read="clickhouse")
+
+
+_PLAIN = _tree(_EXISTS_ALONE)
 
 
 def _profile(version: tuple[int, ...] | None, readonly: int | None, correlated: bool | None) -> ServerProfile:
@@ -132,22 +139,22 @@ class TestTimeoutPermitted:
 
 class TestCorrelatedSubqueryRefusal:
     def test_default_never_refuses(self) -> None:
-        assert SqlDialect().correlated_subquery_refusal(ServerProfile()) is None
+        assert SqlDialect().correlated_subquery_refusal(ServerProfile(), statement=_PLAIN) is None
 
     @pytest.mark.parametrize("profile", [_profile((24, 8), 0, None), _profile((25, 3), 2, None)])
     def test_below_25_4_names_the_version(self, profile: ServerProfile) -> None:
-        reason = CH.correlated_subquery_refusal(profile)
+        reason = CH.correlated_subquery_refusal(profile, statement=_PLAIN)
         assert reason is not None
         assert "25.4" in reason
 
     def test_unknown_version_refuses(self) -> None:
-        reason = CH.correlated_subquery_refusal(_profile(None, 0, True))
+        reason = CH.correlated_subquery_refusal(_profile(None, 0, True), statement=_PLAIN)
         assert reason is not None
         assert "25.4" in reason
 
     @pytest.mark.parametrize("version", [(25, 4), (25, 7)])
     def test_setting_off_readonly_1_before_25_8_lists_every_remedy(self, version: tuple[int, int]) -> None:
-        reason = CH.correlated_subquery_refusal(_profile(version, 1, False))
+        reason = CH.correlated_subquery_refusal(_profile(version, 1, False), statement=_PLAIN)
         assert reason is not None
         assert SETTING in reason
         assert "profile" in reason
@@ -156,7 +163,7 @@ class TestCorrelatedSubqueryRefusal:
 
     @pytest.mark.parametrize("version", [(25, 8), (26, 1)])
     def test_setting_off_readonly_1_from_25_8_omits_upgrade(self, version: tuple[int, int]) -> None:
-        reason = CH.correlated_subquery_refusal(_profile(version, 1, False))
+        reason = CH.correlated_subquery_refusal(_profile(version, 1, False), statement=_PLAIN)
         assert reason is not None
         assert SETTING in reason
         assert "readonly=2" in reason.replace(" ", "")
@@ -165,29 +172,29 @@ class TestCorrelatedSubqueryRefusal:
     @pytest.mark.parametrize("readonly", [0, 2])
     @pytest.mark.parametrize("correlated", [False, None])
     def test_user_may_set_it(self, readonly: int, correlated: bool | None) -> None:
-        assert CH.correlated_subquery_refusal(_profile((25, 4), readonly, correlated)) is None
+        assert CH.correlated_subquery_refusal(_profile((25, 4), readonly, correlated), statement=_PLAIN) is None
 
     @pytest.mark.parametrize("readonly", [1, None])
     def test_setting_already_on(self, readonly: int | None) -> None:
-        assert CH.correlated_subquery_refusal(_profile((25, 4), readonly, True)) is None
+        assert CH.correlated_subquery_refusal(_profile((25, 4), readonly, True), statement=_PLAIN) is None
 
     @pytest.mark.parametrize(("version", "refused"), [((25, 4), True), ((25, 7), True), ((25, 8), False)])
     def test_exists_beside_an_array_join_needs_25_8(self, version: tuple[int, int], refused: bool) -> None:
-        reason = CH.correlated_subquery_refusal(_profile(version, 0, None), sql=_EXISTS_BESIDE_ARRAY_JOIN)
+        reason = CH.correlated_subquery_refusal(_profile(version, 0, None), statement=_tree(_EXISTS_BESIDE_ARRAY_JOIN))
         assert (reason is not None and "25.8" in reason and "ARRAY JOIN" in reason) is refused
 
     @pytest.mark.parametrize("sql", [_EXISTS_ALONE, _ARRAY_JOIN_ALONE])
     def test_either_alone_runs_from_25_4(self, sql: str) -> None:
-        assert CH.correlated_subquery_refusal(_profile((25, 4), 0, None), sql=sql) is None
+        assert CH.correlated_subquery_refusal(_profile((25, 4), 0, None), statement=_tree(sql)) is None
 
     def test_setting_unknown_under_readonly_1_refuses(self) -> None:
-        reason = CH.correlated_subquery_refusal(_profile((25, 8), 1, None))
+        reason = CH.correlated_subquery_refusal(_profile((25, 8), 1, None), statement=_PLAIN)
         assert reason is not None
         assert SETTING in reason
 
     @pytest.mark.parametrize("correlated", [False, None])
     def test_readonly_unknown_and_setting_not_on_refuses(self, correlated: bool | None) -> None:
-        assert CH.correlated_subquery_refusal(_profile((25, 8), None, correlated)) is not None
+        assert CH.correlated_subquery_refusal(_profile((25, 8), None, correlated), statement=_PLAIN) is not None
 
 
 def _attached(sql: str, dialect: SqlDialect) -> str:

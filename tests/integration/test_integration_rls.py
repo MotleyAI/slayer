@@ -246,9 +246,10 @@ async def test_dry_run_sql_contains_wraps(rls_storage):
     )
     flat = resp.sql.replace("\n", " ")
     assert "organization_uuid = 'orgA'" in flat
+    unspaced = "".join(flat.split())
     assert (
-        "FROM (SELECT * FROM orders WHERE organization_uuid = 'orgA') AS orders"
-        in flat
+        "".join("FROM (SELECT * FROM orders WHERE organization_uuid = 'orgA') AS orders".split())
+        in unspaced
     )
 
 

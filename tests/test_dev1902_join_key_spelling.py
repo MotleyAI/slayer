@@ -134,9 +134,16 @@ class TestDetectionProfilesRenamedKeys:
         assert finding.detected is JoinCardinality.MANY_TO_ONE
 
 
+def _side_stats_sql(**kwargs) -> tuple[str, str]:
+    """The two profiling statements, rendered as ``_side_stats`` executes them."""
+    rows, dist = SlayerQueryEngine._side_stats_sql(**kwargs)
+    dialect = kwargs["sqlglot_name"]
+    return rows.sql(dialect=dialect), dist.sql(dialect=dialect)
+
+
 class TestProfilingSql:
     def test_mixed_case_physical_key_is_quoted(self):
-        rows_sql, dist_sql = SlayerQueryEngine._side_stats_sql(
+        rows_sql, dist_sql = _side_stats_sql(
             table="customers", key_cols=[key_identifier("CustPK", quoted=False)], sqlglot_name="postgres")
         assert '"CustPK"' in rows_sql
         assert '"CustPK"' in dist_sql

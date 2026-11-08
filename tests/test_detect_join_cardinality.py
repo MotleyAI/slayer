@@ -485,13 +485,20 @@ class TestSessionPolicyAppliedToProfiling:
         assert f.detected is JoinCardinality.MANY_TO_ONE
 
 
+def _side_stats_sql(**kwargs) -> tuple[str, str]:
+    """The two profiling statements, rendered as ``_side_stats`` executes them."""
+    rows, dist = SlayerQueryEngine._side_stats_sql(**kwargs)
+    dialect = kwargs["sqlglot_name"]
+    return rows.sql(dialect=dialect), dist.sql(dialect=dialect)
+
+
 class TestSideStatsSqlShape:
     """The profiling SQL is built via sqlglot, not string concatenation."""
 
     def test_keys_read_as_slayer_reads_them_on_snowflake(self) -> None:
         model = SlayerModel(name="orders", data_source="ds", sql_table="orders", columns=[
             Column(name="customer_id", type=DataType.INT), Column(name="exact", sql='"exact_key"', type=DataType.INT)])
-        rows_sql, _ = SlayerQueryEngine._side_stats_sql(
+        rows_sql, _ = _side_stats_sql(
             table="orders", key_cols=_physical_keys(model=model, keys=["customer_id", "exact"]),
             sqlglot_name="snowflake",
         )
@@ -500,7 +507,7 @@ class TestSideStatsSqlShape:
         assert 'NOT "exact_key" IS NULL' in rows_sql
 
     def test_identifiers_are_quoted_and_nulls_excluded(self) -> None:
-        rows_sql, dist_sql = SlayerQueryEngine._side_stats_sql(
+        rows_sql, dist_sql = _side_stats_sql(
             table="public.orders", key_cols=[exp.to_identifier("customer_id", quoted=True)], sqlglot_name="postgres",
         )
         for sql in (rows_sql, dist_sql):
@@ -510,14 +517,14 @@ class TestSideStatsSqlShape:
         assert "DISTINCT" not in rows_sql
 
     def test_mixed_case_table_stays_quoted_on_postgres(self) -> None:
-        rows_sql, dist_sql = SlayerQueryEngine._side_stats_sql(
+        rows_sql, dist_sql = _side_stats_sql(
             table="Sales.Orders", key_cols=[exp.to_identifier("id", quoted=True)], sqlglot_name="postgres",
         )
         for sql in (rows_sql, dist_sql):
             assert 'FROM "Sales"."Orders"' in sql
 
     def test_composite_keys_exclude_nulls_on_every_column(self) -> None:
-        rows_sql, dist_sql = SlayerQueryEngine._side_stats_sql(
+        rows_sql, dist_sql = _side_stats_sql(
             table="t", key_cols=[exp.to_identifier("a", quoted=True), exp.to_identifier("b", quoted=True)],
             sqlglot_name="postgres",
         )
@@ -527,7 +534,7 @@ class TestSideStatsSqlShape:
 
     def test_hostile_identifier_stays_a_single_identifier(self) -> None:
         payload = 'a"; DROP TABLE users; --'
-        rows_sql, _ = SlayerQueryEngine._side_stats_sql(
+        rows_sql, _ = _side_stats_sql(
             table="t", key_cols=[exp.to_identifier(payload, quoted=True), exp.to_identifier("b", quoted=True)],
             sqlglot_name="postgres",
         )
