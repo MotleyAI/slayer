@@ -1,4 +1,4 @@
-"""DEV-1954 — a resolved join path is spelled canonically (edge name, else model).
+"""A resolved join path is spelled canonically (edge name, else model).
 
 Graph: ``orders → customers →(hr) regions → region_events``; ``hr`` may be typed
 as ``hr`` or ``regions``. Every resolution door emits the canonical ``hr`` spelling,
@@ -374,7 +374,8 @@ class TestModelSqlSpelledByModelName:
         await engine.storage.save_model(orders)
         query = orders_q(dimensions=["customers.hr.rname"], measures=["amount:sum"])
         sql = await _dry(engine, query)
-        assert table_count(sql, "regions") == 1
+        # Once inside orders' filtered dataset, once for the dimension.
+        assert table_count(sql, "regions") == 2
         resp = await engine.execute(query)
         assert by_key(resp, RNAME, "orders.amount_sum") == \
             {"North": 100.0, "South": 20.0}

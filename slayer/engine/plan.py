@@ -78,8 +78,10 @@ def plan_query(
         elaborated=elaborated,
         producer_registry=producer_registry,
     )
-    conflicts = elaborated.prebound.granularity_conflicts
-    return planned.model_copy(update={"granularity_conflicts": conflicts}) if conflicts else planned
+    prebound = elaborated.prebound
+    update = {k: v for k, v in (("granularity_conflicts", prebound.granularity_conflicts),
+                                ("whole_list_reads", prebound.whole_list_reads)) if v}
+    return planned.model_copy(update=update) if update else planned
 
 
 def _stage_scope_and_bundle(
@@ -132,7 +134,7 @@ def _stage_scope_and_bundle_unframed(
     if sib is not None and isinstance(src, ModelExtension):
         base = model_from_stage_schema(
             name=sib, schema=stage_schemas[sib], data_source=data_source,
-            joins=bundle.saved_joins(sib),
+            saved=bundle.query_backed.get(sib),
         )
         overlaid = apply_extension_overlay(base, src)
         others = {n: s for n, s in stage_schemas.items() if n != sib}
@@ -146,7 +148,7 @@ def _stage_scope_and_bundle_unframed(
     if isinstance(src, str) and src in stage_schemas:
         synth = model_from_stage_schema(
             name=src, schema=stage_schemas[src], data_source=data_source,
-            joins=bundle.saved_joins(src),
+            saved=bundle.query_backed.get(src),
         )
         others = {n: s for n, s in stage_schemas.items() if n != src}
         sb = stage_bundle_with_siblings(

@@ -59,6 +59,7 @@ nav = [
   ]},
   { "OSI" = [
     { "Importing OSI configs" = "osi/osi_import.md" },
+    { "Exporting to OSI" = "osi/osi_export.md" },
   ]},
   { "Tutorials" = [
     { "Make it dynamic" = "examples/01_dynamic/dynamic.md" },

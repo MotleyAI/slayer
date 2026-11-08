@@ -11,6 +11,7 @@ from slayer.core.keys import (
     ColumnSqlKey,
     REGROUP_LEAF_PREFIX,
     CastKey,
+    ListSetKey,
     ScalarCallKey,
     TimeTruncKey,
     TransformKey,
@@ -58,7 +59,7 @@ def _series_mode(inner: ValueKey, *, to_original: Dict[ValueKey, ValueKey]) -> b
     transform or cross-model aggregate leaf."""
     if isinstance(inner, TransformKey) or is_boolean_shaped(inner):
         return True
-    if isinstance(inner, (ArithmeticKey, ScalarCallKey, CastKey)):
+    if isinstance(inner, (ArithmeticKey, ScalarCallKey, CastKey, ListSetKey)):
         has_transform, has_cross_model = _series_flags(inner, to_original=to_original)
         return has_transform or has_cross_model
     return False

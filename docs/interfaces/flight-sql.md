@@ -112,7 +112,7 @@ A projection with no aggregate, metric, `GROUP BY`, `HAVING` or `DISTINCT` (and 
 one row per record, as in SQL; `DISTINCT` or `GROUP BY` returns one row per distinct combination.
 
 List columns travel as their JSON array text in a UTF-8 column (a NULL list as NULL), and JSON values as their
-JSON text; grouping on a list is refused — group by its elements with `<list>.value`. Every other text-typed
+JSON text; grouping on a list groups by its element set (`["go","sql"]` for `['sql', 'go', 'sql']`), and ordering by one is refused. Every other text-typed
 value follows SLayer's one encoding: a UUID as its string, bytes as `\x` followed by lowercase hex, an interval
 as an ISO-8601 duration (`P1DT2H`).
 

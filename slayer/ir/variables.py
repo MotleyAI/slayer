@@ -52,8 +52,9 @@ def merge_query_variables(
 
 
 def _substituted_measure(m: ModelMeasure, variables: Dict[str, Any]) -> ModelMeasure:
-    text = bind_variables(m.formula, variables)
-    return m if text == m.formula else m.substituted(text)
+    if not has_bindings(m.formula):
+        return m
+    return m.substituted(bind_variables(m.formula, variables), variables=variables)
 
 
 def _substituted_dimension(d: Any, variables: Dict[str, Any]) -> Any:
@@ -135,11 +136,24 @@ def apply_variables_to_query(
             if any(n is not o for n, o in zip(new, entries)):
                 changed[field] = new
     if not changed:
-        return query.model_copy()
+        return _carrying(query.model_copy(), effective)
     # ``name`` may already be a minted stage identity the user-name validator refuses.
     data = {f: getattr(query, f) for f in query.model_fields_set | {"version"} if f != "name"}
     rebuilt = SlayerQuery.model_validate(data | changed)
-    return rebuilt.model_copy(update={"name": query.name}) if "name" in query.model_fields_set else rebuilt
+    rebuilt = rebuilt.model_copy(update={"name": query.name}) if "name" in query.model_fields_set else rebuilt
+    return _carrying(rebuilt, effective)
+
+
+def _carrying(query: SlayerQuery, variables: Dict[str, Any]) -> SlayerQuery:
+    """``query`` carrying ``variables`` when a whole-``IN`` placeholder stays unwritten in it."""
+    texts = [
+        *(query.filters or []), *(m.formula for m in query.measures or [] if isinstance(m, ModelMeasure)),
+        *(d.expression for d in query.dimensions or [] if isinstance(d, ComputedDimension)),
+        *(o.raw_formula for o in query.order or [] if o.raw_formula),
+    ]
+    if any(variable_names(t) for t in texts):
+        query._bound_variables = variables
+    return query
 
 
 def _mode_a_surfaces(model: SlayerModel) -> list:
@@ -201,7 +215,7 @@ def substitute_model_sql_surfaces(
         update["filters"] = [_sub(f) for f in model.filters]
     if model.measures:
         update["measures"] = [
-            m.model_copy(update={"formula": bind_variables(m.formula, variables)}) if _measure_needs_pass(m) else m
+            m.substituted(bind_variables(m.formula, variables), variables=variables) if _measure_needs_pass(m) else m
             for m in model.measures
         ]
     return model.model_copy(update=update)

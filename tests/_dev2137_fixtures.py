@@ -4,6 +4,7 @@ element access and ``collect``, and the live-backend check every list-capable su
 from __future__ import annotations
 
 import contextlib
+from collections import Counter
 from collections.abc import AsyncGenerator, Callable
 from decimal import Decimal
 from typing import Any, Optional
@@ -26,8 +27,8 @@ from tests._dev2120_fixtures import (
     stored_contractors,
 )
 
-#: ``(id, contractor_id)``: Ann has two, Bob, Cid and Eve one each.
-ASSIGNMENTS: tuple[tuple[int, int], ...] = ((1, 1), (2, 1), (3, 2), (4, 3), (5, 5))
+#: ``(id, contractor_id)``: Ann has two, Bob, Cid and Eve one each; contractor 9 does not exist.
+ASSIGNMENTS: tuple[tuple[int, int], ...] = ((1, 1), (2, 1), (3, 2), (4, 3), (5, 5), (6, 9))
 ASSIGNMENTS_DDL = "CREATE TABLE assignments (id INTEGER, contractor_id INTEGER)"
 ASSIGNMENTS_INSERT = "INSERT INTO assignments VALUES " + ", ".join(f"({a}, {c})" for a, c in ASSIGNMENTS)
 #: Two identical keyless rows.
@@ -99,6 +100,15 @@ def _collect(values: list[Any]) -> list[Any]:
     return sorted({v for v in values if v is not None})
 
 
+def element_set(value: Optional[list[Any]]) -> Optional[tuple[Any, ...]]:
+    """A list's value in grouping and comparison: its distinct non-NULL elements, sorted."""
+    return None if value is None else tuple(_collect(value))
+
+
+def as_set(value: Any) -> Optional[tuple[Any, ...]]:
+    return None if value is None else tuple(value)
+
+
 class Probe(BaseModel):
     """One live list query: ``read`` turns the response into what the oracle predicts."""
 
@@ -123,6 +133,8 @@ def list_probes(storage: ListStorage = ListStorage()) -> list[Probe]:
         return [e for r in team_rows for e in elements(r["skills"] or [])]
 
     sql_ids = {r["id"] for r in rows if "sql" in elements(r["skills"] or [])}
+    sets = {r["id"]: element_set(r["skills"]) for r in rows}
+    absent = () if storage.null_list_is_empty else None
     assigned = [r for r in rows if r["id"] in {c for a, c in ASSIGNMENTS if a in (1, 4)}]
     return [
         Probe(name="count-elements", query=query(measures=[measure("count(skills.*)", "n")]),
@@ -180,6 +192,29 @@ def list_probes(storage: ListStorage = ListStorage()) -> list[Probe]:
                                                          as_list(r["contractors.c"])) for r in resp.data},
               expected={t: (len(team_elements(rs)), len(rs), _collect(team_elements(rs)))
                         for t in teams if (rs := [r for r in assigned if r["team"] == t])}),
+        Probe(name="group-by-list", query=query(dimensions=["skills"], measures=[measure("count(*)", "n")]),
+              read=lambda resp: {as_set(r["contractors.skills"]): num(r["contractors.n"]) for r in resp.data},
+              expected=dict(Counter(sets.values()))),
+        Probe(name="compare-lists",
+              query=query(measures=[measure("count(*)", "n")], filters=["skills = ['sql', 'go', 'sql']"]),
+              read=lambda resp: num(resp.data[0]["contractors.n"]),
+              expected=sum(1 for s in sets.values() if s == ("go", "sql"))),
+        Probe(name="list-in", query=query(dimensions=["id"], filters=["skills IN (['go'], ['sql'], [])"]),
+              read=lambda resp: {int(r["contractors.id"]) for r in resp.data},
+              expected={i for i, s in sets.items() if s in (("go",), ("sql",), ())}),
+        Probe(name="count-distinct-lists", query=query(measures=[measure("count_distinct(skills)", "n")]),
+              read=lambda resp: num(resp.data[0]["contractors.n"]),
+              expected=len(set(sets.values()) - {None})),
+        Probe(name="partition-by-list",
+              query=query(dimensions=["id", "skills"], measures=[measure("count(*, partition_by=skills)", "n")]),
+              read=lambda resp: {int(r["contractors.id"]): num(r["contractors.n"]) for r in resp.data},
+              expected={i: sum(1 for t in sets.values() if t == s) for i, s in sets.items()}),
+        Probe(name="absent-list",
+              query=SlayerQuery.model_validate({"source_model": "assignments", "dimensions": ["contractors.skills"],
+                                                "measures": [measure("count(*)", "n")]}),
+              read=lambda resp: {as_set(r["assignments.contractors.skills"]): num(r["assignments.n"])
+                                 for r in resp.data},
+              expected=dict(Counter(sets[c] if c in sets else absent for _, c in ASSIGNMENTS))),
     ]
 
 

@@ -10,10 +10,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
+from slayer.core.join_walker import unobserved
 from slayer.core.keys import ValueKey, split_top_level_and
 from slayer.core.query import SlayerQuery
 from slayer.core.scope import ModelScope, StageSchema
 from slayer.engine.bind_inputs import bind_query_inputs
+from slayer.engine.column_dependency import check_model_filters
 from slayer.engine.elaborate_env import (
     build_environment,
     check_combined_partition_keys,
@@ -25,6 +27,7 @@ from slayer.engine.elaborate_env import (
 )
 from slayer.engine.home import resolve_aggregate_homes
 from slayer.engine.join_safety import crossing_local_root_predicate
+from slayer.engine.model_reads import models_read_closure
 from slayer.engine.unrelated import ProductSides
 from slayer.ir.elaborated import ConjunctTyping, ElaboratedProducer, ElaboratedQuery, ElaboratedStage
 from slayer.ir.planned import MaskTyping
@@ -56,6 +59,11 @@ def elaborate_query(
             query=query, bundle=bundle, scope=scope,
             stage_schemas=stage_schemas,
         )
+    if isinstance(scope, ModelScope) and scope.source_model is not None:
+        models = bundle.models_by_name
+        with unobserved():
+            for model in models_read_closure(query, host=scope.source_model, models=list(models.values())):
+                check_model_filters(model=model, reachable=models)
     sides = ProductSides(host=scope.source_model, bundle=bundle) if isinstance(scope, ModelScope) and (
         scope.source_model is not None) else None
     crossing = crossing_local_root_predicate(scope=scope, bundle=bundle)

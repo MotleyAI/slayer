@@ -247,10 +247,14 @@ class TestWhereHaving:
         sql = await gen(where_having_query(), dialect="postgres",
                         model=orders_model(filters=[MODE_A_OR]))
         select = next(
-            s for s in parse(sql, "postgres").find_all(exp.Select) if s.args.get("where")
+            s for s in parse(sql, "postgres").find_all(exp.Select) if s.args.get("having")
         )
-        _assert_grouped_conjuncts(select.args["where"].this, expected=3)
+        _assert_grouped_conjuncts(select.args["where"].this, expected=2)
         _assert_grouped_conjuncts(select.args["having"].this, expected=2)
+        # The model filter's OR is the grouped WHERE of the model's filtered dataset.
+        dataset = select.args["from_"].this
+        assert isinstance(dataset, exp.Subquery), sql
+        _assert_grouped_conjuncts(dataset.this.args["where"].this, expected=1)
 
     @pytest.mark.parametrize("dialect", ["sqlite", "duckdb"])
     async def test_mode_a_or_filter_keeps_its_grouping(self, dialect: str) -> None:

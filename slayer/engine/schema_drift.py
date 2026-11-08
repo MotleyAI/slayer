@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import re
 import time
 from collections import OrderedDict
-from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
+from collections.abc import AsyncGenerator, Awaitable, Callable, Collection, Coroutine
 from contextlib import asynccontextmanager
 from typing import (
     Annotated,
@@ -17,7 +18,7 @@ from typing import (
 )
 
 import sqlglot
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
@@ -34,6 +35,7 @@ from slayer.core.models import (
 )
 from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
 from slayer.core.refs import IDENTIFIER_RE
+from slayer.core.warnings import BrokenDependentWarning
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.engine.introspect_utils import reflect_columns
 from slayer.engine.schema_scope import (
@@ -63,8 +65,9 @@ from slayer.core.syntax import (
     walk_parsed_refs,
 )
 from slayer.sql import sqlite_introspect
-from slayer.sql.client import SqlClient, render_type_probe
+from slayer.sql.client import SqlClient, adapt_client, render_type_probe
 from slayer.sql.dialects import dialect_for_ds_type
+from slayer.sql.dialects.reflection import ResultColumnType
 from slayer.sql.engine_factory import ClientCacheKey, client_cache_key
 from slayer.ir.source_bundle import added_joins
 
@@ -129,15 +132,62 @@ ToDeleteEntry = Annotated[
 ]
 
 
-class ListRetypeFinding(BaseModel):
-    """Report-only: a column stored as TEXT whose live column is a list; re-ingesting re-types it."""
+RemedyKind = Literal["reingest", "set_type"]
 
-    finding: Literal["list_retype"] = "list_retype"
+#: Remedy texts serialized before ``remedy_kind`` existed.
+_LEGACY_REMEDIES: dict[RemedyKind, re.Pattern[str]] = {
+    "reingest": re.compile(r"re-ingest datasource '.*' \(`slayer ingest`\) to re-type it"),
+    "set_type": re.compile(r"set the column's type to [A-Z_]+"),
+}
+
+
+class RetypeFinding(BaseModel):
+    """Report-only: a column whose live column exists with a conflicting type."""
+
+    finding: Literal["retype"] = "retype"
     model_name: str
     data_source: str
     column: str
-    live_type: str
-    summary: str
+    stored_type: DataType
+    live_type: DataType
+    live_db_type: str | None = None
+    remedy_kind: RemedyKind
+
+    @model_validator(mode="before")
+    @classmethod
+    def _infer_legacy_remedy_kind(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or "remedy_kind" in data:
+            return data
+        remedy = data.get("remedy")
+        kind = next((k for k, pattern in _LEGACY_REMEDIES.items()
+                     if isinstance(remedy, str) and pattern.fullmatch(remedy)), None)
+        if kind is None:
+            raise ValueError(f"cannot infer remedy_kind from remedy {remedy!r}")
+        return {**data, "remedy_kind": kind}
+
+    @computed_field
+    @property
+    def remedy(self) -> str:
+        if self.remedy_kind == "reingest":
+            return f"re-ingest datasource '{self.data_source}' (`slayer ingest`) to re-type it"
+        return f"set the column's type to {self.live_type.value}"
+
+    @computed_field
+    @property
+    def summary(self) -> str:
+        live = f"{self.live_db_type} ({self.live_type.value})" if self.live_db_type else self.live_type.value
+        return (f"Column '{self.model_name}.{self.column}' is stored as {self.stored_type.value} but its live "
+                f"column is {live}; {self.remedy}.")
+
+    @classmethod
+    def of(
+        cls, *, model: SlayerModel, column: Column, live_type: DataType, live_db_type: str | None,
+        remedy_kind: RemedyKind,
+    ) -> "RetypeFinding":
+        return cls(
+            model_name=model.name, data_source=model.data_source, column=column.name, stored_type=column.type,
+            live_type=live_type, live_db_type=live_db_type, remedy_kind=remedy_kind,
+        )
 
 
 class NarrowedAccessFinding(BaseModel):
@@ -150,7 +200,7 @@ class NarrowedAccessFinding(BaseModel):
 
 
 #: Validation entries that report rather than delete.
-REPORT_ONLY_FINDINGS = (NarrowedAccessFinding, ListRetypeFinding)
+REPORT_ONLY_FINDINGS = (NarrowedAccessFinding, RetypeFinding)
 
 
 def unloadable_model_delete(*, error: StoredDocumentLoadError) -> WholeModelDelete:
@@ -211,6 +261,8 @@ class IdempotentIngestResult(BaseModel):
     schema_hint: str | None = None
     # Requested schemas dropped from scope with a reason; entries are SkippedSchema.
     skipped_schemas: list[Any] = Field(default_factory=list)
+    # Stored definitions a list re-type this pass breaks.
+    broken_dependents: list[BrokenDependentWarning] = Field(default_factory=list)
 
 
 class AppliedEntry(BaseModel):
@@ -247,8 +299,8 @@ class LiveTable(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     columns: dict[str, DataType] = Field(default_factory=dict)
-    # Each live list column's database type (``VARCHAR[]``, ``ARRAY<STRING>``).
-    list_types: dict[str, str] = Field(default_factory=dict)
+    # Each live column's database type name, where the database reports one.
+    db_types: dict[str, str] = Field(default_factory=dict)
     # Listed but its metadata read failed: present, yet no drift evidence.
     readable: bool = True
 
@@ -282,21 +334,44 @@ def _type_buckets_conflict(*, persisted: DataType, live: DataType, temporal_text
     return data_type_bucket(persisted) != data_type_bucket(live)
 
 
-def list_retype_findings(*, model: SlayerModel, live_table: LiveTable | None) -> list[ListRetypeFinding]:
-    """One finding per stored non-list base column whose live column is a list."""
+def _retyped(*, persisted: DataType, live: DataType, temporal_text: bool) -> bool:
+    return (live is DataType.ARRAY and persisted is not DataType.ARRAY) or _type_buckets_conflict(
+        persisted=persisted, live=live, temporal_text=temporal_text)
+
+
+def retype_findings(
+    *, model: SlayerModel, live_table: LiveTable | None, temporal_text: bool = False,
+) -> list[RetypeFinding]:
+    """One finding per stored base column whose live column's type conflicts; a live list re-ingests."""
     if live_table is None:
         return []
-    out: list[ListRetypeFinding] = []
+    out: list[RetypeFinding] = []
     for col in model.columns:
-        if col.type is DataType.ARRAY or not _column_is_base(col.sql):
+        if not _column_is_base(col.sql):
             continue
-        live = physical_column_sql(sql=col.sql, name=col.name)
-        if live_table.columns.get(live) is DataType.ARRAY:
-            live_type = live_table.list_types.get(live, "ARRAY")
-            out.append(ListRetypeFinding(
-                model_name=model.name, data_source=model.data_source, column=col.name, live_type=live_type,
-                summary=f"Column '{model.name}.{col.name}' is stored as {col.type.value} but its live column is "
-                f"the list {live_type}; re-ingest datasource '{model.data_source}' to re-type it.",
+        name = physical_column_sql(sql=col.sql, name=col.name)
+        live = live_table.columns.get(name)
+        if live is not None and _retyped(persisted=col.type, live=live, temporal_text=temporal_text):
+            out.append(RetypeFinding.of(
+                model=model, column=col, live_type=live, live_db_type=live_table.db_types.get(name),
+                remedy_kind="reingest" if live is DataType.ARRAY else "set_type",
+            ))
+    return out
+
+
+def sql_model_retype_findings(
+    *, model: SlayerModel, live_columns: dict[str, ResultColumnType] | None, temporal_text: bool = False,
+) -> list[RetypeFinding]:
+    """One finding per column of a sql-mode model whose result column's type conflicts."""
+    out: list[RetypeFinding] = []
+    for col in model.columns:
+        live = (live_columns or {}).get(col.name)
+        if live is None and col.sql is not None:
+            live = (live_columns or {}).get(col.sql.strip())
+        if live is not None and _retyped(persisted=col.type, live=live.type, temporal_text=temporal_text):
+            out.append(RetypeFinding.of(
+                model=model, column=col, live_type=live.type, live_db_type=live.db_type,
+                remedy_kind="reingest" if live.type is DataType.ARRAY else "set_type",
             ))
     return out
 
@@ -316,7 +391,7 @@ def _column_is_base(col_sql: str | None) -> bool:
 
 
 def _diff_sql_table_columns(
-    *, model: SlayerModel, live_table: LiveTable, temporal_text: bool = False,
+    *, model: SlayerModel, live_table: LiveTable,
 ) -> tuple[list[str], list[DeleteReason]]:
     """Per-column diff of a sql_table-mode model against live columns."""
     dropped: list[str] = []
@@ -332,19 +407,6 @@ def _diff_sql_table_columns(
                 DeleteReason(
                     target=f"column:{col.name}",
                     reason=f"Live column {bare_name!r} not found",
-                )
-            )
-            continue
-        live_dt = live_table.columns[bare_name]
-        if _type_buckets_conflict(persisted=col.type, live=live_dt, temporal_text=temporal_text):
-            dropped.append(col.name)
-            reasons.append(
-                DeleteReason(
-                    target=f"column:{col.name}",
-                    reason=(
-                        f"Type bucket mismatch: persisted={col.type}, "
-                        f"live={live_dt}"
-                    ),
                 )
             )
     return dropped, reasons
@@ -397,7 +459,6 @@ def diff_sql_table_model(
     model: SlayerModel,
     live_table: LiveTable | None,
     available_models_in_ds: set[str],
-    temporal_text: bool = False,
 ) -> tuple[ToDeleteEntry | None, set[str]]:
     """Diff a sql_table-mode model against live introspection → ``(entry_or_None, dropped_column_names)``; ``live_table is None`` → WholeModelDelete."""
     if live_table is None:
@@ -418,9 +479,7 @@ def diff_sql_table_model(
             {c.name for c in model.columns},
         )
 
-    dropped_cols, col_reasons = _diff_sql_table_columns(
-        model=model, live_table=live_table, temporal_text=temporal_text,
-    )
+    dropped_cols, col_reasons = _diff_sql_table_columns(model=model, live_table=live_table)
     dropped_joins, join_reasons = _diff_sql_table_joins(
         model=model,
         live_table=live_table,
@@ -474,17 +533,14 @@ def _sql_trial_failure_delete(
 
 
 def _diff_sql_model_columns(
-    *, model: SlayerModel, live_columns: dict[str, DataType], compare_types: bool = True, temporal_text: bool = False,
+    *, model: SlayerModel, live_columns: Collection[str],
 ) -> tuple[list[str], list[DeleteReason]]:
-    """Model columns missing from (or, with ``compare_types``, type-conflicting with) cursor metadata."""
+    """Model columns missing from cursor metadata."""
     dropped_cols: list[str] = []
     reasons: list[DeleteReason] = []
     for col in model.columns:
         # Cursor exposes alias names: match col.name, fall back to col.sql.
-        live_dt = live_columns.get(col.name)
-        if live_dt is None and col.sql is not None:
-            live_dt = live_columns.get(col.sql.strip())
-        if live_dt is None:
+        if col.name not in live_columns and (col.sql is None or col.sql.strip() not in live_columns):
             # Base/aliased-base only; derived expressions handled by cascade.
             if _column_is_base(col.sql) or col.sql == col.name:
                 dropped_cols.append(col.name)
@@ -497,35 +553,20 @@ def _diff_sql_model_columns(
                         ),
                     )
                 )
-            continue
-        if compare_types and _type_buckets_conflict(persisted=col.type, live=live_dt, temporal_text=temporal_text):
-            dropped_cols.append(col.name)
-            reasons.append(
-                DeleteReason(
-                    target=f"column:{col.name}",
-                    reason=(
-                        f"Type bucket mismatch on cursor metadata: "
-                        f"persisted={col.type}, live={live_dt}"
-                    ),
-                )
-            )
     return dropped_cols, reasons
 
 
 def diff_sql_model(
     *,
     model: SlayerModel,
-    live_columns: dict[str, DataType] | None,
+    live_columns: Collection[str] | None,
     invalid_sql: bool = False,
-    compare_types: bool = True,
-    temporal_text: bool = False,
 ) -> tuple[ToDeleteEntry | None, set[str]]:
-    """Diff a sql-mode model against cursor metadata; ``live_columns is None`` ⇒ WholeModelDelete, ``invalid_sql=True`` ⇒ the SQL itself is broken, not drift; ``compare_types=False`` checks names only."""
+    """Diff a sql-mode model against cursor metadata's column names; ``live_columns is None`` ⇒ WholeModelDelete,
+    ``invalid_sql=True`` ⇒ the SQL itself is broken, not drift."""
     if live_columns is None:
         return _sql_trial_failure_delete(model=model, invalid_sql=invalid_sql)
-    dropped_cols, reasons = _diff_sql_model_columns(
-        model=model, live_columns=live_columns, compare_types=compare_types, temporal_text=temporal_text,
-    )
+    dropped_cols, reasons = _diff_sql_model_columns(model=model, live_columns=live_columns)
     if not dropped_cols:
         return None, set()
     return (
@@ -1532,6 +1573,29 @@ def compute_datasource_drops(
     return final
 
 
+def column_dependents(*, models: list[SlayerModel], model: SlayerModel, column: str) -> list[ToDeleteEntry]:
+    """What deleting ``model.column`` would cascade to among ``models`` (one datasource); the column itself
+    included."""
+    seed = EditModelDelete(model_name=model.name, data_source=model.data_source, remove=RemoveSpec(columns=[column]))
+    return compute_datasource_drops(models=models, sql_table_diffs={model.name: (seed, {column})}, sql_diffs={})
+
+
+def reads_retyped_column(
+    *, models: list[SlayerModel], finding: RetypeFinding, read_columns: Set[tuple[str, str]],
+) -> bool:
+    """Whether ``read_columns`` reads ``finding``'s column, directly or through a column depending on it."""
+    owner = next((m for m in models if m.name == finding.model_name), None)
+    if owner is None:
+        return (finding.model_name, finding.column) in read_columns
+    for entry in column_dependents(models=models, model=owner, column=finding.column):
+        if isinstance(entry, WholeModelDelete):
+            if any(m == entry.model_name for m, _ in read_columns):
+                return True
+        elif any((entry.model_name, c) in read_columns for c in entry.remove.columns):
+            return True
+    return False
+
+
 # Live introspection
 
 
@@ -1728,16 +1792,14 @@ class _Catalog(BaseModel):
 
 
 class _SqlTrial(BaseModel):
-    live_columns: dict[str, DataType] | None
+    live_columns: dict[str, ResultColumnType] | None
     invalid_sql: bool
-    list_types: dict[str, str] = Field(default_factory=dict)
 
     @classmethod
     def of(cls, types: "ingestion.SqlResultTypes | None", *, invalid_sql: bool) -> "_SqlTrial":
         if types is None:
             return cls(live_columns=None, invalid_sql=invalid_sql)
-        return cls(live_columns=types.columns, invalid_sql=invalid_sql,
-                   list_types={name: found.db_type for name, found in types.lists.items()})
+        return cls(live_columns=types.result_column_types(), invalid_sql=invalid_sql)
 
 
 class DriftSnapshot(BaseModel):
@@ -1882,7 +1944,7 @@ async def _introspect_one_table(*, client: SqlClient, table_name: str, ref: Sche
     cols = await reflect_columns(client=client, table_name=table_name, ref=ref)
     return LiveTable(
         columns={c.name: c.type for c in cols},
-        list_types={c.name: c.db_type or "ARRAY" for c in cols if c.type is DataType.ARRAY},
+        db_types={c.name: c.type_name for c in cols if c.type_name},
     )
 
 
@@ -2123,20 +2185,8 @@ def _resolve_live_table(
     return None
 
 
-def _is_validate_models_base_column(col: Column) -> bool:
-    """Same base-column predicate as storage refinement: ``col.sql`` None or a bare identifier."""
-    if col.type is not DataType.INT:
-        return False
-    if col.sql is None:
-        return True
-    s = col.sql.strip()
-    if not s or s[0].isdigit():
-        return False
-    return all(c.isalnum() or c == "_" for c in s)
-
-
 async def _probe_validate_models_column(
-    *, client: SqlClient, model: SlayerModel, col: Column, table_name: str,
+    *, client: SqlClient, model: SlayerModel, col: Column, physical: str, table_name: str,
     schema_name: str | None,
 ) -> DataType | None:
     """Run the affinity probe for one column in a validate_models pass."""
@@ -2145,7 +2195,7 @@ async def _probe_validate_models_column(
         return await sqlite_introspect.probe_sqlite_integer_column(
             client=client,
             table=table_name,
-            column=col.sql or col.name,
+            column=physical,
             schema=schema_name,
         )
     except UNREACHABLE:
@@ -2158,48 +2208,38 @@ async def _probe_validate_models_column(
         return None
 
 
-def _drift_reason_for_probe(
-    *, model: SlayerModel, col: Column, verdict: DataType,
-) -> DeleteReason:
-    return DeleteReason(
-        target=f"column:{col.name}",
-        reason=(
-            f"SQLite affinity probe widened {model.name}.{col.name} "
-            f"from INT to {verdict.value}; re-run `slayer ingest` "
-            f"to recreate with the correct type."
-        ),
-    )
-
-
 async def _sqlite_probe_int_drift_for_model(
     *,
     model: SlayerModel,
     client: SqlClient,
+    live_tables: dict[str, LiveTable],
     default_schema: str | None = None,
-) -> list[tuple[str, DataType, DeleteReason]]:
-    """Probe-driven INT type-drift on SQLite: ``(column, verdict, DeleteReason)`` for each INT base column the probe widens to DOUBLE/TEXT; ``default_schema`` for unqualified tables, failures skip."""
+) -> list[RetypeFinding]:
+    """A re-type finding for each INT base column, live INT too, SQLite's storage probe widens to DOUBLE/TEXT;
+    ``default_schema`` for unqualified tables, failures skip."""
     if model.sql_table is None:
+        return []
+    live = _resolve_live_table(sql_table=model.sql_table, live_tables=live_tables)
+    if live is None or not live.readable:
         return []
 
     schema_name, table_name = split_sql_table(model.sql_table)
     if schema_name is None:
         schema_name = default_schema or None
 
-    drifts: list[tuple[str, DataType, DeleteReason]] = []
+    drifts: list[RetypeFinding] = []
     for col in model.columns:
-        if not _is_validate_models_base_column(col):
+        physical = physical_column_sql(sql=col.sql, name=col.name)
+        if col.type is not DataType.INT or not _column_is_base(col.sql) or live.columns.get(physical) is not DataType.INT:
             continue
         verdict = await _probe_validate_models_column(
-            client=client, model=model, col=col,
+            client=client, model=model, col=col, physical=physical,
             table_name=table_name, schema_name=schema_name,
         )
         if verdict is None or verdict is DataType.INT:
             continue
-        drifts.append(
-            (col.name, verdict, _drift_reason_for_probe(
-                model=model, col=col, verdict=verdict,
-            ))
-        )
+        drifts.append(RetypeFinding.of(model=model, column=col, live_type=verdict, live_db_type=None,
+                                       remedy_kind="reingest"))
     return drifts
 
 
@@ -2208,59 +2248,17 @@ async def _sqlite_probe_drifts_for_models(
     datasource: DatasourceConfig,
     client: SqlClient,
     sql_table_models: list[SlayerModel],
-) -> dict[str, list[tuple[str, DataType, DeleteReason]]]:
+    live_tables: dict[str, LiveTable],
+) -> list[RetypeFinding]:
     """Run the SQLite probe for every model through the datasource's client."""
-    if not sql_table_models:
-        return {}
     if not dialect_for_ds_type(datasource.type).probes_integer_affinity:
-        return {m.name: [] for m in sql_table_models}
+        return []
     default_schema = datasource.schema_name or None
-    return {
-        m.name: await _sqlite_probe_int_drift_for_model(model=m, client=client, default_schema=default_schema)
-        for m in sql_table_models
-    }
-
-
-def _merge_probe_drifts_into_diff(
-    *,
-    model: SlayerModel,
-    base_diff: tuple[ToDeleteEntry | None, set[str]],
-    probe_drifts: list[tuple[str, DataType, DeleteReason]],
-) -> tuple[ToDeleteEntry | None, set[str]]:
-    """Merge probe drifts into a model's ``(entry, dropped_columns)`` diff as regular column drops; skipped for a WholeModelDelete or no drifts."""
-    if not probe_drifts:
-        return base_diff
-    base_entry, dropped = base_diff
-    if isinstance(base_entry, WholeModelDelete):
-        return base_diff
-
-    drift_cols = [name for name, _, _ in probe_drifts]
-    drift_reasons = [reason for _, _, reason in probe_drifts]
-
-    if base_entry is None:
-        merged_entry = EditModelDelete(
-            model_name=model.name,
-            data_source=model.data_source,
-            remove=RemoveSpec(columns=list(drift_cols)),
-            reasons=list(drift_reasons),
-        )
-    else:
-        # EditModelDelete: append probe columns + reasons, keeping existing.
-        merged_columns = list(base_entry.remove.columns)
-        for c in drift_cols:
-            if c not in merged_columns:
-                merged_columns.append(c)
-        merged_entry = base_entry.model_copy(
-            update={
-                "remove": base_entry.remove.model_copy(
-                    update={"columns": merged_columns}
-                ),
-                "reasons": list(base_entry.reasons) + list(drift_reasons),
-            }
-        )
-
-    merged_dropped = set(dropped) | set(drift_cols)
-    return merged_entry, merged_dropped
+    return [
+        f for m in sql_table_models
+        for f in await _sqlite_probe_int_drift_for_model(
+            model=m, client=client, live_tables=live_tables, default_schema=default_schema)
+    ]
 
 
 def _diff_one_sql_table_model(
@@ -2268,23 +2266,17 @@ def _diff_one_sql_table_model(
     model: SlayerModel,
     live_tables: dict[str, "LiveTable"],
     available_in_ds: set[str],
-    probe_drifts: list[tuple[str, DataType, DeleteReason]],
-    temporal_text: bool,
 ) -> tuple[ToDeleteEntry | None, set[str]]:
-    """Per-model body of ``_collect_sql_table_diffs``: resolve live table, diff, merge probe drifts."""
+    """Per-model body of ``_collect_sql_table_diffs``: resolve the live table and diff."""
     live = _resolve_live_table(
         sql_table=model.sql_table or "", live_tables=live_tables,
     )
     if live is not None and not live.readable:
         return None, set()
-    base = diff_sql_table_model(
+    return diff_sql_table_model(
         model=model,
         live_table=live,
         available_models_in_ds=available_in_ds,
-        temporal_text=temporal_text,
-    )
-    return _merge_probe_drifts_into_diff(
-        model=model, base_diff=base, probe_drifts=probe_drifts,
     )
 
 
@@ -2295,9 +2287,10 @@ async def _collect_sql_table_diffs(
     sql_table_models: list[SlayerModel],
     available_in_ds: set[str],
     snapshot: DriftSnapshot | None = None,
-    findings: list[ListRetypeFinding] | None = None,
+    findings: list[RetypeFinding] | None = None,
 ) -> dict[str, tuple[ToDeleteEntry | None, set[str]]]:
-    """Introspect live and diff each sql_table-mode model; on SQLite also run the affinity probe and merge drift into each diff. Re-type findings append to ``findings``."""
+    """Introspect live and diff each sql_table-mode model; re-type findings (SQLite's affinity probe's
+    included) append to ``findings``."""
     if not sql_table_models:
         return {}
     # Cover every own-catalog schema (a model may be qualified to another own
@@ -2326,23 +2319,18 @@ async def _collect_sql_table_diffs(
         # hand --force-clean a whole tenant).
         logger.warning("validate_models: skipping drift verdict: %s", exc)
         return {}
-    probe_drifts_by_model = await _sqlite_probe_drifts_for_models(
-        datasource=datasource,
-        client=client,
-        sql_table_models=sql_table_models,
-    )
+    temporal_text = dialect_for_ds_type(datasource.type).temporal_text_compatible
     if findings is not None:
         for m in sql_table_models:
             live = _resolve_live_table(sql_table=m.sql_table or "", live_tables=live_tables)
-            findings.extend(list_retype_findings(model=m, live_table=live if live is not None and live.readable else None))
+            findings.extend(retype_findings(
+                model=m, live_table=live if live is not None and live.readable else None, temporal_text=temporal_text,
+            ))
+        findings.extend(await _sqlite_probe_drifts_for_models(
+            datasource=datasource, client=client, sql_table_models=sql_table_models, live_tables=live_tables,
+        ))
     return {
-        m.name: _diff_one_sql_table_model(
-            model=m,
-            live_tables=live_tables,
-            available_in_ds=available_in_ds,
-            probe_drifts=probe_drifts_by_model.get(m.name, []),
-            temporal_text=dialect_for_ds_type(datasource.type).temporal_text_compatible,
-        )
+        m.name: _diff_one_sql_table_model(model=m, live_tables=live_tables, available_in_ds=available_in_ds)
         for m in sql_table_models
     }
 
@@ -2386,9 +2374,10 @@ async def _collect_sql_diffs(
     sql_models: list[SlayerModel],
     client: SqlClient,
     snapshot: DriftSnapshot | None = None,
-    findings: list[ListRetypeFinding] | None = None,
+    findings: list[RetypeFinding] | None = None,
 ) -> dict[str, tuple[ToDeleteEntry | None, set[str]]]:
-    """Trial-execute each sql-mode model concurrently and produce its diff; re-type findings append to ``findings``."""
+    """Trial-execute each sql-mode model concurrently and produce its diff; re-type findings append to
+    ``findings``."""
     out: dict[str, tuple[ToDeleteEntry | None, set[str]]] = {}
     if not sql_models:
         return out
@@ -2399,14 +2388,14 @@ async def _collect_sql_diffs(
     compare_types = dialect_for_ds_type(datasource.type).cursor_reports_types
     for model in sql_models:
         trial = trials[model.sql or ""]
-        if findings is not None and trial.live_columns is not None:
-            live = LiveTable(columns=trial.live_columns, list_types=trial.list_types)
-            findings.extend(list_retype_findings(model=model, live_table=live))
         out[model.name] = diff_sql_model(
             model=model, live_columns=trial.live_columns, invalid_sql=trial.invalid_sql,
-            compare_types=compare_types,
-            temporal_text=dialect_for_ds_type(datasource.type).temporal_text_compatible,
         )
+        if findings is not None and compare_types:
+            findings.extend(sql_model_retype_findings(
+                model=model, live_columns=trial.live_columns,
+                temporal_text=dialect_for_ds_type(datasource.type).temporal_text_compatible,
+            ))
     return out
 
 
@@ -2421,7 +2410,7 @@ def validate_datasource(
     client: SqlClient | None = None,
     available_in_ds: set[str] | None = None,
     snapshot: DriftSnapshot | None = None,
-    findings_out: list[ListRetypeFinding] | None = None,
+    findings_out: list[RetypeFinding] | None = None,
     sql_clients: object = _UNSET,
 ) -> Coroutine[Any, Any, list[ToDeleteEntry]]:
     """Validate ``models`` (all one DS) against the live schema through ``client``. Read-only.
@@ -2442,7 +2431,7 @@ def validate_datasource(
         snapshot=snapshot, findings_out=findings_out,
     )
     if client is not None:
-        return validate(client=client)
+        return validate(client=adapt_client(client))
     return _validate_short_lived(datasource=datasource, validate=validate)
 
 
@@ -2460,7 +2449,7 @@ async def _validate_datasource(
     client: SqlClient,
     available_in_ds: set[str] | None,
     snapshot: DriftSnapshot | None,
-    findings_out: list[ListRetypeFinding] | None,
+    findings_out: list[RetypeFinding] | None,
 ) -> list[ToDeleteEntry]:
     if not models:
         return []

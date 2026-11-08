@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, Optional, Ty
 from collections.abc import Callable, Iterable, Mapping, Sequence
 
 import sqlalchemy as sa
-from pydantic import BaseModel, ConfigDict, field_validator
-from sqlalchemy.engine.url import make_url
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from sqlalchemy.engine.url import URL, make_url
 from sqlalchemy.exc import ArgumentError
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
@@ -40,7 +40,7 @@ from slayer.sql._identifier_fit import (
     substitute_quoted,
 )
 from slayer.sql.dialects.reflection import (
-    CatalogEngine,
+    CatalogConnection,
     ReflectedColumn,
     ResultColumnType,
     TableKeys,
@@ -57,6 +57,7 @@ from slayer.sql.dialects.reflection import (
     inspector_foreign_keys,
     inspector_unique_constraints,
     inspector_unique_indexes,
+    recover,
     relation,
     result_column_type_of_name,
     schema_token,
@@ -565,6 +566,36 @@ def _sqlglot_masking_lexis(sqlglot_name: str) -> SqlLexis:
     )
 
 
+_SLAYER_TYPE_CATEGORIES: Mapping[DataType, str] = {
+    DataType.INT: "number", DataType.DOUBLE: "number", DataType.DATE: "time", DataType.TIMESTAMP: "time",
+    DataType.BOOLEAN: "boolean",
+}
+
+
+class LegacyTypeCategories(BaseModel):
+    """A dialect's SLayer 1.6.0 category per database type name, read only by the deprecated category probes.
+
+    A name (lower-case, parenthesised parts dropped) matches ``names``, else the first ``contains`` substring
+    (upper-case), else takes ``other``; an unclassified column takes its SLayer type's category."""
+
+    model_config = ConfigDict(frozen=True)
+
+    names: Mapping[str, str] = Field(default_factory=dict)
+    contains: tuple[tuple[str, str], ...] = ()
+    other: str | None = None
+    unnamed: Mapping[DataType, str] = Field(default_factory=dict)
+
+    def category(self, column: ResultColumnType) -> str:
+        if column.db_type is not None:
+            name = " ".join(re.sub(r"\([^)]*\)", " ", column.db_type).lower().split())
+            found = self.names.get(name) or next(
+                (c for token, c in self.contains if token in column.db_type.upper()), self.other)
+            if found is not None:
+                return found
+            return _SLAYER_TYPE_CATEGORIES.get(column.type, "string")
+        return self.unnamed.get(column.type) or _SLAYER_TYPE_CATEGORIES.get(column.type, "string")
+
+
 def describe_type_name_code(
     description_row: Sequence[Any], *, overrides: Mapping[str, DataType] | None = None,
 ) -> ResultColumnType | None:
@@ -652,8 +683,9 @@ class DriverFacts(BaseModel):
 
     url_scheme: str | None = None
     url_backend_aliases: frozenset[str] = frozenset()
-    async_driver: str | None = None
     install_extra: str | None = None
+    extra_drivers: dict[str, str] = Field(default_factory=dict)
+    refused_loops: dict[str, frozenset[str]] = Field(default_factory=dict)
 
     @property
     def url_backend(self) -> str:
@@ -668,13 +700,25 @@ class DriverFacts(BaseModel):
         return frozenset({self.url_backend}) | self.url_backend_aliases
 
     @property
-    def sync_driver(self) -> str | None:
+    def default_driver(self) -> str | None:
         """The default driver: ``url_scheme``'s ``+driver`` part."""
         return _scheme_driver(self.url_scheme)
 
+    def bundled_non_default(self, url: URL) -> bool:
+        """Whether ``url`` names a driver the extra installs besides the default."""
+        driver = url.get_driver_name()
+        return url.get_backend_name() in self.url_backends and driver in self.extra_drivers and (
+            driver != self.default_driver
+        )
+
+    def refuses_loop(self, driver: str | None, loop: object) -> bool:
+        """Whether ``driver``'s async mode refuses ``loop``'s kind."""
+        refused = self.refused_loops.get(driver or "", frozenset())
+        return any(kind.__name__ in refused for kind in type(loop).__mro__)
+
     def pin_default_driver(self, url: str) -> str:
         """``url`` with the default driver named when it names none on a served backend; else unchanged."""
-        if self.sync_driver is None:
+        if self.default_driver is None:
             return url
         try:
             parsed = make_url(url)
@@ -683,7 +727,7 @@ class DriverFacts(BaseModel):
         backend = parsed.get_backend_name()
         if "+" in parsed.drivername or backend not in self.url_backends:
             return url
-        return parsed.set(drivername=f"{backend}+{self.sync_driver}").render_as_string(hide_password=False)
+        return parsed.set(drivername=f"{backend}+{self.default_driver}").render_as_string(hide_password=False)
 
 
 class SqlDialect(BaseModel):
@@ -727,11 +771,13 @@ class SqlDialect(BaseModel):
     global_in_subqueries: bool = False
 
     # URL scheme (``None`` = datasource type; its ``+driver`` is the default driver), extra URL
-    # backends served, async DBAPI driver, and their pip extra; read through ``driver_facts``.
+    # backends served, the pip extra, the drivers it installs (driver → distribution) and the
+    # event-loop classes each driver's async mode refuses; read through ``driver_facts``.
     url_scheme: str | None = None
     url_backend_aliases: frozenset[str] = frozenset()
-    async_driver: str | None = None
     install_extra: str | None = None
+    extra_drivers: dict[str, str] = Field(default_factory=dict)
+    refused_loops: dict[str, frozenset[str]] = Field(default_factory=dict)
 
     # SQLAlchemy backend names (``engine.dialect.name``) whose structure this dialect reflects.
     sa_backend_names: frozenset[str] = frozenset()
@@ -741,12 +787,11 @@ class SqlDialect(BaseModel):
 
     # Dates live in TEXT columns: a stored DATE/TIMESTAMP over live TEXT is no drift.
     temporal_text_compatible: bool = False
+    # The deprecated category probes' 1.6.0 classification.
+    legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories()
 
     # Cursor metadata carries column types; when not, types are read off a row, so an empty result has none.
     cursor_reports_types: bool = True
-
-    # Column-type probes run on the synchronous driver (the async one hides what typing needs).
-    type_probe_uses_sync_driver: bool = False
 
     # Rows a ``result_census_select`` samples.
     result_census_rows: int | None = None
@@ -758,7 +803,7 @@ class SqlDialect(BaseModel):
     catalog_qualified_schema_tokens: bool = False
 
     @property
-    def sync_driver(self) -> str | None:
+    def default_driver(self) -> str | None:
         """The default driver: ``url_scheme``'s ``+driver`` part."""
         return _scheme_driver(self.url_scheme)
 
@@ -769,8 +814,9 @@ class SqlDialect(BaseModel):
         return DriverFacts(
             url_scheme=self.url_scheme or ds_type,
             url_backend_aliases=self.url_backend_aliases,
-            async_driver=self.async_driver,
             install_extra=self.install_extra,
+            extra_drivers=self.extra_drivers,
+            refused_loops=self.refused_loops,
         )
 
     @property
@@ -1186,7 +1232,7 @@ class SqlDialect(BaseModel):
         lists' shared element type, when known."""
         values = args[0]
         if fn == "length":
-            return case((is_null(values), exp.Null()), default=self.list_length(values))
+            return case((is_null(values), exp.Null()), default=self.list_length(self.build_list_set(values, element)))
         other = args[1]
         if is_empty_array(other):
             return case((is_null(values), exp.Null()), default=exp.false() if fn == "contains_any" else exp.true())
@@ -1214,7 +1260,19 @@ class SqlDialect(BaseModel):
         return exp.Not(this=self.list_exists(other, alias=alias, element=element, predicate=missing))
 
     def list_length(self, values: Expression) -> Expression:  # NOSONAR(S1172) — hook signature
+        """The size of element set ``values``."""
         self.refuse("length")
+
+    def build_list_set(
+        self, values: Expression, element: Optional[DataType],  # NOSONAR(S1172) — hook signature
+    ) -> Expression:
+        """The element set of ``values``: its distinct non-NULL elements sorted as ``collect`` sorts them; NULL stays
+        NULL."""
+        self.refuse("list_set")
+
+    def build_list_key(self, values: Expression) -> Expression:  # NOSONAR(S1172) — hook signature
+        """What grouping, comparison, distinct counting, partitioning and join-backs read of element set ``values``."""
+        self.refuse("list_key")
 
     def list_contains(self, values: Expression, value: Expression) -> Expression:  # NOSONAR(S1172) — hook signature
         self.refuse("contains")
@@ -1874,6 +1932,15 @@ class SqlDialect(BaseModel):
         """Hook: session setup on every new pooled connection (e.g. ``USE WAREHOUSE``)."""
         return None
 
+    @property
+    def needs_sync_connections(self) -> bool:
+        """Whether a per-connection hook (UDFs, session overrides) runs, which an async driver's connections cannot take."""
+        cls = type(self)
+        return (
+            cls.register_udfs is not SqlDialect.register_udfs
+            or cls.apply_session_overrides is not SqlDialect.apply_session_overrides
+        )
+
     def statement_timeout(self, timeout_seconds: int) -> Expression | None:  # NOSONAR(S1172) — no-op hook default
         """Hook: statement that sets the timeout before the query, or ``None``."""
         return None
@@ -1955,17 +2022,18 @@ class SqlDialect(BaseModel):
     # Structure reflection: the one reader of a live table's columns and keys.
 
     def reflect_columns(
-        self, *, sa_engine: CatalogEngine | None, inspector: Any, table: str, schema: str | None, catalog: str | None,
+        self, *, connection: CatalogConnection | None, inspector: Any, table: str, schema: str | None,
+        catalog: str | None,
     ) -> list[ReflectedColumn]:
         """Inspector columns; when it raises, ``columns_query`` plus ``column_comments_query``."""
         location = TableLocation(name=table, schema_name=schema, catalog=catalog)
         try:
             raw = inspector.get_columns(table, schema=schema_token(schema=schema, catalog=catalog))
-            return self.columns_from_inspector(raw, sa_engine=sa_engine, location=location)
+            return self.columns_from_inspector(raw, connection=connection, inspector=inspector, location=location)
         except Exception:  # noqa: BLE001 — catalog fallback below
-            pass
-        rows = fetch(sa_engine, self.columns_query(location), dialect=self.sqlglot_name)
-        comments = self._column_comments(sa_engine=sa_engine, location=location)
+            recover(connection)
+        rows = fetch(connection, self.columns_query(location), dialect=self.sqlglot_name)
+        comments = self._column_comments(connection=connection, location=location)
         return [
             column_from_type_string(
                 name=name, data_type=dtype, comment=comments.get(name), zoned_types=self.zoned_timestamp_db_types,
@@ -1975,10 +2043,11 @@ class SqlDialect(BaseModel):
         ]
 
     def columns_from_inspector(
-        self, raw: list[dict[str, Any]], *, sa_engine: CatalogEngine | None, location: TableLocation,  # NOSONAR(S1172) — hook signature
+        self, raw: list[dict[str, Any]], *, connection: CatalogConnection | None, inspector: Any,  # NOSONAR(S1172) — hook signature
+        location: TableLocation,  # NOSONAR(S1172) — hook signature
     ) -> list[ReflectedColumn]:
         """Hook: the Inspector's column dicts as columns."""
-        sa_dialect = getattr(sa_engine, "dialect", None)
+        sa_dialect = getattr(inspector, "dialect", None)
         return [
             column_from_sa_type(
                 name=c["name"], sa_type=c["type"], comment=c.get("comment"),
@@ -2005,45 +2074,48 @@ class SqlDialect(BaseModel):
         """Hook: ``(column_name, comment)`` of one table, or ``None`` when comments have no catalog source."""
         return None
 
-    def _column_comments(self, *, sa_engine: CatalogEngine | None, location: TableLocation) -> dict[str, str]:
+    def _column_comments(self, *, connection: CatalogConnection | None, location: TableLocation) -> dict[str, str]:
         query = self.column_comments_query(location)
         if query is None:
             return {}
         try:
-            rows = fetch(sa_engine, query, dialect=self.sqlglot_name)
+            rows = fetch(connection, query, dialect=self.sqlglot_name)
         except Exception:  # noqa: BLE001 — comments are optional
+            recover(connection)
             return {}
         return {name: comment for name, raw in rows if (comment := clean_comment(raw))}
 
     def reflect_table_keys(
-        self, *, sa_engine: CatalogEngine | None, inspector: Any, table: str, schema: str | None, catalog: str | None,
+        self, *, connection: CatalogConnection | None, inspector: Any, table: str, schema: str | None,
+        catalog: str | None,
     ) -> TableKeys:
         """PK, FKs and whole-table unique key sets; each read best-effort, a failure logged at WARNING."""
         token = schema_token(schema=schema, catalog=catalog)
         pk = best_effort(
             lambda: self._primary_key(
-                sa_engine=sa_engine, inspector=inspector, table=table, schema=schema, catalog=catalog,
+                connection=connection, inspector=inspector, table=table, schema=schema, catalog=catalog,
             ),
-            default=[], table=table, what="primary key",
+            connection=connection, default=[], table=table, what="primary key",
         )
         fks = best_effort(
             lambda: inspector_foreign_keys(inspector, table=table, token=token),
-            default=[], table=table, what="foreign keys",
+            connection=connection, default=[], table=table, what="foreign keys",
         )
         uniques = best_effort(
             lambda: inspector_unique_constraints(inspector, table=table, token=token),
-            default=[], table=table, what="unique constraints",
+            connection=connection, default=[], table=table, what="unique constraints",
         )
         indexes = best_effort(
             lambda: inspector_unique_indexes(inspector, table=table, token=token),
-            default=[], table=table, what="unique indexes",
+            connection=connection, default=[], table=table, what="unique indexes",
         )
         return TableKeys(
             primary_key=pk, foreign_keys=fks, unique_key_sets=without_primary_key(pk, uniques + indexes),
         )
 
     def _primary_key(
-        self, *, sa_engine: CatalogEngine | None, inspector: Any, table: str, schema: str | None, catalog: str | None,
+        self, *, connection: CatalogConnection | None, inspector: Any, table: str, schema: str | None,
+        catalog: str | None,
     ) -> list[str]:
         """The Inspector's PK; when it yields none, ``primary_key_query`` (unless the Inspector is final)."""
         try:
@@ -2052,11 +2124,12 @@ class SqlDialect(BaseModel):
         except Exception:
             if self.primary_key_inspector_only:
                 raise
+            recover(connection)
             found = None
         if found or self.primary_key_inspector_only:
             return found or []
         query = self.primary_key_query(TableLocation(name=table, schema_name=schema, catalog=catalog))
-        return [row[0] for row in fetch(sa_engine, query, dialect=self.sqlglot_name)]
+        return [row[0] for row in fetch(connection, query, dialect=self.sqlglot_name)]
 
     def primary_key_query(self, location: TableLocation) -> exp.Select:
         """PK column names from INFORMATION_SCHEMA; joined on the catalog too (DuckDB reuses constraint names)."""
@@ -2080,7 +2153,11 @@ class SqlDialect(BaseModel):
             .where(all_of(where))
         )
 
-    def reflect_default_schema(self, *, sa_engine: sa.Engine | None, inspector: Any) -> str | None:
+    def url_default_schema(self, *, url: URL) -> str | None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: the default schema the connection URL fixes, known without a request; ``None`` when it fixes none."""
+        return None
+
+    def reflect_default_schema(self, *, connection: sa.Connection | None, inspector: Any) -> str | None:
         """The connection's default schema: the Inspector's, else ``current_schema()``; ``None`` when unknown."""
         try:
             name = inspector.default_schema_name
@@ -2088,18 +2165,18 @@ class SqlDialect(BaseModel):
             name = None
         if isinstance(name, str) and name:
             return name
-        if sa_engine is None:
+        if connection is None:
             return None
         try:
-            with sa_engine.connect() as conn:
-                row = conn.execute(sa.text("SELECT current_schema()")).fetchone()
+            row = connection.exec_driver_sql("SELECT current_schema()").fetchone()
         except Exception:  # noqa: BLE001 — dialect may lack current_schema()
+            recover(connection)
             return None
         value = row[0] if row else None
         return value if isinstance(value, str) and value else None
 
     def reflect_schema_description(
-        self, *, sa_engine: sa.Engine, schema: str | None, configured_schema: str | None,  # NOSONAR(S1172) — no-op hook default
+        self, *, connection: sa.Connection, schema: str | None, configured_schema: str | None,  # NOSONAR(S1172) — no-op hook default
     ) -> str | None:
         """Hook: the schema's own description (``schema``, else the connection's, else ``configured_schema``)."""
         return None

@@ -1,4 +1,4 @@
-"""DEV-1450 follow-up #4b — model filters referencing derived columns.
+"""Model filters referencing derived columns.
 
 A ``SlayerModel.filters`` entry (Mode-A SQL, always-applied WHERE) that
 references a non-trivial DERIVED column (``Column.sql`` set) now inlines
@@ -145,7 +145,8 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
                 ),
             ],
             filters=["ranked > 1"],
-        )
+        ),
+        _validate=False,
     )
     # Same-model measure reference — still rejected in a model filter.
     await storage.save_model(
@@ -156,7 +157,8 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
             columns=_base_cols(),
             measures=[ModelMeasure(formula="amount:sum", name="tot")],
             filters=["tot > 100"],
-        )
+        ),
+        _validate=False,
     )
     yield SlayerQueryEngine(storage=storage)
 

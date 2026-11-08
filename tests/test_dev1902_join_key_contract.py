@@ -311,7 +311,7 @@ class TestDriftAndRefinement:
 
     @pytest.mark.parametrize("key", ["id", "cust_id"])
     def test_dropped_local_key_drops_its_join(self, key):
-        """A local key dropped for a type drift (PK or not) takes its join with it."""
+        """A dropped local key (PK or not) takes its join with it."""
         orders = SlayerModel(
             name="orders", data_source="test", sql_table="orders",
             columns=[Column(name="id", type=DataType.INT, primary_key=True),
@@ -322,7 +322,7 @@ class TestDriftAndRefinement:
             name="customers", data_source="test", sql_table="customers",
             columns=[Column(name="id", type=DataType.INT, primary_key=True)],
         )
-        live = LiveTable(columns={"id": DataType.INT, "cust_id": DataType.INT, key: DataType.TEXT})
+        live = LiveTable(columns={c: DataType.INT for c in ("id", "cust_id") if c != key})
         diffs = {m.name: diff_sql_table_model(
             model=m, live_table=live if m is orders else LiveTable(columns={"id": DataType.INT}),
             available_models_in_ds={"orders", "customers"}) for m in (orders, customers)}

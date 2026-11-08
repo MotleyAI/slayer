@@ -995,8 +995,9 @@ _INFERRED = (
 )
 
 
-@pytest.fixture
-def sf_lists(sf_transient_schema: str, sf_datasource: DatasourceConfig, tmp_path):
+@pytest.fixture(scope="module")
+def _sf_list_tables(sf_transient_schema: str):
+    """The list tables, seeded once per module; tests only read them."""
     conn = snowflake.connector.connect(connection_name=_CONNECTION_NAME)
     cur = conn.cursor()
     try:
@@ -1005,13 +1006,7 @@ def sf_lists(sf_transient_schema: str, sf_datasource: DatasourceConfig, tmp_path
                      *mixed_numbers_statements(dialect="snowflake"), *_INFERRED]:
             cur.execute(stmt)
         conn.commit()
-        storage = YAMLStorage(base_dir=str(tmp_path))
-        run_sync(storage.save_datasource(sf_datasource))
-        for base in (contractors_model(data_source="sf_test"), assignments_model(data_source="sf_test")):
-            run_sync(storage.save_model(base.model_copy(update={
-                "columns": [c.model_copy(update={"sql": c.name}) for c in base.columns]})))
-        run_sync(storage.save_model(mixed_numbers_model(data_source="sf_test", explicit_sql=True)))
-        yield storage, cur
+        yield cur
     finally:
         try:
             for table in ("contractors", "assignments", "mixed", "inferred", "structured"):
@@ -1020,6 +1015,17 @@ def sf_lists(sf_transient_schema: str, sf_datasource: DatasourceConfig, tmp_path
         finally:
             cur.close()
             conn.close()
+
+
+@pytest.fixture
+def sf_lists(_sf_list_tables, sf_datasource: DatasourceConfig, tmp_path):
+    storage = YAMLStorage(base_dir=str(tmp_path))
+    run_sync(storage.save_datasource(sf_datasource))
+    for base in (contractors_model(data_source="sf_test"), assignments_model(data_source="sf_test")):
+        run_sync(storage.save_model(base.model_copy(update={
+            "columns": [c.model_copy(update={"sql": c.name}) for c in base.columns]})))
+    run_sync(storage.save_model(mixed_numbers_model(data_source="sf_test", explicit_sql=True)))
+    return storage, _sf_list_tables
 
 
 def _elements(datasource: DatasourceConfig, table: str) -> dict[str, tuple[DataType, DataType | None]]:
@@ -1074,10 +1080,14 @@ def test_list_functions_on_a_structured_array(sf_lists, sf_datasource: Datasourc
 
 def test_reingest_reinfers_only_unknown_elements(sf_lists, sf_datasource: DatasourceConfig) -> None:
     storage, cur = sf_lists
-    for model in ingest_datasource(datasource=sf_datasource, include_tables=["inferred"]):
-        run_sync(storage.save_model(model))
-    cur.execute("INSERT INTO inferred SELECT 2, ARRAY_CONSTRUCT('x'), NULL, NULL, ARRAY_CONSTRUCT(7)")
-    run_sync(ingest_datasource_idempotent(datasource=sf_datasource, storage=storage, include_tables=["inferred"]))
-    model = run_sync(storage.get_model("inferred", data_source="sf_test"))
+    cur.execute("CREATE OR REPLACE TABLE reingested CLONE inferred")  # a private copy: the seeded tables stay read-only
+    try:
+        for model in ingest_datasource(datasource=sf_datasource, include_tables=["reingested"]):
+            run_sync(storage.save_model(model))
+        cur.execute("INSERT INTO reingested SELECT 2, ARRAY_CONSTRUCT('x'), NULL, NULL, ARRAY_CONSTRUCT(7)")
+        run_sync(ingest_datasource_idempotent(datasource=sf_datasource, storage=storage, include_tables=["reingested"]))
+        model = run_sync(storage.get_model("reingested", data_source="sf_test"))
+    finally:
+        cur.execute("DROP TABLE IF EXISTS reingested")
     typed = {c.name: c.element_type for c in model.columns if c.name in ("ints", "empty")}
     assert typed == {"ints": DataType.INT, "empty": DataType.INT}

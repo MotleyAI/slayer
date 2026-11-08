@@ -10,8 +10,8 @@ from collections import OrderedDict
 
 import sqlalchemy as sa
 import sqlalchemy.event as sa_event
-from sqlalchemy.engine.url import make_url
-from sqlalchemy.exc import ArgumentError
+from sqlalchemy.engine.url import URL, make_url
+from sqlalchemy.exc import ArgumentError, NoSuchModuleError
 from sqlalchemy.pool import QueuePool, StaticPool
 
 from slayer.core.models import DatasourceConfig
@@ -81,22 +81,6 @@ def _take_evictions_over_limit() -> list[sa.Engine]:
         _, engine = _engine_cache.popitem(last=False)
         evicted.append(engine)
     return evicted
-
-
-def _sync_connection_string(datasource: DatasourceConfig) -> str:
-    """The datasource's URL with an async-only driver moved to the type's default sync driver."""
-    connection_string = datasource.get_connection_string()
-    facts = dialect_for_ds_type(datasource.type).driver_facts(datasource.type)
-    if facts.async_driver is None or facts.sync_driver is None:
-        return connection_string
-    try:
-        url = make_url(connection_string)
-    except ArgumentError:
-        return connection_string
-    backend = url.get_backend_name()
-    if backend not in facts.url_backends or url.get_driver_name() != facts.async_driver:
-        return connection_string
-    return url.set(drivername=f"{backend}+{facts.sync_driver}").render_as_string(hide_password=False)
 
 
 def _cache_key(datasource: DatasourceConfig, connection_string: str) -> EngineCacheKey:
@@ -183,15 +167,24 @@ def _attach_register_udfs_listener(
     )
 
 
+def _names_async_driver(url: URL) -> bool:
+    """Whether ``url`` names an async driver (an unknown one is judged at engine build)."""
+    try:
+        return url.get_dialect().is_async
+    except NoSuchModuleError:
+        return False
+
+
 def _is_in_memory_sqlite(connection_string: str) -> bool:
-    """True iff the connection string is a SQLite in-memory database (URI forms included)."""
+    """True iff the connection string is a SQLite in-memory database (URI forms included) on a sync driver;
+    an async one goes to the engine build, which refuses it."""
     if connection_string == _MEMORY_DB_NAME:
         return True
     try:
         url = make_url(connection_string)
     except ArgumentError:
         return False
-    if not url.drivername.startswith("sqlite"):
+    if not url.drivername.startswith("sqlite") or _names_async_driver(url):
         return False
     database = url.database
     if not database or database == _MEMORY_DB_NAME:
@@ -246,7 +239,7 @@ def get_engine(datasource: DatasourceConfig) -> sa.Engine:
     """Return a cached engine, building on a miss. The cap is re-applied on hits too, so a lowered ``SLAYER_MAX_CACHED_ENGINES`` takes effect next call."""
     # Snapshot first: a credential rotation mid-build would cache an engine under a wrong fingerprint.
     snapshot = datasource.model_copy()
-    connection_string = _sync_connection_string(snapshot)
+    connection_string = snapshot.get_connection_string()
     cache_key = _cache_key(datasource=snapshot, connection_string=connection_string)
     with _cache_lock:
         cached = _engine_cache.get(cache_key)
@@ -296,7 +289,7 @@ def release_idle(engine: sa.Engine) -> None:
 def invalidate_engine(datasource: DatasourceConfig) -> bool:
     """Drop and dispose the cached engine (returns whether one was cached) — creds are baked in at construction, so only eviction lets ``get_engine`` rebuild after a rotation/revocation."""
     snapshot = datasource.model_copy()
-    connection_string = _sync_connection_string(snapshot)
+    connection_string = snapshot.get_connection_string()
     cache_key = _cache_key(datasource=snapshot, connection_string=connection_string)
     with _cache_lock:
         evicted = _engine_cache.pop(cache_key, None)

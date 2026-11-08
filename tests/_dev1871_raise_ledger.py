@@ -478,12 +478,24 @@ ROWS: Tuple[LedgerRow, ...] = (
          + SUGGEST + 'Write every element as text, or every element as a number.',
          category='checker', family='lists', user=True, owner='checker'),
     _row(module=_EE, function='_check_list_comparison', exc='ListTypeError',
-         message='`…` is a list and cannot be compared with ….'
+         message='`…` is a list and cannot be compared with a scalar by ….'
          + SUGGEST + '…',
          category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_list_comparison', exc='ListTypeError',
+         message='`…` is a list, which has no order: it cannot be compared with ….'
+         + SUGGEST + 'Compare whole lists with = or <>, or its elements through ….',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_comparable_sets', exc='ListTypeError',
+         message='`…` and `…` hold … and … elements, which cannot be compared.'
+         + SUGGEST + "Compare lists of one element type, or cast one list's elements (CAST(x AS …[])).",
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_known_elements', exc='ListTypeError',
+         message='`…` holds opaque (UNKNOWN) elements, which cannot be ….'
+         + SUGGEST + "Declare the column's element_type.",
+         category='checker', family='lists', user=True, owner='checker'),
     _row(module=_EE, function='_check_list_in', exc='ListTypeError',
-         message='`…` is a list and cannot be an IN operand.'
-         + SUGGEST + 'Use contains_any(…, [...]), or filter … IN (...).',
+         message='`…` is a list and cannot be IN a list of scalars.'
+         + SUGGEST + 'Use contains_any(…, [...]), compare whole lists with … IN ([...], [...]), or filter … IN (...).',
          category='checker', family='lists', user=True, owner='checker'),
     _row(module=_EE, function='_check_list_call', exc='ListTypeError',
          message='…() compares two lists; `…` is not a list.'
@@ -494,7 +506,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          + SUGGEST + 'Give the empty list a typed operand.',
          category='checker', family='lists', user=True, owner='checker'),
     _row(module=_EE, function='_check_list_call', exc='ListTypeError',
-         message='`…` holds opaque (UNKNOWN) elements, which …() cannot compare.'
+         message='`…` holds opaque (UNKNOWN) elements, which …() cannot read.'
          + SUGGEST + "Declare the column's element_type.",
          category='checker', family='lists', user=True, owner='checker'),
     _row(module=_EE, function='_check_list_call', exc='ListTypeError',
@@ -506,7 +518,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          + SUGGEST + 'Read its elements through …, or use contains / length.',
          category='checker', family='lists', user=True, owner='checker'),
     _row(module=_EE, function='_check_list_aggregation', exc='ListTypeError',
-         message='`…` is a list: an aggregation over a list is only count; …() cannot take it.'
+         message='`…` is a list: an aggregation over a list is only count or count_distinct; …() cannot take it.'
          + SUGGEST + '…',
          category='checker', family='lists', user=True, owner='checker'),
     _row(module=_EE, function='_check_list_aggregation', exc='ListTypeError',
@@ -514,8 +526,8 @@ ROWS: Tuple[LedgerRow, ...] = (
          + SUGGEST + 'Collect a column with a scalar type.',
          category='checker', family='lists', user=True, owner='checker'),
     _row(module=_EE, function='check_list_dimension', exc='ListTypeError',
-         message='Dimension … is a list, which cannot be grouped on.'
-         + SUGGEST + 'Group by its elements: ….',
+         message='Grouping by the list dimension … needs a database with native lists; … has none.'
+         + SUGGEST + 'Run the query on a database with list columns (Postgres, DuckDB, BigQuery, Snowflake, ClickHouse, Trino or Presto).',
          category='checker', family='lists', user=True, owner='checker'),
     _row(module=_EE, function='check_list_order_key', exc='ListTypeError',
          message='Order key … is a list, which has no sort order.'

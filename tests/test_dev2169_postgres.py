@@ -56,9 +56,12 @@ async def pg(postgresql, tmp_path):
     storage = YAMLStorage(base_dir=str(tmp_path))
     await storage.save_datasource(ds)
     await storage.save_model(typed_model())
+    engine = SlayerQueryEngine(storage=storage)
     try:
-        yield SlayerQueryEngine(storage=storage)
+        yield engine
     finally:
+        await engine.aclose()
+        engine.close()
         engine_factory.invalidate_engine(ds)
 
 

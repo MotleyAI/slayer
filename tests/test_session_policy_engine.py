@@ -163,7 +163,7 @@ async def test_cross_catalog_fails_closed(engine, tmp_path, monkeypatch):
 async def test_schema_resolves_ast_first(engine, tmp_path, monkeypatch):
     seen = {}
 
-    def capture(self, *, sa_engine, inspector, table, schema, catalog):
+    def capture(self, *, connection, inspector, table, schema, catalog):
         seen["schema"] = schema
         return _cols("org")
 

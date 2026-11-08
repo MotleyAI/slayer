@@ -318,7 +318,7 @@ aggregations:
     formula: "avg(CASE WHEN {value} BETWEEN {low} AND {high} THEN {value} END)"
 ```
 
-Use at query time: `weighted_avg(price, weight=quantity)`, `trimmed_mean(revenue, low=10, high=1000)`. An aggregation entry can also override a built-in's default parameters without redefining the SQL, or give a built-in other than `first`/`last` a `formula`, which then replaces its SQL. Like columns and measures, aggregations accept an optional `meta` dict for caller bookkeeping. A formula that does not parse as SQL is rejected when the model is saved, and so is a parameter whose default `sql` is empty, whose name is `value` (which always stands for the aggregated column) or `window` (the trailing-window argument), or that the formula never references; a query argument the aggregation does not accept is rejected, listing the accepted names.
+Use at query time: `weighted_avg(price, weight=quantity)`, `trimmed_mean(revenue, low=10, high=1000)`. An aggregation entry can also override a built-in's default parameters without redefining the SQL, or give a built-in other than `first`/`last` a `formula`, which then replaces its SQL. Like columns and measures, aggregations accept an optional `meta` dict for caller bookkeeping. A formula that does not parse as SQL is rejected when the model is saved, and so is a parameter whose default `sql` is empty, whose name is `value` (which always stands for the aggregated column) or `window` (the trailing-window argument), or that the formula never references; a query argument the aggregation does not accept is rejected, listing the accepted names. A built-in aggregation's name, in any case, resolves only to an aggregation named exactly that built-in's lowercase name.
 
 An aggregation may take the name of a library function or function spelling (`reverse`, `left`, `strpos`, …): inside its own model every call over that model's columns — `reverse(a)`, `a:reverse`, `t.reverse(a)`, in any letter case — is the aggregation, the library function stays reachable everywhere else (another model's columns, a literal argument), and saving, loading and every query response that resolves through it carry a `library_name_shadow` warning; transform, date-part and granularity names stay reserved.
 
@@ -414,6 +414,8 @@ filters:
   - "deleted_at IS NULL"
   - "status <> 'test'"
 ```
+
+They apply wherever the model's rows are read — as a query's source, a join target, a cross-model aggregate or inside another model's filter — before any join, so a LEFT join with no passing match reads as NULL and an INNER join drops the row.
 
 These are SQL-mode expressions (Mode A): any valid SQL the underlying dialect accepts — function calls (`json_extract`, `coalesce`, …), `CASE WHEN`, joined-column references via dotted join paths (`customers.regions.name`). Aggregations and SLayer transforms are rejected here — those are DSL constructs (Mode B) and belong in query-level filters or `ModelMeasure.formula`. See [references.md](references.md) for the full Mode A / Mode B table. Dotted paths stay dotted (no auto-conversion); the legacy `__`-delimited split-alias form (`customers__regions.name`) is a hard error.
 

@@ -1,4 +1,4 @@
-"""DEV-1443 — filter / ORDER BY on raw colon-syntax measure formula must
+"""Filter / ORDER BY on raw colon-syntax measure formula must
 resolve to the user-assigned alias when the same node renames the measure.
 
 Bug: filter ``"operbotdetref:count_distinct >= 5"`` paired with a measure
@@ -21,7 +21,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
 
-from tests._engine_helpers import _engine_generate, _having_text, _where_text
+from tests._engine_helpers import _dataset_where_text, _engine_generate, _having_text, _where_text
 
 
 def _orders_model() -> SlayerModel:
@@ -224,7 +224,7 @@ class TestRemapEdgeCases:
     async def test_remap_does_not_rewrite_quoted_string_literal(
         self,
     ) -> None:
-        """DEV-1443 (CodeRabbit thread 2): the filter remap is identifier-
+        """The filter remap is identifier-
         level only — canonical-name matches inside quoted string literals
         must NOT be rewritten. Example: filter ``country:first = 'country_first'``
         with the measure renamed to ``primary_country`` must remap the
@@ -275,7 +275,7 @@ class TestRemapEdgeCases:
         formula_a: str,
         formula_b: str,
     ) -> None:
-        """DEV-1443 (CodeRabbit + Codex review rounds 3-4 on PR #133): two
+        """Two
         query measures sharing the same explicit ``name`` would otherwise
         silently collapse to one alias, making filter/ORDER BY refs bind
         to whichever measure was processed first. The pre-pass validator
@@ -308,7 +308,7 @@ class TestRemapEdgeCases:
     async def test_rename_collides_with_other_measure_canonical_raises(
         self,
     ) -> None:
-        """DEV-1443 (CodeRabbit review on PR #133): if a query measure's
+        """If a query measure's
         ``name`` equals the canonical alias of another measure in the same
         query, ``_ensure_aggregated_measure``'s alias-based dedup would
         silently merge the two aggregates — both filter refs would resolve
@@ -345,7 +345,7 @@ class TestRemapEdgeCases:
     async def test_filter_canonical_name_collides_with_source_column_raises(
         self,
     ) -> None:
-        """DEV-1443 (Codex review on PR #133): if the canonical agg alias
+        """If the canonical agg alias
         of a renamed measure literally shadows a source ``Column`` on the
         model, the colon-form filter ``col:agg <op> N`` is ambiguous (it
         could mean the renamed aggregate or the source column). Refuse
@@ -408,9 +408,9 @@ class TestRemapEdgeCases:
             ],
         )
         sql = await _generate(query, model)
-        # The model-level (Mode A) filter must surface in the emitted WHERE
-        # clause, unchanged by the query-side measure rename.
-        where = _where_text(sql)
+        # The model-level (Mode A) filter must surface in the WHERE of the
+        # model's filtered dataset, unchanged by the query-side measure rename.
+        where = _dataset_where_text(sql)
         assert "deleted_at" in where, (
             f"model filter dropped from WHERE clause:\nWHERE={where!r}\nSQL:\n{sql}"
         )

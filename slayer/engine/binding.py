@@ -5,13 +5,13 @@ from __future__ import annotations
 
 import difflib
 import os
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
 from decimal import Decimal
 from functools import partial
-from typing import Callable, Dict, Final, List, Mapping, Optional, Tuple, TypeGuard, cast
+from typing import Any, Callable, Dict, Final, List, Mapping, Optional, Tuple, TypeGuard, cast
 
 from pydantic import BaseModel, ConfigDict
 
@@ -22,6 +22,7 @@ from slayer.core.errors import (
     AggregationFilterError,
     AggregationNotAllowedError,
     CastTypeError,
+    ListTypeError,
     CircularJoinPathError,
     GranularityCallError,
     IllegalScopeReferenceError,
@@ -41,7 +42,7 @@ from slayer.core.direction import rank_direction, with_direction_kwarg
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
-from slayer.core.keys import ColumnTypeFn, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, numeric_valued
+from slayer.core.keys import ColumnTypeFn, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, list_valued, numeric_valued
 from slayer.core.join_walker import (
     LIST_ELEMENT_COLUMN,
     resolved_terminal,
@@ -75,11 +76,13 @@ from slayer.core.syntax import (
     ArrayLit,
     Arith,
     BoolOp,
+    BoundVariable,
     Cast,
     Cmp,
     DottedRef,
     Literal,
     ParsedExpr,
+    Placeholder,
     Ref,
     ScalarCall,
     StarSource,
@@ -92,6 +95,7 @@ from slayer.core.syntax import (
     comparison_hint,
     drop_root_qualifier,
     keyword_spelling,
+    parse_bound_expr,
     parse_expr,
     placeholder_names,
     positional_hint,
@@ -114,6 +118,7 @@ from slayer.ir.bound import BoundExpr, BoundFilter, BoundTimeDimension
 
 __all__ = [
     "bind_expr",
+    "bind_model_formula",
     "bind_filter",
     "bind_time_dimension",
     "collect_bind_records",
@@ -205,10 +210,18 @@ def bind_expr(
     )
     return BoundExpr(
         value_key=value_key,
-        routed_dotted=_canonical_if_routed(
-            parsed=parsed, value_key=value_key, scope=scope,
-        ),
+        routed_dotted=_canonical_if_routed(parsed=parsed, value_key=value_key),
     )
+
+
+def bind_model_formula(
+    formula: str, *, model: SlayerModel, models: Sequence[SlayerModel], dialect: str,
+) -> ValueKey:
+    """``formula`` bound on ``model`` (saved measures inlined) against the ``models`` graph, reading no database."""
+    bundle = ResolvedSourceBundle(dialect=dialect, source_model=model, referenced_models=list(models))
+    return bind_expr(
+        parse_expr(formula), scope=ModelScope(source_model=model), bundle=bundle, allow_measures=True,
+    ).value_key
 
 
 def spelled_aggregate_key(
@@ -247,7 +260,7 @@ def bind_time_dimension(
         )
     bound_col = _resolve_column_ref(parsed, scope=scope, bundle=bundle)
     column_type, upstream = _column_facts(bound_col, scope=scope, bundle=bundle)
-    routed = _canonical_if_routed(parsed=parsed, value_key=bound_col, scope=scope)
+    routed = _canonical_if_routed(parsed=parsed, value_key=bound_col)
     return BoundTimeDimension(
         bound=BoundExpr(value_key=TimeTruncKey(source=bound_col, granularity=resolved), routed_dotted=routed),
         column_type=column_type,
@@ -327,7 +340,6 @@ def _canonical_if_routed(
     *,
     parsed: ParsedExpr,
     value_key: ValueKey,
-    scope: ModelScope | StageSchema,
 ) -> Optional[str]:
     """Full canonical dotted path when a ``DottedRef``'s bound path differs from
     its typed hop path (auto-routed or respelled) — or the canonical name of a
@@ -625,22 +637,29 @@ def _bind_in(
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
-) -> InKey:
+) -> ValueKey:
     """Bind an ``IN`` / ``NOT IN`` predicate into an ``InKey``.
 
     LHS binds through the normal column-resolution path; RHS is a ``TupleLit``
-    of ``Literal`` nodes, each bound to a ``LiteralKey`` after normalization."""
+    of ``Literal`` nodes, each bound to a ``LiteralKey`` after normalization. A
+    ``BoundVariable`` RHS is one list beside a list LHS, else the whole list."""
+    if isinstance(parsed.right, Placeholder):
+        _reject_placeholders(parsed.right)
+    ctx: Dict[str, Any] = {"scope": scope, "bundle": bundle, "in_filter": in_filter, "alias_map": alias_map,
+                           "measure_ctx": measure_ctx, "dim_alias_map": dim_alias_map}
+    if isinstance(parsed.right, BoundVariable):
+        listed = list_valued(_bind(parsed.left, **ctx), column_type=scope_column_type(scope=scope, bundle=bundle))
+        rewritten = _variable_in(parsed, right=parsed.right, list_left=listed)
+        if not isinstance(rewritten, Cmp) or rewritten.op not in _MEMBERSHIP_OP:
+            return _bind(rewritten, **ctx)
+        parsed = rewritten
     if not isinstance(parsed.right, TupleLit):
         # Defensive: the parser guarantees a TupleLit RHS for in / not in.
         raise ValueError(
             f"_bind_in: expected TupleLit on RHS of {parsed.op!r}, got "
             f"{type(parsed.right).__name__}."
         )
-    column = _bind(
-        parsed.left,
-        scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map,
-        measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
-    )
+    column = _bind(parsed.left, **ctx)
     values = tuple(
         LiteralKey(value=normalize_scalar(elt.value))
         for elt in parsed.right.elements
@@ -660,6 +679,28 @@ def _bind_in(
         values=values,
         negated=(parsed.op == _NOT_IN),
     )
+
+
+def _variable_in(parsed: Cmp, *, right: BoundVariable, list_left: bool) -> ParsedExpr:
+    """``L IN ({v})`` over a list ``L`` is ``L = v``; over a scalar, ``v``'s values fill the whole list."""
+    elements = tuple(_variable_literal(right.name, v) for v in right.values)
+    if list_left:
+        same = Cmp(op="==", left=parsed.left, right=ArrayLit(elements=elements) if right.listed else elements[0])
+        return UnaryOp(op="not", operand=same) if parsed.op == _NOT_IN else same
+    if not elements:
+        raise ValueError(
+            f"Variable '{right.name}' cannot be an empty list; 'IN ()' is invalid SQL. "
+            f"For 'no filter' semantics, use a sentinel default."
+        )
+    return parsed.model_copy(update={"right": TupleLit(elements=elements)})
+
+
+def _variable_literal(name: str, value: object) -> Literal:
+    """One value of variable ``name`` as a literal (a string, number or boolean)."""
+    scalar = normalize_scalar(value) if isinstance(value, (str, int, float, bool, Decimal)) else value
+    if not isinstance(scalar, (str, Decimal, bool)):
+        raise ValueError(f"Variable '{name}' must hold strings, numbers or booleans, got {type(value).__name__}.")
+    return Literal(value=scalar)
 
 
 def _name_suggestion(*, name: str, model: "SlayerModel") -> str | None:
@@ -1045,7 +1086,7 @@ def _resolve_saved_measure(
     records = _bind_records.get()
     if records is not None:
         records.measures[(terminal_model.name, measure.name)] = None
-    parsed = parse_expr(measure.formula)
+    parsed = parse_bound_expr(measure.formula, measure.bound_variables)
     _reject_placeholders(parsed, text=measure.formula)
     if not host_path:
         # Bare/local: measure lives on the host; bind inline at this scope.
@@ -1133,7 +1174,7 @@ def _bind_expression_agg_source(
     agg: str,
     scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
-) -> ArithmeticKey | ScalarCallKey | LiteralKey | TimeTruncKey | InKey | TimePointCmpKey | CastKey:
+) -> ArithmeticKey | ScalarCallKey | LiteralKey | TimeTruncKey | InKey | TimePointCmpKey | CastKey | ListSetKey:
     """Bind a scalar-expression aggregate source.
 
     Dotted joined-model leaves and operands carrying ``Column.filter`` are both
@@ -1646,6 +1687,12 @@ def _validate_agg_eligibility(
     reason = _column_agg_refusal(
         col=col, columns=owner_model.columns, agg=effective, custom=effective in custom_names,
     )
+    if reason is not None and col.type is DataType.ARRAY:
+        raise ListTypeError(
+            summary=f"`{col.name}` is a list: an aggregation over a list is only count or count_distinct; {effective}() "
+            f"cannot take it.",
+            suggestion=f"Aggregate its elements: {effective}({col.name}.value).",
+        )
     if reason is not None:
         raise AggregationNotAllowedError(column=col.name, agg=effective, reason=reason)
     return effective

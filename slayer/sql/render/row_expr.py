@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
@@ -36,6 +36,7 @@ from slayer.core.keys import (
     ColumnSqlKey,
     ColumnTypeFn,
     InKey,
+    ListSetKey,
     LiteralKey,
     ScalarCallKey,
     TimeTruncKey,
@@ -392,8 +393,8 @@ def in_domain(name: str, args: List[Expression], *, dialect: SqlDialect) -> List
 def _shared_element(
     key: ScalarCallKey, *, column_type: ColumnTypeFn, column_element: ColumnElementFn,
 ) -> Optional[DataType]:
-    """The one element type of ``contains_any`` / ``contains_all``'s two lists, when known."""
-    if key.name not in LIST_ONLY_FUNCTIONS:
+    """The one element type of ``contains_any`` / ``contains_all``'s two lists, or ``length``'s list, when known."""
+    if key.name not in LIST_ONLY_FUNCTIONS and key.name != "length":
         return None
     types = {list_element_type(a, column_type=column_type, column_element=column_element) for a in key.args} - {None}
     return types.pop() if len(types) == 1 else None
@@ -423,6 +424,22 @@ def _no_element(_key: Any) -> Optional[DataType]:
 
 def render_array_literal(*, key: ArrayLiteralKey, dialect: SqlDialect) -> Expression:
     return dialect.build_array_literal([_literal(v.value, dialect=dialect) for v in key.values])
+
+
+def render_list_set(
+    *, key: ListSetKey, part: Callable[[Any], Expression], dialect: SqlDialect, column_type: ColumnTypeFn,
+    column_element: Optional[ColumnElementFn],
+) -> Expression:
+    """The element set through the dialect; ``[]``'s is itself, typed by the list it meets."""
+    if isinstance(key.source, ArrayLiteralKey) and not key.source.values:
+        return dialect.empty_list()
+    element = list_element_type(key.source, column_type=column_type, column_element=column_element or _no_element)
+    return dialect.build_list_set(part(key.source), element)
+
+
+def list_keyed(keys: Sequence[Any], parts: List[Expression], *, dialect: SqlDialect) -> List[Expression]:
+    """Each element-set operand as what a comparison reads of it."""
+    return [dialect.build_list_key(p) if isinstance(k, ListSetKey) else p for k, p in zip(keys, parts, strict=True)]
 
 
 def passthrough_call(*, name: str, args: List[Expression], dialect: SqlDialect) -> Expression:
@@ -574,6 +591,9 @@ def render_row_expression(
         return render_cast(key=key, part=_part, dialect=dialect)
     if isinstance(key, ArrayLiteralKey):
         return render_array_literal(key=key, dialect=dialect)
+    if isinstance(key, ListSetKey):
+        return render_list_set(key=key, part=_part, dialect=dialect, column_type=column_type,
+                               column_element=column_element)
     raise NotImplementedError(
         f"Row-level expression cannot contain {type(key).__name__}.",
     )
@@ -586,9 +606,10 @@ def _row_arithmetic(
     if comparison is not None:
         op, operand, value = comparison
         return render_temporal_comparison(op=op, operand=part(operand), value=value, dialect=dialect)
+    rendered = list_keyed(key.operands, [part(o) for o in key.operands], dialect=dialect)
     if key.op in NULL_SAFE_COMPARISON_OPS:
-        return render_null_safe(op=key.op, operands=[part(o) for o in key.operands], dialect=dialect)
-    operands = numeric_parts(key=key, parts=[part(o) for o in key.operands], column_type=column_type)
+        return render_null_safe(op=key.op, operands=rendered, dialect=dialect)
+    operands = numeric_parts(key=key, parts=rendered, column_type=column_type)
     if key.op == "%":
         return render_modulo(key=key, operands=operands, dialect=dialect, column_type=column_type)
     return render_arithmetic(op=key.op.lower(), operands=operands)

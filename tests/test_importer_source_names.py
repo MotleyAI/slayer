@@ -444,6 +444,7 @@ def test_sql_source_is_described_by_one_statement(live: Live) -> None:
 @pytest.mark.parametrize("sql", ["SELECT ((( not valid", 'DELETE FROM "order" RETURNING id'])
 def test_unreadable_or_modifying_sql_source_is_refused_before_execution(live: Live, sql: str) -> None:
     found = _source(live, sql=sql).read()
-    assert isinstance(found, str) and "could not be read" in found
+    assert isinstance(found, str)
+    assert "could not be read" in found
     assert found.endswith((NotReadOnlyQueryError.__name__, ParseError.__name__)), found
     assert [s for s in live.statements if s != _PING] == []

@@ -44,7 +44,8 @@ def is_due(last_sent: datetime.datetime | None, *, now: datetime.datetime) -> bo
 def build_report(*, config: UsageReportingConfig, batches: list[Batch]) -> UsageReport:
     merged = merge(batches)
     return UsageReport(
-        install_id=config.install_id, batch_id=uuid.uuid4(), env=environment.current(),
+        install_id=config.install_id, first_query_ok=config.first_query_ok, batch_id=uuid.uuid4(),
+        env=environment.current(),
         **{name: getattr(merged, name) for name in Batch.model_fields},
     )
 
