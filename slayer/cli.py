@@ -31,6 +31,7 @@ from slayer.cube.parser import parse_cube_project
 from slayer.cube.report import CubeConversionIssue, CubeIssueCategory
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.parser import parse_dbt_project
+from slayer.importers.physical import UndecidableIdentifierCaseError
 from slayer.demo import (
     DEMO_NAME,
     build_jaffle_shop,
@@ -2263,9 +2264,12 @@ async def _import_dbt_workflow(args, engine: SlayerQueryEngine) -> None:
         target_dialect=ds.type if ds is not None else None,
         offline_reason=offline_reason,
     )
-    if ds is not None:
-        await converter.collect_metadata(client=engine.client_for(ds))
-    result = converter.convert()
+    try:
+        if ds is not None:
+            await converter.collect_metadata(client=engine.client_for(ds))
+        result = converter.convert()
+    except UndecidableIdentifierCaseError as exc:
+        _fail(str(exc))
     hidden_count = await _save_imported_dbt_models(storage=storage, models=result.models)
 
     # Grouped, category-keyed conversion report + a severity tally.
@@ -2325,9 +2329,12 @@ async def _import_cube_workflow(args, engine: SlayerQueryEngine) -> None:
         honor_required_meta=not args.ignore_required_meta,
         target_dialect=ds.type if ds is not None else None, offline_reason=offline_reason,
     )
-    if ds is not None:
-        await converter.collect_metadata(client=engine.client_for(ds))
-    result = converter.convert()
+    try:
+        if ds is not None:
+            await converter.collect_metadata(client=engine.client_for(ds))
+        result = converter.convert()
+    except UndecidableIdentifierCaseError as exc:
+        _fail(str(exc))
     saved = 0
     for model in result.models:
         try:

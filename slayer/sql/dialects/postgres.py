@@ -19,6 +19,7 @@ from slayer.sql.dialects.base import (
     LegacyTypeCategories,
     CONSTANT_INPUT,
     PORTABLE_LIBRARY,
+    IdentifierFolding,
     set_statement,
     NativeFn,
     ListFn,
@@ -150,6 +151,7 @@ class PostgresDialect(SqlDialect):
     ds_type_aliases: frozenset[str] = frozenset({"postgres", "postgresql"})
     vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.MONEY})
     ilike_native: ClassVar[bool] = True
+    identifier_folding: ClassVar[IdentifierFolding] = "lower"
     sa_backend_names: frozenset[str] = frozenset({"postgresql"})
     explain_prefix: str | None = "EXPLAIN ANALYZE"
     explain_postfix: str = ""

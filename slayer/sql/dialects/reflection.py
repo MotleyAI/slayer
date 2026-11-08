@@ -5,11 +5,11 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable, Iterable, Mapping
-from typing import Any, Protocol, TypeVar
+from typing import Annotated, Any, Protocol, TypeVar
 
 import sqlalchemy as sa
 import sqlalchemy.dialects.mssql as _sqla_mssql
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidatorFunctionWrapHandler, WrapValidator
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
@@ -28,14 +28,22 @@ class CatalogConnection(Protocol):
     def rollback(self) -> None: ...
 
 
+def _as_given(value: Any, handler: ValidatorFunctionWrapHandler) -> Any:
+    return value if isinstance(value, str) else handler(value)
+
+
+#: A live name in SQLAlchemy's spelling: a ``quoted_name`` (a lower-case Snowflake / Oracle name) keeps its flag.
+LiveName = Annotated[str, WrapValidator(_as_given)]
+
+
 class TableLocation(BaseModel):
-    """One live table; an unset schema or catalog is the connection's current one."""
+    """One live table, its names in SQLAlchemy's spelling; an unset schema or catalog is the connection's current one."""
 
     model_config = ConfigDict(frozen=True)
 
-    name: str
-    schema_name: str | None = None
-    catalog: str | None = None
+    name: LiveName
+    schema_name: LiveName | None = None
+    catalog: LiveName | None = None
 
 
 class ReflectedColumn(BaseModel):
@@ -51,6 +59,8 @@ class ReflectedColumn(BaseModel):
     db_type: str | None = None
     comment: str | None = None
     type_name: str | None = None
+    # SQLAlchemy's ``quoted_name`` flag on ``name`` (a lower-case Snowflake / Oracle name).
+    quoted: bool = False
 
 
 class ResultColumnType(BaseModel):
@@ -462,7 +472,7 @@ def column_from_sa_type(
         list_type = list_db_type(sa_type, sa_dialect=sa_dialect)
         return ReflectedColumn(
             name=name, type=data_type, element_type=element_type, db_type=list_type,
-            comment=clean_comment(comment), type_name=list_type,
+            comment=clean_comment(comment), type_name=list_type, quoted=getattr(name, "quote", None) is True,
         )
     type_name = _raw_db_type_str(_unwrap_clickhouse_wrappers(sa_type))
     lossy = data_type.is_opaque or _sa_type_is_exact_numeric(sa_type) or _sa_type_is_json(
@@ -470,7 +480,7 @@ def column_from_sa_type(
     ) or type(sa_type).__name__.upper() in zoned_types
     return ReflectedColumn(
         name=name, type=data_type, is_float=_sa_type_is_float(sa_type), db_type=type_name if lossy else None,
-        comment=clean_comment(comment), type_name=type_name,
+        comment=clean_comment(comment), type_name=type_name, quoted=getattr(name, "quote", None) is True,
     )
 
 
