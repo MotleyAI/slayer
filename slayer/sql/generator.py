@@ -5271,7 +5271,7 @@ class SQLGenerator:
 
     def _emit_relation(self, *, model, alias: str, bundle) -> Expression:
         """The one door a model reaches the SQL through (FROM, join target, semi-join
-        hop, list parent), always as its filtered dataset (python.sql P16)."""
+        hop, list parent), always as its filtered dataset (python.sql P13)."""
         if is_spine(model):
             return self._spine_relation(alias=alias)
         filters = list(model.filters or [])

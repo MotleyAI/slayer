@@ -1,4 +1,4 @@
-"""A client connects through one driver: its caller's engine's, else its URL's (spec: sql/execution)."""
+"""A client connects through one driver: its caller's engine's, else its URL's (spec: database/execution)."""
 
 from __future__ import annotations
 

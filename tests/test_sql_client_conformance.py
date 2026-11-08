@@ -1,4 +1,4 @@
-"""The executable client contract (spec: sql/client-contract — the client contract is executable)."""
+"""The executable client contract (spec: database/client-contract — the client contract is executable)."""
 
 from __future__ import annotations
 

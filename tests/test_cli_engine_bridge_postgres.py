@@ -1,4 +1,4 @@
-"""A multi-step CLI command runs its whole workflow in one event loop (spec: sql/execution)."""
+"""A multi-step CLI command runs its whole workflow in one event loop (spec: database/execution)."""
 
 from __future__ import annotations
 

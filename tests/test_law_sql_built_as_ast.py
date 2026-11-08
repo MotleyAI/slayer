@@ -1,4 +1,4 @@
-"""Law (system.arc42.md §3.6): SQL is built as sqlglot AST, never by composing statement text."""
+"""Law (system.arc42.md §3.4): SQL is built as sqlglot AST, never by composing statement text."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""The SQL client contract: typed failures, SLayer-typed metadata, delegation (spec: sql/client-contract)."""
+"""The SQL client contract: typed failures, SLayer-typed metadata, delegation (spec: database/client-contract)."""
 
 from __future__ import annotations
 

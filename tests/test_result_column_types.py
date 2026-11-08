@@ -1,4 +1,4 @@
-"""The typed column-type probe on SQLite, DuckDB and Postgres (spec: sql/client-contract)."""
+"""The typed column-type probe on SQLite, DuckDB and Postgres (spec: database/client-contract)."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Each Postgres driver a URL names serves every client operation (spec: sql/execution, sql/client-contract)."""
+"""Each Postgres driver a URL names serves every client operation (spec: database/execution, database/client-contract)."""
 
 from __future__ import annotations
 

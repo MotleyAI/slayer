@@ -701,7 +701,7 @@ class StorageBackend(ABC):
             self._granularities_settled = True
 
     async def _with_library_granularities_renamed(self, *, name: str, data: Any) -> Any:
-        """A stored datasource dict with each granularity a library name reserves renamed (system P11.2), its
+        """A stored datasource dict with each granularity a library name reserves renamed (storage P3.2), its
         dependants persisted before it so an interrupted rename converges."""
         if not isinstance(data, dict):
             return data

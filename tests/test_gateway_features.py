@@ -1,6 +1,6 @@
 """A gateway with no direct database access serves every feature, and no live access blocks the loop.
 
-Spec: sql/execution. Each parity test runs a feature once on a default engine and once, with
+Spec: database/execution. Each parity test runs a feature once on a default engine and once, with
 every direct path refused, on an engine whose factory returns a gateway; the results must match.
 """
 

@@ -1,4 +1,4 @@
-"""The persisted elements a rendered statement reads, and whether a drift entry touches them (system P10 closure)."""
+"""The persisted elements a rendered statement reads, and whether a drift entry touches them (engine P10 closure)."""
 
 from __future__ import annotations
 

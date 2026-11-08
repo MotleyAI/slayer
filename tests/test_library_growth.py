@@ -1,4 +1,4 @@
-"""Library growth never invalidates a stored artefact (spec: models/stored-upgrade; system principle 11.2)."""
+"""Library growth never invalidates a stored artefact (spec: models/stored-upgrade; storage principle 3.2)."""
 
 from __future__ import annotations
 

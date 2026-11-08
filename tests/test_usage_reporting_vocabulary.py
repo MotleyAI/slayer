@@ -9,6 +9,7 @@ from typing import get_args
 import pytest
 
 from slayer.core.models import DatasourceConfig
+from slayer.sql.client import DatabaseUnavailable, SqlClientError
 from slayer.sql.dialects import SQLGLOT_NAMES
 from slayer.usage_reporting import features, recorder
 from slayer.usage_reporting.payload import CLIENTS, DIALECTS, EXTRAS, ErrorToken
@@ -30,6 +31,11 @@ def test_storage_table_names_real_classes(dotted: str) -> None:
 
 def test_error_tokens_are_vocabulary() -> None:
     assert set(recorder._ERROR_TOKENS.values()) | {"http_4xx", "http_5xx", "other"} <= set(get_args(ErrorToken))
+
+
+@pytest.mark.parametrize("error", [SqlClientError("x"), DatabaseUnavailable("x")])
+def test_sql_client_errors_count_as_db_errors(error: SqlClientError) -> None:
+    assert recorder.error_token(error) == "db_error"
 
 
 @pytest.mark.parametrize(("status", "token"), [(404, "http_4xx"), (422, "http_4xx"), (500, "http_5xx")])

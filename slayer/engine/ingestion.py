@@ -302,7 +302,7 @@ async def _inferred_elements(
     return column.model_copy(update={"element_type": dialect.list_element_type(names)})
 
 
-# --- sql-mode result types (system P20) ---
+# --- sql-mode result types (live_schema P2) ---
 
 
 class ResultList(BaseModel):
@@ -1218,7 +1218,7 @@ class AdditiveMergeResult(BaseModel):
 
 
 def _retyped_list(*, persisted: Column, fresh: Column) -> Column | None:
-    """A stored non-list column whose live column is a list, re-typed to it (system P14's exception); a stored list's
+    """A stored non-list column whose live column is a list, re-typed to it (live_schema P1's exception); a stored list's
     UNKNOWN elements re-inferred for an untyped live list (Snowflake ``ARRAY``). ``None`` when nothing changes."""
     if fresh.type is not DataType.ARRAY:
         return None
@@ -1607,7 +1607,7 @@ async def _adopt_stored_sanitized_names(
 async def _retype_sql_models(
     *, datasource: DatasourceConfig, storage: StorageBackend, client: SqlClient, failures: DocumentLoadFailures,
 ) -> tuple[dict[str, list[str]], dict[str, str]]:
-    """Re-type each stored ``sql``-mode model's stale non-list columns to the lists its query returns (system P20):
+    """Re-type each stored ``sql``-mode model's stale non-list columns to the lists its query returns (live_schema P2):
     ``({model: re-typed columns}, {model: error})``."""
     retyped: dict[str, list[str]] = {}
     errors: dict[str, str] = {}

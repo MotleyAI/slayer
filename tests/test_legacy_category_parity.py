@@ -1,6 +1,6 @@
 """The deprecated category probes answer the category SLayer 1.6.0 answered for every input it classified.
 
-The 1.6.0 classifier is copied verbatim below as the oracle. Spec: sql/client-contract.
+The 1.6.0 classifier is copied verbatim below as the oracle. Spec: database/client-contract.
 """
 
 from __future__ import annotations

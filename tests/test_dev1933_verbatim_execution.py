@@ -83,7 +83,7 @@ def _forwards_to_wrapped_client(func: ast.Attribute) -> bool:
 
 
 class TestClientModuleGuard:
-    """python.sql.arc42.md §3.13: the client constructs no text clause and issues no
+    """python.database.arc42.md §3.2: the client constructs no text clause and issues no
     driver-level execute outside the single verbatim helper pair."""
 
     def _tree(self) -> ast.Module:

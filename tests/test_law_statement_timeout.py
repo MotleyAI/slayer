@@ -1,4 +1,4 @@
-"""sql §3.2 / §3.13 guard: ``client.py`` picks no timeout by ``db_type`` and never re-parses a statement it executes."""
+"""sql §3.2 / database §3.2 guard: ``client.py`` picks no timeout by ``db_type`` and never re-parses a statement it executes."""
 
 from __future__ import annotations
 

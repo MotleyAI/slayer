@@ -1,4 +1,4 @@
-"""A client holds one async engine per event loop (spec: sql/execution)."""
+"""A client holds one async engine per event loop (spec: database/execution)."""
 
 from __future__ import annotations
 

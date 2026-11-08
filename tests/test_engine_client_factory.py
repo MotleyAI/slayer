@@ -1,4 +1,4 @@
-"""Engine-owned clients built by an injectable factory (spec: sql/execution)."""
+"""Engine-owned clients built by an injectable factory (spec: database/execution)."""
 
 from __future__ import annotations
 

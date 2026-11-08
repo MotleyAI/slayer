@@ -1,4 +1,4 @@
-"""A leading qualifier naming the query root resolves to the root at bind time (system §3.9)."""
+"""A leading qualifier naming the query root resolves to the root at bind time (semantics.arc42.md Principle 1)."""
 
 from __future__ import annotations
 

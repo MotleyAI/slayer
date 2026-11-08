@@ -1,5 +1,5 @@
 """Every column a facade catalog advertises is selectable alone, with its advertised type
-(spec: facade/projection; principle 17)."""
+(spec: facade/projection; protocols principle 1)."""
 
 from __future__ import annotations
 

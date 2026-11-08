@@ -1,4 +1,4 @@
-"""Per-driver cursor descriptions of the typed column-type probe (spec: sql/client-contract)."""
+"""Per-driver cursor descriptions of the typed column-type probe (spec: database/client-contract)."""
 
 from __future__ import annotations
 

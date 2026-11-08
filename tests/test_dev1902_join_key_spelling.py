@@ -1,5 +1,5 @@
 """Join keys name columns logically; the physical spelling is applied once, at
-emission (system P16). Executed on SQLite and DuckDB over a graph whose every
+emission (semantics Principle 3). Executed on SQLite and DuckDB over a graph whose every
 key column is renamed (``tests/_dev1902_fixtures.py``)."""
 
 from __future__ import annotations

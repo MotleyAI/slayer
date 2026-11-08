@@ -1,4 +1,4 @@
-"""The default client keeps each dialect's connection behaviour (spec: sql/client-contract)."""
+"""The default client keeps each dialect's connection behaviour (spec: database/client-contract)."""
 
 from __future__ import annotations
 
