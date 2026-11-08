@@ -22,6 +22,7 @@ from slayer.engine.schema_scope import (
     validate_scope_args,
 )
 from slayer.sql.dialects import get_dialect
+from slayer.sql.dialects.reflection import TableLocation
 
 DUCKDB = get_dialect("duckdb")
 
@@ -124,13 +125,13 @@ class TestSqlTableLocation:
         ],
     )
     def test_reads_catalog_schema_and_object(self, sql_table, expected) -> None:
-        at = sql_table_location(sql_table, dialect=DUCKDB)
-        assert (at.catalog, at.schema_name, at.name) == expected
+        catalog, schema, name = expected
+        assert sql_table_location(sql_table, dialect=DUCKDB) == TableLocation(
+            name=name, schema_name=schema, catalog=catalog)
 
     def test_reads_quoted_identifiers(self) -> None:
         """A quoted part reads as the live name it denotes."""
-        at = sql_table_location('prod."Company"', dialect=DUCKDB)
-        assert (at.schema_name, at.name) == ("prod", "Company")
+        assert sql_table_location('prod."Company"', dialect=DUCKDB) == TableLocation(name="Company", schema_name="prod")
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +292,7 @@ class TestQuotedSchemaName:
 
     def test_stored_quoted_parts_read_back_flagged_quoted(self) -> None:
         at = sql_table_location('db."lower_schema"."lower_table"', dialect=get_dialect("snowflake"))
-        assert [(p, getattr(p, "quote", None)) for p in (at.catalog, at.schema_name, at.name)] == [
-            ("db", None), ("lower_schema", True), ("lower_table", True)]
+        flags = [(p, getattr(p, "quote", None)) for p in (at.catalog, at.schema_name, at.name)]
+        assert flags == [("db", None), ("lower_schema", True), ("lower_table", True)]
         unquoted = sql_table_location("lower_schema.lower_table", dialect=get_dialect("snowflake")).schema_name
         assert getattr(unquoted, "quote", None) is not True
