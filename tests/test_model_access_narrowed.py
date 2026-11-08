@@ -169,14 +169,14 @@ class TestValidateModels:
     ) -> None:
         await reader_in_other_datasource(store, name="far_pay", source="hr", formula="sum(salary)")
         unfiltered: list[None] = []
-        load = store.storage.load_models
+        load = engine.storage.load_models
 
         async def counting(*args, **kwargs):
             if kwargs.get("data_source") is None and not args:
                 unfiltered.append(None)
             return await load(*args, **kwargs)
 
-        monkeypatch.setattr(store.storage, "load_models", counting)
+        monkeypatch.setattr(engine.storage, "load_models", counting)
         entries = await engine.validate_models()
         findings = [d for d in (json.dumps(e.model_dump(mode="json")) for e in entries) if "narrowed" in d]
         assert any(mentions(f, "far_pay") for f in findings)

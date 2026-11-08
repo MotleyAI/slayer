@@ -12,11 +12,12 @@ schema on teardown. A ``SELECT 1`` warm-up runs once at fixture entry to
 absorb warehouse-suspend latency.
 """
 
+import asyncio
 import os
 import pathlib
 import tomllib
 import uuid
-from typing import NoReturn
+from typing import Any, NoReturn
 
 import pytest
 import sqlalchemy as sa
@@ -33,10 +34,13 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery, TimeDimension
+from slayer.engine import ingestion
 from slayer.engine.ingestion import ingest_datasource, ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import client, engine_factory
+from slayer.sql.client import ResultColumnType
 from slayer.sql.dialects import SnowflakeDialect
+from slayer.sql.dialects.reflection import TableLocation
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._cast_fixtures import check_try_cast_targets
 from tests._dev2120_fixtures import (
@@ -51,6 +55,7 @@ from tests._dev2120_fixtures import (
     server_table_statements as dev2120_table_statements,
 )
 from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
+from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_model, mixed_numbers_statements
 from tests._reserved_alias_probe import (
     SNOWFLAKE_KEYWORDS,
     keyword_universe,
@@ -239,6 +244,15 @@ def sf_datasource(sf_transient_schema: str) -> DatasourceConfig:
         connection_name=_CONNECTION_NAME,
         schema_name=sf_transient_schema,
     )
+
+
+async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
+    sql_client = client.SlayerSQLClient(datasource=ds)
+    try:
+        return await ingestion.ingest_datasource_async(ds, client=sql_client, **kwargs)
+    finally:
+        await sql_client.aclose()
+        sql_client.close()
 
 
 @pytest.fixture
@@ -612,7 +626,7 @@ def test_statement_timeout_aborts_long_query(sf_engine) -> None:
 
 def test_column_types_round_trip(sf_engine) -> None:
     """A SELECT against each Snowflake type code must round-trip through
-    the type-probe door and produce the expected SLayer categories."""
+    the type-probe door and produce the expected SLayer types."""
     sql = """
         SELECT
             CAST(1 AS NUMBER) AS as_number,
@@ -622,17 +636,60 @@ def test_column_types_round_trip(sf_engine) -> None:
             CAST('2024-01-01' AS DATE) AS as_date,
             CAST('2024-01-01 10:00' AS TIMESTAMP_NTZ) AS as_ts
     """
-    types = client.get_column_types_sync(
+    types = client.get_result_column_types_sync(
         client.render_type_probe(sqlglot.parse_one(sql, dialect="snowflake"), dialect=SnowflakeDialect()),
         db_type="snowflake",
         engine=sf_engine,
     )
-    assert types["as_number"] == "number"
-    assert types["as_double"] == "number"
-    assert types["as_text"] == "string"
-    assert types["as_bool"] == "boolean"
-    assert types["as_date"] == "time"
-    assert types["as_ts"] == "time"
+    assert types["as_number"] == ResultColumnType(type=DataType.INT, db_type="NUMBER(38,0)")
+    assert types["as_double"].type == DataType.DOUBLE
+    assert types["as_text"].type == DataType.TEXT
+    assert types["as_bool"].type == DataType.BOOLEAN
+    assert types["as_date"].type == DataType.DATE
+    assert types["as_ts"].type == DataType.TIMESTAMP
+
+
+def test_session_overrides_apply_to_metadata_reads(sf_transient_schema) -> None:
+    profile = _profile_or_skip()
+    if not all(profile.get(k) for k in ("role", "warehouse", "database")):
+        pytest.skip("profile lacks role / warehouse / database to override")
+    ds = DatasourceConfig(
+        name="sf_overrides", type="snowflake", connection_name=_CONNECTION_NAME,
+        role=profile["role"], warehouse=profile["warehouse"], database=profile["database"],
+        schema_name=sf_transient_schema,
+    )
+    states: dict[int, tuple] = {}
+
+    def _record(dbapi_conn, _conn_record, _proxy) -> None:  # noqa: ANN001
+        cur = dbapi_conn.cursor()
+        try:
+            cur.execute("SELECT CURRENT_ROLE(), CURRENT_WAREHOUSE(), CURRENT_DATABASE(), CURRENT_SCHEMA()")
+            states[id(dbapi_conn)] = tuple(cur.fetchone())
+        finally:
+            cur.close()
+
+    sa_engine = engine_factory.get_engine(ds)
+    event.listen(sa_engine, "checkout", _record)
+    sql_client = client.SlayerSQLClient(datasource=ds)
+    locations = [TableLocation(name=n) for n in ("orders", "customers", "products", "regions")]
+
+    async def _reads() -> None:
+        await asyncio.gather(
+            sql_client.list_objects(None),
+            *(sql_client.reflect_columns(loc) for loc in locations),
+            *(sql_client.reflect_table_keys(loc) for loc in locations),
+        )
+
+    try:
+        # A held connection forces the client's reads onto further pooled connections.
+        with sa_engine.connect():
+            run_sync(_reads())
+    finally:
+        sql_client.close()
+        engine_factory.invalidate_engine(ds)
+    expected = tuple(v.upper() for v in (profile["role"], profile["warehouse"], profile["database"], sf_transient_schema))
+    assert len(states) >= 2
+    assert set(states.values()) == {expected}
 
 
 # ---------------------------------------------------------------------------
@@ -653,7 +710,7 @@ def test_auto_ingest_discovers_joins(sf_datasource, sf_transient_schema) -> None
       - source/target column names on each join
     """
     schema_to_introspect = sf_transient_schema
-    models = ingest_datasource(datasource=sf_datasource, schema=schema_to_introspect)
+    models = run_sync(_ingest(sf_datasource, schema=schema_to_introspect))
     by_name = {m.name.lower(): m for m in models}
     orders = by_name.get("orders")
     customers = by_name.get("customers")
@@ -690,7 +747,7 @@ def test_auto_ingest_discovers_joins(sf_datasource, sf_transient_schema) -> None
 
 def test_auto_ingest_imports_comments(sf_datasource, sf_transient_schema) -> None:
     """Snowflake table/column comments must land on model/column descriptions."""
-    models = ingest_datasource(datasource=sf_datasource, schema=sf_transient_schema)
+    models = run_sync(_ingest(sf_datasource, schema=sf_transient_schema))
     by_name = {m.name.lower(): m for m in models}
     orders = by_name["orders"]
     assert orders.description == "All orders"
@@ -945,7 +1002,7 @@ def sf_lists(sf_transient_schema: str, sf_datasource: DatasourceConfig, tmp_path
     try:
         cur.execute(f"USE SCHEMA {sf_transient_schema}")
         for stmt in [*contractors_statements(dialect="snowflake"), *assignments_statements(dialect="snowflake"),
-                     *_INFERRED]:
+                     *mixed_numbers_statements(dialect="snowflake"), *_INFERRED]:
             cur.execute(stmt)
         conn.commit()
         storage = YAMLStorage(base_dir=str(tmp_path))
@@ -953,10 +1010,11 @@ def sf_lists(sf_transient_schema: str, sf_datasource: DatasourceConfig, tmp_path
         for base in (contractors_model(data_source="sf_test"), assignments_model(data_source="sf_test")):
             run_sync(storage.save_model(base.model_copy(update={
                 "columns": [c.model_copy(update={"sql": c.name}) for c in base.columns]})))
+        run_sync(storage.save_model(mixed_numbers_model(data_source="sf_test", explicit_sql=True)))
         yield storage, cur
     finally:
         try:
-            for table in ("contractors", "assignments", "inferred", "structured"):
+            for table in ("contractors", "assignments", "mixed", "inferred", "structured"):
                 cur.execute(f"DROP TABLE IF EXISTS {table}")
             conn.commit()
         finally:
@@ -971,6 +1029,10 @@ def _elements(datasource: DatasourceConfig, table: str) -> dict[str, tuple[DataT
 
 def test_lists(sf_lists) -> None:
     run_sync(check_lists(SlayerQueryEngine(storage=sf_lists[0]), dialect="snowflake"))
+
+
+def test_mixed_numeric_lists(sf_lists) -> None:
+    run_sync(check_mixed_numbers(SlayerQueryEngine(storage=sf_lists[0])))
 
 
 def test_untyped_array_elements_inferred(sf_lists, sf_datasource: DatasourceConfig) -> None:

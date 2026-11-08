@@ -10,11 +10,11 @@ strategy class carries the runtime hooks; this module covers:
 * Engine caching is keyed on connection_string + a runtime fingerprint so
   two snowflake datasources differing only in warehouse get different
   cached engines.
-* Production engine consumers (ingestion, schema_drift, type_refinement,
-  CLI, MCP, SlayerSQLClient) all reference ``engine_factory`` instead of
-  bare ``sa.create_engine``.
+* ``SlayerSQLClient`` builds its engines through ``engine_factory``; no other
+  production module opens a database (``tests/test_law_database_door.py``).
 """
 
+import asyncio
 import gc
 import json
 import logging
@@ -28,14 +28,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 import sqlalchemy as sa
 
-from slayer import cli
 from slayer.core.models import DatasourceConfig
-from slayer.engine import ingestion, schema_drift
+from slayer.engine import schema_drift
 from slayer.engine.query_engine import _sql_client_cache_key
-from slayer.mcp import server
 from slayer.sql import client as sql_client
 from slayer.sql import engine_factory
-from slayer.storage import type_refinement
+from slayer.sql.dialects import dialect_for_ds_type
+from slayer.sql.dialects.drivers import load_driver
 from tests._engine_helpers import disposable_engine
 
 
@@ -107,6 +106,8 @@ class TestSessionOverridesListener:
             "slayer.sql.dialects.snowflake.SnowflakeDialect.build_engine",
             return_value=MagicMock(),
         ):
+            # Warm-up: the driver's first import registers its own listeners.
+            load_driver(ds, ds.get_connection_string(), dialect=dialect_for_ds_type(ds.type), is_async=False)
             with patch.object(engine_factory.sa_event, "listens_for") as listens_for_mock:
                 listens_for_mock.return_value = lambda fn: fn
                 engine_factory.get_engine(ds)
@@ -221,25 +222,9 @@ class TestCallSiteMigration:
     needs to be.
     """
 
-    def test_ingestion_uses_engine_factory(self) -> None:
-        source = open(ingestion.__file__).read()
-        assert "engine_factory.get_engine" in source or "from slayer.sql.engine_factory" in source
-
     def test_schema_drift_uses_engine_factory(self) -> None:
         source = open(schema_drift.__file__).read()
         assert "engine_factory.get_engine" in source or "from slayer.sql.engine_factory" in source
-
-    def test_type_refinement_uses_engine_factory(self) -> None:
-        source = open(type_refinement.__file__).read()
-        assert "engine_factory.get_engine" in source or "from slayer.sql.engine_factory" in source
-
-    def test_cli_uses_engine_factory(self) -> None:
-        source = open(cli.__file__).read()
-        assert "engine_factory" in source
-
-    def test_mcp_server_uses_engine_factory(self) -> None:
-        source = open(server.__file__).read()
-        assert "engine_factory" in source
 
     def test_sql_client_uses_engine_factory_for_engine_creation(self) -> None:
         source = open(sql_client.__file__).read()
@@ -534,6 +519,13 @@ class TestReleaseIdle:
             return True
         return False
 
+    @staticmethod
+    async def _drift_probe(ds: DatasourceConfig) -> None:
+        """Drift's connectivity check through a client, then its release."""
+        client = sql_client.SlayerSQLClient(datasource=ds)
+        await client.ping()
+        await client.aclose()
+
     def test_release_closes_idle_connections_and_keeps_the_engine_usable(self, tmp_path) -> None:
         engine_factory.reset_cache()
         engine = engine_factory.get_engine(DatasourceConfig(name="f", type="sqlite", database=str(tmp_path / "f.db")))
@@ -555,7 +547,7 @@ class TestReleaseIdle:
         try:
             with engine.connect() as conn:
                 held = conn.connection.driver_connection
-                schema_drift._probe_connect(ds)
+                asyncio.run(self._drift_probe(ds))
         finally:
             engine_factory.reset_cache()
         gc.collect()

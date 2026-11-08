@@ -1620,14 +1620,6 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 31,
-                    "endColumn": 43,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 48,
                     "endColumn": 52,
                     "lineCount": 1
@@ -1639,31 +1631,7 @@
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 37,
-                    "endColumn": 44,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 37,
                     "endColumn": 50,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 39,
-                    "endColumn": 56,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 39,
-                    "endColumn": 56,
                     "lineCount": 1
                 }
             },
@@ -2754,22 +2722,6 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 8,
-                    "endColumn": 54,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 4,
-                    "endColumn": 50,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 25,
                     "endColumn": 49,
                     "lineCount": 1
@@ -2796,14 +2748,6 @@
                 "range": {
                     "startColumn": 28,
                     "endColumn": 36,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 4,
-                    "endColumn": 50,
                     "lineCount": 1
                 }
             },
@@ -2812,14 +2756,6 @@
                 "range": {
                     "startColumn": 63,
                     "endColumn": 71,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 54,
                     "lineCount": 1
                 }
             },
@@ -3308,14 +3244,6 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 4,
-                    "endColumn": 50,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 25,
                     "endColumn": 49,
                     "lineCount": 1
@@ -3326,14 +3254,6 @@
                 "range": {
                     "startColumn": 25,
                     "endColumn": 49,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 4,
-                    "endColumn": 50,
                     "lineCount": 1
                 }
             }
@@ -19002,16 +18922,6 @@
                 }
             }
         ],
-        "./tests/test_ingest_cli_ux.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 64,
-                    "endColumn": 66,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./tests/test_ingest_internal_tables.py": [
             {
                 "code": "reportArgumentType",
@@ -19338,14 +19248,6 @@
                 }
             },
             {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 64,
-                    "endColumn": 70,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportOptionalMemberAccess",
                 "range": {
                     "startColumn": 24,
@@ -19418,30 +19320,6 @@
                 "range": {
                     "startColumn": 23,
                     "endColumn": 32,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 72,
-                    "endColumn": 80,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 72,
-                    "endColumn": 80,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 72,
-                    "endColumn": 80,
                     "lineCount": 1
                 }
             },
@@ -19570,14 +19448,6 @@
                 "range": {
                     "startColumn": 22,
                     "endColumn": 33,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 53,
-                    "endColumn": 59,
                     "lineCount": 1
                 }
             },
@@ -22550,16 +22420,6 @@
                 "range": {
                     "startColumn": 18,
                     "endColumn": 70,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./tests/test_native_type_preservation.py": [
-            {
-                "code": "reportOperatorIssue",
-                "range": {
-                    "startColumn": 15,
-                    "endColumn": 56,
                     "lineCount": 1
                 }
             }

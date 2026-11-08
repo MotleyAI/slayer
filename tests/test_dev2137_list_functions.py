@@ -3,21 +3,26 @@ per-function matrix lives in ``test_dev2120_library_matrix``."""
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
+import duckdb
 import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
 from slayer.core.keys import VALUE_KEY_TYPES, InKey, LiteralKey, ScalarCallKey, _FrozenKey
-from slayer.core.models import Column
+from slayer.core.models import Column, SlayerModel
+from slayer.core.query import SlayerQuery
 from slayer.core.refs import key_display
 from slayer.core.scope import ModelScope
 from slayer.core.syntax import parse_expr
 from slayer.engine.binding import bind_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
+from tests._dev2101_fixtures import emit
 from tests._dev2120_fixtures import NATIVE_LIST_DIALECTS, contractors_model, emit_contractors
 from tests._dev2137_fixtures import list_engine, measure, num, query
+from tests._engine_helpers import seeded_exec_engine
 
 
 @pytest.fixture(scope="module")
@@ -153,6 +158,52 @@ class TestArgumentTypes:
     async def test_list_argument_to_a_text_only_function(self, engine) -> None:
         with pytest.raises(SlayerError, match="skills"):
             await _values(engine, "upper(skills)")
+
+
+# ``mixed``: 1 → scores [2, 3], prices [2.0]; 2 → scores [4], prices [2.5].
+MIXED_DDL = ("CREATE TABLE mixed (id INTEGER, scores INTEGER[], prices DOUBLE[])",
+             "INSERT INTO mixed VALUES (1, [2, 3], [2.0]), (2, [4], [2.5])")
+
+
+def mixed_model() -> SlayerModel:
+    return SlayerModel(name="mixed", sql_table="mixed", data_source="test", columns=[
+        Column(name="id", type=DataType.INT, primary_key=True),
+        Column(name="scores", type=DataType.ARRAY, element_type=DataType.INT),
+        Column(name="prices", type=DataType.ARRAY, element_type=DataType.DOUBLE),
+    ])
+
+
+def _seed_mixed(db_path: str) -> None:
+    with contextlib.closing(duckdb.connect(db_path)) as con:
+        for stmt in MIXED_DDL:
+            con.execute(stmt)
+
+
+MIXED_FILTERS = ["contains(scores, 2.0)", "contains_any(scores, prices)", "contains_all(prices, [2])",
+                 "contains(prices, 2)"]
+
+
+class TestMixedNumerics:
+    @pytest.mark.parametrize("filter_", MIXED_FILTERS)
+    async def test_executes_on_duckdb(self, filter_: str) -> None:
+        async with seeded_exec_engine(dialect="duckdb", seed=_seed_mixed, models=[mixed_model()]) as (eng, _db):
+            resp = await eng.execute(SlayerQuery.model_validate(
+                {"source_model": "mixed", "dimensions": ["id"], "filters": [filter_]}))
+        assert {int(r["mixed.id"]) for r in resp.data} == {1}, resp.sql
+
+    @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
+    @pytest.mark.parametrize("filter_", MIXED_FILTERS)
+    async def test_emits(self, dialect: str, filter_: str) -> None:
+        await emit(SlayerQuery.model_validate({"source_model": "mixed", "dimensions": ["id"], "filters": [filter_]}),
+                   dialect=dialect, models=[mixed_model()])
+
+    @pytest.mark.parametrize("filter_", ["contains_any(scores, prices)", "contains_any(prices, scores)"])
+    async def test_bigquery_overlap_compares_by_equality(self, filter_: str) -> None:
+        # BigQuery has no ``FLOAT64 IN UNNEST(ARRAY<INT64>)`` signature.
+        sql = await emit(SlayerQuery.model_validate(
+            {"source_model": "mixed", "dimensions": ["id"], "filters": [filter_]}), dialect="bigquery",
+            models=[mixed_model()])
+        assert "IN UNNEST" not in sql.upper(), sql
 
 
 def _bind(text: str):

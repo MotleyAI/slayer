@@ -149,7 +149,7 @@ def serve(store: FacadeStore) -> Generator[Servers]:
     flight_engine = SlayerQueryEngine(storage=store.storage)
     loop, thread, pg_port = _start_pg(engine=pg_engine, storage=store.storage)
     flight = build_server(host="127.0.0.1", port=0,
-                          handlers=FlightHandlers(engine=flight_engine, storage=store.storage))
+                          handlers=FlightHandlers(engine=flight_engine))
     flight_thread = threading.Thread(target=flight.serve, daemon=True)
     flight_thread.start()
     try:

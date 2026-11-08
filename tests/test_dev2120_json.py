@@ -21,13 +21,13 @@ from slayer.core.query import SlayerQuery
 from slayer.core.scope import ModelScope
 from slayer.core.syntax import parse_expr
 from slayer.engine.binding import bind_expr
-from slayer.engine.ingestion import _introspected_column, ingest_datasource
+from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql import engine_factory
 from slayer.sql.dialects import clickhouse as clickhouse_dialect
 from slayer.sql.dialects import get_dialect
-from slayer.sql.dialects.reflection import ReflectedColumn
+from slayer.sql.dialects.reflection import column_from_sa_type
 from tests._dev2120_fixtures import (
     DOCS_ROWS,
     EXEC_BACKENDS,
@@ -272,10 +272,7 @@ class TestPostgresVersion:
 
 
 def _db_type(sa_type: sa.types.TypeEngine, *, dialect: str) -> Optional[str]:
-    return _introspected_column(
-        ReflectedColumn(name="payload", type=sa_type), name="payload", primary_key=False,
-        json_types=get_dialect(dialect).json_db_types,
-    ).db_type
+    return column_from_sa_type(name="payload", sa_type=sa_type, json_types=get_dialect(dialect).json_db_types).db_type
 
 
 class TestIngestionKeepsJsonDbType:

@@ -22,6 +22,7 @@ from typing import Any, Literal
 
 import sqlalchemy as sa
 
+from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import (
@@ -51,6 +52,7 @@ from slayer.dbt.models import (
 )
 from slayer.dbt.sql_resolver import resolve_refs
 from slayer.engine.ingestion import introspect_table_to_model
+from slayer.engine.query_engine import run_over_caller_engine
 from slayer.engine.schema_scope import requested_schema_ref
 from slayer.importers.aggregates import dialect_refusal
 from slayer.importers.column_types import (
@@ -68,6 +70,7 @@ from slayer.importers.column_types import (
 )
 from slayer.importers.measures import measure_problems
 from slayer.importers.physical import unreadable_columns
+from slayer.sql.client import SqlClient
 # The conversion-report types are shared with the OSI importer. They
 # live in the neutral ``slayer.ingest_report`` module and are re-exported here so
 # existing ``from slayer.dbt.converter import ConversionResult`` imports keep
@@ -221,17 +224,28 @@ class DbtToSlayerConverter:
         target_dialect: str | None = None,
         offline_reason: str | None = None,
     ) -> None:
+        """Passing ``sa_engine`` is deprecated: ``convert()`` then collects its own metadata through it."""
+        if sa_engine is not None:
+            warn_deprecated(
+                "DbtToSlayerConverter(sa_engine=...) is deprecated; await "
+                "converter.collect_metadata(client=engine.client_for(datasource)) before convert(). "
+                "sa_engine works until SLayer 2.0.",
+                removal="2.0",
+            )
         self.project = project
         self.data_source = data_source
         self.sa_engine = sa_engine
         self.include_hidden_models = include_hidden_models
+        # Regular-model tables read by ``collect_metadata``: the model, or why it could not be read.
+        self._introspected: dict[str, SlayerModel | str] | None = None
         # When set to a dialect that lacks percentile/median
         # (mysql / tsql), the converter emits info caveats for those measures.
         self.target_dialect = target_dialect
         self._sql_dialect = dialect_for_ds_type(target_dialect) if target_dialect else None
         self._dialect = self._sql_dialect.sqlglot_name if self._sql_dialect is not None else None
-        self._live = LiveDatasource(engine=sa_engine, offline_reason=offline_reason, data_source=data_source,
+        self._live = LiveDatasource(offline_reason=offline_reason, data_source=data_source,
                                     db_type=target_dialect, dialect=self._dialect)
+        self._collected = False
         # {dbt model: {column: declared data_type}}
         self._declared: dict[str, dict[str, str]] = {
             rm.name: {c.name: c.data_type for c in rm.columns if c.data_type} for rm in project.regular_models
@@ -254,8 +268,46 @@ class DbtToSlayerConverter:
             if rm.raw_code
         }
 
+    async def collect_metadata(self, *, client: SqlClient) -> None:
+        """Read the hidden regular models' tables and every source and probe conversion asks for through
+        ``client``; ``convert`` then needs no database."""
+        introspected: dict[str, SlayerModel | str] = {}
+        for rm in self.project.regular_models if self.include_hidden_models else []:
+            table_name = rm.alias or rm.name
+            try:
+                introspected[rm.name] = await introspect_table_to_model(
+                    client=client, table_name=table_name, ref=requested_schema_ref(rm.schema_name, client=client),
+                    data_source=self.data_source, model_name=rm.name,
+                )
+            except Exception as exc:  # noqa: BLE001 — one table's failure becomes a conversion warning
+                introspected[rm.name] = (
+                    f"Skipped hidden import of dbt model '{rm.name}' "
+                    f"(table '{table_name}'): {type(exc).__name__}: {exc}"
+                )
+        self._introspected = introspected
+        await self._live.collect(client=client, convert=self._convert)
+        self._collected = True
+
     def convert(self) -> ConversionResult:
-        """Full conversion pipeline."""
+        """Full conversion pipeline (pure: the database is read by ``collect_metadata``)."""
+        if not self._collected and self.sa_engine is not None:
+            run_over_caller_engine(
+                self.sa_engine, data_source=self.data_source, work=lambda client: self.collect_metadata(client=client),
+            )
+        return self._convert()
+
+    def _reset(self) -> None:
+        """Clear one conversion's state, so ``collect_metadata`` can re-run it."""
+        self._offline_noted = set()
+        self.entity_registry = EntityRegistry()
+        self._warnings = []
+        self._unconverted = []
+        self._models_by_name = {}
+        self._dbt_models_by_name = {}
+        self._filtered_columns = {}
+
+    def _convert(self) -> ConversionResult:
+        self._reset()
         self.entity_registry.build(self.project.semantic_models)
 
         for sm in self.project.semantic_models:
@@ -318,58 +370,39 @@ class DbtToSlayerConverter:
 
     def _convert_regular_models(self, existing_names: set) -> list[SlayerModel]:
         """Convert orphan dbt models (not wrapped by semantic_models) to hidden SLayer models."""
-        if self.sa_engine is None:
+        if self._introspected is None:
             self._warnings.append(ConversionWarning(
                 category="hidden_models",
                 severity="info",
                 message=(
-                    "include_hidden_models=True but no SQLAlchemy engine was provided; "
-                    "skipping regular-model import."
+                    "include_hidden_models=True but no table metadata was collected "
+                    "(collect_metadata); skipping regular-model import."
                 ),
             ))
             return []
 
-        engine = self.sa_engine
-        inspector = sa.inspect(engine)
         results: list[SlayerModel] = []
         for rm in self.project.regular_models:
             if rm.name in existing_names:
                 continue
-            converted = self._convert_regular_model(rm=rm, sa_engine=engine, inspector=inspector)
+            converted = self._convert_regular_model(rm=rm)
             if converted is not None:
                 results.append(converted)
                 existing_names.add(converted.name)
         return results
 
-    def _convert_regular_model(
-        self,
-        rm: DbtRegularModel,
-        sa_engine: sa.Engine,
-        inspector: sa.engine.Inspector,
-    ) -> SlayerModel | None:
-        """Introspect a regular dbt model and wrap it as a hidden SlayerModel."""
-        table_name = rm.alias or rm.name
-        try:
-            model = introspect_table_to_model(
-                sa_engine=sa_engine,
-                inspector=inspector,
-                table_name=table_name,
-                ref=requested_schema_ref(rm.schema_name, sa_engine=sa_engine),
-                data_source=self.data_source,
-                model_name=rm.name,
-            )
-        except Exception as exc:
-            self._warnings.append(ConversionWarning(
-                model_name=rm.name,
-                category="hidden_models",
-                severity="info",
-                message=(
-                    f"Skipped hidden import of dbt model '{rm.name}' "
-                    f"(table '{table_name}'): {type(exc).__name__}: {exc}"
-                ),
-            ))
+    def _convert_regular_model(self, rm: DbtRegularModel) -> SlayerModel | None:
+        """Wrap a regular dbt model's introspected table as a hidden SlayerModel."""
+        assert self._introspected is not None
+        introspected = self._introspected.get(rm.name)
+        if not isinstance(introspected, SlayerModel):
+            if introspected is not None:
+                self._warnings.append(ConversionWarning(
+                    model_name=rm.name, category="hidden_models", severity="info", message=introspected,
+                ))
             return None
 
+        model = introspected.model_copy(deep=True)
         model.hidden = True
         if rm.description:
             model.description = rm.description
@@ -1555,7 +1588,7 @@ class DbtToSlayerConverter:
         ``customers__regions.dim`` join path, which the dbt filter converter
         cannot produce, so it is clean-failed rather than emitted as a broken
         one-hop path. (Full multi-hop cross-model filter support is tracked
-        separately — DEV-1445.)
+        separately.)
 
         A foreign entity declared on the source but with **no joinable owner
         model** is also clean-failed: ``convert_dbt_filter`` would fall back to

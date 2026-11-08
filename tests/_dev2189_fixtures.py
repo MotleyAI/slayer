@@ -238,7 +238,9 @@ def stub_has_column(table: ScopedTable, column: str) -> Optional[bool]:
     return table.name.casefold() in TENANT_TABLES if column == TENANT else None
 
 
-def stub_column_present(*, datasource: DatasourceConfig, scoped_table: ScopedTable, column: str) -> Optional[bool]:
+async def stub_column_present(  # NOSONAR(S7503) — stands in for the async engine method
+    *, datasource: DatasourceConfig, scoped_table: ScopedTable, column: str,
+) -> Optional[bool]:
     return stub_has_column(scoped_table, column)
 
 
@@ -319,7 +321,7 @@ class ClientSpy:
 
     @contextlib.contextmanager
     def installed(self, monkeypatch: pytest.MonkeyPatch) -> Generator[ClientSpy]:
-        execute, probe = SlayerSQLClient.execute, SlayerSQLClient.get_column_types
+        execute, probe = SlayerSQLClient.execute, SlayerSQLClient.get_result_column_types
 
         async def _execute(client: SlayerSQLClient, *args: Any, **kwargs: Any) -> Any:
             self.executed.append(str(kwargs.get("sql", args[0] if args else "")))
@@ -330,5 +332,5 @@ class ClientSpy:
             return await probe(client, type_probe)
 
         monkeypatch.setattr(SlayerSQLClient, "execute", _execute)
-        monkeypatch.setattr(SlayerSQLClient, "get_column_types", _probe)
+        monkeypatch.setattr(SlayerSQLClient, "get_result_column_types", _probe)
         yield self

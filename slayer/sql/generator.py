@@ -138,6 +138,7 @@ from slayer.sql.render.value_expr import (
     _ranked_value_cast_type,
     _wrap_cast_for_type,
     contains_aggregate,
+    keeps_native_type,
     render_value_key,
     rewrite_log_alias,
 )
@@ -954,6 +955,12 @@ class SQLGenerator:
             dt = slot.cast_type
         return self._dialect.declared_cast_type(dt)
 
+    def _column_cast_type(self, col: Column) -> Optional[DataType]:
+        """The CAST target for derived column ``col``; none when it keeps its native type."""
+        if keeps_native_type(col=col, dialect=self._dialect):
+            return None
+        return self._dialect.declared_cast_type(col.type)
+
     def _new_allocator(self) -> AliasAllocator:
         """Build an ``AliasAllocator`` carrying this generator's dialect"""
         allocator = AliasAllocator(folds_case=dialect_folds_case(self.dialect))
@@ -1157,7 +1164,7 @@ class SQLGenerator:
         if sql.isidentifier():
             return exp.Column(this=self._to_ident(sql), table=exp.to_identifier(model_name))
         return _wrap_cast_for_type(
-            expr=self._parse(sql), dt=self._dialect.declared_cast_type(type),
+            dialect=self._dialect, expr=self._parse(sql), dt=self._dialect.declared_cast_type(type),
         )
 
     def _resolve_value_ast(self, spec: AggRenderSpec) -> Expression:
@@ -1769,7 +1776,7 @@ class SQLGenerator:
             names = list(slot.public_aliases) or [slot.declared_name]
             rendered = render(slot)
             if slot.type is not None:
-                rendered = _wrap_cast_for_type(expr=rendered, dt=self._slot_cast_type(slot))
+                rendered = _wrap_cast_for_type(dialect=self._dialect, expr=rendered, dt=self._slot_cast_type(slot))
             # One column per declared name (C13); as_ copies its child, so the rendered node is safely reused.
             for alias in names:
                 full_alias = f"{source_relation}.{alias}"
@@ -2321,7 +2328,7 @@ class SQLGenerator:
                 )
                 agg_expr, is_agg = self._build_agg(synth)
                 if is_agg:
-                    agg_expr = _wrap_cast_for_type(expr=agg_expr, dt=self._slot_cast_type(slot))
+                    agg_expr = _wrap_cast_for_type(dialect=self._dialect, expr=agg_expr, dt=self._slot_cast_type(slot))
                     has_aggregation = True
                 select_columns.append(agg_expr.copy().as_(full_alias))
                 _record_alias(sid, full_alias)
@@ -2355,7 +2362,7 @@ class SQLGenerator:
                 ),
             )
             if contains_aggregate(slot.key):
-                composite = _wrap_cast_for_type(expr=composite, dt=self._slot_cast_type(slot))
+                composite = _wrap_cast_for_type(dialect=self._dialect, expr=composite, dt=self._slot_cast_type(slot))
             elif grand_total:
                 composite = _grand_total_value(composite)
             select_columns[idx] = composite.as_(full_alias)
@@ -2673,7 +2680,7 @@ class SQLGenerator:
             rank_inner = rank_inner.from_(base_from).join(
                 src_subq, on=on_range, join_type="LEFT")
             pick = _wrap_cast_for_type(
-                expr=build_ranked_pick(
+                dialect=self._dialect, expr=build_ranked_pick(
                     value_ref=exp.Column(
                         this=exp.to_identifier("_w_value"),
                         table=exp.to_identifier(RANKED_SOURCE_ALIAS),
@@ -2724,7 +2731,7 @@ class SQLGenerator:
                 true=exp.Null(),
             )], default=agg_expr)
         agg_expr = _wrap_cast_for_type(
-            expr=agg_expr, dt=self._slot_cast_type(agg_slot),
+            dialect=self._dialect, expr=agg_expr, dt=self._slot_cast_type(agg_slot),
         )
 
         outer = exp.Select()
@@ -3003,7 +3010,7 @@ class SQLGenerator:
         # A first/last value is the raw picked column, so its temporal type needs no CAST (SQLite would give numeric
         # affinity, truncating a date to its year).
         pick = _wrap_cast_for_type(
-            expr=build_ranked_pick(
+            dialect=self._dialect, expr=build_ranked_pick(
                 value_ref=value_ref, dialect=self._dialect,
                 input_type=aggregation_source_type(local_key.source, column_type=ranked_scope.column_type),
             ),
@@ -3369,7 +3376,7 @@ class SQLGenerator:
                 formula=spec.formula,
             )
         agg_expr, _ = self._build_agg(level2_spec)
-        agg_expr = _wrap_cast_for_type(expr=agg_expr, dt=self._slot_cast_type(agg_slot))
+        agg_expr = _wrap_cast_for_type(dialect=self._dialect, expr=agg_expr, dt=self._slot_cast_type(agg_slot))
         outer_cols: List[Expr] = [
             _base_col(alias).as_(exp.to_identifier(alias, quoted=True))
             for alias in grain_aliases
@@ -3716,7 +3723,7 @@ class SQLGenerator:
                     ),
                 )
                 if cslot.type is not None:
-                    rendered = _wrap_cast_for_type(expr=rendered, dt=self._slot_cast_type(cslot))
+                    rendered = _wrap_cast_for_type(dialect=self._dialect, expr=rendered, dt=self._slot_cast_type(cslot))
                 return rendered
 
             # Cycle public_aliases per projection occurrence: emitting public_aliases[0] twice would drop the second C13
@@ -5376,8 +5383,8 @@ class SQLGenerator:
             (c for c in owner_model.columns if c.name == key.column_name), None,
         )
         return _wrap_cast_for_type(
-            expr=self._parse(expanded_sql),
-            dt=self._dialect.declared_cast_type(col.type if col is not None else None),
+            dialect=self._dialect, expr=self._parse(expanded_sql),
+            dt=self._column_cast_type(col) if col is not None else None,
         )
 
 
@@ -5573,9 +5580,7 @@ class SQLGenerator:
         )
         value_ast = self._parse(value)
         value_sql = (
-            _wrap_cast_for_type(
-                expr=value_ast, dt=self._dialect.declared_cast_type(col.type),
-            ) if cast else value_ast
+            _wrap_cast_for_type(dialect=self._dialect, expr=value_ast, dt=self._column_cast_type(col)) if cast else value_ast
         ).sql(dialect=self.dialect)
         return wrap_column_filter(value_sql=value_sql, filter_sql=filter_sql)
 
@@ -6627,10 +6632,15 @@ class PlannedStatement(BaseModel):
 
     def mint_probe(self, *, policy_scoped: bool = False) -> TypeProbe:
         """The statement (built with ``type_probe``) as a :class:`TypeProbe`, minted at its one render."""
-        return mint_type_probe(self.statement, dialect=_as_dialect(self.dialect), render=lambda tree: _finish_statement(
-            tree, dialect=self.dialect, aliases=self.aliases, exempt=self.exempt, policy_scoped=policy_scoped,
-            pretty=False,
-        ))
+
+        def render(tree: Expr) -> str:
+            assert isinstance(tree, exp.Select)
+            return _finish_statement(
+                tree, dialect=self.dialect, aliases=self.aliases, exempt=self.exempt, policy_scoped=policy_scoped,
+                pretty=False,
+            )
+
+        return mint_type_probe(self.statement, dialect=_as_dialect(self.dialect), render=render)
 
 
 def build_planned_statement(

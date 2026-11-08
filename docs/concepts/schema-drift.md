@@ -42,6 +42,10 @@ Drift is computed per source mode:
   WHERE 1=0`. Successful execution exposes cursor metadata (column names
   and types), which goes through the same column-level diff. A failed
   trial-execute means the SQL itself is broken — emit a whole-model drop.
+  A column an older SLayer probe typed wrongly when the model was saved or
+  imported (an opaque type, or a SQL Server decimal or datetime, as TEXT; a
+  MySQL `BIT` or array as DOUBLE) now reports a type mismatch: re-type the
+  column or re-import the model.
 * **`source_queries`** (query-backed) — never re-introspected directly.
   Treated as a *cascade target*: when validation against the underlying
   datasource produces a column or model drop, any query-backed model that

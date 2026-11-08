@@ -101,11 +101,11 @@ flowchart TD
     host row count or any other column's value.
     [enforced: test:tests/test_dev1837_dimension_measure_matrix.py]
     [enforced: test:tests/test_dev2063_grain_guarantee.py]
-13. **Rendered SQL executes verbatim**: `client.py` hands every statement to the
-    DBAPI unchanged through one door (`exec_driver_sql`, no parameters);
-    SQLAlchemy `text()` never touches rendered SQL — `:name` is never a bind
-    parameter, `%` never a format directive.
-    [enforced: test:tests/test_dev1933_verbatim_execution.py]
+13. **Rendered SQL executes verbatim**: every statement reaches its executing
+    client unchanged; `client.py` hands it to the DBAPI through one door
+    (`exec_driver_sql`, no parameters); SQLAlchemy `text()` never touches
+    rendered SQL — `:name` is never a bind parameter, `%` never a format
+    directive. [enforced: test:tests/test_dev1933_verbatim_execution.py]
 14. **One engine owner**: every SQLAlchemy engine is disposed by exactly one
     owner — `engine_factory` for the engines it caches (eviction and
     `reset_cache` always dispose; `:memory:` is built by its single StaticPool

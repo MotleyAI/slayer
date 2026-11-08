@@ -1,4 +1,4 @@
-"""Integer result metadata must not narrow the database's aggregate range (#347)."""
+"""Integer result metadata must not narrow the database's aggregate range."""
 
 import pytest
 
@@ -10,7 +10,6 @@ from slayer.engine.plan import plan_query
 from slayer.sql.generator import generate_from_planned
 
 duckdb = pytest.importorskip("duckdb")
-pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
@@ -55,7 +54,7 @@ def _sql(*, model, measures, referenced_models=(), **query_kwargs):
 )
 def test_inferred_integer_aggregate_preserves_native_range(integer_orders, sql_type, amount, aggregation, expected):
     sql, planned = _sql(model=integer_orders, measures=[f"amount:{aggregation}"])
-    # first/last desugar onto the regroup primitive (DEV-1835): their public
+    # first/last desugar onto the regroup primitive: their public
     # slot is ROW-phase; the other aggregations keep an AGGREGATE-phase slot.
     slot = next(
         s for s in (*planned.aggregate_slots, *planned.row_slots)
@@ -77,14 +76,13 @@ def test_inferred_integer_aggregate_preserves_native_range(integer_orders, sql_t
     "measure",
     [{"formula": "amount:sum", "type": "INT"}, "as_int"],
 )
-def test_explicit_integer_measure_still_casts(integer_orders, measure):
+def test_explicit_integer_measure_casts_to_64_bit(integer_orders, measure):
     sql, _ = _sql(model=integer_orders, measures=[measure])
-    assert "CAST(SUM(orders.amount) AS INT)" in sql
+    assert "CAST(SUM(orders.amount) AS BIGINT)" in sql
     with duckdb.connect() as connection:
         connection.execute("CREATE TABLE orders (id INT, amount INT)")
         connection.execute("INSERT INTO orders VALUES (1, 2000000000), (2, 2000000000)")
-        with pytest.raises(duckdb.ConversionException, match="out of range"):
-            connection.execute(sql)
+        assert connection.execute(sql).fetchone()[0] == 4_000_000_000
 
 
 @pytest.mark.parametrize(
@@ -135,11 +133,8 @@ def test_joined_integer_aggregate_preserves_cast_intent(integer_orders, explicit
         connection.execute("CREATE TABLE orders (id INT, amount INT, created_at TIMESTAMP)")
         connection.execute("INSERT INTO orders VALUES (1, 2000000000, '2024-01-01'), (2, 2000000000, '2024-01-01')")
         connection.execute("CREATE TABLE customers AS SELECT * FROM orders")
-        if explicit:
-            with pytest.raises(duckdb.ConversionException, match="out of range"):
-                connection.execute(sql)
-        else:
-            assert [row[-1] for row in connection.execute(sql).fetchall()] == [4_000_000_000]
+        assert [row[-1] for row in connection.execute(sql).fetchall()] == [4_000_000_000]
+    assert ("AS BIGINT)" in sql) is explicit
 
 
 @pytest.mark.parametrize("explicit", [False, True])
@@ -151,11 +146,8 @@ def test_partitioned_integer_aggregate_preserves_cast_intent(integer_orders, exp
     with duckdb.connect() as connection:
         connection.execute("CREATE TABLE orders (id INT, amount INT, created_at TIMESTAMP)")
         connection.execute("INSERT INTO orders VALUES (1, 2000000000, '2024-01-01'), (2, 2000000000, '2024-01-01')")
-        if explicit:
-            with pytest.raises(duckdb.ConversionException, match="out of range"):
-                connection.execute(sql)
-        else:
-            assert [row[-1] for row in connection.execute(sql).fetchall()] == [4_000_000_000, 4_000_000_000]
+        assert [row[-1] for row in connection.execute(sql).fetchall()] == [4_000_000_000, 4_000_000_000]
+    assert ("AS BIGINT)" in sql) is explicit
 
 
 @pytest.mark.parametrize("values,expected", [([], None), ([None], None), ([None, 4_000_000_001], 4_000_000_001)])

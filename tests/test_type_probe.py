@@ -19,11 +19,15 @@ from slayer.core.enums import DataType
 from slayer.core.errors import NotReadOnlyQueryError
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
-from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql.engine_factory import client_cache_key
 from slayer.sql.client import (
+    ResultColumnType,
     SlayerSQLClient,
     TypeProbe,
+    UnparseableTypeProbeError,
     get_column_types_sync,
+    get_result_column_types_sync,
     render_type_probe,
     sql_model_trial_query,
 )
@@ -128,22 +132,61 @@ def test_door_executes_the_probe_verbatim(sqlite_engine: sa.Engine) -> None:
     event.listen(sqlite_engine, "before_cursor_execute", lambda _c, _cur, statement, *_a: seen.append(statement))
     probe = render_type_probe(exp.select("a", "b").from_("t"), dialect=SqliteDialect())
     assert get_column_types_sync(probe, engine=sqlite_engine, db_type="sqlite") == {"a": "number", "b": "string"}
-    (statement,) = seen
+    statement, *census = seen
     assert statement == probe.sql
+    assert census == [probe.census_sql(["a", "b"], dialect=SqliteDialect())]
 
 
-def test_sync_door_refuses_a_string(sqlite_engine: sa.Engine) -> None:
-    with pytest.raises(TypeError):
-        get_column_types_sync("SELECT a FROM t", engine=sqlite_engine, db_type="sqlite")  # pyright: ignore[reportArgumentType]
+_TYPED = {"a": ResultColumnType(type=DataType.INT), "b": ResultColumnType(type=DataType.TEXT)}
 
 
-async def test_client_door_refuses_a_string() -> None:
-    client = SlayerSQLClient(datasource=DatasourceConfig(name="mem", type="sqlite", database=":memory:"))
+def _probe_db_client(tmp_path: Path) -> SlayerSQLClient:
+    return SlayerSQLClient(datasource=DatasourceConfig(name="probe", type="sqlite", database=str(tmp_path / "probe.db")))
+
+
+def test_sync_door_parses_and_probes_a_plain_string(sqlite_engine: sa.Engine) -> None:
+    assert get_result_column_types_sync("SELECT a, b FROM t", engine=sqlite_engine, db_type="sqlite") == _TYPED
+
+
+async def test_client_door_parses_and_probes_a_plain_string(sqlite_engine: sa.Engine, tmp_path: Path) -> None:
+    client = _probe_db_client(tmp_path)
     try:
-        with pytest.raises(TypeError):
-            await client.get_column_types("SELECT 1")  # pyright: ignore[reportArgumentType]
+        assert await client.get_result_column_types("SELECT a, b FROM t") == _TYPED
+    finally:
+        await client.aclose()
+        client.close()
+
+
+def test_sync_door_names_an_unparseable_statement(sqlite_engine: sa.Engine) -> None:
+    with pytest.raises(UnparseableTypeProbeError, match=r"SELECT \(\(\( not valid"):
+        get_result_column_types_sync("SELECT ((( not valid", engine=sqlite_engine, db_type="sqlite")
+
+
+async def test_client_door_names_an_unparseable_statement(sqlite_engine: sa.Engine, tmp_path: Path) -> None:
+    client = _probe_db_client(tmp_path)
+    try:
+        with pytest.raises(UnparseableTypeProbeError, match=r"SELECT \(\(\( not valid"):
+            await client.get_result_column_types("SELECT ((( not valid")
     finally:
         client.close()
+
+
+def test_sync_door_refuses_a_modifying_statement(sqlite_engine: sa.Engine) -> None:
+    with pytest.raises(NotReadOnlyQueryError):
+        get_result_column_types_sync("DELETE FROM t", engine=sqlite_engine, db_type="sqlite")
+    with sqlite_engine.connect() as conn:
+        assert conn.execute(sa.text("SELECT COUNT(*) FROM t")).scalar() == 1
+
+
+async def test_client_door_refuses_a_modifying_statement(sqlite_engine: sa.Engine, tmp_path: Path) -> None:
+    client = _probe_db_client(tmp_path)
+    try:
+        with pytest.raises(NotReadOnlyQueryError):
+            await client.get_result_column_types("DELETE FROM t")
+    finally:
+        client.close()
+    with sqlite_engine.connect() as conn:
+        assert conn.execute(sa.text("SELECT COUNT(*) FROM t")).scalar() == 1
 
 
 # ── trial query ───────────────────────────────────────────────────────────
@@ -230,8 +273,8 @@ async def _captured_engine_probe(ds_type: str) -> str:
         ds.credentials_json = None
         with patch.object(engine, "_resolve_datasource", new_callable=AsyncMock, return_value=ds):
             client = MagicMock()
-            client.get_column_types = capture
-            engine._sql_clients[_sql_client_cache_key(ds)] = client
+            client.get_result_column_types = capture
+            engine._sql_clients[client_cache_key(ds)] = client
             await engine.get_column_types("orders")
     (probe,) = seen
     assert isinstance(probe, TypeProbe)
@@ -263,14 +306,14 @@ async def test_engine_probe_applies_the_session_policy(tmp_path: Path) -> None:
     engine = SlayerQueryEngine(storage=storage, policy=SessionPolicy(
         ruleset=ColumnFilterRuleset(column="org", value="secret-org")))
     seen: list[str] = []
-    real = SlayerSQLClient.get_column_types
+    real = SlayerSQLClient.get_result_column_types
 
-    async def spy(self: SlayerSQLClient, probe: TypeProbe) -> dict[str, str]:
+    async def spy(self: SlayerSQLClient, probe: TypeProbe) -> dict[str, ResultColumnType]:
         seen.append(probe.sql)
         return await real(self, probe)
 
     try:
-        with patch.object(SlayerSQLClient, "get_column_types", spy):
+        with patch.object(SlayerSQLClient, "get_result_column_types", spy):
             types = await engine.get_column_types("orders")
     finally:
         engine.close()

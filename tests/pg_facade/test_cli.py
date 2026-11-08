@@ -1,10 +1,17 @@
-"""Tests for the `slayer pg-serve` CLI helpers (DEV-1486)."""
+"""Tests for the `slayer pg-serve` CLI helpers."""
 
 from __future__ import annotations
 
+import argparse
+import importlib
+
 import pytest
 
+import slayer.pg_facade.server as pg_server
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.pg_facade.cli import add_pg_serve_subparser
 from slayer.pg_facade.server import DEFAULT_PG_PORT, _resolve_host, _resolve_token
+from slayer.storage.yaml_storage import YAMLStorage
 
 
 @pytest.mark.parametrize(
@@ -44,18 +51,29 @@ def test_default_port_is_5145() -> None:
 def test_cli_module_imports_without_extra() -> None:
     # The pg facade is pure-stdlib — importing its CLI must not require any
     # optional dependency (e.g. pyarrow).
-    import importlib
-
     mod = importlib.import_module("slayer.pg_facade.cli")
     assert hasattr(mod, "add_pg_serve_subparser")
     assert hasattr(mod, "run_pg_serve")
 
 
+def test_pg_serve_closes_its_engine_when_serving_ends(tmp_path, monkeypatch) -> None:
+    closed: list[bool] = []
+
+    class _Recording(SlayerQueryEngine):
+        def close(self) -> None:
+            closed.append(True)
+            super().close()
+
+    monkeypatch.setattr(pg_server, "SlayerQueryEngine", _Recording)
+    args = argparse.Namespace(demo=False, token="t", host="127.0.0.1", port=0, tls_cert=None, tls_key=None)
+    pg_server.run_pg_serve(
+        args, resolve_storage=lambda _a: YAMLStorage(base_dir=str(tmp_path)), prepare_demo=lambda *_a: None,
+        serve_until_terminated=lambda **_kw: None,
+    )
+    assert closed == [True]
+
+
 def test_pg_serve_subparser_registers() -> None:
-    import argparse
-
-    from slayer.pg_facade.cli import add_pg_serve_subparser
-
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command")
     add_pg_serve_subparser(subparsers)

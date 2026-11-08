@@ -76,9 +76,10 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.ingestion import ingest_datasource
+from slayer.engine import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
+from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from tests.integration._dev2015_server import (
     check_all,
@@ -215,6 +216,15 @@ def _drop_module_db(sqlserver_container, db_name: str) -> None:
                 f"ALTER DATABASE [{db_name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE"
             ))
             conn.execute(sa.text(f"DROP DATABASE [{db_name}]"))
+
+
+async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
+    sql_client = SlayerSQLClient(datasource=ds)
+    try:
+        return await ingestion.ingest_datasource_async(ds, client=sql_client, **kwargs)
+    finally:
+        await sql_client.aclose()
+        sql_client.close()
 
 
 def _ds_config(sqlserver_container, db_name: str) -> DatasourceConfig:
@@ -750,7 +760,7 @@ def sqlserver_ingest_env(sqlserver_container):
                 ))
 
         ds = _ds_config(sqlserver_container, db_name)
-        models = ingest_datasource(datasource=ds, schema=None)
+        models = run_sync(_ingest(ds, schema=None))
         yield models, ds, None
     finally:
         _drop_module_db(sqlserver_container, db_name)
@@ -1816,3 +1826,26 @@ class TestSQLServerLongJsonScalars:
     async def test_split_part_has_no_length_limit(self, _jdocs, expr: str, expected: dict[int, Any]) -> None:
         resp = await SlayerQueryEngine(storage=_jdocs).execute(_jq("id", _v(expr)))
         assert _per_id(resp) == {rid: expected.get(rid) for rid in _JDOCS}, resp.sql
+
+
+@pytest.mark.integration
+def test_typed_probe_reports_declared_type_names(sqlserver_container) -> None:
+    db_name = _create_module_db(sqlserver_container)
+    try:
+        with disposable_engine(_db_url(sqlserver_container, db_name)) as engine, engine.connect() as conn:
+            conn.execute(sa.text("CREATE TABLE typed (i int, m decimal(10,2), t datetime2, s nvarchar(50))"))
+            conn.commit()
+        client = SlayerSQLClient(datasource=_ds_config(sqlserver_container, db_name))
+        try:
+            types = run_sync(client.get_result_column_types("SELECT i, m, t, s FROM typed"))
+        finally:
+            run_sync(client.aclose())
+            client.close()
+    finally:
+        _drop_module_db(sqlserver_container, db_name)
+    assert {name: (column.type, column.db_type) for name, column in types.items()} == {
+        "i": (DataType.INT, "int"),
+        "m": (DataType.DOUBLE, "decimal(10,2)"),
+        "t": (DataType.TIMESTAMP, "datetime2(7)"),
+        "s": (DataType.TEXT, "nvarchar(50)"),
+    }

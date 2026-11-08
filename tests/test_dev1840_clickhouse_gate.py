@@ -283,6 +283,10 @@ class TestOnlyEmittedStagesGate:
         assert fake.permission_checks() == 0
 
 
+async def _always_present(**_kw) -> bool:  # NOSONAR(S7503) — must stay async
+    return True
+
+
 class TestPolicyNeedsNoProbe:
     @pytest.mark.parametrize(
         "ruleset",
@@ -302,7 +306,7 @@ class TestPolicyNeedsNoProbe:
     async def test_policy_only_query_sends_nothing(self, tmp_path, ch_server, monkeypatch, ruleset):
         fake = ch_server.start(version="25.4.1.1", readonly=1, correlated=False)
         engine = await _ch_engine(tmp_path, policy=SessionPolicy(ruleset=ruleset))
-        monkeypatch.setattr(engine, "_column_present", lambda **_kw: True)
+        monkeypatch.setattr(engine, "_column_present", _always_present)
         sql = await _dry_sql(engine, q(measures=[M]))
         assert fake.requests == []
         assert _SETTING not in sql

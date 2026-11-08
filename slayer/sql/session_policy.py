@@ -269,6 +269,15 @@ def _apply_join_ruleset(
         )
 
 
+def policy_column_checks(statement: Expr, *, policy: SessionPolicy) -> list[tuple[ScopedTable, str]]:
+    """The ``(table, column)`` presence facts ``apply_session_policy`` will ask ``has_column`` for."""
+    ruleset = policy.ruleset
+    if not isinstance(ruleset, ColumnFilterRuleset) or not isinstance(statement, _ALLOWED_ROOTS):
+        return []  # the rewrite refuses a non-query statement itself
+    checks = (_scoped_table(table) for table in physical_tables(statement))
+    return list(dict.fromkeys((scoped, ruleset.column) for scoped in checks))
+
+
 def apply_session_policy(
     statement: Expr,
     *,

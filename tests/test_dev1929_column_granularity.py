@@ -21,6 +21,7 @@ from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.binding import bind_time_dimension
 from slayer.engine.elaborate_env import check_time_dimension_column
 from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.sql.client import SlayerSQLClient
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
@@ -521,7 +522,12 @@ class TestIngestion:
             storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
             ds = DatasourceConfig(name="ds", type="sqlite", database=db)
             await storage.save_datasource(ds)
-            await ingest_datasource_idempotent(datasource=ds, storage=storage)
+            client = SlayerSQLClient(datasource=ds)
+            try:
+                await ingest_datasource_idempotent(datasource=ds, storage=storage, client=client)
+            finally:
+                await client.aclose()
+                client.close()
             names = await storage.list_models("ds")
             assert names
             for n in names:

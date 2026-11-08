@@ -2,10 +2,9 @@
 
 import argparse
 import textwrap
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import sqlalchemy as sa
 from sqlalchemy.exc import SQLAlchemyError
 
 from slayer.async_utils import run_sync
@@ -32,6 +31,8 @@ from slayer.dbt.models import (
     DbtSemanticModel,
 )
 from slayer.dbt.parser import parse_dbt_project
+from slayer.ingest_report import ConversionResult
+from slayer.sql.client import SqlClient
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1902_fixtures import AMOUNT_BY_CUSTOMER, cells, make_exec_engine
 
@@ -776,12 +777,19 @@ DbtMeasure(name="total", agg="sum", expr="amount")
     )
 
 
+def _convert_hidden(project: DbtProject) -> ConversionResult:
+    """Collect the hidden regular models' metadata through a stand-in client, then convert."""
+    converter = DbtToSlayerConverter(project=project, data_source="test_db", include_hidden_models=True)
+    run_sync(converter.collect_metadata(client=MagicMock(spec=SqlClient)))
+    return converter.convert()
+
+
 class TestRegularModelConversion:
     """Hidden-model import from regular dbt models."""
 
     def test_default_off_skips_regular_models(self) -> None:
         project = _project_with_orphan()
-        # No sa_engine, no flag — hidden-model pass must be a no-op.
+        # No client, no flag — hidden-model pass must be a no-op.
         result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
         assert all(not m.hidden for m in result.models)
         assert [m.name for m in result.models] == ["orders"]
@@ -792,21 +800,14 @@ class TestRegularModelConversion:
             project=project, data_source="test_db", include_hidden_models=True,
         ).convert()
         assert [m.name for m in result.models] == ["orders"]
-        assert any("no SQLAlchemy engine" in w.message for w in result.warnings)
+        assert any("no table metadata was collected" in w.message for w in result.warnings)
 
     def test_opt_in_with_engine_produces_hidden_model(self) -> None:
         project = _project_with_orphan()
-        engine = MagicMock(spec=sa.Engine)
         fake_model = _sample_slayer_model(name="raw_events")
 
-        with patch.object(sa, "inspect", return_value=MagicMock()), \
-             patch.object(converter_module, "introspect_table_to_model", return_value=fake_model):
-            result = DbtToSlayerConverter(
-                project=project,
-                data_source="test_db",
-                include_hidden_models=True,
-                sa_engine=engine,
-            ).convert()
+        with patch.object(converter_module, "introspect_table_to_model", new=AsyncMock(return_value=fake_model)):
+            result = _convert_hidden(project)
 
         hidden = [m for m in result.models if m.hidden]
         assert len(hidden) == 1
@@ -820,19 +821,12 @@ class TestRegularModelConversion:
 
     def test_introspection_failure_is_skipped_with_warning(self) -> None:
         project = _project_with_orphan()
-        engine = MagicMock(spec=sa.Engine)
 
         def raise_err(**_kwargs):
             raise SQLAlchemyError("table not found")
 
-        with patch.object(sa, "inspect", return_value=MagicMock()), \
-             patch.object(converter_module, "introspect_table_to_model", side_effect=raise_err):
-            result = DbtToSlayerConverter(
-                project=project,
-                data_source="test_db",
-                include_hidden_models=True,
-                sa_engine=engine,
-            ).convert()
+        with patch.object(converter_module, "introspect_table_to_model", new=AsyncMock(side_effect=raise_err)):
+            result = _convert_hidden(project)
 
         # Semantic model still came through
         assert [m.name for m in result.models] == ["orders"]
@@ -843,17 +837,10 @@ class TestRegularModelConversion:
         # Regular model named the same as the semantic model — must be skipped
         # so the semantic (visible) model is not shadowed.
         project = _project_with_orphan(orphan_name="orders")
-        engine = MagicMock(spec=sa.Engine)
         fake_model = _sample_slayer_model(name="orders")
 
-        with patch.object(sa, "inspect", return_value=MagicMock()), \
-             patch.object(converter_module, "introspect_table_to_model", return_value=fake_model):
-            result = DbtToSlayerConverter(
-                project=project,
-                data_source="test_db",
-                include_hidden_models=True,
-                sa_engine=engine,
-            ).convert()
+        with patch.object(converter_module, "introspect_table_to_model", new=AsyncMock(return_value=fake_model)):
+            result = _convert_hidden(project)
 
         # Only the semantic (visible) model survives under the name 'orders'
         assert len(result.models) == 1
@@ -864,15 +851,9 @@ class TestRegularModelConversion:
         project.semantic_models[0].name = "order_facts"
         project.regular_models.append(DbtRegularModel(name="orders", schema_name="staging", alias="orders"))
 
-        with patch.object(sa, "inspect", return_value=MagicMock()), \
-             patch.object(converter_module, "introspect_table_to_model",
-                          side_effect=lambda **kw: _sample_slayer_model(name=kw["table_name"])):
-            result = DbtToSlayerConverter(
-                project=project,
-                data_source="test_db",
-                include_hidden_models=True,
-                sa_engine=MagicMock(spec=sa.Engine),
-            ).convert()
+        with patch.object(converter_module, "introspect_table_to_model",
+                          new=AsyncMock(side_effect=lambda **kw: _sample_slayer_model(name=kw["table_name"]))):
+            result = _convert_hidden(project)
 
         assert [m.name for m in result.models if m.hidden] == ["raw_events"]
 
@@ -890,15 +871,8 @@ class TestHiddenModelDescriptionPrecedence:
             Column(name="db_only", sql="db_only", type=DataType.TEXT,
                    description="db comment only")
         )
-        engine = MagicMock(spec=sa.Engine)
-        with patch.object(sa, "inspect", return_value=MagicMock()), \
-             patch.object(converter_module, "introspect_table_to_model", return_value=fake_model):
-            result = DbtToSlayerConverter(
-                project=project,
-                data_source="test_db",
-                include_hidden_models=True,
-                sa_engine=engine,
-            ).convert()
+        with patch.object(converter_module, "introspect_table_to_model", new=AsyncMock(return_value=fake_model)):
+            result = _convert_hidden(project)
         return next(m for m in result.models if m.hidden)
 
     def test_curated_wins_and_db_comments_fill_gaps(self) -> None:

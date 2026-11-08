@@ -18,7 +18,7 @@ import threading
 from collections.abc import Callable, Coroutine
 from typing import Any
 
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine
 from slayer.pg_facade.auth import Authenticator, validate_bind_address, validate_tls_pair
 from slayer.pg_facade.connection import EngineFactory, PgConnection, StorageProvider
 
@@ -37,6 +37,7 @@ async def serve(
     authenticator: Authenticator | None = None,
     storage_provider: StorageProvider | None = None,
     engine_factory: EngineFactory | None = None,
+    client_factory: ClientFactory | None = None,
     tls_ctx: ssl.SSLContext | None = None,
     catalog_extra_relations=None,
     catalog_ttl_seconds: float | None = None,
@@ -84,7 +85,7 @@ async def serve(
             reader, writer, engine=engine, storage=storage,
             token=token, authenticator=authenticator,
             storage_provider=storage_provider, engine_factory=engine_factory,
-            tls_ctx=tls_ctx,
+            client_factory=client_factory, tls_ctx=tls_ctx,
             catalog_extra_relations=catalog_extra_relations,
             catalog_ttl_seconds=catalog_ttl_seconds,
         )
@@ -192,12 +193,19 @@ def run_pg_serve(
 
     scheme = "postgresql+tls" if tls_ctx is not None else "postgresql"
     print(f"SLayer Postgres facade serving at {scheme}://{host}:{args.port}", flush=True)
-    server = _StoppableRun(
-        lambda: serve(host=host, port=args.port, engine=engine, storage=storage, token=token, tls_ctx=tls_ctx)
-    )
+
+    async def _serve() -> None:
+        try:
+            await serve(host=host, port=args.port, engine=engine, storage=engine.storage, token=token, tls_ctx=tls_ctx)
+        finally:
+            await engine.aclose()  # on the serving loop, which owns the async resources
+
+    server = _StoppableRun(_serve)
     try:
         serve_until_terminated(run=server.run, stop=server.stop)
     except ValueError as exc:
         # validate_bind_address rejection (non-loopback without a token).
         print(str(exc), file=sys.stderr)
         raise SystemExit(2) from exc
+    finally:
+        engine.close()

@@ -67,8 +67,9 @@ async def _assert_parity(
     assert unscoped is not None
     scoped = SlayerQueryEngine(storage=engine.storage, policy=POLICIES[policy])
     if executed:
-        def has_column(table, column) -> Optional[bool]:
-            return scoped._column_present(datasource=ds, scoped_table=table, column=column)
+        has_column = await scoped._has_column(
+            statement=sqlglot.parse_one(unscoped, read=dialect), datasource=ds, policy=POLICIES[policy],
+        )
     else:
         monkeypatch.setattr(scoped, "_column_present", stub_column_present)
         has_column = stub_has_column
@@ -178,11 +179,11 @@ def _join_policy(*, joins: list, whitelist: list[str]) -> SessionPolicy:
     return POLICIES["join_multi_hop"].model_copy(update={"ruleset": ruleset})
 
 
-def _never_confirmed(**_kwargs: Any) -> None:
+async def _never_confirmed(**_kwargs: Any) -> None:  # NOSONAR(S7503) — stands in for the async engine method
     return None
 
 
-def _never_present(**_kwargs: Any) -> bool:
+async def _never_present(**_kwargs: Any) -> bool:  # NOSONAR(S7503) — stands in for the async engine method
     return False
 
 
@@ -243,7 +244,7 @@ async def test_the_refresh_key_scan_fails_closed(kind: str, monkeypatch: pytest.
 async def test_a_refresh_whose_scan_fails_closed_keeps_the_entry(monkeypatch: pytest.MonkeyPatch) -> None:
     confirmed = {"value": True}
 
-    def _presence(**_kwargs: Any) -> Optional[bool]:
+    async def _presence(**_kwargs: Any) -> Optional[bool]:  # NOSONAR(S7503) — stands in for the async engine method
         return True if confirmed["value"] else None
 
     with ClientSpy().installed(monkeypatch) as spy:

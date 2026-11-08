@@ -50,6 +50,16 @@ columns:
   description: Product description.
   label: Description
   hidden: false
+- name: ingredients
+  sql: ingredients
+  type: ARRAY
+  element_type: TEXT
+  db_type: VARCHAR[]
+  primary_key: false
+  unique: false
+  description: The supplies the product is made from, a list sorted by name.
+  label: Ingredients
+  hidden: false
 measures:
 - formula: count_distinct(sku)
   name: product_count

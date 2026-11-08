@@ -13,8 +13,10 @@ with commented tables, ingested, and deleted on teardown.
 
 import os
 import uuid
+from collections.abc import AsyncIterator, Callable
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -23,12 +25,14 @@ from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
+from slayer.engine import ingestion
 from slayer.engine.ingestion import (
-    ingest_datasource,
     ingest_datasource_idempotent,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_drift import EditModelDelete, validate_datasource
+from slayer.sql import engine_factory
+from slayer.sql.client import SlayerSQLClient, SqlClient
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._cast_fixtures import check_try_cast_targets
 from tests._dev2120_fixtures import (
@@ -43,6 +47,7 @@ from tests._dev2120_fixtures import (
     server_table_statements as dev2120_table_statements,
 )
 from tests._dev2137_fixtures import as_list, assignments_model, assignments_statements, check_lists, num
+from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_model, mixed_numbers_statements
 from tests._sql_mode_retype_fixtures import (
     check_query_carries_finding,
     check_reingest_retypes,
@@ -136,12 +141,30 @@ def _ds_config(dataset_id: str, *, name: str = "bqtest", description: str | None
     )
 
 
+async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
+    sql_client = SlayerSQLClient(datasource=ds)
+    try:
+        return await ingestion.ingest_datasource_async(ds, client=sql_client, **kwargs)
+    finally:
+        await sql_client.aclose()
+        sql_client.close()
+
+
+@pytest.fixture
+async def client_for(tmp_path: Path) -> AsyncIterator[Callable[[DatasourceConfig], SqlClient]]:
+    """An engine's client builder; its clients are released at teardown."""
+    engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=str(tmp_path / "client_engine")))
+    try:
+        yield engine.client_for
+    finally:
+        await engine.aclose()
+        engine.close()
+
+
 @pytest.fixture(scope="module")
 def bq_models(bq_dataset):
     _, dataset_id = bq_dataset
-    models = ingest_datasource(
-        datasource=_ds_config(dataset_id), schema=dataset_id
-    )
+    models = run_sync(_ingest(_ds_config(dataset_id), schema=dataset_id))
     return {m.name: m for m in models}, dataset_id
 
 
@@ -174,7 +197,7 @@ class TestBigQueryCommentIngestion:
 
 class TestBigQueryDatasetDescription:
     async def test_dataset_description_fills_datasource(
-        self, bq_dataset, tmp_path: Path
+        self, bq_dataset, tmp_path: Path, client_for
     ) -> None:
         _, dataset_id = bq_dataset
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
@@ -182,7 +205,7 @@ class TestBigQueryDatasetDescription:
         await storage.save_datasource(ds)
 
         result = await ingest_datasource_idempotent(
-            datasource=ds, storage=storage, schema=dataset_id
+            datasource=ds, storage=storage, client=client_for(ds), schema=dataset_id
         )
         assert result.datasource_described is True
         loaded = await storage.get_datasource("bqtest")
@@ -190,12 +213,12 @@ class TestBigQueryDatasetDescription:
 
         # Re-ingest with the reloaded datasource: no-op, nothing re-reported.
         result2 = await ingest_datasource_idempotent(
-            datasource=loaded, storage=storage, schema=dataset_id
+            datasource=loaded, storage=storage, client=client_for(loaded), schema=dataset_id
         )
         assert result2.datasource_described is False
 
     async def test_preset_description_untouched(
-        self, bq_dataset, tmp_path: Path
+        self, bq_dataset, tmp_path: Path, client_for
     ) -> None:
         _, dataset_id = bq_dataset
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
@@ -203,7 +226,7 @@ class TestBigQueryDatasetDescription:
         await storage.save_datasource(ds)
 
         result = await ingest_datasource_idempotent(
-            datasource=ds, storage=storage, schema=dataset_id
+            datasource=ds, storage=storage, client=client_for(ds), schema=dataset_id
         )
         assert result.datasource_described is False
         loaded = await storage.get_datasource("bqtest2")
@@ -212,14 +235,14 @@ class TestBigQueryDatasetDescription:
 
 class TestBigQueryReingest:
     async def test_fill_if_empty_and_preservation(
-        self, bq_dataset, tmp_path: Path
+        self, bq_dataset, tmp_path: Path, client_for
     ) -> None:
         _, dataset_id = bq_dataset
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
         ds = _ds_config(dataset_id)
         await storage.save_datasource(ds)
         await ingest_datasource_idempotent(
-            datasource=ds, storage=storage, schema=dataset_id
+            datasource=ds, storage=storage, client=client_for(ds), schema=dataset_id
         )
 
         loaded = await storage.get_model("orders", data_source="bqtest")
@@ -231,7 +254,7 @@ class TestBigQueryReingest:
         await storage.save_model(loaded)
 
         result = await ingest_datasource_idempotent(
-            datasource=ds, storage=storage, schema=dataset_id
+            datasource=ds, storage=storage, client=client_for(ds), schema=dataset_id
         )
         addition = next(a for a in result.additions if a.model_name == "orders")
         assert addition.described_columns == ["amount"]
@@ -241,14 +264,14 @@ class TestBigQueryReingest:
         assert cols["status"].description == "hand-authored"
 
     async def test_new_commented_column_arrives_with_description(
-        self, bq_dataset, tmp_path: Path
+        self, bq_dataset, tmp_path: Path, client_for
     ) -> None:
         client, dataset_id = bq_dataset
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
         ds = _ds_config(dataset_id)
         await storage.save_datasource(ds)
         await ingest_datasource_idempotent(
-            datasource=ds, storage=storage, schema=dataset_id
+            datasource=ds, storage=storage, client=client_for(ds), schema=dataset_id
         )
 
         table = client.get_table(f"{_PROJECT}.{dataset_id}.orders")
@@ -258,7 +281,7 @@ class TestBigQueryReingest:
         client.update_table(table, ["schema"])
 
         result = await ingest_datasource_idempotent(
-            datasource=ds, storage=storage, schema=dataset_id
+            datasource=ds, storage=storage, client=client_for(ds), schema=dataset_id
         )
         addition = next(a for a in result.additions if a.model_name == "orders")
         assert "discount" in addition.new_columns
@@ -285,20 +308,41 @@ def second_dataset(bq_dataset):
 
 
 class TestBigQueryDriftWithSecondDataset:
-    async def test_bare_models_resolve_in_the_url_dataset(self, bq_dataset, second_dataset) -> None:
+    async def test_bare_models_resolve_in_the_url_dataset(self, bq_dataset, second_dataset, client_for) -> None:
         _, dataset_id = bq_dataset
         ds = _ds_config(dataset_id, name="bqdrift")
-        models = ingest_datasource(datasource=ds)
+        models = await ingestion.ingest_datasource_async(ds, client=client_for(ds))
         assert {m.sql_table for m in models} == {"orders", "plain"}
         plain = next(m for m in models if m.name == "plain")
         plain.columns.append(Column(name="ghost", type=DataType.TEXT))
 
-        entries = await validate_datasource(datasource=ds, models=models)
+        entries = await validate_datasource(datasource=ds, models=models, client=client_for(ds))
 
         assert [
             (type(e).__name__, e.model_name, e.remove.columns if isinstance(e, EditModelDelete) else None)
             for e in entries
         ] == [("EditModelDelete", "plain", ["ghost"])]
+
+
+async def test_default_schema_is_the_url_dataset_without_a_request(bq_dataset, monkeypatch) -> None:
+    bq_client, dataset_id = bq_dataset
+    second = f"{_PROJECT}.slayer_test_{uuid.uuid4().hex[:12]}"
+    bq_client.create_dataset(bigquery.Dataset(second))
+    ds = _ds_config(dataset_id, name="bqdefault")
+
+    def _no_request(*_args, **_kwargs):
+        raise AssertionError("a request was made to resolve the default schema")
+
+    sa_engine = engine_factory.get_engine(ds)
+    monkeypatch.setattr(sa_engine, "connect", _no_request)
+    monkeypatch.setattr(sa_engine, "raw_connection", _no_request)
+    client = SlayerSQLClient(datasource=ds)
+    try:
+        assert await client.default_schema() == dataset_id
+    finally:
+        client.close()
+        engine_factory.invalidate_engine(ds)
+        bq_client.delete_dataset(second, delete_contents=True, not_found_ok=True)
 
 
 def test_every_bigquery_alias_failure_is_quoted(bq_dataset) -> None:
@@ -338,7 +382,7 @@ def bq_dev2120_storage(bq_dataset, tmp_path_factory):
     storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("bq_dev2120")))
     run_sync(storage.save_datasource(ds))
     run_sync(storage.save_model(lib_model(data_source=ds.name)))
-    for model in ingest_datasource(datasource=ds, include_tables=["docs", "events"]):
+    for model in ingestion.ingest_datasource(datasource=ds, include_tables=["docs", "events"]):
         run_sync(storage.save_model(model))
     return storage
 
@@ -397,13 +441,14 @@ def bq_lists(bq_dataset, tmp_path_factory):
     client, dataset_id = bq_dataset
     prefix = f"{dataset_id}."
     for stmt in [*contractors_statements(dialect="bigquery", prefix=prefix),
-                 *assignments_statements(dialect="bigquery", prefix=prefix)]:
+                 *assignments_statements(dialect="bigquery", prefix=prefix),
+                 *mixed_numbers_statements(dialect="bigquery", prefix=prefix)]:
         client.query(stmt).result()
     ds = _ds_config(dataset_id)
     storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("bq_lists")))
     run_sync(storage.save_datasource(ds))
     for model in (contractors_model(data_source=ds.name), assignments_model(data_source=ds.name),
-                  _stale_contractors(ds.name)):
+                  mixed_numbers_model(data_source=ds.name), _stale_contractors(ds.name)):
         run_sync(storage.save_model(model))
     return storage, ds
 
@@ -412,8 +457,12 @@ async def test_lists(bq_lists) -> None:
     await check_lists(SlayerQueryEngine(storage=bq_lists[0]), dialect="bigquery")
 
 
+async def test_mixed_numeric_lists(bq_lists) -> None:
+    await check_mixed_numbers(SlayerQueryEngine(storage=bq_lists[0]))
+
+
 def test_repeated_field_ingested(bq_lists) -> None:
-    (model,) = ingest_datasource(datasource=bq_lists[1], include_tables=["contractors"])
+    (model,) = ingestion.ingest_datasource(datasource=bq_lists[1], include_tables=["contractors"])
     skills = model.get_column("skills")
     assert skills is not None
     assert (skills.type, skills.element_type) == (DataType.ARRAY, DataType.TEXT)
@@ -444,7 +493,7 @@ def bq_amounts(bq_dataset, tmp_path_factory):
     ds = _ds_config(dataset_id)
     storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("bq_amounts")))
     run_sync(storage.save_datasource(ds))
-    for model in ingest_datasource(datasource=ds, include_tables=["amounts"]):
+    for model in ingestion.ingest_datasource(datasource=ds, include_tables=["amounts"]):
         run_sync(storage.save_model(model))
     return storage
 

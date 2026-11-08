@@ -26,11 +26,18 @@ def _mk_engine(tmp_path, policy):
     return SlayerQueryEngine(storage=YAMLStorage(base_dir=str(storage_dir)), policy=policy)
 
 
+async def _teardown(eng):
+    await eng.aclose()
+    eng.close()
+
+
 @pytest.fixture
-def engine(tmp_path):
-    return _mk_engine(
+async def engine(tmp_path):
+    eng = _mk_engine(
         tmp_path, SessionPolicy(ruleset=ColumnFilterRuleset(column="org", value="x"))
     )
+    yield eng
+    await _teardown(eng)
 
 
 def _cols(*names):
@@ -45,10 +52,10 @@ def _patch_columns(monkeypatch, fn):
     monkeypatch.setattr(SqliteDialect, "reflect_columns", fn)
 
 
-def _scoped(engine, sql, *, dialect, datasource):
+async def _scoped(engine, sql, *, dialect, datasource):
     """Apply ``engine``'s policy to the parsed literal ``sql`` and render the tree."""
     tree = sqlglot.parse_one(sql, dialect=dialect)
-    return engine._apply_policy(statement=tree, dialect=dialect, datasource=datasource).sql(dialect=dialect)
+    return (await engine._apply_policy(statement=tree, dialect=dialect, datasource=datasource)).sql(dialect=dialect)
 
 
 def _ds(tmp_path, *, schema_name=None):
@@ -63,25 +70,25 @@ def _ds(tmp_path, *, schema_name=None):
 # -- _column_present ---------------------------------------------------------
 
 
-def test_column_present_true(engine, tmp_path, monkeypatch):
+async def test_column_present_true(engine, tmp_path, monkeypatch):
     _patch_columns(monkeypatch, lambda self, **k: _cols("org", "id"))
-    present = engine._column_present(
+    present = await engine._column_present(
         datasource=_ds(tmp_path), scoped_table=ScopedTable(name="orders"), column="org"
     )
     assert present is True
 
 
-def test_column_present_false(engine, tmp_path, monkeypatch):
+async def test_column_present_false(engine, tmp_path, monkeypatch):
     _patch_columns(monkeypatch, lambda self, **k: _cols("id", "amount"))
-    present = engine._column_present(
+    present = await engine._column_present(
         datasource=_ds(tmp_path), scoped_table=ScopedTable(name="orders"), column="org"
     )
     assert present is False
 
 
-def test_column_present_case_insensitive(engine, tmp_path, monkeypatch):
+async def test_column_present_case_insensitive(engine, tmp_path, monkeypatch):
     _patch_columns(monkeypatch, lambda self, **k: _cols("Organization_UUID"))
-    present = engine._column_present(
+    present = await engine._column_present(
         datasource=_ds(tmp_path),
         scoped_table=ScopedTable(name="orders"),
         column="organization_uuid",
@@ -89,26 +96,26 @@ def test_column_present_case_insensitive(engine, tmp_path, monkeypatch):
     assert present is True
 
 
-def test_column_present_none_on_empty(engine, tmp_path, monkeypatch):
+async def test_column_present_none_on_empty(engine, tmp_path, monkeypatch):
     _patch_columns(monkeypatch, lambda self, **k: [])
-    present = engine._column_present(
+    present = await engine._column_present(
         datasource=_ds(tmp_path), scoped_table=ScopedTable(name="orders"), column="org"
     )
     assert present is None
 
 
-def test_column_present_none_on_introspection_error(engine, tmp_path, monkeypatch):
+async def test_column_present_none_on_introspection_error(engine, tmp_path, monkeypatch):
     def boom(self, **k):
         raise RuntimeError("introspection blew up")
 
     _patch_columns(monkeypatch, boom)
-    present = engine._column_present(
+    present = await engine._column_present(
         datasource=_ds(tmp_path), scoped_table=ScopedTable(name="orders"), column="org"
     )
     assert present is None
 
 
-def test_confirmed_result_is_cached(engine, tmp_path, monkeypatch):
+async def test_confirmed_result_is_cached(engine, tmp_path, monkeypatch):
     calls = {"n": 0}
 
     def counting(self, **k):
@@ -118,12 +125,12 @@ def test_confirmed_result_is_cached(engine, tmp_path, monkeypatch):
     _patch_columns(monkeypatch, counting)
     ds = _ds(tmp_path)
     st = ScopedTable(name="orders")
-    assert engine._column_present(datasource=ds, scoped_table=st, column="org") is True
-    assert engine._column_present(datasource=ds, scoped_table=st, column="org") is True
+    assert await engine._column_present(datasource=ds, scoped_table=st, column="org") is True
+    assert await engine._column_present(datasource=ds, scoped_table=st, column="org") is True
     assert calls["n"] == 1
 
 
-def test_none_result_is_not_cached(engine, tmp_path, monkeypatch):
+async def test_none_result_is_not_cached(engine, tmp_path, monkeypatch):
     seq = iter([[], _cols("org")])
 
     def flaky(self, **k):
@@ -132,11 +139,11 @@ def test_none_result_is_not_cached(engine, tmp_path, monkeypatch):
     _patch_columns(monkeypatch, flaky)
     ds = _ds(tmp_path)
     st = ScopedTable(name="orders")
-    assert engine._column_present(datasource=ds, scoped_table=st, column="org") is None
-    assert engine._column_present(datasource=ds, scoped_table=st, column="org") is True
+    assert await engine._column_present(datasource=ds, scoped_table=st, column="org") is None
+    assert await engine._column_present(datasource=ds, scoped_table=st, column="org") is True
 
 
-def test_cross_catalog_fails_closed(engine, tmp_path, monkeypatch):
+async def test_cross_catalog_fails_closed(engine, tmp_path, monkeypatch):
     calls = {"n": 0}
 
     def counting(self, **k):
@@ -144,7 +151,7 @@ def test_cross_catalog_fails_closed(engine, tmp_path, monkeypatch):
         return _cols("org")
 
     _patch_columns(monkeypatch, counting)
-    present = engine._column_present(
+    present = await engine._column_present(
         datasource=_ds(tmp_path),
         scoped_table=ScopedTable(catalog="other_project", name="orders"),
         column="org",
@@ -153,7 +160,7 @@ def test_cross_catalog_fails_closed(engine, tmp_path, monkeypatch):
     assert calls["n"] == 0
 
 
-def test_schema_resolves_ast_first(engine, tmp_path, monkeypatch):
+async def test_schema_resolves_ast_first(engine, tmp_path, monkeypatch):
     seen = {}
 
     def capture(self, *, sa_engine, inspector, table, schema, catalog):
@@ -161,7 +168,7 @@ def test_schema_resolves_ast_first(engine, tmp_path, monkeypatch):
         return _cols("org")
 
     _patch_columns(monkeypatch, capture)
-    engine._column_present(
+    await engine._column_present(
         datasource=_ds(tmp_path, schema_name="ds_default"),
         scoped_table=ScopedTable(schema_name="ast_schema", name="orders"),
         column="org",
@@ -197,8 +204,14 @@ def _ch_ds():
 
 
 @pytest.fixture
-def join_engine(tmp_path):
-    return _mk_engine(tmp_path, _join_policy())
+async def join_engine(tmp_path):
+    eng = _mk_engine(tmp_path, _join_policy())
+    yield eng
+    await _teardown(eng)
+
+
+async def _always_present(**k):
+    return True
 
 
 # -- policy immutability -----------------------------------------------------
@@ -214,38 +227,39 @@ def test_policy_cannot_be_reassigned(engine):
 # -- _apply_policy dispatch --------------------------------------------------
 
 
-def test_apply_policy_no_policy_returns_verbatim(tmp_path):
+async def test_apply_policy_no_policy_returns_verbatim(tmp_path):
     """With no policy the statement is returned as is."""
     eng = _mk_engine(tmp_path, None)
     statement = sqlglot.parse_one("SELECT  *  FROM   orders", dialect="sqlite")
-    out = eng._apply_policy(statement=statement, dialect="sqlite", datasource=_ds(tmp_path))
+    out = await eng._apply_policy(statement=statement, dialect="sqlite", datasource=_ds(tmp_path))
+    await _teardown(eng)
     assert out == statement
 
 
-def test_apply_policy_column_ruleset_probes(engine, tmp_path, monkeypatch):
-    monkeypatch.setattr(engine, "_column_present", lambda **k: True)
-    out = _scoped(
+async def test_apply_policy_column_ruleset_probes(engine, tmp_path, monkeypatch):
+    monkeypatch.setattr(engine, "_column_present", _always_present)
+    out = await _scoped(
         engine, "SELECT * FROM orders", dialect="sqlite", datasource=_ds(tmp_path)
     )
     assert "WHERE org = 'x'" in out
 
 
-def test_apply_policy_join_ruleset_does_not_probe(join_engine, tmp_path, monkeypatch):
+async def test_apply_policy_join_ruleset_does_not_probe(join_engine, tmp_path, monkeypatch):
     """The join path never calls _column_present."""
-    def boom(**k):
+    async def boom(**k):
         raise AssertionError("_column_present must not be called for a join ruleset")
 
     monkeypatch.setattr(join_engine, "_column_present", boom)
-    out = _scoped(
+    out = await _scoped(
         join_engine, "SELECT * FROM orders", dialect="sqlite", datasource=_ds(tmp_path)
     )
     assert "EXISTS" in out.upper()
 
 
-def test_apply_policy_join_rule_clickhouse_needs_no_version(join_engine, monkeypatch):
+async def test_apply_policy_join_rule_clickhouse_needs_no_version(join_engine, monkeypatch):
     """No profile has been probed, yet the join rule applies: it needs no server setting."""
-    monkeypatch.setattr(join_engine, "_column_present", lambda **k: True)
-    out = _scoped(
+    monkeypatch.setattr(join_engine, "_column_present", _always_present)
+    out = await _scoped(
         join_engine, "SELECT * FROM orders", dialect="clickhouse", datasource=_ch_ds()
     )
     assert "allow_experimental_correlated_subqueries" not in out
@@ -253,9 +267,9 @@ def test_apply_policy_join_rule_clickhouse_needs_no_version(join_engine, monkeyp
     assert "_rls_src.customer_id GLOBAL IN (SELECT toNullable(_rls_j0.id)" in out
 
 
-def test_apply_policy_column_only_clickhouse_not_blocked(engine, monkeypatch):
-    monkeypatch.setattr(engine, "_column_present", lambda **k: True)
-    out = _scoped(
+async def test_apply_policy_column_only_clickhouse_not_blocked(engine, monkeypatch):
+    monkeypatch.setattr(engine, "_column_present", _always_present)
+    out = await _scoped(
         engine, "SELECT * FROM orders", dialect="clickhouse", datasource=_ch_ds()
     )
     assert "allow_experimental_correlated_subqueries" not in out

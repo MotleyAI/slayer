@@ -28,9 +28,10 @@ import sqlalchemy as sa
 import sqlalchemy.exc
 import sqlglot
 
+from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
 from slayer.sql import client as sql_client
-from slayer.sql.client import SlayerSQLClient, render_type_probe
+from slayer.sql.client import ResultColumnType, SlayerSQLClient, render_type_probe
 from slayer.sql.dialects import SqliteDialect
 
 
@@ -73,7 +74,7 @@ def no_retry(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def test_async_cross_call_sees_same_in_memory_db() -> None:
-    """Issue #72 acceptance: schema/data set up once, multiple async reads see it."""
+    """Schema/data set up once, multiple async reads see it."""
     client = _in_memory_client()
     _setup(
         client,
@@ -88,8 +89,8 @@ async def test_async_cross_call_sees_same_in_memory_db() -> None:
     assert rows2 == [{"x": 2}]
 
 
-async def test_get_column_types_cross_call_sees_same_in_memory_db() -> None:
-    """Issue #72 acceptance: get_column_types() must see schema set up earlier."""
+async def test_get_result_column_types_cross_call_sees_same_in_memory_db() -> None:
+    """get_result_column_types() must see schema set up earlier."""
     client = _in_memory_client()
     _setup(
         client,
@@ -98,9 +99,9 @@ async def test_get_column_types_cross_call_sees_same_in_memory_db() -> None:
             "INSERT INTO u VALUES (1, 'x')",
         ],
     )
-    types = await client.get_column_types(
+    types = await client.get_result_column_types(
         render_type_probe(sqlglot.parse_one("SELECT a, b FROM u"), dialect=SqliteDialect()))
-    assert types == {"a": "number", "b": "string"}
+    assert types == {"a": ResultColumnType(type=DataType.INT), "b": ResultColumnType(type=DataType.TEXT)}
 
 
 async def test_two_clients_get_isolated_in_memory_dbs(no_retry: None) -> None:

@@ -4,12 +4,15 @@ Flow: SlayerQuery → plan_query() → PlannedQuery → SQLGenerator → SQL →
 """
 
 import asyncio
+import contextlib
 import copy
 import decimal
 import logging
+import tempfile
 import warnings as _warnings_module
+from collections.abc import AsyncGenerator, Awaitable
 from datetime import datetime
-from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple, TypeVar
+from typing import Any, Callable, Coroutine, Dict, Iterator, List, Optional, Set, Tuple, TypeVar, Unpack
 
 import sqlalchemy as sa
 from sqlglot import exp
@@ -22,7 +25,8 @@ from pydantic import (
     model_validator,
 )
 
-from slayer.async_utils import run_sync
+from slayer.async_utils import run_sync, run_sync_on_caller_thread
+from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, RANKED_AGGREGATIONS, JoinCardinality, TimeGranularity
 from slayer.core.errors import (
     AggregationArgumentError,
@@ -129,19 +133,9 @@ from slayer.ir.planned import (
     plans_read_clock,
     planned_keys,
 )
-from slayer.engine.schema_drift import (
-    AppliedEntry,
-    ApplyDriftResult,
-    ApplyError,
-    LiveSnapshotCache,
-    REPORT_ONLY_FINDINGS,
-    ListRetypeFinding,
-    NarrowedAccessFinding,
-    ToDeleteEntry,
-    unloadable_model_delete,
-    validate_datasource,
-)
+from slayer.engine import ingestion, schema_drift
 from slayer.engine.model_reads import narrowing_models
+from slayer.engine.schema_scope import IngestScopeArgs
 from slayer.engine.response_meta import (
     FieldMetadata as FieldMetadata,  # re-export for slayer_client / tests
     ResponseAttributes,
@@ -159,29 +153,30 @@ from slayer.ir.variables import (
     model_needs_substitution_pass,
     substitute_model_sql_surfaces,
 )
-from slayer.engine.introspect_utils import reflect_columns
-from slayer.engine.schema_scope import SchemaRef
 from slayer.memories.resolver import (
     _all_models_in_datasource,
     resolve_entity,
 )
 from slayer.sql.client import (
     ExecutionResult,
+    ResultColumnType,
     SlayerSQLClient,
+    SqlClient,
     _is_auth_failure,
     _is_transient_db_error,
     _is_unreachable_db_error,
     classify_model_sql,
     render_type_probe,
     sql_model_trial_query,
+    type_categories,
 )
-from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, get_dialect
+from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, dialect_for_sa_backend, get_dialect
 from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.render.library import check_library_support
 from slayer.sql.render.parse import parse_table
 from slayer.sql.sql_template import SqlTemplateError, sql_template
-from slayer.sql import engine_factory
-from slayer.sql.engine_factory import EngineCacheKey, _sql_client_cache_key
+from slayer.sql.dialects.reflection import TableLocation
+from slayer.sql.engine_factory import ClientCacheKey, _sql_client_cache_key, client_cache_key
 from slayer.sql.generator import (
     PlannedStatement,
     _finish_statement,
@@ -190,16 +185,22 @@ from slayer.sql.generator import (
     read_models,
 )
 from slayer.sql.physical_tables import physical_tables
-from slayer.sql.session_policy import HasColumn, ScopedTable, apply_session_policy
+from slayer.sql.session_policy import HasColumn, ScopedTable, apply_session_policy, policy_column_checks
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from slayer.storage.base import StorageBackend
+from slayer.storage.engine_view import EngineStorage
 from slayer.storage.document_loading import DocumentLoadFailures
+from slayer.storage.yaml_storage import YAMLStorage
 import slayer.engine.bundle_builder
 
 logger = logging.getLogger(__name__)
 
 
 _QueryT = TypeVar("_QueryT")
+_T = TypeVar("_T")
+
+#: Builds the client an engine uses for one datasource; the default builds ``SlayerSQLClient``.
+ClientFactory = Callable[[DatasourceConfig], SqlClient]
 
 REFINE_REQUIRES_NAME = (
     "refine applies only to a saved query run by name; put these clauses in the query object instead"
@@ -787,19 +788,21 @@ class SlayerQueryEngine:
         policy: Optional[SessionPolicy] = None,
         cache_config: Optional[CacheConfig] = None,
         clock: Optional[Callable[[], datetime]] = None,
+        client_factory: Optional[ClientFactory] = None,
     ):
-        self.storage = storage
+        self.storage: StorageBackend = EngineStorage(storage, client_source=self.client_for)
+        self._client_factory = client_factory
         # Read once per execution; relative time points resolve against it.
         self._clock = clock if clock is not None else host_clock()
         # Per-engine, opt-in query result cache (defaults to cache-indefinitely).
         self._cache = QueryCache(config=cache_config or CacheConfig())
-        # Keyed so same-name Snowflake datasources (differing warehouse/role) get distinct clients.
-        self._sql_clients: dict[EngineCacheKey, SlayerSQLClient] = {}
+        # One client per datasource name and connection identity, built only by ``client_for``.
+        self._sql_clients: dict[ClientCacheKey, SqlClient] = {}
         self._policy = policy
         # Column-presence facts; an unconfirmable ``None`` is re-probed, never cached.
         self._column_presence_cache: dict[tuple, bool] = {}
         # Live-schema facts reused by query-time drift attribution.
-        self._drift_snapshots = LiveSnapshotCache()
+        self._drift_snapshots = schema_drift.LiveSnapshotCache()
 
     @property
     def policy(self) -> Optional[SessionPolicy]:
@@ -823,18 +826,26 @@ class SlayerQueryEngine:
     def clear_cache(self) -> None:
         self._cache.clear()
 
-    def _apply_policy(
+    async def _apply_policy(
         self, *, statement: Expr, dialect: str, datasource: DatasourceConfig
     ) -> Expr:
         """``statement`` rewritten to enforce the forced-filter policy; unchanged when no policy."""
         if not self.policy:
             return statement
+        has_column = await self._has_column(statement=statement, datasource=datasource, policy=self.policy)
         return apply_session_policy(
-            statement, sql_dialect=get_dialect(dialect), policy=self.policy, has_column=self._has_column(datasource),
+            statement, sql_dialect=get_dialect(dialect), policy=self.policy, has_column=has_column,
         )
 
-    def _has_column(self, datasource: DatasourceConfig) -> HasColumn:
-        return lambda scoped, column: self._column_present(datasource=datasource, scoped_table=scoped, column=column)
+    async def _has_column(
+        self, *, statement: Expr, datasource: DatasourceConfig, policy: SessionPolicy,
+    ) -> HasColumn:
+        """The column presence facts the policy rewrite of ``statement`` asks for, read up front."""
+        present = {
+            check: await self._column_present(datasource=datasource, scoped_table=check[0], column=check[1])
+            for check in policy_column_checks(statement, policy=policy)
+        }
+        return lambda scoped, column: present.get((scoped, column))
 
     async def _render_dialect(
         self, *, dialect: str, datasource: DatasourceConfig, planned_list,
@@ -849,7 +860,7 @@ class SlayerQueryEngine:
         if not sql_dialect.profile_needed(planned_keys(planned_list)):
             return sql_dialect
         try:
-            profile = await self._client_for(datasource).server_profile()
+            profile = await self.client_for(datasource).server_profile()
         except Exception:  # noqa: BLE001 — an unknown server gets the plain cast
             profile = ServerProfile()
         return sql_dialect.model_copy(update={"server_profile": profile})
@@ -865,7 +876,7 @@ class SlayerQueryEngine:
         named = f" (filter(s): {', '.join(repr(t) for t in texts)})" if texts else ""
         lead = f"This query pushes a filter into a related model as a correlated EXISTS semi-join{named}."
         try:
-            profile = await self._client_for(datasource).server_profile()
+            profile = await self.client_for(datasource).server_profile()
         except Exception as exc:
             # An unreadable profile is refused like an empty one; the next query re-probes.
             reason = sql_dialect.correlated_subquery_refusal(ServerProfile(), statement=statement)
@@ -874,7 +885,7 @@ class SlayerQueryEngine:
         if reason is not None:
             raise SlayerError(f"{lead} {reason} Alternatively, restructure the filter.")
 
-    def _column_present(
+    async def _column_present(
         self,
         *,
         datasource: DatasourceConfig,
@@ -901,12 +912,9 @@ class SlayerQueryEngine:
         if key in self._column_presence_cache:
             return self._column_presence_cache[key]
         try:
-            sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
-            inspector = sa.inspect(sa_engine)
             # Carry the catalog so a same-named twin in another catalog never unions in.
-            ref = SchemaRef(catalog=scoped_table.catalog, name=schema)
-            cols = reflect_columns(
-                sa_engine=sa_engine, inspector=inspector, table_name=scoped_table.name, ref=ref,
+            cols = await self.client_for(datasource).reflect_columns(
+                TableLocation(name=scoped_table.name, schema_name=schema, catalog=scoped_table.catalog),
             )
         except Exception as exc:  # introspection failed -> cannot confirm
             logger.warning(
@@ -934,21 +942,34 @@ class SlayerQueryEngine:
         return topologically_order_stages(queries)
 
     async def aclose(self) -> None:
-        """Dispose cached clients' async engines (avoids leaking connections); keep the clients."""
+        """Release every client's loop-bound resources; the clients stay cached and usable."""
         self._drift_snapshots.clear()
-        for client in self._sql_clients.values():
-            await client.aclose()
+        for client in list(self._sql_clients.values()):  # NOSONAR(S7504) — snapshot: a concurrent client_for may add a client during the await
+            try:
+                await client.aclose()
+            except Exception:
+                logger.warning("Failed to release a SQL client during engine aclose.", exc_info=True)
+
+    def run_sync(self, workflow: Coroutine[Any, Any, _T]) -> _T:
+        """Run one whole synchronous workflow in one bridged loop, releasing the clients' loop-bound
+        resources at its end — also when it raises or is cancelled."""
+
+        async def _run() -> _T:
+            try:
+                return await workflow
+            finally:
+                await asyncio.shield(self.aclose())
+
+        return run_sync(_run())
 
     def close(self) -> None:
-        """Close every cached client (disposing private in-memory engines) and clear the cache.
+        """Close every client this engine built and forget them; a later query rebuilds its clients.
 
-        Idempotent; continues past a client that fails to close; leaves the
-        engine reusable — a later query rebuilds its clients (D4). This is the
-        synchronous teardown; loop-bound async engines (async datasources) are
-        disposed by ``aclose()`` on their event loop, not here.
+        Idempotent; continues past a client that fails to close. Loop-bound async
+        resources are released by ``aclose()`` on their event loop, not here.
         """
         try:
-            for client in self._sql_clients.values():
+            for client in list(self._sql_clients.values()):  # NOSONAR(S7504) — snapshot: another thread's client_for may add a client meanwhile
                 try:
                     client.close()
                 except Exception:
@@ -1119,7 +1140,7 @@ class SlayerQueryEngine:
             )
         # Forced-filter rewrite before dry-run / explain / execute so all three
         # (and the cache key) see the policy-rewritten SQL; no-op without a policy.
-        statement = self._apply_policy(statement=built.statement, dialect=dialect, datasource=datasource)
+        statement = await self._apply_policy(statement=built.statement, dialect=dialect, datasource=datasource)
         attributes, expected_columns = build_response_metadata(
             root_planned=root_planned, bundle=root_planned.stage_bundle or rendered.bundle,
             statement=statement,
@@ -1401,12 +1422,37 @@ class SlayerQueryEngine:
         """Cache-key datasource fingerprint (``connection_string|runtime_fingerprint``)."""
         return "|".join(_sql_client_cache_key(datasource))
 
-    def _client_for(self, datasource: DatasourceConfig) -> SlayerSQLClient:
-        """Reuse (or lazily construct) the cached SQL client for a datasource."""
-        ds_key = _sql_client_cache_key(datasource)
-        if ds_key not in self._sql_clients:
-            self._sql_clients[ds_key] = SlayerSQLClient(datasource=datasource)
-        return self._sql_clients[ds_key]
+    def client_for(self, datasource: DatasourceConfig) -> SqlClient:
+        """The one construction point: the cached client for ``datasource``, built by the factory on a miss."""
+        key = client_cache_key(datasource)
+        client = self._sql_clients.get(key)
+        if client is None:
+            factory = self._client_factory
+            client = factory(datasource) if factory is not None else SlayerSQLClient(datasource=datasource)
+            self._sql_clients[key] = client
+        return client
+
+    async def ingest(
+        self, datasource: DatasourceConfig, **scope: Unpack[IngestScopeArgs],
+    ) -> List[SlayerModel]:
+        """The models a scan of ``datasource`` finds, read through this engine's client."""
+        return await ingestion.ingest_datasource_async(datasource, client=self.client_for(datasource), **scope)
+
+    def ingest_sync(self, datasource: DatasourceConfig, **scope: Unpack[IngestScopeArgs]) -> List[SlayerModel]:
+        return self.run_sync(self.ingest(datasource, **scope))
+
+    async def ingest_idempotent(
+        self, datasource: DatasourceConfig, **scope: Unpack[IngestScopeArgs],
+    ) -> "schema_drift.IdempotentIngestResult":
+        """Idempotent ingestion of ``datasource`` into this engine's storage, through this engine's client."""
+        return await ingestion.ingest_datasource_idempotent(
+            datasource=datasource, storage=self.storage, client=self.client_for(datasource), **scope,
+        )
+
+    def ingest_idempotent_sync(
+        self, datasource: DatasourceConfig, **scope: Unpack[IngestScopeArgs],
+    ) -> "schema_drift.IdempotentIngestResult":
+        return self.run_sync(self.ingest_idempotent(datasource, **scope))
 
     async def _execute_pipeline(
         self,
@@ -1460,7 +1506,7 @@ class SlayerQueryEngine:
                 })
 
         # Miss (or cache=False) → a SQL client is required.
-        client = self._client_for(prepared.datasource)
+        client = self.client_for(prepared.datasource)
 
         # explain: run dialect-appropriate EXPLAIN on the query. NEVER cached.
         if explain:
@@ -1516,7 +1562,7 @@ class SlayerQueryEngine:
         return response
 
     async def _run_data_query(
-        self, *, prepared: _Prepared, client: SlayerSQLClient
+        self, *, prepared: _Prepared, client: SqlClient
     ) -> ExecutionResult:
         """Run the prepared data query (schema-drift attribution on error); decodes result keys."""
         try:
@@ -1540,17 +1586,17 @@ class SlayerQueryEngine:
         exprs: "list[str]",
         dialect: str,
         datasource: DatasourceConfig,
-        client: SlayerSQLClient,
+        client: SqlClient,
     ) -> "dict[str, Any]":
         """One batched refresh-key scan → ``{expression: value}``; policy-rewritten like the data query."""
         scan = self._cache.build_refresh_key_sql(table, exprs, dialect)
-        scan = self._apply_policy(statement=scan, dialect=dialect, datasource=datasource)
+        scan = await self._apply_policy(statement=scan, dialect=dialect, datasource=datasource)
         rows = (await client.execute(sql=scan.sql(dialect=dialect))).rows
         row0 = rows[0] if rows else {}
         return {e: row0.get(self._cache.rk_alias(i)) for i, e in enumerate(exprs)}
 
     async def _scan_refresh_key_baselines(
-        self, *, prepared: _Prepared, client: SlayerSQLClient, cache: QueryCache
+        self, *, prepared: _Prepared, client: SqlClient, cache: QueryCache
     ) -> "tuple[list[tuple[str, str]], list[RefreshKeyValue]]":
         """Capture write-time refresh-key baselines ``(applicable, refresh_key_values)`` (same order; failures propagate)."""
         applicable = cache.applicable_keys(tables=prepared.tables, dialect=prepared.dialect)
@@ -1644,19 +1690,13 @@ class SlayerQueryEngine:
     ) -> bool:
         """Synchronous wrapper for :meth:`evict`."""
 
-        async def _run() -> bool:
-            try:
-                return await self.evict(query, variables=variables, data_source=data_source, refine=refine)
-            finally:
-                await self.aclose()
-
-        return run_sync(_run())
+        return self.run_sync(self.evict(query, variables=variables, data_source=data_source, refine=refine))
 
     async def _reexecute_entry(self, entry: _CacheEntry, now: float) -> Optional[_CacheEntry]:
         """Re-prepare + re-execute a stale entry, pinning its connection identity via
         ``override_datasource`` so no config change migrates it; raises if the client is gone.
         ``None`` when the query now reads the clock (never cached)."""
-        client = self._sql_clients.get(entry.ds_key)
+        client = self._sql_clients.get(_entry_client_key(entry))
         if client is None:
             raise RuntimeError(
                 f"no cached SQL client for datasource fingerprint {entry.ds_key!r}; "
@@ -1712,13 +1752,12 @@ class SlayerQueryEngine:
         if not snapshot:
             return result
 
-        # Collate {ds_key: {table: ordered exprs}}, keyed by SQL-client
-        # fingerprint (not the bare name) so each entry scans its own identity.
-        collate: dict[EngineCacheKey, dict[str, list[str]]] = {}
+        # Collate {client key: {table: ordered exprs}} so each entry scans through its own client.
+        collate: dict[ClientCacheKey, dict[str, list[str]]] = {}
         for entry in snapshot.values():
             if not entry.applicable:
                 continue
-            tables = collate.setdefault(entry.ds_key, {})
+            tables = collate.setdefault(_entry_client_key(entry), {})
             for table, expr in entry.applicable:
                 exprs = tables.setdefault(table, [])
                 if expr not in exprs:
@@ -1726,8 +1765,8 @@ class SlayerQueryEngine:
 
         # One batched scan per (ds_key, table), continue-on-error per table,
         # through the write-time client (no name re-resolution).
-        scanned: dict[tuple[EngineCacheKey, str], dict[str, Any]] = {}
-        failed: set[tuple[EngineCacheKey, str]] = set()
+        scanned: dict[tuple[ClientCacheKey, str], dict[str, Any]] = {}
+        failed: set[tuple[ClientCacheKey, str]] = set()
         for ds_key, tables in collate.items():
             client = self._sql_clients.get(ds_key)
             for table, exprs in tables.items():
@@ -1760,7 +1799,7 @@ class SlayerQueryEngine:
             if ttl_expired:
                 bucket = result.expired_refreshed
             else:
-                dk = entry.ds_key
+                dk = _entry_client_key(entry)
                 if any((dk, t) in failed for (t, _e) in entry.applicable):
                     result.unchanged.append(key)
                     continue
@@ -1800,13 +1839,7 @@ class SlayerQueryEngine:
     def refresh_sync(self) -> RefreshResult:
         """Synchronous wrapper for :meth:`refresh`."""
 
-        async def _run() -> RefreshResult:
-            try:
-                return await self.refresh()
-            finally:
-                await self.aclose()
-
-        return run_sync(_run())
+        return self.run_sync(self.refresh())
 
     def _normalize_stage(
         self,
@@ -1840,8 +1873,8 @@ class SlayerQueryEngine:
 
     async def _validate_read_set(
         self, *, datasource: DatasourceConfig, read_set: "Set[str]",
-        findings_out: "Optional[List[ListRetypeFinding]]" = None,
-    ) -> "List[ToDeleteEntry]":
+        findings_out: "Optional[List[schema_drift.ListRetypeFinding]]" = None,
+    ) -> "List[schema_drift.ToDeleteEntry]":
         """Drift entries for the read persisted models of ``datasource``, over reused live facts."""
         identities = await self.storage._list_all_model_identities()
         available = {n for d, n in identities if d == datasource.name}
@@ -1851,10 +1884,10 @@ class SlayerQueryEngine:
             if m is not None:
                 models.append(m)
         async with self._drift_snapshots.acquire(datasource) as snapshot:
-            return await validate_datasource(
+            return await schema_drift.validate_datasource(
                 datasource=datasource,
                 models=models,
-                sql_clients=self._sql_clients,
+                client=self.client_for(datasource),
                 available_in_ds=available,
                 snapshot=snapshot,
                 findings_out=findings_out,
@@ -1871,7 +1904,7 @@ class SlayerQueryEngine:
         """Raise ``SchemaDriftError`` if ``err`` is attributable to drift touching what the
         statement reads; else return so the caller re-raises. Attribution errors are swallowed."""
         try:
-            found: List[ListRetypeFinding] = []
+            found: List[schema_drift.ListRetypeFinding] = []
             entries = await self._validate_read_set(
                 datasource=datasource, read_set=read_set, findings_out=found,
             )
@@ -1945,12 +1978,21 @@ class SlayerQueryEngine:
         )
         return built, dialect, root
 
-    async def get_column_types(  # NOSONAR(S3776) — linear probe pipeline: query-backed prelude → bundle → expand-nested → plan → render → execute → result-key map-back. Splitting hides the order; each step is its own try/except + early-return so flatness is the easier read.
+    async def get_column_types(self, model_name: str, data_source: Optional[str] = None) -> Dict[str, str]:
+        """Deprecated: the 1.5.0 category probe; use ``get_result_column_types``."""
+        warn_deprecated(
+            "SlayerQueryEngine.get_column_types() returns 1.5.0 type categories and is removed in SLayer 2.0; "
+            "use get_result_column_types(), which returns SLayer types and database type names.",
+            removal="2.0",
+        )
+        return type_categories(await self.get_result_column_types(model_name, data_source=data_source))
+
+    async def get_result_column_types(  # NOSONAR(S3776) — linear probe pipeline: query-backed prelude → bundle → expand-nested → plan → render → execute → result-key map-back. Splitting hides the order; each step is its own try/except + early-return so flatness is the easier read.
         self,
         model_name: str,
         data_source: Optional[str] = None,
-    ) -> Dict[str, str]:
-        """Infer column types via a type-probe query → {column: "number"|"string"|"time"|"boolean"}."""
+    ) -> Dict[str, ResultColumnType]:
+        """The probed SLayer type and database type name of each non-identifier column of a model."""
         stored = await self.storage.get_model(model_name, data_source=data_source)
         if stored is None:
             return {}
@@ -1967,7 +2009,7 @@ class SlayerQueryEngine:
                 raise
             except Exception:
                 logger.warning(
-                    "get_column_types: failed to resolve query-backed model '%s'",
+                    "get_result_column_types: failed to resolve query-backed model '%s'",
                     model_name,
                 )
                 return {}
@@ -1984,10 +2026,7 @@ class SlayerQueryEngine:
         except ValueError:
             return {}
 
-        ds_key = _sql_client_cache_key(datasource)
-        if ds_key not in self._sql_clients:
-            self._sql_clients[ds_key] = SlayerSQLClient(datasource=datasource)
-        client = self._sql_clients[ds_key]
+        client = self.client_for(datasource)
 
         try:
             built, dialect, root = await self._plan_type_probe(
@@ -1995,20 +2034,20 @@ class SlayerQueryEngine:
             )
             # Type probing honours the forced-filter policy too; a policy failure
             # degrades to {} rather than leaking an unscoped probe.
-            statement = self._apply_policy(statement=built.statement, dialect=dialect, datasource=datasource)
+            statement = await self._apply_policy(statement=built.statement, dialect=dialect, datasource=datasource)
             probe = built.model_copy(update={"statement": statement}).mint_probe(policy_scoped=self.policy is not None)
         except Exception:
             logger.warning(
-                "get_column_types plan/generate failed for model '%s'",
+                "get_result_column_types plan/generate failed for model '%s'",
                 model_name,
             )
             return {}
 
         try:
-            raw_types = await client.get_column_types(probe)
+            raw_types = await client.get_result_column_types(probe)
         except Exception:
             logger.warning(
-                "get_column_types probe failed for model '%s'", model_name,
+                "get_result_column_types probe failed for model '%s'", model_name,
             )
             return {}
 
@@ -2019,7 +2058,7 @@ class SlayerQueryEngine:
         )[0]
 
         # Map qualified aliases back to bare measure names.
-        result: Dict[str, str] = {}
+        result: Dict[str, ResultColumnType] = {}
         source_relation = root.source_relation
         for slot in root.aggregate_slots:
             if slot.hidden:
@@ -2067,18 +2106,11 @@ class SlayerQueryEngine:
         cache: bool = False,
         refine: "QueryRefinement | dict | None" = None,
     ) -> SlayerResponse:
-        """Synchronous wrapper for execute(); disposes per-call async engines in ``finally``."""
-
-        async def _run_and_cleanup() -> SlayerResponse:
-            try:
-                return await self.execute(
-                    query, variables=variables, dry_run=dry_run,
-                    explain=explain, data_source=data_source, cache=cache, refine=refine,
-                )
-            finally:
-                await self.aclose()
-
-        return run_sync(_run_and_cleanup())
+        """Synchronous wrapper for execute(), run through ``run_sync``."""
+        return self.run_sync(self.execute(
+            query, variables=variables, dry_run=dry_run,
+            explain=explain, data_source=data_source, cache=cache, refine=refine,
+        ))
 
     async def _scope_bare_name_to_datasource(
         self, *, raw: str, name: str, data_source: str
@@ -2351,16 +2383,7 @@ class SlayerQueryEngine:
         root_hint: str | None = None,
     ) -> RootModelRecommendation:
         """Synchronous wrapper for :meth:`recommend_root_model`."""
-
-        async def _run() -> RootModelRecommendation:
-            try:
-                return await self.recommend_root_model(
-                    items, data_source=data_source, root_hint=root_hint
-                )
-            finally:
-                await self.aclose()
-
-        return run_sync(_run())
+        return self.run_sync(self.recommend_root_model(items, data_source=data_source, root_hint=root_hint))
 
 
     async def edit_model_remove(
@@ -2439,12 +2462,12 @@ class SlayerQueryEngine:
         self, deletes: "List[Any]"
     ) -> "Any":
         """Apply each ``ToDeleteEntry`` → ``ApplyDriftResult``; per-entry failures land in ``errors``, ``residual`` from a re-validate."""
-        applied: List[AppliedEntry] = []
-        errors: List[ApplyError] = []
+        applied: List[schema_drift.AppliedEntry] = []
+        errors: List[schema_drift.ApplyError] = []
         touched_ds: set[str] = set()
 
         for entry in deletes:
-            if isinstance(entry, REPORT_ONLY_FINDINGS):
+            if isinstance(entry, schema_drift.REPORT_ONLY_FINDINGS):
                 continue  # report-only
             # Track the datasource up front so re-validation runs even if every
             # mutation on it fails.
@@ -2469,7 +2492,7 @@ class SlayerQueryEngine:
                 else:
                     raise ValueError(f"Unknown delete tool: {entry.tool!r}")
                 applied.append(
-                    AppliedEntry(
+                    schema_drift.AppliedEntry(
                         tool=entry.tool,
                         model_name=entry.model_name,
                         data_source=entry.data_source,
@@ -2477,7 +2500,7 @@ class SlayerQueryEngine:
                 )
             except Exception as exc:  # noqa: BLE001 — best-effort per-entry isolation
                 errors.append(
-                    ApplyError(
+                    schema_drift.ApplyError(
                         tool=entry.tool,
                         model_name=entry.model_name,
                         data_source=entry.data_source,
@@ -2491,7 +2514,7 @@ class SlayerQueryEngine:
             try:
                 residual.extend(
                     e for e in await self.validate_models(data_source=ds_name)
-                    if not isinstance(e, REPORT_ONLY_FINDINGS)
+                    if not isinstance(e, schema_drift.REPORT_ONLY_FINDINGS)
                 )
             except Exception as inner:
                 logger.debug(
@@ -2499,7 +2522,7 @@ class SlayerQueryEngine:
                     ds_name,
                     inner,
                 )
-        return ApplyDriftResult(
+        return schema_drift.ApplyDriftResult(
             applied=applied,
             errors=errors,
             residual=list(residual),
@@ -2565,34 +2588,31 @@ class SlayerQueryEngine:
         sqlglot_name = dialect_for_ds_type(ds_cfg.type).sqlglot_name
         findings: list[JoinCardinalityFinding] = []
         persist_entries: list[tuple] = []
-        client = SlayerSQLClient(datasource=ds_cfg)
-        try:
-            for m in scope:
-                for join in m.joins:
-                    try:
-                        finding, detected = await self._detect_one_join(
-                            model=m, join=join, by_name=by_name,
-                            client=client, sqlglot_name=sqlglot_name,
-                            data_source=ds_name, datasource_cfg=ds_cfg,
+        client = self.client_for(ds_cfg)
+        for m in scope:
+            for join in m.joins:
+                try:
+                    finding, detected = await self._detect_one_join(
+                        model=m, join=join, by_name=by_name,
+                        client=client, sqlglot_name=sqlglot_name,
+                        data_source=ds_name, datasource_cfg=ds_cfg,
+                    )
+                except ForcedFilterError:
+                    # Fail-closed: a report line would leak unscoped stats.
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    # Contain per join: one unreadable table mustn't fail all.
+                    findings.append(
+                        _scan_failed_finding(
+                            data_source=ds_name, model=m, join=join, exc=exc,
                         )
-                    except ForcedFilterError:
-                        # Fail-closed: a report line would leak unscoped stats.
-                        raise
-                    except Exception as exc:  # noqa: BLE001
-                        # Contain per join: one unreadable table mustn't fail all.
-                        findings.append(
-                            _scan_failed_finding(
-                                data_source=ds_name, model=m, join=join, exc=exc,
-                            )
-                        )
-                        continue
-                    findings.append(finding)
-                    if detected is not None:
-                        persist_entries.append(
-                            (m.name, _join_signature(join), detected)
-                        )
-        finally:
-            await client.aclose()
+                    )
+                    continue
+                findings.append(finding)
+                if detected is not None:
+                    persist_entries.append(
+                        (m.name, _join_signature(join), detected)
+                    )
         return findings, persist_entries
 
     async def _detect_one_join(
@@ -2700,8 +2720,8 @@ class SlayerQueryEngine:
             table=table, key_cols=key_cols, sqlglot_name=sqlglot_name,
         )
         # Profile the tenant-scoped rows, like every execution path (no-op without a policy).
-        rows_q = self._apply_policy(statement=rows_q, dialect=sqlglot_name, datasource=datasource)
-        dist_q = self._apply_policy(statement=dist_q, dialect=sqlglot_name, datasource=datasource)
+        rows_q = await self._apply_policy(statement=rows_q, dialect=sqlglot_name, datasource=datasource)
+        dist_q = await self._apply_policy(statement=dist_q, dialect=sqlglot_name, datasource=datasource)
         rows_sql, dist_sql = rows_q.sql(dialect=sqlglot_name), dist_q.sql(dialect=sqlglot_name)
         row_rows = (await client.execute(sql=rows_sql)).rows
         dist_rows = (await client.execute(sql=dist_sql)).rows
@@ -2763,16 +2783,16 @@ class SlayerQueryEngine:
         if ds is None:
             return []
         models, unloadable = await self.storage.load_models(data_source=data_source)
-        retypes: List[ListRetypeFinding] = []
-        entries = await validate_datasource(
-            datasource=ds, models=models, sql_clients=self._sql_clients, findings_out=retypes,
+        retypes: List[schema_drift.ListRetypeFinding] = []
+        entries = await schema_drift.validate_datasource(
+            datasource=ds, models=models, client=self.client_for(ds), findings_out=retypes,
         )
         findings = [
-            NarrowedAccessFinding(model_name=name, data_source=ds_name, narrowed_by=[f"{d}.{n}" for d, n in by])
+            schema_drift.NarrowedAccessFinding(model_name=name, data_source=ds_name, narrowed_by=[f"{d}.{n}" for d, n in by])
             for (ds_name, name), by in sorted(narrowed.items())
             if ds_name == data_source
         ]
-        return [*entries, *(unloadable_model_delete(error=e) for e in unloadable), *retypes, *findings]
+        return [*entries, *(schema_drift.unloadable_model_delete(error=e) for e in unloadable), *retypes, *findings]
 
     def create_model_from_query_sync(
         self,
@@ -2786,7 +2806,7 @@ class SlayerQueryEngine:
     ) -> SlayerModel:
         """Synchronous wrapper for create_model_from_query()."""
 
-        return run_sync(
+        return self.run_sync(
             self.create_model_from_query(
                 query=query,
                 name=name,
@@ -2810,7 +2830,7 @@ class SlayerQueryEngine:
             model=model, runtime_kwarg=runtime_kwarg or {},
         )
         # No datasource hint, so inner resolution uses the priority list — letting
-        # ``get_column_types`` recover from a stale persisted ``data_source``.
+        # ``get_result_column_types`` recover from a stale persisted ``data_source``.
         rendered = await self._plan_and_render(
             query=main_query, named_queries=named_queries, runtime_kwarg=runtime_kwarg or {},
             prefer_data_source=None, splice_chain=(model.name,),
@@ -3011,7 +3031,7 @@ class SlayerQueryEngine:
         assert model.sql is not None
         try:
             dialect = dialect_for_ds_type(ds.type)
-            await self._client_for(ds).get_column_types(
+            await self.client_for(ds).get_result_column_types(
                 render_type_probe(sql_model_trial_query(model.sql, dialect=dialect), dialect=dialect)
             )
         except Exception as exc:
@@ -3142,6 +3162,52 @@ class SlayerQueryEngine:
     def _dialect_for_type(ds_type: Optional[str]) -> str:
         """Map a datasource ``type`` to its sqlglot dialect name (unknown/None → postgres)."""
         return dialect_for_ds_type(ds_type).sqlglot_name
+
+
+@contextlib.asynccontextmanager
+async def short_lived_engine(
+    storage: Optional[StorageBackend] = None, *, client_factory: Optional[ClientFactory] = None,
+) -> AsyncGenerator[SlayerQueryEngine]:
+    """An engine for one call that brought no client (a temporary store when none is given), closed on exit."""
+    with contextlib.ExitStack() as stack:
+        if storage is None:
+            storage = YAMLStorage(base_dir=stack.enter_context(tempfile.TemporaryDirectory()))
+        engine = SlayerQueryEngine(storage=storage, client_factory=client_factory)
+        try:
+            yield engine
+        finally:
+            try:
+                await asyncio.shield(engine.aclose())
+            finally:
+                engine.close()
+
+
+def run_over_caller_engine(
+    sa_engine: sa.Engine, *, data_source: str, work: Callable[[SqlClient], Awaitable[_T]],
+) -> _T:
+    """Run ``work`` synchronously over a short-lived engine's client wrapping the caller's ``sa_engine``.
+
+    The client reads on the caller's thread (in-memory pools are thread-bound) and never disposes the engine.
+    """
+    datasource = DatasourceConfig(
+        name=data_source,
+        type=dialect_for_sa_backend(sa_engine.url.get_backend_name()).sqlglot_name,
+        connection_string=str(sa_engine.url),
+    )
+
+    def _caller_client(ds: DatasourceConfig) -> SlayerSQLClient:
+        return SlayerSQLClient(datasource=ds, sa_engine=sa_engine)
+
+    async def _run() -> _T:
+        async with short_lived_engine(client_factory=_caller_client) as engine:
+            return await work(engine.client_for(datasource))
+
+    return run_sync_on_caller_thread(_run())
+
+
+def _entry_client_key(entry: _CacheEntry) -> ClientCacheKey:
+    """The key of the client that wrote ``entry``."""
+    return (entry.resolved_data_source or "", entry.ds_key)
 
 
 # Join-cardinality detection helpers

@@ -33,7 +33,8 @@ from slayer.core.enums import DataType
 from slayer.core.models import SlayerModel
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.engine_view import EngineStorage
+from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine
 from slayer.facade.catalog import (
     FacadeCatalog,
     build_catalog_grouped_by_schema,
@@ -256,8 +257,17 @@ StorageProvider = Callable[[object], Awaitable[object]]
 EngineFactory = Callable[[object], object]
 
 
-def _default_engine_factory(storage: object) -> object:
-    return SlayerQueryEngine(storage=storage)
+def _default_engine_factory(storage: object, *, client_factory: "ClientFactory | None" = None) -> object:
+    return SlayerQueryEngine(storage=cast(StorageBackend, storage), client_factory=client_factory)
+
+
+def _engine_view_of(*, engine: object, storage: object) -> object:
+    """``engine``'s storage view when it wraps ``storage`` (it refines stored models through the engine), else ``storage``."""
+    view = getattr(engine, "storage", None)
+    if isinstance(view, EngineStorage) and (view is storage or view.inner is storage):
+        return view
+    return storage
+
 
 # GUC_REPORT-class settings. After a successful SET / set_config /
 # RESET of one of these, the server pushes a ``ParameterStatus`` message so
@@ -315,6 +325,7 @@ class PgConnection:
         authenticator: Authenticator | None = None,
         storage_provider: "StorageProvider | None" = None,
         engine_factory: "EngineFactory | None" = None,
+        client_factory: "ClientFactory | None" = None,
         tls_ctx=None,
         catalog_extra_relations=None,
         catalog_ttl_seconds: float | None = None,
@@ -323,11 +334,14 @@ class PgConnection:
         self._writer = writer
         self._engine = engine
         self._storage = storage
+        # What the catalog reads: the engine's view when it wraps this store; a scoped engine's view after auth.
+        self._read_storage = _engine_view_of(engine=engine, storage=storage)
         # Optional per-connection scoping: when ``storage_provider`` is given the
         # storage (and engine, via ``engine_factory``) is resolved from the
         # authenticated principal after auth — e.g. a tenant-scoped store.
         self._storage_provider = storage_provider
         self._engine_factory = engine_factory
+        self._client_factory = client_factory
         # Tracks whether ``_resolve_scope`` actually built per-connection
         # storage + engine objects (so teardown disposes only what this
         # connection owns; an auth failure before the swap mustn't touch
@@ -372,12 +386,12 @@ class PgConnection:
         # Extended protocol: after an error the backend discards every message
         # until the next Sync, then resumes with ReadyForQuery.
         self._skip_until_sync = False
-        # per-connection session-settings mailbox. Captures SET /
+        # Per-connection session-settings mailbox. Captures SET /
         # set_config writes; consulted by SHOW / current_setting reads. Seeded
         # from the module-level SESSION_SETTING_SEED via dict(...) so each
         # connection owns its own copy (never aliasing the seed).
         self._session_settings: dict[str, str] = dict(SESSION_SETTING_SEED)
-        # when True, ``_describe_sql`` is in flight — translator
+        # When True, ``_describe_sql`` is in flight — translator
         # calls must remain pure. Suppresses application of any session-
         # setting mutation hints surfaced by the probe matcher during a
         # Describe.
@@ -411,9 +425,9 @@ class PgConnection:
 
         Gated on ``_owns_scoped_resources`` so an auth failure before the
         swap leaves any static storage/engine the host wants to keep alive
-        untouched. Disposes the engine too (``SlayerQueryEngine.aclose``
-        releases the async SQL-client pools — without this a long-lived
-        facade with ``storage_provider`` leaks one engine per session).
+        untouched. Disposes the engine too (``aclose`` then ``close``, closing
+        its SQL clients — without this a long-lived facade with
+        ``storage_provider`` leaks one engine per session).
         """
         if not self._owns_scoped_resources:
             return
@@ -421,6 +435,12 @@ class PgConnection:
         if engine_aclose is not None:
             try:
                 await engine_aclose()
+            except Exception:  # noqa: BLE001 — teardown best-effort
+                logger.exception("pg facade: scoped engine aclose failed")
+        engine_close = getattr(self._engine, "close", None)
+        if engine_close is not None:
+            try:
+                engine_close()
             except Exception:  # noqa: BLE001 — teardown best-effort
                 logger.exception("pg facade: scoped engine close failed")
         storage_aclose = getattr(self._storage, "aclose", None)
@@ -555,14 +575,17 @@ class PgConnection:
         self._database = database or DEFAULT_DATABASE
         if self._storage_provider is not None:
             self._storage = await self._storage_provider(self._principal)
-            factory = self._engine_factory or _default_engine_factory
-            self._engine = factory(self._storage)
+            if self._engine_factory is not None:
+                self._engine = self._engine_factory(self._storage)
+            else:
+                self._engine = _default_engine_factory(self._storage, client_factory=self._client_factory)
+            self._read_storage = getattr(self._engine, "storage", self._storage)
             # Mark only after BOTH constructions succeed — partial state
             # would leave teardown unsure which side to dispose.
             self._owns_scoped_resources = True
 
     async def _build_catalog(self) -> FacadeCatalog:
-        storage = cast(StorageBackend, self._storage)
+        storage = cast(StorageBackend, self._read_storage)
         models_by_datasource: dict[str, list[SlayerModel]] = {}
         schema_by_datasource: dict[str, str] = {}
         failures = DocumentLoadFailures()
@@ -589,7 +612,7 @@ class PgConnection:
         if self._catalog_ttl_seconds is None:
             return None
         try:
-            return await self._storage.graph_fingerprint()
+            return await cast(StorageBackend, self._read_storage).graph_fingerprint()
         except OSError:
             return None
 
@@ -843,7 +866,7 @@ class PgConnection:
     def _empty_string_null_params_for_bind(
         self, *, sql: str, raw_values, oids: list[int],
     ) -> set[int]:
-        # pre-classify $N indices whose bound value is an empty
+        # Pre-classify $N indices whose bound value is an empty
         # text-OID payload AND whose AST occurrence targets a non-TEXT catalog
         # column. Those positions emit ``NULL`` rather than ``''`` so DuckDB
         # doesn't trip a ``Could not convert string '' to INT64`` at Execute.
@@ -904,7 +927,7 @@ class PgConnection:
         self, sql: str, *, result_formats: list[int] | None,
         param_oids: list[int] | None = None,
     ) -> None:
-        # the catalog executor's Describe path runs the SQL
+        # The catalog executor's Describe path runs the SQL
         # against DuckDB to obtain the cursor's column description. When the
         # prepared-statement form still has ``$N`` placeholders (asyncpg
         # sends Parse + Describe-Statement BEFORE Bind), DuckDB raises a
@@ -1059,7 +1082,7 @@ class PgConnection:
         if isinstance(result, NoOpResult):
             self._apply_tx_command(result.command_tag)
             self._writer.write(_no_op_command_complete(result.command_tag))
-            # apply SET / RESET captures AFTER CommandComplete so
+            # Apply SET / RESET captures AFTER CommandComplete so
             # the post-SET ParameterStatus push lands between CC and
             # ReadyForQuery (any-time ordering OK per PG protocol). Skipped
             # during Describe per _describe_sql / _in_describe.
@@ -1186,7 +1209,7 @@ class PgConnection:
         if self._tx_state == proto.TX_IN_TRANSACTION:
             self._tx_state = proto.TX_FAILED
 
-    # ----- per-connection session-settings application -----------
+    # ----- Per-connection session-settings application -----------
 
     def _apply_set_setting(self, op: SetSettingOp) -> None:
         """Mutate the per-connection session-settings map and (for reportable
@@ -1206,7 +1229,7 @@ class PgConnection:
         intent. Pushes ``ParameterStatus`` for each reportable name whose
         value changed back to seed.
 
-        multi-word names (``RESET TIME ZONE``,
+        Multi-word names (``RESET TIME ZONE``,
         ``RESET SESSION AUTHORIZATION``) are alias-resolved via the same
         ``SHOW_ALIASES`` table that ``SHOW`` consults; without the
         resolution the lookup against ``SESSION_SETTING_SEED`` would
@@ -1299,7 +1322,7 @@ def _substitute_typed_sentinels(sql: str, param_oids: list[int]) -> str:
     return _PARAM_PLACEHOLDER.sub(repl, sql)
 
 
-# empty-string-vs-non-text Bind rewrite -----------------------------
+# Empty-string-vs-non-text Bind rewrite -----------------------------
 #
 # Symmetric with the Describe-side typed-NULL substitution above. pgjdbc /
 # Metabase binds an empty string (``b""``) for "null" against text-OID
