@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import re
 
-import pydantic
 import pytest
 import sqlglot
 from sqlglot import exp
@@ -829,12 +828,11 @@ class TestTransformOrderSupported:
         )
 
     def test_composite_order_string_now_accepted_at_construction(self) -> None:
-        """A composite carrying a colon aggregation becomes a formula; a composite over declared aliases (no colon) is still rejected at construction."""
-        item = OrderItem(column="amount:sum / id:count", direction="desc")
-        assert item.column.name == "_expr_pending"
-        assert item.raw_formula == "amount:sum / id:count"
-        with pytest.raises(pydantic.ValidationError):
-            OrderItem(column="rev / cnt", direction="desc")
+        """Composites with or without colon aggregations are expressions, judged at binding."""
+        for text in ("amount:sum / id:count", "rev / cnt"):
+            item = OrderItem.model_validate({"column": text, "direction": "desc"})
+            assert item.column.name == "_expr_pending"
+            assert item.raw_formula == text
 
 
 class TestHostRootedIsolatedHiddenOrder:

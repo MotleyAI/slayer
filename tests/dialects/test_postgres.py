@@ -21,7 +21,7 @@ def test_postgres_explain_prefix() -> None:
 def test_postgres_log_native_flags() -> None:
     d = PostgresDialect()
     assert d.should_use_native_log(10) is True
-    assert d.should_use_native_log(2) is True
+    assert d.should_use_native_log(2) is False  # Postgres has no log2
 
 
 # build_date_trunc — native DATE_TRUNC

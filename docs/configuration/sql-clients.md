@@ -15,14 +15,14 @@ A client implements `slayer.sql.client.SqlClient`. Every method is `async` excep
 |---|---|---|
 | `datasource` | `DatasourceConfig` | The datasource the client serves. |
 | `execute(sql)` | `ExecutionResult(rows=[{column: value}, ...])` | Run a rendered statement **verbatim** — `:name` and `%` are literal text. A statement that returns no rows (DDL) yields `rows=[]`. |
-| `get_result_column_types(sql)` | `{column: ResultColumnType(type, db_type)}` | Each result column's SLayer `type` (`DataType`) and the database's type name (`db_type`, `None` only when the driver names none), without fetching data beyond what certifying integers needs. |
+| `get_result_column_types(sql)` | `{column: ResultColumnType(type, element_type, db_type)}` | Each result column's SLayer `type` (`DataType`), a list's `element_type`, and the database's type name (`db_type`, `None` only when the driver names none), without fetching data beyond what certifying integers needs. |
 | `server_profile()` | `ServerProfile` | Server facts SLayer gates features on (ClickHouse); `ServerProfile()` when there are none. |
 | `ping()` | `None` | Raise unless the database answers. |
 | `list_schemas()` | `list[str]` | Visible schema tokens (catalog-qualified, `catalog.schema`, on DuckDB). |
 | `default_schema()` | `str \| None` | The connection's default schema. |
 | `current_catalog()` | `str \| None` | The current catalog where schema tokens are catalog-qualified, else `None`. |
 | `list_objects(schema)` | `ObjectListing(tables, views, materialized_views)` | One schema's relations by kind; `None` is the connection default. |
-| `reflect_columns(location)` | `list[ReflectedColumn]` | A table's columns in order: `name`, SLayer `type` (`DataType`), `is_float`, `db_type` (set only for opaque and exact-numeric types), `comment`, `type_name` (the database's name for the type, where known). |
+| `reflect_columns(location)` | `list[ReflectedColumn]` | A table's columns in order: `name`, SLayer `type` (`DataType`), a list's `element_type`, `is_float`, `db_type` (set only where `type` is lossy: opaque, list, exact-numeric, JSON or zoned-timestamp types), `comment`, `type_name` (the database's name for the type, where known). |
 | `reflect_table_keys(location)` | `TableKeys` | Primary key, foreign keys and unique key sets (never repeating the primary key). |
 | `table_comment(location)` | `str \| None` | A table's comment. |
 | `schema_description(schema, configured_schema)` | `str \| None` | A schema's own description (a BigQuery dataset's). |

@@ -1,4 +1,4 @@
-"""Tests for slayer.core.enums.DataType — sqlglot-aligned shape."""
+"""Tests for slayer.core.enums.DataType — sqlglot-aligned shape (DEV-1361)."""
 
 import pytest
 from sqlglot import exp
@@ -84,7 +84,7 @@ class TestDefaultAggregationsByType:
         assert "avg" in DEFAULT_AGGREGATIONS_BY_TYPE[DataType.INT]
 
     def test_text_set_unchanged(self) -> None:
-        # Mirror of the old STRING set, plus count_distinct_approx
+        # Mirror of the old STRING set, plus DEV-1595's count_distinct_approx
         # (eligible wherever count_distinct is — see DEFAULT_AGGREGATIONS_BY_TYPE).
         assert DEFAULT_AGGREGATIONS_BY_TYPE[DataType.TEXT] == frozenset({
             "count", "count_distinct", "count_distinct_approx",

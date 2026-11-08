@@ -11,7 +11,7 @@ import uuid
 from contextlib import AbstractContextManager
 from pathlib import Path
 
-from slayer.usage_reporting.payload import SCHEMA_VERSION, Batch
+from slayer.usage_reporting.payload import SCHEMA_VERSION, Batch, read_spooled
 from slayer.usage_reporting.settings import exclusive_lock, write_private
 
 logger = logging.getLogger(__name__)
@@ -88,7 +88,7 @@ def load(paths: list[Path]) -> list[Batch]:
     batches = []
     for path in paths:
         try:
-            batches.append(Batch.model_validate_json(path.read_bytes()))
+            batches.append(read_spooled(path.read_bytes()))
         except Exception:
             logger.debug("usage reporting: skipping unreadable spool file", exc_info=True)
     return batches

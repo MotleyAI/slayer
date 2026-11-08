@@ -19,7 +19,8 @@ on:
       - '.github/workflows/pg-facade-e2e.yml'
       - '.github/actions/poetry-env/**'
   pull_request:
-    branches: [main]
+    # Every base branch: stacked PRs need the same gate as PRs to main.
+    branches: ['**']
     paths:
       - 'slayer/pg_facade/**'
       - 'slayer/facade/**'

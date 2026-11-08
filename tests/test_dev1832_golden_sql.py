@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 
 from tests._dev1832_fixtures import dev1832_models
 from tests._engine_helpers import _engine_generate
@@ -22,7 +22,7 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1832_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MONTH_TD = [TimeDimension(dimension=ColumnRef(name="ordered_at"),
+_MONTH_TD = [TimeDimension(dimension="ordered_at",
                            granularity=TimeGranularity.MONTH)]
 
 

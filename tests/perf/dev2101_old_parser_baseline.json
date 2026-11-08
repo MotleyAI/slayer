@@ -1,0 +1,14 @@
+{
+  "weighted_avg(amount, weight=rank(sum(amount, partition_by=spend_band), direction='desc'))": 48.2,
+  "sum(quantity * rank(avg(unit_price, partition_by=product), direction='desc'))": 57.8,
+  "sum(rank(amount:sum(window='90d', partition_by=region), direction='desc'))": 46.8,
+  "customers_v2.lifetime_value:weighted_avg(weight=customers_v2.deep_weight)": 26.2,
+  "rank(revenue:sum, partition_by=[status, customer_id], direction='desc')": 35.9,
+  "time_shift(amount:sum / amount:sum(partition_by=[customers.tier]), -1)": 43.1,
+  "sum(quantity * sum(amount, partition_by=product), partition_by=region)": 48.5,
+  "avg(sum(amount, partition_by=city) + sum(amount, partition_by=region))": 43.8,
+  "sum(cumsum(sum(amount, partition_by=[region, ordered_at])) - 1)": 43.3,
+  "sum(CASE WHEN status == 'paid' THEN amount WHEN status == 'refunded' THEN -amount WHEN status == 'pending' THEN 0 ELSE NULL END) / count(*)": 146.5,
+  "(c0 > 0 or c0 is None) and (c1 > 1 or c1 is None) and (c2 > 2 or c2 is None) and (c3 > 3 or c3 is None) and (c4 > 4 or c4 is None) and (c5 > 5 or c5 is None) and (c6 > 6 or c6 is None) and (c7 > 7 or c7 is None) and (c8 > 8 or c8 is None) and (c9 > 9 or c9 is None) and (c10 > 10 or c10 is None) and (c11 > 11 or c11 is None)": 184.4,
+  "sum(m0) * 0 + sum(m1) * 1 + sum(m2) * 2 + sum(m3) * 3 + sum(m4) * 4 + sum(m5) * 5 + sum(m6) * 6 + sum(m7) * 7 + sum(m8) * 8 + sum(m9) * 9 + sum(m10) * 10 + sum(m11) * 11 + sum(m12) * 12 + sum(m13) * 13 + sum(m14) * 14": 224.6
+}

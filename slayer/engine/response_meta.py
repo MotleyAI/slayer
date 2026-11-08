@@ -117,7 +117,7 @@ def _column_for_row_slot(
     """The source ``Column`` backing a ROW slot, for label / format lookup."""
     key = slot.key
     if isinstance(key, TimeTruncKey):
-        key = key.column
+        key = key.source
     if isinstance(key, ColumnKey):
         model = _model_for_path(bundle=bundle, path=key.path)
         leaf = key.leaf

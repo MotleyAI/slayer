@@ -7,7 +7,7 @@ from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.sql.dialects.clickhouse import ClickhouseDialect
 
 from tests._engine_helpers import _engine_generate
@@ -127,7 +127,7 @@ async def test_clickhouse_orders_by_the_projection_not_its_dotted_alias() -> Non
     )
     query = SlayerQuery(
         source_model="orders",
-        time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+        time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
         measures=[ModelMeasure(formula="*:count")],
     )
     sql = await _engine_generate(query=query, model=model, dialect="clickhouse")

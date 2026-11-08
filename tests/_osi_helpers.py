@@ -13,11 +13,12 @@ import yaml
 
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.importers.column_types import LiveSource
 from slayer.ingest_report import ConversionResult, ConversionWarning
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.models import OSIDocument
 from slayer.sql import engine_factory
-from slayer.sql.client import DelegatingSqlClient, ResultColumnType, SqlClient
+from slayer.sql.client import SqlClient
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import build_exec_engine, disposable_engine
 
@@ -60,19 +61,9 @@ def seed_db(*, directory: Path, dialect: str = "duckdb", statements: Sequence[st
     return path
 
 
-_PROBE: dict[str, bool] = {"disabled": False}
-
-
-class _NoTypeProbeClient(DelegatingSqlClient):
-    """A client whose column-type probes all fail."""
-
-    async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
-        raise RuntimeError("probe unavailable")
-
-
 def disable_type_probe(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make every derived-expression type probe fail, as on a database that cannot report one."""
-    monkeypatch.setitem(_PROBE, "disabled", True)
+    """Make every derived-expression type probe report nothing, as on a database that cannot report one."""
+    monkeypatch.setattr(LiveSource, "probe", lambda _self, _expr: None)
 
 
 class MetadataConverter(Protocol):
@@ -88,10 +79,7 @@ def run_converter(converter: MetadataConverter, *, datasource: DatasourceConfig)
     with tempfile.TemporaryDirectory() as tmp:
         engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=tmp))
         try:
-            client: SqlClient = engine.client_for(datasource)
-            if _PROBE["disabled"]:
-                client = _NoTypeProbeClient(inner=client)
-            engine.run_sync(converter.collect_metadata(client=client))
+            engine.run_sync(converter.collect_metadata(client=engine.client_for(datasource)))
         finally:
             engine.close()
             engine_factory.invalidate_engine(datasource)

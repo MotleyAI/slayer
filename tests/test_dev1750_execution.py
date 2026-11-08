@@ -18,7 +18,6 @@ from __future__ import annotations
 import pytest
 
 from tests._dev1750_fixtures import (
-    ColumnRef,
     ModelMeasure,
     SlayerQuery,
     TimeDimension,
@@ -266,7 +265,7 @@ class TestDateRangeFrameBoundOmitted:
         resp = await exec_engine.execute(SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="ordered_at"),
+                dimension="ordered_at",
                 granularity=TimeGranularity.MONTH,
                 date_range=["2024-02-01", "2024-03-31"],
             )],

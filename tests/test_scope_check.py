@@ -1,14 +1,15 @@
-"""Unit tests for the ``assert_scope_closed`` scope validator.
+"""DEV-1705 Stage 1 — unit tests for the ``assert_scope_closed`` scope validator.
 
 These tests pin the validator's *contract* against hand-written SQL strings that
 faithfully mirror the shapes the typed-pipeline generator emits (host base,
 first/last ranked subquery, forward ``_cm_*`` CTE + combined SELECT, host-rooted
 ``_fm_`` / windowed ``_wm_`` legacy shapes, ``time_shift`` CTE pair, RLS-wrapped
-correlated ``EXISTS``). They are intentionally decoupled from the generator so
-they never break when it changes what it emits: the validator must keep
+correlated ``EXISTS``). They are intentionally decoupled from the generator (J3=C
+in the DEV-1705 spec) so they never break when a later stage — or Stage 11's
+legacy deletion — changes what the generator emits: the validator must keep
 closing/flagging *these SQL shapes* regardless of who produces them.
 
-Two closure laws (the ``assert_scope_closed`` contract):
+Two closure laws (DEV-1703 Law-2 / the ``assert_scope_closed`` contract):
   C1 — every table qualifier referenced in a scope binds to that scope's own
        FROM/JOIN sources (or a visible CTE).
   C2 — a reference resolving into another SELECT scope must name a column that
@@ -137,7 +138,7 @@ SELECT _wm_orders__revenue_90d."orders.status",
 FROM _wm_orders__revenue_90d
 """.strip()
 
-# Mixed-case / reserved-word quoted identifiers (parity).
+# Mixed-case / reserved-word quoted identifiers (DEV-1686 parity).
 SQL_QUOTED_MIXED_CASE = """
 SELECT "Orders"."Grant" AS "Orders.Grant", SUM("Orders"."Revenue") AS "Orders.Revenue_sum"
 FROM "Orders" AS "Orders"
@@ -180,7 +181,7 @@ class TestClosedShapesPass:
         assert_scope_closed(SQL_CROSS_MODEL_CM, dialect=dialect)
 
     def test_quoted_mixed_case_qualifiers_close(self) -> None:
-        # Reserved-word / mixed-case quoted identifiers must not
+        # DEV-1686: reserved-word / mixed-case quoted identifiers must not
         # be miscompared (no false positive from naive casefolding).
         assert_scope_closed(SQL_QUOTED_MIXED_CASE, dialect="postgres")
 
@@ -233,7 +234,7 @@ class TestLeaksRaise:
             assert_scope_closed(sql)
 
     def test_dev1531_first_last_out_of_scope_source_ref(self) -> None:
-        # The canonical first/last leak: the outer aggregate body references
+        # The canonical DEV-1531 leak: the outer aggregate body references
         # ``regions.population`` (a further-join column) that lives only inside
         # the ranked subquery and is NOT projected out of it.
         sql = """
@@ -339,7 +340,7 @@ GROUP BY orders.status
 """.strip()
 
     def test_rls_correlation_accepted_without_the_allowlist(self) -> None:
-        # The validator is correlation-aware: a qualifier bound in
+        # DEV-1840 made the validator correlation-aware: a qualifier bound in
         # an ancestor scope resolves through an expression-subquery boundary,
         # so the ``_rls_src`` correlation passes even in pre-RLS mode.
         assert_scope_closed(self.RLS_WRAPPED)
@@ -401,7 +402,7 @@ class TestBestEffortLimitations:
 
 
 # --------------------------------------------------------------------------- #
-# BigQuery parse carve-out REMOVED. Finalised BigQuery
+# BigQuery parse carve-out REMOVED (DEV-1713 Stage 9). Finalised BigQuery
 # naming/mangling collapses dotted aliases to ``___`` before validation, so
 # sqlglot no longer raises ``TypeError`` on real BigQuery output — the
 # ``_SQLGLOT_TYPEERROR_DIALECTS`` skip-set is gone and every dialect (BigQuery
@@ -456,7 +457,7 @@ class TestEnvGatedRuntimeHook:
 
 
 # --------------------------------------------------------------------------- #
-# A derived table nested in an expression subquery correlates to the
+# DEV-1935: a derived table nested in an expression subquery correlates to the
 # subquery's ancestors (the semi-join spine), never to its sibling FROM items.
 # --------------------------------------------------------------------------- #
 SQL_SPINE_CORRELATED = """

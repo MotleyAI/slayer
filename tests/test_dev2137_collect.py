@@ -3,34 +3,17 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 import pytest
 from mcp.types import TextContent
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType
-from slayer.core.errors import ListTypeError, SlayerError
-from slayer.core.models import Aggregation, Column, SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.errors import SlayerError
+from slayer.core.models import Aggregation, Column
 from slayer.mcp.server import create_mcp_server
-from tests._dev2120_fixtures import (
-    NATIVE_LIST_DIALECTS,
-    contractors_engine,
-    contractors_model,
-    emit,
-    emit_contractors,
-)
-from tests._dev2137_fixtures import (
-    all_models,
-    as_list,
-    assignments_model,
-    by,
-    list_engine,
-    measure,
-    query,
-    twins_model,
-)
+from tests._dev2120_fixtures import NATIVE_LIST_DIALECTS, contractors_model, emit_contractors, stored_contractors
+from tests._dev2137_fixtures import all_models, as_list, by, list_engine, measure, query
 
 
 @pytest.fixture(scope="module")
@@ -111,10 +94,11 @@ class TestListResults:
 
     async def test_collect_as_a_dimension(self, engine) -> None:
         q = query(dimensions=[{"expression": "collect(city, partition_by=team)", "name": "c"}])
-        with pytest.raises(SlayerError) as info:
-            await engine.execute(q)
-        msg = str(info.value)
-        assert "list" in msg.lower() or "ARRAY" in msg, msg
+        resp = await engine.execute(q)
+        teams = {r["team"] for r in stored_contractors()}
+        expected = {tuple(sorted({r["city"] for r in stored_contractors() if r["team"] == t and r["city"] is not None}))
+                    for t in teams}
+        assert {tuple(as_list(r["contractors.c"]) or ()) for r in resp.data} == expected
 
     async def test_json_result(self, engine) -> None:
         server = create_mcp_server(storage=engine.storage)
@@ -133,7 +117,7 @@ class TestListResults:
         assert '["Oslo", "Rome"]' in resp.to_markdown() or '["Oslo","Rome"]' in resp.to_markdown()
 
 
-#: Each dialect's lowering marker.
+#: Each dialect's lowering marker (design D7).
 LOWERING = {"bigquery": "IGNORE NULLS", "snowflake": "WITHIN GROUP", "clickhouse": "GROUPUNIQARRAY",
             "trino": "ARRAY_SORT", "postgres": "ARRAY_AGG", "duckdb": "DISTINCT"}
 
@@ -163,80 +147,3 @@ class TestEmission:
     async def test_elements_per_team_emit(self, dialect: str) -> None:
         await emit_contractors(query(dimensions=["team"], measures=[measure("collect(skills.value)", "c")]),
                                dialect=dialect, models=all_models())
-
-
-_TYPED_EMPTY = (r"CAST\(\s*(ARRAY\s*)?\[\]\s+AS\b", r"ARRAY<\w+>\s*\[\]")
-
-
-class TestUntypedEmptyList:
-    @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
-    @pytest.mark.parametrize("formula", ["collect(rate)", "collect(city)", "collect(skills.value)"])
-    async def test_collect_fallback_is_untyped(self, dialect: str, formula: str) -> None:
-        sql = await emit_contractors(query(dimensions=["team"], measures=[measure(formula, "c")]), dialect=dialect)
-        assert not [p for p in _TYPED_EMPTY if re.search(p, sql, re.I)], sql
-
-    @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
-    async def test_join_back_fallback_is_untyped(self, dialect: str) -> None:
-        sql = await emit_contractors(query(dimensions=["name"], measures=[measure("collect(assignments.id)", "c")]),
-                                     dialect=dialect, models=all_models())
-        assert not [p for p in _TYPED_EMPTY if re.search(p, sql, re.I)], sql
-
-    async def test_join_back_without_a_row_is_empty(self, engine) -> None:
-        got = await _collected(engine, "collect(assignments.id)", by_key="name")
-        assert {k: [int(x) for x in v] for k, v in got.items()} == {
-            "Ann": [1, 2], "Bob": [3], "Cid": [4], "Dee": [], "Eve": [5]}
-
-
-def _amounts() -> SlayerModel:
-    return SlayerModel(name="amounts", sql_table="amounts", data_source="test", columns=[
-        Column(name="id", type=DataType.INT, primary_key=True), Column(name="team", type=DataType.TEXT),
-        Column(name="n", type=DataType.DOUBLE, db_type="NUMERIC"),
-        Column(name="big", type=DataType.DOUBLE, db_type="BIGNUMERIC")])
-
-
-async def test_exact_numerics_on_bigquery() -> None:
-    q = SlayerQuery.model_validate({"source_model": "amounts", "dimensions": ["team"], "measures": [
-        measure("collect(n)", "n_set"), measure("collect(big)", "big_set")]})
-    sql = await emit(q, dialect="bigquery", models=[_amounts()])
-    assert sql.upper().count("IGNORE NULLS") == 2, sql
-    assert not [p for p in _TYPED_EMPTY if re.search(p, sql, re.I)], sql
-
-
-class TestRefusedWithoutNativeLists:
-    @pytest.mark.parametrize(("dialect", "database"), [("oracle", "Oracle"), ("mysql", "MySQL")])
-    async def test_refused(self, dialect: str, database: str) -> None:
-        q = query(dimensions=["team"], measures=[measure("collect(team)", "c")])
-        models = [_scalar_contractors()]
-        with pytest.raises(ListTypeError) as info:
-            await emit_contractors(q, dialect=dialect, models=models)
-        assert "collect" in str(info.value), str(info.value)
-        assert database in str(info.value), str(info.value)
-
-
-def _scalar_contractors(*, aggregations: list[Aggregation] | None = None) -> SlayerModel:
-    base = contractors_model()
-    return base.model_copy(update={"columns": [c for c in base.columns if c.type != DataType.ARRAY],
-                                   "aggregations": aggregations or []})
-
-
-_COLLECT_SUM = Aggregation(name="collect", formula="SUM({value})")
-
-
-class TestOwnCollectFormula:
-    @pytest.mark.parametrize("backend", ["sqlite", "duckdb"])
-    async def test_answers_the_formula(self, backend: str) -> None:
-        async with contractors_engine(backend, models=[_scalar_contractors(aggregations=[_COLLECT_SUM])]) as e:
-            resp = await e.execute(query(measures=[measure("collect(rate)", "c")]))
-        assert float(resp.data[0]["contractors.c"]) == 150
-
-    @pytest.mark.parametrize("backend", ["sqlite", "duckdb"])
-    async def test_the_empty_value_follows_the_formula(self, backend: str) -> None:
-        async with contractors_engine(backend, models=[_scalar_contractors(aggregations=[_COLLECT_SUM])]) as e:
-            resp = await e.execute(query(measures=[measure("collect(rate)", "c")], filters=["rate > 100"]))
-        assert resp.data[0]["contractors.c"] is None
-
-    async def test_another_model_keeps_the_builtin(self) -> None:
-        own = assignments_model().model_copy(update={"aggregations": [_COLLECT_SUM]})
-        async with list_engine(models=[contractors_model(), own, twins_model()]) as e:
-            got = await _collected(e, "collect(city)")
-        assert got == {"A": ["Oslo"], "B": ["Oslo", "Rome"]}

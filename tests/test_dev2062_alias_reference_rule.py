@@ -99,7 +99,7 @@ def test_unslotted_composite_renders_structurally() -> None:
 
 _SLOTTED = {
     "column": ColumnKey(leaf="amount"),
-    "time_trunc": TimeTruncKey(column=ColumnKey(leaf="order_date"), granularity=TimeGranularity.MONTH),
+    "time_trunc": TimeTruncKey(source=ColumnKey(leaf="order_date"), granularity=TimeGranularity.MONTH),
     "aggregate": _SUM,
     "transform": TransformKey(op="cumsum", input=_RATIO),
 }

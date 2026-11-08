@@ -16,7 +16,7 @@ import pytest
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import AggregationNotAllowedError
 from slayer.core.models import Column, ModelMeasure
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 
 from tests._dev1836_fixtures import broadcast_warnings
@@ -70,7 +70,7 @@ class TestNamedTerminalMetadata:
         resp = await named_engine.execute(SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="billing_customer.signup_at"),
+                dimension="billing_customer.signup_at",
                 granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "amount:sum", "name": "t"}],
             order=[{"column": "billing_customer.signup_at",
@@ -198,7 +198,7 @@ class TestNamedEdgeValidationConsumers:
         resp = await named_engine.execute(SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="billing_customer.signup_day"),
+                dimension="billing_customer.signup_day",
                 granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "amount:sum", "name": "t"}]))
         months = {str(r["orders.billing_customer.signup_day"])[:7]: r["orders.t"]

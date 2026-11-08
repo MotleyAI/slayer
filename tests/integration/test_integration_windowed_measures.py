@@ -167,7 +167,7 @@ class TestWindowedMeasureValues:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_90d"}],
         )
@@ -185,7 +185,7 @@ class TestWindowedMeasureValues:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[{"formula": "revenue:avg(window='90d')", "name": "rev_avg"}],
         )
@@ -207,7 +207,7 @@ class TestWindowedMeasureValues:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
@@ -238,7 +238,7 @@ class TestWindowedMeasureValues:
             source_model="orders",
             dimensions=[ColumnRef(name="region")],
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_90d"}],
         )
@@ -289,7 +289,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[{"formula": "id:count", "name": "n"}],
             order=[{"column": "revenue:sum(window='90d')", "direction": "desc"}],
@@ -306,7 +306,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[{"formula": "id:count", "name": "n"}],
             order=[{"column": "revenue:sum(window='90d')", "direction": "desc"}],
@@ -330,7 +330,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[{"formula": "id:count", "name": "n"}],
             order=[{"column": "revenue:sum(window='90d')", "direction": "asc"}],
@@ -359,7 +359,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
         query = SlayerQuery(
             source_model="orders_c",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[{"formula": "id:count", "name": "n"}],
             order=[{"column": "id:count / revenue:sum(window='90d')", "direction": "desc"}],
@@ -382,7 +382,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
         query = SlayerQuery(
             source_model="orders_c",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[{"formula": "revenue:sum(window='90d')", "name": "roll"}],
         )
@@ -404,7 +404,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_90d"}],
             order=[{"column": "revenue:sum(window='30d')", "direction": "desc"}],
@@ -443,7 +443,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
             source_model="orders",
             dimensions=[ColumnRef(name="region")],
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[{"formula": "id:count", "name": "n"}],
             order=[{"column": "revenue:sum(window='90d')", "direction": "desc"}],
@@ -593,7 +593,7 @@ class TestFrameBoundEquivalenceValues:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
                 date_range=date_range,
             )],
@@ -667,7 +667,7 @@ class TestFrameBoundEquivalenceValues:
             query = SlayerQuery(
                 source_model="orders",
                 time_dimensions=[TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=date_range,
                 )],

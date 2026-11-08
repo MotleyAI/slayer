@@ -301,12 +301,12 @@ class TestScalarAndList:
         assert finding["remedy_kind"] == "reingest", finding
         assert not any(e.get("finding") == "list_retype" for e in entries), entries
 
-    async def test_a_list_in_an_sql_mode_model_is_a_type_change(self, duck: Duck) -> None:
+    async def test_a_list_in_an_sql_mode_model_keeps_the_reingest_remedy(self, duck: Duck) -> None:
         entries = await _validate(duck.engine(), "ds")
         (finding,) = _retypes(entries, "listy_sql").values()
         _assert_live(finding, stored=DataType.TEXT, live=DataType.ARRAY, db_type="VARCHAR[]")
-        _assert_set_type_remedy(finding)
-        assert finding["remedy_kind"] == "set_type", finding
+        assert "ingest" in finding["remedy"].lower(), finding
+        assert finding["remedy_kind"] == "reingest", finding
         assert _removed(entries, "listy_sql") == set(), entries
 
     async def test_a_missing_column_is_still_deleted_with_its_cascade(self, duck: Duck) -> None:

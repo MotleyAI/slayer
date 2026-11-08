@@ -2,7 +2,7 @@
 
 A ``TimeDimension`` whose column resolves to a DERIVED column
 (``Column.sql`` set) now works everywhere a base-column time dimension
-does. The typed pipeline widens ``TimeTruncKey.column`` to
+does. The typed pipeline widens ``TimeTruncKey.source`` to
 ``Union[ColumnKey, ColumnSqlKey]`` and the SQL generator applies
 ``DATE_TRUNC`` over the EXPANDED derived expression rather than over a
 bare identifier.
@@ -155,7 +155,7 @@ def _bundle_local() -> ResolvedSourceBundle:
 class TestBindDerivedTimeDimension:
     def test_local_derived_td_binds_to_columnsqlkey(self) -> None:
         td = TimeDimension(
-            dimension=ColumnRef(name="effective_at"),
+            dimension="effective_at",
             granularity=TimeGranularity.MONTH,
         )
         bound = bind_time_dimension(
@@ -164,7 +164,7 @@ class TestBindDerivedTimeDimension:
             bundle=_bundle_local(),
         )
         assert isinstance(bound.bound.value_key, TimeTruncKey)
-        assert bound.bound.value_key.column == ColumnSqlKey(
+        assert bound.bound.value_key.source == ColumnSqlKey(
             path=(), model="orders", column_name="effective_at",
         )
         assert bound.bound.value_key.granularity == "month"
@@ -172,7 +172,7 @@ class TestBindDerivedTimeDimension:
 
     def test_joined_derived_td_carries_path(self) -> None:
         td = TimeDimension(
-            dimension=ColumnRef(name="customers.signup_eff"),
+            dimension="customers.signup_eff",
             granularity=TimeGranularity.MONTH,
         )
         bound = bind_time_dimension(
@@ -181,7 +181,7 @@ class TestBindDerivedTimeDimension:
             bundle=_bundle_local(),
         )
         assert isinstance(bound.bound.value_key, TimeTruncKey)
-        assert bound.bound.value_key.column == ColumnSqlKey(
+        assert bound.bound.value_key.source == ColumnSqlKey(
             path=("customers",), model="customers", column_name="signup_eff",
         )
 
@@ -203,7 +203,7 @@ async def test_derived_td_dimension_groups_by_derived_expr(engine):
         SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="effective_at"),
+                dimension="effective_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[{"formula": "amount:sum"}, {"formula": "*:count"}],
@@ -223,7 +223,7 @@ async def test_derived_td_carries_attribute_label(engine):
         SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="effective_at"),
+                dimension="effective_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[{"formula": "amount:sum"}],
@@ -238,7 +238,7 @@ async def test_derived_td_order_by(engine):
         SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="effective_at"),
+                dimension="effective_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[{"formula": "amount:sum"}],
@@ -256,7 +256,7 @@ async def test_derived_td_cumsum_over_order(engine):
         SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="effective_at"),
+                dimension="effective_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
@@ -277,7 +277,7 @@ async def test_derived_td_time_shift(engine):
         SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="effective_at"),
+                dimension="effective_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
@@ -299,7 +299,7 @@ async def test_derived_td_change(engine):
         SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="effective_at"),
+                dimension="effective_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
@@ -320,7 +320,7 @@ async def test_derived_td_consecutive_periods(engine):
         SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="effective_at"),
+                dimension="effective_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
@@ -341,7 +341,7 @@ async def test_derived_td_date_range(engine):
         SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="effective_at"),
+                dimension="effective_at",
                 granularity=TimeGranularity.MONTH,
                 date_range=["2024-02-01 00:00:00", "2024-02-28 00:00:00"],
             )],
@@ -364,7 +364,7 @@ async def test_joined_derived_td(engine):
         SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="customers.signup_eff"),
+                dimension="customers.signup_eff",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[{"formula": "amount:sum"}],
@@ -385,7 +385,7 @@ async def test_cross_model_agg_with_joined_derived_td_shared_grain(engine):
         SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="customers.signup_eff"),
+                dimension="customers.signup_eff",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[{"formula": "customers.revenue:sum"}],

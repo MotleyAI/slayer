@@ -10,7 +10,6 @@ import re
 import pytest
 
 from tests._dev1846_fixtures import (
-    ColumnRef,
     ModelMeasure,
     SlayerQuery,
     TimeDimension,
@@ -39,7 +38,7 @@ def _q(**kw) -> SlayerQuery:
 
 
 def _dr_td() -> list:
-    return [TimeDimension(dimension=ColumnRef(name="ordered_at"),
+    return [TimeDimension(dimension="ordered_at",
                           granularity=TimeGranularity.MONTH,
                           date_range=["2024-02-01", "2024-03-31"])]
 
@@ -229,7 +228,7 @@ class TestManyToOneCalendarShift:
     ) -> None:
         resp = await daily_engine.execute(SlayerQuery(
             source_model="daily",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="ordered_at"),
+            time_dimensions=[TimeDimension(dimension="ordered_at",
                                            granularity=TimeGranularity.DAY)],
             measures=[ModelMeasure(formula="time_shift(cumsum(revenue:sum), -1, 'month')",
                                    name="t")],

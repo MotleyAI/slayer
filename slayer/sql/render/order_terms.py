@@ -29,10 +29,11 @@ drop.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Dict, Literal
+from typing import Dict, List, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.ir.planned import SlotId
 from slayer.sql.dialects.base import SqlDialect
@@ -106,6 +107,8 @@ class OrderEnv(BaseModel):
     ranked_cte: Dict[str, exp.Expression] = Field(default_factory=dict)
     transform_step: Dict[str, exp.Expression] = Field(default_factory=dict)
     outer_composite: Dict[str, exp.Expression] = Field(default_factory=dict)
+    #: The ordered SELECT's own projection (alias → expression), where the ORDER BY attaches to it.
+    projection: Dict[str, Expression] = Field(default_factory=dict)
     #: Owns the null-ordering spelling (P-H). Required so no render site can
     #: silently fall back to a default dialect's null ordering.
     dialect: SqlDialect
@@ -139,8 +142,8 @@ if _MISSING_ARMS:  # pragma: no cover - import-time structural guard
     )
 
 
-def resolve_order_term(*, entry: ScopedOrder, env: OrderEnv) -> exp.Ordered:
-    """One scoped order entry → one ``ORDER BY`` term.
+def resolve_order_term(*, entry: ScopedOrder, env: OrderEnv) -> List[exp.Ordered]:
+    """One scoped order entry → its ``ORDER BY`` terms.
 
     Raises :class:`OrderSlotNotMaterialisedError` when the entry's scope did
     not materialise the slot. Returning an unsorted result instead is the one
@@ -154,6 +157,8 @@ def resolve_order_term(*, entry: ScopedOrder, env: OrderEnv) -> exp.Ordered:
             f"{entry.scope.value} scope did not materialise "
             f"(it carries {sorted(refs)}).",
         )
-    return env.dialect.build_ordered(
+    resolved = env.projection.get(ref.name) if isinstance(ref, exp.Column) and not ref.table else None
+    return env.dialect.build_order_terms(
         ref.copy(), descending=entry.direction == "desc", nulls=entry.nulls,
+        resolved=None if resolved is None else resolved.copy(),
     )

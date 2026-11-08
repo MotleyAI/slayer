@@ -34,6 +34,7 @@ from slayer.core.errors import (
 from slayer.core.join_search import unreachable_target
 from slayer.core.join_walker import OrientedJoin, provably_to_one, walk, walk_miss, walk_terminal
 from slayer.core.models import Column, SlayerModel
+from slayer.core.syntax import drop_root_hop
 from slayer.engine.elaborate_env import validate_model_filter
 from slayer.engine.join_safety import provably_fans
 from slayer.sql.column_expansion import (
@@ -72,6 +73,20 @@ def _fragment_refs(sql: str):
             parsed, root_scope_column_ids(parsed=parsed),  # pyright: ignore[reportArgumentType]
         )
     ]
+
+
+def definition_reads(
+    *, column: Column, host: SlayerModel, reachable: dict[str, SlayerModel],
+) -> list[tuple[str, str]]:
+    """Every ``(model, column)`` the ``Column.sql`` / ``Column.filter`` of ``column`` names, base columns included."""
+    out: list[tuple[str, str]] = []
+    texts = [] if column.sql is None or is_trivial_base(column=column) else [column.sql]
+    for text in [*texts, *([column.filter] if column.filter else [])]:
+        for quals, leaf in _fragment_refs(text) or []:
+            target = resolve_ref_target(qualifiers=quals, source_model=host, models_by_name=reachable)
+            if target is not None and target.get_column(leaf) is not None:
+                out.append((target.name, leaf))
+    return out
 
 
 def _column_dependencies(
@@ -240,11 +255,8 @@ def _detect_cycle_dfs(
 
 
 def _hop_path(*, quals, host: SlayerModel) -> tuple[str, ...]:
-    """A reference's join-hop tokens with ``host``'s own name stripped; empty = host-local."""
-    q = list(quals)
-    if q and q[0] == host.name:
-        q = q[1:]
-    return tuple(q)
+    """A reference's join-hop tokens with ``host``'s own name dropped; empty = host-local."""
+    return drop_root_hop(quals, host.spelling)
 
 
 def _classify_hop_path(

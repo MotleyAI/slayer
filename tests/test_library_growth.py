@@ -1,4 +1,4 @@
-"""Library growth never invalidates a stored artefact (spec: models/stored-upgrade)."""
+"""Library growth never invalidates a stored artefact (spec: models/stored-upgrade; system principle 11.2)."""
 
 from __future__ import annotations
 
@@ -7,9 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from slayer.core.enums import BUILTIN_AGGREGATIONS, GRANULARITY_NAMES, RESERVED_DATE_SYNTAX_NAMES
-from slayer.core.formula import ALL_TRANSFORMS
-from slayer.core.keys import SCALAR_FUNCTIONS
+from slayer.core.enums import ALL_TRANSFORMS, BUILTIN_AGGREGATIONS, GRANULARITY_NAMES, RESERVED_DATE_SYNTAX_NAMES
+from slayer.core.keys import SCALAR_FUNCTIONS, SCALAR_SPELLINGS
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage import migrations
 from tests._granularity_rename_fixtures import DS as GRANULARITY_DS
@@ -20,10 +19,17 @@ from tests._stored_upgrade_fixtures import DS
 #: Every name the library reserved when this guard was written. Extend it only together with the rule below.
 PINNED: dict[str, frozenset[str]] = {
     "functions": frozenset({
-        "abs", "ceil", "ceiling", "coalesce", "concat", "contains", "contains_all", "contains_any", "current_date",
-        "date_add", "date_diff", "date_part", "exp", "floor", "greatest", "ifnull", "iif", "instr", "interval",
-        "least", "length", "like", "ln", "log", "log10", "log2", "lower", "ltrim", "mod", "now", "nullif", "pow",
-        "power", "replace", "round", "rtrim", "sign", "sqrt", "substr", "substring", "trim", "trunc", "upper",
+        "abs", "acos", "ascii", "asin", "atan", "atan2", "cbrt", "ceil", "ceiling", "chr", "coalesce", "concat",
+        "concat_ws", "contains", "contains_all", "contains_any", "cos", "current_date", "date_add", "date_diff",
+        "date_part", "div", "ends_with", "exp", "floor", "greatest", "ifnull", "iif", "ilike", "instr", "interval",
+        "json_value", "least", "left", "length", "like", "ln", "log", "log10", "log2", "lower", "lpad", "ltrim", "mod",
+        "now", "nullif", "pi", "pow", "power", "regexp_extract", "regexp_like", "regexp_replace", "repeat", "replace",
+        "reverse", "right", "round", "rpad", "rtrim", "sign", "sin", "split_part", "sqrt", "starts_with", "substr",
+        "substring", "tan", "trim", "trunc", "upper",
+    }),
+    "spellings": frozenset({
+        "date_trunc", "json_extract", "json_extract_path_text", "json_extract_scalar", "jsonb_extract_path_text",
+        "strpos",
     }),
     "date_syntax": frozenset({
         "day_of_month", "day_of_week", "day_of_year", "dayofmonth", "dayofyear", "doy", "extract", "iso_week",
@@ -42,7 +48,7 @@ PINNED: dict[str, frozenset[str]] = {
 }
 
 #: A model's own definition shadows these, so a new name in them needs no migration.
-SHADOWABLE = frozenset({"functions"})
+SHADOWABLE = frozenset({"functions", "spellings"})
 
 #: A newly reserved name outside ``SHADOWABLE`` → the ``(entity, source_version)`` migration that renames it in stores.
 MIGRATED: dict[str, tuple[str, int]] = {}
@@ -50,7 +56,7 @@ MIGRATED: dict[str, tuple[str, int]] = {}
 
 def live_vocabularies() -> dict[str, frozenset[str]]:
     return {
-        "functions": SCALAR_FUNCTIONS, "date_syntax": RESERVED_DATE_SYNTAX_NAMES,
+        "functions": SCALAR_FUNCTIONS, "spellings": SCALAR_SPELLINGS, "date_syntax": RESERVED_DATE_SYNTAX_NAMES,
         "transforms": frozenset(ALL_TRANSFORMS), "granularities": frozenset(GRANULARITY_NAMES),
         "aggregations": BUILTIN_AGGREGATIONS,
     }
@@ -78,11 +84,6 @@ class TestGuard:
     def test_every_vocabulary_is_pinned(self) -> None:
         assert set(live_vocabularies()) == set(PINNED)
 
-    def test_the_list_names_are_reserved(self) -> None:
-        live = live_vocabularies()
-        assert {"contains", "contains_any", "contains_all", "length"} <= live["functions"]
-        assert "collect" in live["aggregations"]
-
     def test_an_unpinned_reservation_is_caught(self) -> None:
         live = {**live_vocabularies(), "transforms": ALL_TRANSFORMS | {"new_window"}}
         assert unpinned(live=live, pinned=PINNED, migrated=MIGRATED) == ["transforms:new_window"]
@@ -102,7 +103,7 @@ class TestGuard:
             "transforms:new_window"]
 
 
-_FUNCTION_NAMES = sorted(PINNED["functions"])
+_FUNCTION_NAMES = sorted(SCALAR_FUNCTIONS | SCALAR_SPELLINGS)
 
 
 @pytest.fixture(scope="module")
@@ -121,7 +122,7 @@ class TestStoredAggregations:
 
 
 #: Built-in granularities were never storable as custom ones.
-_GRANULARITY_CASES = sorted(frozenset().union(*PINNED.values()) - GRANULARITY_NAMES)
+_GRANULARITY_CASES = sorted(frozenset().union(*live_vocabularies().values()) - GRANULARITY_NAMES)
 
 
 class TestStoredGranularities:

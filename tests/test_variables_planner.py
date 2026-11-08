@@ -15,6 +15,7 @@ from slayer.core.query import (
     TimeDimension,
     refine_query,
 )
+from slayer.core.syntax import BoundVariable, Cmp, parse_bound_expr
 from slayer.ir.variables import (
     apply_variables_to_query,
     extract_placeholder_names,
@@ -27,6 +28,13 @@ from slayer.ir.variables import (
 from slayer.core.query import substitute_variables as core_sv
 from slayer.core.query import extract_placeholder_names as core_epn
 
+
+
+def _bound_right(text: str, variables: dict) -> object:
+    """The right-hand side ``parse_bound_expr`` gives an ``IN`` comparison."""
+    parsed = parse_bound_expr(text, variables)
+    assert isinstance(parsed, Cmp), parsed
+    return parsed.right
 
 class TestMergeQueryVariables:
     def test_precedence_runtime_wins(self) -> None:
@@ -175,26 +183,19 @@ class TestApplyVariablesToQuery:
         with pytest.raises(ValueError, match="Invalid variable name"):
             apply_variables_to_query(query=q, variables={})
 
-    def test_list_value_renders_a_mode_b_tuple(self) -> None:
-        """Was ``test_list_value_raises``. DEV-1730 made list values legal (the
-        ``IN``-pushdown primitive), so the rejection is superseded.
-
-        Under Mode-B's ``python`` escaping the body carries a TRAILING COMMA —
-        ``('x',)`` is a Python tuple literal whereas ``('x')`` is a
-        parenthesised string, so the comma is what makes a single-element list
-        parse as a collection. The documented spelling puts the parentheses in
-        the filter (``region in ({regions})``); this pins the substituted body
-        itself.
-        """
+    def test_list_value_renders_an_in_list(self) -> None:
+        """A list value fills the whole ``IN`` list; one element is still a list."""
         q = SlayerQuery(source_model="orders", filters=["a in ({b})"])
         out = apply_variables_to_query(query=q, variables={"b": [1, 2, 3]})
-        assert out.filters == ["a in (1, 2, 3,)"], out.filters
+        assert out.filters == ["a in ({b})"], out.filters
+        assert _bound_right("a in ({b})", out.bound_variables) == BoundVariable(name="b", values=(1, 2, 3), listed=True)
 
         single = apply_variables_to_query(
             query=SlayerQuery(source_model="orders", filters=["a in ({b})"]),
             variables={"b": ["x"]},
         )
-        assert single.filters == ["a in ('x',)"], single.filters
+        assert single.filters == ["a in ({b})"], single.filters
+        assert _bound_right("a in ({b})", single.bound_variables) == BoundVariable(name="b", values=("x",), listed=True)
 
     def test_dict_value_raises(self) -> None:
         q = SlayerQuery(source_model="orders", filters=["a = {b}"])
@@ -414,11 +415,11 @@ class TestFormulaSurfaces:
         assert out.time_dimensions is not None
         assert [t.date_range for t in out.time_dimensions] == [["2024-01-01", None]]
 
-    def test_string_value_escaped_python_regime(self) -> None:
+    def test_string_value_sql_quoted(self) -> None:
         q = _q(measures=["sum(CASE WHEN status == '{name}' THEN 1 ELSE 0 END)"])
         out = apply_variables_to_query(query=q, variables={"name": "O'Brien"})
         assert out.measures is not None
-        assert out.measures[0].formula == "sum(CASE WHEN status == 'O\\'Brien' THEN 1 ELSE 0 END)"
+        assert out.measures[0].formula == "sum(CASE WHEN status == 'O''Brien' THEN 1 ELSE 0 END)"
 
     def test_list_value_renders_tuple_in_dimension(self) -> None:
         q = _q(dimensions=[{"expression": "region in ({regions})", "name": "ns"}])
@@ -426,7 +427,9 @@ class TestFormulaSurfaces:
         assert out.dimensions is not None
         (d,) = out.dimensions
         assert isinstance(d, ComputedDimension)
-        assert d.expression == "region in ('North', 'South',)"
+        assert d.expression == "region in ({regions})"
+        assert _bound_right(d.expression, out.bound_variables) == BoundVariable(
+            name="regions", values=("North", "South"), listed=True)
 
     @pytest.mark.parametrize("kw", [
         {"measures": ["amount:sum * {? {k} ?}"]},
@@ -544,12 +547,12 @@ class TestSavedMeasureSubstitution:
         assert out.measures[0].name == "scaled"
 
     @pytest.mark.parametrize("backslash_escapes", [False, True])
-    def test_saved_measure_uses_python_regime(self, backslash_escapes: bool) -> None:
+    def test_saved_measure_uses_sql_quoting(self, backslash_escapes: bool) -> None:
         out = substitute_model_sql_surfaces(
             model=_model_with_measure("sum(CASE WHEN status == '{n}' THEN 1 ELSE 0 END)"),
             variables={"n": "O'Brien"}, backslash_escapes=backslash_escapes,
         )
-        assert out.measures[0].formula == "sum(CASE WHEN status == 'O\\'Brien' THEN 1 ELSE 0 END)"
+        assert out.measures[0].formula == "sum(CASE WHEN status == 'O''Brien' THEN 1 ELSE 0 END)"
 
     def test_saved_measure_optional_block_rejected(self) -> None:
         model = _model_with_measure("amount:sum * {? {k} ?}")

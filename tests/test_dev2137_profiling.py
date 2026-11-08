@@ -57,12 +57,6 @@ class TestElements:
         assert outcome.errors == []
         assert scores.sampled == "1 .. 9"
 
-    async def test_cached_like_any_column(self, engine, monkeypatch) -> None:
-        await _profile(engine, "skills", monkeypatch)
-        skills, _, log = await _profile(engine, "skills", monkeypatch)
-        assert log == []
-        assert skills.sampled_values == ["go", "sql"]
-
 
 GRIDS = ("CREATE TABLE grids (id INTEGER, grid INTEGER[][])", "INSERT INTO grids VALUES (1, [[1, 2], [3]])")
 

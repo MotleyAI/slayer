@@ -30,7 +30,6 @@ from tests._dev1832_fixtures import (
     CHANGE_SUM_BY_MONTH,
     COLLAPSE_MIXED_BY_MONTH,
     CONSEC_SUM_BY_MONTH,
-    ColumnRef,
     CUMSUM_MINUS_LAST_BY_MONTH,
     EMPTY_GRAIN_MIXED_BY_MONTH,
     FIRST_SUM_BY_MONTH,
@@ -179,7 +178,7 @@ class TestUngrainedTransformConstituent:
 
 
 def _year_td() -> TimeDimension:
-    return TimeDimension(dimension=ColumnRef(name="ordered_at"),
+    return TimeDimension(dimension="ordered_at",
                          granularity=TimeGranularity.YEAR)
 
 
@@ -298,14 +297,13 @@ class TestTransformSourceRejections:
         with pytest.raises(ValueError, match="unambiguous time dimension"):
             await gen(query)
 
-    async def test_first_over_mixed_keeps_expression_error(self):
+    async def test_first_over_mixed_source_is_the_ranked_aggregate(self):
         query = sales_q(
             dimensions=["region"],
             measures=[ModelMeasure(
-                formula="first(quantity * avg(unit_price, partition_by=product))",
+                formula="first(quantity * avg(unit_price, partition_by=product), id)",
                 name="m")])
-        with pytest.raises(ValueError, match="not supported over an expression"):
-            await gen(query)
+        assert "ROW_NUMBER" in (await gen(query)).upper()
 
 
 # --------------------------------------------------------------------------- #

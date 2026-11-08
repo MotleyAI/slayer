@@ -19,10 +19,12 @@ ImportError at collection time.
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.syntax import Literal, TransformCall, parse_expr
 from slayer.dbt.converter import ConversionResult, DbtToSlayerConverter
 from slayer.dbt.models import (
     DbtDimension,
@@ -212,6 +214,30 @@ def test_offset_window_maps_to_time_shift() -> None:
     assert "time_shift(" in growth.formula
     assert "-1" in norm
     assert "month" in norm.lower()
+
+
+def test_negative_offset_window_shifts_forward() -> None:
+    project = DbtProject(
+        semantic_models=[
+            DbtSemanticModel(name="orders", model="orders",
+                             measures=[DbtMeasure(name="revenue", agg="sum", expr="amount")]),
+        ],
+        metrics=[
+            DbtMetric(name="revenue_metric", type="simple",
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"})),
+            DbtMetric(
+                name="revenue_lead",
+                type="derived",
+                type_params=DbtMetricTypeParams(
+                    expr="revenue_next",
+                    metrics=[DbtMetricInput(name="revenue_metric", alias="revenue_next", offset_window="-1 month")],
+                ),
+            ),
+        ],
+    )
+    shifted = parse_expr(_measure(_convert(project), "revenue_lead").formula)
+    assert isinstance(shifted, TransformCall)
+    assert shifted.args[0] == Literal(value=Decimal(1))
 
 
 def test_offset_to_grain_clean_fails() -> None:
@@ -1221,7 +1247,7 @@ def test_semantic_model_label_preserved_in_meta() -> None:
 
 
 @pytest.mark.parametrize("dialect", ["mysql", "tsql"])
-def test_percentile_on_unsupported_dialect_emits_caveat(dialect: str) -> None:
+def test_percentile_on_unsupported_dialect_is_dropped(dialect: str) -> None:
     project = DbtProject(
         semantic_models=[
             DbtSemanticModel(
@@ -1234,11 +1260,8 @@ def test_percentile_on_unsupported_dialect_emits_caveat(dialect: str) -> None:
     result = DbtToSlayerConverter(
         project=project, data_source="test", target_dialect=dialect
     ).convert()
-    # The measure still imports (formula valid), but a report caveat warns it
-    # won't execute on this dialect.
-    assert _measure(result, "p95").formula == "percentile(latency, p=0.95)"
-    assert any("percentile" in e.message.lower() or "percentile" in (getattr(e, "category", "") or "").lower()
-               for e in _all_report_entries(result))
+    assert all(m.name != "p95" for model in result.models for m in model.measures)
+    assert any("p95" in e.message and "not supported" in e.message for e in _all_report_entries(result))
 
 
 # ───────── Filtered special aggs / derived input filters ─────────
@@ -1266,6 +1289,23 @@ def test_filtered_percentile_metric_preserves_p() -> None:
     col = _column_for(result, m.formula)
     assert col.filter is not None
     assert "region" in col.filter
+
+
+@pytest.mark.parametrize("agg", ["percentile", "median"])
+def test_filtered_metric_the_dialect_refuses_is_dropped(agg: str) -> None:
+    params = DbtMeasureAggParams(percentile=0.95) if agg == "percentile" else None
+    project = DbtProject(
+        semantic_models=[DbtSemanticModel(name="orders", model="orders", measures=[
+            DbtMeasure(name="latency_agg", agg=agg, expr="latency", agg_params=params)])],
+        metrics=[DbtMetric(name="us_latency", type="simple",
+                           type_params=DbtMetricTypeParams.model_validate({"measure": "latency_agg"}),
+                           filter="{{ Dimension('orders__region') }} = 'US'")],
+    )
+    result = DbtToSlayerConverter(project=project, data_source="test", target_dialect="mysql").convert()
+    assert all(m.name not in ("latency_agg", "us_latency") for model in result.models for m in model.measures)
+    messages = [e.message for e in _all_report_entries(result)]
+    assert any("latency_agg" in msg and "not supported" in msg for msg in messages), messages
+    assert any("us_latency" in msg and "was dropped" in msg for msg in messages), messages
 
 
 def test_filtered_sum_boolean_metric_builds_case_int_column() -> None:

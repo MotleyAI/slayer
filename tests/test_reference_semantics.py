@@ -273,18 +273,36 @@ class TestSqlModeRejection:
     def test_model_filter_rejects_aggregation_colon(self) -> None:
         columns = [Column(name="id", sql="id", type=DataType.INT, primary_key=True)]
         with pytest.raises(ValueError, match="(?i)aggregat|colon|measure|DSL"):
-            SlayerModel(name="m", sql_table="t", data_source="test", filters=["revenue:sum > 100"], columns=columns)
+            SlayerModel(
+                name="m",
+                sql_table="t",
+                data_source="test",
+                filters=["revenue:sum > 100"],
+                columns=columns,
+            )
 
     def test_model_filter_rejects_transform_call(self) -> None:
         columns = [Column(name="id", sql="id", type=DataType.INT, primary_key=True)]
         with pytest.raises(ValueError, match="(?i)transform|cumsum|DSL"):
-            SlayerModel(name="m", sql_table="t", data_source="test", filters=["cumsum(revenue:sum) > 0"], columns=columns)
+            SlayerModel(
+                name="m",
+                sql_table="t",
+                data_source="test",
+                filters=["cumsum(revenue:sum) > 0"],
+                columns=columns,
+            )
 
     def test_model_filter_rejects_raw_over(self) -> None:
         """Raw OVER (...) in a model filter is rejected (existing behavior preserved)."""
         columns = [Column(name="id", sql="id", type=DataType.INT, primary_key=True)]
         with pytest.raises(ValueError, match="(?i)window function|OVER"):
-            SlayerModel(name="m", sql_table="t", data_source="test", filters=["row_number() over (order by mass desc) <= 3"], columns=columns)
+            SlayerModel(
+                name="m",
+                sql_table="t",
+                data_source="test",
+                filters=["row_number() over (order by mass desc) <= 3"],
+                columns=columns,
+            )
 
     def test_column_filter_rejects_raw_over(self) -> None:
         with pytest.raises(ValueError, match="(?i)window function|OVER"):
@@ -356,10 +374,9 @@ class TestDslModeRejection:
     """
 
     async def test_query_filter_rejects_raw_sql_function_at_enrichment(self) -> None:
-        """If a user needs json_extract/coalesce/etc. they must define a Column
-        on the model and reference it from the DSL. The rejection fires at
-        enrichment time, where the DSL parser has full custom-aggregation
-        context and can produce an accurate ``Unknown filter function`` error.
+        """A function outside the Mode-B library (``initcap``) must be a Column on the model,
+        referenced from the DSL. The rejection fires at enrichment time, where the DSL parser has
+        full custom-aggregation context and can produce an accurate ``Unknown filter function`` error.
         """
         model = SlayerModel(
             name="orders",
@@ -373,9 +390,9 @@ class TestDslModeRejection:
         query = SlayerQuery(
             source_model="orders",
             dimensions=["id"],
-            filters=["json_extract(data, '$.x') > 5"],
+            filters=["initcap(data) = 'X'"],
         )
-        with pytest.raises(Exception, match="(?i)function|json_extract|raw SQL|unknown|transform"):
+        with pytest.raises(Exception, match="(?i)function|initcap|raw SQL|unknown|transform"):
             await _engine_generate(query=query, model=model)
 
     async def test_query_filter_rejects_unknown_double_underscore_at_enrichment(self) -> None:

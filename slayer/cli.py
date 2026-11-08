@@ -23,6 +23,7 @@ from slayer.async_utils import run_sync
 from slayer.core.deprecation import deprecations_on_one_line, warn_deprecated
 from slayer.core.errors import SlayerError
 from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.format import encode_json
 from slayer.core.recommend import render_recommendation_markdown
 from slayer.core.time_points import host_clock
 from slayer.cube.converter import CubeToSlayerConverter
@@ -1795,7 +1796,7 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
         return
 
     if args.format == "json":
-        print(json.dumps(result.data, indent=2, default=str))
+        print(encode_json(result.data, indent=2))
     else:
         if args.explain:
             print(f"SQL:\n{result.sql}\n")
@@ -2247,7 +2248,7 @@ async def _import_dbt_workflow(args, engine: SlayerQueryEngine) -> None:
     if not project.semantic_models and not (include_hidden and project.regular_models):
         _fail(f"No semantic models found in {args.dbt_project_path}")
 
-    ds = await storage.get_datasource(args.datasource)
+    ds, offline_reason = await _import_datasource(storage, args.datasource)
     if include_hidden and ds is None:
         storage_path = _storage_path(args)
         _fail(
@@ -2255,17 +2256,14 @@ async def _import_dbt_workflow(args, engine: SlayerQueryEngine) -> None:
             "required for --include-hidden-models."
         )
 
-    # Pass the datasource dialect (best-effort) so the converter can
-    # emit percentile/median caveats for dialects that lack them (MySQL/T-SQL).
-    target_dialect = ds.type if ds is not None else None
-
     converter = DbtToSlayerConverter(
         project=project,
         data_source=args.datasource,
         include_hidden_models=include_hidden,
-        target_dialect=target_dialect,
+        target_dialect=ds.type if ds is not None else None,
+        offline_reason=offline_reason,
     )
-    if include_hidden and ds is not None:
+    if ds is not None:
         await converter.collect_metadata(client=engine.client_for(ds))
     result = converter.convert()
     hidden_count = await _save_imported_dbt_models(storage=storage, models=result.models)
@@ -2281,6 +2279,17 @@ async def _import_dbt_workflow(args, engine: SlayerQueryEngine) -> None:
         f"\nDone: {visible_count} models, {hidden_count} hidden, "
         f"{unconverted} unconverted, {dropped} dropped"
     )
+
+
+async def _import_datasource(storage: StorageBackend, name: str) -> tuple[DatasourceConfig | None, str | None]:
+    """``(config, offline reason)`` for an importer's ``--datasource``, best-effort."""
+    try:
+        ds = await storage.get_datasource(name)
+    except Exception as exc:  # noqa: BLE001 — an import still completes without its datasource
+        return None, f"datasource {name!r} could not be resolved: {type(exc).__name__}"
+    if ds is None:
+        return None, f"datasource {name!r} is not configured"
+    return ds, None
 
 
 async def _save_imported_dbt_models(*, storage: StorageBackend, models: list[SlayerModel]) -> int:
@@ -2299,20 +2308,30 @@ async def _save_imported_dbt_models(*, storage: StorageBackend, models: list[Sla
 
 
 def _run_import_cube(args):
-    storage = _resolve_storage(args)
+    engine = SlayerQueryEngine(storage=_resolve_storage(args))
+    engine.run_sync(_import_cube_workflow(args, engine))
+
+
+async def _import_cube_workflow(args, engine: SlayerQueryEngine) -> None:
+    storage = engine.storage
     project, parse_issues = parse_cube_project(args.cube_project_path)
 
     if not project.cubes and not project.views:
         _fail(f"No cubes or views found in {args.cube_project_path}")
 
-    result = CubeToSlayerConverter(
+    ds, offline_reason = await _import_datasource(storage, args.datasource)
+    converter = CubeToSlayerConverter(
         project=project, data_source=args.datasource, parse_issues=parse_issues,
         honor_required_meta=not args.ignore_required_meta,
-    ).convert()
+        target_dialect=ds.type if ds is not None else None, offline_reason=offline_reason,
+    )
+    if ds is not None:
+        await converter.collect_metadata(client=engine.client_for(ds))
+    result = converter.convert()
     saved = 0
     for model in result.models:
         try:
-            run_sync(storage.save_model(model))
+            await storage.save_model(model)
             saved += 1
         except Exception as exc:  # noqa: BLE001 — one bad model shouldn't abort the import
             result.report.add(CubeConversionIssue(

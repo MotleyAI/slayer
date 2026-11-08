@@ -8,7 +8,7 @@ import tempfile
 import pytest
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from tests._dev1471_fixtures import (
     BACKENDS,
     date_str,
@@ -30,7 +30,7 @@ _ROWS = [
 
 _INNER = SlayerQuery.model_validate({
     "name": "s1", "source_model": "orders",
-    "time_dimensions": [TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.MONTH)],
+    "time_dimensions": [TimeDimension(dimension="created_at", granularity=TG.MONTH)],
     "measures": [{"formula": "amount:sum", "name": "rev"}],
 })
 
@@ -49,7 +49,7 @@ async def test_stage_date_range_restricts_outer_stage(backend: str) -> None:
     outer = SlayerQuery.model_validate({
         "source_model": "s1",
         "time_dimensions": [TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TG.MONTH,
+            dimension="created_at", granularity=TG.MONTH,
             date_range=["2025-02-01", "2025-03-31"],
         )],
         "measures": [{"formula": "rev:sum"}],
@@ -70,7 +70,7 @@ async def test_stage_date_range_on_coarser_rebucketing(backend: str) -> None:
     outer = SlayerQuery.model_validate({
         "source_model": "s1",
         "time_dimensions": [TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TG.YEAR,
+            dimension="created_at", granularity=TG.YEAR,
             date_range=["2025-02-01", "2025-03-31"],
         )],
         "measures": [{"formula": "rev:sum"}],

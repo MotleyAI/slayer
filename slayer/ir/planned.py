@@ -28,7 +28,7 @@ from slayer.core.keys import (
 )
 from slayer.core.models import EmptyValue, SlayerModel
 from slayer.core.scope import StageSchema, StaleSpelling
-from slayer.ir.bound import BoundExpr, GranularityConflict
+from slayer.ir.bound import BoundExpr, GranularityConflict, WholeListRead
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 SlotId = str
@@ -215,6 +215,8 @@ class MaskEntry(BaseModel):
     slot_id: SlotId
     typing: MaskTyping
     stratum: int
+    # Mirrors ``BoundFilter.row_restriction``.
+    row_restriction: bool = False
 
 
 class OrderEntry(BaseModel):
@@ -475,6 +477,7 @@ class PlannedQuery(BaseModel):
     stale_spellings: List[StaleSpelling] = Field(default_factory=list)
     # ``whole_periods_only`` granularity pairs on one column that do not nest.
     granularity_conflicts: List[GranularityConflict] = Field(default_factory=list)
+    whole_list_reads: List[WholeListRead] = Field(default_factory=list)
     # Active-TD slot (None if none); time-needing transforms use it for the OVER ORDER BY.
     active_time_dimension_slot_id: Optional[SlotId] = None
     render_source_model: Optional[SlayerModel] = None
@@ -775,6 +778,21 @@ def _walk_plan_keys(obj, seen: set) -> Iterator[ValueKey]:
 def plan_value_keys(planned) -> Iterator[ValueKey]:
     """Every root ``ValueKey`` a plan carries, nested producer plans included."""
     yield from _walk_plan_keys(planned, set())
+
+
+def plan_value_keys_by_root(planned, root: Optional[str] = None) -> Iterator[Tuple[Optional[str], ValueKey]]:
+    """``plan_value_keys`` paired with the model each key is rooted at: a target-rooted producer's keys at its
+    ``producer_root_model``, every other key at the enclosing plan's root (``None``: the plan's own)."""
+    attaches = list(getattr(planned, "regroup_attach_plans", ()) or ())
+    for key in _walk_plan_keys(planned, {id(a.producer_plan) for a in attaches}):
+        yield root, key
+    for attach in attaches:
+        yield from plan_value_keys_by_root(attach.producer_plan, attach.producer_root_model or root)
+
+
+def planned_keys(planned_list) -> Iterator[ValueKey]:
+    """Every key, nested ones included, that rendering ``planned_list`` reads."""
+    return (k for planned in planned_list for root in plan_value_keys(planned) for k in walk_value_keys(root))
 
 
 def plans_read_clock(planned_list) -> bool:

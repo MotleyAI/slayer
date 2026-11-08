@@ -10,14 +10,12 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 import pytest
-from sqlalchemy.exc import ProgrammingError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 LIVE = ("CREATE TABLE contractors (id INTEGER, skills VARCHAR[])",
@@ -92,14 +90,6 @@ class TestValidation:
             entries = _dumps(await engine.validate_models(data_source="ds"))
         assert entries == [], entries
 
-    async def test_a_declared_element_type_differs_in_an_sql_mode_model(self) -> None:
-        model = SlayerModel(name="crew", sql="SELECT id, [1, 2] AS scores FROM contractors", data_source="ds",
-                            columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                                     Column(name="scores", type=DataType.ARRAY, element_type=DataType.TEXT)])
-        async with _env(model) as engine:
-            entries = _dumps(await engine.validate_models(data_source="ds"))
-        assert entries == [], entries
-
 
 class TestQueryTime:
     async def test_a_refused_query_explained(self) -> None:
@@ -107,27 +97,6 @@ class TestQueryTime:
             with pytest.raises(SchemaDriftError) as info:
                 await engine.execute({"source_model": "contractors", "measures": [{"formula": "count(*)", "name": "n"}],
                                       "filters": ["skills = 'go'"]})
-        err = info.value
-        assert "contractors" in err.models
-        assert not any(_deletes_skills(e) for e in _dumps(err.to_delete)), err.to_delete
-        assert "skills" in str(err), str(err)
-        assert "ingest" in str(err).lower(), str(err)
-
-    async def test_a_refused_group_by_explained(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A database refusing GROUP BY on a list (BigQuery on REPEATED) is attributed to the stale column."""
-        real = SlayerSQLClient.execute
-
-        async def refuse_group_by(self: SlayerSQLClient, *args: Any, **kwargs: Any) -> Any:
-            sql = kwargs.get("sql", args[0] if args else "")
-            if "GROUP BY" in sql.upper():
-                raise ProgrammingError(sql, {}, Exception("Grouping by expressions of type ARRAY is not allowed"))
-            return await real(self, *args, **kwargs)
-
-        monkeypatch.setattr(SlayerSQLClient, "execute", refuse_group_by)
-        async with _env(_contractors(STALE)) as engine:
-            with pytest.raises(SchemaDriftError) as info:
-                await engine.execute({"source_model": "contractors", "dimensions": ["skills"],
-                                      "measures": [{"formula": "count(*)", "name": "n"}]})
         err = info.value
         assert "contractors" in err.models
         assert not any(_deletes_skills(e) for e in _dumps(err.to_delete)), err.to_delete

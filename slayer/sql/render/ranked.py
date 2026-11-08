@@ -82,6 +82,7 @@ def build_rank_column(
     *,
     partition_by: Sequence[Expression],
     ranking_time: exp.Ordered,
+    leading: Sequence[exp.Ordered] = (),
 ) -> Expression:
     """``ROW_NUMBER() OVER (PARTITION BY <grain> ORDER BY <time>) AS _rk_rn``.
 
@@ -94,7 +95,7 @@ def build_rank_column(
     window = exp.Window(
         this=exp.RowNumber(),
         partition_by=[p.copy() for p in partition_by],
-        order=exp.Order(expressions=[ranking_time.copy()]),
+        order=exp.Order(expressions=[*(o.copy() for o in leading), ranking_time.copy()]),
     )
     return window.as_(RANK_COLUMN)
 

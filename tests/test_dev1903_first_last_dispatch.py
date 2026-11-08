@@ -16,10 +16,9 @@ from pydantic import BaseModel
 from slayer.core.keys import AggregateKey, ColumnKey, TransformKey
 from slayer.core.models import ModelMeasure
 from slayer.core.query import SlayerQuery
-from slayer.engine import syntax
 from slayer.engine.elaborate import elaborate_query
 from slayer.engine.plan import plan_query
-from slayer.engine.syntax import AggCall, parse_expr
+from slayer.core.syntax import AggCall, parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1846_fixtures import (
@@ -30,6 +29,7 @@ from tests._dev1846_fixtures import (
     sales_model,
 )
 from tests._engine_helpers import seeded_exec_engine
+from slayer.core import syntax
 
 SAVED = [
     ModelMeasure(formula="revenue:sum", name="rev"),
@@ -162,9 +162,10 @@ class TestBindDispatch:
         ("first(qty * avg(revenue, partition_by=store))", {"dimensions": ["store"]}),
         ("first(1)", {}),
     ])
-    def test_row_grain_expression_keeps_expression_error(self, formula, kw):
-        with pytest.raises(ValueError, match="not supported over an expression"):
-            _measure_key(formula, **kw)
+    def test_row_grain_expression_binds_to_ranked_aggregate(self, formula, kw):
+        key = _measure_key(formula, **kw)
+        assert isinstance(key, AggregateKey), key
+        assert key.agg == "first"
 
     def test_transform_kwarg_error(self):
         with pytest.raises(

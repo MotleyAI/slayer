@@ -16,6 +16,7 @@ from slayer.core.keys import (
     AggregateKey,
     ColumnKey,
     ColumnSqlKey,
+    ListSetKey,
     Phase,
     StarKey,
     TimeTruncKey,
@@ -26,6 +27,7 @@ from slayer.core.keys import (
     source_anchor_path,
 )
 from slayer.core.refs import (
+    AGG_REF_RE,
     EXPRESSION_SOURCE_KINDS,
     agg_kwarg_canonical_str,
     auto_name_from_expression,
@@ -120,7 +122,7 @@ class AliasAllocator(BaseModel):
         else:
             parent = self.alias_for(root=root, path=path[:-1], limit=limit)
             base = f"{parent}__{path[-1]}"
-        used = self._join_alias_used.setdefault(root, set())
+        used = self._join_alias_used.setdefault(root, {self._fold(root)})
         candidate = fit_identifier(name=base, limit=limit)
         suffix = 2
         while self._fold(candidate) in used:
@@ -177,13 +179,13 @@ def _joined_row_path(slot: "ValueSlot") -> Optional[Tuple[Tuple[str, ...], str]]
     """``(path, leaf)`` of a ROW slot reading a joined column, else ``None``."""
     if slot.phase != Phase.ROW:
         return None
-    key = slot.key
+    key = slot.key.source if isinstance(slot.key, ListSetKey) else slot.key
     if isinstance(key, ColumnKey):
         path, leaf = key.path, key.leaf
     elif isinstance(key, ColumnSqlKey):
         path, leaf = key.path, key.column_name
-    elif isinstance(key, TimeTruncKey):
-        path, leaf = column_path(key.column), column_leaf(key.column)
+    elif isinstance(key, TimeTruncKey) and isinstance(key.source, (ColumnKey, ColumnSqlKey)):
+        path, leaf = column_path(key.source), column_leaf(key.source)
     else:
         return None
     return (path, leaf) if path else None
@@ -294,6 +296,18 @@ def expression_source_leaf(source: ValueKey) -> str:
     return auto_name_from_expression(key_display(rendered))
 
 
+def formula_text_alias(text: str) -> str:
+    """The public alias of a measure formula named from its canonical ``text``."""
+    # Fullmatch only — a substring heuristic once mis-captured arithmetic composites and leaked ``:``/``/`` into SQL aliases.
+    match = AGG_REF_RE.fullmatch(text)
+    if match is not None and match.group(3) is None:
+        base, agg = match.group(1), match.group(2)
+        if base.endswith(".*"):
+            return f"{base[:-2]}.{canonical_agg_name(measure_name='*', aggregation_name=agg)}"
+        return canonical_agg_name(measure_name=base, aggregation_name=agg)
+    return auto_name_from_expression(text)
+
+
 def _alias_param(value) -> str:
     """A parameter's alias token; a boolean spells itself, never as ``1``."""
     if isinstance(value, bool):
@@ -349,6 +363,9 @@ def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over th
         agg_args=[_alias_param(a) for a in key.args] or None,
         agg_kwargs={k: _alias_param(v) for k, v in key.kwargs} or None,
     )
+    # A hint only: distinct keys stay distinct by key identity, never by this suffix.
+    if key.filter is not None:
+        canonical = f"{canonical}_filter_{auto_name_from_expression(key_display(key.filter))}"
 
     # Host-grain and target-grain aggregates intern separately; ``_host`` keeps their columns distinct.
     if key.locus == "host":

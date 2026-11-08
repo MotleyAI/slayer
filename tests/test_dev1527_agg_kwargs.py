@@ -100,16 +100,21 @@ def _orders(*, extra=None, joins_extra=None) -> SlayerModel:
 class TestResolvedAggKwarg:
     def test_expr_kind_holds_expression(self) -> None:
         col = exp.column("weight", table="customers__regions")
-        rk = ResolvedAggKwarg(kind="expr", value=col)
+        rk = ResolvedAggKwarg(kind="expr", value=col, input_type=None)
         assert rk.kind == "expr"
         assert rk.value.sql(dialect="postgres") == "customers__regions.weight"
+
+    def test_input_type_is_required(self) -> None:
+        col = exp.column("weight")
+        with pytest.raises(ValidationError):
+            ResolvedAggKwarg.model_validate({"kind": "expr", "value": col})
 
     def test_agg_render_spec_accepts_expr_kind(self) -> None:
         spec = AggRenderSpec(
             sql="price", name="price", model_name="sales",
             aggregation="weighted_avg", alias="sales.price_weighted_avg",
             agg_kwargs={"weight": ResolvedAggKwarg(
-                kind="expr", value=exp.column("quantity", table="sales"))},
+                kind="expr", value=exp.column("quantity", table="sales"), input_type=None)},
         )
         assert spec.agg_kwargs["weight"].kind == "expr"
 

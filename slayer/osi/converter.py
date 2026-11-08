@@ -24,22 +24,27 @@ from sqlglot.errors import SqlglotError
 
 from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import DataType, JoinCardinality
-from slayer.core.errors import AmbiguousJoinPathError
+from slayer.core.errors import AmbiguousJoinPathError, UnsupportedServerFunctionError
+from slayer.core.syntax import parse_expr
 from slayer.core.join_walker import resolve_hop
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel, join_key_error
 from slayer.core.query import SlayerQuery
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
 from slayer.engine.binding import bind_model_formula
-from slayer.engine.syntax import parse_expr
 from slayer.sql.column_expansion import root_scope_column_ids, resolve_ref_target
-from slayer.sql.dialects import dialect_for_ds_type
+from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.engine.ingestion import introspect_table_to_model
 from slayer.engine.query_engine import run_over_caller_engine
+from slayer.engine.schema_scope import requested_schema_ref
 from slayer.core.join_search import blocking_pairs, shortest_route, shortest_routes
+from slayer.importers.column_types import LiveDatasource, LiveSource
+from slayer.importers.aggregates import (
+    MaterializedColumn, Unconvertible, contains_args, convert_expression, length_arg, outermost_aggregates,
+)
+from slayer.importers.physical import unreadable_columns
 from slayer.ingest_report import ConversionResult, ConversionWarning
 from slayer.sql.client import ResultColumnType, SqlClient, adapt_client
-from slayer.osi.dialects import Selection, read, render, select_expression
-from slayer.osi.expression import MaterializedColumn, convert_expression, outermost_aggregates
+from slayer.osi.dialects import Selection, is_native, read, render, select_expression
 from slayer.osi.models import (
     OSSIE_DATATYPES,
     TEMPORAL_DATATYPES,
@@ -58,12 +63,6 @@ from slayer.osi.source import parse_source, resolve_datasource
 
 logger = logging.getLogger(__name__)
 
-# Conversion passes ``collect_metadata`` runs to discover the type probes conversion asks for.
-_MAX_PROBE_PASSES = 8
-
-# Target dialects lacking a GROUP BY percentile/median aggregate.
-_NO_PERCENTILE_DIALECTS = frozenset({"mysql", "tsql"})
-
 _TIME_DIMENSION_TYPES = (DataType.DATE, DataType.TIMESTAMP)
 
 
@@ -71,10 +70,9 @@ def _typed_column(*, name: str, data_type: DataType, sql: str | None = None, ele
                   hidden: bool = False, db_type: str | None = None) -> Column:
     """A column of a probed type; a list's elements are ``element``, else UNKNOWN (a probe cannot see them)."""
     if data_type is not DataType.ARRAY:
-        return Column(name=name, sql=sql, type=data_type, db_type=db_type, hidden=hidden)
-    return Column(name=name, sql=sql, type=data_type, element_type=element or DataType.UNKNOWN, db_type=db_type,
-                  hidden=hidden)
-
+        return Column(name=name, sql=sql, type=data_type, hidden=hidden, db_type=db_type)
+    return Column(name=name, sql=sql, type=data_type, element_type=element or DataType.UNKNOWN, hidden=hidden,
+                  db_type=db_type)
 
 OwnerOf = Callable[[Optional[str], str], Optional[str]]
 
@@ -152,6 +150,32 @@ def _match_name(ident: exp.Identifier, names: list[str]) -> str:
     return hits[0]
 
 
+def _list_call(node: exp.Expr, *, dialect: SqlDialect, is_list: Callable[[exp.Expr], bool]) -> exp.Expr:
+    """``node`` as SLayer's own list SQL when it is an array function, else ``node``."""
+    if isinstance(node, exp.ArrayContains):
+        return dialect.build_list_call("contains", contains_args(node, is_list=is_list))
+    if (isinstance(node, exp.EQ) and isinstance(node.expression, exp.Any)
+            and not isinstance(node.expression.this, (exp.Subquery, exp.Select))):
+        return dialect.build_list_call("contains", (node.expression.this, node.this))
+    if (values := length_arg(node)) is not None:
+        return dialect.build_list_call("length", (values,))
+    return node
+
+
+def _bottom_up(tree: exp.Expr, fn: Callable[[exp.Expr], exp.Expr]) -> exp.Expr:
+    """A copy of ``tree`` with ``fn`` applied to every node, children before their parent."""
+    tree = tree.copy()
+    for node in reversed(list(tree.walk())):
+        new = fn(node)
+        if new is node:
+            continue
+        if node is tree:
+            tree = new
+        else:
+            node.replace(new)
+    return tree
+
+
 def _build_meta(
     ctx: Optional[OSIAIContext],
     custom_extensions: Optional[list[OSICustomExtension]],
@@ -223,19 +247,20 @@ class OsiToSlayerConverter:
         self.dialect = dialect
         self.target_dialect = target_dialect
         # sqlglot name of the datasource dialect every stored raw SQL is rendered in.
-        self._target = dialect_for_ds_type(target_dialect).sqlglot_name
-        # Live metadata from ``collect_metadata``: per dataset its introspected model (or the
-        # failure), per source query its column types, per probe statement its types (None: failed).
+        self._dialect: SqlDialect = dialect_for_ds_type(target_dialect)
+        self._target = self._dialect.sqlglot_name
+        # Live metadata from ``collect_metadata``: per dataset its introspected model (or the failure); the
+        # source queries' column types and the derived expressions' probes.
         self._tables: dict[str, SlayerModel | str] = {}
-        self._query_types: dict[str, dict[str, ResultColumnType] | str] = {}
-        self._probes: dict[str, dict[str, ResultColumnType] | None] = {}
-        self._probe_misses: set[str] = set()
+        self._datasource = LiveDatasource(offline_reason=None, data_source=data_source, db_type=target_dialect,
+                                          dialect=self._target)
         self._reset()
 
     def _reset(self) -> None:
         self._models: dict[str, SlayerModel] = {}
         # Introspected source columns per model, for field validation.
         self._physical: dict[str, dict[str, Column]] = {}
+        self._live: dict[str, LiveSource | None] = {}
         self._warnings: list[ConversionWarning] = []
         self._unconverted: list[ConversionWarning] = []
         # (model, column) -> the introspected Column a legacy derived overlay replaced,
@@ -277,40 +302,29 @@ class OsiToSlayerConverter:
         client = adapt_client(client)
         self._collected = False
         if self.target_dialect is None:
-            self._target = dialect_for_ds_type(client.datasource.type).sqlglot_name
+            self._dialect = dialect_for_ds_type(client.datasource.type)
+            self._target = self._dialect.sqlglot_name
+            self._datasource.dialect = self._target
         for doc in self.documents:
             for ds in doc.datasets:
-                await self._collect_source(client=client, ds=ds)
-        for _ in range(_MAX_PROBE_PASSES):
-            self._convert()
-            misses = self._probe_misses - self._probes.keys()
-            if not misses:
-                break
-            for probe in sorted(misses):
-                try:
-                    self._probes[probe] = await client.get_result_column_types(probe)
-                except Exception:  # noqa: BLE001 — probe is best-effort; conversion falls back
-                    self._probes[probe] = None
+                await self._collect_table(client=client, ds=ds)
+        await self._datasource.collect(client=client, convert=self._convert)
         self._collected = True
 
-    async def _collect_source(self, *, client: SqlClient, ds: OSIDataset) -> None:
+    async def _collect_table(self, *, client: SqlClient, ds: OSIDataset) -> None:
         try:
             parsed = parse_source(ds.source)
         except Exception:  # noqa: BLE001 — conversion reports an unparseable source itself
             return
+        if parsed.table is None:
+            return
         try:
-            if parsed.query is not None:
-                self._query_types[parsed.query] = await client.get_result_column_types(parsed.query)
-            elif parsed.table is not None:
-                self._tables[ds.name] = await introspect_table_to_model(
-                    client=client, table_name=parsed.table, schema=parsed.schema_name,
-                    data_source=self.data_source, model_name=ds.name,
-                )
+            self._tables[ds.name] = await introspect_table_to_model(
+                client=client, table_name=parsed.table, ref=requested_schema_ref(parsed.schema_name, client=client),
+                data_source=self.data_source, model_name=ds.name,
+            )
         except Exception as exc:  # noqa: BLE001 — per-dataset isolation
-            if parsed.query is not None:
-                self._query_types[parsed.query] = str(exc)
-            else:
-                self._tables[ds.name] = str(exc)
+            self._tables[ds.name] = str(exc)
 
     def convert(self) -> OsiConversionResult:
         """Convert from the collected metadata (a deprecated ``sa_engine`` converter collects it first)."""
@@ -437,6 +451,7 @@ class OsiToSlayerConverter:
             self._overlay_fields(base, ds)
         else:
             self._declare_fields(base, ds)
+        self._drop_unreadable_fields(base)
         self._apply_dataset_metadata(base, ds, doc)
         self._models[ds.name] = base
         found = self._payload(ds.custom_extensions, kind="dataset", entity=ds.name, label=f"dataset {ds.name!r}",
@@ -454,10 +469,12 @@ class OsiToSlayerConverter:
 
     def _build_sql_mode_model(self, ds: OSIDataset, query: str) -> SlayerModel:
         # The query's output columns, as the datasource's probe reported them.
-        types = self._query_types.get(query, "no query metadata was collected (collect_metadata)")
-        if isinstance(types, str):
-            raise _MetadataUnavailable(types)
-        columns = [_typed_column(name=name, data_type=t.type, db_type=t.lossy_db_type) for name, t in types.items()]
+        live = self._datasource.source(sql=query)
+        if isinstance(live, str):
+            raise _MetadataUnavailable(live)
+        columns = [_typed_column(name=name, data_type=typed[0], db_type=live.result_types[name].lossy_db_type)
+                   for name, typed in live.columns.items()]
+        self._live[ds.name] = live
         return SlayerModel(name=ds.name, sql=query, data_source=self.data_source,
                            columns=columns)
 
@@ -479,6 +496,22 @@ class OsiToSlayerConverter:
         model.columns = columns
         self._apply_primary_key(model, ds)
         model.default_time_dimension = _first_time_dimension(model)
+
+    def _drop_unreadable_fields(self, model: SlayerModel) -> None:
+        """Drop each field reading a source column another field's name holds (a legacy overlay reverts)."""
+        dropped = unreadable_columns(model.columns, dialect=self._target, live=self._physical[model.name])
+        for name, problem in dropped.items():
+            col = next(c for c in model.columns if c.name == name)
+            original = self._shadowed.pop((model.name, name), None)
+            if original is not None:
+                model.columns[model.columns.index(col)] = original
+            else:
+                model.columns.remove(col)
+            self._warn(f"Field {name!r} on {model.name!r} dropped: {problem}"
+                       f"{'; the source column is kept' if original is not None else ''}.",
+                       model_name=model.name, category="masked_column")
+        if model.default_time_dimension in dropped and model.get_column(model.default_time_dimension) is None:
+            model.default_time_dimension = _first_time_dimension(model)
 
     def _apply_primary_key(self, model: SlayerModel, ds: OSIDataset) -> None:
         """A valid declared key replaces the inherited flags; an empty or unresolved one clears them."""
@@ -548,7 +581,22 @@ class OsiToSlayerConverter:
             self._warn(f"{label} has an unparseable expression {selection.candidate.text!r}; skipping.",
                        model_name=ds.name, category="expression")
             return None
-        return render(selection.candidate, tree, target=self._target), tree
+        try:
+            rendered = tree if is_native(selection.candidate, target=self._target) else self._list_calls(tree, ds=ds)
+        except (Unconvertible, UnsupportedServerFunctionError) as exc:
+            self._warn(f"{label}: {exc}; skipping.", model_name=ds.name, category="expression")
+            return None
+        return render(selection.candidate, rendered, target=self._target), tree
+
+    def _list_calls(self, tree: exp.Expr, *, ds: OSIDataset) -> exp.Expr:
+        """``tree`` with array functions as SLayer's own list SQL for the target."""
+        physical = self._physical[ds.name]
+
+        def is_list(node: exp.Expr) -> bool:
+            col = physical.get(node.name) if isinstance(node, exp.Column) and not node.table else None
+            return col is not None and col.type is DataType.ARRAY
+
+        return _bottom_up(tree, lambda node: _list_call(node, dialect=self._dialect, is_list=is_list))
 
     def _field_column(self, field: OSIField, ds: OSIDataset, model: SlayerModel) -> Column | None:
         """The Column one field maps to, or ``None`` on a reported clean-fail."""
@@ -614,9 +662,8 @@ class OsiToSlayerConverter:
             return None
         probed = self._probe_expression_type(model=model, expr=sql)
         if probed is not None:
-            return _typed_column(
-                name=field.name, sql=sql, data_type=probed.type, db_type=probed.lossy_db_type,
-            ), probed.type
+            column = _typed_column(name=field.name, sql=sql, data_type=probed.type, db_type=probed.lossy_db_type)
+            return column, probed.type
         shadowed = physical.get(field.name)
         fallback = declared or (shadowed.type if shadowed is not None else None) or DataType.DOUBLE
         element = shadowed.element_type if shadowed is not None else None
@@ -638,19 +685,16 @@ class OsiToSlayerConverter:
             col.meta = {**(col.meta or {}), **meta}
 
     def _probe_expression_type(self, model: SlayerModel, expr: str) -> ResultColumnType | None:
-        """A derived expression's type from a LIMIT-0 probe of the model's source, or ``None``."""
-        if model.sql_table:
-            from_clause = model.sql_table
-        elif model.sql:
-            from_clause = f"({model.sql}) AS _osi_sub"
-        else:
+        """A derived expression's type from a zero-row probe of the model's source, or ``None``."""
+        if model.name not in self._live:
+            found = self._datasource.source(sql_table=model.sql_table, sql=model.sql) \
+                if model.sql_table or model.sql else None
+            self._live[model.name] = found if isinstance(found, LiveSource) else None
+        live = self._live[model.name]
+        typed = live.probe(expr) if live is not None else None
+        if live is None or typed is None:
             return None
-        probe = f"SELECT ({expr}) AS _osi_probe FROM {from_clause}"
-        if probe not in self._probes:
-            self._probe_misses.add(probe)
-            return None
-        types = self._probes[probe]
-        return next(iter(types.values()), None) if types else None
+        return live.probed(expr) or ResultColumnType(type=typed[0])
 
     def _apply_dataset_metadata(self, model: SlayerModel, ds: OSIDataset, doc: OSIDocument) -> None:
         model.description = render_description(explicit=ds.description, ctx=ds.ai_context) \
@@ -1022,8 +1066,8 @@ class OsiToSlayerConverter:
 
         result = convert_expression(
             tree, entity_name=metric.name, owner_of=owner_of, ref_of=self._make_ref_of(anchor=anchor),
-            percentile_unsupported=self._target in _NO_PERCENTILE_DIALECTS,
-            name_taken=self._model_has_name, target=self._target,
+            sql_dialect=self._dialect,
+            name_taken=self._model_has_name, target=self._target, is_list=self._make_is_list(owner_of),
         )
         if not result.ok or result.formula is None:
             self._unconv(
@@ -1109,6 +1153,13 @@ class OsiToSlayerConverter:
             matches = [name for name in scope if self._model_has_column(name, column)]
             return matches[0] if len(matches) == 1 else None
         return owner_of
+
+    def _make_is_list(self, owner_of: OwnerOf) -> Callable[[Optional[str], str], bool]:
+        def is_list(qualifier: Optional[str], column: str) -> bool:
+            owner = owner_of(qualifier, column)
+            col = self._models[owner].get_column(column) if owner is not None else None
+            return col is not None and col.type is DataType.ARRAY
+        return is_list
 
     def _min_hops_root(self, *, candidates: list[str], mentioned: set[str], to_one: set[str]) -> str | None:
         """Among ``candidates`` routing to every ``mentioned`` model (``to_one`` ones without

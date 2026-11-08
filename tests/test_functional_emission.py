@@ -34,7 +34,7 @@ from slayer.dbt.models import (
     DbtProject,
     DbtSemanticModel,
 )
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 from slayer.mcp.server import create_mcp_server
 from slayer.memories.help_seed import HELP_TOPICS
 from slayer.osi.converter import OsiToSlayerConverter

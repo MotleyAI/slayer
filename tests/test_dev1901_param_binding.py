@@ -24,7 +24,7 @@ from slayer.core.models import Aggregation, AggregationParam, Column, ModelJoin,
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.binding import bind_expr
 from slayer.engine.compile.stages import _first_unattributable_arg_leaf
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from tests._dev1901_fixtures import (
     BAD_DEFAULTS,
@@ -225,14 +225,14 @@ class TestUnanalysableText:
 
     @pytest.mark.parametrize("text", sorted(BAD_DEFAULTS.values()))
     def test_string_argument(self, text: str) -> None:
-        quoted = text.replace("'", "\\'")
+        quoted = text.replace("'", "''")
         with pytest.raises(UnanalyzableAggregationParameterError) as ei:
             _key(f"amount:wsum(weight='{quoted}')")
         self._assert_names(ei.value, agg="wsum", text=text)
 
     @pytest.mark.parametrize("text", ROW_TEXTS)
     def test_row_expression_binds(self, text: str) -> None:
-        quoted = text.replace("'", "\\'")
+        quoted = text.replace("'", "''")
         assert _kw(f"amount:wsum(weight='{quoted}')")["weight"] is not None
 
     @pytest.mark.parametrize("dialect,text", [
@@ -241,7 +241,7 @@ class TestUnanalysableText:
     ])
     def test_dialect_row_expression_binds(self, dialect: str, text: str) -> None:
         models = dev1901_models()
-        quoted = text.replace("'", "\\'")
+        quoted = text.replace("'", "''")
         key = bind_expr(
             parse_expr(f"amount:wsum(weight='{quoted}')"),
             scope=ModelScope(source_model=models[0]),
@@ -317,7 +317,7 @@ def _first_token_revisit_models() -> List[SlayerModel]:
 class TestFragmentTextSurvives:
     def test_a_literal_spelling_the_placeholder_sentinel_is_kept(self) -> None:
         frag = _fragment(_kw(
-            "amount:wsum(weight='CASE WHEN status = \\'__slayer_r0__\\' THEN amount ELSE 0 END')")["weight"])
+            "amount:wsum(weight='CASE WHEN status = ''__slayer_r0__'' THEN amount ELSE 0 END')")["weight"])
         assert "'__slayer_r0__'" in frag.template, frag.template
         assert set(frag.refs) == {AMOUNT, ColumnKey(path=(), leaf="status")}
 

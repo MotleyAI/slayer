@@ -372,7 +372,7 @@ async def test_cumsum_change_identity(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -403,7 +403,7 @@ async def test_nested_cumsum_of_cumsum(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -430,7 +430,7 @@ async def test_consecutive_periods_counts_trailing_true_run(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -458,7 +458,7 @@ async def test_consecutive_periods_with_non_boolean_argument(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -483,7 +483,7 @@ async def test_consecutive_periods_partitions_by_dimension(integration_env):
         source_model="orders",
         dimensions=[ColumnRef(name="status")],
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -514,7 +514,7 @@ async def test_consecutive_periods_comparison_is_selectable(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -534,7 +534,7 @@ async def test_consecutive_periods_comparison_is_filterable(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="total_amount:sum")],
@@ -580,7 +580,7 @@ async def test_time_shift_default_granularity_calendar(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -619,7 +619,7 @@ async def test_time_shift_calendar_based(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -653,7 +653,7 @@ async def test_multiple_time_shifts_in_one_query(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -695,7 +695,7 @@ async def test_time_shift_with_date_range(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2025-03-01", "2025-03-31"],
         )],
@@ -722,7 +722,7 @@ async def test_change_with_date_range(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2025-03-01", "2025-03-31"],
         )],
@@ -746,7 +746,7 @@ async def test_change_pct_with_date_range(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2025-03-01", "2025-03-31"],
         )],
@@ -771,7 +771,7 @@ async def test_multiple_date_range_shifts(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2025-02-01", "2025-02-28"],
         )],
@@ -800,7 +800,7 @@ async def test_forward_row_shift_with_date_range(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2025-02-01", "2025-02-28"],
         )],
@@ -828,7 +828,7 @@ async def test_post_filter_on_change(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -860,7 +860,7 @@ async def test_post_filter_with_base_filter(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -887,7 +887,7 @@ async def test_inline_transform_filter(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="total_amount:sum")],
@@ -911,7 +911,7 @@ async def test_inline_last_change_filter(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="total_amount:sum")],
@@ -927,7 +927,7 @@ async def test_inline_last_change_filter(integration_env):
     query2 = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="total_amount:sum")],
@@ -949,7 +949,7 @@ async def test_arithmetic_transform_filter(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="total_amount:sum")],
@@ -974,7 +974,7 @@ async def test_transform_on_filter_rhs(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="total_amount:sum")],
@@ -998,7 +998,7 @@ async def test_last_measure_type(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -1028,7 +1028,7 @@ async def test_last_function(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -1096,7 +1096,7 @@ async def test_filter_mixing_measure_and_row_conjuncts_splits(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="*:count")],
@@ -1191,7 +1191,7 @@ async def test_last_with_joined_time_dimension(joined_time_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="stores.opened_at"),
+            dimension="stores.opened_at",
             granularity=TimeGranularity.YEAR,
         )],
         measures=[
@@ -1220,7 +1220,7 @@ async def test_last_with_multihop_joined_time_dimension(joined_time_env):
     query = SlayerQuery(
         source_model="order_items",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="orders.created_at"),
+            dimension="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -1299,7 +1299,7 @@ async def test_cross_model_measure_monthly(cross_model_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            dimension="created_at", granularity=TimeGranularity.MONTH,
         )],
         measures=[
             ModelMeasure(formula="*:count"),
@@ -1448,7 +1448,7 @@ async def test_transform_on_cross_model(cross_model_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            dimension="created_at", granularity=TimeGranularity.MONTH,
         )],
         measures=[
             ModelMeasure(formula="customers.avg_score:avg"),
@@ -1479,7 +1479,7 @@ async def test_query_backed_model_count(integration_env):
         name="monthly",
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            dimension="created_at", granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total_amount:sum")],
     )
@@ -1500,7 +1500,7 @@ async def test_query_backed_model_aggregate(integration_env):
         name="monthly",
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            dimension="created_at", granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="total_amount:sum")],
     )
@@ -1520,7 +1520,7 @@ async def test_create_model_from_query(integration_env):
     source_query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            dimension="created_at", granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total_amount:sum")],
     )
@@ -1569,7 +1569,7 @@ async def test_query_list_with_joins(cross_model_env):
             "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}],
         }),
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            dimension="created_at", granularity=TimeGranularity.MONTH,
         )],
         measures=[
             ModelMeasure(formula="*:count"),
@@ -1686,7 +1686,7 @@ async def test_formula_dimension_via_query_list(integration_env):
         name="monthly",
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            dimension="created_at", granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="total_amount:sum")],
     )
@@ -2123,7 +2123,7 @@ async def test_filtered_last_picks_correct_row(integration_env):
         source_model="orders",
         time_dimensions=[
             TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             ),
         ],
@@ -2165,7 +2165,7 @@ async def test_time_dimension_label_fallback(integration_env):
         source_model="orders",
         time_dimensions=[
             TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             ),
         ],
@@ -3119,7 +3119,7 @@ async def test_dense_rank_partition_by_customer_executes(integration_env):
         source_model="orders",
         dimensions=[ColumnRef(name="customer_id")],
         time_dimensions=[
-            TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+            TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)
         ],
         measures=[
             ModelMeasure(formula="amount:sum"),

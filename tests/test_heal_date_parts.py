@@ -11,7 +11,7 @@ import pytest
 from slayer.core.errors import GranularityDefinitionError, SlayerError
 from slayer.core.models import Aggregation, DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.syntax import Arith, Cmp, Literal, Ref, parse_expr, parse_filter_expr
+from slayer.core.syntax import Arith, Cmp, Literal, Ref, parse_expr
 from tests._dev1737_fixtures import PARTS
 from tests._query_heal_fixtures import (
     BACKENDS,
@@ -80,7 +80,7 @@ class TestAliasParsesAsDatePart:
         assert parse_expr(spelling) == parse_expr(canonical("day_of_week"))
 
     def test_isoweek_part_in_filter(self) -> None:
-        assert parse_filter_expr("date_part('ISOWEEK', created_at) = 1") == parse_filter_expr(
+        assert parse_expr("date_part('ISOWEEK', created_at) = 1") == parse_expr(
             "date_part('week', created_at) = 1")
 
     @pytest.mark.parametrize(("expr", "count"), [("isodow(created_at, 1)", "2"), ("isodow()", "0")])
@@ -130,11 +130,11 @@ class TestExtractParsesAsDatePart:
         assert parse_expr(healed) == parse_expr(canonical_text)
 
     def test_filter_spelling(self) -> None:
-        assert parse_filter_expr("EXTRACT(day FROM created_at) = 1") == parse_filter_expr(
+        assert parse_expr("EXTRACT(day FROM created_at) = 1") == parse_expr(
             "date_part('day', created_at) = 1")
 
     def test_keyword_text_in_string_literal_unchanged(self) -> None:
-        assert parse_filter_expr("status == 'extract(day from x)'") == Cmp(
+        assert parse_expr("status == 'extract(day from x)'") == Cmp(
             op="==", left=Ref(name="status"), right=Literal(value="extract(day from x)"))
 
     def test_identifier_named_extract_from_untouched(self) -> None:
@@ -157,7 +157,7 @@ class TestExtractParsesAsDatePart:
 
     def test_unknown_part_lists_accepted_parts(self) -> None:
         with pytest.raises(ValueError) as info:
-            parse_filter_expr("extract(epoch from created_at) > 0")
+            parse_expr("extract(epoch from created_at) > 0")
         message = str(info.value)
         assert "epoch" in message
         for part in PARTS:
@@ -170,7 +170,7 @@ class TestAmbiguousWeekdays:
     def test_part_names_both_conventions(self, name: str, template: str) -> None:
         text = template.format(n=name) + " = 1"
         with pytest.raises(ValueError) as info:
-            parse_filter_expr(text)
+            parse_expr(text)
         for remedy in BOTH_CONVENTIONS:
             assert remedy in str(info.value)
 

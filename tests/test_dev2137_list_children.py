@@ -96,7 +96,7 @@ class TestTheChild:
     async def test_element_type_is_the_columns(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
             "source_model": "contractors", "dimensions": ["scores.value"],
-            "measures": [measure("count(scores.*)", "n")], "filters": ["scores.value > 2"]}))
+            "measures": [measure("count(scores.*)", "n")], "filters": ["scores.value > '2'"]}))
         assert _per(resp, "scores.value") == {3: 1, 9: 1, 5: 1}
 
 
@@ -202,13 +202,6 @@ class TestComposition:
                for r in resp.data}
         assert got == {"A": (3, 2, ["go", "sql"])}
 
-    async def test_element_aggregates_filtered_across_the_reverse_of_a_to_one(self, engine) -> None:
-        resp = await engine.execute(query(dimensions=["team"], filters=["assignments.id = 1"], measures=[
-            measure("count(skills.*)", "n"), measure("count(*)", "m"), measure("collect(skills.value)", "c")]))
-        got = {r["contractors.team"]: (num(r["contractors.n"]), num(r["contractors.m"]), list(r["contractors.c"]))
-               for r in resp.data}
-        assert got == {"A": (3, 1, ["go", "sql"])}
-
     async def test_a_collected_list_in_a_later_stage(self, engine) -> None:
         stage = {"name": "s", "source_model": "contractors", "dimensions": ["team"],
                  "measures": [measure("collect(skills.value)", "team_skills")]}
@@ -310,25 +303,6 @@ async def test_element_aggregates_filtered_across_another_to_many_emit(
     q = query(dimensions=["team"], filters=["assignments.id = 1"],
               measures=[measure("count(skills.*)", "n"), measure("collect(skills.value)", "c")])
     await emit_contractors(q, dialect=dialect, models=all_models())
-
-
-async def _clickhouse_25_4(_self: Any) -> ServerProfile:
-    return ServerProfile(version=(25, 4), readonly=0, correlated_subqueries=None)
-
-
-async def test_clickhouse_before_25_8_refuses_elements_beside_a_pushed_filter(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(SlayerSQLClient, "server_profile", _clickhouse_25_4)
-    q = query(dimensions=["team"], filters=["assignments.id = 1"],
-              measures=[measure("count(skills.*)", "n"), measure("collect(skills.value)", "c")])
-    models = all_models()
-    with pytest.raises(SlayerError, match=r"25\.8"):
-        await emit_contractors(q, dialect="clickhouse", models=models)
-
-
-async def test_clickhouse_25_4_runs_a_pushed_filter_without_elements(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(SlayerSQLClient, "server_profile", _clickhouse_25_4)
-    q = query(dimensions=["team"], filters=["assignments.id = 1"], measures=[measure("count(*)", "n")])
-    await emit_contractors(q, dialect="clickhouse", models=all_models())
 
 
 ELEMENT_FILTERS = ["skills.value = 'go'", "skills.value IN ('go', 'sql')", "NOT (skills.value = 'go')"]

@@ -34,9 +34,11 @@ from slayer.core.keys import (
     REGROUP_LEAF_PREFIX,
     ArithmeticKey,
     ArrayLiteralKey,
+    CastKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
+    ListSetKey,
     LiteralKey,
     ScalarCallKey,
     SqlFragmentKey,
@@ -72,7 +74,10 @@ _Grammar = Literal["predicate", "expression"]
 # A ref that can enter a scope: structural column refs, derived columns, bound
 # parameter expressions, free Mode-A / predicate text, and row-level expression
 # composites — an aggregate's same-model expression source anchors through the same door.
-Ref = Union[ColumnKey, ColumnSqlKey, SqlFragmentKey, ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey, InKey, str]
+Ref = Union[
+    ColumnKey, ColumnSqlKey, SqlFragmentKey, ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey, InKey, CastKey,
+    ListSetKey, str,
+]
 
 
 class _OrderedPathSet:
@@ -408,10 +413,14 @@ class ScopeFrame(BaseModel):
                 limit=self.dialect.max_identifier_bytes,
             )
             self._register_path_prefixes(ref.path)
-            return quote_mixed_case_identifiers(exp.Column(
+            column = quote_mixed_case_identifiers(exp.Column(
                 this=exp.to_identifier(ref.leaf),
                 table=exp.to_identifier(alias),
             ))
+            declared = model_column(model=self.root_model, models_by_name=self._models_by_name(), key=ref)
+            return self.dialect.read_column(
+                column, zoned=self.dialect.is_zoned_db_type(getattr(declared, "db_type", None)),
+            )
         if isinstance(ref, ColumnSqlKey):
             model = self._model_for(ref.model)
             col = next(
@@ -454,13 +463,14 @@ class ScopeFrame(BaseModel):
                 alias_resolver=self._alias_resolver(),
                 crossed_paths=self.join_paths,
             )
-            return self._parse(expanded)
+            return self.dialect.read_column(self._parse(expanded), zoned=self.dialect.is_zoned_db_type(col.db_type))
         if isinstance(ref, SqlFragmentKey):
             # A bound parameter expression: each typed ref anchors (and registers
             # its joins) here, substituted into the parsed template.
             template = sql_template(text=ref.template, dialect=self.dialect.sqlglot_name)
             return template.render({f"r{i}": self._anchor(r) for i, r in enumerate(ref.refs)})
-        if isinstance(ref, (ArithmeticKey, ScalarCallKey, LiteralKey, ArrayLiteralKey, TimeTruncKey, InKey)):
+        if isinstance(ref, (
+                ArithmeticKey, ScalarCallKey, LiteralKey, ArrayLiteralKey, TimeTruncKey, InKey, CastKey, ListSetKey)):
             # An aggregate's row-level expression source — column
             # leaves anchor recursively through this scope, so join
             # registration and derived expansion apply per leaf.

@@ -8,7 +8,6 @@ import re
 
 import pytest
 
-from slayer.core.formula import ALL_TRANSFORMS
 from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
@@ -21,8 +20,9 @@ from tests._dev1846_fixtures import (
     month_td,
 )
 from tests.test_law_guard_ratchet import DEFERRAL_CLASSIFIER
+import slayer.core.enums
 
-RULED_OPS = sorted(ALL_TRANSFORMS - {"first", "last"})
+RULED_OPS = sorted(slayer.core.enums.ALL_TRANSFORMS - {"first", "last"})
 SHIFT_CASES = [
     ("time_shift", "time_shift(weight, -1)", "weight"),
     ("change", "change(weight)", "weight"),

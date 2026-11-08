@@ -14,7 +14,7 @@ The examples use `contractors(id, team, skills ARRAY<TEXT>, required ARRAY<TEXT>
 
 ### Requirement: contains tests list membership
 
-When its first argument is a list, `contains(L, x)` SHALL be TRUE when `x` is an element of `L` and FALSE otherwise. It SHALL be NULL only when `L` or `x` is NULL. A first argument that is not a list SHALL be a typed plan-time error naming `LIKE` as the substring test.
+When its first argument is a list, `contains(L, x)` SHALL be TRUE when `x` is an element of `L` and FALSE otherwise. It SHALL be NULL only when `L` or `x` is NULL. When the first argument is `TEXT`, `contains` SHALL keep its substring meaning.
 
 #### Scenario: Membership
 - **WHEN** a dimension is `contains(skills, 'go')`
@@ -28,13 +28,9 @@ When its first argument is a list, `contains(L, x)` SHALL be TRUE when `x` is an
 - **WHEN** a query measures `count(*)` with the filter `NOT contains(skills, 'go')`
 - **THEN** it returns 2 (Bob and Cid)
 
-#### Scenario: contains on text
+#### Scenario: The string meaning is unchanged
 - **WHEN** a filter is `contains(team, 'A')` on the `TEXT` column `team`
-- **THEN** the query fails at plan time with a typed error naming `LIKE`
-
-#### Scenario: A two-list function given a non-list
-- **WHEN** a filter is `contains_any(team, ['A'])` on the `TEXT` column `team`
-- **THEN** the query fails at plan time with a typed error naming `team` as not a list and naming `LIKE`
+- **THEN** it keeps Ann and Bob
 
 ### Requirement: contains_any and contains_all compare two lists
 
@@ -62,15 +58,19 @@ When its first argument is a list, `contains(L, x)` SHALL be TRUE when `x` is an
 
 ### Requirement: length counts a list's elements
 
-When its argument is a list, `length(L)` SHALL return the number of non-NULL elements, 0 for an empty list and NULL for a NULL list. When the argument is `TEXT`, `length` SHALL keep its character-count meaning. A BigQuery NULL list reads as an empty list because BigQuery stores it as one.
+When its argument is a list, `length(L)` SHALL return the size of its element set — the number of distinct non-NULL elements — 0 for an empty list and NULL for a NULL list; the count with repeats is `count(L.value)`. When the argument is `TEXT`, `length` SHALL keep its character-count meaning. A BigQuery or ClickHouse NULL list reads as an empty list.
 
 #### Scenario: Element counts
 - **WHEN** a dimension is `length(skills)`
-- **THEN** it is 3 for Ann, 1 for Bob, 0 for Cid, NULL for Dee and 1 for Eve
+- **THEN** it is 2 for Ann, 1 for Bob, 0 for Cid, NULL for Dee and 1 for Eve
+
+#### Scenario: Repeats are counted through the elements
+- **WHEN** a query on `contractors` has the dimensions `id` and `length(skills)` and the measure `count(skills.*)`
+- **THEN** Ann's row carries 2 and 3
 
 ### Requirement: Array literals and list variables
 
-A bracketed list of literals `['go', 'sql']` SHALL be a list-valued expression, accepted wherever a list is accepted and rejected with a typed error elsewhere (for example as a dimension, or as an operand of `=`). Its elements SHALL be non-NULL literals of one type family. `[]` SHALL be accepted where the other operand gives it an element type, and rejected where nothing does. A `{variable}` holding a list SHALL be accepted wherever an array literal is.
+A bracketed list of literals `['go', 'sql']` SHALL be a list-valued expression, accepted wherever a list is accepted and rejected with a typed error elsewhere (for example as an operand of `=` beside a scalar). Its elements SHALL be non-NULL literals of one type family. `[]` SHALL be accepted where the other operand gives it an element type, and rejected where nothing does. A `{variable}` holding a list SHALL be accepted wherever an array literal is.
 
 #### Scenario: NULL element in a literal
 - **WHEN** a filter is `contains_any(skills, ['go', NULL])`
@@ -82,36 +82,24 @@ A bracketed list of literals `['go', 'sql']` SHALL be a list-valued expression, 
 
 #### Scenario: A literal as a dimension
 - **WHEN** a dimension is `['go', 'sql']`
-- **THEN** the query fails with a typed error naming the list type
+- **THEN** every row carries `['go', 'sql']`
 
 ### Requirement: Arguments match the element type
 
-The value `x` of `contains(L, x)` and the elements of `M` SHALL belong to the type family of `L`'s elements: numbers (`INT`, `DOUBLE`), times (`DATE`, `TIMESTAMP`), `TEXT` or `BOOLEAN`. Against a numeric element type, a string literal that reads as a number SHALL be converted to that number at plan time. Any other mismatch — including a string literal that does not read as a number, or a `TEXT` column or expression, against numeric elements — SHALL be a typed plan-time error naming the function and both types. A list of one numeric type SHALL compare with a value or list of the other.
+The value `x` of `contains(L, x)` and the elements of `M` SHALL belong to the type family of `L`'s elements. `TEXT` against a numeric element type SHALL follow the mixed-type coercion rule (a literal is converted at plan time, a column is read as a number). Any other mismatch SHALL be a typed plan-time error naming the function and both types.
 
 #### Scenario: A numeric list and a text literal
 - **WHEN** a filter is `contains(scores, '5')` on `scores ARRAY<INT>`
 - **THEN** it is evaluated as `contains(scores, 5)`
 
-#### Scenario: A numeric list and a non-numeric text literal
-- **WHEN** a filter is `contains(scores, 'five')` on `scores ARRAY<INT>`
-- **THEN** the query fails at plan time with a typed error naming `contains`, `INT` and `TEXT`
-
-#### Scenario: A numeric list and a text column
-- **WHEN** a filter is `contains(scores, team)` on `scores ARRAY<INT>` and the `TEXT` column `team`
-- **THEN** the query fails at plan time with a typed error naming `contains`, `INT` and `TEXT`
-
-#### Scenario: Mixed numeric types
-- **WHEN** on `scores ARRAY<INT>` holding `[2, 3]` and `prices ARRAY<DOUBLE>` holding `[2.0]`, filters are `contains(scores, 2.0)` and `contains_any(scores, prices)`
-- **THEN** each keeps the row, on every database with native lists
-
 #### Scenario: Incompatible types
-- **WHEN** a filter is `contains(skills, 5)`
-- **THEN** the query fails with a typed error naming `contains`, `TEXT` and `INT`
+- **WHEN** a filter is `contains(skills, DATE '2025-01-01')`
+- **THEN** the query fails with a typed error naming `contains`, `TEXT` and `DATE`
 
 ### Requirement: One meaning on every database with native lists
 
 Every list function SHALL return the same value for the same inputs on Postgres, DuckDB, BigQuery, Snowflake, ClickHouse and Trino, and SHALL be usable in filters, dimensions and formulas like any other scalar function. Each function SHALL be verified by execution on DuckDB and on every live backend suite, and by emission on every Tier-1 dialect.
 
 #### Scenario: Every list function is covered on every dialect
-- **WHEN** each list function is applied to `skills` on every database with native lists
-- **THEN** it returns the values stated above when executed on DuckDB and Postgres, is refused at plan time on SQLite, and renders a statement for every other native-list database
+- **WHEN** a list function is in the Mode-B library
+- **THEN** the library matrix holds cases for it that execute on DuckDB, are refused at plan time on SQLite, and emit on every Tier-1 dialect

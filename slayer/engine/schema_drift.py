@@ -55,18 +55,17 @@ from slayer.core.join_search import reachable
 from slayer.core.join_walker import OrientedJoin, resolve_hop, walk
 from slayer.sql.column_expansion import resolve_ref_target
 from slayer.engine.dimension_routing import short_form_route_or_none
-from slayer.engine.syntax import (
+from slayer.core.syntax import (
     AggCall,
     DottedRef,
     ParsedExpr,
     Ref,
     StarSource,
     parse_expr,
-    parse_filter_expr,
     walk_parsed_refs,
 )
 from slayer.sql import sqlite_introspect
-from slayer.sql.client import SqlClient, adapt_client, build_sql_model_trial_query
+from slayer.sql.client import SqlClient, adapt_client, render_type_probe
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.reflection import ResultColumnType
 from slayer.sql.engine_factory import ClientCacheKey, client_cache_key
@@ -322,9 +321,11 @@ def data_type_bucket(dt: DataType) -> str:
     return str(dt)
 
 
-def _type_buckets_conflict(*, persisted: DataType, live: DataType) -> bool:
-    """True when persisted vs live types are incompatible; opacity is one-way (live-opaque + operable-persisted conflicts, persisted-opaque never does); a non-list over a live list is a re-type finding, never a conflict."""
+def _type_buckets_conflict(*, persisted: DataType, live: DataType, temporal_text: bool) -> bool:
+    """True when persisted vs live types are incompatible; opacity is one-way (live-opaque + operable-persisted conflicts, persisted-opaque never does); a non-list over a live list is a re-type finding, never a conflict; ``temporal_text``: a DATE/TIMESTAMP over live TEXT is the dialect's own date storage."""
     if live is DataType.ARRAY and persisted is not DataType.ARRAY:
+        return False
+    if temporal_text and live is DataType.TEXT and persisted in (DataType.DATE, DataType.TIMESTAMP):
         return False
     if live.is_opaque:
         return not persisted.is_opaque
@@ -333,12 +334,14 @@ def _type_buckets_conflict(*, persisted: DataType, live: DataType) -> bool:
     return data_type_bucket(persisted) != data_type_bucket(live)
 
 
-def _retyped(*, persisted: DataType, live: DataType) -> bool:
+def _retyped(*, persisted: DataType, live: DataType, temporal_text: bool) -> bool:
     return (live is DataType.ARRAY and persisted is not DataType.ARRAY) or _type_buckets_conflict(
-        persisted=persisted, live=live)
+        persisted=persisted, live=live, temporal_text=temporal_text)
 
 
-def retype_findings(*, model: SlayerModel, live_table: LiveTable | None) -> list[RetypeFinding]:
+def retype_findings(
+    *, model: SlayerModel, live_table: LiveTable | None, temporal_text: bool = False,
+) -> list[RetypeFinding]:
     """One finding per stored base column whose live column's type conflicts; a live list re-ingests."""
     if live_table is None:
         return []
@@ -348,7 +351,7 @@ def retype_findings(*, model: SlayerModel, live_table: LiveTable | None) -> list
             continue
         name = physical_column_sql(sql=col.sql, name=col.name)
         live = live_table.columns.get(name)
-        if live is not None and _retyped(persisted=col.type, live=live):
+        if live is not None and _retyped(persisted=col.type, live=live, temporal_text=temporal_text):
             out.append(RetypeFinding.of(
                 model=model, column=col, live_type=live, live_db_type=live_table.db_types.get(name),
                 remedy_kind="reingest" if live is DataType.ARRAY else "set_type",
@@ -357,7 +360,7 @@ def retype_findings(*, model: SlayerModel, live_table: LiveTable | None) -> list
 
 
 def sql_model_retype_findings(
-    *, model: SlayerModel, live_columns: dict[str, ResultColumnType] | None,
+    *, model: SlayerModel, live_columns: dict[str, ResultColumnType] | None, temporal_text: bool = False,
 ) -> list[RetypeFinding]:
     """One finding per column of a sql-mode model whose result column's type conflicts."""
     out: list[RetypeFinding] = []
@@ -365,9 +368,10 @@ def sql_model_retype_findings(
         live = (live_columns or {}).get(col.name)
         if live is None and col.sql is not None:
             live = (live_columns or {}).get(col.sql.strip())
-        if live is not None and _retyped(persisted=col.type, live=live.type):
+        if live is not None and _retyped(persisted=col.type, live=live.type, temporal_text=temporal_text):
             out.append(RetypeFinding.of(
-                model=model, column=col, live_type=live.type, live_db_type=live.db_type, remedy_kind="set_type",
+                model=model, column=col, live_type=live.type, live_db_type=live.db_type,
+                remedy_kind="reingest" if live.type is DataType.ARRAY else "set_type",
             ))
     return out
 
@@ -387,7 +391,7 @@ def _column_is_base(col_sql: str | None) -> bool:
 
 
 def _diff_sql_table_columns(
-    *, model: SlayerModel, live_table: LiveTable
+    *, model: SlayerModel, live_table: LiveTable,
 ) -> tuple[list[str], list[DeleteReason]]:
     """Per-column diff of a sql_table-mode model against live columns."""
     dropped: list[str] = []
@@ -475,9 +479,7 @@ def diff_sql_table_model(
             {c.name for c in model.columns},
         )
 
-    dropped_cols, col_reasons = _diff_sql_table_columns(
-        model=model, live_table=live_table
-    )
+    dropped_cols, col_reasons = _diff_sql_table_columns(model=model, live_table=live_table)
     dropped_joins, join_reasons = _diff_sql_table_joins(
         model=model,
         live_table=live_table,
@@ -652,7 +654,7 @@ def _filter_refs_dsl(filter_str: str) -> list[str]:
     """Column/measure references in a DSL (Mode B) filter, in expression order
     (deduplicated); ``[]`` on parse failure."""
     try:
-        parsed = parse_filter_expr(filter_str)
+        parsed = parse_expr(filter_str)
     except Exception:
         return []
     return list(dict.fromkeys(_walk_ref_names(parsed)))
@@ -956,7 +958,7 @@ def _stage_refs(stage: SlayerQuery) -> list[str]:
         for ref in _measure_formula_refs(formula)
     ]
     refs += [getattr(d, "full_name", None) or str(d) for d in stage.dimensions or []]
-    refs += [td.dimension.full_name for td in stage.time_dimensions or []]
+    refs += [ref for td in stage.time_dimensions or [] for ref in _measure_formula_refs(td.dimension)]
     # Mode-B (DSL) filters: use the DSL parser so aggregations/transforms surface.
     refs += [col for f in stage.filters or [] for col in _filter_refs_dsl(f)]
     return refs
@@ -1793,6 +1795,12 @@ class _SqlTrial(BaseModel):
     live_columns: dict[str, ResultColumnType] | None
     invalid_sql: bool
 
+    @classmethod
+    def of(cls, types: "ingestion.SqlResultTypes | None", *, invalid_sql: bool) -> "_SqlTrial":
+        if types is None:
+            return cls(live_columns=None, invalid_sql=invalid_sql)
+        return cls(live_columns=types.result_column_types(), invalid_sql=invalid_sql)
+
 
 class DriftSnapshot(BaseModel):
     """One datasource's reusable live-schema facts for query-time attribution."""
@@ -1944,13 +1952,12 @@ async def _live_columns_for_sql_model(
     *,
     model: SlayerModel,
     client: SqlClient,
-) -> dict[str, ResultColumnType] | None:
-    """Trial-execute ``model.sql`` with a 0-row guard; return probed types, or None on failure."""
+) -> ingestion.SqlResultTypes | None:
+    """Trial-execute ``model.sql`` with a 0-row guard; return its result types, or None on failure."""
     if not model.sql:
         return None
-    # Trailing ``;`` stripped before wrapping, else its syntax error looks like drift.
     try:
-        types = await client.get_result_column_types(build_sql_model_trial_query(model.sql))
+        return await ingestion.sql_result_types(sql=model.sql, client=client)
     except Exception as exc:
         logger.info(
             "validate_models: trial-execute on %r failed: %s",
@@ -1958,7 +1965,6 @@ async def _live_columns_for_sql_model(
             exc,
         )
         return None
-    return types
 
 
 def _has_star_projection(parsed: exp.Expression) -> bool:
@@ -1972,23 +1978,25 @@ def _has_star_projection(parsed: exp.Expression) -> bool:
     return False
 
 
-def _scope_table_sources(*, scope: Scope, dialect: str) -> dict[str, str]:
-    """Alias/name → rendered bare table for one scope's physical tables (CTE/derived excluded)."""
-    out: dict[str, str] = {}
+SourceRefs = dict[exp.Table, set[exp.Column]]
+
+
+def _scope_table_sources(*, scope: Scope) -> dict[str, exp.Table]:
+    """Alias/name → bare table for one scope's physical tables (CTE/derived excluded)."""
+    out: dict[str, exp.Table] = {}
     for name, source in scope.sources.items():
         if isinstance(source, exp.Table) and source.name:
             bare = source.copy()
             bare.set("alias", None)
-            out[name] = bare.sql(dialect=dialect)
+            out[name] = bare
     return out
 
 
 def _add_using_join_columns(
     *,
     scope: Scope,
-    local_tables: dict[str, str],
-    refs: dict[str, set[str]],
-    dialect: str,
+    local_tables: dict[str, exp.Table],
+    refs: SourceRefs,
 ) -> bool:
     """Attribute ``JOIN .. USING (k)`` keys to the join's operand tables (USING idents aren't Columns, so the walk misses them); True when an operand is a CTE/derived table that can't be verified."""
     joins = scope.expression.args.get("joins") or []
@@ -2004,37 +2012,33 @@ def _add_using_join_columns(
         if not using:
             continue
         physical = [
-            rendered
+            table
             for op in operands
             if isinstance(op, exp.Table)
-            and (rendered := local_tables.get(op.alias_or_name)) is not None
+            and (table := local_tables.get(op.alias_or_name)) is not None
         ]
         if len(physical) < len(operands):
             cannot_verify = True
-        rendered_keys = [
-            exp.Column(this=ident.copy()).sql(dialect=dialect)
-            for ident in using
-            if isinstance(ident, exp.Identifier)
-        ]
+        keys = [exp.Column(this=ident.copy()) for ident in using if isinstance(ident, exp.Identifier)]
         for table in physical:
-            refs[table].update(rendered_keys)
+            refs[table].update(keys)
     return cannot_verify
 
 
 def _attribute_qualified_ref(
     *,
     qualifier: str,
-    rendered: str,
+    column: exp.Column,
     scope: Scope,
-    tables_by_scope: dict[int, dict[str, str]],
-    refs: dict[str, set[str]],
+    tables_by_scope: dict[int, dict[str, exp.Table]],
+    refs: SourceRefs,
 ) -> bool:
     """Attribute ``qual.col`` in the nearest enclosing scope defining the qualifier; True ⇒ derived/CTE/unknown qualifier (not attributable)."""
     s = scope
     while s is not None:
         target = (tables_by_scope.get(id(s)) or {}).get(qualifier)
         if target is not None:
-            refs[target].add(rendered)
+            refs[target].add(column)
             return False
         if qualifier in s.sources:  # CTE / derived-table alias
             return True
@@ -2044,10 +2048,10 @@ def _attribute_qualified_ref(
 
 def _attribute_bare_ref(
     *,
-    rendered: str,
+    column: exp.Column,
     scope: Scope,
-    tables_by_scope: dict[int, dict[str, str]],
-    refs: dict[str, set[str]],
+    tables_by_scope: dict[int, dict[str, exp.Table]],
+    refs: SourceRefs,
 ) -> bool | None:
     """Attribute a bare column in the nearest enclosing scope with sources; True ⇒ skippable derived ref, None ⇒ ambiguous over several sources."""
     s = scope
@@ -2060,17 +2064,16 @@ def _attribute_bare_ref(
     local = tables_by_scope.get(id(s)) or {}
     if not local:
         return True  # the single source is a CTE / derived table
-    refs[next(iter(local.values()))].add(rendered)
+    refs[next(iter(local.values()))].add(column)
     return False
 
 
 def _attribute_scope_columns(
     *,
     scope: Scope,
-    tables_by_scope: dict[int, dict[str, str]],
-    refs: dict[str, set[str]],
+    tables_by_scope: dict[int, dict[str, exp.Table]],
+    refs: SourceRefs,
     seen: set[int],
-    dialect: str,
 ) -> bool | None:
     """Attribute every yet-unseen column ref of one scope; ``seen`` (node ids) processes each ref once at its innermost scope, None when a bare column can't be attributed."""
     derived = False
@@ -2078,15 +2081,15 @@ def _attribute_scope_columns(
         if id(col) in seen or not isinstance(col.this, exp.Identifier):
             continue
         seen.add(id(col))
-        rendered = exp.Column(this=col.this.copy()).sql(dialect=dialect)
+        column = exp.Column(this=col.this.copy())
         if col.table:
             verdict = _attribute_qualified_ref(
-                qualifier=col.table, rendered=rendered, scope=scope,
+                qualifier=col.table, column=column, scope=scope,
                 tables_by_scope=tables_by_scope, refs=refs,
             )
         else:
             verdict = _attribute_bare_ref(
-                rendered=rendered, scope=scope,
+                column=column, scope=scope,
                 tables_by_scope=tables_by_scope, refs=refs,
             )
         if verdict is None:
@@ -2095,7 +2098,7 @@ def _attribute_scope_columns(
     return derived
 
 
-def _sql_model_source_refs(*, sql: str, dialect: str) -> "dict[str, set[str]] | None":
+def _sql_model_source_refs(*, sql: str, dialect: str) -> SourceRefs | None:
     """Map each source table of a sql-mode model to the columns it references (incl. JOIN USING keys); None when unparseable, a bare column isn't attributable, or a CTE/derived ref coexists with ``*``."""
     try:
         parsed = sqlglot.parse_one(sql, read=dialect)
@@ -2104,23 +2107,20 @@ def _sql_model_source_refs(*, sql: str, dialect: str) -> "dict[str, set[str]] | 
         return None
     if not scopes:
         return None
-    refs: dict[str, set[str]] = {}
-    tables_by_scope: dict[int, dict[str, str]] = {}
+    refs: SourceRefs = {}
+    tables_by_scope: dict[int, dict[str, exp.Table]] = {}
     has_derived_ref = False
     for scope in scopes:
-        local = _scope_table_sources(scope=scope, dialect=dialect)
+        local = _scope_table_sources(scope=scope)
         tables_by_scope[id(scope)] = local
-        for rendered in local.values():
-            refs.setdefault(rendered, set())
-        if _add_using_join_columns(
-            scope=scope, local_tables=local, refs=refs, dialect=dialect
-        ):
+        for table in local.values():
+            refs.setdefault(table, set())
+        if _add_using_join_columns(scope=scope, local_tables=local, refs=refs):
             has_derived_ref = True
     seen: set[int] = set()
     for scope in scopes:  # innermost first — a bare column binds innermost
         derived = _attribute_scope_columns(
-            scope=scope, tables_by_scope=tables_by_scope, refs=refs,
-            seen=seen, dialect=dialect,
+            scope=scope, tables_by_scope=tables_by_scope, refs=refs, seen=seen,
         )
         if derived is None:
             return None
@@ -2135,16 +2135,17 @@ async def _source_tables_resolve(
     *, model: SlayerModel, client: SqlClient
 ) -> bool:
     """Whether every table AND column in ``model.sql`` accepts a 0-row probe; True ⇒ the SQL itself is broken (not drift), any probe failure keeps the drift classification."""
-    dialect = dialect_for_ds_type(client.datasource.type).sqlglot_name
-    refs = _sql_model_source_refs(sql=model.sql or "", dialect=dialect)
+    dialect = dialect_for_ds_type(client.datasource.type)
+    refs = _sql_model_source_refs(sql=model.sql or "", dialect=dialect.sqlglot_name)
     if refs is None:
         return False
     for table, columns in refs.items():
-        select_list = ", ".join(sorted(columns)) or "*"
+        projection = sorted(columns, key=lambda c: c.sql(dialect=dialect.sqlglot_name)) or [exp.Star()]
+        probe = exp.select(*(c.copy() for c in projection)).from_(
+            exp.alias_(table.copy(), "_sd_probe", table=True),
+        ).where(exp.EQ(this=exp.Literal.number(1), expression=exp.Literal.number(0)))
         try:
-            await client.get_result_column_types(
-                f"SELECT {select_list} FROM {table} AS _sd_probe WHERE 1=0"
-            )
+            await client.get_result_column_types(render_type_probe(probe, dialect=dialect))
         except Exception:
             return False
     return True
@@ -2318,10 +2319,13 @@ async def _collect_sql_table_diffs(
         # hand --force-clean a whole tenant).
         logger.warning("validate_models: skipping drift verdict: %s", exc)
         return {}
+    temporal_text = dialect_for_ds_type(datasource.type).temporal_text_compatible
     if findings is not None:
         for m in sql_table_models:
             live = _resolve_live_table(sql_table=m.sql_table or "", live_tables=live_tables)
-            findings.extend(retype_findings(model=m, live_table=live if live is not None and live.readable else None))
+            findings.extend(retype_findings(
+                model=m, live_table=live if live is not None and live.readable else None, temporal_text=temporal_text,
+            ))
         findings.extend(await _sqlite_probe_drifts_for_models(
             datasource=datasource, client=client, sql_table_models=sql_table_models, live_tables=live_tables,
         ))
@@ -2340,7 +2344,7 @@ async def _sql_trials(
 ) -> dict[str, _SqlTrial]:
     """Trial results keyed by SQL text: one trial per distinct text not already in ``snapshot``."""
 
-    async def _invalid_sql(model: SlayerModel, live_cols: dict[str, ResultColumnType] | None) -> bool:
+    async def _invalid_sql(model: SlayerModel, live_cols: ingestion.SqlResultTypes | None) -> bool:
         return live_cols is None and await _source_tables_resolve(model=model, client=client)
 
     trials: dict[str, _SqlTrial] = dict(snapshot.sql_trials) if snapshot is not None else {}
@@ -2358,7 +2362,7 @@ async def _sql_trials(
             raise
     flags = await asyncio.gather(*map(_invalid_sql, pending.values(), live))
     for sql_text, live_cols, invalid_sql in zip(pending, live, flags):
-        trials[sql_text] = _SqlTrial(live_columns=live_cols, invalid_sql=invalid_sql)
+        trials[sql_text] = _SqlTrial.of(live_cols, invalid_sql=invalid_sql)
         if snapshot is not None:
             snapshot.sql_trials[sql_text] = trials[sql_text]
     return trials
@@ -2388,7 +2392,10 @@ async def _collect_sql_diffs(
             model=model, live_columns=trial.live_columns, invalid_sql=trial.invalid_sql,
         )
         if findings is not None and compare_types:
-            findings.extend(sql_model_retype_findings(model=model, live_columns=trial.live_columns))
+            findings.extend(sql_model_retype_findings(
+                model=model, live_columns=trial.live_columns,
+                temporal_text=dialect_for_ds_type(datasource.type).temporal_text_compatible,
+            ))
     return out
 
 

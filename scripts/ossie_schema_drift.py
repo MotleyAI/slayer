@@ -5,6 +5,7 @@ Exit 0 = identical, 1 = schema drifted (diff printed), 2 = upstream fetch failed
 """
 
 import difflib
+import http.client
 import json
 import sys
 import urllib.error
@@ -38,7 +39,8 @@ def _get_json(url: str) -> Any:
         return json.loads(response.read().decode("utf-8"))
 
 
-_FETCH_ERRORS = (urllib.error.URLError, TimeoutError, json.JSONDecodeError)
+# OSError: URL, timeout and connection errors; ValueError: bad JSON or UTF-8; HTTPException: a truncated body.
+_FETCH_ERRORS = (OSError, ValueError, http.client.HTTPException)
 
 
 def _upstream_sha() -> str:

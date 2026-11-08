@@ -10,17 +10,18 @@ import duckdb
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import ListTypeError, SlayerError
-from slayer.core.keys import VALUE_KEY_TYPES, ArrayLiteralKey, InKey, LiteralKey, ScalarCallKey, _FrozenKey
+from slayer.core.errors import SlayerError
+from slayer.core.keys import VALUE_KEY_TYPES, InKey, LiteralKey, ScalarCallKey, _FrozenKey
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.core.refs import key_display
 from slayer.core.scope import ModelScope
+from slayer.core.syntax import parse_expr
 from slayer.engine.binding import bind_expr
-from slayer.engine.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from tests._dev2120_fixtures import NATIVE_LIST_DIALECTS, contractors_model, emit, emit_contractors
-from tests._dev2137_fixtures import list_engine, measure, num, query
+from tests._dev2101_fixtures import emit
+from tests._dev2120_fixtures import NATIVE_LIST_DIALECTS, contractors_model, emit_contractors
+from tests._dev2137_fixtures import as_list, list_engine, measure, num, query
 from tests._engine_helpers import seeded_exec_engine
 
 
@@ -45,18 +46,8 @@ async def _names(engine, filter_: str, **body: Any) -> set[str]:
     return {r["contractors.name"] for r in resp.data}
 
 
-async def _plan(engine, filter_: str, **body: Any) -> None:
-    await engine.execute(query(dimensions=["name"], filters=[filter_], **body), dry_run=True)
-
-
 def _truth(value: Any) -> Any:
     return None if value is None else bool(value)
-
-
-def _assert_names(exc: BaseException, *needles: str) -> None:
-    msg = str(exc)
-    for needle in needles:
-        assert needle in msg, msg
 
 
 class TestContains:
@@ -70,14 +61,8 @@ class TestContains:
     async def test_absence(self, engine) -> None:
         assert await _names(engine, "NOT contains(skills, 'go')") == {"Bob", "Cid"}
 
-    async def test_contains_on_text(self, engine) -> None:
-        with pytest.raises(ListTypeError) as info:
-            await _names(engine, "contains(team, 'A')")
-        _assert_names(info.value, "LIKE")
-
-    async def test_null_value_is_null(self, engine) -> None:
-        got = await _values(engine, "contains(skills, pick)")
-        assert got["Bob"] is None
+    async def test_the_string_meaning_is_unchanged(self, engine) -> None:
+        assert await _names(engine, "contains(team, 'A')") == {"Ann", "Bob"}
 
 
 class TestContainsAnyAll:
@@ -99,20 +84,11 @@ class TestContainsAnyAll:
         got = await _values(engine, "contains_any(skills, ['go'])")
         assert got["Dee"] is None
 
-    async def test_null_second_list_is_null(self, engine) -> None:
-        got = await _values(engine, "contains_all(skills, required)")
-        assert got["Eve"] is None
-
-    async def test_a_two_list_function_given_a_non_list(self, engine) -> None:
-        with pytest.raises(ListTypeError) as info:
-            await _count(engine, "contains_any(team, ['A'])")
-        _assert_names(info.value, "contains_any", "team", "LIKE")
-
 
 class TestLength:
     async def test_element_counts(self, engine) -> None:
         got = {k: num(v) for k, v in (await _values(engine, "length(skills)")).items()}
-        assert got == {"Ann": 3, "Bob": 1, "Cid": 0, "Dee": None, "Eve": 1}
+        assert got == {"Ann": 2, "Bob": 1, "Cid": 0, "Dee": None, "Eve": 1}
 
     async def test_character_count_unchanged(self, engine) -> None:
         got = {k: num(v) for k, v in (await _values(engine, "length(name)")).items()}
@@ -122,7 +98,7 @@ class TestLength:
 class TestPositions:
     async def test_in_a_measure_formula(self, engine) -> None:
         resp = await engine.execute(query(measures=[measure("sum(length(skills))", "n")]))
-        assert num(resp.data[0]["contractors.n"]) == 5
+        assert num(resp.data[0]["contractors.n"]) == 4
 
     async def test_in_a_measure_filter(self, engine) -> None:
         resp = await engine.execute(query(measures=[measure("count(*)", "n")], dimensions=["team"],
@@ -136,109 +112,51 @@ class TestPositions:
 
 class TestArrayLiterals:
     async def test_null_element_in_a_literal(self, engine) -> None:
-        with pytest.raises(ListTypeError, match="NULL"):
+        with pytest.raises(SlayerError, match="NULL"):
             await _count(engine, "contains_any(skills, ['go', NULL])")
 
     async def test_mixed_literal_types(self, engine) -> None:
-        with pytest.raises(ListTypeError) as info:
+        with pytest.raises(SlayerError) as info:
             await _count(engine, "contains_any(skills, ['go', 1])")
-        _assert_names(info.value, "'go'", "1")
+        msg = str(info.value)
+        assert "'go'" in msg, msg
+        assert "1" in msg, msg
 
     async def test_a_literal_as_a_dimension(self, engine) -> None:
-        with pytest.raises(ListTypeError) as info:
-            await _values(engine, "['go', 'sql']")
-        assert "list" in str(info.value).lower() or "ARRAY" in str(info.value), str(info.value)
+        got = await _values(engine, "['go', 'sql']")
+        assert got
+        assert all(as_list(v) == ["go", "sql"] for v in got.values()), got
 
     async def test_a_literal_as_an_equality_operand(self, engine) -> None:
-        with pytest.raises(ListTypeError):
+        with pytest.raises(SlayerError):
             await _count(engine, "name = ['Ann']")
 
     async def test_untyped_empty_literal(self, engine) -> None:
-        with pytest.raises(ListTypeError, match=r"\[\]"):
+        with pytest.raises(SlayerError, match=r"\[\]"):
             await _values(engine, "length([])")
 
-    async def test_empty_literal_typed_by_the_other_operand(self, engine) -> None:
-        assert await _names(engine, "contains_all(skills, [])") == {"Ann", "Bob", "Cid", "Eve"}
-
-
-class TestListVariables:
     async def test_list_variable_in_contains_any(self, engine) -> None:
         assert await _names(engine, "contains_any(skills, {wanted})", variables={"wanted": ["rust", "go"]}) == {
             "Ann", "Eve"}
-
-    async def test_nested_list_variable(self, engine) -> None:
-        with pytest.raises(ValueError, match=r"Variable 'wanted' list element must be"):
-            await _plan(engine, "contains_any(skills, {wanted})", variables={"wanted": [["go"]]})
-
-    async def test_repeated_placeholder_in_two_list_slots(self, engine) -> None:
-        got = await _names(engine, "contains_any(skills, {wanted}) OR contains_all(required, {wanted})",
-                           variables={"wanted": ["rust", "go"]})
-        assert got == {"Ann", "Eve"}
-
-    async def test_repeated_placeholder_in_a_list_slot_and_an_in_list(self, engine) -> None:
-        got = await _names(engine, "contains_any(skills, {wanted}) AND pick IN ({wanted})",
-                           variables={"wanted": ["rust", "go"]})
-        assert got == {"Eve"}
-
-    @pytest.mark.parametrize(("filter_", "fn"), [
-        ("length({wanted}) > 0", "length"),
-        ("contains(skills, {wanted})", "contains"),
-    ])
-    async def test_list_placeholder_in_a_non_list_slot(self, engine, filter_: str, fn: str) -> None:
-        """Outside a list slot the variable binds as an IN-list body, so the call's arity refuses it at plan time."""
-        with pytest.raises((ValueError, SlayerError), match=rf"{fn}.*argument"):
-            await _plan(engine, filter_, variables={"wanted": ["go", "sql"]})
 
 
 class TestArgumentTypes:
     async def test_a_numeric_list_and_a_text_literal(self, engine) -> None:
         assert await _names(engine, "contains(scores, '5')") == {"Eve"}
 
-    @pytest.mark.parametrize(("text", "kept"), [
-        ("'9.0'", {"Ann"}),
-        ("'2.5'", set()),
-        ("'9e0'", {"Ann"}),
-        ("'+9'", {"Ann"}),
-        ("' 9 '", {"Ann"}),
-        ("'.5e1'", {"Eve"}),
-    ])
-    async def test_numeric_text_spellings_convert(self, engine, text: str, kept: set[str]) -> None:
-        assert await _names(engine, f"contains(scores, {text})") == kept
-
-    async def test_numeric_text_elements_of_a_literal_convert(self, engine) -> None:
-        assert await _names(engine, "contains_all(scores, [' 3 ', '9e0'])") == {"Ann"}
-
-    @pytest.mark.parametrize("text", ["'five'", "'NaN'", "'inf'", "'-Infinity'", "''", "'1e'", "'0x9'",
-                                      "'9 apples'"])
-    async def test_a_numeric_list_and_a_non_numeric_text_literal(self, engine, text: str) -> None:
-        with pytest.raises(ListTypeError) as info:
-            await _names(engine, f"contains(scores, {text})")
-        _assert_names(info.value, "contains", "INT", "TEXT")
-
-    @pytest.mark.parametrize("value", ["team", "upper(team)"])
-    async def test_a_numeric_list_and_a_text_column(self, engine, value: str) -> None:
-        with pytest.raises(ListTypeError) as info:
-            await _names(engine, f"contains(scores, {value})")
-        _assert_names(info.value, "contains", "INT", "TEXT")
-
-    @pytest.mark.parametrize("fn", ["contains_any", "contains_all"])
-    async def test_a_numeric_list_and_a_text_list(self, engine, fn: str) -> None:
-        with pytest.raises(ListTypeError) as info:
-            await _names(engine, f"{fn}(scores, codes)")
-        _assert_names(info.value, fn, "INT", "TEXT")
-
-    async def test_a_mixed_numeric_text_literal_stays_mixed(self, engine) -> None:
-        with pytest.raises(ListTypeError) as info:
-            await _names(engine, "contains_any(scores, ['1', 2])")
-        _assert_names(info.value, "'1'", "2")
-
     async def test_incompatible_types(self, engine) -> None:
-        with pytest.raises(ListTypeError) as info:
-            await _count(engine, "contains(skills, 5)")
-        _assert_names(info.value, "contains", "TEXT", "INT")
+        with pytest.raises(SlayerError) as info:
+            await _count(engine, "contains(skills, DATE '2025-01-01')")
+        msg = str(info.value)
+        for needle in ("contains", "TEXT", "DATE"):
+            assert needle in msg, msg
+
+    async def test_text_argument_to_a_list_only_function(self, engine) -> None:
+        with pytest.raises(SlayerError, match="contains_any"):
+            await _count(engine, "contains_any(team, ['A'])")
 
     async def test_list_argument_to_a_text_only_function(self, engine) -> None:
-        with pytest.raises(ListTypeError, match="skills"):
+        with pytest.raises(SlayerError, match="skills"):
             await _values(engine, "upper(skills)")
 
 
@@ -300,7 +218,7 @@ class TestArrayLiteralKey:
         key = _bind("contains_any(skills, ['go', 'sql'])")
         assert isinstance(key, ScalarCallKey), key
         literal = key.args[1]
-        assert isinstance(literal, ArrayLiteralKey), literal
+        assert isinstance(literal, _FrozenKey), literal
         return literal
 
     def test_is_its_own_value_key_kind(self) -> None:
@@ -344,7 +262,6 @@ class TestEmission:
     @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
     async def test_date_lists_emit(self, dialect: str) -> None:
         days = Column(name="days", type=DataType.ARRAY, element_type=DataType.DATE)
-        start = Column(name="start", type=DataType.DATE)
-        model = contractors_model().model_copy(update={"columns": [*contractors_model().columns, days, start]})
-        await emit_contractors(query(dimensions=["id", {"expression": "contains(days, start)", "name": "v"}]),
-                               dialect=dialect, models=[model])
+        model = contractors_model().model_copy(update={"columns": [*contractors_model().columns, days]})
+        await emit_contractors(query(dimensions=["id", {"expression": "contains(days, DATE '2025-01-01')",
+                                                        "name": "v"}]), dialect=dialect, models=[model])

@@ -217,7 +217,7 @@ def bundle1908() -> ResolvedSourceBundle:
 
 def signup_month_td() -> List[TimeDimension]:
     return [TimeDimension(
-        dimension=ColumnRef(name="customers.signup_at"),
+        dimension="customers.signup_at",
         granularity=TimeGranularity.MONTH)]
 
 

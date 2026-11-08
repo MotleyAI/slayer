@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import re
 
-import pydantic
 import pytest
 import sqlglot
 from sqlglot import exp
@@ -19,6 +18,7 @@ from slayer.core.enums import DataType
 from slayer.core.errors import (
     DistinctDimensionValuesError,
     PositionTypingError,
+    ScalarOperandTypeError,
     UnknownReferenceError,
 )
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
@@ -239,11 +239,19 @@ class TestOrderItemEntryPoint:
         assert item.column.name == "_expr_pending", item.column
         assert item.raw_formula == "change(amount:sum) / 2"
 
-    def test_composite_over_declared_aliases_still_rejected(self) -> None:
-        """No ``:`` and no func-style call, so it is not a formula candidate."""
-        with pytest.raises(pydantic.ValidationError) as ei:
-            OrderItem(column="rev / cnt", direction="desc")
-        assert "rev / cnt" in str(ei.value)
+    def test_composite_over_declared_aliases_is_an_expression(self) -> None:
+        item = OrderItem.model_validate({"column": "rev / cnt", "direction": "desc"})
+        assert item.column.name == "_expr_pending", item.column
+        assert item.raw_formula == "rev / cnt"
+
+    @pytest.mark.parametrize(("direction", "expected"), [("desc", ["paid", "open"]), ("asc", ["open", "paid"])])
+    async def test_composite_over_declared_aliases_sorts(self, exec_engine, direction, expected) -> None:
+        resp = await exec_engine.execute(SlayerQuery.model_validate({
+            "source_model": "orders", "dimensions": ["status"],
+            "measures": [{"formula": "sum(amount)", "name": "rev"}, {"formula": "count(*)", "name": "cnt"}],
+            "order": [{"column": "rev / cnt", "direction": direction}],
+        }))
+        assert [r["orders.status"] for r in resp.data] == expected
 
     def test_plain_column_and_dotted_ref_unaffected(self) -> None:
         assert OrderItem(column="status").column.name == "status"
@@ -252,18 +260,19 @@ class TestOrderItemEntryPoint:
         agg = OrderItem(column="amount:sum").column
         assert agg.name == "amount_sum"
 
-    def test_placeholder_survives_strip_source_model_prefix(self) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="amount:sum")],
-            order=[OrderItem(column="orders.amount:sum / orders.id:count", direction="desc")],
-        )
-        stripped = query.strip_source_model_prefix()
-        item = stripped.order[0]
-        assert item.column.name == "_expr_pending", item.column
-        assert item.raw_formula is not None
-        assert "orders." not in item.raw_formula, item.raw_formula
+    async def test_root_qualified_composite_order_equals_bare(self, exec_engine) -> None:
+        def query(order: str) -> SlayerQuery:
+            return SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                measures=[ModelMeasure(formula="amount:sum")],
+                order=[OrderItem.model_validate({"column": order, "direction": "desc"})],
+            )
+
+        qualified = await exec_engine.execute(query("orders.amount:sum / orders.id:count"))
+        bare = await exec_engine.execute(query("amount:sum / id:count"))
+        assert qualified.sql == bare.sql
+        assert qualified.data == bare.data
 
     async def test_real_column_named_like_placeholder_is_not_hijacked(
         self, tmp_path,
@@ -964,12 +973,13 @@ class TestStillGuarded:
         assert _outer_select_columns(sql) == ["orders.status", "orders._count"], sql
         _hidden_order_alias(sql)
 
-    @pytest.mark.parametrize("formula", [
-        "coalesce(amount:sum, id)",      # scalar call with a row-column arg
-        "coalesce(amount:sum, created_at)",  # ... and a time-dimension arg
+    @pytest.mark.parametrize(("formula", "error"), [
+        ("coalesce(amount:sum, id)", _ROW_OPERAND_REJECTED),  # scalar call with a row-column arg
+        # ... and a time-dimension arg, whose mismatched branch types are reported first
+        ("coalesce(amount:sum, created_at)", ScalarOperandTypeError),
     ])
     async def test_scalar_call_with_row_operand_raises_not_stringified(
-        self, engine, formula: str,
+        self, engine, formula: str, error: type[Exception],
     ) -> None:
         """A row-column operand inside a scalar call must raise, not be stringified."""
         query = SlayerQuery(
@@ -978,7 +988,7 @@ class TestStillGuarded:
             measures=[ModelMeasure(formula="*:count")],
             order=[OrderItem(column=formula, direction="desc")],
         )
-        with pytest.raises(_ROW_OPERAND_REJECTED):
+        with pytest.raises(error):
             await _sql(engine, query)
 
     async def test_arithmetic_with_row_operand_raises(self, engine) -> None:

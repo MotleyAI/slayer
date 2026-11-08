@@ -14,10 +14,10 @@ A Mode-B expression SHALL accept SQL `CASE … END` conditionals — searched
 (`CASE WHEN cond THEN val … [ELSE val] END`) and simple
 (`CASE operand WHEN val THEN val … [ELSE val] END`) — lowering them to nested
 `iif(cond, then, otherwise)` calls with `None` as the default otherwise. WHEN
-conditions SHALL accept SQL operator spellings (`=`, `<>`, `AND`/`OR`/`NOT`,
-`IS [NOT] NULL`, `[NOT] IN`, `[NOT] LIKE`) in every expression position, including
-measures. A `CASE` that is recognized as a conditional (a `WHEN` follows it) but is
-malformed MUST raise a specific malformed-CASE error naming the defect.
+conditions, THEN values and ELSE values SHALL accept the full Mode-B grammar in every
+expression position, including measures. A `CASE` that is recognized as a conditional
+(a `WHEN` follows it) but is malformed MUST raise a specific malformed-CASE error naming
+the defect.
 
 #### Scenario: searched CASE lowers to iif
 
@@ -37,7 +37,7 @@ malformed MUST raise a specific malformed-CASE error naming the defect.
 #### Scenario: SQL operator spellings inside WHEN conditions
 
 - WHEN `CASE WHEN region = 'EU' AND amount IS NOT NULL THEN 1 ELSE 0 END` appears in a measure formula
-- THEN the WHEN condition is normalized (`==`, `and`, `is not None`) and the expression parses
+- THEN the WHEN condition parses with the same meaning as `region == 'EU' and amount is not None`
 
 #### Scenario: recognized-but-malformed CASE still errors specifically
 
@@ -95,38 +95,3 @@ leaf regardless of whitespace around the dots.
 
 - WHEN `CASE case WHEN 1 THEN 2 END` is parsed
 - THEN the ambiguous bare keyword-named operand raises an error (never silent corruption), and the parenthesized form `CASE (case) WHEN 1 THEN 2 END` parses correctly with `case` as the operand reference
-
-### Requirement: LIKE operator rewriting
-
-A Mode-B filter SHALL accept `lhs [NOT] LIKE 'pattern'` — LHS a bare or dotted
-identifier or single scalar call, pattern a single-quoted string literal with
-backslash-escape support — rewriting it to the `like(lhs, pattern)` scalar (negated:
-`not like(...)`). The keyword match SHALL be ASCII-exact (any ASCII casing; never via
-Unicode case folding) and SHALL never apply inside a string literal. A double-quoted
-pattern is NOT rewritten (in SQL sources double quotes denote identifiers), so it fails
-loudly rather than silently changing meaning.
-
-#### Scenario: basic LIKE and NOT LIKE
-
-- WHEN `name LIKE 'a%'` / `name NOT LIKE 'a%'` / `lower(customers.email) like '%@x.io'` appear in a filter
-- THEN each rewrites to the corresponding `like(...)` / `not like(...)` scalar call
-
-#### Scenario: escaped quote inside the pattern
-
-- WHEN `col LIKE 'It\'s%'` appears in a filter
-- THEN the full pattern including the escaped quote is preserved as the second argument
-
-#### Scenario: LIKE inside a string literal is untouched
-
-- WHEN a filter contains ` like ` only inside a string literal, e.g. `note == "we like 'cats'"`
-- THEN the literal is preserved byte-for-byte and no rewrite occurs
-
-#### Scenario: case-fold keyword spoofs are not LIKE
-
-- WHEN a filter contains `x lıke 'p%'` or `x liKe 'p%'` (dotless ı / KELVIN SIGN fold to `like`)
-- THEN no rewrite occurs (the token is an ordinary identifier), while ASCII `x LiKe 'p%'` still rewrites
-
-#### Scenario: double-quoted pattern is rejected loudly
-
-- WHEN `col like "p%"` appears in a filter
-- THEN parsing fails with an invalid-expression error rather than rewriting to a string match

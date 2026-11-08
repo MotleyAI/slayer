@@ -1,4 +1,4 @@
-"""Raw stores whose datasource defines a custom granularity, as the previous release wrote them.
+"""Raw stores whose datasource defines a custom granularity, as the last release (v1.4.1) wrote them.
 
 Physical table (SQLite)::
 
@@ -23,7 +23,7 @@ from tests._stored_upgrade_fixtures import run
 DS = "gds"
 OTHER_DS = "other"
 BACKENDS = ["yaml", "sqlite"]
-#: The versions the previous release wrote.
+#: The versions v1.4.1 wrote.
 STORED_VERSIONS = {"SlayerModel": 15, "SlayerQuery": 6, "DatasourceConfig": 2, "Memory": 4}
 
 # (id, created_at, status, amount)
@@ -166,7 +166,7 @@ def raw_documents(*, backend: str, base: str) -> dict[str, str]:
 
 
 async def granularity_store(*, backend: str, base: str, name: str) -> StorageBackend:
-    """A previous-release store: datasource ``DS`` defining ``name`` (``granularity_definition``), the ``events`` model,
+    """A v1.4.1 store: datasource ``DS`` defining ``name`` (``granularity_definition``), the ``events`` model,
     and the query-backed model ``bucketed`` whose stage buckets ``created_at`` by ``name``."""
     db_path = live_db(base)
     return await write_raw_store(

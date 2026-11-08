@@ -413,6 +413,15 @@ class TestDiffSqlModel:
         assert entry is None
 
 
+def _refs(*, sql: str, dialect: str) -> "dict[str, set[str]] | None":
+    """``_sql_model_source_refs`` with each table rendered and each column named."""
+    refs = _sql_model_source_refs(sql=sql, dialect=dialect)
+    if refs is None:
+        return None
+    return {table.sql(dialect=dialect): {col.name for col in cols} for table, cols in refs.items()}
+
+
+
 class TestSqlModelSourceRefs:
     def test_aliases_attributed_and_ctes_excluded(self) -> None:
         sql = """
@@ -423,7 +432,7 @@ class TestSqlModelSourceRefs:
         FROM recent AS r
         JOIN analytics.stores AS s ON r.store_id = s.id
         """
-        refs = _sql_model_source_refs(sql=sql, dialect="postgres")
+        refs = _refs(sql=sql, dialect="postgres")
         assert refs == {
             "orders": {"id", "store_id", "ts"},
             "analytics.stores": {"name", "id"},
@@ -432,26 +441,26 @@ class TestSqlModelSourceRefs:
     def test_star_behind_derived_ref_returns_none(self) -> None:
         # ``*`` may hide the physical column behind ``src.amount``.
         sql = "WITH src AS (SELECT * FROM orders) SELECT src.amount FROM src"
-        assert _sql_model_source_refs(sql=sql, dialect="postgres") is None
+        assert _refs(sql=sql, dialect="postgres") is None
 
     def test_bare_columns_attributed_to_single_table(self) -> None:
-        refs = _sql_model_source_refs(
+        refs = _refs(
             sql="SELECT id, amount FROM orders", dialect="postgres"
         )
         assert refs == {"orders": {"id", "amount"}}
 
     def test_ambiguous_bare_column_returns_none(self) -> None:
         sql = "SELECT amount FROM orders AS o JOIN stores AS s ON o.sid = s.id"
-        assert _sql_model_source_refs(sql=sql, dialect="postgres") is None
+        assert _refs(sql=sql, dialect="postgres") is None
 
     def test_unparseable_sql_returns_none(self) -> None:
-        assert _sql_model_source_refs(sql="SELECT FROM FROM", dialect="postgres") is None
+        assert _refs(sql="SELECT FROM FROM", dialect="postgres") is None
 
     def test_using_join_keys_attributed_to_all_tables(self) -> None:
         # USING identifiers are not exp.Column nodes; a dropped join key must
         # still be probed on every joined table (Codex review on PR #340).
         sql = "SELECT o.amount FROM orders AS o JOIN stores AS s USING (store_id)"
-        refs = _sql_model_source_refs(sql=sql, dialect="postgres")
+        refs = _refs(sql=sql, dialect="postgres")
         assert refs == {
             "orders": {"amount", "store_id"},
             "stores": {"store_id"},
@@ -463,7 +472,7 @@ class TestSqlModelSourceRefs:
             "SELECT a.amount FROM orders AS a WHERE EXISTS "
             "(SELECT 1 FROM stores AS a WHERE a.region = 'US')"
         )
-        refs = _sql_model_source_refs(sql=sql, dialect="postgres")
+        refs = _refs(sql=sql, dialect="postgres")
         assert refs == {"orders": {"amount"}, "stores": {"region"}}
 
     def test_correlated_outer_ref_attributed(self) -> None:
@@ -471,7 +480,7 @@ class TestSqlModelSourceRefs:
             "SELECT o.amount FROM orders AS o WHERE EXISTS "
             "(SELECT 1 FROM stores AS s WHERE s.oid = o.id)"
         )
-        refs = _sql_model_source_refs(sql=sql, dialect="postgres")
+        refs = _refs(sql=sql, dialect="postgres")
         assert refs == {"orders": {"amount", "id"}, "stores": {"oid"}}
 
     def test_using_join_on_cte_with_star_returns_none(self) -> None:
@@ -480,17 +489,17 @@ class TestSqlModelSourceRefs:
             "WITH c AS (SELECT * FROM stores) "
             "SELECT o.amount FROM orders AS o JOIN c USING (store_id)"
         )
-        assert _sql_model_source_refs(sql=sql, dialect="postgres") is None
+        assert _refs(sql=sql, dialect="postgres") is None
 
     def test_union_bare_columns_attributed_per_branch(self) -> None:
         sql = "SELECT a FROM t1 UNION ALL SELECT b FROM t2"
-        refs = _sql_model_source_refs(sql=sql, dialect="postgres")
+        refs = _refs(sql=sql, dialect="postgres")
         assert refs == {"t1": {"a"}, "t2": {"b"}}
 
     def test_table_less_statement_returns_empty_refs(self) -> None:
         # {} (verifies vacuously — invalid_sql) is distinct from None
         # (cannot verify — schema drift).
-        refs = _sql_model_source_refs(
+        refs = _refs(
             sql="SELECT no_such_function(1)", dialect="postgres"
         )
         assert refs == {}
@@ -499,7 +508,7 @@ class TestSqlModelSourceRefs:
         # ``c`` is not an operand of the USING join, so it must not be
         # probed for ``k``.
         sql = "SELECT a.x FROM a JOIN b USING (k) JOIN c ON c.id = a.cid"
-        refs = _sql_model_source_refs(sql=sql, dialect="postgres")
+        refs = _refs(sql=sql, dialect="postgres")
         assert refs == {"a": {"x", "k", "cid"}, "b": {"k"}, "c": {"id"}}
 
 

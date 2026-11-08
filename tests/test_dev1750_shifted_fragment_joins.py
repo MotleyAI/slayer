@@ -20,7 +20,7 @@ import pytest
 from slayer.core.keys import AggregateKey, ColumnKey
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
 

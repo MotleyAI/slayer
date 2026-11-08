@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import http.client
 import json
 import urllib.error
 from typing import Any
@@ -55,9 +56,14 @@ def test_failed_commit_lookup_still_compares(monkeypatch: pytest.MonkeyPatch, ca
     assert "unknown" in capsys.readouterr().out
 
 
-def test_unreachable_upstream_is_a_fetch_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("error", [
+    urllib.error.URLError("no route to host"),
+    http.client.IncompleteRead(b"{"),
+    UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+])
+def test_unreachable_upstream_is_a_fetch_failure(monkeypatch: pytest.MonkeyPatch, error: Exception) -> None:
     def unreachable(url: str) -> Any:
-        raise urllib.error.URLError("no route to host")
+        raise error
 
     monkeypatch.setattr(drift_check, "_get_json", unreachable)
     assert drift_check.main() == drift_check.EXIT_FETCH

@@ -14,7 +14,7 @@ from slayer.core.keys import ColumnKey, ValueKey, boolean_valued, numeric_valued
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.binding import bind_expr
 from slayer.engine.key_metadata import stage_column_type
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev2046_fixtures import customers_model, orders_model

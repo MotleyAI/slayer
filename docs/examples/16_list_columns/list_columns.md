@@ -22,7 +22,7 @@ The examples use the Jaffle Shop demo's `products.ingredients` (the supplies a p
 
 Absence is `NOT contains(ingredients, 'bread')`, and a list-valued variable fills a list argument: `contains_any(item_skus, {wanted})` with `"variables": {"wanted": ["JAF-004", "JAF-005"]}`.
 
-A list is not a scalar: grouping by it, comparing it with `=`, or `sum(item_skus)` are refused with an error naming the alternative, and `contains` on a text column points at `LIKE`.
+A whole list groups, compares and counts distinctly as the set of its distinct elements (so `length(item_skus)` counts distinct SKUs and `count(item_skus.*)` every unit), comparing it with a scalar or `sum(item_skus)` is refused with an error naming the alternative, and `contains` on a text column is a substring test.
 
 ## Elements as rows
 

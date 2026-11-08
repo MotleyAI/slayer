@@ -7,21 +7,27 @@ from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, TextIO, TypeVar
 
 from pydantic import BaseModel, Field
-from sqlglot import exp
+from sqlglot import exp, parse_one
+from sqlglot.optimizer.annotate_types import annotate_types
+from sqlglot.optimizer.qualify import qualify
+from sqlglot.schema import MappingSchema
 
 from slayer.async_utils import marked_coroutine_function, run_sync
 from slayer.core.deprecation import warn_deprecated
-from slayer.core.enums import DataType, ObjectKind
+from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType, ObjectKind
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import (
     Column,
     DatasourceConfig,
     ModelJoin,
     SlayerModel,
+    is_base_column_sql,
     is_key_set_unique,
+    physical_column_sql,
     sanitize_model_name,
 )
 from slayer.core.join_edges import edge_reference
+from slayer.core.query import extract_variable_refs
 from slayer.engine import query_engine, schema_drift
 from slayer.engine.broken_dependents import broken_dependents, report_broken
 from slayer.engine.cardinality import infer_structural_cardinality
@@ -29,9 +35,9 @@ from slayer.engine.fk_edges import FkEdgePlan, plan_fk_edges
 from slayer.engine.internal_tables import internal_table_rule
 from slayer.engine.introspect_utils import dialect_of, reflect_columns, reflect_table_keys, table_location
 from slayer.sql import sqlite_introspect
-from slayer.sql.client import ObjectNotFound, SqlClient
+from slayer.sql.client import ObjectNotFound, SqlClient, render_type_probe, sql_model_trial_query
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
-from slayer.sql.dialects.reflection import ReflectedColumn, TableKeys
+from slayer.sql.dialects.reflection import ReflectedColumn, ResultColumnType, TableKeys
 from slayer.engine.schema_scope import (
     IngestScopeArgs,
     SchemaRef,
@@ -237,7 +243,8 @@ async def _safe_get_table_comment(client: SqlClient, table_name: str, ref: Schem
 
 
 def _introspected_column(col: ReflectedColumn, *, name: str, primary_key: bool) -> IntrospectedColumn:
-    """One live column; ``db_type`` only where ``DataType`` is lossy (opaque, a list, exact NUMERIC/DECIMAL)."""
+    """One live column; ``db_type`` only where ``DataType`` is lossy (opaque, a list, exact NUMERIC/DECIMAL, JSON
+    or a zoned timestamp)."""
     return IntrospectedColumn(
         name=name, type=col.type, element_type=col.element_type, primary_key=primary_key, is_float=col.is_float,
         db_type=col.db_type, comment=col.comment,
@@ -280,12 +287,150 @@ async def _inferred_elements(
     if query is None:
         return column
     try:
-        result = await client.execute(query.sql(dialect=dialect.sqlglot_name))
+        rows = (await client.execute(query.sql(dialect=dialect.sqlglot_name))).rows
+    except UNREACHABLE:
+        raise
     except Exception:  # noqa: BLE001 — an unreadable table keeps its elements opaque
         logger.warning("Could not infer the element type of %s.%s", table_name, column.name, exc_info=True)
         return column
-    names = [next(iter(row.values()), None) for row in result.rows]
+    names = [next(iter(row.values()), None) for row in rows]
     return column.model_copy(update={"element_type": dialect.list_element_type(names)})
+
+
+# --- sql-mode result types (system P20) ---
+
+
+class ResultList(BaseModel):
+    """A list column of an ``sql``-mode query's result."""
+
+    element_type: DataType
+    db_type: str
+
+
+class SqlResultTypes(BaseModel):
+    """An ``sql``-mode query's result column types: lists typed by sqlglot over the live schema of the tables it
+    reads, else by the database's result type."""
+
+    columns: dict[str, DataType]
+    lists: dict[str, ResultList] = Field(default_factory=dict)
+    #: Each column's database type name, where the database reports one.
+    db_types: dict[str, str] = Field(default_factory=dict)
+
+    def result_column_types(self) -> dict[str, ResultColumnType]:
+        """Each column as a ``ResultColumnType``; a list carries its element type and list type name."""
+        return {
+            name: ResultColumnType(type=dt, element_type=found.element_type, db_type=found.db_type)
+            if (found := self.lists.get(name)) is not None
+            else ResultColumnType(type=dt, db_type=self.db_types.get(name))
+            for name, dt in self.columns.items()
+        }
+
+
+_SQLGLOT_TYPES: dict[DataType, exp.DType] = {
+    DataType.TEXT: exp.DataType.Type.TEXT, DataType.INT: exp.DataType.Type.BIGINT,
+    DataType.DOUBLE: exp.DataType.Type.DOUBLE, DataType.BOOLEAN: exp.DataType.Type.BOOLEAN,
+    DataType.DATE: exp.DataType.Type.DATE, DataType.TIMESTAMP: exp.DataType.Type.TIMESTAMP,
+}
+_DATA_TYPES = {v: k for k, v in _SQLGLOT_TYPES.items()}
+
+
+def _sqlglot_type(data_type: DataType, element: DataType | None) -> exp.DataType:
+    if data_type is DataType.ARRAY:
+        return exp.DataType(this=exp.DataType.Type.ARRAY, expressions=[_sqlglot_type(element or DataType.UNKNOWN, None)],
+                            nested=True)
+    return exp.DataType(this=_SQLGLOT_TYPES.get(data_type, exp.DataType.Type.UNKNOWN))
+
+
+async def _typed_result_lists(*, sql: str, client: SqlClient) -> dict[str, ResultList]:
+    """The result columns of ``sql`` that sqlglot types as lists over the reflected tables it reads; ``{}`` when the
+    text or a table cannot be typed."""
+    dialect = dialect_of(client).sqlglot_name
+    try:
+        parsed = parse_one(sql, read=dialect)
+        schema = await _live_schema(parsed, client=client, dialect=dialect)
+        typed = annotate_types(qualify(parsed, schema=schema, dialect=dialect), schema=schema, dialect=dialect)
+    except UNREACHABLE:
+        raise
+    except Exception:  # noqa: BLE001 — untypeable text keeps the database's result types
+        logger.debug("sqlglot cannot type the result of %r", sql, exc_info=True)
+        return {}
+    if not isinstance(typed, exp.Query):
+        return {}
+    out: dict[str, ResultList] = {}
+    for name, result in _list_projections(typed).items():
+        inner = result.expressions[0] if result.expressions else None
+        element = _DATA_TYPES.get(inner.this, DataType.UNKNOWN) if isinstance(inner, exp.DataType) else DataType.UNKNOWN
+        out[name] = ResultList(element_type=element, db_type=result.sql(dialect=dialect))
+    return out
+
+
+async def _live_schema(parsed: exp.Expr, *, client: SqlClient, dialect: str) -> MappingSchema:
+    """The reflected live columns of every table ``parsed`` reads (CTEs excluded), in SLayer types."""
+    ctes = {cte.alias_or_name.casefold() for cte in parsed.find_all(exp.CTE)}
+    schema = MappingSchema(dialect=dialect)
+    for table in parsed.find_all(exp.Table):
+        if not table.db and table.name.casefold() in ctes:
+            continue
+        ref = SchemaRef(catalog=table.catalog or None, name=table.db) if table.db else None
+        columns = await reflect_columns(client=client, table_name=table.name, ref=ref)
+        schema.add_table(
+            exp.table_(table.name, db=table.db or None, catalog=table.catalog or None),
+            {c.name: _sqlglot_type(c.type, c.element_type) for c in columns if "." not in c.name},
+            dialect=dialect,
+        )
+    return schema
+
+
+def _list_projections(query: exp.Query) -> dict[str, exp.DataType]:
+    """``query``'s list-typed output columns: a set operation's column is a list when a branch types it so
+    (``NULL`` in the first, say), matched by position, or by name under ``BY NAME``."""
+    if not (isinstance(query, exp.SetOperation) and isinstance(query.left, exp.Query)
+            and isinstance(query.right, exp.Query)):
+        return {p.alias_or_name: p.type for p in query.selects
+                if p.type is not None and p.type.this is exp.DataType.Type.ARRAY}
+    left, right = _list_projections(query.left), _list_projections(query.right)
+    if query.args.get("by_name"):
+        return {**right, **left}
+    names = zip((p.alias_or_name for p in query.left.selects), (p.alias_or_name for p in query.right.selects))
+    return {**{mine: right[theirs] for mine, theirs in names if theirs in right}, **left}
+
+
+async def sql_result_types(*, sql: str, client: SqlClient) -> SqlResultTypes:
+    """The result column types of an ``sql``-mode query (raises when the query fails)."""
+    dialect = dialect_of(client)
+    probed = await client.get_result_column_types(
+        render_type_probe(sql_model_trial_query(sql, dialect=dialect), dialect=dialect))
+    columns = {name: found.type for name, found in probed.items()}
+    typed = await _typed_result_lists(sql=sql, client=client)
+    by_name = {name.casefold(): found for name, found in typed.items()}
+    lists: dict[str, ResultList] = {}
+    for name, data_type in columns.items():
+        found = by_name.get(name.casefold())
+        # The database's own list type name wins wherever it reports one.
+        reported = probed[name].db_type if data_type is DataType.ARRAY else None
+        if found is not None:
+            columns[name] = DataType.ARRAY
+            lists[name] = found.model_copy(update={"db_type": reported}) if reported else found
+        elif data_type is DataType.ARRAY:
+            lists[name] = ResultList(element_type=DataType.UNKNOWN, db_type=reported or "ARRAY")
+    db_types = {name: found.db_type for name, found in probed.items() if found.db_type}
+    return SqlResultTypes(columns=columns, lists=lists, db_types=db_types)
+
+
+def retyped_sql_columns(model: SlayerModel, *, lists: dict[str, ResultList]) -> tuple[SlayerModel, list[str]]:
+    """``model`` with each stale non-list base column whose result column is a list re-typed to it, and the
+    re-typed column names."""
+    columns: list[Column] = []
+    retyped: list[str] = []
+    for column in model.columns:
+        found = lists.get(physical_column_sql(sql=column.sql, name=column.name)) if is_base_column_sql(column.sql) else None
+        fresh = None if found is None else Column(
+            name=column.name, type=DataType.ARRAY, element_type=found.element_type, db_type=found.db_type)
+        new = _retyped_list(persisted=column, fresh=fresh) if fresh is not None else None
+        columns.append(new or column)
+        if new is not None:
+            retyped.append(column.name)
+    return (model.model_copy(update={"columns": columns}) if retyped else model), retyped
 
 
 # --- Model generation from introspected columns ---
@@ -405,21 +550,17 @@ async def introspect_table_to_model(
     *,
     client: SqlClient,
     table_name: str,
-    schema: str | None,
+    ref: SchemaRef | None,
     data_source: str,
     model_name: str | None = None,
     source_kind: ObjectKind | None = None,
 ) -> SlayerModel:
     """Introspect a single table (no joins) into a SlayerModel.
 
-    ``schema=None`` probes the catalog-qualified default (a bare token lets DuckDB
+    ``ref=None`` probes the catalog-qualified default (a bare token lets DuckDB
     sweep an attached twin) while ``sql_table`` stays bare.
     """
-    ref = (
-        schema_ref_from_token(schema, dialect_name=client.datasource.type, requested=schema)
-        if schema
-        else await default_schema_ref(client)
-    )
+    ref = ref or await default_schema_ref(client)
     keys = await reflect_table_keys(client=client, table_name=table_name, ref=ref)
     columns = await _introspect_table_columns(
         client=client, table_name=table_name, ref=ref, primary_key=keys.primary_key,
@@ -1062,8 +1203,9 @@ def _retyped_list(*, persisted: Column, fresh: Column) -> Column | None:
             "type": DataType.ARRAY, "element_type": fresh.element_type, "db_type": fresh.db_type,
             # Scalar-only settings; a temporal granularity would fail the list's validation.
             "granularity": None, "format": None,
-            # A list's only aggregation is count.
-            "allowed_aggregations": [a for a in persisted.allowed_aggregations or () if a == "count"] or None,
+            "allowed_aggregations": [
+                a for a in persisted.allowed_aggregations or () if a in DEFAULT_AGGREGATIONS_BY_TYPE[DataType.ARRAY]
+            ] or None,
         })
     inferred = (fresh.db_type or "").strip().upper() == "ARRAY"
     known = fresh.element_type is not None and not fresh.element_type.is_opaque
@@ -1168,7 +1310,7 @@ def _additive_merge_existing(
 ) -> AdditiveMergeResult:
     """Merge ``fresh`` into ``persisted`` additively: existing entries are never overwritten.
 
-    Exceptions: SQLite INT→DOUBLE/TEXT widening, a non-list column re-typed to its live list, empty-field
+    Exceptions: SQLite INT→DOUBLE/TEXT widening, a TEXT column re-typed to its live list, empty-field
     gap-fills, and a non-None ``source_kind`` refresh.
     """
     persisted_names = {c.name for c in persisted.columns}
@@ -1429,6 +1571,36 @@ async def _adopt_stored_sanitized_names(
             updates["joins"] = joins
         adopted[new_name] = fresh.model_copy(update=updates) if updates else fresh
     return adopted, rename_map
+
+
+async def _retype_sql_models(
+    *, datasource: DatasourceConfig, storage: StorageBackend, client: SqlClient, failures: DocumentLoadFailures,
+) -> tuple[dict[str, list[str]], dict[str, str]]:
+    """Re-type each stored ``sql``-mode model's stale non-list columns to the lists its query returns (system P20):
+    ``({model: re-typed columns}, {model: error})``."""
+    retyped: dict[str, list[str]] = {}
+    errors: dict[str, str] = {}
+    # A parameterized query only runs with its variables bound.
+    sql_models = [
+        m for m in failures.skip(await storage.load_models(data_source=datasource.name))
+        if m.sql and not any(extract_variable_refs(m.sql))
+    ]
+    if not sql_models:
+        return retyped, errors
+    for model in sql_models:
+        try:
+            types = await sql_result_types(sql=model.sql or "", client=client)
+            # Re-read after the slow trial so a concurrent edit is not reverted.
+            current = await storage.get_model(model.name, data_source=datasource.name)
+            if current is None or current.sql != model.sql:
+                continue
+            updated, columns = retyped_sql_columns(current, lists=types.lists)
+            if columns:
+                await storage.save_model(updated)
+                retyped[model.name] = columns
+        except Exception as exc:  # noqa: BLE001 — one model's failure must not abort the pass
+            errors[model.name] = f"sql-mode re-type: {exc}"
+    return retyped, errors
 
 
 async def _scoped_models_for_validation(
@@ -1719,6 +1891,17 @@ async def _ingest_idempotent(
         default_objects=default_objects,
         failures=failures,
         client=client,
+    )
+    sql_retyped, sql_errors = await _retype_sql_models(
+        datasource=datasource, storage=storage, client=client, failures=failures,
+    )
+    additions.extend(
+        schema_drift.ModelAddition(model_name=name, data_source=datasource.name, widened_columns=columns)
+        for name, columns in sql_retyped.items()
+    )
+    errors.extend(
+        schema_drift.IngestionError(model_name=name, data_source=datasource.name, error=error)
+        for name, error in sql_errors.items()
     )
 
     # Fill-if-empty, checked against the freshly-loaded STORED config, not the caller's copy.

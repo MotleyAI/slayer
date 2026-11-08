@@ -6,8 +6,7 @@ decorate live in ``slayer.ir.prebound``.
 
 from __future__ import annotations
 
-from decimal import Decimal
-from typing import Optional, Tuple, TypeGuard
+from typing import Callable, Optional, Tuple
 
 from slayer.core.enums import (
     AggregationValueClass,
@@ -16,23 +15,25 @@ from slayer.core.enums import (
 )
 from slayer.core.format import NumberFormat
 from slayer.core.keys import (
+    CONDITIONAL_SCALARS,
     AggregateKey,
     ColumnElementFn,
     ColumnKey,
     ColumnTypeFn,
     ColumnSqlKey,
-    LiteralKey,
+    CastKey,
+    ListSetKey,
     ScalarCallKey,
     StarKey,
     TimeTruncKey,
     ValueKey,
     aggregation_source_type,
-    join_conditional_branch_types,
     list_element_type,
     list_valued,
     temporal_type,
+    value_type,
 )
-from slayer.core.join_walker import LIST_ELEMENT_COLUMN, model_column_element, model_column_type
+from slayer.core.join_walker import LIST_ELEMENT_COLUMN, model_column, model_column_element, model_column_type
 from slayer.core.models import SlayerModel
 from slayer.core.scope import ModelScope, StageSchema
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
@@ -110,37 +111,6 @@ def _local_aggregate_source_name(key: ValueKey) -> Optional[str]:
     return getattr(src, "leaf", None) or getattr(src, "column_name", None)
 
 
-def _literal_data_type(value) -> Optional[DataType]:
-    """The SLayer type of a scalar literal (``None`` for a NULL literal)."""
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return DataType.BOOLEAN
-    if isinstance(value, Decimal):
-        return DataType.INT if value == value.to_integral_value() else DataType.DOUBLE
-    if isinstance(value, str):
-        return DataType.TEXT
-    return None
-
-
-def _is_iif(key: object) -> TypeGuard[ScalarCallKey]:
-    return isinstance(key, ScalarCallKey) and key.name == "iif"
-
-
-def _branch_type(*, model: SlayerModel, key) -> Optional[DataType]:
-    """The type of one CASE/iif branch, from the model alone (``None`` when it
-    cannot be determined — a joined column, an arithmetic expression — so it is
-    treated as NULL-absorbing rather than an incompatibility)."""
-    if key is None or isinstance(key, (Decimal, str, bool)):
-        return _literal_data_type(key)
-    if isinstance(key, LiteralKey):
-        return _literal_data_type(key.value)
-    if isinstance(key, ColumnKey) and not key.path:
-        col = model.get_column(key.leaf)
-        return col.type if col is not None else None
-    return measure_key_type(model=model, key=key)
-
-
 def _model_types(*, model: SlayerModel, bundle) -> ColumnTypeFn:
     return model_column_type(
         model=model, models_by_name=bundle.models_by_name if bundle is not None else {},
@@ -189,18 +159,29 @@ def key_element_type(key: ValueKey, *, scope: ModelScope | StageSchema, bundle) 
     return element or DataType.UNKNOWN
 
 
-def bundle_dialect(bundle) -> SqlDialect:
-    """The datasource's own dialect (``MariadbDialect`` for a MariaDB source), else the sqlglot name's."""
-    own = dialect_for_ds_type(bundle.datasource_type)
-    return own if own.sqlglot_name == bundle.dialect else get_dialect(bundle.dialect)
-
-
 def scope_column_type(*, scope: ModelScope | StageSchema, bundle) -> ColumnTypeFn:
     if isinstance(scope, StageSchema):
         return stage_column_type(scope)
     if scope.source_model is None:
         return lambda _key: None
     return model_column_type(model=scope.source_model, models_by_name=bundle.models_by_name)
+
+
+def bundle_dialect(bundle) -> SqlDialect:
+    """The datasource's own dialect (``MariadbDialect`` for a MariaDB source), else the sqlglot name's."""
+    own = dialect_for_ds_type(bundle.datasource_type)
+    return own if own.sqlglot_name == bundle.dialect else get_dialect(bundle.dialect)
+
+
+def scope_zoned_timestamp(*, scope: ModelScope | StageSchema, bundle) -> Callable[[object], bool]:
+    """Whether a model column leaf holds a zoned instant on the bundle's dialect (a stage column already
+    reads naive)."""
+    dialect = bundle_dialect(bundle)
+    if not dialect.zoned_timestamp_db_types or isinstance(scope, StageSchema) or scope.source_model is None:
+        return lambda _key: False
+    model, models_by_name = scope.source_model, bundle.models_by_name
+    return lambda key: dialect.is_zoned_db_type(
+        getattr(model_column(model=model, models_by_name=models_by_name, key=key), "db_type", None))
 
 
 def date_scalar_type(key: ValueKey, *, column_type: ColumnTypeFn) -> Optional[DataType]:
@@ -211,11 +192,19 @@ def date_scalar_type(key: ValueKey, *, column_type: ColumnTypeFn) -> Optional[Da
     return temporal_type(key, column_type=column_type)
 
 
+def _typed_by_value(key: ValueKey) -> bool:
+    """A bare column or a value-returning conditional, typed by its ``value_type``."""
+    return isinstance(key, (ColumnKey, ColumnSqlKey)) or (
+        isinstance(key, ScalarCallKey) and key.name in CONDITIONAL_SCALARS)
+
+
 def stage_measure_type(key: ValueKey, *, schema: StageSchema) -> Optional[DataType]:
     """``type`` for a measure over a stage's flat columns."""
     column_type = stage_column_type(schema)
     if list_valued(key, column_type=column_type):
         return DataType.ARRAY
+    if _typed_by_value(key):
+        return value_type(key, column_type=column_type)
     date_type = date_scalar_type(key, column_type=column_type)
     if date_type is not None or not isinstance(key, AggregateKey):
         return date_type
@@ -229,26 +218,15 @@ def measure_key_type(
     *, model: SlayerModel, key: ValueKey, bundle=None,
 ) -> Optional[DataType]:
     """``type`` for a measure slot, from its bound key alone."""
+    if isinstance(key, CastKey):
+        return key.data_type
     if list_valued(key, column_type=_model_types(model=model, bundle=bundle)):
         return DataType.ARRAY
+    if _typed_by_value(key):
+        return value_type(key, column_type=_model_types(model=model, bundle=bundle))
     date_type = date_scalar_type(key, column_type=_model_types(model=model, bundle=bundle))
     if date_type is not None:
         return date_type
-    if _is_iif(key):
-        # Postgres branch typing: the join over every THEN branch and the final
-        # ELSE. Raises on an incompatible mix (DEV-1740).
-        result: Optional[DataType] = None
-        node = key
-        branches = []
-        while _is_iif(node):
-            branches.append(node.args[1])
-            node = node.args[2]
-        branches.append(node)
-        for branch in branches:
-            result = join_conditional_branch_types(
-                result, _branch_type(model=model, key=branch),
-            )
-        return result
     name = _local_aggregate_source_name(key)
     if name is None or not isinstance(key, AggregateKey):
         return None
@@ -300,11 +278,13 @@ def dimension_key_metadata(
     pre-existing: joined refs surface format / description through
     ``response_meta``, which resolves them against the owning model.
     """
-    if not isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+    if isinstance(key, CastKey):
+        return key.data_type, None, None
+    inner = key.source if isinstance(key, (TimeTruncKey, ListSetKey)) else key
+    if not isinstance(inner, (ColumnKey, ColumnSqlKey)):
         date_type = date_scalar_type(key, column_type=_model_types(model=model, bundle=bundle))
         if date_type is not None:
             return date_type, None, None
-    inner = key.column if isinstance(key, TimeTruncKey) else key
     path = tuple(getattr(inner, "path", ()) or ())
     leaf = getattr(inner, "leaf", None) or getattr(inner, "column_name", None)
     if leaf is None:

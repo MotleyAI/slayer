@@ -22,7 +22,7 @@ from slayer.sql import engine_factory
 from slayer.storage.sqlite_conn import transaction
 from tests._stored_upgrade_fixtures import DS, raw_store
 
-#: SlayerModel / SlayerQuery / Memory versions the previous release wrote.
+#: SlayerModel / SlayerQuery / Memory versions the previous release (v1.4.1) wrote.
 PREVIOUS_MODEL_VERSION = 15
 PREVIOUS_QUERY_VERSION = 6
 PREVIOUS_MEMORY_VERSION = 4

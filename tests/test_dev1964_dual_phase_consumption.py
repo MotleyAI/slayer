@@ -415,7 +415,7 @@ class TestSynthesizedGrainNames:
         assert with_later[a] == with_earlier[a]
 
     def test_time_bucket_spelled_like_a_column(self):
-        bucket = TimeTruncKey(column=ColumnKey(leaf="city"), granularity=TimeGranularity.MONTH)
+        bucket = TimeTruncKey(source=ColumnKey(leaf="city"), granularity=TimeGranularity.MONTH)
         names = _grain_names([bucket, ColumnKey(leaf="city_month")])
         assert names[ColumnKey(leaf="city_month")] == "city_month"
         assert len(set(names.values())) == 2
@@ -448,7 +448,7 @@ class TestSynthesizedGrainNames:
                 Column(name="created_at", type=DataType.TIMESTAMP),
             ]),
         ]
-        months = [TimeDimension(dimension=ColumnRef(name=n), granularity=TimeGranularity.MONTH)
+        months = [TimeDimension(dimension=n, granularity=TimeGranularity.MONTH)
                   for n in ("created_at", "customers.created_at")]
         q = SlayerQuery(
             source_model="orders", dimensions=[ColumnRef(name="region")], time_dimensions=months,

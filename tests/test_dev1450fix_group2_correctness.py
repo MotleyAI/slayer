@@ -30,7 +30,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_drift import _measure_formula_refs
 from slayer.storage.sqlite_conn import transaction
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.syntax import parse_expr, parse_expr as _parse, parse_filter_expr
+from slayer.core.syntax import parse_expr, parse_expr as _parse
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -42,37 +42,22 @@ from slayer.storage.yaml_storage import YAMLStorage
 def test_over_inside_string_literal_is_not_a_window_clause():
     # No raise — the OVER( is inside a quoted literal.
     parse_expr("status == 'OVER('")
-    parse_expr('label == "x OVER (y)"')
+    parse_expr("label == 'x OVER (y)'")
 
 
 def test_over_inside_escaped_string_literal_not_window():
-    # OVER( inside a Python-escaped string literal must not trip the window
-    # guard (Codex round 2): the value is `x " OVER(`.
-    parse_expr(r'status == "x \" OVER("')
+    # The value is `x ' OVER(`: a doubled quote must not end the literal early.
+    parse_expr("status == 'x '' OVER('")
 
 
 def test_in_keyword_inside_escaped_string_literal_not_rewritten():
-    """CR review: ``_normalize_sql_filter_operators`` previously used the
-    SQL-style ('' / "") matcher, so a backslash-escaped quote left the
-    string body unprotected and ``IN`` / ``IS`` / ``AND`` rewrites leaked
-    into the literal. Now backed by ``_PY_STRING_LITERAL_RE``.
-
-    Pin: a literal containing an embedded ``IN`` keyword must round-trip
-    cleanly when the literal is bounded by escaped quotes."""
-    # The value of the literal is `x " IN (foo)` — IN must NOT lowercase
-    # inside the string. The right operand is a literal compared via ==,
-    # not a SQL-style IN clause.
-    parse_filter_expr(r'label == "x \" IN (foo)"')
+    """An embedded ``IN`` inside a literal bounded by a doubled quote stays text."""
+    parse_expr("label == 'x '' IN (foo)'")
 
 
 def test_colon_inside_escaped_string_literal_not_preprocessed():
-    """CR review: ``_preprocess_colons`` previously used the SQL-style
-    matcher; an escaped quote leaked colon-syntax aggregation rewrites
-    into string bodies. Pin: a literal containing ``revenue:sum`` is
-    not rewritten to an aggregation."""
-    # Inner literal is `x " revenue:sum`. The colon there is text, not
-    # a colon-syntax aggregation source.
-    parse_expr(r'label == "x \" revenue:sum"')
+    """A literal containing ``revenue:sum`` after a doubled quote is not an aggregation."""
+    parse_expr("label == 'x '' revenue:sum'")
 
 
 # ---------------------------------------------------------------------------
@@ -86,11 +71,11 @@ def test_is_null_filter_parses_and_renders():
     resulting ``ast.Is`` / ``ast.IsNot`` nodes. Pins both the parse and
     a downstream render through ``_compose_arithmetic_op``."""
     # Parse must accept the SQL-style spelling.
-    parse_filter_expr("deleted_at IS NULL")
-    parse_filter_expr("deleted_at IS NOT NULL")
+    parse_expr("deleted_at IS NULL")
+    parse_expr("deleted_at IS NOT NULL")
     # And the lower-cased Python form should also work.
-    parse_filter_expr("deleted_at is None")
-    parse_filter_expr("deleted_at is not None")
+    parse_expr("deleted_at is None")
+    parse_expr("deleted_at is not None")
 
 
 def test_partition_by_multi_column_parses_and_binds():

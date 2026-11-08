@@ -11,7 +11,7 @@ from typing import Dict, Optional, Tuple
 import pytest
 
 from slayer.engine.bind_inputs import bind_query_inputs
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1840_fixtures import bundle as orders_bundle, q as orders_q

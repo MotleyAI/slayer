@@ -13,7 +13,7 @@ import pytest
 
 from slayer.core.enums import TimeGranularity
 from slayer.core.errors import SlayerError
-from slayer.core.query import ColumnRef, TimeDimension
+from slayer.core.query import TimeDimension
 from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1836_fixtures import (
@@ -43,7 +43,7 @@ M = ModelMeasure(formula="amount:sum", name="m")
 
 def signup_month_td() -> list[TimeDimension]:
     return [TimeDimension(
-        dimension=ColumnRef(name="customers.signup_at"),
+        dimension="customers.signup_at",
         granularity=TimeGranularity.MONTH,
     )]
 
