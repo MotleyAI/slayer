@@ -677,7 +677,10 @@ class OsiToSlayerConverter:
             )
             return None
         # A copy keeps the source's type, db_type, key flag and DB comment.
-        kept = source.sql if source.physical_quoted else None if bare.name == field.name else sql
+        if source.physical_quoted:
+            kept = source.sql
+        else:
+            kept = None if bare.name == field.name else sql
         col = source.model_copy(deep=True, update={"name": field.name, "sql": kept})
         return col, source.type
 

@@ -9,6 +9,7 @@ from typing import Optional, TypeGuard
 import sqlglot
 from pydantic import BaseModel
 from sqlglot import exp
+from sqlglot.dialects.dialect import Dialect
 from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expr, Expression
 from sqlglot.tokenizer_core import TokenType
@@ -136,7 +137,8 @@ def _mixed_case_words(text: str, *, read: str) -> list[str]:
     try:
         tokens = sqlglot.tokenize(text, dialect=read)
     except Exception:  # noqa: BLE001 — an unlexable text may hold any word
-        return re.findall(r"[^\W\d]\w*", text) if _has_upper(text) else []
+        keywords = Dialect.get_or_raise(read).tokenizer_class.KEYWORDS
+        return [w for w in re.findall(r"[^\W\d]\w*", text) if _has_upper(w) and w.upper() not in keywords]
     return [t.text for t in tokens if t.token_type is TokenType.VAR and _has_upper(t.text)]
 
 

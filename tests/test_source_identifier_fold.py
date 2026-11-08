@@ -145,6 +145,11 @@ def test_unknown_dialect_returns_the_undecidable_identifiers() -> None:
     assert result.text == 'SELECT "Quoted", qty, Total FROM Sales.OrderItems'
 
 
+def test_unlexable_text_reports_only_its_mixed_case_names() -> None:
+    result = fold_source_identifiers("SELECT Qty, 'unterminated", dialect=None, masks=())
+    assert list(result.undecidable) == ["Qty"]
+
+
 def test_unknown_dialect_ignores_masked_references() -> None:
     result = fold_source_identifiers("{CUBE}.amount + {Orders.Total}", dialect=None, masks=(CUBE_REFS,))
     assert list(result.undecidable) == []
