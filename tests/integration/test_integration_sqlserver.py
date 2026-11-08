@@ -46,8 +46,10 @@ import re as _re
 import statistics
 import tempfile
 import uuid
+from decimal import Decimal
+from typing import Any
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 
 import pytest
 import sqlalchemy as sa
@@ -347,7 +349,7 @@ class TestSQLServerQueries:
         assert result.row_count == 1
         assert result.data[0]["orders._count"] == 6
 
-    async def test_dev1933_regex_literal_extension_column(self, sqlserver_env: SlayerQueryEngine) -> None:
+    async def test_regex_literal_extension_column(self, sqlserver_env: SlayerQueryEngine) -> None:
         """An ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
         LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
         query = SlayerQuery(
@@ -1849,3 +1851,41 @@ def test_typed_probe_reports_declared_type_names(sqlserver_container) -> None:
         "t": (DataType.TIMESTAMP, "datetime2(7)"),
         "s": (DataType.TEXT, "nvarchar(50)"),
     }
+
+
+@pytest.mark.integration
+async def test_money_columns_are_exact(sqlserver_container, tmp_path) -> None:
+    db_name = _create_module_db(sqlserver_container)
+    try:
+        with disposable_engine(_db_url(sqlserver_container, db_name)) as engine, engine.begin() as conn:
+            conn.execute(sa.text("CREATE TABLE ledger (id INTEGER PRIMARY KEY, amount MONEY, small SMALLMONEY)"))
+            conn.execute(sa.text("INSERT INTO ledger VALUES (1, 0.10, 0.10), (2, 0.20, 0.20)"))
+        ds = _ds_config(sqlserver_container, db_name)
+        (ledger,) = [m for m in await _ingest(ds, schema=None) if m.name == "ledger"]
+        client = SlayerSQLClient(datasource=ds)
+        try:
+            probed = await client.get_result_column_types("SELECT amount, small FROM ledger")
+        finally:
+            await client.aclose()
+            client.close()
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        await storage.save_datasource(ds)
+        await storage.save_model(ledger.model_copy(update={"columns": [
+            *ledger.columns,
+            Column(name="doubled", sql="amount * 2", type=DataType.DOUBLE, db_type="money"),
+            Column(name="small_doubled", sql="small * 2", type=DataType.DOUBLE, db_type="smallmoney"),
+        ]}))
+        engine = SlayerQueryEngine(storage=storage)
+        sums = SlayerQuery.model_validate({"source_model": "ledger", "measures": ["sum(amount)", "sum(small)"]})
+        rows = SlayerQuery.model_validate({"source_model": "ledger", "dimensions": ["id", "doubled", "small_doubled"]})
+        sql = [(await engine.execute(query=q, dry_run=True)).sql or "" for q in (sums, rows)]
+        totals, doubled = await engine.execute(query=sums), await engine.execute(query=rows)
+    finally:
+        _drop_module_db(sqlserver_container, db_name)
+    assert {c.name: (c.db_type or "").lower() for c in ledger.columns if c.name in ("amount", "small")} == {
+        "amount": "money", "small": "smallmoney"}
+    assert {name: t.lossy_db_type for name, t in probed.items()} == {"amount": "money", "small": "smallmoney"}
+    assert all("CAST(" not in s.upper() for s in sql), sql
+    assert totals.data == [{"ledger.amount_sum": Decimal("0.3000"), "ledger.small_sum": Decimal("0.3000")}]
+    assert {r["ledger.id"]: (r["ledger.doubled"], r["ledger.small_doubled"]) for r in doubled.data} == {
+        1: (Decimal("0.2000"), Decimal("0.2000")), 2: (Decimal("0.4000"), Decimal("0.4000"))}

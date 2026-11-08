@@ -119,6 +119,16 @@ def observe_traversals() -> Iterator[Dict[str, bool]]:
         _traversals.reset(token)
 
 
+@contextmanager
+def unobserved() -> Iterator[None]:
+    """Traversals in the block go unrecorded: a validation walk, not a read the planner must serve."""
+    token = _traversals.set(None)
+    try:
+        yield
+    finally:
+        _traversals.reset(token)
+
+
 def _observe(targets: Iterable[str], *, strict: bool) -> None:
     sink = _traversals.get()
     if sink is None:

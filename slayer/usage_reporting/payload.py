@@ -8,7 +8,7 @@ from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 VERSION_PATTERN = r"^\d+(\.\d+)*((a|b|rc)\d+)?(\.post\d+)?(\.dev\d+)?(\+[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$"
 
 Count = Annotated[int, Field(ge=0)]
@@ -18,7 +18,7 @@ UsageKey = Literal[
     # CLI leaf commands
     "cli:serve", "cli:flight-serve", "cli:pg-serve", "cli:mcp", "cli:query", "cli:ingest",
     "cli:validate-models", "cli:recommend-root-model",
-    "cli:import-dbt", "cli:import-cube", "cli:import-osi",
+    "cli:import-dbt", "cli:import-cube", "cli:import-osi", "cli:export-osi",
     "cli:models.list", "cli:models.show", "cli:models.create", "cli:models.delete",
     "cli:datasources.list", "cli:datasources.show", "cli:datasources.create",
     "cli:datasources.delete", "cli:datasources.test",
@@ -84,6 +84,7 @@ DialectToken = Literal[
 
 DatasourceBucket = Literal["0", "1", "2-5", "6+"]
 ModelCountBucket = Literal["0", "1-10", "11-50", "51-200", "200+"]
+QueryCountBucket = Literal["0", "1", "2-5", "6-20", "21+"]
 StorageToken = Literal["yaml", "sqlite", "other"]
 
 ClientToken = Literal[
@@ -106,6 +107,7 @@ FUNCTIONS: frozenset[str] = frozenset(get_args(FunctionToken))
 DIALECTS: frozenset[str] = frozenset(get_args(DialectToken))
 CLIENTS: frozenset[str] = frozenset(get_args(ClientToken))
 EXTRAS: tuple[ExtraToken, ...] = get_args(ExtraToken)
+_QUERY_COUNT_RANK = {bucket: rank for rank, bucket in enumerate(get_args(QueryCountBucket))}
 
 
 def known_usage_key(*, surface: str, key: str) -> str | None:
@@ -206,6 +208,21 @@ class McpClientCount(_Strict):
     sessions: Count = 0
 
 
+class McpSessionCount(_Strict):
+    """MCP sessions whose successful and failed ``query`` calls fall into these buckets."""
+
+    queries_ok: QueryCountBucket
+    queries_err: QueryCountBucket
+    sessions: Count = 0
+
+
+def session_counts(counts: dict[tuple[str, str], int]) -> list[McpSessionCount]:
+    """One row per ``(queries_ok, queries_err)`` bucket pair, in bucket rank order."""
+    pairs = sorted(counts, key=lambda pair: (_QUERY_COUNT_RANK[pair[0]], _QUERY_COUNT_RANK[pair[1]]))
+    return [McpSessionCount.model_validate({"queries_ok": ok, "queries_err": err, "sessions": counts[(ok, err)]})
+            for ok, err in pairs]
+
+
 class Batch(_Strict):
     """Counters of one or more processes; the content of a spool file."""
 
@@ -215,6 +232,7 @@ class Batch(_Strict):
     dialects: Dialects = Field(default_factory=Dialects)
     context: Context = Field(default_factory=Context)
     mcp_clients: list[McpClientCount] = Field(default_factory=list)
+    mcp_sessions: list[McpSessionCount] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -236,8 +254,9 @@ class UsageReport(Batch):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True, serialize_by_alias=True)
 
-    schema_version: Literal[1] = Field(default=SCHEMA_VERSION, alias="schema")
+    schema_version: Literal[2] = Field(default=SCHEMA_VERSION, alias="schema")
     install_id: uuid.UUID | None
+    first_query_ok: datetime.date | None = None
     batch_id: uuid.UUID
     env: Env
 
@@ -254,6 +273,7 @@ def merge(batches: list[Batch]) -> Batch:
     dialects = Dialects()
     context = Context()
     clients: dict[tuple, int] = {}
+    session_pairs: dict[tuple[str, str], int] = {}
     firsts, lasts = [], []
     for batch in batches:
         if batch.period is not None:
@@ -276,6 +296,9 @@ def merge(batches: list[Batch]) -> Batch:
         for client in batch.mcp_clients:
             key = (client.client, client.major)
             clients[key] = clients.get(key, 0) + client.sessions
+        for row in batch.mcp_sessions:
+            pair = (row.queries_ok, row.queries_err)
+            session_pairs[pair] = session_pairs.get(pair, 0) + row.sessions
     return Batch(
         period=Period(first=min(firsts), last=max(lasts)) if firsts else None,
         usage=usage,
@@ -286,4 +309,5 @@ def merge(batches: list[Batch]) -> Batch:
             McpClientCount(client=client, major=major, sessions=sessions)
             for (client, major), sessions in sorted(clients.items(), key=lambda kv: (kv[0][0], kv[0][1] or 0))
         ],
+        mcp_sessions=session_counts(session_pairs),
     )

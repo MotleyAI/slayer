@@ -268,6 +268,45 @@ class LibraryNameShadowWarning(SlayerWarning):
         )
 
 
+class BrokenDependentWarning(SlayerWarning):
+    """A re-ingest re-typed ``column`` to a list, and the stored definition ``name`` that planned before it fails
+    after (``checked=False``: the check could not run, for ``reason``)."""
+
+    kind: Literal["broken_dependent"] = "broken_dependent"
+    model: str
+    data_source: str
+    dependent_kind: Literal["measure", "column", "filter", "saved_query"]
+    name: str
+    column: str
+    checked: bool = True
+    error_type: Optional[str] = None
+    error: Optional[str] = None
+    reason: Optional[str] = None
+
+    def human_message(self) -> str:
+        where = f"{self.dependent_kind} {self.data_source}.{self.model}.{self.name}"
+        if not self.checked:
+            return _single_line(f"{where} reads {self.column}, re-typed to a list, and could not be checked: "
+                                f"{self.reason}")
+        return _single_line(f"{where} breaks now that {self.column} is a list: {self.error}")
+
+
+class WholeListWarning(SlayerWarning):
+    """A query reads the whole list ``list`` as its element set: grouping by it (``operation="group"``) or counting
+    its distinct element sets (``operation="count_distinct"``)."""
+
+    kind: Literal["whole_list"] = "whole_list"
+    operation: Literal["group", "count_distinct"]
+    list: str
+
+    def human_message(self) -> str:
+        if self.operation == "group":
+            return (f"grouping by the list {self.list!r} reads each whole list as a set of its distinct elements; "
+                    f"group by {self.list}.value for one row per element")
+        return (f"count_distinct({self.list}) counts distinct whole lists, each read as a set of its distinct "
+                f"elements; count_distinct({self.list}.value) counts distinct elements")
+
+
 # Discriminated union, not the bare base: a ``List[SlayerWarning]`` would validate
 # down to the base type and drop subclass fields. Keyed on ``kind``, each round-trips.
 AnySlayerWarning = Annotated[
@@ -284,6 +323,8 @@ AnySlayerWarning = Annotated[
         UnloadableDocumentWarning,
         NarrowedAccessWarning,
         LibraryNameShadowWarning,
+        BrokenDependentWarning,
+        WholeListWarning,
     ],
     Field(discriminator="kind"),
 ]
@@ -359,6 +400,28 @@ class SlayerLibraryNameShadowWarning(UserWarning):
     """Carrier ``UserWarning`` for a ``LibraryNameShadowWarning`` payload — one wording on both channels."""
 
     def __init__(self, payload: LibraryNameShadowWarning) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerBrokenDependentWarning(UserWarning):
+    """Carrier ``UserWarning`` for a ``BrokenDependentWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: BrokenDependentWarning) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerWholeListWarning(UserWarning):
+    """Carrier ``UserWarning`` for a ``WholeListWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: WholeListWarning) -> None:
         super().__init__(payload)
         self.payload = payload
 

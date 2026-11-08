@@ -59,9 +59,9 @@ class _KeysInspector:
 
 def _base_keys(inspector: _KeysInspector) -> TableKeys:
     """The base key hook through SQLite (PK Inspector-authoritative, no catalog fallback)."""
-    with disposable_engine("sqlite://") as engine:
+    with disposable_engine("sqlite://") as engine, engine.connect() as conn:
         return SqliteDialect().reflect_table_keys(
-            sa_engine=engine, inspector=cast(sa.engine.Inspector, inspector),
+            connection=conn, inspector=cast(sa.engine.Inspector, inspector),
             table="t", schema=None, catalog=None,
         )
 

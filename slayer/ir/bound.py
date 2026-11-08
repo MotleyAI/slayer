@@ -111,3 +111,12 @@ class GranularityConflict(BaseModel):
 
     column: str
     granularities: Tuple[Granularity, Granularity]
+
+
+class WholeListRead(BaseModel):
+    """A query reading the whole list ``list`` as its element set: grouping by it, or counting its distinct sets."""
+
+    model_config = ConfigDict(frozen=True)
+
+    operation: Literal["group", "count_distinct"]
+    list: str

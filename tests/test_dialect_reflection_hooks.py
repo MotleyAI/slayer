@@ -69,30 +69,18 @@ class _Rows:
 
 
 class _RecordingConnection:
-    def __init__(self, *, log: list[str], respond: Callable[[str], list[tuple]]) -> None:
-        self._log = log
-        self._respond = respond
-
-    def __enter__(self) -> _RecordingConnection:
-        return self
-
-    def __exit__(self, *_exc: object) -> None:
-        return None
-
-    def exec_driver_sql(self, statement: str, *args: Any, **kwargs: Any) -> _Rows:
-        assert not args, "catalog queries carry no bind parameters"
-        assert not kwargs, "catalog queries carry no bind parameters"
-        self._log.append(statement)
-        return _Rows(self._respond(statement))
-
-
-class _RecordingEngine:
     def __init__(self, *, backend: str) -> None:
         self.dialect = SimpleNamespace(name=backend)
         self.statements: list[str] = []
 
-    def connect(self) -> _RecordingConnection:
-        return _RecordingConnection(log=self.statements, respond=_respond)
+    def exec_driver_sql(self, statement: str, *args: Any, **kwargs: Any) -> _Rows:
+        assert not args, "catalog queries carry no bind parameters"
+        assert not kwargs, "catalog queries carry no bind parameters"
+        self.statements.append(statement)
+        return _Rows(_respond(statement))
+
+    def rollback(self) -> None:
+        pass
 
 
 def _respond(statement: str) -> list[tuple]:
@@ -115,12 +103,12 @@ def _emit(
     *, dialect: SqlDialect, backend: str, table: str = "orders",
     schema: str | None, catalog: str | None = None,
 ) -> tuple[list[ReflectedColumn], list[str]]:
-    engine = _RecordingEngine(backend=backend)
+    conn = _RecordingConnection(backend=backend)
     cols = dialect.reflect_columns(
-        sa_engine=engine, inspector=_ColumnsRaisingInspector(),
+        connection=conn, inspector=_ColumnsRaisingInspector(),
         table=table, schema=schema, catalog=catalog,
     )
-    return cols, engine.statements
+    return cols, conn.statements
 
 
 def _parse(sql: str, read: str) -> exp.Select:
@@ -173,7 +161,7 @@ class TestCatalogQueryEmission:
         assert order is not None
         assert "ordinal_position" in order.sql().lower()
         assert cols == [ReflectedColumn(
-            name="id", type=DataType.INT, is_float=False, db_type=None, comment=None,
+            name="id", type=DataType.INT, is_float=False, db_type=None, comment=None, type_name="INTEGER",
         )]
 
     def test_base_columns_query_without_catalog_has_no_catalog_predicate(self) -> None:
@@ -311,10 +299,11 @@ def _attached(paths: tuple[Path, Path]) -> Iterator[sa.Engine]:
 
 
 def _keys(engine: sa.Engine, *, table: str, schema: str = "main", catalog: str = "keys") -> TableKeys:
-    return DuckdbDialect().reflect_table_keys(
-        sa_engine=engine, inspector=_ExplodingInspector(),
-        table=table, schema=schema, catalog=catalog,
-    )
+    with engine.connect() as conn:
+        return DuckdbDialect().reflect_table_keys(
+            connection=conn, inspector=_ExplodingInspector(),
+            table=table, schema=schema, catalog=catalog,
+        )
 
 
 # Every unique index reports SQL sqlglot cannot parse.
@@ -378,9 +367,9 @@ class TestDuckdbTableKeys:
 
 class TestDuckdbColumns:
     def test_types_comments_and_order_from_duckdb_columns(self, duck_paths) -> None:
-        with _attached(duck_paths) as engine:
+        with _attached(duck_paths) as engine, engine.connect() as conn:
             cols = DuckdbDialect().reflect_columns(
-                sa_engine=engine, inspector=_ExplodingInspector(),
+                connection=conn, inspector=_ExplodingInspector(),
                 table="typed", schema="main", catalog="keys",
             )
         assert [(c.name, c.type, c.is_float, c.db_type, c.comment) for c in cols] == [
@@ -395,9 +384,9 @@ class TestDuckdbColumns:
         ]
 
     def test_attached_twin_columns_are_scoped_out(self, duck_paths) -> None:
-        with _attached(duck_paths) as engine:
+        with _attached(duck_paths) as engine, engine.connect() as conn:
             cols = DuckdbDialect().reflect_columns(
-                sa_engine=engine, inspector=_ExplodingInspector(),
+                connection=conn, inspector=_ExplodingInspector(),
                 table="typed", schema="main", catalog="aaa",
             )
         assert [(c.name, c.comment) for c in cols] == [
@@ -467,27 +456,29 @@ class _KeylessInspector:
 ])
 def test_keyless_table_reads_no_catalog_where_the_inspector_is_final(dialect: SqlDialect, backend: str) -> None:
     """Snowflake's INFORMATION_SCHEMA has no KEY_COLUMN_USAGE, so its Inspector's empty PK is final."""
-    engine = _RecordingEngine(backend=backend)
-    keys = dialect.reflect_table_keys(sa_engine=engine, inspector=_KeylessInspector(), table="t", schema="s",
+    conn = _RecordingConnection(backend=backend)
+    keys = dialect.reflect_table_keys(connection=conn, inspector=_KeylessInspector(), table="t", schema="s",
                                       catalog=None)
     assert keys.primary_key == []
-    assert engine.statements == []
+    assert conn.statements == []
 
 
 class TestSqliteBaseKeys:
     def test_pk_unique_and_whole_table_unique_index(self, sqlite_engine) -> None:
-        keys = SqliteDialect().reflect_table_keys(
-            sa_engine=sqlite_engine, inspector=sa.inspect(sqlite_engine),
-            table="customers", schema=None, catalog=None,
-        )
+        with sqlite_engine.connect() as conn:
+            keys = SqliteDialect().reflect_table_keys(
+                connection=conn, inspector=sa.inspect(conn),
+                table="customers", schema=None, catalog=None,
+            )
         assert keys.primary_key == ["id"]
         assert _key_sets(keys) == {("email",), ("a", "b"), ("code",)}
 
     def test_foreign_keys(self, sqlite_engine) -> None:
-        keys = SqliteDialect().reflect_table_keys(
-            sa_engine=sqlite_engine, inspector=sa.inspect(sqlite_engine),
-            table="orders", schema=None, catalog=None,
-        )
+        with sqlite_engine.connect() as conn:
+            keys = SqliteDialect().reflect_table_keys(
+                connection=conn, inspector=sa.inspect(conn),
+                table="orders", schema=None, catalog=None,
+            )
         assert {
             (tuple(fk.columns), fk.referred_table, tuple(fk.referred_columns), fk.referred_schema)
             for fk in keys.foreign_keys
@@ -497,16 +488,17 @@ class TestSqliteBaseKeys:
         }
 
     def test_pk_never_falls_back_to_information_schema(self, sqlite_engine) -> None:
-        with _statements(sqlite_engine) as seen:
+        with _statements(sqlite_engine) as seen, sqlite_engine.connect() as conn:
             SqliteDialect().reflect_table_keys(
-                sa_engine=sqlite_engine, inspector=sa.inspect(sqlite_engine),
+                connection=conn, inspector=sa.inspect(conn),
                 table="orders", schema=None, catalog=None,
             )
         assert not [s for s in seen if "information_schema" in s.lower()]
 
     def test_columns_through_the_inspector(self, sqlite_engine) -> None:
-        cols = SqliteDialect().reflect_columns(
-            sa_engine=sqlite_engine, inspector=sa.inspect(sqlite_engine),
-            table="orders", schema=None, catalog=None,
-        )
+        with sqlite_engine.connect() as conn:
+            cols = SqliteDialect().reflect_columns(
+                connection=conn, inspector=sa.inspect(conn),
+                table="orders", schema=None, catalog=None,
+            )
         assert [c.name for c in cols] == ["id", "customer_id", "a", "b"]

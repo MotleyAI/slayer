@@ -4,7 +4,7 @@ import logging
 import os
 import tempfile
 from collections.abc import AsyncIterator, Callable, Iterator
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any, NoReturn
 from unittest.mock import patch
@@ -78,7 +78,7 @@ class _Rows:
         return iter(self._rows)
 
 
-class _CatalogEngine:
+class _CatalogConnection:
     """Records every catalog statement; answers each through ``respond``."""
 
     def __init__(self, *, backend: str, respond: Callable[[str], list[tuple]]) -> None:
@@ -86,15 +86,14 @@ class _CatalogEngine:
         self.statements: list[str] = []
         self._respond = respond
 
-    @contextmanager
-    def connect(self) -> Iterator[SimpleNamespace]:
-        def _exec(statement: str, *args: Any, **kwargs: Any) -> _Rows:
-            assert not args, "catalog queries carry no bind parameters"
-            assert not kwargs, "catalog queries carry no bind parameters"
-            self.statements.append(statement)
-            return _Rows(self._respond(statement))
+    def exec_driver_sql(self, statement: str, *args: Any, **kwargs: Any) -> _Rows:
+        assert not args, "catalog queries carry no bind parameters"
+        assert not kwargs, "catalog queries carry no bind parameters"
+        self.statements.append(statement)
+        return _Rows(self._respond(statement))
 
-        yield SimpleNamespace(exec_driver_sql=_exec)
+    def rollback(self) -> None:
+        pass
 
 
 class _Inspector:
@@ -121,13 +120,13 @@ class _Inspector:
         return []
 
 
-def _columns_engine(rows: list[tuple], *, backend: str = "firebird") -> _CatalogEngine:
-    return _CatalogEngine(
+def _columns_connection(rows: list[tuple], *, backend: str = "firebird") -> _CatalogConnection:
+    return _CatalogConnection(
         backend=backend, respond=lambda sql: rows if "data_type" in sql.lower() else [],
     )
 
 
-def _pk_engine(rows: list[tuple] | Exception, *, backend: str = "firebird") -> _CatalogEngine:
+def _pk_connection(rows: list[tuple] | Exception, *, backend: str = "firebird") -> _CatalogConnection:
     def _respond(sql: str) -> list[tuple]:
         if "key_column_usage" not in sql.lower():
             return []
@@ -135,11 +134,11 @@ def _pk_engine(rows: list[tuple] | Exception, *, backend: str = "firebird") -> _
             raise rows
         return rows
 
-    return _CatalogEngine(backend=backend, respond=_respond)
+    return _CatalogConnection(backend=backend, respond=_respond)
 
 
-def _pk_queries(engine: _CatalogEngine) -> list[str]:
-    return [s for s in engine.statements if "key_column_usage" in s.lower()]
+def _pk_queries(conn: _CatalogConnection) -> list[str]:
+    return [s for s in conn.statements if "key_column_usage" in s.lower()]
 
 
 @asynccontextmanager
@@ -172,11 +171,11 @@ def _literals(sql: str, *, read: str = "postgres") -> dict[str, str]:
 
 
 def _reflect_columns(
-    engine: _CatalogEngine, *, dialect: SqlDialect | None = None, table: str = "orders",
+    conn: _CatalogConnection, *, dialect: SqlDialect | None = None, table: str = "orders",
     schema: str | None = None,
 ) -> list[ReflectedColumn]:
     return (dialect or SqlDialect()).reflect_columns(
-        sa_engine=engine, inspector=_Inspector(), table=table, schema=schema, catalog=None,
+        connection=conn, inspector=_Inspector(), table=table, schema=schema, catalog=None,
     )
 
 
@@ -184,12 +183,12 @@ _NO_PK = object()
 
 
 def _reflect_pk(
-    engine: _CatalogEngine, *, dialect: SqlDialect | None = None, pk: object = _NO_PK,
+    conn: _CatalogConnection, *, dialect: SqlDialect | None = None, pk: object = _NO_PK,
     table: str = "orders", schema: str | None = None,
 ) -> list[str]:
     inspector = _Inspector(pk={"constrained_columns": []} if pk is _NO_PK else pk)
     return (dialect or SqlDialect()).reflect_table_keys(
-        sa_engine=engine, inspector=inspector, table=table, schema=schema, catalog=None,
+        connection=conn, inspector=inspector, table=table, schema=schema, catalog=None,
     ).primary_key
 
 
@@ -226,7 +225,7 @@ class TestBaseColumnsFallback:
     """The base ``reflect_columns`` falls back to INFORMATION_SCHEMA when the Inspector raises."""
 
     def test_without_schema(self):
-        engine = _columns_engine([("id", "INTEGER"), ("name", "VARCHAR")])
+        engine = _columns_connection([("id", "INTEGER"), ("name", "VARCHAR")])
         result = _reflect_columns(engine)
 
         assert [c.name for c in result] == ["id", "name"]
@@ -236,7 +235,7 @@ class TestBaseColumnsFallback:
         assert "table_schema" not in literals
 
     def test_with_schema(self):
-        engine = _columns_engine([("id", "INTEGER")])
+        engine = _columns_connection([("id", "INTEGER")])
         result = _reflect_columns(engine, schema="public")
 
         assert [c.name for c in result] == ["id"]
@@ -247,7 +246,7 @@ class TestBaseColumnsFallback:
 
     def test_bigquery_uses_dataset_qualified_information_schema(self):
         """A dataset-scoped BigQuery account cannot read the project-level view."""
-        engine = _columns_engine([("id", "INTEGER")], backend="bigquery")
+        engine = _columns_connection([("id", "INTEGER")], backend="bigquery")
         _reflect_columns(engine, dialect=BigqueryDialect(), table="core.mart__kpis")
 
         (sql,) = [s for s in engine.statements if "data_type" in s.lower()]
@@ -256,7 +255,7 @@ class TestBaseColumnsFallback:
 
     def test_bigquery_dataset_is_quoted_and_escaped(self):
         """A hostile dataset name cannot break out of the identifier."""
-        engine = _columns_engine([], backend="bigquery")
+        engine = _columns_connection([], backend="bigquery")
         _reflect_columns(
             engine, dialect=BigqueryDialect(), schema="evil` UNION SELECT 1,2 FROM `x",
         )
@@ -272,7 +271,7 @@ class TestBaseColumnsFallback:
     def test_hostile_names_stay_escaped_literals(self):
         """table/schema values only ever appear as escaped string literals."""
         payload = "'; DROP TABLE users;--"
-        engine = _columns_engine([])
+        engine = _columns_connection([])
         _reflect_columns(engine, table=payload, schema=payload)
 
         (sql,) = [s for s in engine.statements if "data_type" in s.lower()]
@@ -282,7 +281,7 @@ class TestBaseColumnsFallback:
 
     def test_decimal_variants_capture_db_type_and_map_numeric(self):
         """Decimal64/BIGNUMERIC must keep db_type and map numeric, not TEXT."""
-        engine = _columns_engine([("short_amount", "Decimal64(4)"), ("big_amount", "BIGNUMERIC")])
+        engine = _columns_connection([("short_amount", "Decimal64(4)"), ("big_amount", "BIGNUMERIC")])
         by_name = {c.name: c for c in _reflect_columns(engine)}
 
         assert by_name["short_amount"].type is DataType.DOUBLE
@@ -292,7 +291,7 @@ class TestBaseColumnsFallback:
 
     def test_wrapped_decimals_unwrap_and_capture_db_type(self):
         """ClickHouse wrapper text must not defeat the fallback mapping (CodeRabbit)."""
-        engine = _columns_engine(
+        engine = _columns_connection(
             [
                 ("amount", "Nullable(Decimal(18, 2))"),
                 ("ratio", "LowCardinality(Nullable(Decimal(10, 4)))"),
@@ -311,7 +310,7 @@ class TestBasePkFallback:
     """The base ``reflect_table_keys`` reads the PK from INFORMATION_SCHEMA when the Inspector has none."""
 
     def test_without_schema(self):
-        engine = _pk_engine([("id",)])
+        engine = _pk_connection([("id",)])
         assert _reflect_pk(engine) == ["id"]
 
         (sql,) = _pk_queries(engine)
@@ -320,7 +319,7 @@ class TestBasePkFallback:
         assert "table_schema" not in literals
 
     def test_with_schema(self):
-        engine = _pk_engine([("id",), ("tenant_id",)])
+        engine = _pk_connection([("id",), ("tenant_id",)])
         assert _reflect_pk(engine, schema="public") == ["id", "tenant_id"]
 
         (sql,) = _pk_queries(engine)
@@ -329,12 +328,12 @@ class TestBasePkFallback:
         assert literals["table_schema"] == "public"
 
     def test_empty_result(self):
-        assert _reflect_pk(_pk_engine([]), table="no_pk_table") == []
+        assert _reflect_pk(_pk_connection([]), table="no_pk_table") == []
 
     def test_hostile_names_stay_escaped_literals(self):
         """table/schema values only ever appear as escaped string literals."""
         payload = "'; DROP TABLE users;--"
-        engine = _pk_engine([])
+        engine = _pk_connection([])
         _reflect_pk(engine, table=payload, schema=payload)
 
         (sql,) = _pk_queries(engine)
@@ -412,7 +411,7 @@ class TestGenerateJoinsDedup:
                 "CREATE TABLE orders (id INTEGER PRIMARY KEY, buyer_id INTEGER, seller_id INTEGER);"
             )
 
-        def _keys(self, *, sa_engine, inspector, table, schema, catalog) -> TableKeys:
+        def _keys(self, *, connection, inspector, table, schema, catalog) -> TableKeys:
             return TableKeys(
                 primary_key=["id"], foreign_keys=fks if table == "orders" else [],
                 unique_key_sets=[],
@@ -448,7 +447,7 @@ class TestPkFallbackNeverSinksTheTable:
 
     def test_bigquery_skips_the_fallback_entirely(self):
         """It can only fail there, and each attempt is a billed query."""
-        engine = _pk_engine([("id",)], backend="bigquery")
+        engine = _pk_connection([("id",)], backend="bigquery")
         pk = _reflect_pk(
             engine, dialect=BigqueryDialect(), pk={"constrained_columns": []}, schema="core",
         )
@@ -456,7 +455,7 @@ class TestPkFallbackNeverSinksTheTable:
         assert _pk_queries(engine) == []
 
     def test_failing_fallback_yields_no_pk_instead_of_raising(self):
-        engine = _pk_engine(Exception("403 Access Denied: information_schema"), backend="postgresql")
+        engine = _pk_connection(Exception("403 Access Denied: information_schema"), backend="postgresql")
         pk = _reflect_pk(
             engine, dialect=PostgresDialect(), pk={"constrained_columns": []}, schema="public",
         )
@@ -466,7 +465,7 @@ class TestPkFallbackNeverSinksTheTable:
 
     def test_fallback_still_answers_when_the_inspector_is_empty(self):
         """The reason the fallback exists."""
-        engine = _pk_engine([("id",)])
+        engine = _pk_connection([("id",)])
         assert _reflect_pk(engine, pk={"constrained_columns": []}) == ["id"]
         assert len(_pk_queries(engine)) == 1
 
@@ -483,18 +482,18 @@ class TestPkFallbackNeverSinksTheTable:
     )
     def test_malformed_inspector_pk_normalizes(self, malformed):
         """Callers feed the value to set(): None raises, a string splits to chars."""
-        engine = _pk_engine([], backend="bigquery")
+        engine = _pk_connection([], backend="bigquery")
         assert _reflect_pk(engine, dialect=BigqueryDialect(), pk=malformed) == []
 
     def test_malformed_pk_still_reaches_the_fallback(self):
         """Unusable is not an answer — try INFORMATION_SCHEMA, as for empty."""
-        engine = _pk_engine([("id",)], backend="postgresql")
+        engine = _pk_connection([("id",)], backend="postgresql")
         pk = _reflect_pk(engine, dialect=PostgresDialect(), pk={"constrained_columns": "id"})
         assert pk == ["id"]
         assert len(_pk_queries(engine)) == 1
 
     def test_inspector_pk_short_circuits_the_fallback(self):
-        engine = _pk_engine([("other",)], backend="postgresql")
+        engine = _pk_connection([("other",)], backend="postgresql")
         pk = _reflect_pk(engine, dialect=PostgresDialect(), pk={"constrained_columns": ["id"]})
         assert pk == ["id"]
         assert _pk_queries(engine) == []
@@ -512,9 +511,10 @@ class TestSqliteKeyReads:
 
     @staticmethod
     def _pk(engine: sa.Engine, table: str) -> list[str]:
-        return dialect_for_sa_backend(engine.dialect.name).reflect_table_keys(
-            sa_engine=engine, inspector=sa.inspect(engine), table=table, schema=None, catalog=None,
-        ).primary_key
+        with engine.connect() as conn:
+            return dialect_for_sa_backend(engine.dialect.name).reflect_table_keys(
+                connection=conn, inspector=sa.inspect(conn), table=table, schema=None, catalog=None,
+            ).primary_key
 
     def test_sqlite_no_pk(self):
         """Empty inspector PK on SQLite returns empty without info_schema query."""

@@ -19,7 +19,9 @@ from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
-    LIST_VALUE, PORTABLE_LIBRARY, ExtremumFn, IdentifierFolding, NativeFn, ListRelation, SqlDialect, TextFn, anon, as_text, case, either,
+    LegacyTypeCategories,
+    LIST_VALUE, PORTABLE_LIBRARY, ExtremumFn, IdentifierFolding, NativeFn, ListRelation, SqlDialect, TextFn, anon, as_text,
+    case, either,
     element_lambda, lit, operand_copy, setting, text_try_cast,
 )
 from slayer.sql.dialects.patterns import POSIX, RegexFlavour
@@ -159,6 +161,13 @@ class SnowflakeDialect(SqlDialect):
     # INFORMATION_SCHEMA has no KEY_COLUMN_USAGE.
     primary_key_inspector_only: bool = True
     ds_type_aliases: frozenset[str] = frozenset({"snowflake"})
+    legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories(
+        names={
+            "number": "number", "float": "number", "date": "time", "timestamp": "time", "timestamp_ltz": "time",
+            "timestamp_tz": "time", "timestamp_ntz": "time", "time": "time", "boolean": "boolean",
+        },
+        other="string",
+    )
     sa_backend_names: frozenset[str] = frozenset({"snowflake"})
     explain_prefix: str | None = "EXPLAIN USING JSON"
     explain_postfix: str = ""
@@ -217,7 +226,13 @@ class SnowflakeDialect(SqlDialect):
         return kinds.pop() if len(kinds) == 1 else DataType.TEXT
 
     def list_length(self, values: Expression) -> Expression:
-        return anon("ARRAY_SIZE", anon("ARRAY_COMPACT", _semi_structured(values)))
+        return anon("ARRAY_SIZE", values)
+
+    def build_list_set(self, values: Expression, element: Optional[DataType]) -> Expression:
+        return anon("ARRAY_SORT", anon("ARRAY_DISTINCT", anon("ARRAY_COMPACT", _semi_structured(values))))
+
+    def build_list_key(self, values: Expression) -> Expression:
+        return values
 
     def list_contains(self, values: Expression, value: Expression) -> Expression:
         found = exp.Cast(this=operand_copy(value), to=exp.DataType.build("VARIANT"))

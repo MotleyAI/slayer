@@ -31,8 +31,9 @@ class TestGeneratorInvariant:
         qb = SlayerModel(name="qb_unspliced", data_source="test",
                          source_queries=[query(source_model="orders", measures=[m("amount:sum", "a")])])
         generator = SQLGenerator(dialect="postgres")
+        bundle = ResolvedSourceBundle(dialect="postgres", source_model=qb)
         with pytest.raises(ValueError) as exc:
-            generator._build_from_clause_from_planned(source_model=qb, source_relation="qb_unspliced")
+            generator._emit_relation(model=qb, alias="qb_unspliced", bundle=bundle)
         msg = str(exc.value)
         assert "qb_unspliced" in msg, msg
         assert "query-backed" in msg, msg
@@ -134,9 +135,9 @@ class TestEmissionLaw:
         seen: List[tuple] = []
         real = SQLGenerator._emit_relation
 
-        def spy(self, *, model, alias):
+        def spy(self, *, model, alias, bundle):
             seen.append((model.sql_table, frozenset(self._gen_stage_reads)))
-            return real(self, model=model, alias=alias)
+            return real(self, model=model, alias=alias, bundle=bundle)
 
         monkeypatch.setattr(SQLGenerator, "_emit_relation", spy)
         queries = {

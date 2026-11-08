@@ -150,7 +150,7 @@ A bare model name that exists in several datasources resolves to the first liste
 
 ### Validate models
 
-`POST /validate-models` with body `{"data_source": null}` (or a datasource name) diffs the stored models against the live schemas, read-only, and returns the drift findings: the deletes needed to keep them valid plus report-only `list_retype` and `narrowed_access` entries; an unknown datasource returns 404 and an introspection failure 422. See [Schema Drift](../concepts/schema-drift.md).
+`POST /validate-models` with body `{"data_source": null}` (or a datasource name) diffs the stored models against the live schemas, read-only, and returns the drift findings: the deletes needed to keep them valid plus report-only `retype` and `narrowed_access` entries; an unknown datasource returns 404 and an introspection failure 422. See [Schema Drift](../concepts/schema-drift.md).
 
 ### Recommend a root model
 

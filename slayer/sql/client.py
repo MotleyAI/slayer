@@ -22,10 +22,11 @@ from pydantic import BaseModel, Field
 from sqlglot import expressions as exp
 from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expr
-from sqlalchemy.engine.url import make_url
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.engine.url import URL, make_url
+from sqlalchemy.exc import ArgumentError
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from slayer.async_utils import on_caller_thread
+from slayer.async_utils import on_caller_thread, run_sync
 from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
@@ -41,6 +42,7 @@ from slayer.sql.dialects.reflection import (
     TableKeys,
     TableLocation,
     clean_comment,
+    recover,
     schema_token,
 )
 from slayer.sql.render.parse import is_read_only_query, parse_query
@@ -98,29 +100,13 @@ def _dispose_engine_quietly(engine: sa.Engine) -> None:
         logger.warning("Failed to dispose a private in-memory engine.", exc_info=True)
 
 
-def _get_async_engine(connection_string: str):
-    """Create an async engine (not cached — async engines bind to their event loop)."""
-    return create_async_engine(connection_string, pool_pre_ping=True)
-
-
-def _async_connection_string(connection_string: str, db_type: str | None) -> str | None:
-    """The async URL for ``connection_string``, or ``None`` to run sync-in-thread.
-
-    An async-capable driver is kept; the default sync driver moves to the dialect's async
-    driver; any other driver, or a foreign backend, stays sync.
-    """
-    facts = dialect_for_ds_type(db_type).driver_facts(db_type)
-    if facts.async_driver is None:
-        return None
-    url = make_url(connection_string)
-    backend = url.get_backend_name()
-    if backend not in facts.url_backends:
-        return None
-    if url.get_dialect(_is_async=True).is_async:
-        return connection_string
-    if url.drivername.partition("+")[2] != facts.sync_driver:
-        return None
-    return url.set(drivername=f"{backend}+{facts.async_driver}").render_as_string(hide_password=False)
+def _abandon(engines: list[AsyncEngine]) -> None:
+    """Drop engines whose event loop has closed: their pools are dereferenced, never touched from this loop."""
+    for engine in engines:
+        try:
+            engine.sync_engine.dispose(close=False)
+        except Exception:  # pragma: no cover - best-effort
+            logger.warning("Failed to abandon a closed loop's async engine.", exc_info=True)
 
 
 _TEXT = ResultColumnType(type=DataType.TEXT)
@@ -159,15 +145,9 @@ def _types_from_cursor(result: Any, *, dialect: SqlDialect) -> dict[str, ResultC
     return {name: t or _TEXT for name, t in types.items()}
 
 
-_CATEGORIES = {
-    DataType.INT: "number", DataType.DOUBLE: "number", DataType.DATE: "time", DataType.TIMESTAMP: "time",
-    DataType.BOOLEAN: "boolean",
-}
-
-
-def type_categories(types: dict[str, ResultColumnType]) -> dict[str, str]:
-    """The 1.5.0 categories (``number`` / ``string`` / ``time`` / ``boolean``) of typed probe results."""
-    return {name: _CATEGORIES.get(column.type, "string") for name, column in types.items()}
+def type_categories(types: dict[str, ResultColumnType], *, dialect: SqlDialect) -> dict[str, str]:
+    """The 1.6.0 categories (``number`` / ``string`` / ``time`` / ``boolean``) of typed probe results."""
+    return {name: dialect.legacy_type_categories.category(column) for name, column in types.items()}
 
 
 async def _run_sync_in_thread(func, *args, **kwargs):
@@ -175,11 +155,19 @@ async def _run_sync_in_thread(func, *args, **kwargs):
 
     Scoped executor, not the default one: pytest-asyncio can hang on default-
     executor threads after SQLite tests; this one shuts down immediately.
+    Cancellation never waits: the worker is abandoned and finishes on its own.
     """
     loop = asyncio.get_running_loop()
     call = functools.partial(func, *args, **kwargs)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="slayer-blocking")
+    cancelled = False
+    try:
         return await loop.run_in_executor(executor, call)
+    except asyncio.CancelledError:
+        cancelled = True
+        raise
+    finally:
+        executor.shutdown(wait=not cancelled, cancel_futures=cancelled)
 
 
 def render_type_probe(query: Expr, *, dialect: SqlDialect) -> TypeProbe:
@@ -461,7 +449,7 @@ def get_column_types_sync(
     )
     return type_categories(get_result_column_types_sync(
         sql, engine=engine, db_type=db_type, datasource_name=datasource_name,
-    ))
+    ), dialect=dialect_for_ds_type(db_type))
 
 
 async def _get_result_column_types_async(
@@ -532,16 +520,19 @@ class SqlClient(Protocol):
 
 
 class SlayerSQLClient:
-    """Executes SQL against databases via SQLAlchemy.
+    """Executes SQL against databases via SQLAlchemy, through one driver.
 
-    A native async driver where the dialect has one (a missing one raises), else
-    sync-in-thread. The async engine is cached per instance (bound to the current event loop).
+    The driver is the caller's ``sa_engine``'s, else the URL's (the one named, else the type's
+    default). An async-capable driver serves everything on one async engine per event loop; a
+    sync-only driver, or a loop the driver's async mode refuses, runs on its sync engine in a worker.
     A caller's ``sa_engine`` serves every call on the caller's thread and is never disposed here.
     """
 
     def __init__(self, datasource: DatasourceConfig, *, sa_engine: sa.Engine | None = None):
         self.datasource = datasource
-        self._async_engine = None
+        self._async_engines: dict[asyncio.AbstractEventLoop, AsyncEngine] = {}
+        # Guards the per-loop registry; never held across engine construction or disposal.
+        self._async_lock = threading.Lock()
         self._sync_engine: sa.Engine | None = sa_engine
         self._sync_engine_owner: EngineOwner | None = "caller" if sa_engine is not None else None
         # Backstop disposing a client-owned engine when the client is collected unclosed.
@@ -550,16 +541,18 @@ class SlayerSQLClient:
     def close(self) -> None:
         """Dispose this client's private in-memory engine (idempotent).
 
-        The synchronous teardown: a factory-owned engine is left to the factory.
-        An async engine is event-loop-bound and can only be disposed by
-        ``aclose()`` inside its loop — if one is still live here, warn rather
-        than drop it silently (a sync ``close()`` cannot dispose it).
+        A factory-owned engine is left to the factory. Async engines are loop-bound and released
+        only by ``aclose()`` on their own loop: while a live loop's engine remains, this warns.
         """
         self._dispose_private_sync_engine()
-        if self._async_engine is not None:
+        with self._async_lock:
+            closed = self._take_closed_loop_engines()
+            live = bool(self._async_engines)
+        _abandon(closed)
+        if live:
             logger.warning(
-                "SlayerSQLClient.close() cannot dispose the loop-bound async "
-                "engine for datasource %r; await aclose() in its event loop.",
+                "SlayerSQLClient.close() cannot dispose the loop-bound async engines for datasource %r; "
+                "await aclose() on each engine's event loop.",
                 self.datasource.name,
             )
 
@@ -580,14 +573,16 @@ class SlayerSQLClient:
         return False
 
     async def aclose(self) -> None:
-        """Release loop-bound resources (the async engine, idle pooled connections); the client stays usable."""
+        """Release the running loop's resources (its async engine, idle pooled connections); the client stays usable."""
         if self._sync_engine is not None and self._sync_engine_owner == "factory":
             engine_factory.release_idle(self._sync_engine)
-        engine = self._async_engine
+        loop = asyncio.get_running_loop()
+        with self._async_lock:
+            engine = self._async_engines.pop(loop, None)
+            closed = self._take_closed_loop_engines()
+        _abandon(closed)
         if engine is None:
             return
-        # Null first so a failed dispose can't leave a half-torn engine cached.
-        self._async_engine = None
         try:
             await engine.dispose()
         except Exception as exc:  # pragma: no cover
@@ -596,6 +591,11 @@ class SlayerSQLClient:
                 self.datasource.name, exc,
             )
 
+    def _take_closed_loop_engines(self) -> list[AsyncEngine]:
+        """Pop the engines whose loop has closed (callers hold ``_async_lock``)."""
+        closed = [loop for loop in self._async_engines if loop.is_closed()]
+        return [self._async_engines.pop(loop) for loop in closed]
+
     def _connection_datasource(self) -> DatasourceConfig:
         """``datasource`` with its ``${ENV_VAR}`` references resolved (itself when it has none)."""
         ds = self.datasource
@@ -603,20 +603,63 @@ class SlayerSQLClient:
             return ds.resolve_env_vars()
         return ds
 
-    def _get_async_engine(self):
-        """Get or create the async engine for this client (cached per instance); none over a caller's engine."""
-        if self._async_engine is None and self._sync_engine_owner != "caller":
-            ds = self._connection_datasource()
-            conn_str = ds.get_connection_string()
-            dialect = dialect_for_ds_type(ds.type)
-            with plugin_errors(ds, conn_str, dialect=dialect):
-                async_conn_str = _async_connection_string(
-                    connection_string=conn_str, db_type=ds.type,
-                )
-            if async_conn_str:
-                load_driver(ds, async_conn_str, dialect=dialect, is_async=True)
-                self._async_engine = _get_async_engine(async_conn_str)
-        return self._async_engine
+    @property
+    def _dialect(self) -> SqlDialect:
+        return dialect_for_ds_type(self.datasource.type)
+
+    def _async_url(self) -> URL | None:
+        """The connection URL when its driver runs async; ``None`` for a caller's engine or a sync-only driver."""
+        if self._sync_engine_owner is not None and self._sync_engine_owner != "factory":
+            return None
+        ds = self._connection_datasource()
+        conn_str = ds.get_connection_string()
+        if engine_factory._is_in_memory_sqlite(conn_str):
+            return None
+        try:
+            url = make_url(conn_str)
+        except ArgumentError:
+            return None
+        with plugin_errors(ds, conn_str, dialect=self._dialect):
+            is_async = url.get_dialect(_is_async=True).is_async
+        return url if is_async else None
+
+    def _async_engine_here(self) -> AsyncEngine | None:
+        """The running loop's async engine, or ``None`` when this client runs its driver synchronously here."""
+        url = self._async_url()
+        if url is None:
+            return None
+        facts = self._dialect.driver_facts(self.datasource.type)
+        if facts.refuses_loop(url.get_driver_name(), asyncio.get_running_loop()):
+            return None
+        return self._get_async_engine()
+
+    def _warn_bundled_driver(self, url: URL) -> None:
+        facts = self._dialect.driver_facts(self.datasource.type)
+        if facts.bundled_non_default(url):
+            warn_deprecated(
+                f"motley-slayer[{facts.install_extra}] stops installing {url.get_driver_name()} in 2.0; "
+                "depend on it directly.",
+                removal="2.0",
+                stacklevel=3,
+            )
+
+    def _get_async_engine(self) -> AsyncEngine:
+        """The running loop's async engine, built on first use there."""
+        loop = asyncio.get_running_loop()
+        with self._async_lock:
+            engine = self._async_engines.get(loop)
+            closed = self._take_closed_loop_engines()
+        _abandon(closed)
+        if engine is not None:
+            return engine
+        ds = self._connection_datasource()
+        conn_str = ds.get_connection_string()
+        load_driver(ds, conn_str, dialect=self._dialect, is_async=True)
+        self._warn_bundled_driver(make_url(conn_str))
+        engine = create_async_engine(conn_str, pool_pre_ping=True)
+        with self._async_lock:
+            self._async_engines[loop] = engine
+        return engine
 
     def _get_sync_engine_for_client(self) -> sa.Engine:
         """Return a per-client sync engine.
@@ -639,6 +682,8 @@ class SlayerSQLClient:
             return engine
         self._sync_engine = engine_factory.get_engine(ds)
         self._sync_engine_owner = "factory"
+        with contextlib.suppress(ArgumentError):
+            self._warn_bundled_driver(make_url(conn_str))
         return self._sync_engine
 
     async def _blocking(self, func: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
@@ -671,10 +716,7 @@ class SlayerSQLClient:
         return True
 
     async def _discard_engines_on_auth_failure(self, exc: BaseException) -> None:
-        """Async-path cleanup: the sync engine plus this client's async pool.
-
-        Disposing the async pool needs a loop — hence the split from execute_sync.
-        """
+        """Async-path cleanup: the sync engine plus the running loop's async engine."""
         if not self._discard_sync_engine_on_auth_failure(exc):
             return
         await self.aclose()
@@ -692,6 +734,9 @@ class SlayerSQLClient:
         timeout_seconds: int = 120,
     ) -> ExecutionResult:
         """Execute SQL asynchronously."""
+        return await self._typed_execute(sql=sql, timeout_seconds=timeout_seconds)
+
+    async def _typed_execute(self, *, sql: str, timeout_seconds: int) -> ExecutionResult:
         try:
             return await self._execute(sql=sql, timeout_seconds=timeout_seconds)
         except Exception as exc:
@@ -704,7 +749,7 @@ class SlayerSQLClient:
         sql: str,
         timeout_seconds: int,
     ) -> ExecutionResult:
-        async_engine = self._get_async_engine()
+        async_engine = self._async_engine_here()
         db_type = self.datasource.type
         if async_engine is not None:
             return await _execute_with_retry_async(
@@ -714,7 +759,6 @@ class SlayerSQLClient:
                 timeout_seconds=timeout_seconds,
                 datasource_name=self.datasource.name,
             )
-        # No async driver — fall back to sync in thread pool
         return await _execute_with_retry_threaded(
             sql=sql,
             db_type=db_type,
@@ -735,12 +779,11 @@ class SlayerSQLClient:
 
     async def _get_result_column_types(self, *, probe: TypeProbe) -> dict[str, ResultColumnType]:
         db_type = self.datasource.type
-        if not dialect_for_ds_type(db_type).type_probe_uses_sync_driver:
-            async_engine = self._get_async_engine()
-            if async_engine is not None:
-                return await _get_result_column_types_async(
-                    probe, engine=async_engine, db_type=db_type, datasource_name=self.datasource.name,
-                )
+        async_engine = self._async_engine_here()
+        if async_engine is not None:
+            return await _get_result_column_types_async(
+                probe, engine=async_engine, db_type=db_type, datasource_name=self.datasource.name,
+            )
         return await self._blocking(
             get_result_column_types_sync,
             probe,
@@ -756,15 +799,15 @@ class SlayerSQLClient:
             "use get_result_column_types(), which returns SLayer types and database type names.",
             removal="2.0",
         )
-        return type_categories(await self.get_result_column_types(sql))
+        return type_categories(await self.get_result_column_types(sql), dialect=self._dialect)
 
     async def server_profile(self) -> ServerProfile:
         """The server's profile for this client's engine, probed once per engine."""
-        dialect = dialect_for_ds_type(self.datasource.type)
+        dialect = self._dialect
         if dialect.server_profile_sql() is None:
             return ServerProfile()
         try:
-            async_engine = self._get_async_engine()
+            async_engine = self._async_engine_here()
             if async_engine is not None:
                 async with async_engine.connect() as conn:
                     return await _server_profile_async(conn, engine=async_engine, dialect=dialect)
@@ -775,34 +818,33 @@ class SlayerSQLClient:
             await self._typed(exc)
             raise
 
-    # Live metadata: synchronous reflection over the sync engine, off the event loop.
+    # Live metadata: one read on one open sync connection — the async engine's, else the sync engine's off the loop.
 
-    async def _metadata(self, read: Callable[[sa.Engine], _T]) -> _T:
+    async def _metadata(self, read: Callable[[sa.Connection], _T]) -> _T:
         try:
-            engine = self._get_sync_engine_for_client()
-            return await self._blocking(read, engine)
+            async_engine = self._async_engine_here()
+            if async_engine is not None:
+                async with async_engine.connect() as conn:
+                    return await conn.run_sync(read)
+            return await self._blocking(_read_on_connection, self._get_sync_engine_for_client(), read)
         except Exception as exc:
             await self._typed(exc)
             raise
 
-    @property
-    def _dialect(self) -> SqlDialect:
-        return dialect_for_ds_type(self.datasource.type)
-
     async def ping(self) -> None:
         """Raise unless the database answers a trivial statement."""
-
-        def _ping(engine: sa.Engine) -> None:
-            with engine.connect() as conn:
-                _exec_verbatim(conn, "SELECT 1")
-
-        await self._metadata(_ping)
+        await self._metadata(lambda conn: _exec_verbatim(conn, "SELECT 1"))
 
     async def list_schemas(self) -> list[str]:
-        return await self._metadata(lambda engine: list(sa.inspect(engine).get_schema_names() or []))
+        return await self._metadata(lambda conn: list(sa.inspect(conn).get_schema_names() or []))
 
     async def default_schema(self) -> str | None:
-        return await self._metadata(self._default_schema_sync)
+        try:
+            url = make_url(self._connection_datasource().get_connection_string())
+        except ArgumentError:
+            url = None
+        fixed = None if url is None else self._dialect.url_default_schema(url=url)
+        return fixed if fixed is not None else await self._metadata(self._default_schema_sync)
 
     async def current_catalog(self) -> str | None:
         return await self._metadata(self._current_catalog_sync)
@@ -820,87 +862,90 @@ class SlayerSQLClient:
         return await self._metadata(functools.partial(self._table_comment_sync, location=location))
 
     async def schema_description(self, schema: str | None, configured_schema: str | None) -> str | None:
-        return await self._metadata(lambda engine: self._dialect.reflect_schema_description(
-            sa_engine=engine, schema=schema, configured_schema=configured_schema,
+        return await self._metadata(lambda conn: self._dialect.reflect_schema_description(
+            connection=conn, schema=schema, configured_schema=configured_schema,
         ))
 
-    def _default_schema_sync(self, engine: sa.Engine) -> str | None:
-        return self._dialect.reflect_default_schema(sa_engine=engine, inspector=_LazyInspector(engine))
+    def _default_schema_sync(self, conn: sa.Connection) -> str | None:
+        return self._dialect.reflect_default_schema(connection=conn, inspector=_LazyInspector(conn))
 
-    def _current_catalog_sync(self, engine: sa.Engine) -> str | None:
+    def _current_catalog_sync(self, conn: sa.Connection) -> str | None:
         sql = self._dialect.current_catalog_sql()
         if sql is None:
             return None
         try:
-            with engine.connect() as conn:
-                row = _exec_verbatim(conn, sql).fetchone()
+            row = _exec_verbatim(conn, sql).fetchone()
         except Exception as exc:  # noqa: BLE001 — an unknown catalog is None
             if _typed_failure(exc) is not None:
                 raise
+            recover(conn)
             return None
         value = row[0] if row else None
         return value if isinstance(value, str) and value else None
 
-    def _default_token(self, engine: sa.Engine) -> str | None:
+    def _default_token(self, conn: sa.Connection) -> str | None:
         """The connection default as an Inspector token: catalog-qualified where tokens are."""
         if not self._dialect.catalog_qualified_schema_tokens:
             return None
-        return schema_token(schema=self._default_schema_sync(engine), catalog=self._current_catalog_sync(engine))
+        return schema_token(schema=self._default_schema_sync(conn), catalog=self._current_catalog_sync(conn))
 
-    def _location_token(self, engine: sa.Engine, location: TableLocation) -> str | None:
+    def _location_token(self, conn: sa.Connection, location: TableLocation) -> str | None:
         """``location``'s Inspector token; unset parts are the connection's current ones where tokens qualify."""
         if location.catalog is None and self._dialect.catalog_qualified_schema_tokens:
             return schema_token(
-                schema=location.schema_name or self._default_schema_sync(engine),
-                catalog=self._current_catalog_sync(engine),
+                schema=location.schema_name or self._default_schema_sync(conn),
+                catalog=self._current_catalog_sync(conn),
             )
         return schema_token(schema=location.schema_name, catalog=location.catalog)
 
-    def _list_objects_sync(self, engine: sa.Engine, *, schema: str | None) -> ObjectListing:
-        inspector = sa.inspect(engine)
-        if schema is not None and not _schema_listed(inspector, schema):
+    def _list_objects_sync(self, conn: sa.Connection, *, schema: str | None) -> ObjectListing:
+        inspector = sa.inspect(conn)
+        if schema is not None and not _schema_listed(inspector, schema, conn=conn):
             raise ObjectNotFound(f"schema {schema!r} not found")
-        token = schema if schema is not None else self._default_token(engine)
+        token = schema if schema is not None else self._default_token(conn)
         return ObjectListing(
             tables=list(inspector.get_table_names(schema=token) or []),
             views=_object_names(inspector, accessor="get_view_names", token=token),
             materialized_views=_object_names(inspector, accessor="get_materialized_view_names", token=token),
         )
 
-    def _reflect_columns_sync(self, engine: sa.Engine, *, location: TableLocation) -> list[ReflectedColumn]:
+    def _reflect_columns_sync(self, conn: sa.Connection, *, location: TableLocation) -> list[ReflectedColumn]:
         try:
             columns = self._dialect.reflect_columns(
-                sa_engine=engine, inspector=_LazyInspector(engine), table=location.name,
+                connection=conn, inspector=_LazyInspector(conn), table=location.name,
                 schema=location.schema_name, catalog=location.catalog,
             )
         except Exception as exc:
-            if _typed_failure(exc) is None and self._absent(engine, location):
-                raise ObjectNotFound(f"table {location.name!r} not found") from exc
+            if _typed_failure(exc) is None:
+                recover(conn)
+                if self._absent(conn, location):
+                    raise ObjectNotFound(f"table {location.name!r} not found") from exc
             raise
         if not columns:
             raise ObjectNotFound(f"table {location.name!r} not found")
         return columns
 
-    def _absent(self, engine: sa.Engine, location: TableLocation) -> bool:
+    def _absent(self, conn: sa.Connection, location: TableLocation) -> bool:
         """Whether the Inspector confirms ``location`` does not exist (unconfirmable → ``False``)."""
         try:
-            return not sa.inspect(engine).has_table(location.name, schema=self._location_token(engine, location))
+            return not sa.inspect(conn).has_table(location.name, schema=self._location_token(conn, location))
         except Exception:  # noqa: BLE001 — unconfirmable
+            recover(conn)
             return False
 
-    def _reflect_table_keys_sync(self, engine: sa.Engine, *, location: TableLocation) -> TableKeys:
+    def _reflect_table_keys_sync(self, conn: sa.Connection, *, location: TableLocation) -> TableKeys:
         keys = self._dialect.reflect_table_keys(
-            sa_engine=engine, inspector=_LazyInspector(engine), table=location.name,
+            connection=conn, inspector=_LazyInspector(conn), table=location.name,
             schema=location.schema_name, catalog=location.catalog,
         )
         if not (keys.primary_key or keys.foreign_keys or keys.unique_key_sets):
-            self._reflect_columns_sync(engine, location=location)  # a keyless table must exist
+            self._reflect_columns_sync(conn, location=location)  # a keyless table must exist
         return keys
 
-    def _table_comment_sync(self, engine: sa.Engine, *, location: TableLocation) -> str | None:
+    def _table_comment_sync(self, conn: sa.Connection, *, location: TableLocation) -> str | None:
         try:
-            comment = sa.inspect(engine).get_table_comment(
-                location.name, schema=self._location_token(engine, location),
+            comment = sa.inspect(conn).get_table_comment(
+                location.name, schema=self._location_token(conn, location),
             )
         except NotImplementedError:
             return None
@@ -913,8 +958,11 @@ class SlayerSQLClient:
     ) -> ExecutionResult:
         """Execute SQL synchronously (CLI, notebooks, tests).
 
-        Discards only the sync engine on auth failure — no loop for the async pool.
+        An async driver runs on a bridged loop whose engine is released at its end; a sync one
+        runs here, discarding only the sync engine on auth failure.
         """
+        if self._async_url() is not None:
+            return run_sync(self._execute_bridged(sql=sql, timeout_seconds=timeout_seconds))
         try:
             return _execute_with_retry_sync(
                 sql=sql,
@@ -926,6 +974,17 @@ class SlayerSQLClient:
         except Exception as exc:
             self._discard_sync_engine_on_auth_failure(exc)
             raise
+
+    async def _execute_bridged(self, *, sql: str, timeout_seconds: int) -> ExecutionResult:
+        try:
+            return await self._typed_execute(sql=sql, timeout_seconds=timeout_seconds)
+        finally:
+            await asyncio.shield(self.aclose())
+
+
+def _read_on_connection(engine: sa.Engine, read: Callable[[sa.Connection], _T]) -> _T:
+    with engine.connect() as conn:
+        return read(conn)
 
 
 # Placeholder in the retry warning when the SQL is empty/whitespace.
@@ -1263,23 +1322,24 @@ def _typed_failure(exc: BaseException) -> SqlClientError | None:
 
 
 class _LazyInspector:
-    """An Inspector built on first use, so a hook that never reads it never connects."""
+    """An Inspector built on first use, so a hook that never reads it never builds one."""
 
-    def __init__(self, engine: sa.Engine) -> None:
-        self._engine = engine
+    def __init__(self, conn: sa.Connection) -> None:
+        self._conn = conn
         self._inspector: Any = None
 
     def __getattr__(self, name: str) -> Any:
         if self._inspector is None:
-            self._inspector = sa.inspect(self._engine)
+            self._inspector = sa.inspect(self._conn)
         return getattr(self._inspector, name)
 
 
-def _schema_listed(inspector: Any, schema: str) -> bool:
+def _schema_listed(inspector: Any, schema: str, *, conn: sa.Connection) -> bool:
     """Whether ``schema`` (bare or catalog-qualified) is among the listed schemas; unlistable → ``True``."""
     try:
         names = [n.casefold() for n in inspector.get_schema_names() or []]
     except Exception:  # noqa: BLE001 — unknown listing never claims absence
+        recover(conn)
         return True
     wanted = schema.casefold()
     return any(n == wanted or ("." not in wanted and n.rpartition(".")[2] == wanted) for n in names)
@@ -1314,6 +1374,17 @@ class DelegatingSqlClient:
 
     async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
         return await self.inner.get_result_column_types(sql)
+
+    async def get_column_types(self, sql: str) -> dict[str, str]:
+        """Deprecated: the 1.6.0 category probe; use ``get_result_column_types``."""
+        warn_deprecated(
+            "DelegatingSqlClient.get_column_types() returns 1.6.0 type categories and is removed in SLayer 2.0; "
+            "use get_result_column_types(), which returns SLayer types and database type names.",
+            removal="2.0",
+        )
+        return type_categories(
+            await self.inner.get_result_column_types(sql), dialect=dialect_for_ds_type(self.datasource.type),
+        )
 
     async def server_profile(self) -> ServerProfile:
         return await self.inner.server_profile()
@@ -1350,3 +1421,44 @@ class DelegatingSqlClient:
 
     def close(self) -> None:
         self.inner.close()
+
+
+class BorrowedSqlClient(DelegatingSqlClient):
+    """``inner`` lent to another engine: closing it here leaves ``inner`` open."""
+
+    async def aclose(self) -> None:
+        """No-op: the lender closes ``inner``."""
+
+    def close(self) -> None:
+        """No-op: the lender closes ``inner``."""
+
+
+_CATEGORY_TYPES = {
+    "number": DataType.DOUBLE, "string": DataType.TEXT, "time": DataType.TIMESTAMP, "boolean": DataType.BOOLEAN,
+}
+
+
+class _CategoryProbeClient(DelegatingSqlClient):
+    """A client written for 1.6.0, whose type probe is ``get_column_types``: its categories read as types."""
+
+    async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
+        warn_deprecated(
+            "A SQL client's get_column_types() is the 1.6.0 type probe and is no longer called in SLayer 2.0; "
+            "implement get_result_column_types(), which returns SLayer types and database type names.",
+            removal="2.0",
+        )
+        categories: dict[str, str] = await self.inner.get_column_types(sql)  # pyright: ignore[reportAttributeAccessIssue]
+        return {name: ResultColumnType(type=_CATEGORY_TYPES.get(c, DataType.TEXT)) for name, c in categories.items()}
+
+
+def adapt_client(client: SqlClient) -> SqlClient:
+    """``client``, wrapped to probe through its 1.6.0 ``get_column_types`` when that is the only probe it serves."""
+    if isinstance(client, DelegatingSqlClient):
+        cls = type(client)
+        legacy = (cls.get_result_column_types is DelegatingSqlClient.get_result_column_types
+                  and cls.get_column_types is not DelegatingSqlClient.get_column_types)
+    else:
+        typed = getattr(client, "get_result_column_types", None)
+        stub = typed is None or getattr(typed, "__func__", None) is SqlClient.get_result_column_types
+        legacy = stub and hasattr(client, "get_column_types")
+    return _CategoryProbeClient(client) if legacy else client

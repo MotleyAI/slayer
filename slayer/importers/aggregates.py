@@ -29,6 +29,11 @@ from slayer.sql.dialects.base import ListFn
 
 _SENTINEL_PREFIX = "SLAYERTOKEN"
 _SIMPLE_AGG = {exp.Sum: "sum", exp.Avg: "avg", exp.Min: "min", exp.Max: "max"}
+_STAT_AGG: dict[type[exp.Expr], str] = {
+    exp.Stddev: "stddev_samp", exp.StddevSamp: "stddev_samp", exp.StddevPop: "stddev_pop",
+    exp.Variance: "var_samp", exp.VariancePop: "var_pop",
+}
+_STAT_AGG2: dict[type[exp.Expr], str] = {exp.Corr: "corr", exp.CovarSamp: "covar_samp", exp.CovarPop: "covar_pop"}
 _AGG_NODES = (exp.Filter, exp.AggFunc, exp.WithinGroup)
 
 _BINARY_OPS: dict[type[exp.Expr], str] = {
@@ -153,6 +158,10 @@ class OperandPolicy:
         """The reference ``agg`` aggregates: ``operand`` over the rows ``mask`` keeps."""
         raise NotImplementedError
 
+    def param(self, operand: exp.Expr, *, mask: exp.Expr | None, agg: str) -> str:
+        """The reference an aggregation parameter binds (``other=``)."""
+        return self.operand(operand, mask=mask, agg=agg)
+
     def is_list(self, operand: exp.Expr) -> bool:  # NOSONAR(S1172) — hook default
         """Whether ``operand`` is a list-valued column."""
         return False
@@ -183,6 +192,14 @@ class InlineOperands(OperandPolicy):
 
     def is_list(self, operand: exp.Expr) -> bool:
         return isinstance(operand, exp.Column) and self._is_list(operand.table or None, operand.name)
+
+    def param(self, operand: exp.Expr, *, mask: exp.Expr | None, agg: str) -> str:
+        """A parameter binds only a column: a bare one, else a materialized one."""
+        if mask is None and isinstance(operand, exp.Column):
+            return self._column_ref(operand.table or None, operand.name)
+        if mask is not None:
+            operand = exp.Case(ifs=[exp.If(this=mask.copy(), true=operand.copy())])
+        return self._materialize(operand)
 
     def operand(self, operand: exp.Expr, *, mask: exp.Expr | None, agg: str) -> str:
         if mask is not None:
@@ -397,6 +414,17 @@ class _Translator:
             return self._count_ref(node, mask=mask)
         if isinstance(node, exp.ArrayAgg):
             return self._collect_ref(node, mask=mask)
+        if type(node) in _STAT_AGG or isinstance(node, exp.ApproxDistinct):
+            if isinstance(node.this, exp.Distinct) or node.args.get("accuracy") is not None:
+                raise Unconvertible(f"{node.key.upper()} with DISTINCT or an accuracy is not supported")
+            agg = _STAT_AGG.get(type(node), "count_distinct_approx")
+            self._refuse_list(node.this, agg.upper())
+            return functional_agg_text(source=self.policy.operand(node.this, mask=mask, agg=agg), suffix=agg)
+        if type(node) in _STAT_AGG2:
+            agg = _STAT_AGG2[type(node)]
+            self._refuse_list(node.this, agg.upper())
+            value = self.policy.operand(node.this, mask=mask, agg=agg)
+            return f"{agg}({value}, other={self.policy.param(node.expression, mask=mask, agg=agg)})"
         name = node.sql_name() if isinstance(node, exp.Func) else node.key
         raise Unconvertible(f"unsupported aggregation {name!r}")
 

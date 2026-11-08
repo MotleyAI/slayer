@@ -205,13 +205,13 @@ class _InspectorClient(DelegatingSqlClient):
 
     async def reflect_columns(self, location: TableLocation) -> list[ReflectedColumn]:
         return SqlDialect().reflect_columns(
-            sa_engine=MagicMock(), inspector=self._inspector, table=location.name,
+            connection=MagicMock(), inspector=self._inspector, table=location.name,
             schema=location.schema_name, catalog=location.catalog,
         )
 
     async def reflect_table_keys(self, location: TableLocation) -> TableKeys:
         return SqlDialect().reflect_table_keys(
-            sa_engine=MagicMock(), inspector=self._inspector, table=location.name,
+            connection=MagicMock(), inspector=self._inspector, table=location.name,
             schema=location.schema_name, catalog=location.catalog,
         )
 

@@ -179,6 +179,7 @@ All code, old and new, MUST obey these.
 23. **One database door**: every live database access — statement or metadata —
     goes through a client owned by a query engine.
     [enforced: test:tests/test_law_database_door.py]
+18. **Fail at save time**: a stored definition guaranteed to fail every query that reads it is refused when saved, wherever the check is affordable; query time keeps the same check as a fail-closed backstop for definitions stored without it. [review]
 
 ## 4. Enforcement
 

@@ -408,14 +408,14 @@ def normalize_aggregation_name(name: str) -> str:
 # Built-in aggregation SQL formulas (for aggregations that use a template).
 # {value} = measure's SQL expression; {param_name} = parameter values.
 # Note: percentile is dialect-dependent (no single template works on
-# SQLite/ClickHouse/MySQL) and lives in generator._build_percentile instead.
+# SQLite/ClickHouse/MySQL) and lives in render_aggregate instead.
 BUILTIN_AGGREGATION_FORMULAS: dict[str, str] = {
     # A NULL value's weight is skipped like the value; ``* 1.0`` keeps integer inputs from dividing as integers.
     "weighted_avg": "SUM({value} * {weight}) * 1.0 / NULLIF(SUM(CASE WHEN {value} IS NOT NULL THEN {weight} END), 0)",
 }
 
 # Built-in aggregations that require specific parameters.
-# Percentile's required-param check lives in generator._build_percentile.
+# Percentile's required-param check lives in render_aggregate.
 BUILTIN_AGGREGATION_REQUIRED_PARAMS: dict[str, list[str]] = {
     "weighted_avg": ["weight"],
     "corr": ["other"],
@@ -467,8 +467,8 @@ DEFAULT_AGGREGATIONS_BY_TYPE: dict[DataType, frozenset[str]] = {
     DataType.BOOLEAN: _NUMERIC_AGGREGATIONS,
     DataType.DATE: _ORDERED_AGGREGATIONS,
     DataType.TIMESTAMP: _ORDERED_AGGREGATIONS,
-    # A list counts as a whole; its elements aggregate through ``<column>.value``.
-    DataType.ARRAY: frozenset({"count"}),
+    # A list counts as a whole or by distinct element sets; its elements aggregate through ``<column>.value``.
+    DataType.ARRAY: frozenset({"count", "count_distinct"}),
 }
 
 # A sole primary key is restricted to counting and min/max, regardless of data type.

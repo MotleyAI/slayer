@@ -15,6 +15,7 @@ from slayer.core.query import (
     TimeDimension,
     refine_query,
 )
+from slayer.core.syntax import BoundVariable, Cmp, parse_bound_expr
 from slayer.ir.variables import (
     apply_variables_to_query,
     extract_placeholder_names,
@@ -27,6 +28,13 @@ from slayer.ir.variables import (
 from slayer.core.query import substitute_variables as core_sv
 from slayer.core.query import extract_placeholder_names as core_epn
 
+
+
+def _bound_right(text: str, variables: dict) -> object:
+    """The right-hand side ``parse_bound_expr`` gives an ``IN`` comparison."""
+    parsed = parse_bound_expr(text, variables)
+    assert isinstance(parsed, Cmp), parsed
+    return parsed.right
 
 class TestMergeQueryVariables:
     def test_precedence_runtime_wins(self) -> None:
@@ -179,13 +187,15 @@ class TestApplyVariablesToQuery:
         """A list value fills the whole ``IN`` list; one element is still a list."""
         q = SlayerQuery(source_model="orders", filters=["a in ({b})"])
         out = apply_variables_to_query(query=q, variables={"b": [1, 2, 3]})
-        assert out.filters == ["a in (1, 2, 3)"], out.filters
+        assert out.filters == ["a in ({b})"], out.filters
+        assert _bound_right("a in ({b})", out.bound_variables) == BoundVariable(name="b", values=(1, 2, 3), listed=True)
 
         single = apply_variables_to_query(
             query=SlayerQuery(source_model="orders", filters=["a in ({b})"]),
             variables={"b": ["x"]},
         )
-        assert single.filters == ["a in ('x')"], single.filters
+        assert single.filters == ["a in ({b})"], single.filters
+        assert _bound_right("a in ({b})", single.bound_variables) == BoundVariable(name="b", values=("x",), listed=True)
 
     def test_dict_value_raises(self) -> None:
         q = SlayerQuery(source_model="orders", filters=["a = {b}"])
@@ -417,7 +427,9 @@ class TestFormulaSurfaces:
         assert out.dimensions is not None
         (d,) = out.dimensions
         assert isinstance(d, ComputedDimension)
-        assert d.expression == "region in ('North', 'South')"
+        assert d.expression == "region in ({regions})"
+        assert _bound_right(d.expression, out.bound_variables) == BoundVariable(
+            name="regions", values=("North", "South"), listed=True)
 
     @pytest.mark.parametrize("kw", [
         {"measures": ["amount:sum * {? {k} ?}"]},

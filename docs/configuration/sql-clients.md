@@ -22,12 +22,14 @@ A client implements `slayer.sql.client.SqlClient`. Every method is `async` excep
 | `default_schema()` | `str \| None` | The connection's default schema. |
 | `current_catalog()` | `str \| None` | The current catalog where schema tokens are catalog-qualified, else `None`. |
 | `list_objects(schema)` | `ObjectListing(tables, views, materialized_views)` | One schema's relations by kind; `None` is the connection default. |
-| `reflect_columns(location)` | `list[ReflectedColumn]` | A table's columns in order: `name`, SLayer `type` (`DataType`), a list's `element_type`, `is_float`, `db_type` (set only where `type` is lossy: opaque, list, exact-numeric, JSON or zoned-timestamp types), `comment`. |
+| `reflect_columns(location)` | `list[ReflectedColumn]` | A table's columns in order: `name`, SLayer `type` (`DataType`), a list's `element_type`, `is_float`, `db_type` (set only where `type` is lossy: opaque, list, exact-numeric, JSON or zoned-timestamp types), `comment`, `type_name` (the database's name for the type, where known). |
 | `reflect_table_keys(location)` | `TableKeys` | Primary key, foreign keys and unique key sets (never repeating the primary key). |
 | `table_comment(location)` | `str \| None` | A table's comment. |
 | `schema_description(schema, configured_schema)` | `str \| None` | A schema's own description (a BigQuery dataset's). |
 | `aclose()` | `None` | Release resources bound to the current event loop; the client stays usable. |
 | `close()` | `None` | Release everything; idempotent. |
+
+A client written for 1.6.0, whose type probe is `get_column_types(sql)` returning `number` / `string` / `time` / `boolean`, keeps working until SLayer 2.0: each probe reads those categories as DOUBLE, TEXT, TIMESTAMP and BOOLEAN and warns, as does `DelegatingSqlClient.get_column_types`.
 
 A `TableLocation(name, schema_name=None, catalog=None)` names a table; an unset part is the
 connection's current one.
@@ -43,7 +45,10 @@ refuses the query.
 **Lifecycle and concurrency.** The engine builds one client per datasource name and connection
 identity, calls it concurrently from one event loop, and closes it — code that borrows a client
 never does. Synchronous SLayer calls run each whole workflow in one event loop and call `aclose()`
-at its end, so a client must keep working after `aclose()`.
+at its end, so a client must keep working after `aclose()`. Cancelling a `SlayerSQLClient` call
+that runs in a worker thread (every call over a driver without async support, or over psycopg on
+Windows' default event loop), e.g. with `asyncio.wait_for`, returns at once unless the client was
+built with `sa_engine=`; the blocking call itself finishes in its worker thread on its own.
 
 ## A statements-only gateway
 

@@ -21,6 +21,7 @@ from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.core.enums import DataType
 from slayer.sql.dialects.base import (
+    LegacyTypeCategories,
     LIST_ELEMENT,
     PORTABLE_LIBRARY,
     NativeFn,
@@ -36,7 +37,7 @@ from slayer.sql.dialects.base import (
 )
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.reflection import (
-    CatalogEngine,
+    CatalogConnection,
     ReflectedColumn,
     ReflectedForeignKey,
     ResultColumnType,
@@ -106,6 +107,15 @@ class DuckdbDialect(SqlDialect):
     vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.INT128})
     ilike_native: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"duckdb"})
+    legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories(
+        contains=(
+            *((t, "time") for t in ("TIMESTAMP", "DATE", "TIME", "INTERVAL")),
+            *((t, "number") for t in ("INT", "FLOAT", "DOUBLE", "DECIMAL", "NUMERIC", "REAL")),
+            *((t, "string") for t in ("VARCHAR", "TEXT", "CHAR", "STRING", "BLOB", "ENUM")),
+            ("BOOL", "boolean"),
+        ),
+        other="string",
+    )
     sa_backend_names: frozenset[str] = frozenset({"duckdb"})
     explain_prefix: str | None = "EXPLAIN ANALYZE"
     explain_postfix: str = ""
@@ -158,7 +168,14 @@ class DuckdbDialect(SqlDialect):
         return case((anon("JSON_VALID", value), read))
 
     def list_length(self, values: Expression) -> Expression:
-        return anon("LEN", _compact(values))
+        return anon("LEN", values)
+
+    def build_list_set(self, values: Expression, element: Optional[DataType]) -> Expression:
+        """``list_distinct`` drops NULL elements."""
+        return anon("LIST_SORT", anon("LIST_DISTINCT", values))
+
+    def build_list_key(self, values: Expression) -> Expression:
+        return values
 
     def list_contains(self, values: Expression, value: Expression) -> Expression:
         return anon("LIST_CONTAINS", _compact(values), value)
@@ -182,7 +199,7 @@ class DuckdbDialect(SqlDialect):
         return "SELECT current_database()"
 
     def reflect_columns(
-        self, *, sa_engine: CatalogEngine | None, inspector: Any,  # NOSONAR(S1172) — hook signature
+        self, *, connection: CatalogConnection | None, inspector: Any,  # NOSONAR(S1172) — hook signature
         table: str, schema: str | None, catalog: str | None,
     ) -> list[ReflectedColumn]:
         query = (
@@ -196,14 +213,14 @@ class DuckdbDialect(SqlDialect):
                 name=name, data_type=dtype, comment=comment, overrides=_TYPE_NAME_OVERRIDES,
                 zoned_types=self.zoned_timestamp_db_types, json_types=self.json_db_types,
             )
-            for name, dtype, comment in fetch(sa_engine, query, dialect=self.sqlglot_name)
+            for name, dtype, comment in fetch(connection, query, dialect=self.sqlglot_name)
         ]
 
     def describe_cursor_column(self, description_row: Sequence[Any]) -> ResultColumnType | None:
         return describe_type_name_code(description_row, overrides=_TYPE_NAME_OVERRIDES)
 
     def reflect_table_keys(
-        self, *, sa_engine: CatalogEngine | None, inspector: Any,  # NOSONAR(S1172) — hook signature
+        self, *, connection: CatalogConnection | None, inspector: Any,  # NOSONAR(S1172) — hook signature
         table: str, schema: str | None, catalog: str | None,
     ) -> TableKeys:
         scope = _scope(table=table, schema=schema, catalog=catalog)
@@ -215,7 +232,7 @@ class DuckdbDialect(SqlDialect):
                 .where(all_of([*(c.copy() for c in scope), eq_literal(col("constraint_type"), kind)]))
                 .order_by(col("constraint_index"))
             )
-            return fetch(sa_engine, query, dialect=self.sqlglot_name)
+            return fetch(connection, query, dialect=self.sqlglot_name)
 
         def unique_indexes() -> list[list[str]]:
             query = (
@@ -223,12 +240,12 @@ class DuckdbDialect(SqlDialect):
                 .from_(table_function("duckdb_indexes"))
                 .where(all_of([*(c.copy() for c in scope), col("is_unique")]))
             )
-            sets = (_plain_index_columns(sql) for (sql,) in fetch(sa_engine, query, dialect=self.sqlglot_name))
+            sets = (_plain_index_columns(sql) for (sql,) in fetch(connection, query, dialect=self.sqlglot_name))
             return [s for s in sets if s]
 
         pk_rows = best_effort(
             lambda: constraints("PRIMARY KEY", "constraint_column_names"),
-            default=[], table=table, what="primary key",
+            connection=connection, default=[], table=table, what="primary key",
         )
         pk = list(pk_rows[0][0]) if pk_rows else []
         fks = best_effort(
@@ -241,13 +258,15 @@ class DuckdbDialect(SqlDialect):
                     "FOREIGN KEY", "constraint_column_names", "referenced_table", "referenced_column_names",
                 )
             ],
-            default=[], table=table, what="foreign keys",
+            connection=connection, default=[], table=table, what="foreign keys",
         )
         uniques = best_effort(
             lambda: [list(cols) for (cols,) in constraints("UNIQUE", "constraint_column_names")],
-            default=[], table=table, what="unique constraints",
+            connection=connection, default=[], table=table, what="unique constraints",
         )
-        indexes = best_effort(unique_indexes, default=[], table=table, what="unique indexes")
+        indexes = best_effort(
+            unique_indexes, connection=connection, default=[], table=table, what="unique indexes",
+        )
         return TableKeys(
             primary_key=pk, foreign_keys=fks, unique_key_sets=without_primary_key(pk, uniques + indexes),
         )

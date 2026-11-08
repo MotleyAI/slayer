@@ -19,10 +19,10 @@ def enable() -> None:
 
 
 def disable() -> None:
-    """Persist ``disabled`` and delete the install ID and every unsent batch."""
+    """Persist ``disabled`` and delete the install ID, its first-query date and every unsent batch."""
     recorder.reset()
     settings.update_config(lambda config: config.model_copy(update={
-        "setting": "disabled", "install_id": None, "install_id_created": None,
+        "setting": "disabled", "install_id": None, "install_id_created": None, "first_query_ok": None,
     }))
     spool.purge(settings.spool_dir())
 

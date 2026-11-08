@@ -53,10 +53,12 @@ from slayer.engine.profiling import (
     refresh_table_backed_model_sampled,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import REPORT_ONLY_FINDINGS, ListRetypeFinding, NarrowedAccessFinding
+from slayer.engine.schema_drift import REPORT_ONLY_FINDINGS, NarrowedAccessFinding, RetypeFinding
 from slayer.inspect.service import InspectService
 from slayer.memories.service import MemoryService
-from slayer.osi.converter import OsiConversionError, OsiToSlayerConverter
+from slayer.osi.converter import OsiConversionError, OsiConversionResult, OsiToSlayerConverter
+from slayer.osi.exporter import OsiExportError, export_osi
+from slayer.ingest_report import ConversionWarning
 from slayer.osi.parser import parse_osi_path
 from slayer.pg_facade.cli import add_pg_serve_subparser
 from slayer.pg_facade.server import run_pg_serve
@@ -833,6 +835,27 @@ examples:
     )
     _add_storage_arg(import_osi_parser)
 
+    # ── export-osi ────────────────────────────────────────────────────
+    export_osi_parser = subparsers.add_parser(
+        "export-osi",
+        help="Export a datasource's models as an Ossie (OSI) document",
+        epilog="""\
+examples:
+  slayer export-osi --datasource my_postgres --out shop.osi.yaml
+  slayer export-osi --datasource my_pg --models orders customers --out shop.osi.json --no-extensions
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    export_osi_parser.add_argument("--datasource", required=True, help="SLayer datasource whose models to export")
+    export_osi_parser.add_argument("--models", nargs="+", default=None,
+                                   help="Export only these models (default: all of the datasource's models)")
+    export_osi_parser.add_argument("--out", required=True,
+                                   help="Output file: JSON when it ends in .json, YAML otherwise")
+    export_osi_parser.add_argument("--no-extensions", action="store_true",
+                                   help="Omit the SLAYER custom extensions (plain Ossie; SLayer-only content "
+                                        "is reported, not exported)")
+    _add_storage_arg(export_osi_parser)
+
     # ── models ────────────────────────────────────────────────────────
     models_parser = subparsers.add_parser(
         "models",
@@ -1351,6 +1374,8 @@ def _dispatch(parser: argparse.ArgumentParser, args) -> None:  # NOSONAR(S3776) 
         _run_import_cube(args)
     elif args.command == "import-osi":
         _run_import_osi(args)
+    elif args.command == "export-osi":
+        _run_export_osi(args)
     elif args.command == "models":
         _run_models(args)
     elif args.command == "datasources":
@@ -1753,6 +1778,8 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
         query = json.loads(query_input)
         if isinstance(query, list) and not query:
             raise SystemExit("Query list cannot be empty.")
+    if args.dry_run:
+        usage_reporting.mark_dry_run()
     usage_reporting.observe_query(query)
     result = engine.execute_sync(
         query=query,
@@ -1935,7 +1962,7 @@ def _format_validate_models_output(entries) -> str:
                 f"reads {', '.join(entry.narrowed_by)}"
             )
             continue
-        if isinstance(entry, ListRetypeFinding):
+        if isinstance(entry, RetypeFinding):
             lines.append(f"RE-TYPE: {entry.summary}")
             continue
         if entry.tool == "delete_model":
@@ -2360,6 +2387,46 @@ def _run_import_osi(args):
     engine.run_sync(_import_osi_workflow(args, engine))
 
 
+def _run_export_osi(args):
+    engine = SlayerQueryEngine(storage=_resolve_storage(args))
+    try:
+        result = engine.run_sync(export_osi(engine=engine, datasource=args.datasource, models=args.models,
+                                            extensions=not args.no_extensions))
+    except OsiExportError as exc:
+        _fail(str(exc))
+    if args.out.endswith(".json"):
+        text = json.dumps(result.document, indent=2, ensure_ascii=False) + "\n"
+    else:
+        text = yaml.safe_dump(result.document, sort_keys=False, allow_unicode=True)
+    # The output path is an intended, user-specified CLI location.
+    with open(args.out, "w", encoding="utf-8") as fh:  # NOSONAR(S8707)
+        fh.write(text)
+    print(f"Exported {len(result.document['datasets'])} datasets to {args.out}")
+    if result.entries:
+        print("\nExport report:")
+        print(result.render_report())
+
+
+async def _restore_query_backed(engine: SlayerQueryEngine, result: OsiConversionResult) -> None:
+    """Save each restored query-backed model through the engine, inputs first; a failure keeps the sql-mode model."""
+    pending = {model.name: model for model in result.query_backed}
+    while pending:
+        ready = [m for m in pending.values()
+                 if not {q.source_model for q in m.source_queries or [] if isinstance(q.source_model, str)} & set(pending)
+                 or len(pending) == 1]
+        for model in ready or list(pending.values()):
+            del pending[model.name]
+            try:
+                await engine.save_model(model)
+            except Exception as exc:  # noqa: BLE001 — per-model isolation; reported
+                result.warnings.append(ConversionWarning(
+                    model_name=model.name, category="extension", severity="info",
+                    message=f"Query-backed model {model.name!r} does not restore ({exc}); kept as a sql-mode "
+                            f"model over its source.",
+                    suggestion="Import every model its saved queries read.",
+                ))
+
+
 async def _import_osi_workflow(args, engine: SlayerQueryEngine) -> None:
     storage = engine.storage
     try:
@@ -2396,6 +2463,7 @@ async def _import_osi_workflow(args, engine: SlayerQueryEngine) -> None:
             f"Imported model: {model.name} "
             f"({len(model.columns)} columns, {len(model.measures)} measures)"
         )
+    await _restore_query_backed(engine, result)
 
     if result.unconverted_metrics or result.warnings:
         print("\nConversion report:")

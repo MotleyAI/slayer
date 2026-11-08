@@ -28,7 +28,7 @@ from slayer.core.keys import (
 )
 from slayer.core.models import EmptyValue, SlayerModel
 from slayer.core.scope import StageSchema, StaleSpelling
-from slayer.ir.bound import BoundExpr, GranularityConflict
+from slayer.ir.bound import BoundExpr, GranularityConflict, WholeListRead
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 SlotId = str
@@ -41,7 +41,6 @@ __all__ = [
     "FilterReachability",
     "MaskEntry",
     "MaskTyping",
-    "ModeAFilter",
     "OrderEntry",
     "PickedParam",
     "PlainProducerKernel",
@@ -218,13 +217,6 @@ class MaskEntry(BaseModel):
     stratum: int
     # Mirrors ``BoundFilter.row_restriction``.
     row_restriction: bool = False
-
-
-class ModeAFilter(BaseModel):
-    """A Mode-A model-filter text (model definition, not a query position); renders in the base WHERE."""
-
-    id: BoundFilterId
-    text: str
 
 
 class OrderEntry(BaseModel):
@@ -469,10 +461,9 @@ class PlannedQuery(BaseModel):
     combined_expression_slots: List[ValueSlot] = Field(default_factory=list)
     transform_layers: List[TransformLayer] = Field(default_factory=list)
     # Typed filter conjuncts over hidden slots; the first ``n_date_range_masks``
-    # are synthesized date-range bounds (they render before the Mode-A texts).
+    # are synthesized date-range bounds.
     masks: List[MaskEntry] = Field(default_factory=list)
     n_date_range_masks: int = Field(default=0, ge=0)
-    mode_a_filters: List[ModeAFilter] = Field(default_factory=list)
     projection: List[SlotId] = Field(default_factory=list)
     order: List[OrderEntry] = Field(default_factory=list)
     limit: Optional[int] = None
@@ -488,6 +479,7 @@ class PlannedQuery(BaseModel):
     stale_spellings: List[StaleSpelling] = Field(default_factory=list)
     # ``whole_periods_only`` granularity pairs on one column that do not nest.
     granularity_conflicts: List[GranularityConflict] = Field(default_factory=list)
+    whole_list_reads: List[WholeListRead] = Field(default_factory=list)
     # Active-TD slot (None if none); time-needing transforms use it for the OVER ORDER BY.
     active_time_dimension_slot_id: Optional[SlotId] = None
     render_source_model: Optional[SlayerModel] = None

@@ -1,0 +1,39 @@
+name: Wheel gate
+description: Install the one built wheel with [all] into a fresh uv tool environment and run the release gate on it.
+
+inputs:
+  python-version:
+    description: Python version to install the wheel with.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v10.3.3
+
+    - name: Install the built wheel
+      id: install
+      shell: bash
+      env:
+        PYTHON_VERSION: ${{ inputs.python-version }}
+        UV_TOOL_DIR: ${{ runner.temp }}/wheel-gate/tools
+        UV_TOOL_BIN_DIR: ${{ runner.temp }}/wheel-gate/bin
+      run: |
+        shopt -s nullglob
+        wheels=(dist/*.whl)
+        if [ "${#wheels[@]}" -ne 1 ]; then
+          echo "::error::Expected exactly one wheel in dist/, found ${#wheels[@]}."
+          exit 1
+        fi
+        wheel="$(realpath "${wheels[0]}")"
+        uv tool install --no-config --python "$PYTHON_VERSION" "motley-slayer[all] @ file://$wheel"
+        echo "wheel=$wheel" >> "$GITHUB_OUTPUT"
+        echo "slayer=$UV_TOOL_BIN_DIR/slayer" >> "$GITHUB_OUTPUT"
+
+    - name: Run the release gate
+      shell: bash
+      env:
+        SLAYER: ${{ steps.install.outputs.slayer }}
+        WHEEL: ${{ steps.install.outputs.wheel }}
+      run: poetry run python -m scripts.release_gate --slayer "$SLAYER" --wheel "$WHEEL"

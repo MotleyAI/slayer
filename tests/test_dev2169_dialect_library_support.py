@@ -387,6 +387,8 @@ _LIST_HOOKS: dict[str, Callable[[SqlDialect], Any]] = {
     "contains_any": lambda d: d.build_list_call("contains_any", (_X, _Y)),
     "contains_all": lambda d: d.build_list_call("contains_all", (_X, _Y)),
     "collect": lambda d: d.build_collect(_X, DataType.TEXT),
+    "list_set": lambda d: d.build_list_set(_X, DataType.TEXT),
+    "list_key": lambda d: d.build_list_key(_X),
 }
 
 

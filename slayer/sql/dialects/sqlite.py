@@ -22,6 +22,7 @@ from slayer.core.like_pattern import LikePattern, LikeWildcard, parse_like
 from slayer.core.regex_pattern import RegexGroupRef, RegexPattern, RegexReplacement, parse_replacement
 from slayer.core.time_points import parse_temporal_value
 from slayer.sql.dialects.base import (
+    LegacyTypeCategories,
     COMPARISON_NODES,
     FALSE_WORDS,
     INTEGER_TEXT_PATTERN,
@@ -631,6 +632,8 @@ class SqliteDialect(SqlDialect):
     probes_integer_affinity: bool = True
     temporal_text_compatible: bool = True
     cursor_reports_types: bool = False
+    # The cursor names no types: every column takes its SLayer type's category.
+    legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories()
     primary_key_inspector_only: bool = True
     explain_prefix: str | None = "EXPLAIN QUERY PLAN"
     explain_postfix: str = ""

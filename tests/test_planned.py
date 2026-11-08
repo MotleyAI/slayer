@@ -1,4 +1,4 @@
-"""Stage 7a.1 (DEV-1450) — typed plan shapes.
+"""Stage 7a.1 — typed plan shapes.
 
 `PlannedQuery` is the final output of the planning pipeline that the
 SQL generator (stage 7b) consumes. The shapes here are the typed
@@ -27,7 +27,6 @@ from slayer.ir.bound import BoundExpr
 from slayer.ir.planned import (
     MaskEntry,
     MaskTyping,
-    ModeAFilter,
     OrderEntry,
     PlannedQuery,
     Stage,
@@ -168,7 +167,7 @@ class TestTransformLayer:
 
 
 # ---------------------------------------------------------------------------
-# MaskEntry / ModeAFilter (DEV-1865)
+# MaskEntry
 # ---------------------------------------------------------------------------
 
 
@@ -182,10 +181,6 @@ class TestMaskEntry:
         m = MaskEntry(slot_id="s2", typing=MaskTyping.MEASURE, stratum=1)
         assert m.typing is MaskTyping.MEASURE
 
-    def test_mode_a_filter_carries_text(self):
-        f = ModeAFilter(id="mf0", text="status = 'paid'")
-        assert f.text == "status = 'paid'"
-
 
 # ---------------------------------------------------------------------------
 # OrderEntry
@@ -193,7 +188,7 @@ class TestMaskEntry:
 
 
 class TestOrderEntry:
-    # DEV-1747 §5.10 / DEV-1865 — ``phase`` is required with no default; the
+    # ``phase`` is required with no default; the
     # producing scope is classified at emission-side lowering, not on the plan.
 
     def test_asc(self):
@@ -266,7 +261,6 @@ class TestPlannedQuery:
         assert pq.projection == ["a1"]
         assert pq.transform_layers == []
         assert pq.masks == []
-        assert pq.mode_a_filters == []
         assert pq.order == []
         assert pq.limit is None
         assert pq.offset is None

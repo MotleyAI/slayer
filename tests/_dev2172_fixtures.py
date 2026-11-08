@@ -9,7 +9,7 @@ import datetime as dt
 import json
 import threading
 import uuid
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, LiteralString, cast
@@ -119,11 +119,11 @@ class FacadeStore(BaseModel):
     datasource: DatasourceConfig
 
 
-async def build_store(base: Path) -> FacadeStore:
-    """Seed DuckDB and ingest every table, plus ``SAVED_MEASURES``; ``things`` reaches ``parts`` through the
-    reversed ``parts`` edge."""
+async def build_store(base: Path, *, extra: Iterable[str] = ()) -> FacadeStore:
+    """Seed DuckDB (then ``extra``) and ingest every table, plus ``SAVED_MEASURES``; ``things`` reaches ``parts``
+    through the reversed ``parts`` edge."""
     db = str(base / "dev2172.duckdb")
-    seed_contractors("duckdb", db, extra=statements())
+    seed_contractors("duckdb", db, extra=[*statements(), *extra])
     ds = DatasourceConfig(name=DS, type="duckdb", database=db)
     storage = YAMLStorage(base_dir=str(base / "store"))
     await storage.save_datasource(ds)

@@ -115,6 +115,28 @@ def usage_keys(report: dict, *, surface: str) -> set[str]:
     return {k for k in report.get("usage", {}) if k.startswith(f"{surface}:")}
 
 
+def session_rows(report: dict) -> list[tuple[str, str, int]]:
+    """``(queries_ok, queries_err, sessions)`` per ``mcp_sessions`` row, in report order."""
+    return [(row["queries_ok"], row["queries_err"], row["sessions"]) for row in report.get("mcp_sessions", [])]
+
+
+def raw_config() -> dict:
+    """The stored config file as plain JSON (fields of any version)."""
+    return json.loads(settings.config_path().read_text())
+
+
+def stored_first_query() -> str | None:
+    return raw_config().get("first_query_ok")
+
+
+def write_raw_config(**fields: Any) -> None:
+    """Merge ``fields`` into the stored config file as plain JSON, bypassing the config model."""
+    path = settings.config_path()
+    current = json.loads(path.read_text()) if path.is_file() else {}
+    current.update(fields)
+    settings.write_private(path, json.dumps(current, default=str).encode())
+
+
 def _resolve(schema: dict, node: dict) -> dict:
     while "$ref" in node:
         node = schema["$defs"][node["$ref"].rsplit("/", 1)[-1]]

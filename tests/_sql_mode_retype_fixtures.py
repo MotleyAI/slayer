@@ -49,7 +49,7 @@ async def check_validation_finding(engine: SlayerQueryEngine, *, data_source: st
     mine = [e for e in entries if e.get("model_name") == MODEL]
     deletes = [e for e in mine if e.get("tool") == "delete_model" or column in ((e.get("remove") or {}).get("columns") or [])]
     assert deletes == [], mine
-    findings = [e for e in mine if e.get("finding") == "list_retype" and e.get("column") == column]
+    findings = [e for e in mine if e.get("finding") == "retype" and e.get("column") == column]
     assert len(findings) == 1, mine
     assert "ingest" in str(findings[0]).lower(), findings
 

@@ -12,7 +12,7 @@ from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType
 from slayer.core.errors import SlayerError
 from slayer.core.models import Aggregation, Column
 from slayer.mcp.server import create_mcp_server
-from tests._dev2120_fixtures import NATIVE_LIST_DIALECTS, contractors_model, emit_contractors
+from tests._dev2120_fixtures import NATIVE_LIST_DIALECTS, contractors_model, emit_contractors, stored_contractors
 from tests._dev2137_fixtures import all_models, as_list, by, list_engine, measure, query
 
 
@@ -94,10 +94,11 @@ class TestListResults:
 
     async def test_collect_as_a_dimension(self, engine) -> None:
         q = query(dimensions=[{"expression": "collect(city, partition_by=team)", "name": "c"}])
-        with pytest.raises(SlayerError) as info:
-            await engine.execute(q)
-        msg = str(info.value)
-        assert "list" in msg.lower() or "ARRAY" in msg, msg
+        resp = await engine.execute(q)
+        teams = {r["team"] for r in stored_contractors()}
+        expected = {tuple(sorted({r["city"] for r in stored_contractors() if r["team"] == t and r["city"] is not None}))
+                    for t in teams}
+        assert {tuple(as_list(r["contractors.c"]) or ()) for r in resp.data} == expected
 
     async def test_json_result(self, engine) -> None:
         server = create_mcp_server(storage=engine.storage)

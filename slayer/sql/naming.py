@@ -17,6 +17,7 @@ from slayer.core.keys import (
     AggregateKey,
     ColumnKey,
     ColumnSqlKey,
+    ListSetKey,
     Phase,
     StarKey,
     TimeTruncKey,
@@ -180,7 +181,7 @@ def _joined_row_path(slot: "ValueSlot") -> Optional[Tuple[Tuple[str, ...], str]]
     """``(path, leaf)`` of a ROW slot reading a joined column, else ``None``."""
     if slot.phase != Phase.ROW:
         return None
-    key = slot.key
+    key = slot.key.source if isinstance(slot.key, ListSetKey) else slot.key
     if isinstance(key, ColumnKey):
         path, leaf = key.path, key.leaf
     elif isinstance(key, ColumnSqlKey):

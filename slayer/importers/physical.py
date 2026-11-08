@@ -99,8 +99,9 @@ class PhysicalIndex:
         if len(found := self._matches(ident, self._known)) > 1:
             return f"physical column {ident.name!r} is ambiguous between {sorted(found)}"
         targets = self._targets(ident)
+        named = set(self._matches(ident, {c.name: True for c in self.columns}))
         for col in self.columns:
-            if not self._named(ident, col) or (id(col) in self._reads and self._reads[id(col)][0] in targets):
+            if col.name not in named or (id(col) in self._reads and self._reads[id(col)][0] in targets):
                 continue
             if col.name == owner:
                 return f"{owner!r} reads the physical column of its own name"

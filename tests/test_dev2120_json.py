@@ -297,7 +297,7 @@ class TestIngestionKeepsJsonDbType:
                                               {"name": "payload", "type": sa.types.NullType()}]
         with patch.object(clickhouse_dialect, "fetch", return_value=[("id", "Int32"), ("payload", "JSON")]):
             cols = get_dialect("clickhouse").reflect_columns(
-                sa_engine=None, inspector=inspector, table="docs", schema="db", catalog=None)
+                connection=None, inspector=inspector, table="docs", schema="db", catalog=None)
         assert [(c.name, c.db_type) for c in cols] == [("id", None), ("payload", "JSON")]
 
     async def test_duckdb_json_column_ingested_and_read(self) -> None:
