@@ -2010,9 +2010,8 @@ async def _ingest_idempotent(
 
 def _friendly_db_error(exc: Exception) -> str:
     """Convert a database exception into a user-friendly message with hints."""
-    msg = str(exc)
-    if hasattr(exc, "orig") and exc.orig:
-        msg = str(exc.orig)
+    orig = getattr(exc, "orig", None)
+    msg = str(orig) if orig else str(exc)
 
     hints = []
     msg_lower = msg.lower()

@@ -252,7 +252,7 @@ def get_engine(datasource: DatasourceConfig) -> sa.Engine:
             reuse = cache_key in _engine_cache
     for stale in trimmed:
         _dispose_quietly(engine=stale, reason="cache limit lowered")
-    if reuse:
+    if reuse and cached is not None:
         return cached
     # Built outside the lock: construction does I/O and would queue everyone else behind it.
     engine = _build_engine(

@@ -1976,7 +1976,7 @@ async def _live_columns_for_sql_model(
         return None
 
 
-def _has_star_projection(parsed: exp.Expression) -> bool:
+def _has_star_projection(parsed: exp.Expr) -> bool:
     """Whether any SELECT in the statement projects ``*`` or ``t.*``."""
     for select in parsed.find_all(exp.Select):
         for proj in select.expressions:

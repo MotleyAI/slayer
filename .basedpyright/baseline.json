@@ -28,42 +28,6 @@
                 }
             }
         ],
-        "./slayer/engine/ingestion.py": [
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 36,
-                    "endColumn": 40,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 22,
-                    "endColumn": 26,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./slayer/engine/schema_drift.py": [
-            {
-                "code": "reportPrivateImportUsage",
-                "range": {
-                    "startColumn": 37,
-                    "endColumn": 47,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 48,
-                    "endColumn": 54,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./slayer/facade/catalog_sql.py": [
             {
                 "code": "reportPrivateImportUsage",
@@ -2116,16 +2080,6 @@
                 "range": {
                     "startColumn": 22,
                     "endColumn": 25,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./slayer/sql/engine_factory.py": [
-            {
-                "code": "reportReturnType",
-                "range": {
-                    "startColumn": 15,
-                    "endColumn": 21,
                     "lineCount": 1
                 }
             }
