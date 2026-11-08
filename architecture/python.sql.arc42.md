@@ -28,28 +28,30 @@ flowchart TD
     sql__window_detect["Window detect"]
   end
   engine["Query engine"]
+  database["Database access"]
+  live_schema["Live schema"]
   ir["Intermediate representation"]
   storage["Storage backends"]
   importers("Importers")
   subgraph usage_reporting["Usage reporting"]
     usage_reporting__features["Features"]
   end
-  surfaces("User-facing surfaces")
   core__models -.-> sql__dialects
   core__models -.-> sql__sql_predicate
   core__models -.-> sql__window_detect
   core__query -.-> sql__window_detect
   sql__render --> sql__dialects
   sql__sql_predicate --> sql__window_detect
+  database --> sql
   engine --> sql
   importers --> sql
+  live_schema --> sql
   sql --> core
   sql --> ir
   storage --> sql
-  surfaces --> sql
   usage_reporting__features --> sql
   classDef leaf fill:none;
-  class core__query,core__models,sql__render,sql__dialects,sql__sql_predicate,sql__window_detect,engine,ir,storage,importers,usage_reporting__features,surfaces leaf;
+  class core__query,core__models,sql__render,sql__dialects,sql__sql_predicate,sql__window_detect,engine,database,live_schema,ir,storage,importers,usage_reporting__features leaf;
 ```
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:sql_focus -->

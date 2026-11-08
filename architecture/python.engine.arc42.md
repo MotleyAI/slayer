@@ -33,6 +33,8 @@ flowchart TD
     engine__elaborate["Elaborate"]
     engine__compile["Compile"]
     engine__plan["Plan"]
+    engine__population["Population"]
+    engine__cardinality["Cardinality"]
   end
   ir["Intermediate representation"]
   subgraph storage["Storage backends"]
@@ -59,6 +61,16 @@ flowchart TD
   engine__elaborate --> engine__elaborate_env
   engine__plan --> engine__compile
   engine__plan --> engine__elaborate
+  engine__binding --> engine__population
+  engine__bind_inputs --> engine__population
+  engine__bind_inputs --> engine__cardinality
+  engine__elaborate --> engine__population
+  engine__elaborate --> engine__cardinality
+  engine__compile --> engine__population
+  engine__compile --> engine__cardinality
+  engine__plan --> engine__cardinality
+  engine__population --> engine__cardinality
+  engine__cardinality --> engine__elaborate_env
   engine --> core
   engine --> ir
   engine --> sql
@@ -70,7 +82,7 @@ flowchart TD
   storage --> engine
   storage --> sql
   classDef leaf fill:none;
-  class core__query,core__models,core__syntax,sql__render,sql__dialects,sql__sql_predicate,sql__window_detect,engine__binding,engine__bind_inputs,engine__elaborate_env,engine__elaborate,engine__compile,engine__plan,ir,storage__migrations leaf;
+  class core__query,core__models,core__syntax,sql__render,sql__dialects,sql__sql_predicate,sql__window_detect,engine__binding,engine__bind_inputs,engine__elaborate_env,engine__elaborate,engine__compile,engine__plan,engine__population,engine__cardinality,ir,storage__migrations leaf;
 ```
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:query_pipeline -->
@@ -89,6 +101,8 @@ flowchart TD
     engine__elaborate["Elaborate"]
     engine__compile["Compile"]
     engine__plan["Plan"]
+    engine__population["Population"]
+    engine__cardinality["Cardinality"]
   end
   engine__bind_inputs --> engine__binding
   engine__bind_inputs --> engine__elaborate_env
@@ -98,8 +112,18 @@ flowchart TD
   engine__elaborate --> engine__elaborate_env
   engine__plan --> engine__compile
   engine__plan --> engine__elaborate
+  engine__binding --> engine__population
+  engine__bind_inputs --> engine__population
+  engine__bind_inputs --> engine__cardinality
+  engine__elaborate --> engine__population
+  engine__elaborate --> engine__cardinality
+  engine__compile --> engine__population
+  engine__compile --> engine__cardinality
+  engine__plan --> engine__cardinality
+  engine__population --> engine__cardinality
+  engine__cardinality --> engine__elaborate_env
   classDef leaf fill:none;
-  class engine__binding,engine__bind_inputs,engine__elaborate_env,engine__elaborate,engine__compile,engine__plan leaf;
+  class engine__binding,engine__bind_inputs,engine__elaborate_env,engine__elaborate,engine__compile,engine__plan,engine__population,engine__cardinality leaf;
 ```
 <!-- /likec4:engine_focus -->
 

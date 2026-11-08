@@ -14,6 +14,33 @@ type refinement (`type_refinement.py`).
 The `live_schema_focus` view ([views.c4](views.c4)):
 
 <!-- likec4:live_schema_focus -->
+```mermaid
+flowchart TD
+  %% live_schema_focus: Live schema in context
+  core["Core domain models"]
+  sql["SQL generation"]
+  engine["Query engine"]
+  database["Database access"]
+  live_schema["Live schema"]
+  ir["Intermediate representation"]
+  storage["Storage backends"]
+  importers("Importers")
+  search("Search & embeddings")
+  memories("Agent memories")
+  surfaces("User-facing surfaces")
+  engine --> live_schema
+  importers --> live_schema
+  live_schema --> core
+  live_schema --> database
+  live_schema --> engine
+  live_schema --> ir
+  live_schema --> memories
+  live_schema --> search
+  live_schema --> sql
+  live_schema --> storage
+  storage --> live_schema
+  surfaces --> live_schema
+```
 <!-- /likec4:live_schema_focus -->
 
 ## 3. Principles

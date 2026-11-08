@@ -13,6 +13,25 @@ builds none.
 The `database_focus` view ([views.c4](views.c4)):
 
 <!-- likec4:database_focus -->
+```mermaid
+flowchart TD
+  %% database_focus: Database access in context
+  core["Core domain models"]
+  sql["SQL generation"]
+  engine["Query engine"]
+  database["Database access"]
+  live_schema["Live schema"]
+  storage["Storage backends"]
+  importers("Importers")
+  surfaces("User-facing surfaces")
+  database --> core
+  database --> sql
+  engine --> database
+  importers --> database
+  live_schema --> database
+  storage --> database
+  surfaces --> database
+```
 <!-- /likec4:database_focus -->
 
 ## 3. Principles

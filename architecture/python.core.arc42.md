@@ -27,6 +27,8 @@ flowchart TD
     engine__binding["Binding"]
     engine__bind_inputs["Bind inputs"]
   end
+  database["Database access"]
+  live_schema["Live schema"]
   ir["Intermediate representation"]
   subgraph storage["Storage backends"]
     storage__migrations["Migrations"]
@@ -50,9 +52,11 @@ flowchart TD
   core__query --> core__syntax
   engine__binding --> core__syntax
   engine__bind_inputs --> core__syntax
+  database --> core
   engine --> core
   importers --> core
   ir --> core
+  live_schema --> core
   memories --> core
   protocols --> core
   search --> core
@@ -61,7 +65,7 @@ flowchart TD
   surfaces --> core
   usage_reporting__features --> core
   classDef leaf fill:none;
-  class core__query,core__models,core__syntax,sql__dialects,sql__sql_predicate,sql__window_detect,engine__binding,engine__bind_inputs,ir,storage__migrations,importers,search,memories,protocols,usage_reporting__features,surfaces leaf;
+  class core__query,core__models,core__syntax,sql__dialects,sql__sql_predicate,sql__window_detect,engine__binding,engine__bind_inputs,database,live_schema,ir,storage__migrations,importers,search,memories,protocols,usage_reporting__features,surfaces leaf;
 ```
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:core_focus -->

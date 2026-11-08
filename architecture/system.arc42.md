@@ -20,6 +20,8 @@ flowchart TD
   core["Core domain models"]
   sql["SQL generation"]
   engine["Query engine"]
+  database["Database access"]
+  live_schema["Live schema"]
   ir["Intermediate representation"]
   storage["Storage backends"]
   importers("Importers")
@@ -31,15 +33,28 @@ flowchart TD
   core -.-> sql
   core -.-> storage
   engine --> core
+  database --> core
+  database --> sql
+  engine --> database
+  engine --> live_schema
   engine --> ir
   engine --> memories
-  engine --> search
   engine --> sql
   engine --> storage
   importers --> core
+  importers --> database
+  importers --> live_schema
   importers --> engine
   importers --> sql
   ir --> core
+  live_schema --> core
+  live_schema --> database
+  live_schema --> engine
+  live_schema --> ir
+  live_schema --> memories
+  live_schema --> search
+  live_schema --> sql
+  live_schema --> storage
   memories --> core
   memories --> engine
   memories --> search
@@ -54,17 +69,20 @@ flowchart TD
   sql --> core
   sql --> ir
   storage --> core
+  storage --> database
   storage --> engine
+  storage --> live_schema
   storage --> memories
   storage --> search
   storage --> sql
   surfaces --> core
+  surfaces --> database
   surfaces --> engine
   surfaces --> importers
+  surfaces --> live_schema
   surfaces --> memories
   surfaces --> protocols
   surfaces --> search
-  surfaces --> sql
   surfaces --> storage
   protocols --> usage_reporting
   surfaces --> usage_reporting
