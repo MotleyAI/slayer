@@ -655,12 +655,12 @@ class TestGetColumnTypesTypedPipeline:
         engine, tmp = await _engine()
         try:
             await engine.save_model(m)
-            planned_calls: List[str] = []
+            planned_calls: List[Tuple[bool, str]] = []
             original_generate = query_engine_module.build_planned_statement
 
             def _wrapper(*args, **kwargs):
                 built = original_generate(*args, **kwargs)
-                planned_calls.append(built.statement.sql())
+                planned_calls.append((bool(kwargs.get("type_probe")), built.statement.sql()))
                 return built
 
             with patch.object(
@@ -673,11 +673,12 @@ class TestGetColumnTypesTypedPipeline:
                     await engine.get_column_types("qb_for_types")
                 except Exception:  # noqa: BLE001 — probe-execute failure is expected
                     pass
-            assert planned_calls, (
+            probes = [sql for is_probe, sql in planned_calls if is_probe]
+            assert len(probes) == 1, (
                 "get_column_types must build the query-backed probe through "
-                "build_planned_statement"
+                f"build_planned_statement exactly once; got {len(probes)}"
             )
-            assert "SELECT" in planned_calls[0].upper(), planned_calls[0]
+            assert "SELECT" in probes[0].upper(), probes[0]
         finally:
             tmp.cleanup()
 

@@ -11,7 +11,7 @@ Phase 1 lands the full suite as failing tests; Phase 2 turns them green.
 from __future__ import annotations
 
 import re
-from typing import List
+from typing import List, Tuple
 
 import pytest
 import sqlglot
@@ -1224,12 +1224,12 @@ class TestCallSitesAndContractPins:
         await storage.save_model(orders_model)
         engine = SlayerQueryEngine(storage=storage)
 
-        planned_calls: List[str] = []
+        planned_calls: List[Tuple[bool, str]] = []
         original_generate = query_engine_module.build_planned_statement
 
         def _wrapper(*args, **kwargs):
             built = original_generate(*args, **kwargs)
-            planned_calls.append(built.statement.sql())
+            planned_calls.append((bool(kwargs.get("type_probe")), built.statement.sql()))
             return built
 
         monkeypatch.setattr(
@@ -1243,7 +1243,9 @@ class TestCallSitesAndContractPins:
             f"build_planned_statement exactly once; got {len(planned_calls)} "
             f"call(s)"
         )
-        assert "SELECT" in planned_calls[0].upper(), planned_calls[0]
+        is_probe, sql = planned_calls[0]
+        assert is_probe, "the one build must be the type probe"
+        assert "SELECT" in sql.upper(), sql
 
     async def test_outer_wrapper_owns_order_limit_offset(
         self, orders_model: SlayerModel,
