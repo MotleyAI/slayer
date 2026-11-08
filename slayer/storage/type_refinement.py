@@ -18,7 +18,9 @@ import logging
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig, is_base_column_sql, physical_column_sql
 from slayer.engine.introspect_utils import table_location
-from slayer.engine.schema_scope import UNREACHABLE, schema_ref_from_token, split_sql_table
+from slayer.engine.schema_scope import (
+    UNREACHABLE, schema_ref_from_token, split_sql_table, sql_table_parts, table_schema_ref,
+)
 from slayer.sql import sqlite_introspect
 from slayer.sql.client import ObjectNotFound, SqlClient
 from slayer.sql.dialects import dialect_for_ds_type
@@ -244,8 +246,16 @@ async def refine_dict_with_live_schema(d: dict, datasource: DatasourceConfig, cl
     if not refinable:
         return False
 
-    schema_token, table_name = _parse_sql_table_with_default_schema(sql_table, datasource)
-    ref = schema_ref_from_token(schema_token, dialect_name=datasource.type) if schema_token else None
+    *qualifiers, table_name = sql_table_parts(sql_table, dialect=dialect_for_ds_type(datasource.type))
+    if qualifiers:
+        try:
+            ref = await table_schema_ref(catalog=qualifiers[-2] if len(qualifiers) > 1 else None,
+                                         schema=qualifiers[-1], client=client)
+        except ValueError:
+            return False  # a catalog this connection cannot reach keeps its persisted types
+    else:
+        default = datasource.schema_name or None
+        ref = schema_ref_from_token(default, dialect_name=datasource.type) if default else None
     try:
         live = await client.reflect_columns(table_location(table_name, ref))
     except ObjectNotFound:

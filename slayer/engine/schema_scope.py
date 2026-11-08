@@ -29,7 +29,7 @@ from sqlglot.errors import SqlglotError
 from slayer.core.models import DatasourceConfig
 from slayer.sql.client import AuthenticationRefused, DatabaseUnavailable, SqlClient
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, dialect_for_sa_backend
-from slayer.sql.naming import render_table_name
+from slayer.sql.naming import denoted_name, render_table_name
 from slayer.sql.render.parse import parse_table
 
 logger = logging.getLogger(__name__)
@@ -212,7 +212,9 @@ def requested_schema_ref(token: Optional[str], *, client: SqlClient) -> Optional
 async def table_schema_ref(*, catalog: Optional[str], schema: Optional[str], client: SqlClient) -> Optional[SchemaRef]:
     """The ref locating a parsed table's schema; a catalog the connection cannot reach raises."""
     if catalog and not qualifies_tokens(client.datasource):
-        if catalog != await _current_database(client):
+        named = denoted_name(exp.to_identifier(catalog, quoted=is_quoted_name(catalog) or None),
+                             dialect=dialect_for_ds_type(client.datasource.type))
+        if named != await _current_database(client):
             raise ValueError(f"catalog {catalog!r} is not reachable over this connection")
         catalog = None
     if not schema:

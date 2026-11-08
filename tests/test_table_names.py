@@ -22,14 +22,16 @@ from slayer.engine.ingestion import (
 from slayer.engine.introspect_utils import table_location
 from slayer.engine import schema_drift
 from slayer.engine.schema_drift import DriftSnapshot, LiveTable, _list_live_objects
-from slayer.engine.schema_scope import SchemaRef, is_quoted_name
+from slayer.engine.schema_scope import SchemaRef, is_quoted_name, table_schema_ref
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.importers.physical import PhysicalIndex
 from slayer.sql import engine_factory
-from slayer.sql.client import DelegatingSqlClient, ObjectListing, SlayerSQLClient
+from slayer.sql.client import DelegatingSqlClient, ExecutionResult, ObjectListing, SlayerSQLClient
 from slayer.sql.dialects import get_dialect
+from slayer.sql.dialects.reflection import ReflectedColumn, TableLocation
 from slayer.sql.naming import denoted_name, render_table_name
 from slayer.sql.render.parse import parse_table
+from slayer.storage.type_refinement import refine_dict_with_live_schema
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import _engine_generate, disposable_engine
 
@@ -242,6 +244,41 @@ async def test_drift_snapshot_reads_folded_and_exact_twins_separately(monkeypatc
     for name in ("foo", quoted_name("foo", True), "foo"):
         await snapshot._table(client=client, datasource=datasource, ref=ref, obj_name=name)
     assert read == [False, True]
+
+
+class _SnowflakeDatabaseClient(DelegatingSqlClient):
+    """Test double: a Snowflake connection in database ``SLAYER_CI`` whose ``qty`` column is live INT."""
+
+    def __init__(self) -> None:
+        super().__init__(inner=SlayerSQLClient(datasource=DatasourceConfig(name=DS, type="snowflake")))
+        self.located: list[TableLocation] = []
+
+    async def execute(self, sql: str) -> ExecutionResult:
+        return ExecutionResult(rows=[{"current_database": "SLAYER_CI"}])
+
+    async def reflect_columns(self, location: TableLocation) -> list[ReflectedColumn]:
+        self.located.append(location)
+        return [ReflectedColumn(name="qty", type=DataType.INT)]
+
+
+async def test_a_catalog_matches_the_current_database_by_the_name_it_denotes() -> None:
+    client = _SnowflakeDatabaseClient()
+    ref = await table_schema_ref(catalog="slayer_ci", schema="s", client=client)
+    assert ref is not None
+    assert ref.catalog is None
+    exact_lowercase = quoted_name("slayer_ci", True)
+    with pytest.raises(ValueError, match="not reachable"):
+        await table_schema_ref(catalog=exact_lowercase, schema="s", client=client)
+
+
+async def test_type_refinement_reads_a_quoted_schema_in_the_current_database() -> None:
+    client = _SnowflakeDatabaseClient()
+    model = {"name": "t", "sql_table": 'slayer_ci."lower_schema".t', "data_source": DS,
+             "columns": [{"name": "qty", "type": "DOUBLE"}]}
+    assert await refine_dict_with_live_schema(model, client.datasource, client)
+    (location,) = client.located
+    assert (location.catalog, location.schema_name, is_quoted_name(location.schema_name)) == (
+        None, "lower_schema", True)
 
 
 def test_table_location_keeps_the_quoting_of_its_names() -> None:

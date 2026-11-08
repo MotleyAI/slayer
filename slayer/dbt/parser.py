@@ -75,23 +75,31 @@ def _collect_yaml_paths(directory: str) -> list[str]:
     return paths
 
 
-def _parent_project_file(project_path: str) -> str | None:
-    """The ``dbt_project.yml`` beside a ``models`` directory given as the project path, read from its listing."""
-    with os.scandir(Path(project_path).resolve().parent) as entries:
-        return next((e.path for e in entries if e.name == "dbt_project.yml" and e.is_file()), None)
+def _project_file_in(directory: Path) -> str | None:
+    """``directory``'s ``dbt_project.yml``, read from its listing; ``None`` when absent or unlistable."""
+    try:
+        with os.scandir(directory) as entries:
+            return next((e.path for e in entries if e.name == "dbt_project.yml" and e.is_file()), None)
+    except OSError:
+        return None
 
 
 def _models_directory_quoting(project_path: str) -> dict[str, Any]:
-    """The ``quoting:`` of the project whose ``model-paths`` directory ``project_path`` is; ``{}`` otherwise."""
-    path = _parent_project_file(project_path)
-    data = _load_yaml(path) if path is not None else None
-    if data is None:
-        return {}
-    model_paths = data.get("model-paths") or ["models"]
-    if Path(project_path).resolve().name not in {str(p).strip("/") for p in model_paths}:
-        return {}
-    found = data.get("quoting")
-    return found if isinstance(found, dict) else {}
+    """The ``quoting:`` of the nearest enclosing project one of whose ``model-paths`` is ``project_path``; ``{}``
+    otherwise."""
+    given = Path(project_path).absolute()
+    target = given.resolve()
+    for root in given.parents:
+        path = _project_file_in(root)
+        if path is None:
+            continue
+        data = _load_yaml(path) or {}
+        model_paths = data.get("model-paths") or ["models"]
+        if not any((root / str(p)).resolve() == target for p in model_paths):
+            return {}
+        found = data.get("quoting")
+        return found if isinstance(found, dict) else {}
+    return {}
 
 
 def _collect_sql_files(directory: str) -> dict[str, str]:

@@ -80,6 +80,23 @@ def test_models_directory_reads_the_project_quoting(tmp_path: Path) -> None:
     assert project.quoting == {"identifier": False}
 
 
+def test_a_nested_model_path_reads_the_project_quoting(tmp_path: Path) -> None:
+    root = tmp_path / "dbt"
+    write_yaml(root / "dbt_project.yml", {"name": "shop", "version": "1.0", "config-version": 2,
+                                          "model-paths": ["src/models"], "quoting": {"identifier": False}})
+    write_yaml(root / "src" / "models" / "schema.yml", {"version": 2, "semantic_models": [ITEMS]})
+    assert parse_dbt_project(str(root / "src" / "models")).quoting == {"identifier": False}
+
+
+def test_a_symlinked_model_path_reads_the_project_quoting(tmp_path: Path) -> None:
+    root, external = tmp_path / "dbt", tmp_path / "elsewhere" / "models"
+    write_yaml(root / "dbt_project.yml", {"name": "shop", "version": "1.0", "config-version": 2,
+                                          "model-paths": ["linked"], "quoting": {"identifier": False}})
+    write_yaml(external / "schema.yml", {"version": 2, "semantic_models": [ITEMS]})
+    (root / "linked").symlink_to(external, target_is_directory=True)
+    assert parse_dbt_project(str(root / "linked")).quoting == {"identifier": False}
+
+
 def test_a_directory_outside_the_model_paths_ignores_the_parent_project(tmp_path: Path) -> None:
     _import(tmp_path, dialect="postgres", semantic_models=[ITEMS], quoting={"identifier": False})
     write_yaml(tmp_path / "dbt" / "other" / "schema.yml", {"version": 2, "semantic_models": [ITEMS]})
