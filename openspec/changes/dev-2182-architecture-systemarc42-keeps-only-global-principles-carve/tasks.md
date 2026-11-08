@@ -23,26 +23,26 @@
 
 ## 4. Moves (implement stage; pure-move commits)
 
-- [ ] 4.1 Create `slayer/database/`, `slayer/live_schema/`, `slayer/engine/population/`, `slayer/engine/cardinality/` with docstring-only `__init__.py`; move the modules per design › Code moves via `la:deterministic-refactor` (tests in scope); commit the pure moves alone; verify `la-typecheck` no new errors
-- [ ] 4.2 `git mv openspec/specs/sql/{client-contract,execution}` → `openspec/specs/database/`; verify `openspec validate --specs --strict`
-- [ ] 4.3 String references: grep every moved dotted and file path (`patch("…")`, `caplog` logger names, law-test path constants, `importlib`, `getattr`, `__all__`, entry points, docs) and update; `slayer/usage_reporting/recorder.py` maps the new `SqlClientError` path; verify 3.3 stays green
+- [x] 4.1 Create `slayer/database/`, `slayer/live_schema/`, `slayer/engine/population/`, `slayer/engine/cardinality/` with docstring-only `__init__.py`; move the modules per design › Code moves via `la:deterministic-refactor` (tests in scope); commit the pure moves alone; verify `la-typecheck` no new errors
+- [x] 4.2 `git mv openspec/specs/sql/{client-contract,execution}` → `openspec/specs/database/`; verify `openspec validate --specs --strict`
+- [x] 4.3 String references: grep every moved dotted and file path (`patch("…")`, `caplog` logger names, law-test path constants, `importlib`, `getattr`, `__all__`, entry points, docs) and update; `slayer/usage_reporting/recorder.py` maps the new `SqlClientError` path; verify 3.3 stays green
 
 ## 5. Stubs (implement stage)
 
-- [ ] 5.1 `slayer/core/deprecation.py`: the raising helper (string-literal `removal`, `NoReturn`, `ImportError` naming old path, new path, SLayer 2.0)
-- [ ] 5.2 A stub at every old module path; `__getattr__` tables in `slayer/engine/population/__init__.py` and `slayer/engine/cardinality/__init__.py`; verify 3.1 and 3.2 green
+- [x] 5.1 `slayer/core/deprecation.py`: the raising helper (string-literal `removal`, `NoReturn`, `ImportError` naming old path, new path, SLayer 2.0)
+- [x] 5.2 A stub at every old module path; `__getattr__` tables in `slayer/engine/population/__init__.py` and `slayer/engine/cardinality/__init__.py`; verify 3.1 and 3.2 green
 
 ## 6. Docs and pointers (implement stage)
 
-- [ ] 6.1 `docs/configuration/sql-clients.md`, `docs/concepts/ingestion.md`, `examples/seed.py` new paths; `CLAUDE.md` principle list and pointers match the new system §3; grep docs for every old path
-- [ ] 6.2 Root-fix the 5 baselined basedpyright errors in moved files; verify `poetry run basedpyright` shows no new errors and the baseline only shrank
+- [x] 6.1 `docs/configuration/sql-clients.md`, `docs/concepts/ingestion.md`, `examples/seed.py` new paths; `CLAUDE.md` principle list and pointers match the new system §3; grep docs for every old path
+- [x] 6.2 Root-fix the 5 baselined basedpyright errors in moved files; verify `poetry run basedpyright` shows no new errors and the baseline only shrank
 - [ ] 6.3 `la-arch-diagrams`; verify `la-arch-check` green and the legacy baseline still 7
 
 ## 7. Move gate (implement stage)
 
-- [ ] 7.1 `la-typecheck` no new errors; `la-arch-check` green; `npx likec4 validate architecture` green
-- [ ] 7.2 `poetry run pytest -m "not integration"` green; `poetry run pytest --collect-only tests/` collects with no import errors; a fresh `python -c "import <mod>"` for every moved module succeeds
-- [ ] 7.3 `poetry run ruff check slayer/ tests/` clean; `openspec validate dev-2182-architecture-systemarc42-keeps-only-global-principles-carve --strict` green
+- [x] 7.1 `la-typecheck` no new errors; `la-arch-check` green; `npx likec4 validate architecture` green
+- [x] 7.2 `poetry run pytest -m "not integration"` green; `poetry run pytest --collect-only tests/` collects with no import errors; a fresh `python -c "import <mod>"` for every moved module succeeds
+- [x] 7.3 `poetry run ruff check slayer/ tests/` clean; `openspec validate dev-2182-architecture-systemarc42-keeps-only-global-principles-carve --strict` green
 
 ## 8. Tracker (review stage, at merge)
 
