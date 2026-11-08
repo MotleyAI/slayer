@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-import sqlglot
 from pydantic import BaseModel, Field as PydanticField
+from sqlglot.expressions.core import Expr
 from sqlglot.expressions.query import Query
 
 from slayer.core.enums import AggregationValueClass, DataType, classify_aggregation
@@ -27,7 +27,6 @@ from slayer.core.models import Column, SlayerModel
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
 from slayer.ir.planned import PlannedQuery, ValueSlot
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.sql.dialects import get_dialect
 from slayer.sql.naming import expression_source_leaf, next_slot_result_key
 
 
@@ -64,13 +63,6 @@ def _infer_aggregated_format(
         boolean_share = source_type is DataType.BOOLEAN and aggregation == "avg"
         return NumberFormat(type=NumberFormatType.PERCENT if boolean_share else NumberFormatType.FLOAT)
     return None
-
-
-def expected_columns_from_sql(*, sql: str, dialect: str) -> List[str]:
-    """The outer SELECT's result-key columns (aliases), read from the rendered SQL."""
-    parsed = sqlglot.parse_one(sql, dialect=dialect)
-    assert isinstance(parsed, Query)  # rendered SQL is always a query
-    return list(parsed.named_selects)
 
 
 def _projected_slot_keys(*, root_planned: PlannedQuery) -> List[Tuple[ValueSlot, str]]:
@@ -193,24 +185,15 @@ def build_response_metadata(  # NOSONAR(S3776) — flat per-slot metadata classi
     *,
     root_planned: PlannedQuery,
     bundle: ResolvedSourceBundle,
-    sql: str,
-    dialect: str,
+    statement: Expr,
 ) -> Tuple[ResponseAttributes, List[str]]:
-    """Build ``(attributes, expected_columns)``; only keys in the rendered projection surface."""
-    # Canonical projection keys from the plan; the emitted SQL may carry
-    # length-fitted / alias-mangled names.
-    slot_keys = _projected_slot_keys(root_planned=root_planned)
-    plan_aliases = [rk for _, rk in slot_keys]
+    """Build ``(attributes, expected_columns)``; only keys in ``statement``'s projection surface.
 
-    expected_columns = expected_columns_from_sql(sql=sql, dialect=dialect)
-    # Decode emitted projection names back to canonical dotted form so matching
-    # below operates in the plan's result-key space.
-    if expected_columns:
-        expected_columns = list(
-            get_dialect(dialect).decode_result_keys(
-                [dict.fromkeys(expected_columns)], aliases=plan_aliases,
-            )[0]
-        )
+    The statement's outer names are canonical: fitting and mangling happen at its render.
+    """
+    assert isinstance(statement, Query)  # a generated statement is always a query
+    slot_keys = _projected_slot_keys(root_planned=root_planned)
+    expected_columns = list(statement.named_selects)
     public_keys = set(expected_columns)
 
     dim_meta: Dict[str, FieldMetadata] = {}

@@ -82,6 +82,12 @@ class TestConfigStripping:
         assert warnings == []
         assert "config" not in resolved
 
+    def test_strips_config_with_a_dict_argument(self) -> None:
+        sql = "{{ config(quoting={'identifier': false}) }}\nselect 1"
+        resolved, warnings = resolve_refs(sql, regular_models_sql={})
+        assert warnings == []
+        assert resolved.strip() == "select 1"
+
 
 class TestSourceResolution:
     def test_source_produces_schema_dot_table(self) -> None:

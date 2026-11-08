@@ -2,8 +2,8 @@
 
 SLayer can import [Cube](https://cube.dev) (Cube.js / Cube.dev) data models —
 cubes and views, in **YAML or JavaScript** — and convert them to SLayer models.
-The conversion is **fully offline**: data types come from Cube's declared
-dimension / measure types, so no database connection is required. Everything that
+The conversion works offline (data types then come from Cube's declared dimension /
+measure types) and types from the live schema when `--datasource` resolves. Everything that
 can't be mapped cleanly is captured in a structured JSON report rather than
 silently dropped.
 
@@ -21,6 +21,12 @@ to the storage directory, and writes `cube_import_report.json` next to it.
 `--datasource` is just the SLayer datasource name to file the models under — it
 does not need to exist or be reachable. After importing, run `slayer ingest`
 against a live connection to profile sample values and refine numeric types.
+
+> **Worked example.** [From Cube to SLayer](../examples/17_cube_import/cube_import.md)
+> imports a small jaffle-shop project end-to-end — YAML cubes, a view, and a JS
+> `FILTER_PARAMS` cube — and queries the result. Its
+> [notebook](../examples/17_cube_import/cube_import_nb.ipynb) runs the whole flow
+> offline against a deterministic DuckDB.
 
 ## What gets converted
 
@@ -83,6 +89,11 @@ Column types come from the live datasource when `--datasource` resolves (a list 
 type), else from an explicit dimension `type` or the measure's aggregation; an aggregation SLayer refuses over a
 list, or a `min`/`max` over a column nothing types, drops the measure with a report, and an offline import notes
 that types were not checked against the database.
+
+Unquoted names in a cube's SQL (`sql_table`, `sql`, member, join and `FILTER_PARAMS` SQL) are read as the datasource's
+database reads them, so on Postgres, Redshift, Snowflake and Oracle `Sales.OrderItems` and `{CUBE}.OrderAmount` are
+stored as `sales.orderitems` and `orderamount` (quoted names, string literals and comments are kept as written), and an
+import whose datasource is not configured is refused when its SQL holds an unquoted name with an upper-case letter.
 
 ### Joins
 

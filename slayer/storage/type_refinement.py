@@ -18,9 +18,11 @@ import logging
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig, is_base_column_sql, physical_column_sql
 from slayer.engine.introspect_utils import table_location
-from slayer.engine.schema_scope import UNREACHABLE, schema_ref_from_token, split_sql_table
+from slayer.engine.schema_scope import UNREACHABLE, schema_ref_from_token, sql_table_location, table_schema_ref
 from slayer.sql import sqlite_introspect
 from slayer.sql.client import ObjectNotFound, SqlClient
+from slayer.sql.dialects import dialect_for_ds_type
+from slayer.sql.dialects.reflection import TableLocation
 
 
 logger = logging.getLogger(__name__)
@@ -100,12 +102,23 @@ def has_sqlite_widenable_columns(d: dict) -> bool:
 def _parse_sql_table_with_default_schema(
     sql_table: str, datasource: DatasourceConfig,
 ) -> tuple[str | None, str]:
-    """Split ``sql_table`` on its final dot into ``(schema_token, table)``; unqualified → ``datasource.schema_name``."""
-    default_schema = getattr(datasource, "schema_name", None) or None
-    schema_token, table_name = split_sql_table(sql_table)
-    if schema_token is None:
-        return default_schema, table_name
-    return schema_token, table_name
+    """``sql_table``'s ``(schema, table)`` live names; unqualified → ``datasource.schema_name``."""
+    at = sql_table_location(sql_table, dialect=dialect_for_ds_type(datasource.type))
+    return at.schema_name or datasource.schema_name or None, at.name
+
+
+async def _live_table_location(sql_table: str, datasource: DatasourceConfig,
+                               client: SqlClient) -> TableLocation | None:
+    """Where ``sql_table``'s live table is read; ``None`` for a catalog this connection cannot reach."""
+    at = sql_table_location(sql_table, dialect=dialect_for_ds_type(datasource.type))
+    if at.schema_name is None:
+        default = datasource.schema_name or None
+        return table_location(at.name, schema_ref_from_token(default, dialect_name=datasource.type) if default else None)
+    try:
+        ref = await table_schema_ref(catalog=at.catalog, schema=at.schema_name, client=client)
+    except ValueError:
+        return None
+    return table_location(at.name, ref)
 
 
 async def _safe_probe(
@@ -243,10 +256,11 @@ async def refine_dict_with_live_schema(d: dict, datasource: DatasourceConfig, cl
     if not refinable:
         return False
 
-    schema_token, table_name = _parse_sql_table_with_default_schema(sql_table, datasource)
-    ref = schema_ref_from_token(schema_token, dialect_name=datasource.type) if schema_token else None
+    location = await _live_table_location(sql_table, datasource, client)
+    if location is None:
+        return False  # a catalog this connection cannot reach keeps its persisted types
     try:
-        live = await client.reflect_columns(table_location(table_name, ref))
+        live = await client.reflect_columns(location)
     except ObjectNotFound:
         return False  # persisted types are the safe fallback for a table the database lacks
     live_columns = {c.name: c.type for c in live}

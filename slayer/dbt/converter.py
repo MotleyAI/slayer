@@ -18,7 +18,8 @@ reason + workaround, and the raw construct is stashed into the owning entity's
 import logging
 import re
 from collections import defaultdict
-from typing import Any, Literal
+from collections.abc import Callable
+from typing import Any, Literal, TypeVar
 
 import sqlalchemy as sa
 
@@ -41,6 +42,7 @@ from slayer.dbt.models import (
     DbtConfig,
     DbtConversionTypeParams,
     DbtDimension,
+    DbtEntity,
     DbtMeasure,
     DbtMetric,
     DbtMetricInput,
@@ -50,7 +52,8 @@ from slayer.dbt.models import (
     DbtRegularModel,
     DbtSemanticModel,
 )
-from slayer.dbt.sql_resolver import resolve_refs
+from slayer.dbt.relations import RelationNames
+from slayer.dbt.sql_resolver import JINJA_RE, referenced_models, resolve_refs, strip_config
 from slayer.engine.ingestion import introspect_table_to_model
 from slayer.engine.query_engine import run_over_caller_engine
 from slayer.engine.schema_scope import requested_schema_ref
@@ -69,16 +72,19 @@ from slayer.importers.column_types import (
     untyped_message,
 )
 from slayer.importers.measures import measure_problems
-from slayer.importers.physical import unreadable_columns
+from slayer.importers.physical import UndecidableIdentifierCaseError, physical_identifier, unreadable_columns
 from slayer.sql.client import SqlClient
 # The conversion-report types are shared with the OSI importer. They
 # live in the neutral ``slayer.ingest_report`` module and are re-exported here so
 # existing ``from slayer.dbt.converter import ConversionResult`` imports keep
 # working against the same class objects.
 from slayer.ingest_report import ConversionResult, ConversionWarning
-from slayer.sql.dialects import dialect_for_ds_type
+from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, dialect_for_sa_backend
+from slayer.sql.render.parse import fold_source_identifiers, stored_identifier
 
 logger = logging.getLogger(__name__)
+
+_Member = TypeVar("_Member", DbtDimension, DbtMeasure, DbtEntity)
 
 # Map dbt aggregation names to SLayer aggregation names
 _AGG_MAP: dict[str, str] = {
@@ -241,10 +247,8 @@ class DbtToSlayerConverter:
         # When set to a dialect that lacks percentile/median
         # (mysql / tsql), the converter emits info caveats for those measures.
         self.target_dialect = target_dialect
-        self._sql_dialect = dialect_for_ds_type(target_dialect) if target_dialect else None
-        self._dialect = self._sql_dialect.sqlglot_name if self._sql_dialect is not None else None
         self._live = LiveDatasource(offline_reason=offline_reason, data_source=data_source,
-                                    db_type=target_dialect, dialect=self._dialect)
+                                    db_type=target_dialect, dialect=None)
         self._collected = False
         # {dbt model: {column: declared data_type}}
         self._declared: dict[str, dict[str, str]] = {
@@ -267,17 +271,37 @@ class DbtToSlayerConverter:
             for rm in project.regular_models
             if rm.raw_code
         }
+        if target_dialect:
+            self._use_dialect(dialect_for_ds_type(target_dialect))
+        else:
+            self._use_dialect(dialect_for_sa_backend(sa_engine.dialect.name) if sa_engine is not None else None)
+        # {semantic model: (sql_table, sql)}, read once the project's SQL is folded.
+        self._sources: dict[str, tuple[str | None, str | None]] = {}
+        self._folded = False
+        self._undecidable: list[str] = []
+
+    def _use_dialect(self, dialect: SqlDialect | None) -> None:
+        """Read the project with ``dialect``'s identifier rules and its dbt adapter's quoting policy."""
+        self._sql_dialect = dialect
+        self._dialect = self._live.dialect = dialect.sqlglot_name if dialect is not None else None
+        # Reports of reading the project's SQL and relation names, which happens once.
+        self._fold_warnings: list[ConversionWarning] = []
+        self._relations = RelationNames(project=self.project, dialect=dialect, warn=self._fold_warnings.append)
 
     async def collect_metadata(self, *, client: SqlClient) -> None:
         """Read the hidden regular models' tables and every source and probe conversion asks for through
-        ``client``; ``convert`` then needs no database."""
+        ``client`` (in its datasource's dialect when none was given); ``convert`` then needs no database."""
+        if self._sql_dialect is None and not self._folded:
+            self._use_dialect(dialect_for_ds_type(client.datasource.type))
         introspected: dict[str, SlayerModel | str] = {}
         for rm in self.project.regular_models if self.include_hidden_models else []:
             table_name = rm.alias or rm.name
+            schema = self._relations.live_name("schema", rm.schema_name) if rm.schema_name else None
             try:
                 introspected[rm.name] = await introspect_table_to_model(
-                    client=client, table_name=table_name, ref=requested_schema_ref(rm.schema_name, client=client),
-                    data_source=self.data_source, model_name=rm.name,
+                    client=client, table_name=self._relations.live_name("identifier", table_name),
+                    ref=requested_schema_ref(schema, client=client), data_source=self.data_source,
+                    model_name=rm.name,
                 )
             except Exception as exc:  # noqa: BLE001 — one table's failure becomes a conversion warning
                 introspected[rm.name] = (
@@ -308,6 +332,10 @@ class DbtToSlayerConverter:
 
     def _convert(self) -> ConversionResult:
         self._reset()
+        self._fold_project()
+        self._warnings.extend(self._fold_warnings)
+        if self._undecidable:
+            raise UndecidableIdentifierCaseError(self._undecidable)
         self.entity_registry.build(self.project.semantic_models)
 
         for sm in self.project.semantic_models:
@@ -334,6 +362,105 @@ class DbtToSlayerConverter:
             unconverted_metrics=self._unconverted,
             warnings=self._warnings,
         )
+
+    def _fold_project(self) -> None:
+        """Read the project's physical SQL and relation names with the datasource's identifier folding, once.
+
+        A construct whose SQL cannot be read is dropped with a report; without a dialect, identifiers whose meaning
+        depends on one refuse the import."""
+        if self._folded:
+            return
+        self._folded = True
+        undecidable: list[str] = []
+
+        def fold(text: str) -> str | None:
+            found = fold_source_identifiers(text, dialect=self._sql_dialect, masks=(JINJA_RE,))
+            undecidable.extend(found.undecidable)
+            return None if found.unreadable else found.text
+
+        unreadable_sql = self._fold_regular_sql(fold, only=self._inlined_models())
+        for rm in self.project.regular_models:
+            if rm.config_quoting:
+                self._fold_warnings.append(ConversionWarning(
+                    model_name=rm.name, category="quoting", severity="info",
+                    message=f"Model {rm.name!r} sets config(quoting=…), which is not applied; its relations follow "
+                            f"the project's quoting policy."))
+        semantic_models: list[DbtSemanticModel] = []
+        for sm in self.project.semantic_models:
+            ref_name = sm.model or sm.name
+            source = ({ref_name} | referenced_models(self._regular_models_sql[ref_name], self._regular_models_sql)
+                      if ref_name in self._regular_models_sql else set())
+            if bad := sorted(source & unreadable_sql):
+                self._fold_warnings.append(ConversionWarning(
+                    model_name=sm.name, category="sql_inline", severity="dropped",
+                    message=f"Semantic model {sm.name!r} dropped: the SQL of {bad} does not parse, so its "
+                            f"identifiers could not be read with the source's meaning."))
+                continue
+            semantic_models.append(self._folded_members(sm, fold=fold, undecidable=undecidable))
+        self.project = self.project.model_copy(update={"semantic_models": semantic_models})
+        self._sources = {sm.name: self._model_source(sm) for sm in semantic_models}
+        self._undecidable = [*undecidable, *self._relations.undecidable]
+
+    def _inlined_models(self) -> set[str]:
+        """The regular models whose SQL a semantic model inlines, transitively."""
+        used: set[str] = set()
+        for sm in self.project.semantic_models:
+            ref_name = sm.model or sm.name
+            if ref_name in self._regular_models_sql:
+                used |= {ref_name} | referenced_models(self._regular_models_sql[ref_name], self._regular_models_sql)
+        return used
+
+    def _fold_regular_sql(self, fold: Callable[[str], str | None], *, only: set[str]) -> set[str]:
+        """Fold each of the ``only`` regular models' SQL in place, config blocks stripped; those that do not parse."""
+        unreadable: set[str] = set()
+        for name, raw in self._regular_models_sql.items():
+            if name not in only:
+                continue
+            folded = fold(strip_config(raw))
+            if folded is None:
+                unreadable.add(name)
+            else:
+                self._regular_models_sql[name] = folded
+        return unreadable
+
+    def _named_member(self, member: _Member, *, undecidable: list[str]) -> _Member:
+        """A member without an ``expr``, reading the physical column its name folds to."""
+        if not any(c.isupper() for c in member.name):
+            return member
+        if self._sql_dialect is None:
+            undecidable.append(member.name)
+            return member
+        folded_name = self._folded_name(member.name)
+        return member.model_copy(update={"expr": folded_name}) if folded_name != member.name else member
+
+    def _folded_name(self, name: str) -> str:
+        """``name`` as the datasource reads it unquoted."""
+        if self._sql_dialect is None or self._sql_dialect.identifier_folding == "none":
+            return name
+        return stored_identifier(name, dialect=self._sql_dialect)
+
+    def _folded_members(self, sm: DbtSemanticModel, *, fold: Callable[[str], str | None],
+                        undecidable: list[str]) -> DbtSemanticModel:
+        """``sm`` with each member's ``expr`` folded (a missing one: its folded name); unreadable members dropped."""
+        def kept(kind: str, members: list[_Member]) -> list[_Member]:
+            out = []
+            for member in members:
+                if member.expr is None:
+                    out.append(self._named_member(member, undecidable=undecidable))
+                    continue
+                folded = fold(member.expr)
+                if folded is None:
+                    self._fold_warnings.append(ConversionWarning(
+                        model_name=sm.name, category="expression", severity="dropped",
+                        message=f"{kind} {member.name!r} on {sm.name!r} dropped: its SQL {member.expr!r} does not "
+                                f"parse, so its identifiers could not be read with the source's meaning."))
+                    continue
+                out.append(member.model_copy(update={"expr": folded}))
+            return out
+
+        return sm.model_copy(update={
+            "dimensions": kept("Dimension", sm.dimensions), "measures": kept("Measure", sm.measures),
+            "entities": kept("Entity", sm.entities)})
 
     def _prune_dangling_measures(self) -> None:
         """Drop+report any ``ModelMeasure`` whose formula references a name that
@@ -437,7 +564,7 @@ class DbtToSlayerConverter:
                 f"namespace per model — rename one side in the dbt project."
             )
 
-        sql_table, sql_source = self._model_source(sm)
+        sql_table, sql_source = self._sources[sm.name]
         default_time_dim = sm.defaults.agg_time_dimension if sm.defaults else None
 
         # Accumulate model-level meta (config.meta + label + any
@@ -527,7 +654,7 @@ class DbtToSlayerConverter:
 
     def _drop_masked(self, sm: DbtSemanticModel, cols: list[Column], *, live: LiveSource | None) -> list[Column]:
         """``cols`` without those reading a physical column another column's name holds (or their own name)."""
-        dropped = unreadable_columns(cols, dialect=self._dialect, live=live.columns if live is not None else ())
+        dropped = unreadable_columns(cols, dialect=self._dialect, live=live.names if live is not None else ())
         for name, problem in dropped.items():
             self._warnings.append(ConversionWarning(
                 model_name=sm.name, category="masked_column", severity="dropped",
@@ -542,7 +669,8 @@ class DbtToSlayerConverter:
             return True  # our own CASE WHEN … THEN 1 ELSE 0 END
         found: Typed | None = None
         if live is not None:
-            found = live.column(physical) if physical is not None else live.probe(col.sql or col.name)
+            found = (live.column(physical_identifier(col, dialect=self._dialect)) if physical is not None
+                     else live.probe(col.sql or col.name))
         declared = self._declared_type(sm=sm, physical=physical)
         if found is not None and declared is not None and contradicts(declared, found):
             self._warnings.append(ConversionWarning(
@@ -559,7 +687,10 @@ class DbtToSlayerConverter:
         return True
 
     def _declared_type(self, *, sm: DbtSemanticModel, physical: str | None) -> Typed | None:
-        raw = self._declared.get(sm.model or sm.name, {}).get(physical) if physical is not None else None
+        if physical is None:
+            return None
+        declared = self._declared.get(sm.model or sm.name, {})
+        raw = declared.get(physical) or next((t for c, t in declared.items() if self._folded_name(c) == physical), None)
         if raw is None:
             return None
         found = declared_type(raw, dialect=self._dialect)
@@ -573,9 +704,10 @@ class DbtToSlayerConverter:
         """``(sql_table, sql)``: a regular dbt model's refs inlined as SQL, else the physical table."""
         ref_name = sm.model or sm.name
         if ref_name not in self._regular_models_sql:
-            return ref_name, None
-        resolved, warnings = resolve_refs(self._regular_models_sql[ref_name], self._regular_models_sql)
-        self._warnings.extend(
+            return self._relations.ref(ref_name), None
+        resolved, warnings = resolve_refs(self._regular_models_sql[ref_name], self._regular_models_sql,
+                                          relation=self._relations.ref, source_relation=self._relations.source)
+        self._fold_warnings.extend(
             ConversionWarning(model_name=sm.name, category="sql_inline", severity="info", message=message)
             for message in warnings
         )

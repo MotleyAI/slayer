@@ -1,7 +1,7 @@
 """Forced-filter SQL rewrite for session-policy RLS.
 
 ``apply_session_policy`` is a pure sqlglot transform wrapping every *physical* table
-reference in the final SQL per the policy's ``ruleset``. A column ruleset filters each
+reference in the finished statement tree per the policy's ``ruleset``. A column ruleset filters each
 table having the tenant column; a join ruleset filters the anchor directly and reaches
 it from other tables via a correlated ``EXISTS`` (a null-guarded ``IN`` on dialects whose
 correlated subqueries need a server setting)::
@@ -13,7 +13,7 @@ correlated subqueries need a server setting)::
                                 AND _rls_j0.organization_uuid = '7ef3'
                             )) AS orders
 
-Rewriting at the final-SQL layer means base tables, joins, CTEs, sql-mode raw tables and
+Rewriting the finished statement means base tables, joins, CTEs, sql-mode raw tables and
 query-backed stages all funnel through one code path. Values are always ``exp.convert``
 literals and identifiers are built structurally, so the rewrite is injection-safe.
 """
@@ -22,12 +22,9 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-import sqlglot
 from pydantic import BaseModel, ConfigDict
 from sqlglot import exp
-from sqlglot.errors import SqlglotError
-from sqlglot.expressions.core import Expression
-from sqlglot.optimizer.scope import Scope, traverse_scope
+from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.errors import ForcedFilterError
 from slayer.core.policy import (
@@ -37,8 +34,8 @@ from slayer.core.policy import (
     SessionPolicy,
     _validate_join_rule_anchor,
 )
-from slayer.sql.dialects import SqlDialect, get_dialect
-from slayer.sql.type_probe import TypeProbe, mint_type_probe
+from slayer.sql.dialects import SqlDialect
+from slayer.sql.physical_tables import physical_tables
 
 # Any other statement root (INSERT / UPDATE / DDL / …) fails closed.
 _ALLOWED_ROOTS = (exp.Select, exp.SetOperation)
@@ -53,9 +50,9 @@ def _hop_alias(i: int) -> str:
 
 
 class ScopedTable(BaseModel):
-    """A physical table reference's identity, as parsed from the SQL.
+    """A physical table reference's identity, as the statement states it.
 
-    ``schema_name`` and ``catalog`` mirror the qualifiers the SQL actually states, so
+    ``schema_name`` and ``catalog`` mirror the qualifiers the statement states, so
     both are ``None`` for a bare name; the engine's probe falls back to the datasource.
     """
 
@@ -87,27 +84,6 @@ def _build_predicate(
     if isinstance(value, tuple):
         return exp.In(this=col, expressions=[exp.convert(v) for v in value])
     return exp.EQ(this=col, expression=exp.convert(value))
-
-
-def _generates_numbers(table: exp.Table) -> bool:
-    """A table function over numeric literals only (the time spine's integer sequence): no stored rows."""
-    call = table.this
-    if not isinstance(call, exp.Func):
-        return False
-    literals = list(call.find_all(exp.Literal))
-    return bool(literals) and all(not lit.is_string for lit in literals) and not any(call.find_all(exp.Column, exp.Table))
-
-
-def _physical_tables(ast: Expression) -> list:
-    """The physical ``exp.Table`` nodes in ``ast``, snapshotted before any mutation."""
-    physical = []
-    for scope in traverse_scope(ast):
-        for table in scope.tables:
-            source = scope.sources.get(table.alias_or_name)
-            if isinstance(source, Scope) or _generates_numbers(table):
-                continue  # a CTE / derived table, or a stored-row-free number series
-            physical.append(table)
-    return physical
 
 
 def _target_matches(scoped: ScopedTable, target_table: str) -> bool:
@@ -152,7 +128,7 @@ def _apply_column_ruleset(
     ast: Expression, ruleset: ColumnFilterRuleset, has_column: HasColumn
 ) -> None:
     predicate = _build_predicate(ruleset.column, ruleset.value)
-    for table in _physical_tables(ast):
+    for table in physical_tables(ast):
         scoped = _scoped_table(table)
         present = has_column(scoped, ruleset.column)
         if present is None:
@@ -272,7 +248,7 @@ def _apply_join_ruleset(
     ast: Expression, ruleset: JoinFilterRuleset, *, sql_dialect: SqlDialect
 ) -> None:
     """Structurally scope every physical table; never probes column presence."""
-    for table in _physical_tables(ast):
+    for table in physical_tables(ast):
         scoped = _scoped_table(table)
         if _target_matches(scoped, ruleset.table):
             _wrap_table(table, [_build_predicate(ruleset.column, ruleset.value)])
@@ -293,60 +269,38 @@ def _apply_join_ruleset(
         )
 
 
-def policy_column_checks(sql: str, *, dialect: str, policy: SessionPolicy) -> list[tuple[ScopedTable, str]]:
+def policy_column_checks(statement: Expr, *, policy: SessionPolicy) -> list[tuple[ScopedTable, str]]:
     """The ``(table, column)`` presence facts ``apply_session_policy`` will ask ``has_column`` for."""
     ruleset = policy.ruleset
-    if not isinstance(ruleset, ColumnFilterRuleset):
-        return []
-    try:
-        ast = sqlglot.parse_one(sql, dialect=dialect)
-    except SqlglotError:
-        return []  # the rewrite reports the parse failure itself
-    if not isinstance(ast, _ALLOWED_ROOTS):
-        return []
-    checks = (_scoped_table(table) for table in _physical_tables(ast))
+    if not isinstance(ruleset, ColumnFilterRuleset) or not isinstance(statement, _ALLOWED_ROOTS):
+        return []  # the rewrite refuses a non-query statement itself
+    checks = (_scoped_table(table) for table in physical_tables(statement))
     return list(dict.fromkeys((scoped, ruleset.column) for scoped in checks))
 
 
 def apply_session_policy(
-    sql: str,
+    statement: Expr,
     *,
-    dialect: str,
+    sql_dialect: SqlDialect,
     policy: SessionPolicy,
     has_column: HasColumn,
-) -> str:
-    """Wrap every physical-table ref per the policy's ``ruleset``.
+) -> exp.Query:
+    """A copy of ``statement`` with every physical-table ref wrapped per the policy's ``ruleset``.
 
     ``has_column`` returns ``True``/``False``/``None`` (cannot confirm) and is consulted
     only for a ``ColumnFilterRuleset``. Raises :class:`ForcedFilterError` on any
     fail-closed condition.
     """
-    return _policed(sql, dialect=dialect, policy=policy, has_column=has_column).sql(dialect=dialect)
-
-
-def apply_session_policy_to_probe(
-    probe: TypeProbe,
-    *,
-    dialect: str,
-    policy: SessionPolicy,
-    has_column: HasColumn,
-) -> TypeProbe:
-    """``probe`` with :func:`apply_session_policy`'s rewrite, re-minted from the rewritten AST."""
-    tree = _policed(probe.sql, dialect=dialect, policy=policy, has_column=has_column)
-    return mint_type_probe(tree, dialect=get_dialect(dialect), render=lambda t: t.sql(dialect=dialect))
-
-
-def _policed(sql: str, *, dialect: str, policy: SessionPolicy, has_column: HasColumn) -> Expression:
     ruleset = policy.ruleset
-    ast = sqlglot.parse_one(sql, dialect=dialect)
-    if not isinstance(ast, _ALLOWED_ROOTS):
+    if not isinstance(statement, _ALLOWED_ROOTS):
         raise ForcedFilterError(
             "Forced filter: refusing to rewrite a non-SELECT statement "
-            f"({type(ast).__name__}); failing closed."
+            f"({type(statement).__name__}); failing closed."
         )
 
+    ast = statement.copy()
     if isinstance(ruleset, ColumnFilterRuleset):
         _apply_column_ruleset(ast, ruleset, has_column)
     else:  # JoinFilterRuleset
-        _apply_join_ruleset(ast, ruleset, sql_dialect=get_dialect(dialect))
+        _apply_join_ruleset(ast, ruleset, sql_dialect=sql_dialect)
     return ast

@@ -114,7 +114,8 @@ schemas, pass their names or ask for all of them:
 - `--schema a,b` (or `schemas=["a","b"]`) — ingest the named schemas. A single
   name is emitted **verbatim** into `sql_table` (`--schema public` →
   `public.orders`); across several schemas the default one stays bare and only
-  the non-default siblings are prefixed (`analytics.orders`).
+  the non-default siblings are prefixed (`analytics.orders`). A name that is not a plain identifier is quoted
+  (`sales."order items"`, `"sales.v2".orders`).
 - `--all-schemas` — ingest every non-system schema in the datasource's own
   catalog. The default schema stays bare; every other schema is qualified.
 - `--schema` and `--all-schemas` are mutually exclusive (the same conflict is

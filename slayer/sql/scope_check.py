@@ -3,8 +3,8 @@
 C1 (binding): every column qualifier binds to its own scope's FROM / JOIN sources.
 C2 (projection): a reference into a CTE / derived table names a column it projects.
 Sound on the generator's corpus: raises only on a provable leak (unqualified refs and
-physical-table columns are unverifiable). Runs on post-mangle, pre-RLS output (pre-mangle
-dotted aliases would false-flag); ``allow_rls_correlation`` admits the session policy's
+physical-table columns are unverifiable). Runs on post-mangle output (pre-mangle dotted
+aliases would false-flag); ``allow_rls_correlation`` admits the session policy's
 ``_rls_src`` EXISTS reference. ``SLAYER_VALIDATE_SCOPES=1`` checks every emitted statement.
 """
 
@@ -149,11 +149,11 @@ def assert_scope_closed(
         raise ScopeLeakError(_format_leaks(result.leaks, sql))
 
 
-def maybe_validate_scopes(sql: str, *, dialect: str = "postgres") -> None:
+def maybe_validate_scopes(sql: str, *, dialect: str = "postgres", allow_rls_correlation: bool = False) -> None:
     """Run the closure, CTE-name and CTE-order checks iff ``SLAYER_VALIDATE_SCOPES`` is truthy (read per call)."""
     value = os.environ.get(_ENV_FLAG)
     if value is not None and value.strip().lower() in _TRUTHY:
-        assert_scope_closed(sql=sql, dialect=dialect)
+        assert_scope_closed(sql=sql, dialect=dialect, allow_rls_correlation=allow_rls_correlation)
         assert_unique_cte_names(sql=sql, dialect=dialect)
         assert_dependency_ordered_ctes(sql=sql, dialect=dialect)
 

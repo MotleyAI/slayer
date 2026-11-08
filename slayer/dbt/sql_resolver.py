@@ -24,15 +24,19 @@ tokens into the output:
 
 import logging
 import re
+from collections.abc import Callable
+
+from slayer.sql.dialects import dialect_for_ds_type
+from slayer.sql.naming import render_table_name
 
 logger = logging.getLogger(__name__)
 
 
 # {{ config(...) }} — strip entirely. The argument list is always valid
-# Python-like syntax but can span multiple lines; we match anything up to the
-# closing braces that doesn't itself contain `}}`.
+# Python-like syntax (dict arguments included) but can span multiple lines; we
+# match anything up to the closing braces that doesn't itself contain `}}`.
 _CONFIG_RE = re.compile(
-    r"\{\{\s*config\s*\([^}]*?\)\s*\}\}",
+    r"\{\{\s*config\s*\((?:(?!\}\}).)*?\)\s*\}\}",
     re.DOTALL,
 )
 
@@ -64,11 +68,41 @@ _SOURCE_RE = re.compile(
 # never for substitution.
 _ANY_JINJA_RE = re.compile(r"\{\{[^}]*\}\}")
 
+# Any Jinja expression, statement or comment.
+JINJA_RE = re.compile(r"\{\{.*?\}\}|\{%.*?%\}|\{#.*?#\}", re.DOTALL)
+
+_DEFAULT_DIALECT = dialect_for_ds_type(None)
+
+
+def _bare_relation(name: str) -> str:
+    return render_table_name(parts=[name], dialect=_DEFAULT_DIALECT)
+
+
+def _source_relation(source: str, table: str) -> str:
+    return render_table_name(parts=[source, table], dialect=_DEFAULT_DIALECT)
+
+
+def strip_config(sql: str) -> str:
+    """``sql`` without its ``{{ config(...) }}`` blocks."""
+    return _CONFIG_RE.sub("", sql)
+
+
+def referenced_models(sql: str, regular_models_sql: dict[str, str], _seen: frozenset[str] = frozenset()) -> set[str]:
+    """The regular models ``sql`` inlines, transitively."""
+    found: set[str] = set()
+    for match in _REF_RE.finditer(sql):
+        name = match.group(2) or match.group(1)
+        if name in regular_models_sql and name not in _seen:
+            found |= {name, *referenced_models(regular_models_sql[name], regular_models_sql, _seen | {name})}
+    return found
+
 
 def resolve_refs(
     sql: str,
     regular_models_sql: dict[str, str],
     *,
+    relation: Callable[[str], str] = _bare_relation,
+    source_relation: Callable[[str, str], str] = _source_relation,
     max_depth: int = 16,
     _visited: set[str] | None = None,
 ) -> tuple[str, list[str]]:
@@ -88,6 +122,8 @@ def resolve_refs(
         max_depth: Recursion cap for transitive ref resolution. Cycles are
             detected via ``_visited`` but the depth limit is a belt-and-
             braces guard against degenerate graphs.
+        relation: The stored name of the relation a ``ref()`` to a table names.
+        source_relation: The stored name of the relation ``source(source, table)`` names.
         _visited: Internal — tracks the chain of regular-model names
             currently being resolved. Used to short-circuit cycles.
 
@@ -108,7 +144,7 @@ def resolve_refs(
         return sql, warnings
 
     # 1. Strip {{ config(...) }} — pure metadata, no SQL.
-    resolved = _CONFIG_RE.sub("", sql)
+    resolved = strip_config(sql)
 
     # 2. Resolve {{ ref(...) }} calls.
     def replace_ref(match: "re.Match[str]") -> str:
@@ -125,6 +161,8 @@ def resolve_refs(
             inner_sql, inner_warnings = resolve_refs(
                 regular_models_sql[model_name],
                 regular_models_sql,
+                relation=relation,
+                source_relation=source_relation,
                 max_depth=max_depth - 1,
                 _visited=_visited | {model_name},
             )
@@ -139,14 +177,13 @@ def resolve_refs(
             # at the call site.
             return f"({inner_sql})"
         # Not a known regular model → treat as source table.
-        return model_name
+        return relation(model_name)
 
     resolved = _REF_RE.sub(replace_ref, resolved)
 
     # 3. Resolve {{ source('schema', 'table') }}.
     def replace_source(match: "re.Match[str]") -> str:
-        schema, table = match.group(1), match.group(2)
-        return f"{schema}.{table}"
+        return source_relation(match.group(1), match.group(2))
 
     resolved = _SOURCE_RE.sub(replace_source, resolved)
 

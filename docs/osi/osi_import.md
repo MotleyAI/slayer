@@ -75,7 +75,7 @@ A **dataset-scoped** metric references its own dataset's fields unqualified (`SU
 
 Each expression is read from exactly one candidate, the first available in this order: the `--dialect` override; the top-level `sql`; an `OSSIE_SQL_2026` entry; an `ANSI_SQL` entry; an entry in the datasource's own dialect (`POSTGRES`, `DUCKDB`, `TSQL`, …); any other SQL dialect SLayer can read (with an informational report entry). Within one step the first entry wins. An expression with only non-SQL dialects (`MDX`, `DAX`, `TABLEAU`, …) is reported, never raised.
 
-`OSSIE_SQL_2026` and `ANSI_SQL` are read with Ossie's portable function set (`IFF`, `ZEROIFNULL`, `DATEADD`, `STARTSWITH`, `||`, …), and every stored column SQL is rendered in the datasource's dialect (for example `||` becomes `CONCAT` on MySQL). An expression already in the datasource's own dialect is stored verbatim.
+`OSSIE_SQL_2026` and `ANSI_SQL` are read with Ossie's portable function set (`IFF`, `ZEROIFNULL`, `DATEADD`, `STARTSWITH`, `||`, …), and every stored column SQL is rendered in the datasource's dialect (for example `||` becomes `CONCAT` on MySQL). An expression already in the datasource's own dialect is stored verbatim, apart from its unquoted names, which every expression and dataset `source` stores as the datasource's database folds them (`OrderAmount` → `orderamount` on Postgres, Redshift, Snowflake and Oracle; a column qualified by another dataset's name is kept as written).
 
 ## Clean-Fail Report
 

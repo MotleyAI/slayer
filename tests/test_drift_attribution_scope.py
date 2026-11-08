@@ -7,7 +7,6 @@ import contextlib
 import re
 from collections.abc import AsyncIterator
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -21,6 +20,7 @@ from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.engine import ingestion
+from slayer.engine.ingestion import IngestableObject
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_drift import EditModelDelete, LiveTable, WholeModelDelete
 from slayer.engine.schema_scope import SchemaRef
@@ -563,7 +563,7 @@ class TestSnapshotReuse:
         listed_objects: dict[str | None, list[str]] = {"a": ["orders"], "b": []}
 
         def _listing(*, client: Any, ref: SchemaRef, include_views: bool) -> list[Any]:
-            return [SimpleNamespace(name=n) for n in listed_objects[ref.name]]
+            return [IngestableObject(name=n, kind="table") for n in listed_objects[ref.name]]
 
         def _orders(schema: str) -> SlayerModel:
             return SlayerModel(
@@ -608,7 +608,7 @@ class TestSnapshotReuse:
                 schema_drift, "_live_schema_refs", return_value=[SchemaRef(name="a"), SchemaRef(name="b")],
             ), patch.object(
                 ingestion, "list_ingestable_objects",
-                side_effect=lambda **_: [SimpleNamespace(name="orders")],
+                side_effect=lambda **_: [IngestableObject(name="orders", kind="table")],
             ), patch.object(
                 schema_drift, "_introspect_one_table", return_value=LiveTable(columns={"id": DataType.TEXT}),
             ) as introspect:
@@ -855,7 +855,7 @@ async def _render(engine: SlayerQueryEngine, payload: Any) -> tuple[Expression, 
     )
     rendered = await engine._plan_and_render(
         query=main, named_queries=named, runtime_kwarg={}, prefer_data_source=ds,
-        splice_chain=chain, as_statement=True,
+        splice_chain=chain,
     )
     prepared = await engine._prepare_pipeline(
         query=main, named_queries=named, runtime_kwarg={}, prefer_data_source=ds,

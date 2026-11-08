@@ -88,7 +88,7 @@ class TestSemanticOverRegularModel:
                 DbtRegularModel(name="claim", raw_code=claim_sql),
             ],
         )
-        result = DbtToSlayerConverter(project=project, data_source="db").convert()
+        result = DbtToSlayerConverter(project=project, data_source="db", target_dialect="duckdb").convert()
         m = next(m for m in result.models if m.name == "bridge")
         assert m.sql is not None
         # Caller alias ``c`` directly follows the inlined ``claim`` subquery;

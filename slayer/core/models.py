@@ -280,6 +280,12 @@ class Column(BaseModel):
         return physical_column_sql(sql=self.sql, name=self.name)
 
     @property
+    def physical_quoted(self) -> bool:
+        """Whether this base column's ``sql`` quotes its physical name (an exact-case name)."""
+        text = (self.sql or "").strip()
+        return self.is_base and len(text) > 1 and text[0] == text[-1] == '"'
+
+    @property
     def needs_expansion(self) -> bool:
         """The reference resolves to more than a bare physical column — a derived
         ``sql`` or an attached ``filter`` — so its uses expand to that definition."""

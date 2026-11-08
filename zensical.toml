@@ -124,6 +124,10 @@ nav = [
       "examples/16_list_columns/list_columns.md",
       { "Notebook" = "examples/16_list_columns/list_columns_nb.ipynb" },
     ]},
+    { "Cube Import" = [
+      "examples/17_cube_import/cube_import.md",
+      { "Notebook" = "examples/17_cube_import/cube_import_nb.ipynb" },
+    ]},
     { "Schema Drift (worked example)" = "examples/schema-drift.md" },
   ]},
   { "Configuration" = [

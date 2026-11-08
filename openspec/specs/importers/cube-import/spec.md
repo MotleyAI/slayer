@@ -9,7 +9,7 @@ Scenarios use the `orders` table of `importers/meaning-preservation`: rows `(1, 
 
 ### Requirement: Cube reference forms
 
-In every Cube SQL surface of a cube (dimension `sql`, CASE `when` predicates, measure `sql` and `filters`, segments, join `ON`), `{CUBE}.x`, `{<own cube>}.x` and a bare `x` SHALL denote the physical column `x` of the cube's source; `{other}.x` SHALL denote the physical column `x` of the joined cube `other`'s source, and a construct naming a cube that is not joined SHALL be dropped with a report naming that cube; `{member}`, `{CUBE.member}` and `{<own cube>.member}` SHALL denote that member of the cube, under the name it was imported as; `{other.member}` SHALL denote the member of the joined cube `other`. The cube's own `sql` body SHALL be imported as written.
+In every Cube SQL surface of a cube (dimension `sql`, CASE `when` predicates, measure `sql` and `filters`, segments, join `ON`), `{CUBE}.x`, `{<own cube>}.x` and a bare `x` SHALL denote the physical column `x` of the cube's source; `{other}.x` SHALL denote the physical column `x` of the joined cube `other`'s source, and a construct naming a cube that is not joined SHALL be dropped with a report naming that cube; `{member}`, `{CUBE.member}` and `{<own cube>.member}` SHALL denote that member of the cube, under the name it was imported as; `{other.member}` SHALL denote the member of the joined cube `other`. The cube's own `sql` body SHALL be imported as written, its unquoted identifiers read with the datasource's identifier folding (importers/meaning-preservation).
 
 #### Scenario: Same-cube dotted reference
 - **WHEN** cube `orders` declares measure `paid_sum` (`sum`, `sql: {CUBE}.amount`, filter `{CUBE}.status = 'paid'`) and calculated measures `a: {orders.paid_sum}` and `b: {CUBE.paid_sum}`
@@ -29,7 +29,7 @@ In every Cube SQL surface of a cube (dimension `sql`, CASE `when` predicates, me
 
 ### Requirement: Calculated measures with raw SQL aggregates
 
-A Cube calculated measure (`type: number`, `string`, `time` or `boolean` with `sql`) whose SQL contains aggregate calls SHALL import as a SLayer measure computing the same value: each outermost `SUM`, `AVG`, `MIN`, `MAX`, `COUNT`, `COUNT(*)`, `COUNT(DISTINCT …)` or percentile aggregate (with an optional `FILTER (WHERE …)`) SHALL aggregate its operand over the cube's rows; an operand that is not a bare column SHALL be evaluated as Cube's SQL, verbatim, in the database's dialect; arithmetic over aggregates and over other measures SHALL be kept. A calculated measure using a construct outside that set, or a non-bare operand that reads another cube, SHALL be dropped with a report naming the measure and the construct. Division by zero SHALL yield NULL.
+A Cube calculated measure (`type: number`, `string`, `time` or `boolean` with `sql`) whose SQL contains aggregate calls SHALL import as a SLayer measure computing the same value: each outermost `SUM`, `AVG`, `MIN`, `MAX`, `COUNT`, `COUNT(*)`, `COUNT(DISTINCT …)` or percentile aggregate (with an optional `FILTER (WHERE …)`) SHALL aggregate its operand over the cube's rows; an operand that is not a bare column SHALL be evaluated as Cube's SQL, verbatim apart from the identifier folding of "Imported SQL reads with the source's identifier folding" (`importers/meaning-preservation`), in the database's dialect; arithmetic over aggregates and over other measures SHALL be kept. A calculated measure using a construct outside that set, or a non-bare operand that reads another cube, SHALL be dropped with a report naming the measure and the construct. Division by zero SHALL yield NULL.
 
 #### Scenario: CASE inside an aggregate, with a colliding dimension
 - **WHEN** cube `orders` declares dimension `status` with `sql: {CUBE}.state` and calculated measure `paid_cnt: SUM(CASE WHEN {CUBE}.status = 'paid' THEN 1 END)`
@@ -55,6 +55,10 @@ A Cube calculated measure (`type: number`, `string`, `time` or `boolean` with `s
 - **WHEN** a calculated measure is `SUM({CUBE}.amount) OVER ()`
 - **THEN** it is dropped and the report names it
 
+#### Scenario: Mixed-case operand on Postgres
+- **WHEN** on Postgres a calculated measure is `SUM(CASE WHEN {CUBE}.Status = 'paid' THEN {CUBE}.Amount END)`
+- **THEN** its operand reads the physical columns `status` and `amount`, and `'paid'` is kept as written
+
 ### Requirement: Cube join keys read physical columns
 
 A Cube join whose `ON` is an equality, or a conjunction of equalities, between columns of the two cubes SHALL import with join keys that read exactly the physical columns the `ON` names on each side, whichever members the cubes declare; a side whose physical column's name a different member holds SHALL drop the join with a report naming it. Any other `ON` SHALL drop the join with a report.
@@ -73,7 +77,7 @@ The column references inside a FILTER_PARAMS pushdown body SHALL follow the same
 
 ### Requirement: The datasource is used whenever it resolves
 
-`slayer import-cube` SHALL resolve its `--datasource` and use it for column typing whenever it is configured and reachable; an import whose datasource is not configured, cannot be resolved or cannot be reached SHALL still complete.
+`slayer import-cube` SHALL resolve its `--datasource` and use it for column typing whenever it is configured and reachable; an import whose datasource is not configured, cannot be resolved or cannot be reached SHALL still complete, unless it is refused because its identifier case cannot be determined (importers/meaning-preservation).
 
 #### Scenario: Import against a reachable datasource
 - **WHEN** `import-cube` runs against a reachable DuckDB datasource whose `orders.tags` is a text list, and a dimension reads `{CUBE}.tags`
