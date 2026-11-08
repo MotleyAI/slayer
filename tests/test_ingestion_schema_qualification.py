@@ -1263,18 +1263,16 @@ class TestCommentComposition:
 
 
 class TestFirstDotParsers:
-    """The persisted-``sql_table`` parsers split on the FINAL dot, so a 3-part
-    ``catalog.schema.table`` keeps its catalog with the schema token (§3.8).
-    (The shared ``split_sql_table`` is pinned in test_schema_scope.py; here we
-    pin the ``type_refinement`` entry point the plan commits to keeping — the
-    SQLite integer-probe / drift-probe input.) A first-dot split would probe
-    schema ``c`` / table ``s.t`` and silently match nothing."""
+    """The persisted-``sql_table`` readers read each part, so a 3-part
+    ``catalog.schema.table`` probes schema ``schema`` / table ``table``. (The
+    shared ``sql_table_location`` is pinned in test_schema_scope.py; here we pin
+    the ``type_refinement`` entry point — the SQLite integer-probe input.) A
+    first-dot split would probe schema ``c`` / table ``s.t`` and silently match
+    nothing."""
 
-    def test_type_refinement_parser_keeps_the_catalog(self) -> None:
+    def test_type_refinement_parser_reads_the_schema_and_table(self) -> None:
         ds = DatasourceConfig(name="s", type="duckdb", database=":memory:")
-        assert _parse_sql_table_with_default_schema("proj.dataset.tbl", ds) == (
-            "proj.dataset", "tbl"
-        )
+        assert _parse_sql_table_with_default_schema("proj.dataset.tbl", ds) == ("dataset", "tbl")
 
 
 # ===========================================================================

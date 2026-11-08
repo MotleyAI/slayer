@@ -49,7 +49,7 @@ from slayer.engine.schema_scope import (
     live_name,
     resolve_ingest_scope,
     schema_ref_from_token,
-    split_sql_table,
+    sql_table_location,
     validate_scope_args,
 )
 from slayer.core.errors import AmbiguousModelError, EntityResolutionError, StoredDocumentLoadError
@@ -511,7 +511,8 @@ async def _sqlite_probe_integer_columns(
     if not dialect_of(client).probes_integer_affinity:
         return columns
 
-    schema, table = split_sql_table(sql_table, dialect=dialect_of(client))
+    location = sql_table_location(sql_table, dialect=dialect_of(client))
+    schema, table = location.schema_name, location.name
     out: list[IntrospectedColumn] = []
     for col in columns:
         if col.type is not DataType.INT or "." in col.name:
@@ -1425,7 +1426,8 @@ def _qualifier_repair_allowed(
     Always for a default-schema twin; for another schema only if the bare name
     isn't a default-schema table. Unknown membership fails closed.
     """
-    if fresh_schema is not None and fresh_schema == default_schema_name:
+    if fresh_schema is not None and default_schema_name is not None and live_key(fresh_schema) == live_key(
+            default_schema_name):
         return True
     if default_objects is None:
         return False
@@ -1460,9 +1462,9 @@ def _merge_one_table(
         and persisted.sql_table != fresh.sql_table
     ):
         dialect = dialect_for_ds_type(datasource.type)
-        persisted_schema, persisted_obj = split_sql_table(persisted.sql_table, dialect=dialect)
-        fresh_schema, _ = split_sql_table(fresh.sql_table, dialect=dialect)
-        if persisted_schema is not None:
+        persisted_at = sql_table_location(persisted.sql_table, dialect=dialect)
+        fresh_at = sql_table_location(fresh.sql_table, dialect=dialect)
+        if persisted_at.schema_name is not None:
             # A differently qualified twin is a different physical table.
             return SkippedTable(
                 table_name=persisted.sql_table,
@@ -1472,8 +1474,8 @@ def _merge_one_table(
                 ),
             )
         if not _qualifier_repair_allowed(
-            bare_name=persisted_obj,
-            fresh_schema=fresh_schema,
+            bare_name=persisted_at.name,
+            fresh_schema=fresh_at.schema_name if fresh_at.catalog is None else None,
             default_schema_name=default_schema_name,
             default_objects=default_objects,
         ):
@@ -1503,17 +1505,19 @@ def _merge_one_table(
 
 def _bare_table_name(sql_table: str, *, dialect: SqlDialect) -> str:
     """The live object a ``sql_table`` names, without its schema."""
-    return split_sql_table(sql_table, dialect=dialect)[1]
+    return sql_table_location(sql_table, dialect=dialect).name
 
 
-def _sql_table_identity(
-    sql_table: str | None, *, default_schema: str | None, dialect: SqlDialect,
-) -> tuple[str | None, str] | None:
-    """``(schema, object)`` identity of a ``sql_table``, unqualified → ``default_schema``."""
+_Identity = tuple[tuple[str, bool], ...]
+
+
+def _sql_table_identity(sql_table: str | None, *, default_schema: str | None, dialect: SqlDialect) -> _Identity | None:
+    """The live object a ``sql_table`` names, each part with its quote flag; unqualified → ``default_schema``."""
     if not sql_table:
         return None
-    schema, obj = split_sql_table(sql_table, dialect=dialect)
-    return (schema if schema is not None else default_schema, obj)
+    at = sql_table_location(sql_table, dialect=dialect)
+    schema = at.schema_name if at.schema_name is not None else default_schema
+    return tuple(live_key(p) for p in (at.catalog, schema, at.name) if p is not None)
 
 
 async def _stored_sanitized_identity_map(
@@ -1522,11 +1526,11 @@ async def _stored_sanitized_identity_map(
     datasource: DatasourceConfig,
     default_schema: str | None,
     failures: DocumentLoadFailures,
-) -> tuple[set[str], dict[str, tuple[str | None, str] | None]]:
+) -> tuple[set[str], dict[str, _Identity | None]]:
     """Stored model names for ``datasource`` plus each loadable one's live-object identity."""
     identities = await storage._list_all_model_identities()
     stored_names = {n for d, n in identities if d == datasource.name}
-    stored_identity: dict[str, tuple[str | None, str] | None] = {
+    stored_identity: dict[str, _Identity | None] = {
         m.name: _sql_table_identity(m.sql_table, default_schema=default_schema,
                                     dialect=dialect_for_ds_type(datasource.type))
         for m in failures.skip(await storage.load_models(data_source=datasource.name))
@@ -1538,7 +1542,7 @@ def _sanitized_rename_map(
     *,
     fresh_by_name: dict[str, "SlayerModel"],
     stored_names: set[str],
-    stored_identity: dict[str, tuple[str | None, str] | None],
+    stored_identity: dict[str, _Identity | None],
     default_schema: str | None,
     dialect: SqlDialect,
 ) -> dict[str, str]:

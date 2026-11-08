@@ -47,8 +47,9 @@ from slayer.engine.schema_scope import (
     live_key,
     qualifies_tokens,
     resolve_ingest_scope,
-    split_sql_table,
+    sql_table_location,
     sql_table_parts,
+    table_schema_ref,
 )
 from slayer.engine import ingestion, query_engine
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError, StoredDocumentLoadError
@@ -2217,9 +2218,8 @@ async def _sqlite_probe_int_drift_for_model(
     if live is None or not live.readable:
         return []
 
-    schema_name, table_name = split_sql_table(model.sql_table, dialect=dialect)
-    if schema_name is None:
-        schema_name = default_schema or None
+    location = sql_table_location(model.sql_table, dialect=dialect)
+    schema_name, table_name = location.schema_name or default_schema or None, location.name
 
     drifts: list[RetypeFinding] = []
     for col in model.columns:
@@ -2276,6 +2276,22 @@ def _diff_one_sql_table_model(
     )
 
 
+async def _model_schema_tokens(models: list[SlayerModel], *, client: SqlClient) -> set[str]:
+    """The schema tokens the models' ``sql_table``s name, each schema keeping its quote flag; a schema in a
+    catalog this connection cannot reach is left out, as enumeration leaves it out."""
+    dialect = dialect_for_ds_type(client.datasource.type)
+    tokens: set[str] = set()
+    for model in models:
+        at = sql_table_location(model.sql_table or "", dialect=dialect)
+        try:
+            ref = await table_schema_ref(catalog=at.catalog, schema=at.schema_name, client=client)
+        except ValueError:
+            continue
+        if ref is not None and ref.token is not None:
+            tokens.add(ref.token)
+    return tokens
+
+
 async def _collect_sql_table_diffs(
     *,
     datasource: DatasourceConfig,
@@ -2291,10 +2307,7 @@ async def _collect_sql_table_diffs(
         return {}
     # Cover every own-catalog schema (a model may be qualified to another own
     # schema); fall back to the models' own schemas if enumeration is unavailable.
-    fallback_tokens = {
-        tok for m in sql_table_models
-        if (tok := split_sql_table(m.sql_table or "", dialect=dialect_for_ds_type(datasource.type))[0]) is not None
-    }
+    fallback_tokens = await _model_schema_tokens(sql_table_models, client=client)
     try:
         if snapshot is None:
             live_tables = await _live_schema_for_datasource(

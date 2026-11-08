@@ -1,7 +1,7 @@
 """Pure-unit tests for the schema-identity value objects.
 
 No database: exercises ``SchemaRef`` (the one owner of schema identity), the
-single ``split_sql_table`` parser, the dialect-gated token constructor, the
+single ``sql_table_location`` reader, the dialect-gated token constructor, the
 system-schema filter, and the shared scope-conflict validator. Resolution
 precedence / dedup / current-catalog preference is inherently dialect- and
 catalog-semantic and lives in ``test_ingestion_schema_qualification.py`` instead.
@@ -18,7 +18,7 @@ from slayer.engine.schema_scope import (
     SkippedSchema,
     is_system_schema,
     schema_ref_from_token,
-    split_sql_table,
+    sql_table_location,
     validate_scope_args,
 )
 from slayer.sql.dialects import get_dialect
@@ -109,26 +109,28 @@ class TestSchemaRefDerived:
 
 
 # ---------------------------------------------------------------------------
-# split_sql_table — the one persisted-string parser (D-5 / §3.8)
+# sql_table_location — the one persisted-string reader
 # ---------------------------------------------------------------------------
 
 
-class TestSplitSqlTable:
+class TestSqlTableLocation:
     @pytest.mark.parametrize(
         ("sql_table", "expected"),
         [
-            ("t", (None, "t")),
-            ("s.t", ("s", "t")),
-            ("c.s.t", ("c.s", "t")),          # catalog preserved, NOT dropped
-            ("proj.dataset.tbl", ("proj.dataset", "tbl")),
+            ("t", (None, None, "t")),
+            ("s.t", (None, "s", "t")),
+            ("c.s.t", ("c", "s", "t")),          # catalog preserved, NOT dropped
+            ("proj.dataset.tbl", ("proj", "dataset", "tbl")),
         ],
     )
-    def test_splits_on_the_final_dot(self, sql_table, expected) -> None:
-        assert split_sql_table(sql_table, dialect=DUCKDB) == expected
+    def test_reads_catalog_schema_and_object(self, sql_table, expected) -> None:
+        at = sql_table_location(sql_table, dialect=DUCKDB)
+        assert (at.catalog, at.schema_name, at.name) == expected
 
     def test_reads_quoted_identifiers(self) -> None:
         """A quoted part reads as the live name it denotes."""
-        assert split_sql_table('prod."Company"', dialect=DUCKDB) == ("prod", "Company")
+        at = sql_table_location('prod."Company"', dialect=DUCKDB)
+        assert (at.schema_name, at.name) == ("prod", "Company")
 
 
 # ---------------------------------------------------------------------------
@@ -288,8 +290,8 @@ class TestQuotedSchemaName:
         assert ref != schema_ref_from_token("lower_schema", dialect_name="snowflake")
 
     def test_stored_quoted_parts_read_back_flagged_quoted(self) -> None:
-        schema, table = split_sql_table('"lower_schema"."lower_table"', dialect=get_dialect("snowflake"))
-        assert (schema, getattr(schema, "quote", None), table, getattr(table, "quote", None)) == (
-            "lower_schema", True, "lower_table", True)
-        unquoted, _ = split_sql_table("lower_schema.lower_table", dialect=get_dialect("snowflake"))
+        at = sql_table_location('db."lower_schema"."lower_table"', dialect=get_dialect("snowflake"))
+        assert [(p, getattr(p, "quote", None)) for p in (at.catalog, at.schema_name, at.name)] == [
+            ("db", None), ("lower_schema", True), ("lower_table", True)]
+        unquoted = sql_table_location("lower_schema.lower_table", dialect=get_dialect("snowflake")).schema_name
         assert getattr(unquoted, "quote", None) is not True

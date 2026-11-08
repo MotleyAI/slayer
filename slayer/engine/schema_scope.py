@@ -29,6 +29,7 @@ from sqlglot.errors import SqlglotError
 from slayer.core.models import DatasourceConfig
 from slayer.sql.client import AuthenticationRefused, DatabaseUnavailable, SqlClient
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, dialect_for_sa_backend
+from slayer.sql.dialects.reflection import TableLocation
 from slayer.sql.naming import denoted_name, render_table_name
 from slayer.sql.render.parse import parse_table
 
@@ -173,11 +174,11 @@ def sql_table_parts(sql_table: str, *, dialect: SqlDialect) -> list[str]:
     return table_live_parts(table)
 
 
-def split_sql_table(sql_table: str, *, dialect: SqlDialect) -> tuple[Optional[str], str]:
-    """A persisted ``sql_table`` as ``(schema_token, object)``: a 3-part ``catalog.schema.table`` keeps its
-    catalog with the schema token (``"c.s.t" -> ("c.s", "t")``); ``(None, object)`` when unqualified."""
-    *qualifiers, obj = sql_table_parts(sql_table, dialect=dialect)
-    return (qualifiers[0] if len(qualifiers) == 1 else ".".join(qualifiers) or None), obj
+def sql_table_location(sql_table: str, *, dialect: SqlDialect) -> TableLocation:
+    """The live table a persisted ``sql_table`` names, each part with its own quote flag."""
+    *qualifiers, name = sql_table_parts(sql_table, dialect=dialect)
+    return TableLocation(name=name, schema_name=qualifiers[-1] if qualifiers else None,
+                         catalog=qualifiers[-2] if len(qualifiers) > 1 else None)
 
 
 def schema_ref_from_token(

@@ -17,7 +17,7 @@ from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.ingestion import (
-    IntrospectedColumn, _columns_to_model, ingest_datasource_idempotent, list_ingestable_objects,
+    IntrospectedColumn, _columns_to_model, _sql_table_identity, ingest_datasource_idempotent, list_ingestable_objects,
 )
 from slayer.engine.introspect_utils import table_location
 from slayer.engine import schema_drift
@@ -279,6 +279,20 @@ async def test_type_refinement_reads_a_quoted_schema_in_the_current_database() -
     (location,) = client.located
     assert (location.catalog, location.schema_name, is_quoted_name(location.schema_name)) == (
         None, "lower_schema", True)
+
+
+def test_ingestion_identity_tells_a_quoted_schema_from_the_folded_one() -> None:
+    snowflake = get_dialect("snowflake")
+    exact = _sql_table_identity('"lower_schema".t', default_schema=None, dialect=snowflake)
+    folded = _sql_table_identity("lower_schema.t", default_schema=None, dialect=snowflake)
+    assert exact != folded
+
+
+async def test_drift_fallback_lists_a_quoted_schema_of_the_current_database_only() -> None:
+    models = [SlayerModel(name=name, data_source=DS, sql_table=sql_table, columns=[Column(name="qty")])
+              for name, sql_table in (("here", 'slayer_ci."lower_schema".t'), ("away", "otherdb.s.t"))]
+    (token,) = await schema_drift._model_schema_tokens(models, client=_SnowflakeDatabaseClient())
+    assert (token, is_quoted_name(token)) == ("lower_schema", True)
 
 
 def test_table_location_keeps_the_quoting_of_its_names() -> None:
