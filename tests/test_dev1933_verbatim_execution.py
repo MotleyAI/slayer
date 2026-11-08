@@ -211,7 +211,7 @@ class TestAsyncPathsUseVerbatimDoor:
         # The timeout SET *and* the query both went through the door.
         statements = [call.args[0] for call in conn.exec_driver_sql.await_args_list]
         assert _DOOR_SQL in statements
-        assert any(stmt.startswith("SET LOCAL statement_timeout") for stmt in statements)
+        assert any(stmt.startswith("SET statement_timeout") for stmt in statements)
 
     async def test_get_result_column_types_async(self) -> None:
         conn = _fake_async_conn()
@@ -263,7 +263,7 @@ class TestSyncPathsUseVerbatimDoor:
         _assert_all_verbatim_sync(conn)
         statements = [call.args[0] for call in conn.exec_driver_sql.call_args_list]
         assert _DOOR_SQL in statements
-        assert any(stmt.startswith("SET LOCAL statement_timeout") for stmt in statements)
+        assert any(stmt.startswith("SET statement_timeout") for stmt in statements)
 
     def test_get_result_column_types_sync(self) -> None:
         conn = _fake_sync_conn()

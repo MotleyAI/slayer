@@ -71,6 +71,9 @@ bounded time for its `finally` blocks, then re-raises the original interruption.
   drained.
 - `SlayerQueryEngine.run_sync` and the client's `_execute_bridged` call the end-of-workflow release
   instead of `aclose()`. `short_lived_engine` keeps `aclose()` + `close()`.
+- A client without the end-of-workflow release (a custom `SqlClient`) gets no call at the end of a
+  synchronous workflow and stays open until `close()`; `DelegatingSqlClient` forwards the release to
+  `inner`.
 - `SlayerQueryEngine.close()` and `SlayerSQLClient.close()` also release the client's bridge-loop
   async engine by scheduling its disposal on the bridge loop and waiting. A `weakref.finalize`
   backstop schedules the same for an unclosed client; bridge shutdown covers the rest.
@@ -226,3 +229,6 @@ not log.
 27. The default client refuses session-changing and transaction-control statements with a typed
     error (sqlglot tokenizer, every `;`-separated statement). Options: refuse at the door /
     document only. (user, from codex findings 3–4)
+28. At the end of a synchronous workflow, only clients that implement the end-of-workflow release
+    are released; other `SqlClient`s stay open until `close()`, and `DelegatingSqlClient` forwards
+    the release. Options: release only where implemented / fall back to `aclose()`. (user)

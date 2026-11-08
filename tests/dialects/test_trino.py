@@ -431,7 +431,7 @@ class TestBuildEngineScheme:
         assert _build(url) is sentinel.engine
         built, kwargs = _built(create_engine)
         assert kwargs["connect_args"] == {"http_scheme": "https"}
-        assert kwargs["pool_pre_ping"] is True
+        assert "pool_pre_ping" not in kwargs
         assert built == make_url(url)
 
     def test_password_on_non_443_port_connects_over_https(self, create_engine: MagicMock) -> None:

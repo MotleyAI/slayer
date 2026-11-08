@@ -87,7 +87,17 @@ class TestGetEngine:
         assert result is fake
         args, kwargs = create_engine_mock.call_args
         assert args[0].startswith("postgresql+psycopg://")
-        assert kwargs.get("pool_pre_ping") is True
+        assert "pool_pre_ping" not in kwargs
+
+
+def _recording_listens_for(registered: list[tuple[str, str]]) -> Any:
+    """A ``listens_for`` stand-in recording ``(event, listener name)`` for every registration."""
+    def _listens_for(_target: Any, event: str, *_a: Any, **_k: Any) -> Any:
+        def _register(fn: Any) -> Any:
+            registered.append((event, fn.__name__))
+            return fn
+        return _register
+    return _listens_for
 
 
 class TestSessionOverridesListener:
@@ -108,15 +118,12 @@ class TestSessionOverridesListener:
         ):
             # Warm-up: the driver's first import registers its own listeners.
             load_driver(ds, ds.get_connection_string(), dialect=dialect_for_ds_type(ds.type), is_async=False)
+            registered: list[tuple[str, str]] = []
             with patch.object(engine_factory.sa_event, "listens_for") as listens_for_mock:
-                listens_for_mock.return_value = lambda fn: fn
+                listens_for_mock.side_effect = _recording_listens_for(registered)
                 engine_factory.get_engine(ds)
-        listens_for_mock.assert_called_once()
-        _engine_arg, event_name = listens_for_mock.call_args.args
-        # Use ``checkout`` (not ``connect``) so session state
-        # is re-applied on every pool checkout, not just on the first
-        # physical connection.
-        assert event_name == "checkout"
+        # Once per physical connection: ``connect``, not ``checkout``.
+        assert [event for event, name in registered if name == "_slayer_session_overrides"] == ["connect"]
 
     def test_non_snowflake_engine_skips_session_overrides_listener(self) -> None:
         """Postgres / SQLite / etc. don't override apply_session_overrides,
@@ -128,10 +135,11 @@ class TestSessionOverridesListener:
             warehouse="should_not_fire",
             role="should_not_fire",
         )
+        registered: list[tuple[str, str]] = []
         with patch.object(engine_factory.sa_event, "listens_for") as listens_for_mock:
-            listens_for_mock.return_value = lambda fn: fn
+            listens_for_mock.side_effect = _recording_listens_for(registered)
             engine_factory.get_engine(ds)
-        listens_for_mock.assert_not_called()
+        assert "_slayer_session_overrides" not in [name for _event, name in registered]
 
     def test_session_listener_invokes_dialect_apply_session_overrides(self) -> None:
         """When the engine opens a connection, the listener body must
@@ -151,7 +159,7 @@ class TestSessionOverridesListener:
                 ) as apply_mock:
                     engine = engine_factory.get_engine(ds)
                     with engine.connect() as _:
-                        pass  # NOSONAR(S108) — empty body is intentional; opening + closing fires the checkout-event listener under test
+                        pass  # NOSONAR(S108) — empty body is intentional; opening fires the connect-event listener under test
         assert apply_mock.call_count >= 1
         # Listener calls ``apply_session_overrides(dbapi_connection=..., datasource=...)``
         # by name; the datasource is the kwarg, not a positional arg.
@@ -764,7 +772,7 @@ class TestConfigSnapshot:
         engine_factory.reset_cache()
 
     def test_session_overrides_listener_is_insulated_from_later_mutation(self) -> None:
-        """The listener fires on every checkout for the life of the engine. It
+        """The listener fires on every new connection for the life of the engine. It
         must keep applying the fields this engine was cached under, not whatever
         the caller's config says later — those fields *are* its cache key."""
         pytest.importorskip("snowflake.connector")
@@ -786,7 +794,7 @@ class TestConfigSnapshot:
                 engine = engine_factory.get_engine(ds)
                 ds.warehouse = "WH_MUTATED_AFTER"
                 with engine.connect() as _:
-                    pass  # NOSONAR(S108) — opening + closing fires the checkout listener
+                    pass  # NOSONAR(S108) — opening fires the connect listener
         assert apply_mock.call_args.kwargs["datasource"].warehouse == "WH_AT_BUILD"
         engine_factory.reset_cache()
 
