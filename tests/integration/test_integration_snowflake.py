@@ -1111,7 +1111,8 @@ def test_quoted_lowercase_table_ingests_types_and_queries(sf_datasource, sf_engi
         assert source.column("qty") == (DataType.INT, None)
         storage = YAMLStorage(base_dir=str(tmp_path))
         run_sync(storage.save_datasource(sf_datasource))
-        run_sync(ingest_datasource_idempotent(datasource=sf_datasource, storage=storage, schema=sf_transient_schema))
+        run_sync(ingest_datasource_idempotent(datasource=sf_datasource, storage=storage, schema=sf_transient_schema,
+                                              include_tables=["lower_items"]))
         model = run_sync(storage.get_model("lower_items"))
         assert model is not None
         assert model.sql_table == f'{sf_transient_schema}."lower_items"'
