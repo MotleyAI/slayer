@@ -1,0 +1,16 @@
+# The join target for `orders`. Supplies the `region` dimension the view and
+# the join queries group by.
+cubes:
+  - name: customers
+    sql_table: customers
+    dimensions:
+      - name: customer_id
+        sql: "{CUBE}.customer_id"
+        type: number
+        primary_key: true
+      - name: name
+        sql: "{CUBE}.name"
+        type: string
+      - name: region
+        sql: "{CUBE}.region"
+        type: string
