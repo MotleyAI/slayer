@@ -294,7 +294,7 @@ async def test_the_client_reads_the_url_dataset_without_building_an_engine(monke
         raise AssertionError("an engine was built to resolve the default schema")
 
     monkeypatch.setattr(engine_factory, "get_engine", _no_engine)
-    monkeypatch.setattr("slayer.sql.client.create_async_engine", _no_engine)
+    monkeypatch.setattr("slayer.database.client.create_async_engine", _no_engine)
     client = SlayerSQLClient(datasource=_DS)
     try:
         assert await client.default_schema() == _URL_DATASET

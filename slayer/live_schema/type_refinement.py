@@ -46,7 +46,7 @@ def _is_sqlite_datasource(datasource: DatasourceConfig) -> bool:
 
 
 def _is_auto_default_integer_format_dict(fmt: dict | None) -> bool:
-    """Dict-shape mirror of :func:`slayer.engine.ingestion._is_auto_default_integer_format`."""
+    """Dict-shape mirror of :func:`slayer.live_schema.ingestion._is_auto_default_integer_format`."""
     if not isinstance(fmt, dict):
         return False
     if fmt.get("type") != "integer":

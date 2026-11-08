@@ -26,7 +26,7 @@ load. Locally, run::
 before invoking this suite.
 
 Teardown of the per-module DB requires special handling: SLayer caches
-SQLAlchemy engines (``slayer/sql/engine_factory.py``) and pyodbc pools
+SQLAlchemy engines (``slayer/database/engine_factory.py``) and pyodbc pools
 those connections, so a vanilla ``DROP DATABASE`` will block. The
 ``_drop_module_db`` helper:
 

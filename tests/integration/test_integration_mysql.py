@@ -293,7 +293,7 @@ def _mysql_env_storage(mysql_container, tmp_path_factory):
 def mysql_env(_mysql_env_storage) -> SlayerQueryEngine:
     """Per-test SlayerQueryEngine wrapping the module-scoped storage. The
     engine is recreated per-test because its async SA engine binds to the
-    current event loop (slayer/sql/client.py:148)."""
+    current event loop (slayer/database/client.py:148)."""
     return SlayerQueryEngine(storage=_mysql_env_storage)
 
 

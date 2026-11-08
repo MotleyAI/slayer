@@ -2219,7 +2219,7 @@ class StartupIngestSummary(BaseModel):
     """Outcome of :func:`ingest_all_datasources_idempotent`.
 
     ``drift_pending`` accumulates ``ToDeleteEntry`` objects from
-    :mod:`slayer.engine.schema_drift` across every per-datasource result.
+    :mod:`slayer.live_schema.schema_drift` across every per-datasource result.
     It is typed as ``List[Any]`` to avoid a circular import with
     ``schema_drift``; runtime entries are
     ``EditModelDelete | WholeModelDelete``.

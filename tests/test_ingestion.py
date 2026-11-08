@@ -885,7 +885,7 @@ class TestSqliteIngestionProbe:
                 name="ds", type="duckdb", database=db_path,
             )
             with patch(
-                "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
+                "slayer.database.sqlite_introspect.probe_sqlite_integer_column",
                 side_effect=AssertionError("probe must not run on DuckDB"),
             ):
                 models = await _ingest(ds)
@@ -913,7 +913,7 @@ class TestSqliteIngestionProbe:
             # so the caller never sees an exception.
             models = []
             with patch(
-                "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
+                "slayer.database.sqlite_introspect.probe_sqlite_integer_column",
                 side_effect=RuntimeError("simulated probe failure"),
             ):
                 with caplog.at_level(logging.WARNING):
@@ -945,7 +945,7 @@ class TestSqliteIngestionProbe:
                 return DataType.INT
 
             with patch(
-                "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
+                "slayer.database.sqlite_introspect.probe_sqlite_integer_column",
                 side_effect=_capture,
             ):
                 # Mixed bag: one base column (no '.') and one dotted alias.

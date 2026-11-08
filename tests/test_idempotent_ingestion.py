@@ -826,7 +826,7 @@ class TestSqliteProbeWideningOnReingest:
         await _persist_int_model(storage, "ds", "t", "qty")
 
         with patch(
-            "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
+            "slayer.database.sqlite_introspect.probe_sqlite_integer_column",
             side_effect=AssertionError("probe must not run on DuckDB"),
         ):
             await _ingest(datasource=ds, storage=storage)
@@ -975,7 +975,7 @@ class TestSqliteProbeWideningOnReingest:
             column_format=custom_format,
         )
 
-        with caplog.at_level(_logging.INFO, logger="slayer.engine.ingestion"):
+        with caplog.at_level(_logging.INFO, logger="slayer.live_schema.ingestion"):
             await _ingest(datasource=ds, storage=storage)
 
         loaded = await storage.get_model("sensordata", data_source="ds")

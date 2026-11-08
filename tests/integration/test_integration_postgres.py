@@ -76,7 +76,7 @@ def _pg_env_storage(postgresql_proc, tmp_path_factory):
     """Module-scoped: per-module Postgres DB with seeded customers/orders, plus
     a YAMLStorage with the orders + customers models pre-saved. Returns the
     storage instance — the per-test ``pg_env`` fixture wraps a fresh engine
-    around it (engines bind to their event loop, see slayer/sql/client.py:144).
+    around it (engines bind to their event loop, see slayer/database/client.py:144).
     """
     conn, db_name = _create_module_db(postgresql_proc)
     try:

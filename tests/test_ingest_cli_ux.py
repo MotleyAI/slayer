@@ -58,7 +58,7 @@ def _patch_ingest(monkeypatch, result: IdempotentIngestResult) -> None:
         return result
 
     monkeypatch.setattr(
-        "slayer.engine.ingestion.ingest_datasource_idempotent", _fake
+        "slayer.live_schema.ingestion.ingest_datasource_idempotent", _fake
     )
     monkeypatch.setattr(
         "slayer.cli._resolve_storage",
@@ -294,7 +294,7 @@ class TestRestExitSemantics:
             )
 
         monkeypatch.setattr(
-            "slayer.engine.ingestion.ingest_datasource_idempotent", _fake
+            "slayer.live_schema.ingestion.ingest_datasource_idempotent", _fake
         )
 
         resp = client.post("/ingest", json={"datasource": "ds"})
@@ -326,7 +326,7 @@ class TestRestExitSemantics:
             )
 
         monkeypatch.setattr(
-            "slayer.engine.ingestion.ingest_datasource_idempotent", _fake
+            "slayer.live_schema.ingestion.ingest_datasource_idempotent", _fake
         )
 
         resp = client.post("/ingest", json={"datasource": "ds"})

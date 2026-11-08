@@ -340,7 +340,7 @@ class TestSkipBackstop:
             return insp
 
         monkeypatch.setattr(
-            "slayer.sql.client.sa.inspect", _patched_inspect
+            "slayer.database.client.sa.inspect", _patched_inspect
         )
 
         report = await _report(ds)
@@ -383,11 +383,11 @@ class TestIdleRelease:
                 return nullcontext(MagicMock())
 
         monkeypatch.setattr(
-            "slayer.sql.engine_factory.get_engine",
+            "slayer.database.engine_factory.get_engine",
             lambda _cfg: _ExplodingEngine(),
         )
         monkeypatch.setattr(
-            "slayer.sql.client.sa.inspect",
+            "slayer.database.client.sa.inspect",
             lambda *_a, **_k: (_ for _ in ()).throw(_Boom("the real failure")),
         )
 
@@ -444,7 +444,7 @@ class TestIdleRelease:
         class _ExplodingEngine:
             pool = _ExplodingPool()
 
-        with caplog.at_level(logging.WARNING, logger="slayer.sql.engine_factory"):
+        with caplog.at_level(logging.WARNING, logger="slayer.database.engine_factory"):
             engine_factory.release_idle(_ExplodingEngine())  # pyright: ignore[reportArgumentType]  # deliberate fake
 
         assert any(

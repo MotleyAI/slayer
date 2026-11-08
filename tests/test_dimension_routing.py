@@ -1,5 +1,5 @@
 """Unit tests for the pure route resolver
-``slayer/engine/dimension_routing.py``: ``short_form_route_or_none`` (executable
+``slayer/engine/population/dimension_routing.py``: ``short_form_route_or_none`` (executable
 hop-token path for a uniquely-routable target, else ``None``, never raises),
 ``route_dotted_target`` (same but raises ``UnresolvableDimensionJoinError`` with a
 route-aware ``suggested_path`` on ambiguous/unreachable), and ``_safe_hops`` (the

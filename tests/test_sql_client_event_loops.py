@@ -218,13 +218,13 @@ async def test_close_warns_while_a_live_loops_engine_remains(
     client = SlayerSQLClient(pg_ds)
     try:
         await client.execute(SQL)
-        with caplog.at_level(logging.WARNING, logger="slayer.sql.client"):
+        with caplog.at_level(logging.WARNING, logger="slayer.database.client"):
             client.close()
         assert any("aclose" in r.getMessage() for r in caplog.records)
         assert (await client.execute(SQL)).rows == ROWS
     finally:
         await client.aclose()
     caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="slayer.sql.client"):
+    with caplog.at_level(logging.WARNING, logger="slayer.database.client"):
         client.close()
     assert not any("aclose" in r.getMessage() for r in caplog.records)

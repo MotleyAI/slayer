@@ -484,7 +484,7 @@ class SqlClient(Protocol):
     """Everything SLayer asks of one datasource's database: statements, live metadata, lifecycle.
 
     The contract (semantics, typed failures, lifecycle) is ``docs/configuration/sql-clients.md``;
-    ``slayer.sql.conformance.run_conformance`` checks an implementation against it.
+    ``slayer.database.conformance.run_conformance`` checks an implementation against it.
     """
 
     @property

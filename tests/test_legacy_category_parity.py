@@ -39,7 +39,7 @@ postgresql = factories.postgresql("postgresql_proc")
 
 DEPRECATED = pytest.mark.filterwarnings("ignore:.*get_column_types.*:FutureWarning")
 
-# --- SLayer 1.6.0's classifier (slayer/sql/client.py, slayer/sql/dialects/snowflake.py), verbatim ---
+# --- SLayer 1.6.0's classifier (slayer/database/client.py, slayer/sql/dialects/snowflake.py), verbatim ---
 
 _PG_OID_MAP: dict[int, str] = {
     16: "boolean", 20: "number", 21: "number", 23: "number", 26: "number", 700: "number", 701: "number",

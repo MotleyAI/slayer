@@ -2,7 +2,7 @@
 
 Where the **dialect-class methods** are tested in
 ``tests/dialects/test_snowflake.py``, this module covers
-``slayer.sql.client``'s **delegation** to those methods:
+``slayer.database.client``'s **delegation** to those methods:
 
 * The typed probe reads cursor descriptions through
   ``SqlDialect.describe_cursor_column``, never through Postgres OIDs.

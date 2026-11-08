@@ -1,6 +1,6 @@
 """SQLite affinity-probe helper unit tests.
 
-The helper lives in :mod:`slayer.sql.sqlite_introspect` and probes the actual
+The helper lives in :mod:`slayer.database.sqlite_introspect` and probes the actual
 storage classes of stored values in a SQLite column declared with INTEGER
 affinity. It returns:
 

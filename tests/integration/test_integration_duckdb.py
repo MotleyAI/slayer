@@ -24,7 +24,7 @@ def _duckdb_env_storage(tmp_path_factory):
     """Module-scoped: per-module DuckDB file with seeded customers/orders, plus
     a YAMLStorage with the orders + customers models pre-saved. The per-test
     ``duckdb_env`` fixture wraps a fresh engine around the returned storage
-    (engines bind to their event loop — see slayer/sql/client.py:144)."""
+    (engines bind to their event loop — see slayer/database/client.py:144)."""
     tmp_path = tmp_path_factory.mktemp("duckdb_env")
     db_path = tmp_path / "test.duckdb"
     conn = duckdb.connect(str(db_path))

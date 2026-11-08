@@ -352,7 +352,7 @@ class TestSqliteProbePreservesComments:
     async def test_non_affinity_engine_keeps_comments(self) -> None:
         cols = [IntrospectedColumn(name="a", type=DataType.INT, comment="kept")]
         async with _client(DatasourceConfig(name="mem", type="duckdb", database=":memory:")) as client:
-            with patch("slayer.sql.sqlite_introspect.probe_sqlite_integer_column") as probe:
+            with patch("slayer.database.sqlite_introspect.probe_sqlite_integer_column") as probe:
                 out = await _sqlite_probe_integer_columns(client=client, sql_table="t", columns=cols)
         probe.assert_not_called()
         assert out[0].comment == "kept"

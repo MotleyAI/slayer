@@ -417,7 +417,7 @@ class TestIntrospectionUnavailable:
             ds = self._ds_with_one_table(tmpdir)
             async with _client(ds) as client:
                 with patch(
-                    "slayer.engine.schema_drift._introspect_one_table",
+                    "slayer.live_schema.schema_drift._introspect_one_table",
                     side_effect=PermissionError("403 Access Denied"),
                 ), pytest.raises(IntrospectionUnavailable):
                     await _live_schema_for_datasource(client=client, datasource=ds)
@@ -431,7 +431,7 @@ class TestIntrospectionUnavailable:
             )
             async with _client(ds) as client:
                 with patch(
-                    "slayer.engine.schema_drift._introspect_one_table",
+                    "slayer.live_schema.schema_drift._introspect_one_table",
                     side_effect=PermissionError("403 Access Denied"),
                 ):
                     diffs = await _collect_sql_table_diffs(

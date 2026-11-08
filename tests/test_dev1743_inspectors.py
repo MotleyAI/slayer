@@ -2,7 +2,7 @@
 
 Two save-time inspectors resolve table aliases by splitting on ``__`` today:
 
-* ``slayer/engine/schema_drift.py`` — ``_walk_alias_to_target_model`` (line ~667),
+* ``slayer/live_schema/schema_drift.py`` — ``_walk_alias_to_target_model`` (line ~667),
   reached from the pure cascade entry point ``compute_datasource_drops``.
 * ``slayer/engine/column_dependency.py`` — ``_resolve_target_for_ref`` (line ~69),
   reached from ``_column_dependencies``.

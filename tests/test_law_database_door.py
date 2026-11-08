@@ -31,9 +31,9 @@ SLAYER = REPO / "slayer"
 
 #: The trusted boundary: the default client and the connection / dialect code it owns.
 BOUNDARY = (
-    "slayer/sql/client.py",
-    "slayer/sql/engine_factory.py",
-    "slayer/sql/sqlite_introspect.py",
+    "slayer/database/client.py",
+    "slayer/database/engine_factory.py",
+    "slayer/database/sqlite_introspect.py",
     "slayer/sql/dialects/",
 )
 #: SLayer's own databases: storage's SQLite, the facade-local catalog DuckDB, demo data generation.

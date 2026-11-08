@@ -3,7 +3,7 @@ and a live database schema.
 
 Two layers are tested here:
 
-* Pure functions in ``slayer.engine.schema_drift`` — exercise each diff /
+* Pure functions in ``slayer.live_schema.schema_drift`` — exercise each diff /
   cascade rule against synthetic ``LiveTable`` fixtures, no DB involved.
 * ``SlayerQueryEngine.validate_models()`` — end-to-end against a real SQLite
   database in a tempfile, verifying the orchestrator wires up live
@@ -1271,7 +1271,7 @@ class TestValidateModelsSqliteProbe:
         engine = SlayerQueryEngine(storage=storage)
 
         with patch(
-            "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
+            "slayer.database.sqlite_introspect.probe_sqlite_integer_column",
             side_effect=AssertionError("probe must not fire on non-SQLite"),
         ):
             result = await engine.validate_models(data_source="ds")
@@ -1295,7 +1295,7 @@ class TestValidateModelsSqliteProbe:
             ],
         )
         with patch(
-            "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
+            "slayer.database.sqlite_introspect.probe_sqlite_integer_column",
             return_value=None,
         ):
             result = await engine.validate_models(data_source="ds")
