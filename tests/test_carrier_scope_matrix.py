@@ -1,19 +1,16 @@
-"""DEV-1705 Stage 1 — carrier × scope acceptance matrix.
-
-Two layers (DEV-1705 spec, decision 4A = hybrid):
+"""Carrier × scope acceptance matrix.
 
 * **Layer 1 — invariant sweep** (``TestScopeClosureInvariant``): every
   currently-passing (carrier, scope) combination emits scope-closed SQL. Each
   cell first asserts a *structural marker* proving the intended scope/carrier
   shape was actually exercised (guards against a fixture silently degrading to a
   plain ``_base``), then asserts ``assert_scope_closed`` passes.
-* **Layer 2 — defect pins** (``TestScopeDefectPins``): known-broken combos land
-  as ``xfail(strict=True)`` pinned to the DEV-1703 stage that fixes them, each
-  asserting the intended post-fix shape so it auto-promotes when the stage lands.
+* **Layer 2 — scope pins** (``TestScopeDefectPins``): scopes with no other
+  passing representative, asserting their intended shape.
 
 Plus the two flagged semantic pins — **F1** (1:N crossing aggregates keep
-multiply-per-match) and **F4** (revised by DEV-1840: a host-local filter
-semi-joins into the scalar cross-model CTE) — as SQL-shape assertions here; their executed-value
+multiply-per-match) and **F4** (a host-local filter semi-joins into the scalar
+cross-model CTE) — as SQL-shape assertions here; their executed-value
 counterparts live in ``tests/integration/test_integration_duckdb.py``. And the
 **RLS × isolation-CTE** cells, which exercise the validator's post-RLS
 ``allow_rls_correlation`` allowlist against the session-policy transform.
@@ -22,31 +19,8 @@ Carriers exercised: aggregate source (ColumnKey / ColumnSqlKey), explicit-time
 positional arg, ``Column.filter``, derived + time dimensions, WHERE filters
 (typed + Mode-A), model filters, order refs. Scopes: host base ``_base``,
 first/last ranked subquery, forward ``_cm_*`` CTE, ``time_shift`` CTE, windowed
-``_wm_`` CTE (Stage-10, xfail). ``_fm_``/``_wm_`` legacy scope shapes get direct
-validator coverage in ``tests/test_scope_check.py`` (hand-written SQL, J3=C).
-
-Harvest manifest (DEV-1705 deliverable 3 — tests recovered from the abandoned
-point-fix worktrees, each pinned to the DEV-1703 stage that fixes it):
-
-  | Source   | Recovered scenarios                    | Landed as / where                                   | Stage |
-  |----------|----------------------------------------|-----------------------------------------------------|-------|
-  | DEV-1526 | cross-model agg source crossing a      | tests/test_sql_generator.py::                       | 4     |
-  |          | further join (12 discovery cases)      | TestCrossModelAggregateSourceSqlJoinInference       |       |
-  | DEV-1531 | first/last cross-join value            | tests/test_sql_generator.py::                       | 5     |
-  |          | materialisation (SQL-shape, 8 pins +   | TestMeasureSourceSqlJoinInference (in-class); +     |       |
-  |          | 2 green no-ops) & executed values      | test_integration_duckdb.py::TestDev1531CrossJoin... |       |
-  | DEV-1496 | windowed-measure raise-don't-degrade   | tests/test_sql_generator.py::TestWindowedMeasure... | 10    |
-  |          | guards (8)                             |                                                     |       |
-  | DEV-1527 | agg-kwarg derived path-alias (LOCAL    | test_agg_param_derived_column_path_alias_xfail      | 2     |
-  |          | half; cross-model remainder = Stage 4) | (+ tests/test_dev1527_agg_kwargs.py)                |       |
-  | DEV-1474 | cross-model partition in time_shift    | tests/test_dev1474_time_shift_cross_model_         | 7     |
-  |          | (PROMOTED at Stage 7 — the pin in      | partition.py (rich suite) + TestScopeDefectPins::   |       |
-  |          | TestScopeDefectPins is now a plain     | test_time_shift_cross_model_partition (this file)   |       |
-  |          | passing test)                          |                                                     |       |
-
-DEV-1526's ``TestColumnSqlKeyJoinPathsHelper`` is deliberately NOT landed: it
-unit-tests ``SQLGenerator._column_sql_key_join_paths``, a Stage-4 production
-helper absent on this branch — it belongs with the Stage-4 (DEV-1708) fix.
+producer CTE. ``_fm_``/``_wm_`` legacy scope shapes get direct validator
+coverage in ``tests/test_scope_check.py`` (hand-written SQL).
 """
 
 from __future__ import annotations
@@ -54,6 +28,7 @@ from __future__ import annotations
 import re
 
 import pytest
+import sqlglot
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
@@ -64,6 +39,7 @@ from slayer.core.policy import (
     SessionPolicy,
 )
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.sql.dialects import get_dialect
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.sql.session_policy import apply_session_policy
 from tests._engine_helpers import _engine_generate
@@ -205,7 +181,7 @@ class TestScopeClosureInvariant:
             measures=[ModelMeasure(formula="balance:last(ordered_at)")],
         )
         sql = await _gen(query, _orders())
-        assert "_cm_" in sql  # DEV-1835: ranked producer under uniform _cm_ scope
+        assert "_cm_" in sql  # ranked producer under the uniform _cm_ scope
         assert "ROW_NUMBER()" in sql
         assert "orders.ordered_at" in sql                    # explicit time carrier
         assert_scope_closed(sql)
@@ -267,7 +243,7 @@ class TestScopeClosureInvariant:
 # --------------------------------------------------------------------------- #
 class TestSemanticPinsSqlShape:
     async def test_f4_scalar_cross_model_agg_semi_joins_host_local_filter(self) -> None:
-        # No dimensions ⇒ scalar cross-model aggregate. Since DEV-1840 the
+        # No dimensions ⇒ scalar cross-model aggregate. The
         # host-local filter (orders.status='paid') restricts the target-rooted
         # _cm_ CTE's population via a correlated EXISTS — never via a
         # cardinality-changing join of the CTE body.
@@ -322,10 +298,10 @@ class TestRlsIsolationCte:
         sql = await self._cross_model_sql()
         assert_scope_closed(sql)  # pre-RLS
         wrapped = apply_session_policy(
-            sql, dialect="postgres",
+            sqlglot.parse_one(sql, dialect="postgres"), sql_dialect=get_dialect("postgres"),
             policy=SessionPolicy(ruleset=ColumnFilterRuleset(column="org", value="7ef3")),
             has_column=_ALWAYS,
-        )
+        ).sql(dialect="postgres")
         # Column ruleset wraps each table with a plain WHERE (no correlation);
         # closed even without the allowlist, and with it.
         assert_scope_closed(wrapped)
@@ -334,7 +310,7 @@ class TestRlsIsolationCte:
     async def test_join_ruleset_correlated_exists_needs_allowlist(self) -> None:
         sql = await self._cross_model_sql()
         wrapped = apply_session_policy(
-            sql, dialect="postgres",
+            sqlglot.parse_one(sql, dialect="postgres"), sql_dialect=get_dialect("postgres"),
             policy=SessionPolicy(ruleset=JoinFilterRuleset(
                 table="customers", column="organization_uuid", value="orgA",
                 joins=[JoinFilterRule(
@@ -342,27 +318,23 @@ class TestRlsIsolationCte:
                     join_path=["orders.customer_id = customers.id"])],
             )),
             has_column=_ALWAYS,
-        )
+        ).sql(dialect="postgres")
         assert "_rls_src" in wrapped  # intentional correlated EXISTS emitted
-        # DEV-1840 made the checker correlation-aware (planner-emitted
-        # semi-joins correlate legally), so the RLS correlation passes with
+        # The checker is correlation-aware (planner-emitted semi-joins
+        # correlate legally), so the RLS correlation passes with
         # and without the legacy allowlist flag.
         assert_scope_closed(wrapped)
         assert_scope_closed(wrapped, allow_rls_correlation=True)
 
 
 # --------------------------------------------------------------------------- #
-# Layer 2 — defect pins (strict xfail, pinned to the fixing stage).
-# Rich cross-model / first-last / windowed defect coverage lives beside the
-# existing pins in tests/test_sql_generator.py (DEV-1526/1531/1496 classes);
-# these two demonstrate the matrix's xfail dimension for scopes with no
-# currently-passing representative.
+# Layer 2 — scope pins. Rich cross-model / first-last / windowed coverage
+# lives in tests/test_sql_generator.py.
 # --------------------------------------------------------------------------- #
 class TestScopeDefectPins:
     async def test_windowed_measure_emits_wm_cte(self) -> None:
-        # DEV-1714 (Stage 10) landed: duration-windowed measures emit a range-join
-        # producer CTE on the typed pipeline. DEV-1835 unifies its naming under the
-        # `_cm_` producer scope (formerly `_wm_`). Rich coverage lives in
+        # Duration-windowed measures emit a range-join producer CTE under the
+        # `_cm_` producer scope. Rich coverage lives in
         # tests/test_sql_generator.py (TestFields / TestWindowedMeasureGuards)
         # and tests/integration/test_integration_windowed_measures.py.
         query = SlayerQuery(
@@ -372,7 +344,7 @@ class TestScopeDefectPins:
             measures=[ModelMeasure(formula="amount:sum(window='90d')", name="rev_w")],
         )
         sql = await _gen(query, _orders())
-        assert "_cm_" in sql  # DEV-1835: windowed producer under uniform _cm_ scope
+        assert "_cm_" in sql  # windowed producer under the uniform _cm_ scope
 
     async def test_cross_model_source_crosses_further_join(self) -> None:
         customers = _customers(extra=[
@@ -387,9 +359,8 @@ class TestScopeDefectPins:
         assert "LEFT JOIN regions AS regions" in cm_body
 
     async def test_time_shift_cross_model_partition(self) -> None:
-        # DEV-1711 (Stage 7) landed: the shifted CTE is a ScopeFrame that pulls
-        # the join a cross-model partition crosses, so this promoted from its
-        # strict-xfail pin. Rich coverage lives in
+        # The shifted CTE is a ScopeFrame that pulls the join a cross-model
+        # partition crosses. Rich coverage lives in
         # tests/test_dev1474_time_shift_cross_model_partition.py.
         query = SlayerQuery(
             source_model="orders",

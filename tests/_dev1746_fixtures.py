@@ -1,4 +1,4 @@
-"""Shared fixtures + helpers for the DEV-1746 scope-assembly test modules.
+"""Shared fixtures + helpers for the scope-assembly test modules.
 
 Underscore-prefixed (like ``tests/_engine_helpers.py`` and
 ``tests/_cross_model_chain.py``) so pytest skips it during collection while
@@ -62,7 +62,7 @@ PAID_FEB_WINDOW = PAID_JAN + PAID_FEB  # 30.0
 
 
 def seed_dev1746_sqlite(db_path: str) -> None:
-    """Create + seed the DEV-1746 SQLite corpus at ``db_path``."""
+    """Create + seed the scope-assembly SQLite corpus at ``db_path``."""
     with transaction(db_path) as con:
         con.executescript(
             """
@@ -164,9 +164,8 @@ def outer_select_aliases(sql: str, *, dialect: str = "postgres") -> List[str]:
     """The outermost SELECT's output column names, **in emitted order**.
 
     B7 is an ordering contract, so this returns a list. Uses sqlglot's
-    ``named_selects``, which is what ``response_meta.expected_columns_from_sql``
-    reads — so asserting on this asserts on the same thing the response's
-    ``columns`` order is derived from.
+    ``named_selects``, which the response's ``columns`` order is read from
+    on the statement tree.
     """
     parsed = sqlglot.parse_one(sql, dialect=dialect)
     assert parsed is not None, f"SQL failed to parse:\n{sql}"

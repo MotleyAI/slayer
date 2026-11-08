@@ -29,6 +29,7 @@ from slayer.engine.plan import plan_query, plan_stages
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.planned import plan_has_semi_join_filters
 from slayer.sql.client import ExecutionResult, SlayerSQLClient
+from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.clickhouse import _attach_ch_correlated_setting
 from slayer.sql.generator import generate_planned_stages
 from slayer.sql.session_policy import apply_session_policy
@@ -329,14 +330,14 @@ class TestSettingsCoexistence:
             raise AssertionError("join path never probes columns")
 
         out = apply_session_policy(
-            sql,
-            dialect="clickhouse",
+            sqlglot.parse_one(sql, dialect="clickhouse"),
+            sql_dialect=get_dialect("clickhouse"),
             policy=SessionPolicy(ruleset=JoinFilterRuleset(
                 table="customers", column="organization_uuid", value="orgA",
                 joins=(_ORDERS_RULE,),
             )),
             has_column=_boom_probe,
-        )
+        ).sql(dialect="clickhouse")
         assert out.count("SETTINGS") == 1
         assert out.count(_SETTING) == 1
         assert f"{_SETTING} = 1" in out

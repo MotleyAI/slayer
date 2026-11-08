@@ -1,12 +1,14 @@
-"""DEV-1450 stage 7b.15d — response_meta.build_response_metadata.
+"""response_meta.build_response_metadata.
 
 Asserts the typed-plan-derived ``attributes`` + ``expected_columns`` match
 what the legacy enriched-query path produced: result keys read straight from
-the rendered SQL, dimensions vs measures split by phase, measure format
+the statement's projection, dimensions vs measures split by phase, measure format
 inferred (currency inheritance, count→integer), labels propagated.
 """
 
 from __future__ import annotations
+
+import sqlglot
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
@@ -69,7 +71,7 @@ def _meta_for(query: SlayerQuery):
     planned = plan_query(query=query, bundle=bundle)
     sql = generate_from_planned(planned, bundle=bundle, dialect="postgres")
     attrs, cols = build_response_metadata(
-        root_planned=planned, bundle=bundle, sql=sql, dialect="postgres"
+        root_planned=planned, bundle=bundle, statement=sqlglot.parse_one(sql, dialect="postgres"),
     )
     return attrs, cols, sql
 

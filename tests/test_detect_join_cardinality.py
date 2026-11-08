@@ -484,11 +484,18 @@ class TestSessionPolicyAppliedToProfiling:
         assert f.detected is JoinCardinality.MANY_TO_ONE
 
 
+def _side_stats_sql(**kwargs) -> tuple[str, str]:
+    """The two profiling statements, rendered with quoted identifiers."""
+    rows, dist = SlayerQueryEngine._side_stats_sql(**kwargs)
+    dialect = kwargs["sqlglot_name"]
+    return rows.sql(dialect=dialect, identify=True), dist.sql(dialect=dialect, identify=True)
+
+
 class TestSideStatsSqlShape:
     """The profiling SQL is built via sqlglot, not string concatenation."""
 
     def test_identifiers_are_quoted_and_nulls_excluded(self) -> None:
-        rows_sql, dist_sql = SlayerQueryEngine._side_stats_sql(
+        rows_sql, dist_sql = _side_stats_sql(
             table="public.orders", key_cols=["customer_id"], sqlglot_name="postgres",
         )
         for sql in (rows_sql, dist_sql):
@@ -498,7 +505,7 @@ class TestSideStatsSqlShape:
         assert "DISTINCT" not in rows_sql
 
     def test_composite_keys_exclude_nulls_on_every_column(self) -> None:
-        rows_sql, dist_sql = SlayerQueryEngine._side_stats_sql(
+        rows_sql, dist_sql = _side_stats_sql(
             table="t", key_cols=["a", "b"], sqlglot_name="postgres",
         )
         for sql in (rows_sql, dist_sql):
@@ -507,7 +514,7 @@ class TestSideStatsSqlShape:
 
     def test_hostile_identifier_stays_a_single_identifier(self) -> None:
         payload = 'a"; DROP TABLE users; --'
-        rows_sql, _ = SlayerQueryEngine._side_stats_sql(
+        rows_sql, _ = _side_stats_sql(
             table="t", key_cols=[payload, "b"], sqlglot_name="postgres",
         )
         # sqlglot doubles the embedded quote, so the payload cannot terminate

@@ -4,6 +4,7 @@ the policy dispatch. ``SqliteDialect.reflect_columns`` is mocked so no live sche
 
 
 import pytest
+import sqlglot
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
@@ -49,6 +50,12 @@ def _cols(*names):
 def _patch_columns(monkeypatch, fn):
     """Replace the probe's column read (the SQLite datasource's ``reflect_columns``)."""
     monkeypatch.setattr(SqliteDialect, "reflect_columns", fn)
+
+
+async def _scoped(engine, sql, *, dialect, datasource):
+    """Apply ``engine``'s policy to the parsed literal ``sql`` and render the tree."""
+    tree = sqlglot.parse_one(sql, dialect=dialect)
+    return (await engine._apply_policy(statement=tree, dialect=dialect, datasource=datasource)).sql(dialect=dialect)
 
 
 def _ds(tmp_path, *, schema_name=None):
@@ -221,18 +228,18 @@ def test_policy_cannot_be_reassigned(engine):
 
 
 async def test_apply_policy_no_policy_returns_verbatim(tmp_path):
-    """With no policy the SQL is returned verbatim (zero overhead, no parse)."""
+    """With no policy the statement is returned as is."""
     eng = _mk_engine(tmp_path, None)
-    sql = "SELECT  *  FROM   orders"
-    out = await eng._apply_policy(sql=sql, dialect="sqlite", datasource=_ds(tmp_path))
+    statement = sqlglot.parse_one("SELECT  *  FROM   orders", dialect="sqlite")
+    out = await eng._apply_policy(statement=statement, dialect="sqlite", datasource=_ds(tmp_path))
     await _teardown(eng)
-    assert out == sql
+    assert out == statement
 
 
 async def test_apply_policy_column_ruleset_probes(engine, tmp_path, monkeypatch):
     monkeypatch.setattr(engine, "_column_present", _always_present)
-    out = await engine._apply_policy(
-        sql="SELECT * FROM orders", dialect="sqlite", datasource=_ds(tmp_path)
+    out = await _scoped(
+        engine, "SELECT * FROM orders", dialect="sqlite", datasource=_ds(tmp_path)
     )
     assert "WHERE org = 'x'" in out
 
@@ -243,8 +250,8 @@ async def test_apply_policy_join_ruleset_does_not_probe(join_engine, tmp_path, m
         raise AssertionError("_column_present must not be called for a join ruleset")
 
     monkeypatch.setattr(join_engine, "_column_present", boom)
-    out = await join_engine._apply_policy(
-        sql="SELECT * FROM orders", dialect="sqlite", datasource=_ds(tmp_path)
+    out = await _scoped(
+        join_engine, "SELECT * FROM orders", dialect="sqlite", datasource=_ds(tmp_path)
     )
     assert "EXISTS" in out.upper()
 
@@ -252,8 +259,8 @@ async def test_apply_policy_join_ruleset_does_not_probe(join_engine, tmp_path, m
 async def test_apply_policy_join_rule_clickhouse_needs_no_version(join_engine, monkeypatch):
     """No profile has been probed, yet the join rule applies: it needs no server setting."""
     monkeypatch.setattr(join_engine, "_column_present", _always_present)
-    out = await join_engine._apply_policy(
-        sql="SELECT * FROM orders", dialect="clickhouse", datasource=_ch_ds()
+    out = await _scoped(
+        join_engine, "SELECT * FROM orders", dialect="clickhouse", datasource=_ch_ds()
     )
     assert "allow_experimental_correlated_subqueries" not in out
     assert "EXISTS" not in out.upper()
@@ -262,8 +269,8 @@ async def test_apply_policy_join_rule_clickhouse_needs_no_version(join_engine, m
 
 async def test_apply_policy_column_only_clickhouse_not_blocked(engine, monkeypatch):
     monkeypatch.setattr(engine, "_column_present", _always_present)
-    out = await engine._apply_policy(
-        sql="SELECT * FROM orders", dialect="clickhouse", datasource=_ch_ds()
+    out = await _scoped(
+        engine, "SELECT * FROM orders", dialect="clickhouse", datasource=_ch_ds()
     )
     assert "allow_experimental_correlated_subqueries" not in out
     assert "org = 'x'" in out

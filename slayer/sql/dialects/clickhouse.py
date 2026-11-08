@@ -13,7 +13,6 @@ from collections.abc import Callable, Sequence
 from datetime import date
 from typing import Any, ClassVar, Optional
 
-import sqlglot
 from sqlalchemy.types import NullType
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
@@ -140,14 +139,12 @@ def _parse_bool_setting(raw: Any) -> bool | None:
     return None
 
 
-def _exists_beside_array_join(sql: str) -> bool:
-    """Whether a SELECT of ``sql`` both ``ARRAY JOIN``s and filters by ``EXISTS`` (ClickHouse < 25.8 cannot plan it)."""
-    if "ARRAY JOIN" not in sql.upper():
-        return False
+def _exists_beside_array_join(statement: Expr) -> bool:
+    """Whether a SELECT of ``statement`` both ``ARRAY JOIN``s and filters by ``EXISTS`` (ClickHouse < 25.8 cannot plan it)."""
     return any(
         any(j.args.get("kind") == "ARRAY" for j in select.args.get("joins") or [])
         and select.args.get("where") is not None and select.args["where"].find(exp.Exists) is not None
-        for select in sqlglot.parse_one(sql, read="clickhouse").find_all(exp.Select)
+        for select in statement.find_all(exp.Select)
     )
 
 
@@ -482,7 +479,7 @@ class ClickhouseDialect(SqlDialect):
         """``readonly = 1`` forbids every setting change; ``0`` and ``2`` allow it."""
         return profile.readonly != 1
 
-    def correlated_subquery_refusal(self, profile: ServerProfile, *, sql: str = "") -> str | None:
+    def correlated_subquery_refusal(self, profile: ServerProfile, *, statement: Expr) -> str | None:
         version = profile.version
         if version is None or version < _CORRELATED_MIN_VERSION:
             detected = (
@@ -490,7 +487,7 @@ class ClickhouseDialect(SqlDialect):
                 else f"detected {version[0]}.{version[1]}. Upgrade the server."
             )
             return f"ClickHouse supports correlated subqueries only from server 25.4, but {detected}"
-        if version < _CORRELATED_DEFAULT_ON_VERSION and _exists_beside_array_join(sql):
+        if version < _CORRELATED_DEFAULT_ON_VERSION and _exists_beside_array_join(statement):
             return (
                 "ClickHouse runs a correlated subquery beside a list's ARRAY JOIN only from server 25.8, "
                 f"but detected {version[0]}.{version[1]}. Upgrade the server."

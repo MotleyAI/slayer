@@ -18,7 +18,7 @@ from slayer.core.errors import NameCollisionError
 from slayer.core.models import SlayerModel
 from slayer.engine import query_engine as query_engine_module
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.response_meta import expected_columns_from_sql, projection_result_keys
+from slayer.engine.response_meta import projection_result_keys
 from slayer.sql.dialects import get_dialect
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from tests._dev1739_fixtures import customers_model, make_exec_engine
@@ -234,11 +234,10 @@ async def test_planned_keys_equal_rendered_keys_query_backed(exec_engine) -> Non
 
 
 async def _assert_parity(engine: SlayerQueryEngine, payload: Any) -> None:
-    """Planned result keys equal the rendered SQL's decoded outer aliases, in order."""
+    """Planned result keys equal the statement's decoded outer aliases, in order."""
     rendered = await _plan(engine, payload)
-    assert rendered.sql is not None
     planned = projection_result_keys(root_planned=rendered.planned_list[-1])
-    emitted = expected_columns_from_sql(sql=rendered.sql, dialect=rendered.dialect)
+    emitted = list(rendered.statement.named_selects)
     decoded = list(get_dialect(rendered.dialect).decode_result_keys(
         [dict.fromkeys(emitted)], aliases=planned,
     )[0])

@@ -1980,9 +1980,9 @@ class SqlDialect(BaseModel):
         return True
 
     def correlated_subquery_refusal(
-        self, profile: ServerProfile, *, sql: str = "",  # NOSONAR(S1172) — no-op hook default
+        self, profile: ServerProfile, *, statement: Expr,  # NOSONAR(S1172) — no-op hook default
     ) -> str | None:
-        """Hook: why this user cannot run ``sql``'s correlated subquery, or ``None``."""
+        """Hook: why this user cannot run ``statement``'s correlated subquery, or ``None``."""
         return None
 
     def attach_correlated_setting(self, statement: Expression) -> None:  # NOSONAR(S1172) — no-op hook default

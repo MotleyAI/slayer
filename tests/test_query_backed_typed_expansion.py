@@ -27,7 +27,6 @@ from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure
 from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
-from slayer.sql.type_probe import TypeProbe
 
 
 # ---------------------------------------------------------------------------
@@ -641,8 +640,8 @@ class TestGetColumnTypesTypedPipeline:
         # produces — typically "number" for SQLite.
         assert types["amount_sum"], types["amount_sum"]
 
-    async def test_get_column_types_renders_via_generate_planned_stages(self) -> None:
-        """The query-backed probe path renders through ``generate_planned_stages``."""
+    async def test_get_column_types_renders_via_build_planned_statement(self) -> None:
+        """The query-backed probe path builds through ``build_planned_statement``."""
         # Save a real query-backed model so the prelude branch runs too.
         m = SlayerModel(
             name="qb_for_types",
@@ -656,17 +655,16 @@ class TestGetColumnTypesTypedPipeline:
         engine, tmp = await _engine()
         try:
             await engine.save_model(m)
-            planned_calls: List[str] = []
-            original_generate = query_engine_module.generate_planned_stages
+            planned_calls: List[Tuple[bool, str]] = []
+            original_generate = query_engine_module.build_planned_statement
 
             def _wrapper(*args, **kwargs):
-                probe = original_generate(*args, **kwargs)
-                assert isinstance(probe, TypeProbe)
-                planned_calls.append(probe.sql)
-                return probe
+                built = original_generate(*args, **kwargs)
+                planned_calls.append((bool(kwargs.get("type_probe")), built.statement.sql()))
+                return built
 
             with patch.object(
-                query_engine_module, "generate_planned_stages", _wrapper,
+                query_engine_module, "build_planned_statement", _wrapper,
             ):
                 # The call may fail at the SQL-execute step (we don't have
                 # a real backing table); the assertion is about the
@@ -675,11 +673,12 @@ class TestGetColumnTypesTypedPipeline:
                     await engine.get_column_types("qb_for_types")
                 except Exception:  # noqa: BLE001 — probe-execute failure is expected
                     pass
-            assert planned_calls, (
-                "get_column_types must render the query-backed probe through "
-                "generate_planned_stages"
+            probes = [sql for is_probe, sql in planned_calls if is_probe]
+            assert len(probes) == 1, (
+                "get_column_types must build the query-backed probe through "
+                f"build_planned_statement exactly once; got {len(probes)}"
             )
-            assert "SELECT" in planned_calls[0].upper(), planned_calls[0]
+            assert "SELECT" in probes[0].upper(), probes[0]
         finally:
             tmp.cleanup()
 

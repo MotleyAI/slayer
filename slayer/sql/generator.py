@@ -18,7 +18,6 @@ from typing import (
     Set,
     Tuple,
     cast,
-    overload,
 )
 
 from decimal import Decimal
@@ -32,7 +31,7 @@ from slayer.core.enums import (
     JoinType,
     TimeGranularity,
 )
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.errors import (
     AggregationNotAllowedError,
@@ -6466,19 +6465,16 @@ def _finish_statement(
     dialect: "str | SqlDialect",
     aliases: Sequence[str] = (),
     exempt: frozenset[str] = frozenset(),
+    policy_scoped: bool = False,
+    pretty: bool = True,
 ) -> str:
     """The one render of a composed statement: text, then identifier fitting, scope validation and the limit check."""
     d = _as_dialect(dialect)
-    return _render_rewritten(d.rewrite_statement(statement), dialect=d, aliases=aliases, exempt=exempt, pretty=True)
-
-
-def _render_rewritten(
-    statement: Expr, *, dialect: SqlDialect, aliases: Sequence[str], exempt: frozenset[str], pretty: bool,
-) -> str:
-    sql = dialect.rewrite_emitted_sql(
-        statement.sql(dialect=dialect.sqlglot_name, pretty=pretty), aliases=aliases, exempt=exempt)
-    maybe_validate_scopes(sql, dialect=dialect.sqlglot_name)
-    dialect.assert_no_overlimit_identifiers(sql, exempt=exempt)
+    sql = d.rewrite_emitted_sql(
+        d.rewrite_statement(statement).sql(dialect=d.sqlglot_name, pretty=pretty), aliases=aliases, exempt=exempt,
+    )
+    maybe_validate_scopes(sql, dialect=d.sqlglot_name, allow_rls_correlation=policy_scoped)
+    d.assert_no_overlimit_identifiers(sql, exempt=exempt)
     return sql
 
 
@@ -6582,49 +6578,54 @@ def _as_dialect(dialect: "str | SqlDialect") -> SqlDialect:
     return dialect if isinstance(dialect, SqlDialect) else get_dialect(dialect)
 
 
-@overload
-def generate_planned_stages(
-    planned_queries, *, bundle, dialect: "str | SqlDialect" = ..., projection_aliases: "Sequence[str]" = ...,
-    kept_stages: "Optional[Set[str]]" = ..., read_set: "Optional[Set[str]]" = ...,
-    associated: "Optional[Set[str]]" = ..., type_probe: Literal[False] = ...,
-) -> str: ...
+class PlannedStatement(BaseModel):
+    """A composed statement before its single render, with what that render fits and exempts."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    statement: exp.Select
+    dialect: "str | SqlDialect"
+    aliases: List[str] = Field(default_factory=list)
+    exempt: FrozenSet[str] = frozenset()
+    kept_stages: Set[str] = Field(default_factory=set)
+    #: Models whose filters the statement restricts by a correlated subquery.
+    associated: Set[str] = Field(default_factory=set)
+
+    def render(self, *, policy_scoped: bool = False) -> str:
+        """The statement's one render (``policy_scoped``: a session policy rewrote it)."""
+        return _finish_statement(
+            self.statement, dialect=self.dialect, aliases=self.aliases, exempt=self.exempt,
+            policy_scoped=policy_scoped,
+        )
+
+    def mint_probe(self, *, policy_scoped: bool = False) -> TypeProbe:
+        """The statement (built with ``type_probe``) as a :class:`TypeProbe`, minted at its one render."""
+
+        def render(tree: Expr) -> str:
+            assert isinstance(tree, exp.Select)
+            return _finish_statement(
+                tree, dialect=self.dialect, aliases=self.aliases, exempt=self.exempt, policy_scoped=policy_scoped,
+                pretty=False,
+            )
+
+        return mint_type_probe(self.statement, dialect=_as_dialect(self.dialect), render=render)
 
 
-@overload
-def generate_planned_stages(
-    planned_queries, *, bundle, dialect: "str | SqlDialect" = ..., projection_aliases: "Sequence[str]" = ...,
-    kept_stages: "Optional[Set[str]]" = ..., read_set: "Optional[Set[str]]" = ...,
-    associated: "Optional[Set[str]]" = ..., type_probe: Literal[True],
-) -> TypeProbe: ...
-
-
-def generate_planned_stages(
+def build_planned_statement(
     planned_queries,
     *,
     bundle,
     dialect: "str | SqlDialect" = "postgres",
     projection_aliases: "Sequence[str]" = (),
-    kept_stages: "Optional[Set[str]]" = None,
-    read_set: "Optional[Set[str]]" = None,
-    associated: "Optional[Set[str]]" = None,
     type_probe: bool = False,
-) -> "str | TypeProbe":
-    """Render a multi-stage DAG (``plan_stages`` output) to one SQL string; spliced
-    stages nothing reaches are pruned, the stage relations emitted land in ``kept_stages``,
-    the models the statement reads in ``read_set``, those whose filters it restricts by a
-    correlated subquery in ``associated``. ``type_probe`` bounds it by the dialect's type probe
-    and mints it as a :class:`TypeProbe`."""
+) -> PlannedStatement:
+    """Compose a multi-stage DAG (``plan_stages`` output) as one statement, its settings attached;
+    spliced stages nothing reaches are pruned. ``type_probe`` bounds it by the dialect's type probe."""
     kept: Set[str] = set()
     statement = _build_planned_stages_ast(
         planned_queries, bundle=bundle, dialect=dialect, kept_stages=kept,
     )
-    if kept_stages is not None:
-        kept_stages.update(kept)
-    if read_set is not None:
-        read_set.update(read_models(statement))
     filter_associations = association_models(statement)
-    if associated is not None:
-        associated.update(filter_associations)
     if type_probe:
         statement = _as_dialect(dialect).type_probe(statement)
     spine_sizes = [p.spine.size for p in planned_queries if p.spine is not None]
@@ -6637,12 +6638,36 @@ def generate_planned_stages(
         _as_dialect(dialect).attach_correlated_setting(statement)
     # Length-fit over-limit projection aliases from the plan-derived canonical keys, not parsed off the SQL —
     # BigQuery can't parse a backticked dotted alias.
-    exempt = _user_authored_exemptions(bundle=bundle, dialect=dialect)
-    if type_probe:
-        d = _as_dialect(dialect)
-        return mint_type_probe(d.rewrite_statement(statement), dialect=d, render=lambda tree: _render_rewritten(
-            tree, dialect=d, aliases=projection_aliases, exempt=exempt, pretty=False))
-    return _finish_statement(statement, dialect=dialect, aliases=projection_aliases, exempt=exempt)
+    return PlannedStatement(
+        statement=statement, dialect=dialect, aliases=list(projection_aliases),
+        exempt=_user_authored_exemptions(bundle=bundle, dialect=dialect), kept_stages=kept,
+        associated=filter_associations,
+    )
+
+
+def generate_planned_stages(
+    planned_queries,
+    *,
+    bundle,
+    dialect: "str | SqlDialect" = "postgres",
+    projection_aliases: "Sequence[str]" = (),
+    kept_stages: "Optional[Set[str]]" = None,
+    read_set: "Optional[Set[str]]" = None,
+    associated: "Optional[Set[str]]" = None,
+) -> str:
+    """Render a multi-stage DAG (``plan_stages`` output) to one SQL string; the stage relations
+    emitted land in ``kept_stages``, the models the statement reads in ``read_set``, those whose
+    filters it restricts by a correlated subquery in ``associated``."""
+    built = build_planned_statement(
+        planned_queries, bundle=bundle, dialect=dialect, projection_aliases=projection_aliases,
+    )
+    if kept_stages is not None:
+        kept_stages.update(built.kept_stages)
+    if read_set is not None:
+        read_set.update(read_models(built.statement))
+    if associated is not None:
+        associated.update(built.associated)
+    return built.render()
 
 
 def _build_planned_stages_ast(
