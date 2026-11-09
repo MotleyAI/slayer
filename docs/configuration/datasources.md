@@ -101,7 +101,7 @@ SQL generation is covered by unit tests, but not verified against live instances
     BigQuery, ClickHouse, and similar analytical warehouses typically don't have foreign keys, so auto-ingestion won't discover joins. Define joins manually in your model YAML. Snowflake is an exception — it stores declarative (non-enforced) FK constraints AND exposes them via the Inspector, so auto-ingestion discovers joins like Postgres / MySQL / SQLite.
 
 !!! note "Statement timeouts"
-    SLayer sends ClickHouse's timeout as a per-request `max_execution_time` setting (a `SETTINGS` clause in your SQL wins), skips it for a `readonly = 1` user with a `statement_timeout_skipped` warning (grant `readonly = 2` to keep it), sets MariaDB's timeout with `max_statement_time`, and sends Trino's as the `query_max_run_time` session property of the query alone. A timeout set by a statement (Postgres, MySQL, MariaDB, Snowflake) is sent once per connection, and again only when the value a query needs changes.
+    SLayer sends ClickHouse's timeout as a per-request `max_execution_time` setting (a `SETTINGS` clause in your SQL wins), skips it for a `readonly = 1` user with a `statement_timeout_skipped` warning (grant `readonly = 2` to keep it), sets MariaDB's timeout with `max_statement_time`, and sends Trino's as the `query_max_run_time` session property of the query alone. A timeout set by a statement (Postgres, MySQL, MariaDB, Snowflake) is sent once per connection, and again only when the value a query needs changes (a `transaction_pooler` datasource sets it in each statement's transaction instead).
 
 ### Snowflake
 

@@ -5,7 +5,8 @@ Every query execution and column-type probe SHALL run under the caller's
 statement timeout, applied the way the datasource's database accepts it and on
 the synchronous and asynchronous paths alike. A timeout set by a statement SHALL
 be set once per connection and re-set only when the value a call needs differs
-from the value in force on that connection. Datasources whose type is absent
+from the value in force on that connection, except on a datasource marked
+`transaction_pooler`, where it is set in each statement's transaction. Datasources whose type is absent
 or unrecognised SHALL be treated like Postgres. A database with no timeout
 mechanism SHALL run the statement with no timeout and no warning. Where a
 timeout cannot be applied and the database is not best-effort, the statement
@@ -171,8 +172,9 @@ datasource. The end of a synchronous workflow SHALL NOT close an in-memory datab
 process SHALL use its own event loop and connections and SHALL neither use nor close its parent's.
 A synchronous call made from code already running on that event loop SHALL complete without
 deadlock. Context variables set by the caller SHALL be visible inside the workflow. Interrupting a
-synchronous call SHALL cancel its work and SHALL return to the caller only after that work's cleanup
-has run, leaving no connection in use.
+synchronous call SHALL cancel its work and SHALL return to the caller once that work's cleanup has
+run or a bounded wait has passed; a statement already running on a driver thread finishes there and
+then returns its connection to the pool.
 
 #### Scenario: No reconnect across synchronous calls
 - **WHEN** a client executes three statements synchronously on a `postgres` datasource whose driver
@@ -209,8 +211,8 @@ has run, leaving no connection in use.
 #### Scenario: An interrupted synchronous call cleans up
 - **WHEN** a synchronous call is interrupted while its statement runs, and another synchronous call
   follows
-- **THEN** the interruption reaches the caller, no connection is left checked out, and the following
-  call succeeds
+- **THEN** the interruption reaches the caller, every connection is back in its pool once the
+  interrupted statement ends, and the following call succeeds
 
 #### Scenario: Process exit leaves nothing open
 - **WHEN** a process that has run synchronous calls on networked and file-backed datasources ends

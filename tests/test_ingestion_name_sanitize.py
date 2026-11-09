@@ -444,6 +444,7 @@ class TestIdleRelease:
 
         class _ExplodingEngine:
             pool = _ExplodingPool()
+            url = sa.engine.make_url(f"sqlite:///{workspace / 'live.db'}")
 
         with caplog.at_level(logging.WARNING, logger="slayer.sql.engine_factory"):
             engine_factory.release_idle(_ExplodingEngine())  # pyright: ignore[reportArgumentType]  # deliberate fake
