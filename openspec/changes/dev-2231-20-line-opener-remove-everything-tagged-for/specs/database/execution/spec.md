@@ -81,3 +81,10 @@ plugin SHALL propagate unchanged.
 #### Scenario: Surfaces carry the hint
 - **WHEN** a missing-driver error reaches a handler that reports SLayer errors
 - **THEN** the reported message contains the install hint
+
+### Requirement: A caller's engine serves synchronous calls on the caller's thread
+A client wrapping an engine its caller supplied SHALL run that engine's blocking work, during a synchronous SLayer call, on the thread that made the call.
+
+#### Scenario: A caller's in-memory engine serves a synchronous call
+- **WHEN** a caller creates an in-memory SQLite engine, creates and fills a table on it, and runs a statement through a client wrapping it from a synchronous SLayer call
+- **THEN** the statement reads that table's rows, and the engine's connections are checked out on the caller's thread

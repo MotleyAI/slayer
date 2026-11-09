@@ -56,7 +56,7 @@ def test_the_package_is_2_0_0_dev0() -> None:
 
 
 def test_models_dir_is_not_a_cli_option(tmp_path: Path) -> None:
-    result = run_cli_in_process(["datasources", "--models-dir", str(tmp_path), "list"])
+    result = run_cli_in_process(["datasources", "list", "--models-dir", str(tmp_path)])
     assert result.returncode != 0
     assert "unrecognized arguments: --models-dir" in result.stderr
 

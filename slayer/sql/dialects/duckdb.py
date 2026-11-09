@@ -21,7 +21,6 @@ from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.core.enums import DataType
 from slayer.sql.dialects.base import (
-    LegacyTypeCategories,
     LIST_ELEMENT,
     PORTABLE_LIBRARY,
     NativeFn,
@@ -107,15 +106,6 @@ class DuckdbDialect(SqlDialect):
     vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.INT128})
     ilike_native: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"duckdb"})
-    legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories(
-        contains=(
-            *((t, "time") for t in ("TIMESTAMP", "DATE", "TIME", "INTERVAL")),
-            *((t, "number") for t in ("INT", "FLOAT", "DOUBLE", "DECIMAL", "NUMERIC", "REAL")),
-            *((t, "string") for t in ("VARCHAR", "TEXT", "CHAR", "STRING", "BLOB", "ENUM")),
-            ("BOOL", "boolean"),
-        ),
-        other="string",
-    )
     sa_backend_names: frozenset[str] = frozenset({"duckdb"})
     explain_prefix: str | None = "EXPLAIN ANALYZE"
     log10_native: bool = True

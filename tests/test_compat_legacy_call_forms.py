@@ -112,17 +112,19 @@ _NO_CLIENT: dict[str, Callable[[DatasourceConfig, YAMLStorage], Any]] = {
 def test_a_call_without_a_client_is_refused(form: str, tmp_path: Path) -> None:
     db = tmp_path / "never.db"
     ds = DatasourceConfig(name=DS_NAME, type="sqlite", database=str(db))
+    call, store = _NO_CLIENT[form], YAMLStorage(base_dir=str(tmp_path / "store"))
     with recorded(), pytest.raises(TypeError):
-        _NO_CLIENT[form](ds, YAMLStorage(base_dir=str(tmp_path / "store")))
+        call(ds, store)
     assert not db.exists()
 
 
 async def test_validate_datasource_takes_no_sql_clients(sqlite_shop: DatasourceConfig, tmp_path: Path) -> None:
     engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=str(tmp_path / "store")))
     try:
+        models, client = [orders_model()], engine.client_for(sqlite_shop)
         with recorded(), pytest.raises(TypeError):
-            await schema_drift.validate_datasource(  # pyright: ignore[reportCallIssue]
-                datasource=sqlite_shop, models=[orders_model()], client=engine.client_for(sqlite_shop), sql_clients={},
+            await schema_drift.validate_datasource(
+                datasource=sqlite_shop, models=models, client=client, sql_clients={},  # pyright: ignore[reportCallIssue]
             )
     finally:
         await engine.aclose()
@@ -134,10 +136,11 @@ def test_a_scope_error_fails_before_reading(sqlite_shop: DatasourceConfig, tmp_p
         client = engine.client_for(sqlite_shop)
         with pytest.raises(ValueError, match="all_schemas"):
             ingestion.ingest_datasource(sqlite_shop, client=client, schema="main", all_schemas=True)
+        idempotent = ingestion.ingest_datasource_idempotent(
+            datasource=sqlite_shop, storage=engine.storage, client=client, schema="main", all_schemas=True,
+        )
         with pytest.raises(ValueError, match="all_schemas"):
-            engine.run_sync(ingestion.ingest_datasource_idempotent(
-                datasource=sqlite_shop, storage=engine.storage, client=client, schema="main", all_schemas=True,
-            ))
+            engine.run_sync(idempotent)
 
 
 # --------------------------------------------------------------------------- #
@@ -150,20 +153,17 @@ def _client_converter(kind: str, *, dialect: str | None) -> Any:
 
 @pytest.mark.parametrize("kind", ["dbt", "osi"])
 def test_a_positional_converter_argument_is_refused(kind: str) -> None:
+    converter, source = (DbtToSlayerConverter, ORDERS_PROJECT) if kind == "dbt" else (OsiToSlayerConverter, [ORDERS_OSI])
     with recorded(), pytest.raises(TypeError):
-        if kind == "dbt":
-            DbtToSlayerConverter(ORDERS_PROJECT, DS_NAME, True)  # pyright: ignore[reportCallIssue, reportArgumentType]
-        else:
-            OsiToSlayerConverter([ORDERS_OSI], DS_NAME, True)  # pyright: ignore[reportCallIssue, reportArgumentType]
+        converter(source, DS_NAME, True)  # pyright: ignore[reportCallIssue, reportArgumentType]
 
 
 @pytest.mark.parametrize("kind", ["dbt", "osi"])
 def test_a_converter_takes_no_sa_engine(kind: str) -> None:
+    converter: Any = DbtToSlayerConverter if kind == "dbt" else OsiToSlayerConverter
+    source = {"project": ORDERS_PROJECT} if kind == "dbt" else {"documents": [ORDERS_OSI]}
     with recorded(), pytest.raises(TypeError):
-        if kind == "dbt":
-            DbtToSlayerConverter(project=ORDERS_PROJECT, data_source=DS_NAME, sa_engine=None)  # pyright: ignore[reportCallIssue]
-        else:
-            OsiToSlayerConverter(documents=[ORDERS_OSI], data_source=DS_NAME, sa_engine=None)  # pyright: ignore[reportCallIssue]
+        converter(**source, data_source=DS_NAME, sa_engine=None)
 
 
 @pytest.mark.parametrize("kind", ["dbt", "osi"])

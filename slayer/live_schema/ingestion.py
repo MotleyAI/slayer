@@ -3,7 +3,7 @@
 import logging
 import sys
 from collections import defaultdict
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, TextIO, TypeVar
 
 from pydantic import BaseModel, Field, model_validator
@@ -12,8 +12,7 @@ from sqlglot.optimizer.annotate_types import annotate_types
 from sqlglot.optimizer.qualify import qualify
 from sqlglot.schema import MappingSchema
 
-from slayer.async_utils import marked_coroutine_function, run_sync
-from slayer.core.deprecation import warn_deprecated
+from slayer.async_utils import run_sync
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType, ObjectKind
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import (
@@ -28,7 +27,6 @@ from slayer.core.models import (
 )
 from slayer.core.join_edges import edge_reference
 from slayer.core.query import extract_variable_refs
-from slayer.engine import query_engine
 from slayer.live_schema import schema_drift
 from slayer.live_schema import broken_dependents as dependents  # module import: in an import cycle
 from slayer.engine.cardinality.inference import infer_structural_cardinality
@@ -40,7 +38,6 @@ from slayer.database.client import ObjectNotFound, SqlClient, render_type_probe,
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.dialects.reflection import ReflectedColumn, ResultColumnType, TableKeys
 from slayer.live_schema.schema_scope import (
-    IngestScopeArgs,
     SchemaRef,
     UNREACHABLE,
     SkippedSchema,
@@ -1019,17 +1016,12 @@ async def ingest_datasource_async(
     )).models
 
 
-def _run_through(
-    datasource: DatasourceConfig, *, client: SqlClient | None, work: Callable[[SqlClient], Awaitable[_T]],
-) -> _T:
-    """Run ``work`` synchronously over ``client`` (released after), else over a short-lived engine's client."""
+def _run_through(client: SqlClient, work: Awaitable[_T]) -> _T:
+    """Run ``work`` synchronously, releasing ``client`` after."""
 
     async def _run() -> _T:
-        if client is None:
-            async with query_engine.short_lived_engine() as engine:
-                return await work(engine.client_for(datasource))
         try:
-            return await work(client)
+            return await work
         finally:
             await client.aclose()
 
@@ -1046,23 +1038,13 @@ def ingest_datasource_report(
     include_views: bool = True,
     surface_internals: bool = False,
     *,
-    client: SqlClient | None = None,
+    client: SqlClient,
 ) -> IngestionScanReport:
-    """Synchronous ``ingest_datasource_report_async``; omitting ``client`` is deprecated."""
-    scope = IngestScopeArgs(
-        include_tables=include_tables, exclude_tables=exclude_tables, schema=schema, schemas=schemas,
-        all_schemas=all_schemas, include_views=include_views, surface_internals=surface_internals,
-    )
-    if client is None:
-        warn_deprecated(
-            "ingest_datasource_report() without client= is deprecated; pass client=engine.client_for(datasource), "
-            "or await ingest_datasource_report_async(datasource, client=...). The no-client form works until "
-            "SLayer 2.0.",
-            removal="2.0",
-        )
-    return _run_through(
-        datasource, client=client, work=lambda c: ingest_datasource_report_async(datasource, client=c, **scope),
-    )
+    """Synchronous ``ingest_datasource_report_async``."""
+    return _run_through(client, ingest_datasource_report_async(
+        datasource, client=client, include_tables=include_tables, exclude_tables=exclude_tables, schema=schema,
+        schemas=schemas, all_schemas=all_schemas, include_views=include_views, surface_internals=surface_internals,
+    ))
 
 
 def ingest_datasource(
@@ -1075,22 +1057,13 @@ def ingest_datasource(
     include_views: bool = True,
     surface_internals: bool = False,
     *,
-    client: SqlClient | None = None,
+    client: SqlClient,
 ) -> list[SlayerModel]:
-    """Synchronous ``ingest_datasource_async``; omitting ``client`` is deprecated."""
-    scope = IngestScopeArgs(
-        include_tables=include_tables, exclude_tables=exclude_tables, schema=schema, schemas=schemas,
-        all_schemas=all_schemas, include_views=include_views, surface_internals=surface_internals,
-    )
-    if client is None:
-        warn_deprecated(
-            "ingest_datasource() without client= is deprecated; use engine.ingest_sync(datasource, ...) or pass "
-            "client=engine.client_for(datasource). The no-client form works until SLayer 2.0.",
-            removal="2.0",
-        )
-    return _run_through(
-        datasource, client=client, work=lambda c: ingest_datasource_async(datasource, client=c, **scope),
-    )
+    """Synchronous ``ingest_datasource_async``."""
+    return _run_through(client, ingest_datasource_async(
+        datasource, client=client, include_tables=include_tables, exclude_tables=exclude_tables, schema=schema,
+        schemas=schemas, all_schemas=all_schemas, include_views=include_views, surface_internals=surface_internals,
+    ))
 
 
 # --- Idempotent re-ingestion ---
@@ -1824,51 +1797,7 @@ async def _run_additive_pass(
     return additions, errors, merge_skipped, broken
 
 
-@marked_coroutine_function
-def ingest_datasource_idempotent(
-    *,
-    datasource: DatasourceConfig,
-    storage: StorageBackend,
-    client: SqlClient | None = None,
-    include_tables: list[str] | None = None,
-    exclude_tables: list[str] | None = None,
-    schema: str | None = None,
-    schemas: list[str] | None = None,
-    all_schemas: bool = False,
-    include_views: bool = True,
-    surface_internals: bool = False,
-) -> Coroutine[Any, Any, "schema_drift.IdempotentIngestResult"]:
-    """Idempotent re-ingestion: create missing models, additively merge existing ones.
-
-    User-authored sql/query-backed models are skipped. Then validates the same
-    scope so drift and dropped tables show up in ``to_delete``. Omitting ``client``
-    is deprecated. A plain function returning the coroutine, so a deprecation names the caller's line.
-    """
-    scope = IngestScopeArgs(
-        include_tables=include_tables, exclude_tables=exclude_tables, schema=schema, schemas=schemas,
-        all_schemas=all_schemas, include_views=include_views, surface_internals=surface_internals,
-    )
-    if client is not None:
-        return _ingest_idempotent(datasource=datasource, storage=storage, client=client, **scope)
-    warn_deprecated(
-        "ingest_datasource_idempotent() without client= is deprecated; use engine.ingest_idempotent(datasource) "
-        "(or engine.ingest_idempotent_sync) or pass client=engine.client_for(datasource). The no-client form "
-        "works until SLayer 2.0.",
-        removal="2.0",
-    )
-    return _ingest_idempotent_short_lived(datasource=datasource, storage=storage, scope=scope)
-
-
-async def _ingest_idempotent_short_lived(
-    *, datasource: DatasourceConfig, storage: StorageBackend, scope: IngestScopeArgs,
-) -> "schema_drift.IdempotentIngestResult":
-    async with query_engine.short_lived_engine(storage) as engine:
-        return await _ingest_idempotent(
-            datasource=datasource, storage=engine.storage, client=engine.client_for(datasource), **scope,
-        )
-
-
-async def _ingest_idempotent(
+async def ingest_datasource_idempotent(
     *,
     datasource: DatasourceConfig,
     storage: StorageBackend,
@@ -1881,6 +1810,11 @@ async def _ingest_idempotent(
     include_views: bool = True,
     surface_internals: bool = False,
 ) -> "schema_drift.IdempotentIngestResult":
+    """Idempotent re-ingestion: create missing models, additively merge existing ones.
+
+    User-authored sql/query-backed models are skipped. Then validates the same
+    scope so drift and dropped tables show up in ``to_delete``.
+    """
     validate_scope_args(schema=schema, schemas=schemas, all_schemas=all_schemas)
 
     scan = await ingest_datasource_report_async(

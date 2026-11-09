@@ -12,12 +12,10 @@ import concurrent.futures
 import contextlib
 import contextvars
 import functools
-import inspect
 import itertools
 import logging
 import os
 import queue
-import sys
 import threading
 import time
 from typing import Any, TypeVar
@@ -26,7 +24,6 @@ from collections.abc import Awaitable, Callable, Coroutine
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
-F = TypeVar("F", bound=Callable[..., Any])
 
 _CallerCall = tuple[Callable[[], Any], "concurrent.futures.Future[Any]"]
 _caller_calls: contextvars.ContextVar["queue.SimpleQueue[_CallerCall | None] | None"] = contextvars.ContextVar(
@@ -252,26 +249,14 @@ def run_sync(coro: Coroutine[Any, Any, T]) -> T:
     return _await_interruptibly(_Workflow(coro, context), serve=calls)
 
 
-def marked_coroutine_function(func: F) -> F:
-    """Mark a plain function returning a coroutine as a coroutine function (Python 3.12+)."""
-    if sys.version_info >= (3, 12):
-        return inspect.markcoroutinefunction(func)
-    return func
-
-
 async def on_caller_thread(func: Callable[[], T]) -> T:
-    """Run blocking ``func`` on the thread that called ``run_sync_on_caller_thread``; inline outside one."""
+    """Run blocking ``func`` on the thread that called ``run_sync``; inline outside one."""
     calls = _caller_calls.get()
     if calls is None:
         return func()
     done: concurrent.futures.Future[T] = concurrent.futures.Future()
     calls.put((func, done))
     return await asyncio.wrap_future(done)
-
-
-def run_sync_on_caller_thread(coro: Coroutine[Any, Any, T]) -> T:
-    """``run_sync``, named for callers whose engines are bound to this thread."""
-    return run_sync(coro)
 
 
 async def _wind_down(callbacks: list[ShutdownCallback]) -> None:

@@ -8,6 +8,7 @@ import asyncio
 import json
 import shutil
 import tempfile
+from types import SimpleNamespace
 from typing import Any
 from collections.abc import AsyncIterator, Generator
 
@@ -16,6 +17,7 @@ import pytest_asyncio
 from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
+from slayer.cli import _run_memory
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
@@ -193,10 +195,6 @@ def test_cli_memory_save_accepts_description_flag(
     """``_run_memory`` builds the Namespace inline; this mirrors the
     pattern from ``tests/test_memories_cli.py`` while exercising the
     new ``--description`` flag."""
-    from types import SimpleNamespace
-
-    from slayer.cli import _run_memory
-
     args = SimpleNamespace(
         storage=yaml_storage.base_dir,
         memory_command="save",

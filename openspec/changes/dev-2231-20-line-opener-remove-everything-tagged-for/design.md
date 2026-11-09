@@ -48,9 +48,8 @@ Architecture grounding:
 3. **`SlayerSQLClient(sa_engine=)` stays** (default): public, documented (`docs/configuration/sql-clients.md`),
    untagged; sql §3.14/§3.15 keep their wording.
 4. **Code dead after the removals is deleted** (default): `marked_coroutine_function`;
-   `run_over_caller_engine`, `run_sync_on_caller_thread`, `on_caller_thread`, `_caller_calls` / `_CallerCall`
-   (a caller-owned engine's blocking work runs inline — what `on_caller_thread` already did outside
-   `run_sync_on_caller_thread`, whose only user was the removed converter path); `_ingest_idempotent_short_lived`,
+   `run_over_caller_engine` and `run_sync_on_caller_thread` (an alias of `run_sync` whose only user was the
+   removed converter path); `on_caller_thread` and `run_sync`'s caller-call serving stay (decision 13); `_ingest_idempotent_short_lived`,
    `_validate_short_lived`, `_UNSET`, `_run_through`'s no-client branch; `type_categories`,
    `_CategoryProbeClient`, `_CATEGORY_TYPES`, `_ExecuteExplainClient`, `adapt_client`, `_overridden`, `_served`,
    `LegacyTypeCategories`, `_SLAYER_TYPE_CATEGORIES`, the `legacy_type_categories` field and tables,
@@ -77,10 +76,11 @@ Architecture grounding:
 12. **The conformance suite keeps failing a 1.6.0-only client** (codex): the scenario moves, verbatim, from
     the removed 1.6.0 requirement into "The client contract is executable";
     `tests/test_sql_client_conformance.py::TestA160ClientIsCheckedAgainstTheCurrentContract` stays unchanged.
-13. **Retained-API thread-affinity tests for caller-owned engines** — rejected (codex): deleting the
-    caller-thread machinery changes no surviving path (`on_caller_thread` already ran inline whenever
-    `run_sync_on_caller_thread` was not active, and only the removed converter path activated it); the helpers
-    are not public.
+13. **A caller-owned engine's blocking work stays on the synchronous caller's thread** (probe; codex): `run_sync`
+    serves `on_caller_thread` calls for every synchronous call, so a thread-bound caller engine (`sqlite://`'s
+    `SingletonThreadPool`, `check_same_thread`) keeps seeing its tables; running it inline was probed to read an
+    empty in-memory database or raise `ProgrammingError`, and to block the bridge loop. The caller-thread tests
+    deleted with `run_sync_on_caller_thread` are restored over `run_sync`.
 14. **Keep dbt's positional order after removing `sa_engine`** — rejected (codex): see decision 5.
 15. **Spec scenario titles naming `inspect_model`** (default): a MODIFIED requirement cannot rename a scenario,
     so `models/column-granularity` and `models/sample-profiling` restate the affected requirement under a new
