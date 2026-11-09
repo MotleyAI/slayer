@@ -3,6 +3,7 @@ path funnels through. Dialect-agnostic; cached by connection string + runtime fi
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import threading
@@ -15,6 +16,7 @@ from sqlalchemy.exc import ArgumentError, NoSuchModuleError
 from sqlalchemy.pool import QueuePool, StaticPool
 
 from slayer.core.models import DatasourceConfig
+from slayer.sql import connection_policy
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.base import SqlDialect, _digest
 from slayer.sql.dialects.drivers import load_driver
@@ -26,6 +28,8 @@ EngineCacheKey = tuple[str, str, str]
 
 # SQLite in-memory sentinel (bare value or path of ``sqlite:///:memory:``).
 _MEMORY_DB_NAME = ":memory:"
+
+_LOCAL_FILE_BACKENDS = frozenset({"sqlite", "duckdb"})
 
 # LRU-ordered, bounded. Credential leg is a security boundary: with the secret out of the URL (BigQuery), two identities would otherwise share one engine.
 _engine_cache: "OrderedDict[EngineCacheKey, sa.Engine]" = OrderedDict()
@@ -108,7 +112,13 @@ def client_cache_key(datasource: DatasourceConfig) -> ClientCacheKey:
 
 
 def _runtime_fingerprint(datasource: DatasourceConfig) -> str:
-    """Fingerprint of runtime fields so datasources differing only in (e.g.) warehouse don't share an engine. Only Snowflake and in-memory SQLite use this; others collapse to ``""``."""
+    """Fingerprint of runtime fields so datasources differing only in (e.g.) warehouse or ``transaction_pooler`` don't share an engine."""
+    pooler = "pooler=1" if datasource.transaction_pooler else ""
+    return "|".join(p for p in (_dialect_fingerprint(datasource), pooler) if p)
+
+
+def _dialect_fingerprint(datasource: DatasourceConfig) -> str:
+    """Snowflake's session fields and an in-memory SQLite's name; ``""`` elsewhere."""
     if datasource.type == "snowflake":
         parts = (
             ("wh", datasource.warehouse or ""),
@@ -131,15 +141,15 @@ def _attach_session_overrides_listener(
     engine: sa.Engine,
     datasource: DatasourceConfig,
 ) -> None:
-    """Apply ``apply_session_overrides`` on every pool ``checkout`` (not ``connect``) so a stray ``USE`` can't leak into the next query. Skipped when the hook is the no-op."""
+    """Apply ``apply_session_overrides`` once per new connection (the client refuses a stray ``USE``). Skipped when the hook is the no-op."""
     dialect = dialect_for_ds_type(datasource.type)
     base_method = SqlDialect.apply_session_overrides
     dialect_method = type(dialect).apply_session_overrides
     if dialect_method is base_method:
         return
 
-    @sa_event.listens_for(engine, "checkout")
-    def _slayer_session_overrides(dbapi_connection, _connection_record, _connection_proxy):
+    @sa_event.listens_for(engine, "connect")
+    def _slayer_session_overrides(dbapi_connection, _connection_record):
         dialect.apply_session_overrides(
             dbapi_connection=dbapi_connection,
             datasource=datasource,
@@ -226,10 +236,13 @@ def _build_engine(*, datasource: DatasourceConfig, connection_string: str) -> sa
     if _is_in_memory_sqlite(connection_string):
         return build_in_memory_sqlite_engine(connection_string)
     dialect = dialect_for_ds_type(datasource.type)
+    connection_policy.check_transaction_pooler_backend(datasource, url=connection_string)
     load_driver(datasource, connection_string, dialect=dialect, is_async=False)
     engine = dialect.build_engine(datasource, connection_string=connection_string)
     if engine is None:
-        engine = sa.create_engine(connection_string, pool_pre_ping=True)
+        engine = sa.create_engine(connection_string, **connection_policy.engine_kwargs(
+            url=connection_string, dialect=dialect, datasource=datasource,
+        ))
     _attach_register_udfs_listener(engine=engine, datasource=datasource)
     _attach_session_overrides_listener(engine=engine, datasource=datasource)
     return engine
@@ -275,12 +288,20 @@ def get_engine(datasource: DatasourceConfig) -> sa.Engine:
     return engine
 
 
+def holds_local_file(engine: sa.Engine) -> bool:
+    """Whether ``engine``'s idle connections hold a local database file: a file-backed SQLite or DuckDB URL on a
+    QueuePool (the in-memory pools, StaticPool and SingletonThreadPool, close live data when drained)."""
+    url = engine.url
+    if url.get_backend_name() not in _LOCAL_FILE_BACKENDS or not isinstance(engine.pool, QueuePool):
+        return False
+    return not _is_in_memory_sqlite(str(url)) and url.database not in (None, "", _MEMORY_DB_NAME)
+
+
 def release_idle(engine: sa.Engine) -> None:
-    """Close a cached engine's idle connections (freeing file locks) without disposing it: checked-out connections return to the same, still-owned pool."""
+    """Close a cached engine's idle local-file connections (freeing file locks) without disposing it: checked-out
+    connections return to the same, still-owned pool; networked connections stay open."""
     try:
-        # Only QueuePool's dispose drains idle connections alone; the in-memory pools
-        # (StaticPool, SingletonThreadPool) close live connections and drop the data.
-        if isinstance(engine.pool, QueuePool):
+        if holds_local_file(engine):
             engine.pool.dispose()
     except Exception:
         logger.warning("Failed to release idle connections.", exc_info=True)
@@ -311,3 +332,15 @@ def reset_cache() -> None:
         _engine_cache.clear()
     for key, engine in dropped:
         _dispose_quietly(engine=engine, reason=f"cache reset ({loggable_key(key)})")
+
+
+def _forget_parent_pools() -> None:
+    """In a forked child: drop inherited pools without closing the parent's connections."""
+    for engine in list(_engine_cache.values()):
+        engine.dispose(close=False)
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_forget_parent_pools)
+
+atexit.register(reset_cache)

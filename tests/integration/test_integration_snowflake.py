@@ -17,12 +17,13 @@ import os
 import pathlib
 import tomllib
 import uuid
-from typing import Any, NoReturn
+from typing import Any, NoReturn, cast
 
 import pytest
 import sqlalchemy as sa
 import sqlglot
 from sqlalchemy import event
+from sqlalchemy.pool import QueuePool
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, JoinCardinality, TimeGranularity
@@ -936,7 +937,7 @@ def test_dev1645_mixed_case_column_executes(sf_dev1645_storage) -> None:
 def test_every_snowflake_alias_failure_is_quoted(sf_engine) -> None:
     assert unquoted_alias_failures(
         dialect="snowflake", words=keyword_universe(SNOWFLAKE_KEYWORDS), table="regions", column="id",
-        fails=sa_statement_fails(sf_engine), workers=8,
+        fails=sa_statement_fails(sf_engine), workers=cast(QueuePool, sf_engine.pool).size(),
     ) == []
 
 

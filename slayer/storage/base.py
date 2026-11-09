@@ -39,6 +39,7 @@ from slayer.core.models import (
 from slayer.core.query import SlayerQuery
 from slayer.core.warnings import LibraryNameShadowWarning, SlayerLibraryNameShadowWarning, caller_announces
 from slayer.embeddings.models import Embedding
+from slayer.sql import connection_policy
 from slayer.memories.models import (
     MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX,
     Memory,
@@ -1154,6 +1155,7 @@ class StorageBackend(ABC):
     async def save_datasource(self, datasource: DatasourceConfig) -> None:
         """Persist a datasource config (upsert by exact name) once its custom granularities pass the save-time rules. Backends must NOT override this."""
         datasource.check_granularities()
+        connection_policy.check_transaction_pooler(datasource)
         await self._save_datasource_impl(datasource)
 
     @abstractmethod

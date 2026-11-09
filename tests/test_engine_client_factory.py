@@ -337,19 +337,19 @@ class TestEngineOwnsItsClients:
         assert released.count("twin") == 1
 
     def test_create_model_from_query_sync_releases_clients(self, shop: Shop, monkeypatch: pytest.MonkeyPatch) -> None:
-        released: list[str] = []
-
-        async def _release(self: SlayerSQLClient) -> None:
-            released.append(self.datasource.name)
-
-        monkeypatch.setattr(SlayerSQLClient, "release_local_connections", _release)
         engine = SlayerQueryEngine(storage=shop.storage)
+        released: list[bool] = []
+
+        async def _release() -> None:
+            released.append(True)
+
+        monkeypatch.setattr(engine, "release_local_connections", _release)
         try:
             model = engine.create_model_from_query_sync(REVENUE_BY_STATUS, name="rev_by_status")
         finally:
             engine.close()
         assert model.name == "rev_by_status"
-        assert DS_NAME in released
+        assert released == [True]
 
     async def test_the_local_python_client_passes_the_factory_through(self, shop: Shop) -> None:
         factory = GatewayFactory()

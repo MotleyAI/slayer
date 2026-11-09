@@ -36,6 +36,11 @@ _TIMEOUT_SQL = {
     "snowflake": "ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = {s}",
 }
 
+_TIMEOUT_PREFIXES = (
+    "SET statement_timeout", "SET LOCAL statement_timeout", "SET max_execution_time",
+    "ALTER SESSION SET STATEMENT_TIMEOUT",
+)
+
 _REJECTED = sqlalchemy.exc.ProgrammingError("SET", {}, Exception("unrecognized configuration parameter"))
 _FAIL_CLOSED = sqlalchemy.exc.OperationalError("SET", {}, Exception("(1193, \"Unknown system variable\")"))
 
@@ -73,7 +78,7 @@ class Recorder:
 
     def _run(self, sql: str, link: Link) -> MagicMock:
         self.log.append(sql)
-        if link.reject is not None and "timeout" in sql.lower() and sql.startswith(("SET", "ALTER")):
+        if link.reject is not None and sql.startswith(_TIMEOUT_PREFIXES):
             raise link.reject
         return self._result()
 
@@ -281,7 +286,8 @@ def test_replaced_connection_does_not_inherit_a_rejection(monkeypatch, run: Runn
     rec.replace(Link())
     results = run(client, [(SQL, 120)])
     assert rec.statements() == [_timeout_sql("postgres", 120), SQL, _timeout_sql("postgres", 120), SQL]
-    assert isinstance(results[0], ExecutionResult) and results[0].warnings == []
+    assert isinstance(results[0], ExecutionResult)
+    assert results[0].warnings == []
 
 
 # ---------------------------------------------------------------------------

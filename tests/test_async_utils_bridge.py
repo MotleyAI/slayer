@@ -114,6 +114,21 @@ def test_nested_run_sync_from_the_bridge_loop_completes() -> None:
     assert _bounded(lambda: run_sync(_outer())) == 42
 
 
+async def _exit() -> None:
+    raise SystemExit(3)
+
+
+def test_system_exit_reaches_the_caller_and_the_bridge_survives() -> None:
+    loop = run_sync(_running_loop())
+
+    def _call() -> None:
+        run_sync(_exit())
+
+    with pytest.raises(SystemExit):
+        _bounded(_call)
+    assert _bounded(lambda: run_sync(_running_loop())) is loop
+
+
 # ---------------------------------------------------------------------------
 # Context variables
 # ---------------------------------------------------------------------------
@@ -164,8 +179,9 @@ def test_interrupt_cancels_the_workflow_and_waits_for_its_cleanup() -> None:
     timer = threading.Thread(target=_interrupt, daemon=True)
     timer.start()
     begun = time.monotonic()
+    waiting = _wait()
     with pytest.raises(KeyboardInterrupt):
-        run_sync(_wait())
+        run_sync(waiting)
     timer.join(_BOUND)
     assert time.monotonic() - begun < _BOUND
     assert cancelled.is_set()
@@ -247,7 +263,8 @@ def test_caller_thread_calls_stay_on_the_caller_thread(tmp_path: Path) -> None:
 
         workflow_thread, rows = run_sync_on_caller_thread(_workflow())
     assert rows == [[{"x": 1}]] * 2
-    assert checkouts and set(checkouts) == {threading.get_ident()}
+    assert checkouts
+    assert set(checkouts) == {threading.get_ident()}
     assert workflow_thread != threading.get_ident()
     assert workflow_thread == run_sync(_thread_ident())
 
@@ -263,7 +280,8 @@ def test_caller_thread_calls_from_inside_a_running_loop(tmp_path: Path) -> None:
             return run_sync_on_caller_thread(client.execute("SELECT 1 AS x")).rows
 
         assert asyncio.run(_inside()) == [{"x": 1}]
-    assert checkouts and set(checkouts) == {threading.get_ident()}
+    assert checkouts
+    assert set(checkouts) == {threading.get_ident()}
 
 
 def test_a_raising_caller_thread_call_propagates() -> None:
@@ -273,8 +291,11 @@ def test_a_raising_caller_thread_call_propagates() -> None:
     async def _workflow() -> None:
         await on_caller_thread(_boom)
 
+    def _run_workflow() -> None:
+        run_sync_on_caller_thread(_workflow())
+
     with pytest.raises(ValueError, match="boom"):
-        _bounded(lambda: run_sync_on_caller_thread(_workflow()))
+        _bounded(_run_workflow)
     assert _bounded(lambda: run_sync_on_caller_thread(_value(3))) == 3
 
 
@@ -300,8 +321,9 @@ def test_interrupting_a_caller_thread_workflow_cleans_up() -> None:
     timer = threading.Thread(target=_interrupt, daemon=True)
     timer.start()
     begun = time.monotonic()
+    workflow = _workflow()
     with pytest.raises(KeyboardInterrupt):
-        run_sync_on_caller_thread(_workflow())
+        run_sync_on_caller_thread(workflow)
     timer.join(_BOUND)
     assert time.monotonic() - begun < _BOUND
     assert cleaned.is_set()

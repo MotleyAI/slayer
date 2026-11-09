@@ -34,6 +34,9 @@ def assert_one_request_each(requests: Sequence[str]) -> None:
     found = [next((i for i, r in enumerate(requests) if marker in r), None) for marker in MARKERS]
     assert None not in found, f"markers {MARKERS} not all on one session: {list(requests)}"
     first, _, last = found
-    assert first is not None and last is not None
+    assert first is not None
+    assert last is not None
     window = list(requests[first + 1:last + 1])
-    assert len(window) == 2 and MARKERS[1] in window[0] and MARKERS[2] in window[1], window
+    assert len(window) == 2, window
+    assert MARKERS[1] in window[0], window
+    assert MARKERS[2] in window[1], window

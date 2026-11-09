@@ -20,18 +20,21 @@ import sqlalchemy.exc
 import sqlglot
 from pydantic import BaseModel, Field
 from sqlglot import expressions as exp
+from sqlglot.dialects.dialect import Dialect as SqlglotDialect
 from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expr
+from sqlglot.tokenizer_core import TokenType
 from sqlalchemy.engine.url import URL, make_url
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from slayer import async_utils
 from slayer.async_utils import on_caller_thread, run_sync
 from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
-from slayer.sql import engine_factory
+from slayer.sql import connection_policy, engine_factory
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.dialects.base import ServerProfile, describe_type_name_code
 from slayer.sql.dialects.drivers import load_driver, plugin_errors
@@ -75,6 +78,56 @@ class ObjectNotFound(SqlClientError):
     """A metadata read named a schema or table that does not exist."""
 
 
+class SessionStatementRefused(SqlClientError):
+    """``execute`` was given a statement that changes session state or controls transactions."""
+
+
+# Leading keywords of a statement the default client refuses.
+_SESSION_LEADS = (
+    ("ALTER", "SESSION"), ("START", "TRANSACTION"),
+    ("USE",), ("SET",), ("RESET",), ("DISCARD",), ("BEGIN",), ("COMMIT",), ("ROLLBACK",),
+)
+
+# Leading keywords of a statement that only reads.
+_READ_LEADS = frozenset({"SELECT", "WITH", "VALUES", "TABLE", "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "("})
+
+# Tokens that are never keywords: literals and quoted names.
+_LITERAL_TOKENS = frozenset({
+    TokenType.STRING, TokenType.NATIONAL_STRING, TokenType.RAW_STRING, TokenType.BIT_STRING,
+    TokenType.HEX_STRING, TokenType.BYTE_STRING, TokenType.HEREDOC_STRING, TokenType.UNICODE_STRING,
+    TokenType.IDENTIFIER,
+})
+
+
+def _statement_leads(sql: str, *, dialect: SqlDialect) -> list[tuple[str, ...]]:
+    """Each ``;``-separated statement's first two words, upper-cased; a literal or quoted name reads as ``""``."""
+    statements: list[list[str]] = [[]]
+    for token in SqlglotDialect.get_or_raise(dialect.sqlglot_name).tokenize(sql):
+        if token.token_type is TokenType.SEMICOLON:
+            statements.append([])
+            continue
+        words = statements[-1]
+        if len(words) < 2:
+            words.append("" if token.token_type in _LITERAL_TOKENS else token.text.upper())
+    return [tuple(words) for words in statements if words]
+
+
+def admit_statement(sql: str, *, dialect: SqlDialect) -> bool:
+    """Refuse session and transaction statements in ``sql``; return whether it does anything but read."""
+    try:
+        leads = _statement_leads(sql, dialect=dialect)
+    except SqlglotError as exc:
+        raise SessionStatementRefused(f"The SQL client cannot split this text into statements: {exc}") from exc
+    for lead in leads:
+        refused = next((words for words in _SESSION_LEADS if lead[:len(words)] == words), None)
+        if refused is not None:
+            raise SessionStatementRefused(
+                f"The SQL client refuses {' '.join(refused)} statements: session state and transactions "
+                "are managed by SLayer.",
+            )
+    return not all(lead[0] in _READ_LEADS for lead in leads)
+
+
 class UnparseableTypeProbeError(ValueError):
     """The SQL whose result columns were asked for could not be parsed, so no type probe was built."""
 
@@ -98,6 +151,20 @@ def _dispose_engine_quietly(engine: sa.Engine) -> None:
         engine.dispose()
     except Exception:  # pragma: no cover - dispose failures are best-effort
         logger.warning("Failed to dispose a private in-memory engine.", exc_info=True)
+
+
+def _release_bridge_engine(engine: AsyncEngine, token: int) -> None:
+    """Dispose a bridge-loop async engine on that loop, unless bridge shutdown already did."""
+    if async_utils.unregister_shutdown(token):
+        async_utils.call_on_bridge(engine.dispose)
+
+
+def _forget_bridge_release(release: weakref.finalize) -> None:
+    """Cancel a pending ``_release_bridge_engine``: its engine is being disposed on the bridge loop now."""
+    detached = release.detach()
+    if detached is not None:
+        _engine, token = detached[2]
+        async_utils.unregister_shutdown(token)
 
 
 def _abandon(engines: list[AsyncEngine]) -> None:
@@ -297,29 +364,104 @@ def _server_profile_sync(*, engine: sa.Engine, dialect: SqlDialect) -> ServerPro
         return _server_profile(conn, engine=engine, dialect=dialect)
 
 
+def _timeout_sql(dialect: SqlDialect, timeout_seconds: int, *, transaction_local: bool) -> str | None:
+    tree = (dialect.transaction_local_statement_timeout(timeout_seconds) if transaction_local
+            else dialect.statement_timeout(timeout_seconds))
+    return None if tree is None else tree.sql(dialect=dialect.sqlglot_name)
+
+
+def _timeout_in_force(info: Any, timeout_seconds: int) -> bool | None:
+    """Whether the session's timeout is ``timeout_seconds`` (``True``: rejected at that value), or ``None``."""
+    record = info.get(connection_policy.TIMEOUT_IN_FORCE)
+    if isinstance(record, tuple) and record[0] == timeout_seconds:
+        return record[1]
+    return None
+
+
+def _timeout_plan(
+    conn, *, dialect: SqlDialect, timeout_seconds: int, transaction_local: bool,
+) -> tuple[str | None, bool]:
+    """The timeout statement to send (``None`` when the session already has the value), and whether the
+    session rejected this value before."""
+    sql = _timeout_sql(dialect, timeout_seconds, transaction_local=transaction_local)
+    if sql is None or transaction_local:
+        return sql, False
+    rejected = _timeout_in_force(conn.info, timeout_seconds)
+    if rejected is None:
+        conn.info.pop(connection_policy.TIMEOUT_IN_FORCE, None)
+        return sql, False
+    return None, rejected
+
+
+def _timeout_outcome(
+    conn, *, sent: bool, rejected: bool, transaction_local: bool, timeout_seconds: int, datasource_name: str,
+) -> list[StatementTimeoutSkippedWarning]:
+    """Record a sent session timeout on the connection; return the skips to report."""
+    if sent and not transaction_local:
+        conn.info[connection_policy.TIMEOUT_IN_FORCE] = (timeout_seconds, rejected)
+    return [_skip(datasource_name, timeout_seconds, "timeout_rejected")] if rejected else []
+
+
+def _set_timeout(
+    conn, *, dialect: SqlDialect, datasource_name: str, timeout_seconds: int, transaction_local: bool,
+) -> list[StatementTimeoutSkippedWarning]:
+    """Send the timeout statement unless the session already has it; return the skips to report."""
+    sql, rejected = _timeout_plan(
+        conn, dialect=dialect, timeout_seconds=timeout_seconds, transaction_local=transaction_local,
+    )
+    if sql is not None:
+        try:
+            _exec_verbatim(conn, sql)
+        except sqlalchemy.exc.DBAPIError:
+            if not dialect.statement_timeout_best_effort:
+                raise
+            rejected = True
+            if transaction_local:
+                conn.rollback()
+    return _timeout_outcome(
+        conn, sent=sql is not None, rejected=rejected, transaction_local=transaction_local,
+        timeout_seconds=timeout_seconds, datasource_name=datasource_name,
+    )
+
+
+async def _set_timeout_async(
+    conn, *, dialect: SqlDialect, datasource_name: str, timeout_seconds: int, transaction_local: bool,
+) -> list[StatementTimeoutSkippedWarning]:
+    """Async sibling of ``_set_timeout``."""
+    sql, rejected = _timeout_plan(
+        conn, dialect=dialect, timeout_seconds=timeout_seconds, transaction_local=transaction_local,
+    )
+    if sql is not None:
+        try:
+            await _exec_verbatim_async(conn, sql)
+        except sqlalchemy.exc.DBAPIError:
+            if not dialect.statement_timeout_best_effort:
+                raise
+            rejected = True
+            if transaction_local:
+                await conn.rollback()
+    return _timeout_outcome(
+        conn, sent=sql is not None, rejected=rejected, transaction_local=transaction_local,
+        timeout_seconds=timeout_seconds, datasource_name=datasource_name,
+    )
+
+
 @contextlib.contextmanager
 def _statement_timeout(
     conn, *, engine: Any, dialect: SqlDialect, datasource_name: str, timeout_seconds: int,
+    transaction_local: bool = False,
 ) -> Iterator[list[StatementTimeoutSkippedWarning]]:
-    """Put the dialect's timeout on ``conn`` for the block; yields the skips to report."""
+    """Put the dialect's timeout on ``conn`` for the block (a session statement once per value); yields the skips."""
     if dialect.timeout_reads_profile and not dialect.timeout_permitted(_server_profile(conn, engine=engine, dialect=dialect)):
         yield [_skip(datasource_name, timeout_seconds, "readonly_user")]
         return
     dbapi_connection = conn.connection.dbapi_connection
     prior = dialect.set_connection_timeout(dbapi_connection, timeout_seconds)
     try:
-        skipped: list[StatementTimeoutSkippedWarning] = []
-        timeout = dialect.statement_timeout(timeout_seconds)
-        if timeout is not None:
-            timeout_sql = timeout.sql(dialect=dialect.sqlglot_name)
-            try:
-                _exec_verbatim(conn, timeout_sql)
-            except sqlalchemy.exc.DBAPIError:
-                if not dialect.statement_timeout_best_effort:
-                    raise
-                conn.rollback()
-                skipped.append(_skip(datasource_name, timeout_seconds, "timeout_rejected"))
-        yield skipped
+        yield _set_timeout(
+            conn, dialect=dialect, datasource_name=datasource_name, timeout_seconds=timeout_seconds,
+            transaction_local=transaction_local,
+        )
     finally:
         dialect.restore_connection_timeout(dbapi_connection, prior)
 
@@ -327,6 +469,7 @@ def _statement_timeout(
 @contextlib.asynccontextmanager
 async def _statement_timeout_async(
     conn, *, engine: Any, dialect: SqlDialect, datasource_name: str, timeout_seconds: int,
+    transaction_local: bool = False,
 ) -> AsyncIterator[list[StatementTimeoutSkippedWarning]]:
     """Async sibling of ``_statement_timeout``."""
     if dialect.timeout_reads_profile and not dialect.timeout_permitted(
@@ -337,18 +480,10 @@ async def _statement_timeout_async(
     dbapi_connection = (await conn.get_raw_connection()).dbapi_connection
     prior = dialect.set_connection_timeout(dbapi_connection, timeout_seconds)
     try:
-        skipped: list[StatementTimeoutSkippedWarning] = []
-        timeout = dialect.statement_timeout(timeout_seconds)
-        if timeout is not None:
-            timeout_sql = timeout.sql(dialect=dialect.sqlglot_name)
-            try:
-                await _exec_verbatim_async(conn, timeout_sql)
-            except sqlalchemy.exc.DBAPIError:
-                if not dialect.statement_timeout_best_effort:
-                    raise
-                await conn.rollback()
-                skipped.append(_skip(datasource_name, timeout_seconds, "timeout_rejected"))
-        yield skipped
+        yield await _set_timeout_async(
+            conn, dialect=dialect, datasource_name=datasource_name, timeout_seconds=timeout_seconds,
+            transaction_local=transaction_local,
+        )
     finally:
         dialect.restore_connection_timeout(dbapi_connection, prior)
 
@@ -421,21 +556,53 @@ async def _probe_async(conn: Any, *, probe: TypeProbe, db_type: str | None) -> d
     )
 
 
+def _open_probe_transaction(conn: sa.Connection) -> bool:
+    """Leave autocommit so the driver opens the probe's transaction; return whether the connection was in it."""
+    dbapi_connection: Any = conn.connection.dbapi_connection
+    try:
+        autocommit = bool(conn.dialect.detect_autocommit_setting(dbapi_connection))
+    except NotImplementedError:
+        return False
+    if autocommit:
+        dbapi_connection.autocommit = False
+    return autocommit
+
+
+def _close_probe_transaction(conn: sa.Connection, *, autocommit: bool) -> None:
+    """Roll the probe's transaction back and restore autocommit; a connection that cannot roll back is discarded."""
+    try:
+        conn.rollback()
+    except Exception:
+        if not conn.invalidated:
+            conn.invalidate()
+        raise
+    if autocommit:
+        dbapi_connection: Any = conn.connection.dbapi_connection
+        dbapi_connection.autocommit = True
+
+
 def get_result_column_types_sync(
     sql: str, *, engine: sa.Engine, db_type: str | None = None, datasource_name: str | None = None,
+    transaction_local: bool = False,
 ) -> dict[str, ResultColumnType]:
     """Column types of ``sql``'s result over an existing engine, read-only (rolled back) so a probe can't mutate."""
     probe = type_probe_of(sql, db_type=db_type)
     with engine.connect() as conn, _statement_timeout(
         conn, engine=engine, dialect=dialect_for_ds_type(db_type),
         datasource_name=datasource_name or str(engine.url), timeout_seconds=_TYPE_PROBE_TIMEOUT_SECONDS,
+        transaction_local=transaction_local,
     ):
         ro_sql = _read_only_transaction_sql(db_type)
-        if ro_sql:
+        if ro_sql is None:
+            types = _probe_sync(conn, probe=probe, db_type=db_type)
+            conn.rollback()
+            return types
+        autocommit = _open_probe_transaction(conn)
+        try:
             _exec_verbatim(conn, ro_sql)
-        types = _probe_sync(conn, probe=probe, db_type=db_type)
-        conn.rollback()
-    return types
+            return _probe_sync(conn, probe=probe, db_type=db_type)
+        finally:
+            _close_probe_transaction(conn, autocommit=autocommit)
 
 
 def get_column_types_sync(
@@ -458,18 +625,25 @@ async def _get_result_column_types_async(
     engine,
     db_type: str | None,
     datasource_name: str | None = None,
+    transaction_local: bool = False,
 ) -> dict[str, ResultColumnType]:
     """Async sibling of ``get_result_column_types_sync``."""
     async with engine.connect() as conn, _statement_timeout_async(
         conn, engine=engine, dialect=dialect_for_ds_type(db_type),
         datasource_name=datasource_name or str(engine.url), timeout_seconds=_TYPE_PROBE_TIMEOUT_SECONDS,
+        transaction_local=transaction_local,
     ):
         ro_sql = _read_only_transaction_sql(db_type)
-        if ro_sql:
+        if ro_sql is None:
+            types = await _probe_async(conn, probe=probe, db_type=db_type)
+            await conn.rollback()
+            return types
+        autocommit = await conn.run_sync(_open_probe_transaction)
+        try:
             await _exec_verbatim_async(conn, ro_sql)
-        types = await _probe_async(conn, probe=probe, db_type=db_type)
-        await conn.rollback()
-    return types
+            return await _probe_async(conn, probe=probe, db_type=db_type)
+        finally:
+            await conn.run_sync(functools.partial(_close_probe_transaction, autocommit=autocommit))
 
 
 class ExecutionResult(BaseModel):
@@ -537,17 +711,24 @@ class SlayerSQLClient:
         self._sync_engine_owner: EngineOwner | None = "caller" if sa_engine is not None else None
         # Backstop disposing a client-owned engine when the client is collected unclosed.
         self._sync_engine_finalizer: weakref.finalize | None = None
+        # Releases the bridge loop's async engine: on ``close()``, or when the client is collected unclosed.
+        self._bridge_release: weakref.finalize | None = None
 
     def close(self) -> None:
-        """Dispose this client's private in-memory engine (idempotent).
+        """Dispose this client's private in-memory engine and its bridge-loop async engine (idempotent).
 
-        A factory-owned engine is left to the factory. Async engines are loop-bound and released
-        only by ``aclose()`` on their own loop: while a live loop's engine remains, this warns.
+        A factory-owned engine is left to the factory. Other loops' async engines are released only by
+        ``aclose()`` on their own loop: while a live one remains, this warns.
         """
         self._dispose_private_sync_engine()
         with self._async_lock:
+            for loop in [loop for loop in self._async_engines if async_utils.is_bridge_loop(loop)]:
+                del self._async_engines[loop]
             closed = self._take_closed_loop_engines()
             live = bool(self._async_engines)
+            release, self._bridge_release = self._bridge_release, None
+        if release is not None:
+            release()
         _abandon(closed)
         if live:
             logger.warning(
@@ -580,7 +761,12 @@ class SlayerSQLClient:
         with self._async_lock:
             engine = self._async_engines.pop(loop, None)
             closed = self._take_closed_loop_engines()
+            release = None
+            if engine is not None and async_utils.is_bridge_loop(loop):
+                release, self._bridge_release = self._bridge_release, None
         _abandon(closed)
+        if release is not None:
+            _forget_bridge_release(release)
         if engine is None:
             return
         try:
@@ -654,11 +840,17 @@ class SlayerSQLClient:
             return engine
         ds = self._connection_datasource()
         conn_str = ds.get_connection_string()
+        connection_policy.check_transaction_pooler_backend(ds, url=conn_str)
         load_driver(ds, conn_str, dialect=self._dialect, is_async=True)
         self._warn_bundled_driver(make_url(conn_str))
-        engine = create_async_engine(conn_str, pool_pre_ping=True)
+        engine = create_async_engine(conn_str, **connection_policy.engine_kwargs(
+            url=conn_str, dialect=self._dialect, datasource=ds, is_async=True,
+        ))
         with self._async_lock:
             self._async_engines[loop] = engine
+            if async_utils.is_bridge_loop(loop):
+                token = async_utils.register_shutdown(engine.dispose)
+                self._bridge_release = weakref.finalize(self, _release_bridge_engine, engine, token)
         return engine
 
     def _get_sync_engine_for_client(self) -> sa.Engine:
@@ -733,12 +925,13 @@ class SlayerSQLClient:
         sql: str,
         timeout_seconds: int = 120,
     ) -> ExecutionResult:
-        """Execute SQL asynchronously."""
-        return await self._typed_execute(sql=sql, timeout_seconds=timeout_seconds)
+        """Execute SQL asynchronously; a session or transaction statement is refused."""
+        writes = admit_statement(sql, dialect=self._dialect)
+        return await self._typed_execute(sql=sql, timeout_seconds=timeout_seconds, writes=writes)
 
-    async def _typed_execute(self, *, sql: str, timeout_seconds: int) -> ExecutionResult:
+    async def _typed_execute(self, *, sql: str, timeout_seconds: int, writes: bool) -> ExecutionResult:
         try:
-            return await self._execute(sql=sql, timeout_seconds=timeout_seconds)
+            return await self._execute(sql=sql, timeout_seconds=timeout_seconds, writes=writes)
         except Exception as exc:
             await self._typed(exc)
             raise
@@ -748,6 +941,7 @@ class SlayerSQLClient:
         *,
         sql: str,
         timeout_seconds: int,
+        writes: bool,
     ) -> ExecutionResult:
         async_engine = self._async_engine_here()
         db_type = self.datasource.type
@@ -758,6 +952,8 @@ class SlayerSQLClient:
                 db_type=db_type,
                 timeout_seconds=timeout_seconds,
                 datasource_name=self.datasource.name,
+                transaction_local=self.datasource.transaction_pooler,
+                writes=writes,
             )
         return await _execute_with_retry_threaded(
             sql=sql,
@@ -765,6 +961,8 @@ class SlayerSQLClient:
             timeout_seconds=timeout_seconds,
             engine=self._get_sync_engine_for_client(),
             datasource_name=self.datasource.name,
+            transaction_local=self.datasource.transaction_pooler,
+            writes=writes,
             run=self._blocking,
         )
 
@@ -783,6 +981,7 @@ class SlayerSQLClient:
         if async_engine is not None:
             return await _get_result_column_types_async(
                 probe, engine=async_engine, db_type=db_type, datasource_name=self.datasource.name,
+                transaction_local=self.datasource.transaction_pooler,
             )
         return await self._blocking(
             get_result_column_types_sync,
@@ -790,6 +989,7 @@ class SlayerSQLClient:
             db_type=db_type,
             engine=self._get_sync_engine_for_client(),
             datasource_name=self.datasource.name,
+            transaction_local=self.datasource.transaction_pooler,
         )
 
     async def get_column_types(self, sql: str) -> dict[str, str]:
@@ -956,13 +1156,14 @@ class SlayerSQLClient:
         sql: str,
         timeout_seconds: int = 120,
     ) -> ExecutionResult:
-        """Execute SQL synchronously (CLI, notebooks, tests).
+        """Execute SQL synchronously (CLI, notebooks, tests); a session or transaction statement is refused.
 
-        An async driver runs on a bridged loop whose engine is released at its end; a sync one
+        An async driver runs on the bridge loop, whose connections serve later calls; a sync one
         runs here, discarding only the sync engine on auth failure.
         """
+        writes = admit_statement(sql, dialect=self._dialect)
         if self._async_url() is not None:
-            return run_sync(self._execute_bridged(sql=sql, timeout_seconds=timeout_seconds))
+            return run_sync(self._execute_bridged(sql=sql, timeout_seconds=timeout_seconds, writes=writes))
         try:
             return _execute_with_retry_sync(
                 sql=sql,
@@ -970,16 +1171,28 @@ class SlayerSQLClient:
                 timeout_seconds=timeout_seconds,
                 engine=self._get_sync_engine_for_client(),
                 datasource_name=self.datasource.name,
+                transaction_local=self.datasource.transaction_pooler,
+                writes=writes,
             )
         except Exception as exc:
             self._discard_sync_engine_on_auth_failure(exc)
             raise
 
-    async def _execute_bridged(self, *, sql: str, timeout_seconds: int) -> ExecutionResult:
+    async def _execute_bridged(self, *, sql: str, timeout_seconds: int, writes: bool) -> ExecutionResult:
         try:
-            return await self._typed_execute(sql=sql, timeout_seconds=timeout_seconds)
+            return await self._typed_execute(sql=sql, timeout_seconds=timeout_seconds, writes=writes)
         finally:
-            await asyncio.shield(self.aclose())
+            await asyncio.shield(self.release_local_connections())
+
+    async def release_local_connections(self) -> None:
+        """End of a synchronous workflow: free idle connections holding a local database file; networked
+        connections stay open for later calls."""
+        if self._sync_engine is not None and self._sync_engine_owner == "factory":
+            engine_factory.release_idle(self._sync_engine)
+        with self._async_lock:
+            engine = self._async_engines.get(asyncio.get_running_loop())
+        if engine is not None and engine_factory.holds_local_file(engine.sync_engine):
+            await engine.dispose()
 
 
 def _read_on_connection(engine: sa.Engine, read: Callable[[sa.Connection], _T]) -> _T:
@@ -1014,9 +1227,11 @@ def _is_transient_db_error(exc: BaseException) -> bool:
     """True only for DB errors worth retrying.
 
     OperationalError is too broad (spans schema errors); match transient signals
-    in exc.orig. DisconnectionError is always transient.
+    in exc.orig. DisconnectionError, and an error SQLAlchemy read as a lost connection, are always transient.
     """
     if isinstance(exc, sqlalchemy.exc.DisconnectionError):
+        return True
+    if isinstance(exc, sqlalchemy.exc.DBAPIError) and exc.connection_invalidated:
         return True
     msg = str(getattr(exc, "orig", exc)).lower()
     return any(sig in msg for sig in _TRANSIENT_DB_ERROR_SIGNALS)
@@ -1170,6 +1385,8 @@ async def _execute_with_retry_async(
     db_type: str | None,
     timeout_seconds: int = 120,
     datasource_name: str | None = None,
+    transaction_local: bool = False,
+    writes: bool = False,
     max_attempts: int = 3,
     initial_delay: float = 1.0,
     max_delay: float = 10.0,
@@ -1178,7 +1395,7 @@ async def _execute_with_retry_async(
         sql=sql,
         do_call=lambda: _execute_sql_async(
             sql=sql, engine=engine, db_type=db_type, timeout_seconds=timeout_seconds,
-            datasource_name=datasource_name,
+            datasource_name=datasource_name, transaction_local=transaction_local, writes=writes,
         ),
         max_attempts=max_attempts,
         initial_delay=initial_delay,
@@ -1192,6 +1409,8 @@ async def _execute_sql_async(
     db_type: str | None,
     timeout_seconds: int = 120,
     datasource_name: str | None = None,
+    transaction_local: bool = False,
+    writes: bool = False,
 ) -> ExecutionResult:
     _t = timing.start()
     async with engine.connect() as conn:
@@ -1200,12 +1419,13 @@ async def _execute_sql_async(
         async with _statement_timeout_async(
             conn, engine=engine, dialect=dialect_for_ds_type(db_type),
             datasource_name=datasource_name or str(engine.url), timeout_seconds=timeout_seconds,
+            transaction_local=transaction_local,
         ) as skipped:
             timing.record("set_timeout", _t)
             _t = timing.start()
             result = await _exec_verbatim_async(conn, sql)
             rows = _fetch_rows(result, dialect=dialect_for_ds_type(db_type))
-            if not result.returns_rows:
+            if writes or not result.returns_rows:
                 await conn.commit()
             timing.record("query", _t)
     return ExecutionResult(rows=rows, warnings=skipped)
@@ -1218,6 +1438,8 @@ async def _execute_with_retry_threaded(
     engine: sa.Engine,
     timeout_seconds: int = 120,
     datasource_name: str | None = None,
+    transaction_local: bool = False,
+    writes: bool = False,
     max_attempts: int = 3,
     initial_delay: float = 1.0,
     max_delay: float = 10.0,
@@ -1232,6 +1454,8 @@ async def _execute_with_retry_threaded(
             timeout_seconds=timeout_seconds,
             engine=engine,
             datasource_name=datasource_name,
+            transaction_local=transaction_local,
+            writes=writes,
         ),
         max_attempts=max_attempts,
         initial_delay=initial_delay,
@@ -1246,6 +1470,8 @@ def _execute_with_retry_sync(
     engine: sa.Engine,
     timeout_seconds: int = 120,
     datasource_name: str | None = None,
+    transaction_local: bool = False,
+    writes: bool = False,
     max_attempts: int = 3,
     initial_delay: float = 1.0,
     max_delay: float = 10.0,
@@ -1259,6 +1485,8 @@ def _execute_with_retry_sync(
             timeout_seconds=timeout_seconds,
             engine=engine,
             datasource_name=datasource_name,
+            transaction_local=transaction_local,
+            writes=writes,
         )
 
     delay = initial_delay
@@ -1279,14 +1507,17 @@ def _execute_sql_sync(
     engine: sa.Engine,
     timeout_seconds: int = 120,
     datasource_name: str | None = None,
+    transaction_local: bool = False,
+    writes: bool = False,
 ) -> ExecutionResult:
     with engine.connect() as conn, _statement_timeout(
         conn, engine=engine, dialect=dialect_for_ds_type(db_type),
         datasource_name=datasource_name or str(engine.url), timeout_seconds=timeout_seconds,
+        transaction_local=transaction_local,
     ) as skipped:
         result = _exec_verbatim(conn=conn, sql=sql)
         rows = _fetch_rows(result, dialect=dialect_for_ds_type(db_type))
-        if not result.returns_rows:
+        if writes or not result.returns_rows:
             conn.commit()
     return ExecutionResult(rows=rows, warnings=skipped)
 
@@ -1418,6 +1649,12 @@ class DelegatingSqlClient:
 
     async def aclose(self) -> None:
         await self.inner.aclose()
+
+    async def release_local_connections(self) -> None:
+        """Forwarded to ``inner`` when it has the end-of-workflow release."""
+        release = getattr(self.inner, "release_local_connections", None)
+        if release is not None:
+            await release()
 
     def close(self) -> None:
         self.inner.close()

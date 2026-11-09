@@ -160,8 +160,11 @@ def test_probe_sets_the_timeout_before_its_read_only_transaction(postgresql_logg
 def test_probe_keeps_its_read_only_guard(postgresql_logged: Any, driver: str, ds_type: str | None) -> None:
     with _logged(postgresql_logged, driver=driver, ds_type=ds_type) as (ds, _log):
         client = SlayerSQLClient(ds)
+        def _probe() -> Awaitable[Any]:
+            return client.get_result_column_types("SELECT bump() AS n")
+
         with pytest.raises(Exception, match="read-only transaction"):
-            _in_one_loop(client, lambda: client.get_result_column_types("SELECT bump() AS n"))
+            _in_one_loop(client, _probe)
 
 
 def test_a_failed_probe_leaves_no_transaction_open(postgresql_logged: Any, driver: str) -> None:

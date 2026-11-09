@@ -12,52 +12,52 @@
 
 ## 1. Baseline measurement (first pr-implement task, before any production change)
 
-- [ ] 1.1 Measure requests and new connections per warm statement on Postgres, MySQL, SQL Server, ClickHouse, Trino, BigQuery and Snowflake, on async / sync / bridged paths; also the Snowflake integration job time. Verify the table is posted as a comment on DEV-2230.
-- [ ] 1.2 Verify live, per driver, each design D3 assumption: `detect_autocommit_setting` availability (psycopg, psycopg2, asyncpg, pg8000, pymysql, mysqldb, aiomysql); pyodbc `autocommit=True` at connect; Snowflake connector rollback/commit cost and AUTOCOMMIT state; BigQuery/ClickHouse/Trino rollback is local. Record the outcome on DEV-2230; a contradicting result stops for the user.
+- [x] 1.1 Measure requests and new connections per warm statement on Postgres, MySQL, SQL Server, ClickHouse, Trino, BigQuery and Snowflake, on async / sync / bridged paths; also the Snowflake integration job time. Verify the table is posted as a comment on DEV-2230.
+- [x] 1.2 Verify live, per driver, each design D3 assumption: `detect_autocommit_setting` availability (psycopg, psycopg2, asyncpg, pg8000, pymysql, mysqldb, aiomysql); pyodbc `autocommit=True` at connect; Snowflake connector rollback/commit cost and AUTOCOMMIT state; BigQuery/ClickHouse/Trino rollback is local. Record the outcome on DEV-2230; a contradicting result stops for the user.
 
 ## 2. Dependencies
 
-- [ ] 2.1 Raise `sqlalchemy` to `>=2.0.43,<2.1` in `pyproject.toml` and regenerate the lock; verify `poetry install -E all` succeeds.
+- [x] 2.1 Raise `sqlalchemy` to `>=2.0.43,<2.1` in `pyproject.toml` and regenerate the lock; verify `poetry install -E all` succeeds.
 
 ## 3. Bridge loop (D1)
 
-- [ ] 3.1 Implement the long-lived bridge loop in `slayer/async_utils.py` (lazy start, copied context, nested fallback, interrupt → cancel + bounded cleanup wait, queue-pumping caller-thread variant, owner with idempotent shutdown + atexit, at-fork reset). Verify 0.5 passes.
+- [x] 3.1 Implement the long-lived bridge loop in `slayer/async_utils.py` (lazy start, copied context, nested fallback, interrupt → cancel + bounded cleanup wait, queue-pumping caller-thread variant, owner with idempotent shutdown + atexit, at-fork reset). Verify 0.5 passes.
 
 ## 4. Release semantics (D2)
 
-- [ ] 4.1 Add the end-of-workflow release (local-file idle connections only, judged by resolved URL + pool type) and use it in `SlayerQueryEngine.run_sync` and `_execute_bridged`; keep `aclose()` full disposal; `close()` and a finalizer release bridge-loop engines. Verify 0.6 passes.
+- [x] 4.1 Add the end-of-workflow release (local-file idle connections only, judged by resolved URL + pool type) and use it in `SlayerQueryEngine.run_sync` and `_execute_bridged`; keep `aclose()` full disposal; `close()` and a finalizer release bridge-loop engines. Verify 0.6 passes.
 
 ## 5. Connection policy (D3, D5, D6)
 
-- [ ] 5.1 Add the one connection-policy helper and per-dialect transaction-mode hooks; route the factory builder, dialect build hooks and the async builder through it; delete every `pool_pre_ping=True`. Verify 0.4 (transaction mode) passes and `grep -rn pool_pre_ping slayer/` is empty.
-- [ ] 5.2 Move Snowflake `apply_session_overrides` to `connect`; update the build-hook error text. Verify 0.4 (overrides) passes.
-- [ ] 5.3 Add the after-idle ping listener. Verify 0.4 (ping) passes.
+- [x] 5.1 Add the one connection-policy helper and per-dialect transaction-mode hooks; route the factory builder, dialect build hooks and the async builder through it; delete every `pool_pre_ping=True`. Verify 0.4 (transaction mode) passes and `grep -rn pool_pre_ping slayer/` is empty.
+- [x] 5.2 Move Snowflake `apply_session_overrides` to `connect`; update the build-hook error text. Verify 0.4 (overrides) passes.
+- [x] 5.3 Add the after-idle ping listener. Verify 0.4 (ping) passes.
 
 ## 6. Timeout once per connection (D4)
 
-- [ ] 6.1 Add the timeout-scope hook; Postgres session `SET`; the connection-record value/rejection store; probe ordering with rollback in `finally`. Verify 0.3 passes.
+- [x] 6.1 Add the timeout-scope hook; Postgres session `SET`; the connection-record value/rejection store; probe ordering with rollback in `finally`. Verify 0.3 passes.
 
 ## 7. transaction_pooler (D7)
 
-- [ ] 7.1 Add `DatasourceConfig.transaction_pooler`, the save-time check in `StorageBackend.save_datasource`, the build-time backend check, the cache-key leg, and the transactional path. Verify 0.4 (pooler) passes.
+- [x] 7.1 Add `DatasourceConfig.transaction_pooler`, the save-time check in `StorageBackend.save_datasource`, the build-time backend check, the cache-key leg, and the transactional path. Verify 0.4 (pooler) passes.
 
 ## 8. Client door (D9)
 
-- [ ] 8.1 Add `SessionStatementRefused` and the tokenizer check on `execute` / `execute_sync`. Verify 0.7 passes.
-- [ ] 8.2 Commit after every statement that is not a read-only query (DuckDB's driver reports `returns_rows` for DDL and DML, so today they are rolled back); verify `tests/test_session_statement_refused.py::test_ordinary_statements_run[duckdb]` and `::test_duckdb_writes_are_committed` pass.
+- [x] 8.1 Add `SessionStatementRefused` and the tokenizer check on `execute` / `execute_sync`. Verify 0.7 passes.
+- [x] 8.2 Commit after every statement that is not a read-only query (DuckDB's driver reports `returns_rows` for DDL and DML, so today they are rolled back); verify `tests/test_session_statement_refused.py::test_ordinary_statements_run[duckdb]` and `::test_duckdb_writes_are_committed` pass.
 
 ## 9. Architecture and docs
 
-- [ ] 9.1 Apply the approved arc42 edits verbatim: `architecture/python.sql.arc42.md` §3 item 17 (design.md decisions log entry 6) and the `architecture/system.arc42.md` renumber to 24 (entry 7). Verify `poetry run la-arch-check` passes.
-- [ ] 9.2 Docs, one sentence each: `docs/configuration/datasources.md` (Snowflake overrides once per connection; timeout once per connection; `transaction_pooler` and when to set it) and `docs/configuration/sql-clients.md` (`execute` refuses session and transaction statements). Verify `grep -n "every pool checkout\|per-connection .USE" docs/` finds no stale text.
+- [x] 9.1 Apply the approved arc42 edits verbatim: `architecture/python.sql.arc42.md` §3 item 17 (design.md decisions log entry 6) and the `architecture/system.arc42.md` renumber to 24 (entry 7). Verify `poetry run la-arch-check` passes.
+- [x] 9.2 Docs, one sentence each: `docs/configuration/datasources.md` (Snowflake overrides once per connection; timeout once per connection; `transaction_pooler` and when to set it) and `docs/configuration/sql-clients.md` (`execute` refuses session and transaction statements). Verify `grep -n "every pool checkout\|per-connection .USE" docs/` finds no stale text.
 
 ## 10. Snowflake suite (D8)
 
-- [ ] 10.1 Size the reserved-alias sweep's worker count to the pool; one raw connection per seeding fixture. Verify the alias sweep still passes live.
+- [x] 10.1 Size the reserved-alias sweep's worker count to the pool; one raw connection per seeding fixture. Verify the alias sweep still passes live.
 - [ ] 10.2 Measure the Snowflake job time locally and in CI against the 5-minute target; verify `.github/workflows/integration-snowflake.yml` keeps `timeout-minutes: 15`.
 - [ ] 10.3 Before closing DEV-2230 (pr-review stage), revisit batching the two sweeps with the user, using the measured times.
 
 ## 11. Verification
 
-- [ ] 11.1 Re-measure as in 1.1 and post the after table on DEV-2230.
-- [ ] 11.2 Run the full unit suite, the CI integration invocation, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors) and `poetry run la-arch-check`; all green.
+- [x] 11.1 Re-measure as in 1.1 and post the after table on DEV-2230.
+- [x] 11.2 Run the full unit suite, the CI integration invocation, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors) and `poetry run la-arch-check`; all green.

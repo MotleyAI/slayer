@@ -84,12 +84,10 @@ the factory's sync builder, the dialect build hooks (which pass their own argume
 the client's async builder. Each dialect declares its transaction mode:
 - **DBAPI autocommit:** `isolation_level="AUTOCOMMIT"` + `skip_autocommit_rollback=True`. Postgres
   (psycopg, psycopg2, asyncpg, pg8000 where it detects autocommit), MySQL/MariaDB
-  (pymysql, mysqldb, aiomysql). Each driver is verified live; one that can't detect autocommit falls
-  to the dialect-supplied form.
-- **Dialect-supplied autocommit:** SQL Server turns on pyodbc `autocommit=True` at connect (its SA
-  dialect rejects `AUTOCOMMIT` as an isolation level), and Snowflake skips its unconditional
-  `ROLLBACK`. In both, the SLayer dialect makes rollback and commit no network request once the
-  connection is in autocommit.
+  (pymysql, mysqldb, aiomysql), SQL Server (pyodbc). Each driver is verified live; one that can't
+  detect autocommit falls to the dialect-supplied form.
+- **Dialect-supplied autocommit:** Snowflake skips its unconditional `ROLLBACK` and `COMMIT`: the
+  SLayer dialect makes rollback and commit no network request once the connection is in autocommit.
 - **Rollback is local:** BigQuery and ClickHouse (DBAPI rollback is a no-op) and Trino (already
   AUTOCOMMIT): nothing to change.
 - **Transactional:** a `transaction_pooler` Postgres datasource (D7).
@@ -199,7 +197,8 @@ not log.
 12. Before/after measurements on every Tier-1 networked backend, recorded on the issue. (default,
     from the issue)
 13. Per-dialect transaction mode (DBAPI autocommit / dialect-supplied autocommit / rollback is local
-    / transactional); pyodbc autocommit at connect for SQL Server. (codex)
+    / transactional); SQL Server in DBAPI autocommit, verified live (task 1.2). (codex, corrected by
+    probe)
 14. `skip_autocommit_rollback` only on dialects verified to detect autocommit; Snowflake's skip is
     SLayer-supplied. (codex)
 15. Bridge loop owner with idempotent shutdown (refuse, dispose on loop, stop, join; atexit; leak

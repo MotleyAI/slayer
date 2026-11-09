@@ -176,8 +176,9 @@ def test_synchronous_calls_repeat_safely(
     assert _writable_by_another_process(duckdb_ds.database or "")
     pids.append(asyncio.run(_from_a_running_loop()))
     assert _writable_by_another_process(duckdb_ds.database or "")
+    failing = _workflow(fail=True)
     with pytest.raises(ValueError, match="workflow failed"):
-        query_engine.run_sync(_workflow(fail=True))
+        query_engine.run_sync(failing)
     assert _writable_by_another_process(duckdb_ds.database or "")
     pids.append(query_engine.run_sync(_workflow()))
     assert len(set(pids)) == 1
@@ -323,7 +324,8 @@ def test_process_exit_leaves_nothing_open(
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "ok"
-    assert "ResourceWarning" not in proc.stderr and "unclosed" not in proc.stderr.lower(), proc.stderr
+    assert "ResourceWarning" not in proc.stderr, proc.stderr
+    assert "unclosed" not in proc.stderr.lower(), proc.stderr
     assert _eventually(lambda: not _backends(postgresql_proc, database=pg_ds.database or ""))
     prefix = f"{pg_ds.database}|"
     log = Path(postgresql_proc.logfile).read_text(errors="replace").splitlines()

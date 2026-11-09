@@ -1046,6 +1046,8 @@ class DatasourceConfig(BaseModel):
     # BigQuery-specific. A per-end-user OAuth authorized-user grant as JSON;
     # mutually exclusive with ``credentials_json`` (which carries a service account).
     oauth_credentials_json: str | None = Field(default=None, repr=False)
+    # Postgres-specific: reached through a transaction-mode pooler (e.g. PgBouncer), so session state is never set.
+    transaction_pooler: bool = False
     granularities: list[CustomGranularity] = Field(
         default_factory=list,
         description=(

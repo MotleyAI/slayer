@@ -257,15 +257,17 @@ async def test_saving_the_flag_on_postgres_is_kept(tmp_path: Path, ds_type: str)
     storage = YAMLStorage(base_dir=str(tmp_path / "store"))
     await storage.save_datasource(DatasourceConfig(name="ds", type=ds_type, host="h", transaction_pooler=True))
     loaded = await storage.get_datasource("ds")
-    assert loaded is not None and loaded.transaction_pooler is True
+    assert loaded is not None
+    assert loaded.transaction_pooler is True
 
 
 def test_a_non_postgres_driver_with_the_flag_fails_to_connect() -> None:
     ds = _ds("mysql+pymysql://u@db.invalid/d", ds_type="postgres", transaction_pooler=True)
     with pytest.raises(ValueError, match="mysql"):
         engine_factory.get_engine(ds)
+    client = SlayerSQLClient(ds)
     with pytest.raises(ValueError, match="mysql"):
-        SlayerSQLClient(ds).execute_sync("SELECT 1")
+        client.execute_sync("SELECT 1")
 
 
 def test_the_flag_splits_the_engine_cache() -> None:
@@ -283,7 +285,8 @@ async def test_a_stored_datasource_without_the_flag_loads_unchanged(tmp_path: Pa
     path.write_text(yaml.safe_dump(stored))
     before = path.read_bytes()
     loaded = await storage.get_datasource("pg")
-    assert loaded is not None and loaded.transaction_pooler is False
+    assert loaded is not None
+    assert loaded.transaction_pooler is False
     assert path.read_bytes() == before
 
 

@@ -68,31 +68,37 @@ def test_refusal_is_a_typed_client_error() -> None:
 @pytest.mark.usefixtures("nothing_sent")
 @pytest.mark.parametrize(("ds_type", "sql", "keywords"), _REFUSED)
 def test_sync_refuses_and_sends_nothing(ds_type: str | None, sql: str, keywords: str) -> None:
+    client = _client(ds_type)
     with pytest.raises(_refused(), match=keywords):
-        _client(ds_type).execute_sync(sql)
+        client.execute_sync(sql)
 
 
 @pytest.mark.usefixtures("nothing_sent")
 @pytest.mark.parametrize(("ds_type", "sql", "keywords"), _REFUSED)
 def test_async_refuses_and_sends_nothing(ds_type: str | None, sql: str, keywords: str) -> None:
+    executing = _client(ds_type).execute(sql)
     with pytest.raises(_refused(), match=keywords):
-        asyncio.run(_client(ds_type).execute(sql))
+        asyncio.run(executing)
 
 
 @pytest.mark.usefixtures("nothing_sent")
 def test_untokenisable_text_is_refused() -> None:
+    client = _client("postgres")
     with pytest.raises(_refused()):
-        _client("postgres").execute_sync("SELECT 'unterminated")
+        client.execute_sync("SELECT 'unterminated")
 
 
 # ---------------------------------------------------------------------------
 # Queries, DDL and DML are unaffected
 # ---------------------------------------------------------------------------
 
+# DuckDB answers a write with its ``Count`` row.
+_WRITE_ROWS = {"sqlite": [], "duckdb": [{"Count": 1}]}
+
 _ORDINARY = [
     ("CREATE TABLE t (x INT)", []),
-    ("INSERT INTO t VALUES (1)", []),
-    ("UPDATE t SET x = 2", []),
+    ("INSERT INTO t VALUES (1)", _WRITE_ROWS),
+    ("UPDATE t SET x = 2", _WRITE_ROWS),
     ("SELECT x FROM t", [{"x": 2}]),
     ("SELECT 'SET x' AS \"USE\"", [{"USE": "SET x"}]),
     ("-- BEGIN\nSELECT 1 AS one", [{"one": 1}]),
@@ -108,7 +114,7 @@ def test_ordinary_statements_run(tmp_path: Path, ds_type: str) -> None:
     finally:
         client.close()
         engine_factory.reset_cache()
-    assert rows == [expected for _, expected in _ORDINARY]
+    assert rows == [expected[ds_type] if isinstance(expected, dict) else expected for _, expected in _ORDINARY]
 
 
 @pytest.mark.parametrize("path", ["sync", "async"])

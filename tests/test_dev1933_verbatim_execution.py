@@ -178,6 +178,8 @@ def _fake_async_conn() -> MagicMock:
     conn.execute = AsyncMock(return_value=result)
     conn.rollback = AsyncMock()
     conn.get_raw_connection = AsyncMock()
+    sync_conn = MagicMock()
+    conn.run_sync = AsyncMock(side_effect=lambda fn, *a, **kw: fn(sync_conn, *a, **kw))
     return conn
 
 

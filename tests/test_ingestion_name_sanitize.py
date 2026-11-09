@@ -378,6 +378,7 @@ class TestIdleRelease:
 
         class _ExplodingEngine:
             pool = _ExplodingPool()
+            url = sa.engine.make_url(f"sqlite:///{ds.database}")
 
             def connect(self) -> nullcontext[MagicMock]:
                 return nullcontext(MagicMock())

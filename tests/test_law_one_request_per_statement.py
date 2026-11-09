@@ -52,7 +52,9 @@ def _logged(info: Any, *, driver: str) -> Generator[tuple[DatasourceConfig, Serv
 
 def _assert_one_request_each(statements: list[LoggedEntry]) -> None:
     window = [e.sql for e in between(statements, after="'mark-1'", through="'mark-3'")]
-    assert len(window) == 2 and "'mark-2'" in window[0] and "'mark-3'" in window[1], window
+    assert len(window) == 2, window
+    assert "'mark-2'" in window[0], window
+    assert "'mark-3'" in window[1], window
 
 
 async def _three_async(client: SlayerSQLClient) -> None:
@@ -167,7 +169,10 @@ def test_idle_connection_costs_one_ping(postgresql_logged: Any, driver: str, mon
         finally:
             client.close()
         window = between(log.statements(until="'mark-2'"), after="'mark-1'", through="'mark-2'")
-    assert len(window) == 2 and window[0].sql in _PINGS and "'mark-2'" in window[1].sql, [e.sql for e in window]
+    sent = [e.sql for e in window]
+    assert len(sent) == 2, sent
+    assert sent[0] in _PINGS, sent
+    assert "'mark-2'" in sent[1], sent
 
 
 @pytest.mark.parametrize("driver", ["psycopg", "psycopg2"])
