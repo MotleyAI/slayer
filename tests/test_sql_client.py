@@ -676,6 +676,28 @@ def test_a_lost_connection_is_transient_only_for_a_read() -> None:
     assert _is_transient_db_error(_lost_connection(), writes=True) is False
 
 
+@pytest.mark.parametrize("orig_message", [
+    "lost connection to MySQL server during query",
+    "BrokenPipeError: Broken pipe",
+    "server closed the connection unexpectedly",
+    "Connection reset by peer",
+    "Connection was killed",
+])
+def test_a_write_whose_outcome_is_unknown_is_not_retried(orig_message: str) -> None:
+    assert _is_transient_db_error(_make_op_error(orig_message)) is True
+    assert _is_transient_db_error(_make_op_error(orig_message), writes=True) is False
+
+
+@pytest.mark.parametrize("orig_message", [
+    "database is locked",
+    "deadlock detected",
+    "could not connect to server: Connection refused",
+    "Connection refused",
+])
+def test_a_write_that_never_ran_is_retried(orig_message: str) -> None:
+    assert _is_transient_db_error(_make_op_error(orig_message), writes=True) is True
+
+
 def test_a_write_is_not_resent_after_a_lost_connection(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[bool] = []
 
