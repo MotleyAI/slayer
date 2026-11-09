@@ -191,7 +191,7 @@ class FlightHandlers:
 
     def __init__(self, *, engine: SlayerQueryEngine) -> None:
         self._engine = engine
-        # Each RPC's workflow releases the shared clients on its own loop, so run one at a time.
+        # Each RPC's workflow ends by releasing the shared clients' idle local-file connections, so run one at a time.
         self._engine_lock = threading.Lock()
 
     # ----- helpers ----------------------------------------------------------

@@ -665,3 +665,48 @@ class TestProbeRollsBack:
                 )
             assert types == {"a": ResultColumnType(type=DataType.INT), "b": ResultColumnType(type=DataType.TEXT)}
             assert "rollback" in seen
+
+
+def _lost_connection() -> sqlalchemy.exc.OperationalError:
+    return sqlalchemy.exc.OperationalError("SELECT 1", {}, Exception("terminating connection"), connection_invalidated=True)
+
+
+def test_a_lost_connection_is_transient_only_for_a_read() -> None:
+    assert _is_transient_db_error(_lost_connection()) is True
+    assert _is_transient_db_error(_lost_connection(), writes=True) is False
+
+
+@pytest.mark.parametrize("orig_message", [
+    "lost connection to MySQL server during query",
+    "BrokenPipeError: Broken pipe",
+    "server closed the connection unexpectedly",
+    "Connection reset by peer",
+    "Connection was killed",
+])
+def test_a_write_whose_outcome_is_unknown_is_not_retried(orig_message: str) -> None:
+    assert _is_transient_db_error(_make_op_error(orig_message)) is True
+    assert _is_transient_db_error(_make_op_error(orig_message), writes=True) is False
+
+
+@pytest.mark.parametrize("orig_message", [
+    "database is locked",
+    "deadlock detected",
+    "could not connect to server: Connection refused",
+    "Connection refused",
+])
+def test_a_write_that_never_ran_is_retried(orig_message: str) -> None:
+    assert _is_transient_db_error(_make_op_error(orig_message), writes=True) is True
+
+
+def test_a_write_is_not_resent_after_a_lost_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[bool] = []
+
+    def _fail(**kwargs: object) -> object:
+        calls.append(bool(kwargs["writes"]))
+        raise _lost_connection()
+
+    monkeypatch.setattr(sql_client, "_execute_sql_sync", _fail)
+    engine = MagicMock()
+    with pytest.raises(sqlalchemy.exc.OperationalError):
+        _execute_with_retry_sync("INSERT INTO t VALUES (1)", "postgres", engine=engine, writes=True, initial_delay=0)
+    assert calls == [True]
