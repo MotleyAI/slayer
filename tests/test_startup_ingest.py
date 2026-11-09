@@ -173,7 +173,6 @@ def _serve_args(**overrides) -> argparse.Namespace:
         "host": "h",
         "port": 1,
         "storage": None,
-        "models_dir": None,
         "demo": False,
         "ingest_on_startup": False,
     }
@@ -184,7 +183,6 @@ def _serve_args(**overrides) -> argparse.Namespace:
 def _mcp_args(**overrides) -> argparse.Namespace:
     base = {
         "storage": None,
-        "models_dir": None,
         "demo": False,
         "ingest_on_startup": False,
     }

@@ -54,7 +54,7 @@ class TestInspectShowsIncomingEdges:
             storage = await _storage(d)
             md = await render_model_inspection(
                 model=_customers(), storage=storage, engine=None,
-                format="markdown", compact=False)
+                format="markdown")
             assert "orders" in md
             assert "one_to_many" in md
 
@@ -63,7 +63,7 @@ class TestInspectShowsIncomingEdges:
             storage = await _storage(d)
             out = await render_model_inspection(
                 model=_customers(), storage=storage, engine=None,
-                format="json", compact=False)
+                format="json")
             text = json.dumps(json.loads(out))
             assert '"orders"' in text
             assert '"one_to_many"' in text

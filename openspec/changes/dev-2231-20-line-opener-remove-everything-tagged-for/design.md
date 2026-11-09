@@ -1,17 +1,17 @@
 ## Context
 
-18 `warn_deprecated(..., removal="2.0")` sites on `main` (pinned in `tests/test_law_removal_tripwire.py`'s
-`PINNED`). The tripwire compares only major versions, so `2.0.0.dev0` already trips every one of them.
+20 `warn_deprecated(..., removal="2.0")` sites on `main` (pinned in `tests/test_law_removal_tripwire.py`'s
+`PINNED`, beside the moved module paths' `raise_moved(..., removal="3.0")` sites, which stay). The tripwire compares only major versions, so `2.0.0.dev0` already trips every one of them.
 Architecture grounding:
 
-- system §3.7 (async-first): `ingest_datasource_idempotent` / `validate_datasource` were plain functions
+- system §3.5 (async-first): `ingest_datasource_idempotent` / `validate_datasource` were plain functions
   returning a coroutine only so the deprecation could name the caller's line; they become `async def`.
-- system §3.23 (one database door): every remaining form reads through a client owned by an engine; the
+- database §3.1 (one database door): every remaining form reads through a client owned by an engine; the
   removed no-client forms were the only callers of a per-call fallback engine.
-- sql §3.14 / §3.15 (one engine owner / one driver per client): `SlayerSQLClient(sa_engine=)` is public,
+- database §3.3 / §3.4 (one engine owner / one driver per client): `SlayerSQLClient(sa_engine=)` is public,
   documented and untagged and stays; the principles' wording is unchanged. No arc42 or `.c4` edit.
 - Spec attachment: existing capabilities only (cross-cutting `compatibility/*` plus the deltas listed in the
-  proposal).
+  proposal; the client contract and execution live under `database/` since the database-access carve-out).
 
 ## Goals / Non-Goals
 
@@ -21,7 +21,7 @@ Architecture grounding:
   finds nothing.
 - `slayer.__version__ == "2.0.0.dev0"`.
 - The tripwire keeps its mechanism (helper scan, literal `removal`, major comparison, only the helper emits
-  `FutureWarning`) with an empty `PINNED`, ready for `removal="3.0"` forms.
+  `FutureWarning`) with `PINNED` holding only the moved module paths, ready for `removal="3.0"` forms.
 - Every removed public form fails loudly rather than silently changing meaning (except `SLAYER_MODELS_DIR`,
   decision 2).
 
@@ -52,17 +52,19 @@ Architecture grounding:
    (a caller-owned engine's blocking work runs inline — what `on_caller_thread` already did outside
    `run_sync_on_caller_thread`, whose only user was the removed converter path); `_ingest_idempotent_short_lived`,
    `_validate_short_lived`, `_UNSET`, `_run_through`'s no-client branch; `type_categories`,
-   `_CategoryProbeClient`, `_CATEGORY_TYPES`, `adapt_client`, `LegacyTypeCategories`, `_SLAYER_TYPE_CATEGORIES`,
-   the `legacy_type_categories` field and tables; `WarningLocation` and `warn_deprecated`'s `location=`.
+   `_CategoryProbeClient`, `_CATEGORY_TYPES`, `_ExecuteExplainClient`, `adapt_client`, `_overridden`, `_served`,
+   `LegacyTypeCategories`, `_SLAYER_TYPE_CATEGORIES`, the `legacy_type_categories` field and tables,
+   `SqlDialect.build_explain_sql`; `render_model_inspection`'s `compact` parameter and its compact-learnings
+   branches; `WarningLocation` and `warn_deprecated`'s `location=`.
    `warn_deprecated` (no callers left) and `deprecations_on_one_line` stay as the 3.0 mechanism.
 5. **Converter parameters after `data_source` become keyword-only** (default). Without it, removing the third
    slot would silently bind a 1.5.0 positional `sa_engine` to dbt's `include_hidden_models`. Every positional
    call reaching a later parameter passes through the removed slot, so no valid untagged form is lost.
 6. **`slayer/storage/legacy_backends.py` goes entirely** (default), including the `_list_memories_rows`
    wrong-shape `TypeError`; the abstract method's annotated type is the contract.
-7. **The tripwire's 2.0.0 test is generalised to the next major** (default): it patches the version to
-   `{major+1}.0.0` and asserts the named sites equal `PINNED`, instead of becoming vacuous. The
-   `all(s.removal == "2.0")` assertion goes.
+7. **The tripwire's 2.0.0 test goes; its 3.0.0 test is generalised to the next major** (default): with no 2.0
+   site left the 2.0.0 case is vacuous; the 3.0.0 case patches the version to `{major+1}.0.0` and asserts the
+   named sites equal `PINNED`, and `MOVED_PATH_SITES` (now all of `PINNED`) goes.
 8. **New tests cover `warn_deprecated` / `deprecations_on_one_line`** (default): their only tests (the
    `--models-dir` CLI and per-surface warning tests) are deleted with the surfaces.
 9. **Stored-data upgrade paths are untouched** (issue).
@@ -84,7 +86,10 @@ Architecture grounding:
     so `models/column-granularity` and `models/sample-profiling` restate the affected requirement under a new
     name (REMOVED + ADDED); `models/list-columns`, the other `models/sample-profiling` requirement and
     `queries/time-spine` MODIFY bodies only.
-16. **Stale capability Purposes are rewritten in the main specs** (default): a delta's `## Purpose` is ignored
+16. **A client without `explain` is not adapted** (default; precedent of decision 4's 1.6.0 probe): the
+    engine uses its factory's client as built; a `DelegatingSqlClient` subclass overriding only `execute` has
+    its explain served by the wrapped client; the conformance suite keeps failing a client without `explain`.
+17. **Stale capability Purposes are rewritten in the main specs** (default): a delta's `## Purpose` is ignored
     for an existing capability, so task 7.3 edits `openspec/specs/{compatibility/legacy-call-forms,
     compatibility/removal-tripwire,storage/custom-backends}/spec.md` directly with the wording given there.
 

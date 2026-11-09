@@ -1216,13 +1216,13 @@ class TestMissingVariablePerSurface:
 
 
 # ---------------------------------------------------------------------------
-# 17. get_column_types: defaults-only Mode-A substitution (D3)
+# 17. get_result_column_types: defaults-only Mode-A substitution (D3)
 # ---------------------------------------------------------------------------
 
-class TestGetColumnTypesDefaults:
+class TestGetResultColumnTypesDefaults:
     async def test_complete_defaults_probe_succeeds(self) -> None:
         """A Mode-A {var} column with a complete model default resolves at the
-        type-probe path (get_column_types), returning real types instead of the
+        type-probe path (get_result_column_types), returning real types instead of the
         {} degradation."""
         model = SlayerModel(
             name="orders",
@@ -1237,9 +1237,9 @@ class TestGetColumnTypesDefaults:
         )
         engine, tmp = await _engine_with(model)
         try:
-            types = await engine.get_column_types("orders")
-            assert types.get("scaled") == "number"
-            assert types.get("amount") == "number"
+            types = await engine.get_result_column_types("orders")
+            assert types["scaled"].type in (DataType.INT, DataType.DOUBLE)
+            assert types["amount"].type in (DataType.INT, DataType.DOUBLE)
         finally:
             tmp.cleanup()
 
@@ -1258,7 +1258,7 @@ class TestGetColumnTypesDefaults:
         )
         engine, tmp = await _engine_with(model)
         try:
-            types = await engine.get_column_types("orders")
+            types = await engine.get_result_column_types("orders")
             assert types == {}
         finally:
             tmp.cleanup()
@@ -1281,7 +1281,7 @@ class TestGetColumnTypesDefaults:
         )
         engine, tmp = await _engine_with(model)
         try:
-            types = await engine.get_column_types("orders")
+            types = await engine.get_result_column_types("orders")
             assert types == {}
         finally:
             tmp.cleanup()
@@ -1304,9 +1304,9 @@ class TestGetColumnTypesDefaults:
         )
         engine, tmp = await _engine_with(model)
         try:
-            types = await engine.get_column_types("orders")
-            assert types.get("amount") == "number"
-            assert types.get("region") == "string"
+            types = await engine.get_result_column_types("orders")
+            assert types["amount"].type in (DataType.INT, DataType.DOUBLE)
+            assert types["region"].type == DataType.TEXT
         finally:
             tmp.cleanup()
 

@@ -36,7 +36,7 @@ def prepare_demo_storage(*, base_dir: str, prebuilt_duckdb: str | None = None):
     database path.
     """
     args = argparse.Namespace(
-        storage=base_dir, models_dir=None, datasource=None, force=False
+        storage=base_dir, datasource=None, force=False
     )
     storage = _resolve_storage(args)
     if prebuilt_duckdb is not None:

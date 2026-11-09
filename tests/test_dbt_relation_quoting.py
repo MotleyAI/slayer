@@ -11,14 +11,13 @@ from sqlglot import exp
 from slayer.core.models import SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.dbt.converter import DbtToSlayerConverter
-from slayer.dbt.models import DbtProject
 from slayer.dbt.parser import parse_dbt_project
 from slayer.ingest_report import ConversionResult
 from slayer.sql.dialects import get_dialect
 from slayer.sql.naming import denoted_name
 from slayer.sql.render.parse import parse_query, parse_table
 from tests._dev2171_fixtures import column, entries, models_of, write_yaml
-from tests._engine_helpers import _engine_generate, disposable_engine
+from tests._engine_helpers import _engine_generate
 
 DS = "ds"
 ITEMS = {"name": "items", "model": "ref('OrderItems')", "dimensions": [{"name": "qty", "type": "categorical"}]}
@@ -238,10 +237,3 @@ def test_member_without_an_expr_reads_its_folded_name(tmp_path: Path) -> None:
           "dimensions": [{"name": "OrderDate", "type": "time", "type_params": {"time_granularity": "day"}}]}
     orders = models_of(_import(tmp_path, dialect="postgres", semantic_models=[sm]))["orders"]
     assert column(orders, "OrderDate").physical_name == "orderdate"
-
-
-def test_an_engine_alone_gives_the_dialect(tmp_path: Path) -> None:
-    project = DbtProject.model_validate({"semantic_models": [ITEMS | {"model": "OrderItems"}]})
-    with disposable_engine(f"duckdb:///{tmp_path / 'shop.duckdb'}") as engine:
-        result = DbtToSlayerConverter(project=project, data_source=DS, sa_engine=engine).convert()
-    assert models_of(result)["items"].sql_table == "OrderItems"

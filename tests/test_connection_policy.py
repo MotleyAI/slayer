@@ -29,8 +29,6 @@ from tests._engine_helpers import disposable_engine, plant_async_engine
 from tests._pg_helpers import pg_database
 from tests._pg_statement_log import LOGGED_POSTGRES_OPTIONS, ServerLog
 
-pytestmark = pytest.mark.filterwarnings("ignore::FutureWarning")
-
 postgresql_logged = factories.postgresql_proc(port=None, postgres_options=LOGGED_POSTGRES_OPTIONS)
 
 _PINGS = {";", "SELECT 1"}

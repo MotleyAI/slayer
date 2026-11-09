@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import threading
-import warnings
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -21,8 +20,6 @@ from slayer.database import engine_factory
 from slayer.database.client import ObjectNotFound, SlayerSQLClient
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.reflection import TableLocation
-
-pytestmark = pytest.mark.filterwarnings("ignore::FutureWarning")
 
 _HOST = "one-driver.invalid"
 _PG = f"u:p%40ss@{_HOST}:5432/d"
@@ -300,47 +297,6 @@ async def test_a_callers_engine_is_the_only_engine(engines: _Engines, connection
     assert caller.connect.called
     assert engines.async_urls == []
     assert engines.factory_urls == []
-
-
-# ---------------------------------------------------------------------------
-# A bundled non-default driver warns until 2.0
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("ds", "driver", "extra"),
-    [
-        pytest.param(_ds("postgres", f"postgresql+psycopg2://{_PG}"), "psycopg2", "postgres", id="psycopg2"),
-        pytest.param(_ds("postgres", f"postgresql+asyncpg://{_PG}"), "asyncpg", "postgres", id="asyncpg"),
-        pytest.param(_ds("mysql", f"mysql+aiomysql://{_MY}"), "aiomysql", "mysql", id="aiomysql"),
-        pytest.param(_ds("mariadb", f"mariadb+aiomysql://{_MY}"), "aiomysql", "mysql", id="mariadb-aiomysql"),
-    ],
-)
-async def test_bundled_non_default_driver_warns(engines: _Engines, ds: DatasourceConfig, driver: str, extra: str) -> None:
-    with warnings.catch_warnings(record=True) as record:
-        warnings.simplefilter("always")
-        with contextlib.suppress(*_EXPECTED_FAILURES):
-            await SlayerSQLClient(ds).execute("SELECT 1")
-    messages = [str(w.message) for w in record if issubclass(w.category, FutureWarning)]
-    assert any(driver in m and f"motley-slayer[{extra}]" in m and "2.0" in m for m in messages), messages
-
-
-@pytest.mark.parametrize(
-    "ds",
-    [
-        pytest.param(_ds("postgres", f"postgresql://{_PG}"), id="bare-postgres"),
-        pytest.param(_ds("postgres", f"postgresql+psycopg://{_PG}"), id="psycopg"),
-        pytest.param(_ds("mysql", f"mysql+pymysql://{_MY}"), id="pymysql"),
-        pytest.param(_ds("mysql", f"mysql://{_MY}"), id="bare-mysql"),
-        pytest.param(_ds("postgres", f"postgresql+pg8000://{_PG}"), id="pg8000"),
-    ],
-)
-async def test_default_and_unbundled_drivers_are_silent(engines: _Engines, ds: DatasourceConfig) -> None:
-    with warnings.catch_warnings(record=True) as record:
-        warnings.simplefilter("always")
-        with contextlib.suppress(*_EXPECTED_FAILURES):
-            await SlayerSQLClient(ds).execute("SELECT 1")
-    assert [str(w.message) for w in record if issubclass(w.category, FutureWarning)] == []
 
 
 # ---------------------------------------------------------------------------

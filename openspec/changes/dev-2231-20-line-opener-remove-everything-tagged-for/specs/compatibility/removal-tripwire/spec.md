@@ -1,7 +1,7 @@
 ## REMOVED Requirements
 
 ### Requirement: One marker for code removed in 2.0
-**Reason**: Restated per major version in "One marker for code scheduled for removal"; no 2.0 workaround remains.
+**Reason**: Restated per major version in "One marker for code scheduled for removal"; every 2.0 workaround is removed and only the moved module paths, removed in 3.0, remain marked.
 **Migration**: None.
 
 ### Requirement: The tripwire stops a 2.0 release
@@ -16,11 +16,11 @@
 
 ### Requirement: One marker for code scheduled for removal
 
-Every piece of compatibility code scheduled for removal in a future major version SHALL emit its deprecation through one shared mechanism that records the removal version as a literal, and that mechanism SHALL be the only way such code is marked and the only emitter of `FutureWarning` in the package. Each use of a marked form SHALL emit exactly one `FutureWarning`, attributed to the line that used it, and the CLI SHALL print it as one `Deprecated: …` line on stderr. The marked sites SHALL be exactly the pinned set of covered workarounds, which at version 2.0.0.dev0 is empty. Stored-data upgrade paths, the colon aggregation spelling, the Flight pyarrow adapter modules and the pg facade's `token=` argument SHALL NOT be marked.
+Every piece of compatibility code scheduled for removal in a future major version SHALL be marked through one shared mechanism that records the removal version as a literal, and that mechanism SHALL be the only way such code is marked and the only emitter of `FutureWarning` in the package. A marked form that still works SHALL emit exactly one `FutureWarning` per use, attributed to the line that used it, and the CLI SHALL print it as one `Deprecated: …` line on stderr; a marked module path that moved SHALL raise an `ImportError` instead. The covered workarounds SHALL be every module path moved in 2.0 by the database-access, live-schema, row-supply and cardinality carve-outs, each removed in 3.0; no form that still works is marked at 2.0.0.dev0. Stored-data upgrade paths, the colon aggregation spelling, the Flight pyarrow adapter modules and the pg facade's `token=` argument SHALL NOT be marked.
 
 #### Scenario: Every covered workaround is marked
 - **WHEN** the marked sites in the package are enumerated
-- **THEN** they are exactly the pinned set of covered workarounds — none at 2.0.0.dev0 — and none of the excluded paths
+- **THEN** they are exactly the pinned set of covered workarounds, each with its pinned removal version, and none of the excluded paths
 
 #### Scenario: A marker without a literal removal version is rejected
 - **WHEN** a marked site gives its removal version as anything but a string literal
@@ -44,7 +44,7 @@ A unit test SHALL read the package version and SHALL fail while any marked site'
 
 #### Scenario: At the next major the tripwire names every pinned site
 - **WHEN** the version the tripwire reads is patched to the next major version's `.0.0`
-- **THEN** it fails naming exactly the pinned covered sites, and passes when none is pinned
+- **THEN** it fails naming exactly the pinned covered sites
 
 #### Scenario: Aliased use is still found
 - **WHEN** a module emits through the shared mechanism under an import alias

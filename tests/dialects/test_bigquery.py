@@ -70,7 +70,7 @@ def test_ds_type_aliases() -> None:
 
 
 def test_explain_prefix_is_none() -> None:
-    """BigQuery has no SQL-level EXPLAIN; ``explain_prefix is None`` signals ``build_explain_sql`` to raise."""
+    """BigQuery has no SQL-level EXPLAIN; ``explain_prefix is None`` signals ``explain_statements`` to raise."""
     assert BigqueryDialect().explain_prefix is None
 
 

@@ -61,7 +61,7 @@ class TestModelRender:
                 cardinality=JoinCardinality.MANY_TO_ONE, email_unique=True
             )
             out = await render_model_inspection(
-                model=model, storage=storage, engine=None, format="json", compact=False
+                model=model, storage=storage, engine=None, format="json"
             )
             payload = json.loads(out)
             join = payload["joins"][0]
@@ -77,7 +77,7 @@ class TestModelRender:
                 cardinality=JoinCardinality.MANY_TO_ONE, email_unique=True
             )
             out = await render_model_inspection(
-                model=model, storage=storage, engine=None, format="json", compact=False
+                model=model, storage=storage, engine=None, format="json"
             )
             payload = json.loads(out)
             email = next(c for c in payload["columns"] if c["name"] == "email")
@@ -93,7 +93,7 @@ class TestModelRender:
                 cardinality=JoinCardinality.MANY_TO_ONE, email_unique=True
             )
             md = await render_model_inspection(
-                model=model, storage=storage, engine=None, format="markdown", compact=False
+                model=model, storage=storage, engine=None, format="markdown"
             )
             assert "many_to_one" in md
 
@@ -107,7 +107,7 @@ class TestModelRender:
                 cardinality=JoinCardinality.MANY_TO_ONE, email_unique=True
             )
             md = await render_model_inspection(
-                model=model, storage=storage, engine=None, format="markdown", compact=False
+                model=model, storage=storage, engine=None, format="markdown"
             )
             # The columns table gains a `unique` column.
             assert "unique" in md.lower()

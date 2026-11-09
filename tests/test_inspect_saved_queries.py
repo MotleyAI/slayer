@@ -127,12 +127,12 @@ class TestModelViews:
     async def test_inspect_model_tool(self, storage: YAMLStorage) -> None:
         server = create_mcp_server(storage=storage)
         payload = await call_tool_json(
-            server, name="inspect_model", arguments={"model_name": "orders", "format": "json", "sections": ["columns"]},
+            server, name="inspect", arguments={"entity_type": "model", "reference": "orders", "compact": False, "format": "json", "sections": ["columns"]},
         )
         assert "saved_queries" not in payload
         payload = await call_tool_json(
-            server, name="inspect_model",
-            arguments={"model_name": "orders", "format": "json", "sections": ["saved_queries"]},
+            server, name="inspect",
+            arguments={"entity_type": "model", "reference": "orders", "compact": False, "format": "json", "sections": ["saved_queries"]},
         )
         assert _listed(payload) == ON_ORDERS
 

@@ -155,7 +155,6 @@ def test_cli_search_default_is_compact(yaml_storage: YAMLStorage) -> None:
 
     args = SimpleNamespace(
         storage=yaml_storage.base_dir,
-        models_dir=None,
         entities=["warehouse.orders.amount_paid"],
         query=None,
         question=None,
@@ -186,7 +185,6 @@ def test_cli_search_verbose_flag_opts_out_of_compact(
 
     args = SimpleNamespace(
         storage=yaml_storage.base_dir,
-        models_dir=None,
         entities=["warehouse.orders.amount_paid"],
         query=None,
         question=None,

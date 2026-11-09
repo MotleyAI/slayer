@@ -874,7 +874,7 @@ class TestRendering:
         model = await duck.storage.get_model("contractors", data_source="test")
         assert model is not None
         out = await render_model_inspection(model=model, storage=duck.storage, engine=duck, format="markdown",
-                                            sections=["columns"], compact=False)
+                                            sections=["columns"])
         assert _says_set_grouping(out), out
 
     def test_search_column_text(self) -> None:

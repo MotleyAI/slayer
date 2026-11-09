@@ -199,7 +199,6 @@ def test_cli_memory_save_accepts_description_flag(
 
     args = SimpleNamespace(
         storage=yaml_storage.base_dir,
-        models_dir=None,
         memory_command="save",
         learning="x",
         entities="mydb.orders.amount",
