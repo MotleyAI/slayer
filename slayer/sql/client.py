@@ -1653,29 +1653,49 @@ async def _plan_rows_async(conn: Any, statements: ExplainStatements, *, dialect:
     except BaseException as exc:
         failure = await _switch_off_async(conn, statements.session_off)
         if failure is not None or isinstance(exc, asyncio.CancelledError):
-            await conn.invalidate()
-        if isinstance(failure, asyncio.CancelledError):
-            raise failure from exc
+            await _invalidate_async(conn)
         raise
     failure = await _switch_off_async(conn, statements.session_off)
     if failure is not None:
-        await conn.invalidate()
+        await _invalidate_async(conn)
         raise failure
     return rows
 
 
 async def _switch_off_async(conn: Any, sql: str) -> BaseException | None:
-    """Run ``sql`` to its end, shielded from cancellation; its failure, else the cancellation that arrived meanwhile."""
-    off = asyncio.ensure_future(_exec_verbatim_async(conn, sql))
-    cancelled: asyncio.CancelledError | None = None
-    while not off.done():
-        try:
-            await asyncio.wait({off})
-        except asyncio.CancelledError as exc:
-            cancelled = cancelled or exc
-    if off.cancelled():
-        return cancelled or asyncio.CancelledError()
-    return off.exception() or cancelled
+    """Run ``sql`` to its end, shielded from cancellation; its failure. A cancellation meanwhile invalidates ``conn``
+    and is re-raised."""
+    try:
+        return await _outlast(_exec_verbatim_async(conn, sql))
+    except asyncio.CancelledError:
+        await _invalidate_async(conn)
+        raise
+
+
+async def _invalidate_async(conn: Any) -> None:
+    """Invalidate ``conn``, shielded from cancellation."""
+    failure = await _outlast(conn.invalidate())
+    if failure is not None:
+        raise failure
+
+
+async def _outlast(aw: Awaitable[Any]) -> BaseException | None:
+    """Run ``aw`` to its end, shielded from cancellation; its failure. A cancellation meanwhile is re-raised once it
+    ends."""
+    fut = asyncio.ensure_future(aw)
+    await _until_done(fut)
+    return fut.exception()
+
+
+async def _until_done(fut: asyncio.Future[Any]) -> None:
+    """Wait until ``fut`` is done; a cancellation meanwhile is re-raised once it is, ``fut``'s failure retrieved."""
+    try:
+        await asyncio.wait({fut})
+    except asyncio.CancelledError:
+        await _until_done(fut)
+        if not fut.cancelled():
+            fut.exception()
+        raise
 
 
 def _fetch_rows(result, *, dialect: SqlDialect) -> list[dict[str, Any]]:

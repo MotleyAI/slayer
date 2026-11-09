@@ -294,8 +294,9 @@ class TestAClientWrittenBeforeExplain:
             DatasourceConfig(name="lite", type="sqlite", database=":memory:"),
         )
         adapted = adapt_client(client)
+        statements = ExplainStatements(statement="EXPLAIN QUERY PLAN SELECT 1")
         with pytest.warns(FutureWarning, match=DEPRECATION):
-            result = await adapted.explain(ExplainStatements(statement="EXPLAIN QUERY PLAN SELECT 1"))
+            result = await adapted.explain(statements)
         assert result.rows == _PLAN
         assert client.executed == ["EXPLAIN QUERY PLAN SELECT 1"]
 

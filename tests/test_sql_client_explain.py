@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -239,6 +240,42 @@ class TestAsyncCancellation:
         with pytest.raises(asyncio.CancelledError):
             await task
         await _until(lambda: (1, f"END {SESSION_OFF}") in db.events and (1, "CLOSE") in db.events)
+        assert _discarded(db, 1)
+
+    async def test_a_cancellation_cannot_skip_the_invalidation(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = FakeDb()
+        client = async_client(monkeypatch, db)
+        db.hold_async(PLAN_SQL)
+        gate = db.hold_invalidate()
+        task = asyncio.create_task(client.explain(SESSION_STATEMENTS))
+        await _until(db.entered[PLAN_SQL].is_set)
+        task.cancel()
+        await _until(db.invalidating.is_set)
+        task.cancel()
+        gate.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await _until(lambda: (1, "CLOSE") in db.events)
+        assert _discarded(db, 1)
+
+    async def test_a_switch_off_failure_under_cancellation_is_retrieved(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        unhandled: list[dict[str, object]] = []
+        asyncio.get_running_loop().set_exception_handler(lambda _loop, context: unhandled.append(context))
+        db = FakeDb()
+        client = async_client(monkeypatch, db)
+        gate = db.hold_async(SESSION_OFF)
+        db.fail(SESSION_OFF, _off_error())
+        task = asyncio.create_task(client.explain(SESSION_STATEMENTS))
+        await _until(db.entered[SESSION_OFF].is_set)
+        task.cancel()
+        gate.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        del task
+        gc.collect()
+        await asyncio.sleep(0)
+        gc.collect()
+        assert unhandled == []
         assert _discarded(db, 1)
 
 

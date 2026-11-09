@@ -51,6 +51,8 @@ class FakeDb:
         self.async_gates: dict[str, asyncio.Event] = {}
         self.entered: dict[str, threading.Event] = {}
         self.connections: list[Any] = []
+        self.invalidate_gate: asyncio.Event | None = None
+        self.invalidating = threading.Event()
 
     def fail(self, sql: str, *errors: BaseException) -> None:
         """Raise ``errors`` in turn on the next runs of ``sql``."""
@@ -64,6 +66,11 @@ class FakeDb:
     def hold_async(self, sql: str) -> asyncio.Event:
         gate = self.async_gates[sql] = asyncio.Event()
         self.entered[sql] = threading.Event()
+        return gate
+
+    def hold_invalidate(self) -> asyncio.Event:
+        """Hold an async connection's invalidation open until the gate is set."""
+        gate = self.invalidate_gate = asyncio.Event()
         return gate
 
     def _begin(self, conn_id: int, sql: str, options: Any) -> None:
@@ -180,6 +187,9 @@ class FakeAsyncConn:
         self.db.events.append((self.id, "ROLLBACK"))
 
     async def invalidate(self, exception: BaseException | None = None) -> None:  # noqa: ARG002 — SQLAlchemy's signature
+        self.db.invalidating.set()
+        if self.db.invalidate_gate is not None:
+            await asyncio.wait_for(self.db.invalidate_gate.wait(), _WAIT)
         self.invalidated = True
         self.db.events.append((self.id, "INVALIDATE"))
 
