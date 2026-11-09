@@ -1,7 +1,7 @@
 # compatibility/removal-tripwire Specification
 
 ## Purpose
-Makes every piece of compatibility code scheduled for removal in SLayer 2.0 identifiable and warning, and stops a 2.0 release while any of it remains.
+Makes every piece of compatibility code scheduled for removal in a future major version identifiable (warning while it still works, raising with its new location where its module moved), and stops that version's release while any of it remains.
 
 ## Requirements
 
