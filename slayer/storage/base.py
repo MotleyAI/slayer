@@ -659,6 +659,12 @@ class StorageBackend(ABC):
         await asyncio.sleep(0)  # awaited protocol hook; async impls override
         return None
 
+    async def _raw_datasource_dicts(self) -> dict[str, dict]:
+        """Every stored datasource dict verbatim, keyed by the name ``get_datasource`` reads it under; backends without
+        raw access store none."""
+        await asyncio.sleep(0)
+        return {}
+
     async def _write_raw_datasource_dict(self, *, name: str, data: dict) -> None:
         raise NotImplementedError
 
@@ -674,8 +680,8 @@ class StorageBackend(ABC):
         raise NotImplementedError
 
     async def _settle_library_granularities(self) -> None:
-        """Once per instance, before any model or memory loads: load every datasource, which renames its library-named
-        granularities (an unloadable datasource is reported where it is used)."""
+        """Once per instance, before any model or memory loads: rename the library-named granularities of every stored
+        datasource dict (an unloadable datasource is reported where it is used)."""
         if getattr(self, "_granularities_settled", False) or _SETTLING.get():
             return
         lock = self._granularities_lock = getattr(self, "_granularities_lock", None) or asyncio.Lock()
@@ -684,9 +690,9 @@ class StorageBackend(ABC):
                 return
             token = _SETTLING.set(True)
             try:
-                for name in await self.list_datasources():
+                for name, data in (await self._raw_datasource_dicts()).items():
                     with contextlib.suppress(ValueError):
-                        await self.get_datasource(name)
+                        await self._with_library_granularities_renamed(name=name, data=data)
             finally:
                 _SETTLING.reset(token)
             self._granularities_settled = True
