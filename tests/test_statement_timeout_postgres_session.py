@@ -220,6 +220,22 @@ def test_pooler_timeout_is_transaction_local(postgresql_logged: Any, driver: str
     assert sent == ["SET LOCAL statement_timeout = 120000"] * 2
 
 
+def test_pooler_probe_is_transaction_local_and_read_only(postgresql_logged: Any, driver: str) -> None:
+    with _logged(postgresql_logged, driver=driver, transaction_pooler=True) as (ds, log):
+        client = SlayerSQLClient(ds)
+
+        async def _work() -> Any:
+            await client.get_result_column_types("SELECT 1 AS probe_marker")
+            with pytest.raises(Exception, match="read-only transaction"):
+                await client.get_result_column_types("SELECT bump() AS n")
+            return (await client.execute(_STATE_SQL)).rows[0]
+
+        after = _in_one_loop(client, _work)
+        sent = [e.sql for e in log.statements(until="pg_backend_pid") if "statement_timeout = " in e.sql]
+    assert sent == ["SET LOCAL statement_timeout = 60000"] * 2 + ["SET LOCAL statement_timeout = 120000"]
+    assert (after["t"], after["ro"]) == ("2min", "off")
+
+
 def test_pooler_leaves_the_session_timeout_unchanged(postgresql_logged: Any) -> None:
     with _logged(postgresql_logged, driver="psycopg2", transaction_pooler=True) as (ds, _log):
         client = SlayerSQLClient(ds)

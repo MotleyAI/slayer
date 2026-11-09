@@ -341,7 +341,7 @@ Every read of or statement against a user datasource — query and explain state
 
 ### Requirement: The query engine owns the clients it builds
 
-A query engine SHALL be the only party that closes the clients it built; code that borrows a client SHALL NOT close it. Closing a query engine, synchronously or asynchronously, SHALL close every client it built, including factory clients, and SHALL release every connection those clients hold, including those held for synchronous calls; the clients SHALL remain usable afterwards. Every synchronous entry point SHALL run its whole workflow in one bridged event loop and, at its end, SHALL release the idle connections that hold a local database file, also when the workflow raises or is cancelled; connections to networked databases SHALL stay open for later calls.
+A query engine SHALL be the only party that closes the clients it built; code that borrows a client SHALL NOT close it. Closing a query engine, synchronously or asynchronously, SHALL close every client it built, including factory clients, and SHALL release the connections those clients own (a synchronous close those on the bridge loop, an asynchronous close those on its own loop); pooled connections of the shared engine cache stay open for other clients. The clients SHALL remain usable afterwards. Every synchronous entry point SHALL run its whole workflow in one bridged event loop and, at its end, SHALL release the idle connections that hold a local database file, also when the workflow raises or is cancelled; connections to networked databases SHALL stay open for later calls.
 
 #### Scenario: Join profiling leaves the shared client open
 - **WHEN** join-cardinality profiling runs and a query on the same datasource follows on the same engine
@@ -360,7 +360,8 @@ A query engine SHALL be the only party that closes the clients it built; code th
 - **THEN** each call returns or raises its own result, and after each the idle connections holding a local database file are released
 
 #### Scenario: Closing an engine releases its synchronous connections
-- **WHEN** a query engine that served synchronous calls on a Postgres datasource is closed
+- **WHEN** a query engine that served synchronous calls on a Postgres datasource whose driver is
+  psycopg (the default) is closed
 - **THEN** no connection it opened remains open on the server
 
 ### Requirement: Live database access never blocks the event loop
