@@ -189,6 +189,68 @@ def test_interrupt_cancels_the_workflow_and_waits_for_its_cleanup() -> None:
     assert run_sync(_value(1)) == 1
 
 
+def _interrupt_scheduling(monkeypatch: pytest.MonkeyPatch, *, after: threading.Event | None) -> None:
+    """The caller's first bridge-loop scheduling is interrupted: after ``after`` is set, or before it schedules."""
+    loop = run_sync(_running_loop())
+    real, fired = loop.call_soon_threadsafe, threading.Event()
+
+    def _interrupted(callback: Any, *args: Any, **kwargs: Any) -> Any:
+        if async_utils.on_bridge_thread() or fired.is_set():
+            return real(callback, *args, **kwargs)
+        fired.set()
+        if after is None:
+            raise KeyboardInterrupt
+        real(callback, *args, **kwargs)
+        assert after.wait(_BOUND)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(loop, "call_soon_threadsafe", _interrupted)
+
+
+def test_an_interrupt_just_after_submission_cancels_the_workflow(monkeypatch: pytest.MonkeyPatch) -> None:
+    started, cancelled = threading.Event(), threading.Event()
+
+    async def _wait() -> None:
+        started.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    waiting = _wait()
+
+    def _call() -> None:
+        run_sync(waiting)
+
+    _interrupt_scheduling(monkeypatch, after=started)
+    with pytest.raises(KeyboardInterrupt):
+        _bounded(_call)
+    assert cancelled.is_set()
+    assert _bounded(lambda: run_sync(_value(2))) == 2
+
+
+def test_an_interrupt_before_submission_closes_the_workflow_unstarted(monkeypatch: pytest.MonkeyPatch) -> None:
+    ran = threading.Event()
+
+    async def _never() -> None:
+        ran.set()
+
+    workflow = _never()
+
+    def _call() -> None:
+        run_sync(workflow)
+
+    _interrupt_scheduling(monkeypatch, after=None)
+    begun = time.monotonic()
+    with pytest.raises(KeyboardInterrupt):
+        _bounded(_call)
+    assert time.monotonic() - begun < 5
+    assert workflow.cr_frame is None
+    assert not ran.is_set()
+    assert _bounded(lambda: run_sync(_value(5))) == 5
+
+
 # ---------------------------------------------------------------------------
 # Fork
 # ---------------------------------------------------------------------------
