@@ -75,8 +75,9 @@ class TestExplainStatementsPerDialect:
         assert TsqlDialect().explain_prefix is None
 
     def test_bigquery_refuses(self) -> None:
+        dialect = BigqueryDialect()
         with pytest.raises(ExplainUnsupportedError):
-            BigqueryDialect().explain_statements(_SQL)
+            dialect.explain_statements(_SQL)
 
     def test_the_refusal_is_a_value_error(self) -> None:
         assert issubclass(ExplainUnsupportedError, ValueError)

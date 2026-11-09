@@ -353,10 +353,8 @@ plus `$GCP_PROJECT_ID` for billing). The `bigquery://` driver requires the
   when you need it.
 - **SLayer timestamps are `DATETIME`.** `now()`, timestamp literals, `TRY_CAST(… AS TIMESTAMP)`, `json_value(… RETURNING TIMESTAMP)` and the date functions produce naive `DATETIME` values (UTC wall clock), and a zoned `TIMESTAMP` column, which ingestion marks with `db_type: TIMESTAMP` (re-ingest older models), reads as its UTC wall clock everywhere except as a direct comparison operand, where it stays bare (keeping partition pruning) and the other side is cast to `TIMESTAMP`.
 - **A NULL list is an empty list.** BigQuery stores a `NULL` `REPEATED` value as `[]`, so `length` returns 0, `IS NULL` is false and `count(list)` counts it where other databases see `NULL`.
-- **No native EXPLAIN.** BigQuery has no SQL-level `EXPLAIN`. The
-  `BigqueryDialect.explain_prefix` is `None`, so `engine.execute(...,
-  explain=True)` returns the dry-run SQL unchanged rather than an execution
-  plan.
+- **No native EXPLAIN.** BigQuery has no SQL-level `EXPLAIN`, so `engine.execute(..., explain=True)` raises
+  `ExplainUnsupportedError` (a `ValueError`); use `dry_run=True` to see the SQL.
 
 ## Adding a new dialect
 

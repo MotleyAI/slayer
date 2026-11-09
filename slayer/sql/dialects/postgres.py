@@ -154,7 +154,6 @@ class PostgresDialect(SqlDialect):
     identifier_folding: ClassVar[IdentifierFolding] = "lower"
     sa_backend_names: frozenset[str] = frozenset({"postgresql"})
     explain_prefix: str | None = "EXPLAIN ANALYZE"
-    explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = False
     # NAMEDATALEN: 63 usable bytes; over-length names are SILENTLY truncated.

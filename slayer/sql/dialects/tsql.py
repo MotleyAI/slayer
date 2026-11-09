@@ -217,8 +217,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         exp.DataType.Type.MONEY, exp.DataType.Type.SMALLMONEY,
     })
     sa_backend_names: frozenset[str] = frozenset({"mssql"})
-    explain_prefix: str | None = "SET SHOWPLAN_ALL ON;"
-    explain_postfix: str = "; SET SHOWPLAN_ALL OFF"
+    explain_prefix: str | None = None
     log10_native: bool = True
     log2_native: bool = False
     integer_avg: bool = True
@@ -254,6 +253,11 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         except ValueError:
             version = None
         return ServerProfile(version=version)
+
+    def explain_session(self, enabled: bool) -> Expression | None:
+        """``SET SHOWPLAN_ALL ON`` / ``OFF``: each must be the only statement in its batch."""
+        mode = exp.EQ(this=exp.column("SHOWPLAN_ALL"), expression=exp.var("ON" if enabled else "OFF"))
+        return exp.Set(expressions=[exp.SetItem(this=mode)])
 
     def _require_regex(self, fn: str) -> None:
         self.require_version(minimum=_SQL_SERVER_2025, what=f"{fn}()", release="SQL Server 2025")

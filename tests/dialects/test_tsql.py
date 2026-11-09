@@ -187,8 +187,9 @@ def test_tsql_build_covar_2arg_covar_pop_uses_varp() -> None:
 
 
 def test_tsql_build_explain_sql_refuses() -> None:
+    dialect = TsqlDialect()
     with pytest.warns(FutureWarning, match="explain_statements"), pytest.raises(ExplainUnsupportedError):
-        TsqlDialect().build_explain_sql("SELECT 1")
+        dialect.build_explain_sql("SELECT 1")
 
 
 # Outer wrap: T-SQL accepts WITH only as a statement prefix, so the chain's CTEs

@@ -402,13 +402,6 @@ def _render_probe_model(model: SlayerModel, *, dialect: SqlDialect) -> SlayerMod
     return model
 
 
-
-
-def _build_explain_sql(dialect: str, sql: str) -> str:
-    """Dialect-appropriate EXPLAIN; raises for dialects without SQL-level EXPLAIN (e.g. BigQuery)."""
-    return get_dialect(dialect).build_explain_sql(sql)
-
-
 def _stage_labels(*, stages, displays=None) -> List[str]:
     """Each stage's user-facing pointer; part of the dedup identity (distinguishes same-text stages)."""
     displays = displays or {}
@@ -1520,14 +1513,16 @@ class SlayerQueryEngine:
                     "warnings": list(prepared.slack_warnings),
                 })
 
+        # A dialect without EXPLAIN refuses before any database access.
+        explain_statements = get_dialect(prepared.dialect).explain_statements(prepared.sql) if explain else None
+
         # Miss (or cache=False) → a SQL client is required.
         client = self.client_for(prepared.datasource)
 
         # explain: run dialect-appropriate EXPLAIN on the query. NEVER cached.
-        if explain:
-            explain_sql = _build_explain_sql(dialect=prepared.dialect, sql=prepared.sql)
+        if explain_statements is not None:
             try:
-                explained = await client.execute(sql=explain_sql)
+                explained = await client.explain(explain_statements)
             except Exception as exc:
                 await self._maybe_raise_schema_drift(
                     err=exc, datasource=prepared.datasource, read_set=prepared.touched,

@@ -130,8 +130,9 @@ class TestFailures:
         db = FakeDb()
         error = _plan_error()
         db.fail(PLAN_SQL, error)
+        client, statements = _client(path, monkeypatch, db), _statements(path)
         with pytest.raises(sqlalchemy.exc.ProgrammingError) as excinfo:
-            await _client(path, monkeypatch, db).explain(_statements(path))
+            await client.explain(statements)
         assert excinfo.value is error
         assert _explain_run(db, 1) == list(_EXPLAIN)
         assert _no_commit(db)
@@ -143,8 +144,9 @@ class TestFailures:
         plan_error = _plan_error()
         db.fail(PLAN_SQL, plan_error)
         db.fail(SESSION_OFF, _off_error())
+        client, statements = _client(path, monkeypatch, db), _statements(path)
         with pytest.raises(sqlalchemy.exc.ProgrammingError) as excinfo:
-            await _client(path, monkeypatch, db).explain(_statements(path))
+            await client.explain(statements)
         assert excinfo.value is plan_error
         assert _discarded(db, 1)
         assert _no_commit(db)
@@ -155,8 +157,9 @@ class TestFailures:
         db = FakeDb()
         off_error = _off_error()
         db.fail(SESSION_OFF, off_error)
+        client, statements = _client(path, monkeypatch, db), _statements(path)
         with pytest.raises(sqlalchemy.exc.ProgrammingError) as excinfo:
-            await _client(path, monkeypatch, db).explain(_statements(path))
+            await client.explain(statements)
         assert excinfo.value is off_error
         assert _discarded(db, 1)
         assert _no_commit(db)
@@ -185,8 +188,9 @@ class TestFailures:
         async_engine = client._async_engine_here() if path == "async" else None
         evicted: list[DatasourceConfig] = []
         monkeypatch.setattr(engine_factory, "invalidate_engine", lambda ds: evicted.append(ds) or True)
+        statements = _statements(path)
         with pytest.raises(AuthenticationRefused):
-            await client.explain(_statements(path))
+            await client.explain(statements)
         if async_engine is not None:
             assert async_engine.disposed  # pyright: ignore[reportAttributeAccessIssue]
         else:
@@ -310,9 +314,10 @@ class TestOnARealConnection:
         assert (await client.execute("PRAGMA cache_size")).rows == [{"cache_size": 4321}]
 
     async def test_the_session_is_restored_after_a_failing_plan_statement(self, client: SlayerSQLClient) -> None:
+        statements = ExplainStatements(
+            statement="SELECT * FROM no_such_table", session_on=_PRAGMA_ON, session_off=_PRAGMA_OFF,
+        )
         with pytest.raises(sqlalchemy.exc.OperationalError, match="no such table"):
-            await client.explain(ExplainStatements(
-                statement="SELECT * FROM no_such_table", session_on=_PRAGMA_ON, session_off=_PRAGMA_OFF,
-            ))
+            await client.explain(statements)
         assert (await client.execute("PRAGMA cache_size")).rows == [{"cache_size": 4321}]
         assert (await client.execute("SELECT id FROM t")).rows == [{"id": 1}]

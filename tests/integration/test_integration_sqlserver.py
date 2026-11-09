@@ -53,6 +53,7 @@ from typing import Optional
 
 import pytest
 import sqlalchemy as sa
+import sqlalchemy.exc
 from tests._dev1737_fixtures import (
     DT,
     DateCase,
@@ -1912,7 +1913,7 @@ async def sqlserver_one_connection(_sqlserver_env_storage):
             engine.close()
 
 
-_EXPLAINED = SlayerQuery(source_model="orders", measures=[{"formula": "*:count"}])
+_EXPLAINED = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "*:count"}]})
 
 
 @pytest.mark.integration
@@ -1933,7 +1934,7 @@ class TestSQLServerExplain:
         engine, clients = sqlserver_one_connection
         await engine.execute(query=_EXPLAINED)
         statements = TsqlDialect().explain_statements("SELECT * FROM no_such_table")
-        with pytest.raises(sa.exc.ProgrammingError, match="no_such_table"):
+        with pytest.raises(sqlalchemy.exc.ProgrammingError, match="no_such_table"):
             await clients[0].explain(statements)
         after = await engine.execute(query=_EXPLAINED)
         assert after.data == [{"orders._count": 6}]

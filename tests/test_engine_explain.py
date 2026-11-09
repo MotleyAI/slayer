@@ -195,6 +195,7 @@ class TestTheEngineCallsExplain:
             dry = await engine.execute(_QUERY, dry_run=True)
             response = await engine.execute(_QUERY, explain=True)
             engine.close()
+        assert dry.sql is not None
         assert recorders[0].explained == [ExplainStatements(
             statement=dry.sql, session_on="SET SHOWPLAN_ALL ON", session_off="SET SHOWPLAN_ALL OFF",
         )]

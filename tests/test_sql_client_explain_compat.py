@@ -304,8 +304,9 @@ class TestAClientWrittenBeforeExplain:
             DatasourceConfig(name="lite", type="sqlite", database=":memory:"),
         )
         adapted = adapt_client(client)
+        statements = ExplainStatements(statement="SELECT 1", session_on="SET A ON", session_off="SET A OFF")
         with pytest.raises(ExplainUnsupportedError):
-            await adapted.explain(ExplainStatements(statement="SELECT 1", session_on="SET A ON", session_off="SET A OFF"))
+            await adapted.explain(statements)
         assert client.executed == []
 
     async def test_the_1_6_0_probe_adapter_composes(self, shop: Shop) -> None:

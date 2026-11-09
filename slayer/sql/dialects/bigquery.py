@@ -133,7 +133,6 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     primary_key_inspector_only: bool = True
     # BigQuery has no SQL-level EXPLAIN.
     explain_prefix: str | None = None
-    explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = False
     max_identifier_bytes: int | None = 300  # column-name limit

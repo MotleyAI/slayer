@@ -16,11 +16,11 @@
 
 ## 3. Implementation (pr-implement)
 
-- [ ] 3.1 `ExplainUnsupportedError(SlayerError)` in `slayer/core/errors.py` — verify 2.1's refusal tests pass
-- [ ] 3.2 `ExplainStatements`, `explain_session`, `explain_statements` in `slayer/sql/dialects/base.py`; `TsqlDialect` override with `explain_prefix = None`; `explain_postfix` removed; `build_explain_sql` deprecated via `warn_deprecated(..., removal="2.0")` — verify 2.1 passes
-- [ ] 3.3 `SqlClient.explain` in the Protocol; `SlayerSQLClient.explain` on the async and threaded paths with timeout, retry, typed failures, shielded switch-off and invalidation (design.md decisions 7–8) — verify 2.2 and 2.3 pass
-- [ ] 3.4 `DelegatingSqlClient.explain`; legacy route and refusal in `adapt_client` (design.md decision 10) — verify 2.4 passes
-- [ ] 3.5 Engine explain branch calls `dialect.explain_statements` then `client.explain`; `_build_explain_sql` removed — verify 2.5 passes
-- [ ] 3.6 Conformance `explain` check in `slayer/sql/conformance.py` — verify 2.6 passes
-- [ ] 3.7 Docs: `docs/configuration/sql-clients.md` (contract row, deprecated-route sentence, gateway example `explain` override); `docs/database-support.md` BigQuery sentence corrected — verify by reading the rendered pages' text
-- [ ] 3.8 Full gates: `poetry run pytest -m "not integration"`, the CI integration invocation from CLAUDE.md, `poetry run pytest tests/integration/test_integration_sqlserver.py -m integration`, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors), `poetry run la-arch-check`, `openspec validate dev-2234-sql-server-explain-fails-set-showplan-all-must --strict` — all green
+- [x] 3.1 `ExplainUnsupportedError(SlayerError)` in `slayer/core/errors.py` — verify 2.1's refusal tests pass
+- [x] 3.2 `ExplainStatements`, `explain_session`, `explain_statements` in `slayer/sql/dialects/base.py`; `TsqlDialect` override with `explain_prefix = None`; `explain_postfix` removed; `build_explain_sql` deprecated via `warn_deprecated(..., removal="2.0")` — verify 2.1 passes
+- [x] 3.3 `SqlClient.explain` in the Protocol; `SlayerSQLClient.explain` on the async and threaded paths with timeout, retry, typed failures, shielded switch-off and invalidation (design.md decisions 7–8) — verify 2.2 and 2.3 pass
+- [x] 3.4 `DelegatingSqlClient.explain`; legacy route and refusal in `adapt_client` (design.md decision 10) — verify 2.4 passes
+- [x] 3.5 Engine explain branch calls `dialect.explain_statements` then `client.explain`; `_build_explain_sql` removed — verify 2.5 passes
+- [x] 3.6 Conformance `explain` check in `slayer/sql/conformance.py` — verify 2.6 passes
+- [x] 3.7 Docs: `docs/configuration/sql-clients.md` (contract row, deprecated-route sentence, gateway example `explain` override); `docs/database-support.md` BigQuery sentence corrected — verify by reading the rendered pages' text
+- [x] 3.8 Full gates: `poetry run pytest -m "not integration"`, the CI integration invocation from CLAUDE.md, `poetry run pytest tests/integration/test_integration_sqlserver.py -m integration`, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors), `poetry run la-arch-check`, `openspec validate dev-2234-sql-server-explain-fails-set-showplan-all-must --strict` — all green

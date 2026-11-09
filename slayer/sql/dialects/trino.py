@@ -71,7 +71,6 @@ class PrestoFamilyDialect(SqlDialect):
     sqlglot_name: str = "presto"
     array_cast_types: ClassVar[bool] = True
     explain_prefix: str | None = "EXPLAIN ANALYZE"
-    explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
     max_identifier_bytes: int | None = None  # unbounded
