@@ -47,4 +47,4 @@
 
 ## 8. Tracker (review stage, at merge)
 
-- [ ] 8.1 Pointer comments: DEV-2212 (system Principle 8 is now semantics Law 7; `slayer/engine/population/`), DEV-2216 (`slayer/engine/cardinality/`), DEV-2231 (`slayer/live_schema/`, tripwire paths)
+- [x] 8.1 Pointer comments: DEV-2212 (system Principle 8 is now semantics Law 7; `slayer/engine/population/`), DEV-2216 (`slayer/engine/cardinality/`), DEV-2231 (`slayer/live_schema/`, tripwire paths)
