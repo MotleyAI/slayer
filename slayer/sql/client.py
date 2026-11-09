@@ -5,6 +5,7 @@ import concurrent.futures
 import contextlib
 import functools
 import logging
+import os
 import re
 import threading
 import time
@@ -99,17 +100,24 @@ _LITERAL_TOKENS = frozenset({
 })
 
 
-def _statement_leads(sql: str, *, dialect: SqlDialect) -> list[tuple[str, ...]]:
-    """Each ``;``-separated statement's first two words, upper-cased; a literal or quoted name reads as ``""``."""
-    statements: list[list[str]] = [[]]
+# Keywords that make a statement leading with a read keyword (a ``WITH``) write.
+_WRITE_TOKENS = frozenset({TokenType.INSERT, TokenType.UPDATE, TokenType.DELETE, TokenType.MERGE})
+
+
+def _statement_leads(sql: str, *, dialect: SqlDialect) -> list[tuple[tuple[str, ...], bool]]:
+    """Each ``;``-separated statement's first two words, upper-cased (a literal or quoted name reads as ``""``),
+    and whether it holds a write keyword."""
+    statements: list[tuple[list[str], list[bool]]] = [([], [False])]
     for token in SqlglotDialect.get_or_raise(dialect.sqlglot_name).tokenize(sql):
         if token.token_type is TokenType.SEMICOLON:
-            statements.append([])
+            statements.append(([], [False]))
             continue
-        words = statements[-1]
+        words, writes = statements[-1]
         if len(words) < 2:
             words.append("" if token.token_type in _LITERAL_TOKENS else token.text.upper())
-    return [tuple(words) for words in statements if words]
+        if token.token_type in _WRITE_TOKENS:
+            writes[0] = True
+    return [(tuple(words), writes[0]) for words, writes in statements if words]
 
 
 def admit_statement(sql: str, *, dialect: SqlDialect) -> bool:
@@ -118,14 +126,14 @@ def admit_statement(sql: str, *, dialect: SqlDialect) -> bool:
         leads = _statement_leads(sql, dialect=dialect)
     except SqlglotError as exc:
         raise SessionStatementRefused(f"The SQL client cannot split this text into statements: {exc}") from exc
-    for lead in leads:
+    for lead, _writes in leads:
         refused = next((words for words in _SESSION_LEADS if lead[:len(words)] == words), None)
         if refused is not None:
             raise SessionStatementRefused(
                 f"The SQL client refuses {' '.join(refused)} statements: session state and transactions "
                 "are managed by SLayer.",
             )
-    return not all(lead[0] in _READ_LEADS for lead in leads)
+    return any(writes or lead[0] not in _READ_LEADS for lead, writes in leads)
 
 
 class UnparseableTypeProbeError(ValueError):
@@ -285,6 +293,17 @@ _profile_locks: "weakref.WeakKeyDictionary[Any, Any]" = weakref.WeakKeyDictionar
 _profile_locks_guard = threading.Lock()
 
 
+def _fresh_profile_locks() -> None:
+    """In a forked child: the parent's profile locks may be held, so start over."""
+    global _profile_locks_guard
+    _profile_locks_guard = threading.Lock()
+    _profile_locks.clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_fresh_profile_locks)
+
+
 def _profile_lock(engine: Any, factory: Callable[[], Any]) -> Any:
     with _profile_locks_guard:
         lock = _profile_locks.get(engine)
@@ -412,8 +431,8 @@ def _set_timeout(
     if sql is not None:
         try:
             _exec_verbatim(conn, sql)
-        except sqlalchemy.exc.DBAPIError:
-            if not dialect.statement_timeout_best_effort:
+        except sqlalchemy.exc.DBAPIError as exc:
+            if exc.connection_invalidated or not dialect.statement_timeout_best_effort:
                 raise
             rejected = True
             if transaction_local:
@@ -434,8 +453,8 @@ async def _set_timeout_async(
     if sql is not None:
         try:
             await _exec_verbatim_async(conn, sql)
-        except sqlalchemy.exc.DBAPIError:
-            if not dialect.statement_timeout_best_effort:
+        except sqlalchemy.exc.DBAPIError as exc:
+            if exc.connection_invalidated or not dialect.statement_timeout_best_effort:
                 raise
             rejected = True
             if transaction_local:
@@ -843,14 +862,17 @@ class SlayerSQLClient:
         connection_policy.check_transaction_pooler_backend(ds, url=conn_str)
         load_driver(ds, conn_str, dialect=self._dialect, is_async=True)
         self._warn_bundled_driver(make_url(conn_str))
-        engine = create_async_engine(conn_str, **connection_policy.engine_kwargs(
+        built = create_async_engine(conn_str, **connection_policy.engine_kwargs(
             url=conn_str, dialect=self._dialect, datasource=ds, is_async=True,
         ))
         with self._async_lock:
-            self._async_engines[loop] = engine
-            if async_utils.is_bridge_loop(loop):
+            engine = self._async_engines.setdefault(loop, built)
+            if engine is built and async_utils.is_bridge_loop(loop):
                 token = async_utils.register_shutdown(engine.dispose)
-                self._bridge_release = weakref.finalize(self, _release_bridge_engine, engine, token)
+                if token is not None:
+                    self._bridge_release = weakref.finalize(self, _release_bridge_engine, engine, token)
+        if engine is not built:
+            _abandon([built])  # a concurrent first use built the loop's engine; this one never connected
         return engine
 
     def _get_sync_engine_for_client(self) -> sa.Engine:
@@ -1186,7 +1208,10 @@ class SlayerSQLClient:
 
     async def release_local_connections(self) -> None:
         """End of a synchronous workflow: free idle connections holding a local database file; networked
-        connections stay open for later calls."""
+        connections stay open for later calls. A private loop (a nested call) ends here, so it is fully released."""
+        if not async_utils.is_bridge_loop(asyncio.get_running_loop()):
+            await self.aclose()
+            return
         if self._sync_engine is not None and self._sync_engine_owner == "factory":
             engine_factory.release_idle(self._sync_engine)
         with self._async_lock:
@@ -1223,15 +1248,16 @@ _TRANSIENT_DB_ERROR_SIGNALS = (
 )
 
 
-def _is_transient_db_error(exc: BaseException) -> bool:
+def _is_transient_db_error(exc: BaseException, *, writes: bool = False) -> bool:
     """True only for DB errors worth retrying.
 
     OperationalError is too broad (spans schema errors); match transient signals
-    in exc.orig. DisconnectionError, and an error SQLAlchemy read as a lost connection, are always transient.
+    in exc.orig. DisconnectionError is always transient; so is an error SQLAlchemy read as a lost connection,
+    unless the statement ``writes`` (it may have been applied).
     """
     if isinstance(exc, sqlalchemy.exc.DisconnectionError):
         return True
-    if isinstance(exc, sqlalchemy.exc.DBAPIError) and exc.connection_invalidated:
+    if isinstance(exc, sqlalchemy.exc.DBAPIError) and exc.connection_invalidated and not writes:
         return True
     msg = str(getattr(exc, "orig", exc)).lower()
     return any(sig in msg for sig in _TRANSIENT_DB_ERROR_SIGNALS)
@@ -1342,6 +1368,7 @@ async def _retry_with_backoff(
     max_attempts: int,
     initial_delay: float,
     max_delay: float,
+    writes: bool = False,
 ) -> ExecutionResult:
     """Retry an async DB call with exponential backoff on transient errors.
 
@@ -1353,7 +1380,7 @@ async def _retry_with_backoff(
         try:
             return await do_call()
         except _RETRYABLE_ERRORS as exc:
-            _log_transient_or_raise(exc=exc, sql=sql, attempt=attempt, delay=delay)
+            _log_transient_or_raise(exc=exc, sql=sql, attempt=attempt, delay=delay, writes=writes)
             await asyncio.sleep(delay)
             delay = min(delay * 2, max_delay)
     return await do_call()
@@ -1367,9 +1394,9 @@ def _check_max_attempts(max_attempts: int) -> None:
 _RETRYABLE_ERRORS = (sqlalchemy.exc.OperationalError, sqlalchemy.exc.DisconnectionError)
 
 
-def _log_transient_or_raise(*, exc: Exception, sql: str, attempt: int, delay: float) -> None:
+def _log_transient_or_raise(*, exc: Exception, sql: str, attempt: int, delay: float, writes: bool = False) -> None:
     """Re-raise a non-transient error; log the retry of a transient one."""
-    if not _is_transient_db_error(exc):
+    if not _is_transient_db_error(exc, writes=writes):
         raise exc
     sql_lines = (sql or "").strip().splitlines()
     sql_excerpt = sql_lines[0][:120] if sql_lines else _EMPTY_SQL_PLACEHOLDER
@@ -1397,6 +1424,7 @@ async def _execute_with_retry_async(
             sql=sql, engine=engine, db_type=db_type, timeout_seconds=timeout_seconds,
             datasource_name=datasource_name, transaction_local=transaction_local, writes=writes,
         ),
+        writes=writes,
         max_attempts=max_attempts,
         initial_delay=initial_delay,
         max_delay=max_delay,
@@ -1457,6 +1485,7 @@ async def _execute_with_retry_threaded(
             transaction_local=transaction_local,
             writes=writes,
         ),
+        writes=writes,
         max_attempts=max_attempts,
         initial_delay=initial_delay,
         max_delay=max_delay,
@@ -1494,7 +1523,7 @@ def _execute_with_retry_sync(
         try:
             return _call()
         except _RETRYABLE_ERRORS as exc:
-            _log_transient_or_raise(exc=exc, sql=sql, attempt=attempt, delay=delay)
+            _log_transient_or_raise(exc=exc, sql=sql, attempt=attempt, delay=delay, writes=writes)
             time.sleep(delay)
             delay = min(delay * 2, max_delay)
     return _call()

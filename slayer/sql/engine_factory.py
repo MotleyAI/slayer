@@ -335,7 +335,10 @@ def reset_cache() -> None:
 
 
 def _forget_parent_pools() -> None:
-    """In a forked child: drop inherited pools without closing the parent's connections."""
+    """In a forked child: a fresh cache lock (the parent's may be held), and inherited pools dropped without
+    closing the parent's connections."""
+    global _cache_lock
+    _cache_lock = threading.Lock()
     for engine in list(_engine_cache.values()):
         engine.dispose(close=False)
 

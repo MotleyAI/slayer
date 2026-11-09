@@ -12,7 +12,8 @@ import pytest
 from slayer.core.models import DatasourceConfig
 from slayer.sql import client as sql_client
 from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient, SqlClientError
+from slayer.sql.client import SlayerSQLClient, SqlClientError, admit_statement
+from slayer.sql.dialects import PostgresDialect
 
 _URLS = {
     "postgres": "postgresql+psycopg://u@db.invalid/d",
@@ -132,3 +133,16 @@ def test_duckdb_writes_are_committed(tmp_path: Path, path: str) -> None:
         engine_factory.reset_cache()
     with duckdb.connect(str(db), read_only=True) as conn:
         assert conn.execute("SELECT count(*) FROM t").fetchone() == (2,)
+
+
+@pytest.mark.parametrize(
+    ("sql", "writes"),
+    [
+        ("WITH d AS (DELETE FROM t WHERE x = 1 RETURNING x) SELECT * FROM d", True),
+        ("WITH n AS (SELECT 1 AS x) INSERT INTO t SELECT x FROM n", True),
+        ("WITH n AS (SELECT 1 AS x) SELECT x FROM n", False),
+        ("SELECT 'DELETE' AS \"UPDATE\"", False),
+    ],
+)
+def test_a_cte_that_writes_is_committed(sql: str, writes: bool) -> None:
+    assert admit_statement(sql, dialect=PostgresDialect()) is writes

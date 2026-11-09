@@ -364,6 +364,97 @@ def test_shutdown_is_idempotent_and_stops_the_bridge() -> None:
     assert "ResourceWarning" not in proc.stderr
 
 
+_SHUTDOWN_CANCELS_SCRIPT = textwrap.dedent("""
+    import asyncio, threading
+    from slayer import async_utils
+
+    started, outcome = threading.Event(), []
+
+    async def _wait():
+        started.set()
+        await asyncio.sleep(60)
+
+    def _call():
+        try:
+            async_utils.run_sync(_wait())
+        except BaseException as exc:
+            outcome.append(type(exc).__name__)
+
+    caller = threading.Thread(target=_call, daemon=True)
+    caller.start()
+    assert started.wait(10)
+    async_utils.shutdown_bridge()
+    caller.join(10)
+    assert not caller.is_alive(), "the caller still waits on a stopped loop"
+    print(outcome)
+""")
+
+
+def test_shutdown_cancels_a_running_workflow() -> None:
+    proc = subprocess.run(
+        [sys.executable, "-c", _SHUTDOWN_CANCELS_SCRIPT], cwd=str(REPO), capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "['CancelledError']"
+
+
+_SHUTDOWN_OUTLASTED_SCRIPT = textwrap.dedent("""
+    import asyncio, threading
+    from slayer import async_utils
+
+    async_utils._CLEANUP_SECONDS = 0.5
+    started, outcome = threading.Event(), []
+
+    async def _stubborn():
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            await asyncio.sleep(60)
+
+    def _call():
+        try:
+            async_utils.run_sync(_stubborn())
+        except BaseException as exc:
+            outcome.append(type(exc).__name__)
+
+    caller = threading.Thread(target=_call, daemon=True)
+    caller.start()
+    assert started.wait(10)
+    async_utils.shutdown_bridge()
+    caller.join(10)
+    assert not caller.is_alive(), "the caller waits on a workflow shutdown abandoned"
+    print(outcome)
+""")
+
+
+def test_shutdown_releases_a_caller_whose_workflow_outlasts_it() -> None:
+    proc = subprocess.run(
+        [sys.executable, "-c", _SHUTDOWN_OUTLASTED_SCRIPT], cwd=str(REPO), capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "['CancelledError']"
+
+
+def test_no_shutdown_callback_is_taken_while_shutdown_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _release() -> None:
+        return None
+
+    monkeypatch.setattr(async_utils._bridge, "closing", True)
+    assert async_utils.register_shutdown(_release) is None
+
+
+def test_shutdown_from_the_bridge_thread_is_a_no_op() -> None:
+    loop = run_sync(_running_loop())
+
+    async def _shut_down_from_inside() -> None:
+        async_utils.shutdown_bridge()
+
+    run_sync(_shut_down_from_inside())
+    assert run_sync(_running_loop()) is loop
+    assert loop.is_running()
+
+
 def test_session_leak_gate_shuts_the_bridge_down(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
     monkeypatch.setattr(async_utils, "shutdown_bridge", lambda: calls.append("bridge"), raising=False)

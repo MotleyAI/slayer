@@ -10,7 +10,7 @@ import time
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import psycopg
 import pytest
@@ -25,7 +25,7 @@ from slayer.sql import client as sql_client
 from slayer.sql import engine_factory
 from slayer.sql.client import DelegatingSqlClient, SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._engine_helpers import disposable_engine
+from tests._engine_helpers import disposable_engine, plant_async_engine
 from tests._pg_helpers import pg_database
 from tests._pg_statement_log import LOGGED_POSTGRES_OPTIONS, ServerLog
 
@@ -352,3 +352,17 @@ async def test_a_delegating_client_forwards_the_release() -> None:
     inner = _ReleaseRecorder()
     await DelegatingSqlClient(inner).release_local_connections()  # pyright: ignore[reportArgumentType]
     assert inner.releases == 1
+
+
+def test_release_on_a_private_loop_disposes_its_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A loop other than the bridge's ends with its workflow, so nothing it built may outlive it."""
+    client = SlayerSQLClient(DatasourceConfig(name="pg", type="postgres", host="db.invalid", database="d"))
+    fake = MagicMock()
+    fake.dispose = AsyncMock()
+
+    async def _go() -> None:
+        plant_async_engine(monkeypatch, client, fake)
+        await client.release_local_connections()
+
+    asyncio.run(_go())
+    fake.dispose.assert_awaited_once()

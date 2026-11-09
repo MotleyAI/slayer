@@ -222,3 +222,22 @@ class TestAsyncEngineDisposal:
         assert client._sync_engine is sync_engine_first, (
             "_sync_engine rebuilt — :memory: data would be lost"
         )
+
+
+async def test_a_concurrent_first_use_converges_on_one_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _pg_client()
+    built: list[MagicMock] = []
+    inner: list[Any] = []
+
+    def _create(*_a: Any, **_k: Any) -> MagicMock:
+        engine = _fake_async_engine()
+        built.append(engine)
+        if len(built) == 1:  # another first use on this loop finishes while this one builds
+            inner.append(client._get_async_engine())
+        return engine
+
+    monkeypatch.setattr(sql_client, "create_async_engine", _create)
+    outer = client._get_async_engine()
+    assert outer is inner[0] is built[1]
+    assert client._get_async_engine() is outer
+    built[0].sync_engine.dispose.assert_called_once_with(close=False)

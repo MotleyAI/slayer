@@ -9,7 +9,9 @@ connections opened by one call serve the next.
 import asyncio
 import atexit
 import concurrent.futures
+import contextlib
 import contextvars
+import functools
 import inspect
 import logging
 import os
@@ -45,6 +47,8 @@ class _Bridge:
         self.closing = False
         self.on_shutdown: dict[int, ShutdownCallback] = {}
         self.next_token = 0
+        # Outcomes of the workflows submitted and not yet finished; shutdown fails any it leaves behind.
+        self.in_flight: set[concurrent.futures.Future[Any]] = set()
 
 
 _bridge = _Bridge()
@@ -66,22 +70,18 @@ def _serve_forever(loop: asyncio.AbstractEventLoop, ready: threading.Event) -> N
     loop.run_forever()
 
 
-def _bridge_loop() -> asyncio.AbstractEventLoop:
-    """The running bridge loop, started on first use."""
-    bridge = _bridge
-    with bridge.lock:
-        if bridge.closing:
-            raise RuntimeError("The SLayer bridge event loop is shutting down.")
-        if bridge.loop is None or bridge.thread is None or not bridge.thread.is_alive():
-            loop = asyncio.new_event_loop()
-            ready = threading.Event()
-            thread = threading.Thread(
-                target=_serve_forever, args=(loop, ready), name="slayer-bridge", daemon=True,
-            )
-            thread.start()
-            ready.wait()
-            bridge.loop, bridge.thread = loop, thread
-        return bridge.loop
+def _bridge_loop_locked(bridge: _Bridge) -> asyncio.AbstractEventLoop:
+    """The running bridge loop, started on first use (callers hold ``bridge.lock``)."""
+    if bridge.loop is None or bridge.thread is None or not bridge.thread.is_alive():
+        loop = asyncio.new_event_loop()
+        ready = threading.Event()
+        thread = threading.Thread(
+            target=_serve_forever, args=(loop, ready), name="slayer-bridge", daemon=True,
+        )
+        thread.start()
+        ready.wait()
+        bridge.loop, bridge.thread = loop, thread
+    return bridge.loop
 
 
 def on_bridge_thread() -> bool:
@@ -93,10 +93,13 @@ def is_bridge_loop(loop: asyncio.AbstractEventLoop) -> bool:
     return loop is _bridge.loop
 
 
-def register_shutdown(callback: ShutdownCallback) -> int:
-    """Run ``callback`` on the bridge loop at bridge shutdown; returns a token for ``unregister_shutdown``."""
+def register_shutdown(callback: ShutdownCallback) -> int | None:
+    """Run ``callback`` on the bridge loop at bridge shutdown; returns a token for ``unregister_shutdown``,
+    or ``None`` while shutdown runs (the caller releases the resource itself)."""
     bridge = _bridge
     with bridge.lock:
+        if bridge.closing:
+            return None
         bridge.next_token += 1
         bridge.on_shutdown[bridge.next_token] = callback
         return bridge.next_token
@@ -122,6 +125,11 @@ def call_on_bridge(work: Callable[[], Coroutine[Any, Any, None]]) -> None:
         logger.warning("A bridge-loop release failed.", exc_info=True)
 
 
+def _settled(bridge: _Bridge, done: "concurrent.futures.Future[Any]") -> None:
+    with bridge.lock:
+        bridge.in_flight.discard(done)
+
+
 async def _contained(coro: Coroutine[Any, Any, T]) -> tuple[bool, Any]:
     """``coro``'s result, or the ``SystemExit`` / ``KeyboardInterrupt`` it raised, which would otherwise stop the loop."""
     try:
@@ -132,7 +140,6 @@ async def _contained(coro: Coroutine[Any, Any, T]) -> tuple[bool, Any]:
 
 def _submit(coro: Coroutine[Any, Any, T], context: contextvars.Context) -> tuple["concurrent.futures.Future[T]", Callable[[], None]]:
     """Start ``coro`` on the bridge loop in ``context``; returns its outcome and a thread-safe cancel."""
-    loop = _bridge_loop()
     done: concurrent.futures.Future[T] = concurrent.futures.Future()
     started: list[asyncio.Task[tuple[bool, Any]]] = []
     cancelled = threading.Event()
@@ -160,7 +167,15 @@ def _submit(coro: Coroutine[Any, Any, T], context: contextvars.Context) -> tuple
         if started:
             loop.call_soon_threadsafe(started[0].cancel)
 
-    loop.call_soon_threadsafe(_start)
+    bridge = _bridge
+    with bridge.lock:  # scheduled before any shutdown starts, which then cancels it
+        if bridge.closing:
+            coro.close()
+            raise RuntimeError("The SLayer bridge event loop is shutting down.")
+        loop = _bridge_loop_locked(bridge)
+        bridge.in_flight.add(done)
+        done.add_done_callback(functools.partial(_settled, bridge))
+        loop.call_soon_threadsafe(_start)
     return done, _cancel
 
 
@@ -251,7 +266,14 @@ def run_sync_on_caller_thread(coro: Coroutine[Any, Any, T]) -> T:
     return run_sync(coro)
 
 
-async def _run_shutdown_callbacks(callbacks: list[ShutdownCallback]) -> None:
+async def _wind_down(callbacks: list[ShutdownCallback]) -> None:
+    """Cancel the workflows still running, then run the shutdown callbacks."""
+    current = asyncio.current_task()
+    pending = [task for task in asyncio.all_tasks() if task is not current]
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.wait(pending, timeout=_CLEANUP_SECONDS)
     for callback in callbacks:
         try:
             await callback()
@@ -260,27 +282,31 @@ async def _run_shutdown_callbacks(callbacks: list[ShutdownCallback]) -> None:
 
 
 def shutdown_bridge() -> None:
-    """Dispose the bridge's resources on its loop, then stop and join it (idempotent)."""
+    """Cancel the bridge's workflows, dispose its resources on its loop, then stop and join it (idempotent;
+    a no-op on the bridge thread itself)."""
     bridge = _bridge
     with bridge.lock:
-        if bridge.loop is None or bridge.closing:
+        if bridge.loop is None or bridge.closing or bridge.thread is threading.current_thread():
             return
         bridge.closing = True
         loop, thread = bridge.loop, bridge.thread
         callbacks = list(bridge.on_shutdown.values())
         bridge.on_shutdown.clear()
+        in_flight = list(bridge.in_flight)
     try:
-        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+        if thread is not None and thread.is_alive():
             try:
-                asyncio.run_coroutine_threadsafe(_run_shutdown_callbacks(callbacks), loop).result(timeout=_CLEANUP_SECONDS)
+                asyncio.run_coroutine_threadsafe(_wind_down(callbacks), loop).result(timeout=2 * _CLEANUP_SECONDS)
             except Exception:
                 logger.warning("Bridge shutdown did not finish its releases.", exc_info=True)
             loop.call_soon_threadsafe(loop.stop)
-            if thread is not None:
-                thread.join(timeout=_CLEANUP_SECONDS)
+            thread.join(timeout=_CLEANUP_SECONDS)
             if not loop.is_running():
                 loop.close()
     finally:
+        for done in in_flight:  # a workflow its cancellation did not end in time: its caller must not wait on
+            with contextlib.suppress(concurrent.futures.InvalidStateError):
+                done.set_exception(asyncio.CancelledError("the SLayer bridge event loop shut down"))
         with bridge.lock:
             bridge.loop, bridge.thread, bridge.closing = None, None, False
 

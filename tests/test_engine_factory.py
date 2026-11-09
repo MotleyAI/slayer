@@ -18,6 +18,9 @@ import asyncio
 import gc
 import json
 import logging
+import os
+import select
+import signal
 import sqlite3
 import sys
 import threading
@@ -934,3 +937,31 @@ class TestInMemoryFactoryCoherence:
         if _ON_313:
             unclosed = [w for w in caught if "unclosed database" in str(w.message).lower()]
             assert not unclosed, [str(w.message) for w in unclosed]
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX fork")
+@pytest.mark.filterwarnings("ignore:.*fork.*:DeprecationWarning")
+def test_a_child_forked_while_the_cache_lock_is_held_can_build_engines(tmp_path) -> None:
+    ds = DatasourceConfig(name="f", type="sqlite", database=str(tmp_path / "fork.db"))
+    read_fd, write_fd = os.pipe()
+    with engine_factory._cache_lock:
+        pid = os.fork()
+        if pid == 0:  # pragma: no cover - child
+            try:
+                os.close(read_fd)
+                with engine_factory.get_engine(ds).connect() as conn:
+                    conn.exec_driver_sql("SELECT 1")
+                os.write(write_fd, b"ok")
+            finally:
+                os._exit(0)
+    os.close(write_fd)
+    try:
+        ready, _, _ = select.select([read_fd], [], [], 15)
+        if not ready:
+            os.kill(pid, signal.SIGKILL)
+        report = os.read(read_fd, 64) if ready else b"child deadlocked"
+    finally:
+        os.close(read_fd)
+        os.waitpid(pid, 0)
+        engine_factory.invalidate_engine(ds)
+    assert report == b"ok"

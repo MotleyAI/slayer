@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import warnings
 from collections.abc import Callable
 from typing import Any
@@ -310,3 +311,15 @@ def test_pooler_rejection_rolls_back(monkeypatch, run: Runner) -> None:
     assert rec.log == ["SET LOCAL statement_timeout = 120000", ROLLBACK, SQL]
     assert isinstance(results[0], ExecutionResult)
     assert results[0].warnings == [StatementTimeoutSkippedWarning.model_validate({"datasource": "pg_ds", **_SKIP})]
+
+
+def test_a_lost_connection_during_the_timeout_is_not_a_rejection(monkeypatch, run: Runner) -> None:
+    """Best-effort covers a rejected setting, never a dead connection: the error reaches the retry."""
+    rec = Recorder()
+    rec.install(monkeypatch)
+    rec.link.reject = sqlalchemy.exc.OperationalError("SET", {}, Exception("server closed"), connection_invalidated=True)
+    for name in ("_execute_with_retry_sync", "_execute_with_retry_threaded", "_execute_with_retry_async"):
+        monkeypatch.setattr(sql_client, name, functools.partial(getattr(sql_client, name), max_attempts=1))
+    results = run(_client("postgres"), [(SQL, 120)])
+    assert isinstance(results[0], sqlalchemy.exc.OperationalError)
+    assert rec.statements() == [_timeout_sql("postgres", 120)]
