@@ -337,6 +337,9 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         )
         self._forget_raw(data_source=data_source, name=name)
 
+    async def _raw_datasource_dicts(self) -> dict[str, dict]:
+        return dict(await asyncio.to_thread(self._raw_rows_sync, "SELECT name, data FROM datasources ORDER BY name"))
+
     async def _write_raw_datasource_dict(self, *, name: str, data: dict) -> None:
         await asyncio.to_thread(self._update_sync, "UPDATE datasources SET data = ? WHERE name = ?", (json.dumps(data), name))
 
