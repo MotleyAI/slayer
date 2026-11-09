@@ -18,4 +18,4 @@
 - [x] 3.1 `poetry run pytest -m "not integration"` passes in full.
 - [x] 3.2 `poetry run ruff check slayer/ tests/` and `poetry run basedpyright` (no new errors vs baseline) pass.
 - [x] 3.3 `poetry run la-arch-check` passes.
-- [ ] 3.4 The PR targets `1.x`, not `main`.
+- [x] 3.4 The PR targets `1.x`, not `main`.
