@@ -700,10 +700,10 @@ class StorageBackend(ABC):
     async def _with_library_granularities_renamed(self, *, name: str, data: Any) -> Any:
         """A stored datasource dict with each granularity a library name reserves renamed, its dependants persisted
         before it so an interrupted rename converges."""
-        if not isinstance(data, dict):
+        granularities = data.get("granularities") if isinstance(data, dict) else None
+        if not isinstance(granularities, list):
             return data
-        names = [g["name"] for g in data.get("granularities") or [] if isinstance(g, dict)
-                 and isinstance(g.get("name"), str)]
+        names = [g["name"] for g in granularities if isinstance(g, dict) and isinstance(g.get("name"), str)]
         renames = granularity_renames(names)
         if not renames:
             return data

@@ -186,6 +186,9 @@ _BROKEN_DATASOURCES = {
     "unparseable": {"yaml": "name: [unclosed\n", "sqlite": "{not json"},
     "non-mapping": {backend: _serialized(backend=backend, doc=["contains"]) for backend in BACKENDS},
     "invalid-mapping": {backend: _serialized(backend=backend, doc=_INVALID_DATASOURCE) for backend in BACKENDS},
+    "non-list-granularities": {
+        backend: _serialized(backend=backend, doc={**_INVALID_DATASOURCE, "granularities": 42}) for backend in BACKENDS
+    },
 }
 
 
