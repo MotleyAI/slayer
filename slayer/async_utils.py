@@ -13,6 +13,7 @@ import contextlib
 import contextvars
 import functools
 import inspect
+import itertools
 import logging
 import os
 import queue
@@ -47,12 +48,14 @@ class _Bridge:
         self.thread: threading.Thread | None = None
         self.closing = False
         self.on_shutdown: dict[int, ShutdownCallback] = {}
-        self.next_token = 0
         # Outcomes of the workflows submitted and not yet finished; shutdown fails any it leaves behind.
         self.in_flight: set[concurrent.futures.Future[Any]] = set()
 
 
 _bridge = _Bridge()
+
+# Shutdown tokens; a forked child keeps counting, so never reissues a parent's.
+_tokens = itertools.count(1)
 
 
 def _reset_after_fork() -> None:
@@ -101,9 +104,9 @@ def register_shutdown(callback: ShutdownCallback) -> int | None:
     with bridge.lock:
         if bridge.closing:
             return None
-        bridge.next_token += 1
-        bridge.on_shutdown[bridge.next_token] = callback
-        return bridge.next_token
+        token = next(_tokens)
+        bridge.on_shutdown[token] = callback
+        return token
 
 
 def unregister_shutdown(token: int) -> bool:
