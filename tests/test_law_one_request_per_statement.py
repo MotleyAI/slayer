@@ -207,13 +207,40 @@ def test_fresh_connection_is_not_pinged(postgresql_logged: Any, driver: str, mon
 # ---------------------------------------------------------------------------
 
 
+def _pre_ping_values(tree: ast.AST) -> list[ast.expr]:
+    """Values given to ``pool_pre_ping`` as a keyword, a dict entry or a subscript assignment."""
+    values: list[ast.expr] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.keyword) and node.arg == "pool_pre_ping":
+            values.append(node.value)
+        elif isinstance(node, ast.Dict):
+            values.extend(v for k, v in zip(node.keys, node.values) if isinstance(k, ast.Constant) and k.value == "pool_pre_ping")
+        elif isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Subscript) and isinstance(t.slice, ast.Constant) and t.slice.value == "pool_pre_ping"
+            for t in node.targets
+        ):
+            values.append(node.value)
+    return [v for v in values if not (isinstance(v, ast.Constant) and v.value is False)]
+
+
 def _pool_pre_ping_sites() -> list[str]:
-    sites: list[str] = []
-    for path in sorted((REPO / "slayer").rglob("*.py")):
-        for node in ast.walk(ast.parse(path.read_text())):
-            if isinstance(node, ast.keyword) and node.arg == "pool_pre_ping":
-                sites.append(f"{path.relative_to(REPO).as_posix()}:{node.value.lineno}")
-    return sites
+    return [
+        f"{path.relative_to(REPO).as_posix()}:{value.lineno}"
+        for path in sorted((REPO / "slayer").rglob("*.py"))
+        for value in _pre_ping_values(ast.parse(path.read_text(encoding="utf-8")))
+    ]
+
+
+@pytest.mark.parametrize(("source", "found"), [
+    ("create_engine(url, pool_pre_ping=True)", 1),
+    ("kwargs = {'pool_pre_ping': True}", 1),
+    ("kwargs['pool_pre_ping'] = flag", 1),
+    ("kwargs.update(pool_pre_ping=True)", 1),
+    ("dict(pool_pre_ping=True)", 1),
+    ("create_engine(url, pool_pre_ping=False)", 0),
+])
+def test_the_pre_ping_scan_sees_every_spelling(source: str, found: int) -> None:
+    assert len(_pre_ping_values(ast.parse(source))) == found
 
 
 def test_no_engine_pings_on_every_checkout() -> None:

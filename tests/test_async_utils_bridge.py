@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import os
 import select
@@ -228,6 +229,32 @@ def test_an_interrupt_just_after_submission_cancels_the_workflow(monkeypatch: py
         _bounded(_call)
     assert cancelled.is_set()
     assert _bounded(lambda: run_sync(_value(2))) == 2
+
+
+def test_cleanup_after_an_interrupt_is_bounded_overall(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A workflow that ignores cancellation and keeps queueing caller-thread work cannot hold the caller."""
+    started, stop = threading.Event(), threading.Event()
+
+    async def _stubborn() -> None:
+        started.set()
+        while not stop.is_set():
+            with contextlib.suppress(asyncio.CancelledError):
+                await on_caller_thread(lambda: time.sleep(0.05))
+
+    workflow = _stubborn()
+
+    def _call() -> None:
+        run_sync(workflow)
+
+    monkeypatch.setattr(async_utils, "_CLEANUP_SECONDS", 0.5)
+    _interrupt_scheduling(monkeypatch, after=started)
+    begun = time.monotonic()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            _bounded(_call)
+    finally:
+        stop.set()
+    assert time.monotonic() - begun < 5
 
 
 def test_an_interrupt_before_submission_closes_the_workflow_unstarted(monkeypatch: pytest.MonkeyPatch) -> None:

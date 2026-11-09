@@ -18,6 +18,7 @@ import os
 import queue
 import sys
 import threading
+import time
 from typing import Any, TypeVar
 from collections.abc import Awaitable, Callable, Coroutine
 
@@ -201,18 +202,17 @@ def _await_interruptibly(workflow: _Workflow, *, serve: "queue.SimpleQueue[_Call
         return workflow.done.result()
     except BaseException:
         if workflow.cancel():
-            _serve_caller_calls(serve, until=workflow.done)
+            _serve_caller_calls(serve, bounded=True)
         raise
 
 
-def _serve_caller_calls(
-    calls: "queue.SimpleQueue[_CallerCall | None]", *, until: "concurrent.futures.Future[Any] | None" = None,
-) -> None:
-    """Run queued ``on_caller_thread`` calls here until the workflow ends (bounded when ``until`` is given)."""
+def _serve_caller_calls(calls: "queue.SimpleQueue[_CallerCall | None]", *, bounded: bool = False) -> None:
+    """Run queued ``on_caller_thread`` calls here until the workflow ends (for ``_CLEANUP_SECONDS`` when ``bounded``)."""
+    deadline = time.monotonic() + _CLEANUP_SECONDS
     while True:
-        if until is not None:
+        if bounded:
             try:
-                call = calls.get(timeout=_CLEANUP_SECONDS)
+                call = calls.get(timeout=max(0.0, deadline - time.monotonic()))
             except queue.Empty:
                 return
         else:

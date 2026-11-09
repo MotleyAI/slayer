@@ -1238,14 +1238,18 @@ _TRANSIENT_RETRY_LOG_FORMAT = (
 
 # Lower-cased DBAPI-message substrings marking a transient failure worth a
 # retry. Deterministic schema errors are excluded — sleeping wouldn't help.
-_TRANSIENT_DB_ERROR_SIGNALS = (
+# The statement did not run: safe to retry a write.
+_NOT_APPLIED_SIGNALS = (
     "database is locked",     # SQLite under contention
     "deadlock",               # Postgres / MySQL deadlock_detected
-    "lost connection",        # MySQL "Lost connection to MySQL server"
-    "broken pipe",            # connection mid-query
     "could not connect",      # libpq / psycopg
-    "server closed",          # Postgres "server closed the connection unexpectedly"
     "connection refused",
+)
+# The connection dropped mid-statement: a write may have been applied.
+_CONNECTION_LOST_SIGNALS = (
+    "lost connection",        # MySQL "Lost connection to MySQL server"
+    "broken pipe",
+    "server closed",          # Postgres "server closed the connection unexpectedly"
     "connection reset",
     "connection was killed",  # MySQL admin kill
 )
@@ -1255,7 +1259,7 @@ def _is_transient_db_error(exc: BaseException, *, writes: bool = False) -> bool:
     """True only for DB errors worth retrying.
 
     OperationalError is too broad (spans schema errors); match transient signals
-    in exc.orig. DisconnectionError is always transient; so is an error SQLAlchemy read as a lost connection,
+    in exc.orig. DisconnectionError is always transient; a lost connection is transient
     unless the statement ``writes`` (it may have been applied).
     """
     if isinstance(exc, sqlalchemy.exc.DisconnectionError):
@@ -1263,7 +1267,8 @@ def _is_transient_db_error(exc: BaseException, *, writes: bool = False) -> bool:
     if isinstance(exc, sqlalchemy.exc.DBAPIError) and exc.connection_invalidated and not writes:
         return True
     msg = str(getattr(exc, "orig", exc)).lower()
-    return any(sig in msg for sig in _TRANSIENT_DB_ERROR_SIGNALS)
+    signals = _NOT_APPLIED_SIGNALS if writes else _NOT_APPLIED_SIGNALS + _CONNECTION_LOST_SIGNALS
+    return any(sig in msg for sig in signals)
 
 
 # Credential-rejection signals (distinct from transient): retrying is pointless,

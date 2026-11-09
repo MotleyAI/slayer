@@ -2,12 +2,14 @@
 
 ### Requirement: The default client refuses session and transaction statements
 The default client's `execute` SHALL refuse, with a typed SQL-client error naming the statement's
-leading keywords, any text in which a statement changes the connection's session state or controls
-transactions: `USE`, `SET`, `RESET`, `ALTER SESSION`, `DISCARD`, `BEGIN`, `START TRANSACTION`,
+leading keywords, any text in which a statement leads with a keyword that changes the connection's
+session state or controls transactions: `USE`, `SET`, `RESET`, `ALTER SESSION`, `DISCARD`, `BEGIN`, `START TRANSACTION`,
 `COMMIT`, `ROLLBACK`, `END`, `ABORT`, `SAVEPOINT`, `RELEASE`, `SAVE` and `XA`, in any letter case,
 as the first statement or as any later statement of a multi-statement text. A refused text SHALL send nothing to the database. Queries, DDL and DML SHALL
 be unaffected, including when a refused keyword appears inside a string literal, a quoted identifier,
 a comment, or later in a statement that leads with another keyword.
+Session state changed through a function or procedure call (for example Postgres `set_config`) is
+not detected.
 
 #### Scenario: A Snowflake USE is refused
 - **WHEN** a Snowflake datasource's default client executes `USE WAREHOUSE other_wh`
