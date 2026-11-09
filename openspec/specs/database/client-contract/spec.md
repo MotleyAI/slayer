@@ -1,4 +1,4 @@
-# sql/client-contract Specification
+# database/client-contract Specification
 
 ## Purpose
 Defines the contract every SQL client — the default one or a host-supplied gateway — must meet: statement and metadata semantics, typed failures, delegation, and an executable conformance suite that proves an implementation honours it.
