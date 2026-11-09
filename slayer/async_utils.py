@@ -138,7 +138,7 @@ async def _contained(coro: Coroutine[Any, Any, T]) -> tuple[bool, Any]:
     """``coro``'s result, or the ``SystemExit`` / ``KeyboardInterrupt`` it raised, which would otherwise stop the loop."""
     try:
         return True, await coro
-    except (SystemExit, KeyboardInterrupt) as exc:
+    except (SystemExit, KeyboardInterrupt) as exc:  # NOSONAR(S5754) — re-raised on the caller's thread
         return False, exc
 
 

@@ -11,7 +11,7 @@ from sqlalchemy.dialects import plugins
 from sqlalchemy.engine import CreateEnginePlugin
 from sqlalchemy.engine.default import DefaultDialect
 from sqlalchemy.engine.url import URL, make_url
-from sqlalchemy.exc import ArgumentError, DisconnectionError, NoSuchModuleError
+from sqlalchemy.exc import ArgumentError, DisconnectionError
 from sqlalchemy.pool import StaticPool
 
 if TYPE_CHECKING:
@@ -59,7 +59,7 @@ def _detects_autocommit(url: str | URL, *, is_async: bool) -> bool:
     """Whether ``url``'s SQLAlchemy dialect reads a connection's autocommit state."""
     try:
         sa_dialect = make_url(url).get_dialect(_is_async=is_async)
-    except (ArgumentError, NoSuchModuleError):
+    except ArgumentError:  # NoSuchModuleError included
         return False
     return sa_dialect.detect_autocommit_setting is not DefaultDialect.detect_autocommit_setting
 
