@@ -14,11 +14,12 @@ import pytest
 from filelock import FileLock
 from pydantic import BaseModel, ConfigDict
 
+from slayer import async_utils
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.demo import jaffle_shop
 from slayer.embeddings import client as embedding_client
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests import _emitted_reparse_law as emitted_reparse_law
@@ -158,6 +159,7 @@ def _dispose_engines_at_session_end() -> Iterator[None]:
     unraisable hook are still installed in every xdist worker (a
     ``pytest_sessionfinish`` hook can run after they are gone)."""
     yield
+    async_utils.shutdown_bridge()
     engine_factory.reset_cache()
     gc.collect()
 

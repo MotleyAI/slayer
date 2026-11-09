@@ -1,4 +1,4 @@
-"""A multi-step CLI command runs its whole workflow in one event loop (spec: sql/execution)."""
+"""A multi-step CLI command runs its whole workflow in one event loop (spec: database/execution)."""
 
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ from slayer.async_utils import run_sync
 from slayer.cli import _run_validate_models
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.engine.cardinality import CardinalityVerdict
-from slayer.sql import engine_factory
+from slayer.engine.cardinality.inference import CardinalityVerdict
+from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 
 postgresql_proc = factories.postgresql_proc(port=None)

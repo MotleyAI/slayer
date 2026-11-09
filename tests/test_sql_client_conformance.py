@@ -1,4 +1,4 @@
-"""The executable client contract (spec: sql/client-contract — the client contract is executable)."""
+"""The executable client contract (spec: database/client-contract — the client contract is executable)."""
 
 from __future__ import annotations
 
@@ -14,12 +14,13 @@ import pytest
 from psycopg import sql as pg_sql
 from pytest_postgresql import factories
 
-import slayer.sql.conformance as conformance
+import slayer.database.conformance as conformance
 from slayer.core.models import DatasourceConfig
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.core.enums import DataType
-from slayer.sql.client import DelegatingSqlClient, ObjectNotFound, ResultColumnType, SlayerSQLClient
-from slayer.sql.conformance import ConformanceReport, capabilities_for, fixture_statements, run_conformance
+from slayer.database.client import DelegatingSqlClient, ExecutionResult, ObjectNotFound, ResultColumnType, SlayerSQLClient
+from slayer.sql.dialects.base import ExplainStatements
+from slayer.database.conformance import ConformanceReport, capabilities_for, fixture_statements, run_conformance
 from slayer.storage.sqlite_conn import transaction
 
 postgresql_proc = factories.postgresql_proc(port=None)
@@ -192,6 +193,64 @@ class TestStatementsOnlyDelegatingClientConforms:
     async def test_conforms(self, sqlite_ds: DatasourceConfig) -> None:
         report = await _run(_StatementsOnly(inner=SlayerSQLClient(datasource=sqlite_ds)), dialect="sqlite")
         assert report.failed == []
+
+
+
+class _NoExplain:
+    """Broken: every current member but ``explain``."""
+
+    def __init__(self, inner: SlayerSQLClient) -> None:
+        self._inner = inner
+
+    def __getattr__(self, name: str) -> Any:
+        if name == "explain":
+            raise AttributeError(name)
+        return getattr(self._inner, name)
+
+
+class _PlanModeLeftOn(DelegatingSqlClient):
+    """Broken: after an explain, statements return plan rows."""
+
+    plan_mode = False
+
+    async def explain(self, statements: ExplainStatements) -> ExecutionResult:
+        result = await self.inner.explain(statements)
+        self.plan_mode = True
+        return result
+
+    async def execute(self, sql: str) -> ExecutionResult:
+        if self.plan_mode:
+            return ExecutionResult(rows=[{"detail": f"SCAN {sql}"}])
+        return await self.inner.execute(sql)
+
+
+class TestExplainIsChecked:
+    @pytest.mark.parametrize(("dialect", "build"), [("sqlite", _sqlite), ("duckdb", _duckdb)])
+    async def test_the_default_client_passes_on_local_backends(
+        self, tmp_path: Path, dialect: str, build: Callable[[Path], DatasourceConfig],
+    ) -> None:
+        ds = build(tmp_path)
+        try:
+            report = await _run(SlayerSQLClient(datasource=ds), dialect=dialect)
+        finally:
+            engine_factory.invalidate_engine(ds)
+        assert "explain" in report.passed, report.failures
+
+    async def test_the_default_client_passes_on_postgres(self, postgres_datasource: DatasourceConfig) -> None:
+        report = await _run(SlayerSQLClient(datasource=postgres_datasource), dialect="postgres")
+        assert "explain" in report.passed, report.failures
+
+    async def test_a_statements_only_delegating_client_passes(self, sqlite_ds: DatasourceConfig) -> None:
+        report = await _run(_StatementsOnly(inner=SlayerSQLClient(datasource=sqlite_ds)), dialect="sqlite")
+        assert "explain" in report.passed, report.failures
+
+    async def test_a_client_without_explain_fails_it(self, sqlite_ds: DatasourceConfig) -> None:
+        report = await _run(_NoExplain(inner=SlayerSQLClient(datasource=sqlite_ds)), dialect="sqlite")
+        assert "explain" in report.failed
+
+    async def test_an_explain_leaving_plan_mode_on_fails_it(self, sqlite_ds: DatasourceConfig) -> None:
+        report = await _run(_PlanModeLeftOn(inner=SlayerSQLClient(datasource=sqlite_ds)), dialect="sqlite")
+        assert "explain" in report.failed
 
 
 def test_the_suite_needs_no_test_framework() -> None:

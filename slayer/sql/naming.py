@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Dict, Literal, Optional, Tuple
 
 import sqlglot
@@ -36,6 +37,7 @@ from slayer.core.refs import (
     partition_by_suffix,
 )
 from slayer.sql._identifier_fit import fit_identifier
+from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, get_dialect
 from slayer.sql.naming_bijection import (  # noqa: F401
     _ALIAS_SEP,
     decode_alias,
@@ -403,6 +405,14 @@ def maybe_quote_ident(ident: Optional[Expression]) -> None:
         ident.set("quoted", True)
 
 
+def key_identifier(name: str, *, quoted: bool) -> exp.Identifier:
+    """A physical column ``name`` as SLayer reads it: quoted when its stored SQL quotes it or it holds an upper-case
+    letter."""
+    ident = exp.to_identifier(name, quoted=True if quoted else None)
+    maybe_quote_ident(ident)
+    return ident
+
+
 def quote_mixed_case_identifiers(node: Expression) -> Expression:
     """Quote mixed-case DB identifiers (``.transform`` callback): a ``Column``'s name leaf and a ``Table``'s physical parts only. Idempotent."""
     if isinstance(node, exp.Column):
@@ -412,6 +422,40 @@ def quote_mixed_case_identifiers(node: Expression) -> Expression:
         maybe_quote_ident(node.args.get("db"))
         maybe_quote_ident(node.args.get("catalog"))
     return node
+
+
+def as_sql_dialect(dialect: str | SqlDialect | None) -> SqlDialect | None:
+    """``dialect`` by sqlglot name; ``None`` for an unknown or absent one."""
+    if dialect is None or isinstance(dialect, SqlDialect):
+        return dialect
+    return get_dialect(dialect) if dialect in SQLGLOT_NAMES else None
+
+
+def denoted_name(ident: exp.Identifier, *, dialect: str | SqlDialect | None) -> str:
+    """The exact name SLayer reads ``ident`` as: quoted or holding an upper-case letter as written, else folded."""
+    if ident.quoted or any(c.isupper() for c in ident.name):
+        return ident.name
+    found = as_sql_dialect(dialect)
+    return found.unquoted_identifier(ident.name) if found is not None else ident.name
+
+
+_PLAIN_PART_RE = re.compile(r"[^\W\d]\w*")
+
+
+def _quoted_part(part: str, *, dialect: SqlDialect) -> bool:
+    """Whether a live name part needs quotes to read back as itself (reserved words: the generator quotes them)."""
+    if not _PLAIN_PART_RE.fullmatch(part):
+        return True
+    # SQLAlchemy's ``quoted_name``: a name SLayer would otherwise read with the database's folding.
+    return getattr(part, "quote", None) is True and denoted_name(exp.to_identifier(part), dialect=dialect) != part
+
+
+def render_table_name(*, parts: Sequence[str], dialect: SqlDialect) -> str:
+    """The stored ``sql_table`` naming the live table ``parts`` (``[[catalog.]schema.]table``)."""
+    *qualifiers, name = [exp.Identifier(this=str(p), quoted=_quoted_part(p, dialect=dialect)) for p in parts]
+    table = exp.Table(this=name, db=qualifiers[-1] if qualifiers else None,
+                      catalog=qualifiers[-2] if len(qualifiers) > 1 else None)
+    return table.sql(dialect=dialect.sqlglot_name)
 
 
 def assert_unique_cte_names(sql: str, *, dialect: str = "postgres") -> None:

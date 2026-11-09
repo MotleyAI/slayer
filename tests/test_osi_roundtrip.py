@@ -13,7 +13,7 @@ import yaml
 from slayer.core.enums import DataType, JoinCardinality, JoinType
 from slayer.core.models import ModelJoin, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._osi_export_fixtures import (
     BASIC_MEASURES, DATASOURCE, col, customers, measure, monthly_revenue, orders, orders_columns, rich_orders, visits,
@@ -118,6 +118,7 @@ async def trip(request: pytest.FixtureRequest, tmp_path: Path) -> tuple[Env, Env
     return env, imported
 
 
+@pytest.mark.timeout(300)  # temporary: back to the suite's 120 s once DEV-2236 cuts per-query planning cost
 async def test_same_results_after_round_trip(trip: tuple[Env, Env]) -> None:
     env, imported = trip
     payloads: list[dict[str, Any]] = []

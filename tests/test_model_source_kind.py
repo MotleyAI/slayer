@@ -14,14 +14,14 @@ from pydantic import ValidationError
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.engine import ingestion
-from slayer.engine.ingestion import (
+from slayer.live_schema import ingestion
+from slayer.live_schema.ingestion import (
     _additive_merge_existing,
     ingest_datasource_idempotent,
     introspect_table_to_model,
     list_ingestable_objects,
 )
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.migrations import CURRENT_VERSIONS, migrate
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage

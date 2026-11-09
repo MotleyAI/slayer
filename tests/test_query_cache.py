@@ -38,7 +38,7 @@ from slayer.engine.cache import (
     _CacheEntry,
 )
 from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects import get_dialect
 from slayer.sql.physical_tables import physical_tables
 from slayer.storage.yaml_storage import YAMLStorage

@@ -435,6 +435,34 @@ def _statements(engine: sa.Engine) -> Iterator[list[str]]:
         event.remove(engine, "before_cursor_execute", _record)
 
 
+class _KeylessInspector:
+    """An Inspector reporting a table with no keys."""
+
+    def get_pk_constraint(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"constrained_columns": [], "name": None}
+
+    def get_foreign_keys(self, *_args: Any, **_kwargs: Any) -> list[Any]:
+        return []
+
+    def get_unique_constraints(self, *_args: Any, **_kwargs: Any) -> list[Any]:
+        return []
+
+    def get_indexes(self, *_args: Any, **_kwargs: Any) -> list[Any]:
+        return []
+
+
+@pytest.mark.parametrize(("dialect", "backend"), [
+    (SnowflakeDialect(), "snowflake"), (BigqueryDialect(), "bigquery"), (SqliteDialect(), "sqlite"),
+])
+def test_keyless_table_reads_no_catalog_where_the_inspector_is_final(dialect: SqlDialect, backend: str) -> None:
+    """Snowflake's INFORMATION_SCHEMA has no KEY_COLUMN_USAGE, so its Inspector's empty PK is final."""
+    conn = _RecordingConnection(backend=backend)
+    keys = dialect.reflect_table_keys(connection=conn, inspector=_KeylessInspector(), table="t", schema="s",
+                                      catalog=None)
+    assert keys.primary_key == []
+    assert conn.statements == []
+
+
 class TestSqliteBaseKeys:
     def test_pk_unique_and_whole_table_unique_index(self, sqlite_engine) -> None:
         with sqlite_engine.connect() as conn:

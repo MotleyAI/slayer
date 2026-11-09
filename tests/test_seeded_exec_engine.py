@@ -21,7 +21,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
 

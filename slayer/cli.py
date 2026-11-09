@@ -31,6 +31,7 @@ from slayer.cube.parser import parse_cube_project
 from slayer.cube.report import CubeConversionIssue, CubeIssueCategory
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.parser import parse_dbt_project
+from slayer.importers.physical import UndecidableIdentifierCaseError
 from slayer.demo import (
     DEMO_NAME,
     build_jaffle_shop,
@@ -38,21 +39,21 @@ from slayer.demo import (
     ingest_demo_models,
     resolve_demo_db_path,
 )
-from slayer.engine.cardinality import CardinalityVerdict
-from slayer.engine import ingestion as engine_ingestion
-from slayer.engine.ingestion import (
+from slayer.engine.cardinality.inference import CardinalityVerdict
+from slayer.live_schema import ingestion as engine_ingestion
+from slayer.live_schema.ingestion import (
     _empty_ingest_message,
     _print_ingest_addition,
     _print_ingest_drift_and_errors,
 )
-from slayer.engine.join_safety import audit_join_safety
+from slayer.engine.cardinality.join_safety import audit_join_safety
 from slayer.flight.cli import add_flight_serve_subparser, run_flight_serve
 from slayer.engine.profiling import (
     refresh_all_table_backed_sampled,
     refresh_table_backed_model_sampled,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import REPORT_ONLY_FINDINGS, NarrowedAccessFinding, RetypeFinding
+from slayer.live_schema.schema_drift import REPORT_ONLY_FINDINGS, NarrowedAccessFinding, RetypeFinding
 from slayer.inspect.service import InspectService
 from slayer.memories.service import MemoryService
 from slayer.osi.converter import OsiConversionError, OsiConversionResult, OsiToSlayerConverter
@@ -66,7 +67,7 @@ from slayer.search.service import SearchService
 from slayer.storage import migrations as _mig
 from slayer.storage.base import StorageBackend, default_storage_path, resolve_storage
 from slayer.storage.document_loading import DocumentLoadFailures
-from slayer.storage.type_refinement import (
+from slayer.live_schema.type_refinement import (
     has_refineable_columns,
     has_sqlite_widenable_columns,
     refine_dict_with_live_schema,
@@ -2263,9 +2264,12 @@ async def _import_dbt_workflow(args, engine: SlayerQueryEngine) -> None:
         target_dialect=ds.type if ds is not None else None,
         offline_reason=offline_reason,
     )
-    if ds is not None:
-        await converter.collect_metadata(client=engine.client_for(ds))
-    result = converter.convert()
+    try:
+        if ds is not None:
+            await converter.collect_metadata(client=engine.client_for(ds))
+        result = converter.convert()
+    except UndecidableIdentifierCaseError as exc:
+        _fail(str(exc))
     hidden_count = await _save_imported_dbt_models(storage=storage, models=result.models)
 
     # Grouped, category-keyed conversion report + a severity tally.
@@ -2325,9 +2329,12 @@ async def _import_cube_workflow(args, engine: SlayerQueryEngine) -> None:
         honor_required_meta=not args.ignore_required_meta,
         target_dialect=ds.type if ds is not None else None, offline_reason=offline_reason,
     )
-    if ds is not None:
-        await converter.collect_metadata(client=engine.client_for(ds))
-    result = converter.convert()
+    try:
+        if ds is not None:
+            await converter.collect_metadata(client=engine.client_for(ds))
+        result = converter.convert()
+    except UndecidableIdentifierCaseError as exc:
+        _fail(str(exc))
     saved = 0
     for model in result.models:
         try:

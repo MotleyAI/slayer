@@ -11,7 +11,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.osi.source import parse_source
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._osi_export_fixtures import (
     BASIC_MEASURES, col, customers, monthly_revenue, orders, orders_columns, rich_orders, visits,

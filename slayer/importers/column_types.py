@@ -9,9 +9,10 @@ from sqlglot.expressions.core import Expression
 from sqlglot.errors import SqlglotError
 
 from slayer.core.enums import DataType
-from slayer.engine.ingestion import introspect_table_to_model
-from slayer.engine.schema_scope import table_schema_ref
-from slayer.sql.client import ResultColumnType, SqlClient, render_type_probe
+from slayer.live_schema.ingestion import introspect_table_columns
+from slayer.live_schema.schema_scope import live_name, table_live_parts, table_schema_ref
+from slayer.importers.physical import PhysicalIndex, live_exact_name
+from slayer.database.client import ResultColumnType, SqlClient, render_type_probe
 from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, get_dialect
 from slayer.sql.dialects.base import slayer_type_of
 from slayer.sql.render.parse import parse_expression, parse_query, parse_table
@@ -96,20 +97,23 @@ class LiveSource:
     """A source's collected live column types, and its expressions' collected probe types; never reads the database."""
 
     def __init__(self, *, owner: LiveDatasource, key: SourceKey, relation: Expression,
-                 result_types: dict[str, ResultColumnType], target: SqlDialect, source: SqlDialect) -> None:
+                 found: list[tuple[str, ResultColumnType]], target: SqlDialect, source: SqlDialect) -> None:
         self._owner = owner
         self.key = key
         self.relation = relation
-        self.result_types = result_types
         self.target = target
         self.source = source
-        self.columns: dict[str, Typed] = {name: _typed(t) for name, t in result_types.items()}
+        # Live column names in SQLAlchemy's spelling, its quote flag kept.
+        self.names: list[str] = [name for name, _ in found]
+        self.result_types: dict[str, ResultColumnType] = dict(found)
+        self.columns: dict[str, Typed] = {name: _typed(t) for name, t in found}
+        self._index = PhysicalIndex([], dialect=source.sqlglot_name, live=self.names)
+        self._by_exact = {live_exact_name(name, dialect=source): _typed(t) for name, t in found}
 
-    def column(self, physical: str) -> Typed | None:
-        """The live type of the physical column ``physical``."""
-        if physical in self.columns:
-            return self.columns[physical]
-        return next((t for n, t in self.columns.items() if n.lower() == physical.lower()), None)
+    def column(self, physical: exp.Identifier | str) -> Typed | None:
+        """The live type of the one physical column ``physical`` names; ``None`` for none or several."""
+        found = self._index.live_names(exp.to_identifier(physical) if isinstance(physical, str) else physical)
+        return self._by_exact[found[0]] if len(found) == 1 else None
 
     def probed(self, expr: str) -> ResultColumnType | None:
         """``expr``'s collected probe type over the source; ``None`` when not (yet) collected or unprobeable."""
@@ -192,22 +196,25 @@ class LiveDatasource:
         try:
             if sql_table:
                 table = parse_table(name=sql_table, dialect=source)
-                ref = await table_schema_ref(catalog=table.catalog, schema=table.db, client=client)
-                model = await introspect_table_to_model(client=client, table_name=table.name, ref=ref,
-                                                        data_source=self.data_source)
-                if not model.columns:
+                *qualifiers, name = table_live_parts(table)
+                ref = await table_schema_ref(catalog=qualifiers[-2] if len(qualifiers) > 1 else None,
+                                             schema=qualifiers[-1] if qualifiers else None, client=client)
+                columns = await introspect_table_columns(client=client, table_name=name, ref=ref)
+                if not columns:
                     raise ValueError(f"table {table.sql(dialect=source.sqlglot_name)} was not found")
                 relation: Expression = table
-                types = {c.name: ResultColumnType(type=c.type, element_type=c.element_type, db_type=c.db_type)
-                         for c in model.columns}
+                found = [(live_name(c.name, quoted=c.quoted),
+                          ResultColumnType(type=c.type, element_type=c.element_type, db_type=c.db_type))
+                         for c in columns]
             else:
                 query = parse_query(sql=sql or "", target_dialect=target, parse_dialect=source)
                 relation = query.subquery("_slayer_src")
-                types = await client.get_result_column_types(
-                    render_type_probe(exp.select("*").from_(relation.copy()), dialect=target))
+                # The driver's result names are in SQLAlchemy's spelling already.
+                found = list((await client.get_result_column_types(
+                    render_type_probe(exp.select("*").from_(relation.copy()), dialect=target))).items())
         except Exception as exc:  # noqa: BLE001 — an unreadable source still imports
             return f"the source could not be read from datasource {self.data_source!r}: {type(exc).__name__}"
-        return LiveSource(owner=self, key=key, relation=relation, result_types=types, target=target, source=source)
+        return LiveSource(owner=self, key=key, relation=relation, found=found, target=target, source=source)
 
     async def _probe(self, *, client: SqlClient, key: tuple[SourceKey, str]) -> ResultColumnType | None:
         live = self._sources.get(key[0])

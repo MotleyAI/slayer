@@ -11,7 +11,7 @@ from __future__ import annotations
 from slayer.core.enums import JoinCardinality, invert_cardinality
 from slayer.core.join_walker import edges_between, provably_to_one
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.engine.join_safety import safe_reachable
+from slayer.engine.cardinality.join_safety import safe_reachable
 
 
 def _model(name, cols, joins=None):

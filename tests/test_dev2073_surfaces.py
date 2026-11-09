@@ -8,8 +8,8 @@ import re
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import ColumnRef
-from slayer.engine.ingestion import _updated_detail_lines
-from slayer.engine.schema_drift import ModelAddition
+from slayer.live_schema.ingestion import _updated_detail_lines
+from slayer.live_schema.schema_drift import ModelAddition
 from slayer.facade.catalog import FacadeCatalog, FacadeTable, build_catalog
 from slayer.facade.translator import QueryResult, translate
 from slayer.inspect.collection_render import render_models_summary

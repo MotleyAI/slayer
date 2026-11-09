@@ -17,7 +17,6 @@ from typing import Any, Callable, Coroutine, Dict, Iterator, List, Optional, Set
 import sqlalchemy as sa
 from sqlglot import exp
 from sqlglot.expressions.core import Expr
-from sqlglot.optimizer.qualify_columns import quote_identifiers
 from pydantic import (
     BaseModel,
     ConfigDict as PydanticConfigDict,
@@ -43,7 +42,7 @@ from slayer.core.errors import (
     SlayerError,
     StoredDocumentLoadError,
 )
-from slayer.engine.cardinality import (
+from slayer.engine.cardinality.inference import (
     CardinalityVerdict,
     JoinCardinalityFinding,
     JoinCardinalityReport,
@@ -77,7 +76,7 @@ from slayer.core.query import (
 )
 from slayer.core.join_search import blocking_pairs, shortest_routes, unreachable_target
 from slayer.engine.column_dependency import check_definition_ambiguity, check_definition_reach, check_model_filters
-from slayer.engine.population import (
+from slayer.engine.population.inference import (
     ambiguity_resolved_path,
     determined_path,
     infer_population,
@@ -135,9 +134,9 @@ from slayer.ir.planned import (
     plans_read_clock,
     planned_keys,
 )
-from slayer.engine import ingestion, schema_drift
+from slayer.live_schema import ingestion, schema_drift
 from slayer.engine.model_reads import narrowing_models
-from slayer.engine.schema_scope import IngestScopeArgs
+from slayer.live_schema.schema_scope import IngestScopeArgs
 from slayer.engine.response_meta import (
     FieldMetadata as FieldMetadata,  # re-export for slayer_client / tests
     ResponseAttributes,
@@ -159,7 +158,7 @@ from slayer.memories.resolver import (
     _all_models_in_datasource,
     resolve_entity,
 )
-from slayer.sql.client import (
+from slayer.database.client import (
     ExecutionResult,
     ResultColumnType,
     SlayerSQLClient,
@@ -176,10 +175,11 @@ from slayer.sql.client import (
 from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, dialect_for_sa_backend, get_dialect
 from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.render.library import check_library_support
+from slayer.sql.naming import key_identifier
 from slayer.sql.render.parse import parse_table
 from slayer.sql.sql_template import SqlTemplateError, sql_template
 from slayer.sql.dialects.reflection import TableLocation
-from slayer.sql.engine_factory import ClientCacheKey, _sql_client_cache_key, client_cache_key
+from slayer.database.engine_factory import ClientCacheKey, _sql_client_cache_key, client_cache_key
 from slayer.sql.generator import (
     PlannedStatement,
     _finish_statement,
@@ -400,13 +400,6 @@ def _render_probe_model(model: SlayerModel, *, dialect: SqlDialect) -> SlayerMod
             model=model, variables=model.query_variables, dialect=dialect
         )
     return model
-
-
-
-
-def _build_explain_sql(dialect: str, sql: str) -> str:
-    """Dialect-appropriate EXPLAIN; raises for dialects without SQL-level EXPLAIN (e.g. BigQuery)."""
-    return get_dialect(dialect).build_explain_sql(sql)
 
 
 def _stage_labels(*, stages, displays=None) -> List[str]:
@@ -963,23 +956,34 @@ class SlayerQueryEngine:
             except Exception:
                 logger.warning("Failed to release a SQL client during engine aclose.", exc_info=True)
 
+    async def release_local_connections(self) -> None:
+        """Free the clients' idle connections holding a local database file; a client without that release is skipped."""
+        for client in list(self._sql_clients.values()):  # NOSONAR(S7504) — snapshot: a concurrent client_for may add a client during the await
+            release = getattr(client, "release_local_connections", None)
+            if release is None:
+                continue
+            try:
+                await release()
+            except Exception:
+                logger.warning("Failed to release a SQL client's local connections.", exc_info=True)
+
     def run_sync(self, workflow: Coroutine[Any, Any, _T]) -> _T:
-        """Run one whole synchronous workflow in one bridged loop, releasing the clients' loop-bound
-        resources at its end — also when it raises or is cancelled."""
+        """Run one whole synchronous workflow on the bridge loop, releasing idle local-file connections at
+        its end — also when it raises or is cancelled; networked connections stay open."""
 
         async def _run() -> _T:
             try:
                 return await workflow
             finally:
-                await asyncio.shield(self.aclose())
+                await asyncio.shield(self.release_local_connections())
 
         return run_sync(_run())
 
     def close(self) -> None:
         """Close every client this engine built and forget them; a later query rebuilds its clients.
 
-        Idempotent; continues past a client that fails to close. Loop-bound async
-        resources are released by ``aclose()`` on their event loop, not here.
+        Idempotent; continues past a client that fails to close. Clients release their bridge-loop
+        connections here; other loops' async resources are released by ``aclose()`` on their loop.
         """
         try:
             for client in list(self._sql_clients.values()):  # NOSONAR(S7504) — snapshot: another thread's client_for may add a client meanwhile
@@ -1520,14 +1524,16 @@ class SlayerQueryEngine:
                     "warnings": list(prepared.slack_warnings),
                 })
 
+        # A dialect without EXPLAIN refuses before any database access.
+        explain_statements = get_dialect(prepared.dialect).explain_statements(prepared.sql) if explain else None
+
         # Miss (or cache=False) → a SQL client is required.
         client = self.client_for(prepared.datasource)
 
         # explain: run dialect-appropriate EXPLAIN on the query. NEVER cached.
-        if explain:
-            explain_sql = _build_explain_sql(dialect=prepared.dialect, sql=prepared.sql)
+        if explain_statements is not None:
             try:
-                explained = await client.execute(sql=explain_sql)
+                explained = await client.explain(explain_statements)
             except Exception as exc:
                 await self._maybe_raise_schema_drift(
                     err=exc, datasource=prepared.datasource, read_set=prepared.touched,
@@ -1926,9 +1932,9 @@ class SlayerQueryEngine:
             # An "invalid_sql" entry restates the query failure itself, so it is no drift evidence.
             filtered = [
                 e for e in entries
-                if reads.touched_by(e) and getattr(e, "cause", "schema_drift") != "invalid_sql"
+                if schema_drift.touches(reads, e) and getattr(e, "cause", "schema_drift") != "invalid_sql"
             ]
-            findings = [f for f in found if reads.touched_by(f)]
+            findings = [f for f in found if schema_drift.touches(reads, f)]
             if filtered or findings:
                 raise SchemaDriftError(
                     models=sorted({e.model_name for e in [*filtered, *findings]}),
@@ -2713,9 +2719,10 @@ class SlayerQueryEngine:
 
     @staticmethod
     def _side_stats_sql(*, table, key_cols, sqlglot_name) -> tuple[exp.Select, exp.Select]:
-        """(row-count, distinct-count) profiling statements, every identifier quoted; NULL key rows excluded from both."""
+        """(row-count, distinct-count) profiling statements reading the table and keys as SLayer reads them; NULL key
+        rows excluded from both."""
         tbl = parse_table(name=table, dialect=get_dialect(sqlglot_name))
-        cols = [exp.column(c, quoted=True) for c in key_cols]
+        cols = [exp.column(c) for c in key_cols]
         predicate = None
         for col in cols:
             term = exp.Not(this=exp.Is(this=col.copy(), expression=exp.null()))
@@ -2733,8 +2740,8 @@ class SlayerQueryEngine:
         )
         dist_q = exp.select(count_star.copy()).from_(inner.subquery("d"))
         return (
-            quote_identifiers(rows_q, dialect=sqlglot_name, identify=True),
-            quote_identifiers(dist_q, dialect=sqlglot_name, identify=True),
+            rows_q,
+            dist_q,
         )
 
     async def _side_stats(
@@ -3292,9 +3299,9 @@ def _detection_skip_reason(*, model, target, src_cols, tgt_cols) -> str | None:
     return None
 
 
-def _physical_keys(*, model: SlayerModel, keys: List[str]) -> List[str]:
+def _physical_keys(*, model: SlayerModel, keys: List[str]) -> List[exp.Identifier]:
     by_name = {c.name: c for c in model.columns}
-    return [by_name[k].physical_name for k in keys]
+    return [key_identifier(by_name[k].physical_name, quoted=by_name[k].physical_quoted) for k in keys]
 
 
 def _validate_join_keys(

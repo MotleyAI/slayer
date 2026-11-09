@@ -1,4 +1,4 @@
-"""LAW one relation door (python.sql P16): a model reaches SQL only through ``_emit_relation``, as its filtered dataset.
+"""LAW one relation door (python.sql P13): a model reaches SQL only through ``_emit_relation``, as its filtered dataset.
 
 AST scan of ``slayer/sql/``: the backing-relation builders are called only from ``_backing_relation``,
 ``_backing_relation`` only from ``_emit_relation``, and a model's ``.filters`` is read only by the door

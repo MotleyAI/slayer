@@ -39,13 +39,13 @@ from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelJoin,
 from slayer.core.query import SlayerQuery
 from slayer.core.refs import key_display
 from slayer.core.syntax import parse_expr
-from slayer.engine.ingestion import ingest_datasource_async
+from slayer.live_schema.ingestion import ingest_datasource_async
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.inspect.collection_render import render_models_summary
 from slayer.inspect.model_render import render_model_inspection
 from slayer.mcp.server import create_mcp_server
 from slayer.search.render import render_column_text
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.sql.dialects import get_dialect
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2101_fixtures import emit

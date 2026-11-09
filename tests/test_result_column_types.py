@@ -1,4 +1,4 @@
-"""The typed column-type probe on SQLite, DuckDB and Postgres (spec: sql/client-contract)."""
+"""The typed column-type probe on SQLite, DuckDB and Postgres (spec: database/client-contract)."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ from pytest_postgresql import factories
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import engine_factory
-from slayer.sql.client import (
+from slayer.database import engine_factory
+from slayer.database.client import (
     ResultColumnType,
     SlayerSQLClient,
     get_column_types_sync,

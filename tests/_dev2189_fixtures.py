@@ -25,10 +25,10 @@ from slayer.core.policy import (
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient, TypeProbe
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient, TypeProbe
 from slayer.sql.dialects import get_dialect
-from slayer.sql.dialects.base import ServerProfile
+from slayer.sql.dialects.base import ExplainStatements, ServerProfile
 from slayer.sql.session_policy import ScopedTable, apply_session_policy
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1739_fixtures import transaction
@@ -322,15 +322,21 @@ class ClientSpy:
     @contextlib.contextmanager
     def installed(self, monkeypatch: pytest.MonkeyPatch) -> Generator[ClientSpy]:
         execute, probe = SlayerSQLClient.execute, SlayerSQLClient.get_result_column_types
+        explain = SlayerSQLClient.explain
 
         async def _execute(client: SlayerSQLClient, *args: Any, **kwargs: Any) -> Any:
             self.executed.append(str(kwargs.get("sql", args[0] if args else "")))
             return await execute(client, *args, **kwargs)
+
+        async def _explain(client: SlayerSQLClient, statements: ExplainStatements, *args: Any, **kwargs: Any) -> Any:
+            self.executed.extend(s for s in (statements.session_on, statements.statement, statements.session_off) if s)
+            return await explain(client, statements, *args, **kwargs)
 
         async def _probe(client: SlayerSQLClient, type_probe: TypeProbe) -> Any:
             self.probed.append(type_probe.sql)
             return await probe(client, type_probe)
 
         monkeypatch.setattr(SlayerSQLClient, "execute", _execute)
+        monkeypatch.setattr(SlayerSQLClient, "explain", _explain)
         monkeypatch.setattr(SlayerSQLClient, "get_result_column_types", _probe)
         yield self

@@ -18,7 +18,7 @@ from typing import Any, ClassVar
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 
-from slayer.sql.dialects.base import PORTABLE_LIBRARY, NativeFn, SqlDialect
+from slayer.sql.dialects.base import PORTABLE_LIBRARY, IdentifierFolding, NativeFn, SqlDialect
 from slayer.sql.dialects.postgres import describe_pg_cursor_column
 from slayer.sql.dialects.reflection import ResultColumnType
 from slayer.sql.dialects.trino import PrestoFamilyDialect
@@ -38,9 +38,9 @@ class RedshiftDialect(SqlDialect):
     ilike_native: ClassVar[bool] = True
     vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.MONEY})
     ds_type_aliases: frozenset[str] = frozenset({"redshift"})
+    identifier_folding: ClassVar[IdentifierFolding] = "lower"
     sa_backend_names: frozenset[str] = frozenset({"redshift"})
     explain_prefix: str | None = "EXPLAIN"
-    explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = False
     max_identifier_bytes: int | None = 127
@@ -74,7 +74,6 @@ class DatabricksDialect(SqlDialect):
     ds_type_aliases: frozenset[str] = frozenset({"databricks"})
     sa_backend_names: frozenset[str] = frozenset({"databricks"})
     explain_prefix: str | None = "EXPLAIN EXTENDED"
-    explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
     max_identifier_bytes: int | None = None  # unbounded
@@ -89,7 +88,6 @@ class SparkDialect(SqlDialect):
     ilike_native: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"spark"})
     explain_prefix: str | None = "EXPLAIN EXTENDED"
-    explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
     max_identifier_bytes: int | None = None  # unbounded
@@ -103,9 +101,9 @@ class OracleDialect(SqlDialect):
     native_functions: ClassVar[frozenset[NativeFn]] = _EXTREMA
     extremum_propagates_null: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"oracle"})
+    identifier_folding: ClassVar[IdentifierFolding] = "upper"
     sa_backend_names: frozenset[str] = frozenset({"oracle"})
     explain_prefix: str | None = "EXPLAIN PLAN FOR"
-    explain_postfix: str = ""
     # Oracle has neither LOG10 nor LOG2 as single-arg functions — keep
     # the canonical 2-arg LOG(base, x) form.
     log10_native: bool = False

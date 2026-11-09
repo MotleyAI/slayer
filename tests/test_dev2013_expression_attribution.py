@@ -38,7 +38,7 @@ from slayer.core.keys import (
 )
 from slayer.core.models import Aggregation, AggregationParam, Column, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.join_safety import grain_determines
+from slayer.engine.cardinality.join_safety import grain_determines
 
 from tests import _dev1840_fixtures as f40
 from tests._dev1847_fixtures import (

@@ -10,7 +10,8 @@ scenarios in `openspec/specs/queries/semantics` and
 `target:` tag naming the issue that flips them in its own PR. The carrier: an
 aggregate is a partial function from its grain's coordinate space to scalars,
 typed by that grain; grains form a lattice under set inclusion, and broadcast
-is the coercion from coarser to finer.
+is the coercion from coarser to finer. §4 holds the reference and expression
+principles every layer obeys.
 
 ## 2. Axioms
 
@@ -63,7 +64,7 @@ is the coercion from coarser to finer.
      **cancellation**: a qualifier naming a dataset already on its path reads that
      row (`a.b.a ≡ a`) rather than re-joining, any other unreachable qualifier
      anchored at the query root. Only definition defaults cancel — a revisiting
-     query path is refused (its root qualifier is no revisit, system §3.9), a revisiting
+     query path is refused (its root qualifier is no revisit, Principle 1), a revisiting
      `Column.sql` likewise.
      It is counted over that
      dataset's rows. The ordering key of a ranked aggregation must be determined by the
@@ -299,8 +300,42 @@ enforced test ids as its instances land.
    [enforced: test:tests/test_law_lowering_soundness.py]
    [enforced: test:tests/test_dev1935_boolean_lowering.py]; compiling a filter
    as a hidden measure. [review]
+7. **Measure closure**: adding a measure never changes the result's rows or
+   any other field's values.
+   [enforced: test:tests/test_dev1837_dimension_measure_matrix.py]
 
-## 4. Notes
+## 4. Principles
+
+All code, old and new, MUST obey these.
+
+1. **Dotted-canonical references**: dots denote join paths in queries and model
+   SQL; the legacy `__` split-alias input form is a hard error; `__` survives
+   only as an internal generated-SQL join alias (`__slayer_` prefix reserved).
+   A resolved path is **canonical**: each hop spelled by its edge name, else its
+   target model — a query stage by its name in its own query list, which precedes
+   a same-named model (`customers.regions ≡ customers.hr` for an edge named `hr`); a leading
+   **root qualifier** — the root's own name, read before any hop — drops out (`r.x ≡ x` from
+   root `r`); keys, join aliases and result names carry only canonical paths.
+   [enforced: test:tests/test_dev1743_resolution.py]
+   [enforced: test:tests/test_dev1954_canonical_paths.py]
+   [enforced: test:tests/test_dev2187_root_qualifier.py]
+2. **Two expression layers**: Mode A free SQL (`Column.sql`, model `filters`)
+   vs Mode B, a SQL-compatible grammar (formulas, query fields) — one
+   canonical function library, extended never forked. [review]
+   - **2.1** Every Mode B construct means the same on every dialect.
+     [enforced: test:tests/test_dev2120_library_matrix.py]
+   - **2.2** A dialect without its own translation of a Mode B construct
+     refuses it with a typed error; a base-class default is never another
+     dialect's SQL. [enforced: test:tests/test_dev2169_dialect_library_support.py]
+3. **Logical names, physical once**: every model-level column reference —
+   query fields, `join_pairs`, unique-key sets — names a column by
+   `Column.name`; the physical spelling (`Column.physical_name`: a base
+   column's bare `sql`, else its name) is applied once, where a reference
+   becomes SQL or meets the live schema, and is never the key two references
+   are matched on.
+   [enforced: test:tests/test_dev1902_join_key_spelling.py]
+
+## 5. Notes
 
 Database-level nondeterminism (floating-point summation order, approximate
 quantiles, ties in first/last) is accepted, not closed: the laws hold up to

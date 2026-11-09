@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelMeasure, SlayerModel
-from slayer.engine.ingestion import _additive_merge_existing
+from slayer.live_schema.ingestion import _additive_merge_existing
 
 
 def _stored(*, amount_type: DataType = DataType.DOUBLE) -> SlayerModel:

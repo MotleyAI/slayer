@@ -11,7 +11,7 @@ import pytest
 from slayer.core.errors import RefinementConflictError, UnknownReferenceError
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from tests._saved_query_refinement_fixtures import (
     AVG_CUSTOMER_REVENUE,
     BY_REGION_MONTH,

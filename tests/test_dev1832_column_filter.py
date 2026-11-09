@@ -34,7 +34,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 from slayer.core.errors import ColumnCycleError
 from slayer.core.keys import ColumnSqlKey
 from slayer.engine.column_dependency import _filter_dependencies
-from slayer.engine.filter_reachability import key_has_host_local_ref
+from slayer.engine.population.filter_reachability import key_has_host_local_ref
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.column_expansion import expand_column_definition_parts_sync
 

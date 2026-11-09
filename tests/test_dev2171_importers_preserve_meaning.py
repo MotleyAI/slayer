@@ -1,4 +1,4 @@
-"""Every importer reads every known ambiguous form with the source's meaning (principle 21;
+"""Every importer reads every known ambiguous form with the source's meaning (importers principle 1;
 spec: importers/meaning-preservation › Every importer is checked against the source's numbers)."""
 
 from __future__ import annotations

@@ -13,10 +13,11 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.errors import ExplainUnsupportedError
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.engine_factory import client_cache_key
+from slayer.database.engine_factory import client_cache_key
 from slayer.sql.dialects import (
     BigqueryDialect,
     PostgresDialect,
@@ -25,7 +26,7 @@ from slayer.sql.dialects import (
     dialect_for_ds_type,
     get_dialect,
 )
-from slayer.sql.client import DelegatingSqlClient, ExecutionResult, ResultColumnType, SlayerSQLClient
+from slayer.database.client import DelegatingSqlClient, ExecutionResult, ResultColumnType, SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests import _emitted_reparse_law as emitted_reparse_law
@@ -79,10 +80,10 @@ def test_log_native_flags() -> None:
     assert d.should_use_native_log(2) is False
 
 
-def test_build_explain_sql_raises() -> None:
+def test_explain_statements_raise() -> None:
     d = BigqueryDialect()
-    with pytest.raises(ValueError, match="EXPLAIN is not supported"):
-        d.build_explain_sql("SELECT 1")
+    with pytest.raises(ExplainUnsupportedError):
+        d.explain_statements("SELECT 1")
 
 
 # build_date_trunc — WEEK_SUNDAY override
@@ -467,7 +468,7 @@ def test_build_engine_with_credentials_json_passes_info_to_create_engine() -> No
     assert engine is not None
     assert captured["url"] == "bigquery://my-project"
     assert captured["kwargs"]["credentials_info"] == sa_info
-    assert captured["kwargs"]["pool_pre_ping"] is True
+    assert "pool_pre_ping" not in captured["kwargs"]
 
 
 def test_build_engine_with_invalid_credentials_json_raises() -> None:
@@ -678,7 +679,7 @@ def test_build_engine_oauth_uses_user_supplied_client() -> None:
     assert engine is not None
     assert captured["url"].query["user_supplied_client"] == "true"
     assert captured["kwargs"]["connect_args"] == {"client": fake_client}
-    assert captured["kwargs"]["pool_pre_ping"] is True
+    assert "pool_pre_ping" not in captured["kwargs"]
     # No ``credentials_info`` — that kwarg would send us back through
     # ``service_account.Credentials`` and defeat the whole path.
     assert "credentials_info" not in captured["kwargs"]

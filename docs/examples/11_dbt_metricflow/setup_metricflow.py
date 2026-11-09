@@ -253,7 +253,7 @@ def convert_dbt_to_slayer(
 
     project = parse_dbt_project(str(dbt_project_path / "models"))
     result = DbtToSlayerConverter(
-        project=project, data_source=DATASOURCE_NAME
+        project=project, data_source=DATASOURCE_NAME, target_dialect="duckdb"
     ).convert()
 
     storage = YAMLStorage(base_dir=str(models_dir))

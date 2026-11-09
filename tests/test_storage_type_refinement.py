@@ -1,7 +1,7 @@
 """DEV-1361: storage-driven type refinement on load.
 
 The v4→v5 dict migrator does coarse rename only (``number`` → ``DOUBLE``).
-A separate sync helper, ``slayer.storage.type_refinement.refine_dict_with_live_schema``,
+A separate sync helper, ``slayer.live_schema.type_refinement.refine_dict_with_live_schema``,
 introspects the model's datasource and refines ``DOUBLE`` → ``INT`` for base
 columns whose live SQL type is integer. Storage backends call this helper
 during ``get_model`` and write back the refined dict so subsequent loads are
@@ -29,10 +29,10 @@ from slayer.core.enums import DataType
 from slayer.core.errors import StoredDocumentLoadError
 from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import engine_factory
-from slayer.sql.client import DatabaseUnavailable, SlayerSQLClient
+from slayer.database import engine_factory
+from slayer.database.client import DatabaseUnavailable, SlayerSQLClient
 from slayer.storage import migrations as mig
-from slayer.storage.type_refinement import (
+from slayer.live_schema.type_refinement import (
     has_refineable_columns,
     has_sqlite_widenable_columns,
     refine_dict_with_live_schema,
@@ -333,7 +333,7 @@ class TestYamlStorageRefinementOnLoad:
         # second time around, because the model on disk is now v5 with refined
         # types and the migrator chain returns immediately.
         with patch(
-            "slayer.engine.schema_drift._live_schema_for_datasource",
+            "slayer.live_schema.schema_drift._live_schema_for_datasource",
             wraps=_unreachable,
         ) as spy:
             await storage_with_v4_model["storage"].get_model("items", data_source="live")
@@ -548,7 +548,7 @@ class TestRefineSqliteAffinityProbe:
         }
         ds = self._ds_for(db_path)
         with patch(
-            "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
+            "slayer.database.sqlite_introspect.probe_sqlite_integer_column",
             return_value=None,
         ):
             await _refine(d, ds)
@@ -839,7 +839,7 @@ class TestV7SqliteModelNotAutoRepairedOnLoad:
 
         # The probe must NOT be called on a current-version dict load.
         with patch(
-            "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
+            "slayer.database.sqlite_introspect.probe_sqlite_integer_column",
             side_effect=AssertionError(
                 "probe must not run on already-current-version dict load"
             ),

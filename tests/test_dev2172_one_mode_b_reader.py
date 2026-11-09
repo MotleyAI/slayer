@@ -1,4 +1,4 @@
-"""Mode B text is parsed only by ``core.syntax``; its consumers read the parse tree (principle 18)."""
+"""Mode B text is parsed only by ``core.syntax``; its consumers read the parse tree (system principle 8)."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 from slayer.usage_reporting.features import query_features
 
 SLAYER = Path(__file__).resolve().parents[1] / "slayer"
-#: Rewrite superseded stored spellings the current grammar rejects (principle 11), so they cannot use it.
+#: Rewrite superseded stored spellings the current grammar rejects (storage principle 3), so they cannot use it.
 TOKENIZE_ALLOWED = {
     "storage/sql_string_migration.py",
     "storage/rank_direction_migration.py",

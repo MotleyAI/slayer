@@ -17,7 +17,7 @@ from slayer.core.errors import AmbiguousModelError
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.embeddings import client as embedding_client
-from slayer.engine.population import infer_population
+from slayer.engine.population.inference import infer_population
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.inspect.service import InspectService
 from slayer.pg_facade.connection import PgConnection

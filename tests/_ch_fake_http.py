@@ -16,7 +16,7 @@ import pytest
 import sqlalchemy as sa
 
 from slayer.core.models import DatasourceConfig
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from tests._engine_helpers import disposable_engine
 
 pytest.importorskip("clickhouse_sqlalchemy")

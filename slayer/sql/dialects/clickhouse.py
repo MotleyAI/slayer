@@ -394,7 +394,6 @@ class ClickhouseDialect(SqlDialect):
     ds_type_aliases: frozenset[str] = frozenset({"clickhouse"})
     sa_backend_names: frozenset[str] = frozenset({"clickhouse"})
     explain_prefix: str | None = "EXPLAIN"
-    explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
     max_identifier_bytes: int | None = None  # unbounded

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
-from slayer.engine.ingestion import _additive_merge_existing
+from slayer.live_schema.ingestion import _additive_merge_existing
 
 
 def _model(*, keys: set[str], columns: tuple[tuple[str, str | None], ...]) -> SlayerModel:

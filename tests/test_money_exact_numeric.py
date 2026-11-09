@@ -13,10 +13,10 @@ from slayer.core.enums import DataType
 from slayer.core.keys import AggregateKey, ColumnKey
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine import ingestion
+from slayer.live_schema import ingestion
 from slayer.engine.key_metadata import measure_key_preserves_native_type
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.postgres import describe_pg_cursor_column
 from slayer.sql.dialects.reflection import (

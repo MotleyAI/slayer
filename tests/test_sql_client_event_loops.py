@@ -1,4 +1,4 @@
-"""A client holds one async engine per event loop (spec: sql/execution)."""
+"""A client holds one async engine per event loop (spec: database/execution)."""
 
 from __future__ import annotations
 
@@ -18,9 +18,9 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import client as client_module
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.database import client as client_module
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._pg_helpers import pg_database
 
@@ -218,13 +218,13 @@ async def test_close_warns_while_a_live_loops_engine_remains(
     client = SlayerSQLClient(pg_ds)
     try:
         await client.execute(SQL)
-        with caplog.at_level(logging.WARNING, logger="slayer.sql.client"):
+        with caplog.at_level(logging.WARNING, logger="slayer.database.client"):
             client.close()
         assert any("aclose" in r.getMessage() for r in caplog.records)
         assert (await client.execute(SQL)).rows == ROWS
     finally:
         await client.aclose()
     caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="slayer.sql.client"):
+    with caplog.at_level(logging.WARNING, logger="slayer.database.client"):
         client.close()
     assert not any("aclose" in r.getMessage() for r in caplog.records)

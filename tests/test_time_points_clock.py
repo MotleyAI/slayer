@@ -8,7 +8,7 @@ import pytest
 
 from slayer.core.models import SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 
 from tests._dev1737_fixtures import seed_backend
 from tests._engine_helpers import seeded_exec_engine

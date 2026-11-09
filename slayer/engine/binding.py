@@ -64,7 +64,7 @@ from slayer.core.models import (
     shadows_library_function,
 )
 from slayer.core.warnings import LibraryNameShadowWarning
-from slayer.engine import dimension_routing
+from slayer.engine.population import dimension_routing
 from slayer.engine.key_metadata import bundle_dialect, scope_column_type
 from slayer.engine.param_binding import bind_aggregation_params
 from slayer.core.query import TimeDimension

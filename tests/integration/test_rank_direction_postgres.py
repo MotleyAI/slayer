@@ -6,7 +6,7 @@ from pytest_postgresql import factories
 import tests.test_rank_direction as base
 from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1847_fixtures import (
     _CORDERS_ROWS,

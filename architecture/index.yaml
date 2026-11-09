@@ -13,11 +13,11 @@ x-guards: {baseline: 0}
 
 cross_cutting_specs:
   queries: {touches: [python.core, python.engine, python.sql, python.storage]}
-  models: {touches: [python.core, python.storage, python.engine]}
+  models: {touches: [python.core, python.storage, python.engine, python.live_schema]}
   aggregations: {touches: [python.core, python.engine, python.sql]}
   cli: {touches: [python.surfaces, python.protocols]}
   results: {touches: [python.core, python.surfaces, python.protocols]}
-  compatibility: {touches: [python.core, python.engine, python.importers, python.storage, python.surfaces]}
+  compatibility: {touches: [python.core, python.database, python.engine, python.importers, python.live_schema, python.sql, python.storage, python.surfaces]}
 
 # arc42 files not owned by one node; arch_check flags unlisted orphans.
 cross_cutting_arc42: [architecture/semantics.arc42.md]
@@ -33,3 +33,5 @@ diagrams:
   architecture/python.core.arc42.md: [core_focus]
   architecture/python.engine.arc42.md: [query_pipeline, engine_focus]
   architecture/python.sql.arc42.md: [sql_focus]
+  architecture/python.database.arc42.md: [database_focus]
+  architecture/python.live_schema.arc42.md: [live_schema_focus]

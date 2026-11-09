@@ -1,4 +1,4 @@
-"""sql §3.2 / §3.13 guard: ``client.py`` picks no timeout by ``db_type`` and never re-parses a statement it executes."""
+"""sql §3.2 / database §3.2 guard: ``client.py`` picks no timeout by ``db_type`` and never re-parses a statement it executes."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import ast
 import re
 from pathlib import Path
 
-from slayer.sql import client as sql_client
+from slayer.database import client as sql_client
 
 # The one sqlglot parse allowed in client.py: save-time model classification, never executed.
 _PARSE_ALLOWED_IN = {"classify_model_sql"}

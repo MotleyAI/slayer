@@ -39,6 +39,7 @@ from slayer.core.models import (
 from slayer.core.query import SlayerQuery
 from slayer.core.warnings import LibraryNameShadowWarning, SlayerLibraryNameShadowWarning, caller_announces
 from slayer.embeddings.models import Embedding
+from slayer.sql import connection_policy
 from slayer.memories.models import (
     MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX,
     Memory,
@@ -61,10 +62,10 @@ from slayer.storage.legacy_alias_rewrite import (
     extract_dunder_chains,
     mode_a_surface_texts,
 )
-from slayer.sql.client import SqlClient
+from slayer.database.client import SqlClient
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.sql_template import check_aggregation_definition
-from slayer.storage.type_refinement import (
+from slayer.live_schema.type_refinement import (
     has_refineable_columns,
     has_sqlite_widenable_columns,
     refine_dict_with_live_schema,
@@ -701,7 +702,7 @@ class StorageBackend(ABC):
             self._granularities_settled = True
 
     async def _with_library_granularities_renamed(self, *, name: str, data: Any) -> Any:
-        """A stored datasource dict with each granularity a library name reserves renamed (system P11.2), its
+        """A stored datasource dict with each granularity a library name reserves renamed (storage P3.2), its
         dependants persisted before it so an interrupted rename converges."""
         if not isinstance(data, dict):
             return data
@@ -1154,6 +1155,7 @@ class StorageBackend(ABC):
     async def save_datasource(self, datasource: DatasourceConfig) -> None:
         """Persist a datasource config (upsert by exact name) once its custom granularities pass the save-time rules. Backends must NOT override this."""
         datasource.check_granularities()
+        connection_policy.check_transaction_pooler(datasource)
         await self._save_datasource_impl(datasource)
 
     @abstractmethod

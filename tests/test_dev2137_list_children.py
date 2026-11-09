@@ -13,7 +13,7 @@ from slayer.core.errors import SlayerError
 from slayer.core.join_walker import list_child, with_list_children
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects.base import ServerProfile
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1836_fixtures import broadcast_warnings

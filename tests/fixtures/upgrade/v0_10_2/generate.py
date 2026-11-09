@@ -19,9 +19,9 @@ import slayer
 
 from slayer.core.models import Aggregation, AggregationParam, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.engine_factory import get_engine, invalidate_engine
+from slayer.database.engine_factory import get_engine, invalidate_engine
 from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage

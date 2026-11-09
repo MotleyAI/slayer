@@ -13,13 +13,13 @@ import pytest
 import sqlalchemy as sa
 
 from slayer.core.models import DatasourceConfig, SlayerModel, sanitize_model_name
-from slayer.sql import engine_factory
-from slayer.engine import ingestion as ingestion_module
-from slayer.engine.ingestion import (
+from slayer.database import engine_factory
+from slayer.live_schema import ingestion as ingestion_module
+from slayer.live_schema.ingestion import (
     IngestionScanReport,
     _introspect_table_columns,
 )
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
 from sqlalchemy.pool import QueuePool
 
@@ -340,7 +340,7 @@ class TestSkipBackstop:
             return insp
 
         monkeypatch.setattr(
-            "slayer.sql.client.sa.inspect", _patched_inspect
+            "slayer.database.client.sa.inspect", _patched_inspect
         )
 
         report = await _report(ds)
@@ -378,16 +378,17 @@ class TestIdleRelease:
 
         class _ExplodingEngine:
             pool = _ExplodingPool()
+            url = sa.engine.make_url(f"sqlite:///{ds.database}")
 
             def connect(self) -> nullcontext[MagicMock]:
                 return nullcontext(MagicMock())
 
         monkeypatch.setattr(
-            "slayer.sql.engine_factory.get_engine",
+            "slayer.database.engine_factory.get_engine",
             lambda _cfg: _ExplodingEngine(),
         )
         monkeypatch.setattr(
-            "slayer.sql.client.sa.inspect",
+            "slayer.database.client.sa.inspect",
             lambda *_a, **_k: (_ for _ in ()).throw(_Boom("the real failure")),
         )
 
@@ -443,8 +444,9 @@ class TestIdleRelease:
 
         class _ExplodingEngine:
             pool = _ExplodingPool()
+            url = sa.engine.make_url(f"sqlite:///{workspace / 'live.db'}")
 
-        with caplog.at_level(logging.WARNING, logger="slayer.sql.engine_factory"):
+        with caplog.at_level(logging.WARNING, logger="slayer.database.engine_factory"):
             engine_factory.release_idle(_ExplodingEngine())  # pyright: ignore[reportArgumentType]  # deliberate fake
 
         assert any(

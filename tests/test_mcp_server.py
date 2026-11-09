@@ -13,7 +13,7 @@ from mcp.shared.memory import create_connected_server_and_client_session
 from mcp.types import TextContent
 from sqlalchemy import exc as sa_exc
 
-import slayer.engine.ingestion as ingestion_mod
+import slayer.live_schema.ingestion as ingestion_mod
 from slayer.core.enums import DataType
 from slayer.core.query import SlayerQuery
 from slayer.core.models import (
@@ -25,8 +25,8 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.engine.ingestion import _is_id_column
-from slayer.sql.client import DatabaseUnavailable, ResultColumnType, SlayerSQLClient
+from slayer.live_schema.ingestion import _is_id_column
+from slayer.database.client import DatabaseUnavailable, ResultColumnType, SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
 from slayer.inspect.model_render import (
     _choose_sample_agg,

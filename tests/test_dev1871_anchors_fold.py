@@ -12,7 +12,7 @@ import pytest
 
 from slayer.core.errors import PopulationErrorReason, PopulationInferenceError
 from slayer.core.query import SlayerQuery
-from slayer.engine.population import infer_population
+from slayer.engine.population.inference import infer_population
 
 from tests._dev1866_fixtures import DS_CHAIN, make_inference_storage
 

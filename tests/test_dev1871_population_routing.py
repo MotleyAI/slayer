@@ -15,8 +15,8 @@ import pytest
 
 from slayer.core.errors import PopulationErrorReason, PopulationInferenceError
 from slayer.core.query import SlayerQuery
-from slayer.engine.dimension_routing import short_form_route_or_none
-from slayer.engine.population import evaluate_candidates, infer_population
+from slayer.engine.population.dimension_routing import short_form_route_or_none
+from slayer.engine.population.inference import evaluate_candidates, infer_population
 
 from tests._dev1866_fixtures import (
     DS_CHAIN,

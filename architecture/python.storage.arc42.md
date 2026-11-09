@@ -7,8 +7,7 @@ the `StorageBackend` ABC (`base.py`): a YAML tree (`yaml_storage.py`) or one
 SQLite file (`sqlite_storage.py`), with the embedding sidecar
 (`sidecar_embedding_store.py`) shared by both, the dict→dict migration registry
 (`migrations.py`, `v2_…v9_migration.py`, `legacy_alias_rewrite.py`) applied on
-load, crash-safe writes (`atomic_write.py`), and live-schema type refinement
-(`type_refinement.py`).
+load, and crash-safe writes (`atomic_write.py`).
 
 ## 2. Building blocks
 
@@ -25,6 +24,14 @@ Child `migrations` (the registry); the other modules are leaves of the node.
    (inaccessible ≡ deleted); its writes merge onto the full documents. Code
    downstream of storage takes no caller context.
    [enforced: test:tests/test_model_access.py]
+3. **Versioned persistence**: models, queries, datasource configs and memories
+   carry `version`; migrations run automatically on load. [review]
+   - **3.1** A load never writes; an upgraded document is persisted only by a
+     save. [target: DEV-1844]
+   - **3.2** Library growth never invalidates a stored artefact: a newly
+     reserved name yields to a model's own definition of it inside that model;
+     any other collision ships with a migration.
+     [enforced: test:tests/test_library_growth.py]
 
 ## 4. Rationale
 

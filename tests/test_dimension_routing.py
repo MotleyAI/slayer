@@ -1,5 +1,5 @@
 """Unit tests for the pure route resolver
-``slayer/engine/dimension_routing.py``: ``short_form_route_or_none`` (executable
+``slayer/engine/population/dimension_routing.py``: ``short_form_route_or_none`` (executable
 hop-token path for a uniquely-routable target, else ``None``, never raises),
 ``route_dotted_target`` (same but raises ``UnresolvableDimensionJoinError`` with a
 route-aware ``suggested_path`` on ambiguous/unreachable), and ``_safe_hops`` (the
@@ -16,7 +16,7 @@ from slayer.core.errors import UnresolvableDimensionJoinError
 from slayer.core.join_search import HopFilter, addressable_hops
 from slayer.core.join_walker import canonical_token
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.engine.dimension_routing import (
+from slayer.engine.population.dimension_routing import (
     route_dotted_target,
     short_form_route_or_none,
 )

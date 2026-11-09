@@ -15,9 +15,9 @@ from slayer.api.server import create_app
 from slayer.async_utils import run_sync
 from slayer.core.errors import SlayerError
 from slayer.core.models import DatasourceConfig
-from slayer.engine import ingestion as ingestion_module
+from slayer.live_schema import ingestion as ingestion_module
 from slayer.mcp.server import create_mcp_server
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._cli_inprocess import run_cli_in_process

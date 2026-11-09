@@ -17,7 +17,7 @@ from slayer.core.join_walker import follow, resolved_terminal, walk, walk_cancel
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import _build_stage_graph, _stage_referenced_columns_for_base
+from slayer.live_schema.schema_drift import _build_stage_graph, _stage_referenced_columns_for_base
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import disposable_engine, seeded_exec_engine

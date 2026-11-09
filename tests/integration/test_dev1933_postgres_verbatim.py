@@ -18,7 +18,7 @@ from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 import sqlglot
 
-from slayer.sql.client import SlayerSQLClient, render_type_probe
+from slayer.database.client import SlayerSQLClient, render_type_probe
 from slayer.sql.dialects import PostgresDialect
 from slayer.storage.yaml_storage import YAMLStorage
 

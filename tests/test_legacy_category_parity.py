@@ -1,6 +1,6 @@
 """The deprecated category probes answer the category SLayer 1.6.0 answered for every input it classified.
 
-The 1.6.0 classifier is copied verbatim below as the oracle. Spec: sql/client-contract.
+The 1.6.0 classifier is copied verbatim below as the oracle. Spec: database/client-contract.
 """
 
 from __future__ import annotations
@@ -20,8 +20,8 @@ from pytest_postgresql import factories
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import engine_factory
-from slayer.sql.client import (
+from slayer.database import engine_factory
+from slayer.database.client import (
     DelegatingSqlClient,
     SlayerSQLClient,
     _types_from_cursor,
@@ -39,7 +39,7 @@ postgresql = factories.postgresql("postgresql_proc")
 
 DEPRECATED = pytest.mark.filterwarnings("ignore:.*get_column_types.*:FutureWarning")
 
-# --- SLayer 1.6.0's classifier (slayer/sql/client.py, slayer/sql/dialects/snowflake.py), verbatim ---
+# --- SLayer 1.6.0's classifier (slayer/database/client.py, slayer/sql/dialects/snowflake.py), verbatim ---
 
 _PG_OID_MAP: dict[int, str] = {
     16: "boolean", 20: "number", 21: "number", 23: "number", 26: "number", 700: "number", 701: "number",

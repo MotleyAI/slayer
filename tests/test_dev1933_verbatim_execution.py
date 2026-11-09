@@ -20,9 +20,9 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import client as sql_client
-from slayer.sql import engine_factory
-from slayer.sql.client import ResultColumnType, SlayerSQLClient, TypeProbe, render_type_probe
+from slayer.database import client as sql_client
+from slayer.database import engine_factory
+from slayer.database.client import ResultColumnType, SlayerSQLClient, TypeProbe, render_type_probe
 from slayer.sql.dialects import SqliteDialect
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
@@ -83,7 +83,7 @@ def _forwards_to_wrapped_client(func: ast.Attribute) -> bool:
 
 
 class TestClientModuleGuard:
-    """python.sql.arc42.md §3.13: the client constructs no text clause and issues no
+    """python.database.arc42.md §3.2: the client constructs no text clause and issues no
     driver-level execute outside the single verbatim helper pair."""
 
     def _tree(self) -> ast.Module:
@@ -178,6 +178,8 @@ def _fake_async_conn() -> MagicMock:
     conn.execute = AsyncMock(return_value=result)
     conn.rollback = AsyncMock()
     conn.get_raw_connection = AsyncMock()
+    sync_conn = MagicMock()
+    conn.run_sync = AsyncMock(side_effect=lambda fn, *a, **kw: fn(sync_conn, *a, **kw))
     return conn
 
 
@@ -211,7 +213,7 @@ class TestAsyncPathsUseVerbatimDoor:
         # The timeout SET *and* the query both went through the door.
         statements = [call.args[0] for call in conn.exec_driver_sql.await_args_list]
         assert _DOOR_SQL in statements
-        assert any(stmt.startswith("SET LOCAL statement_timeout") for stmt in statements)
+        assert any(stmt.startswith("SET statement_timeout") for stmt in statements)
 
     async def test_get_result_column_types_async(self) -> None:
         conn = _fake_async_conn()
@@ -263,7 +265,7 @@ class TestSyncPathsUseVerbatimDoor:
         _assert_all_verbatim_sync(conn)
         statements = [call.args[0] for call in conn.exec_driver_sql.call_args_list]
         assert _DOOR_SQL in statements
-        assert any(stmt.startswith("SET LOCAL statement_timeout") for stmt in statements)
+        assert any(stmt.startswith("SET statement_timeout") for stmt in statements)
 
     def test_get_result_column_types_sync(self) -> None:
         conn = _fake_sync_conn()

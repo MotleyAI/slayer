@@ -11,7 +11,7 @@ from sqlglot import exp
 
 from slayer.core.errors import QueryTypeError
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.base import ServerProfile
 from tests._dev2101_fixtures import (

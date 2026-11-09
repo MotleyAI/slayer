@@ -9,12 +9,13 @@ example a gateway that holds the database credentials and enforces its own gover
 
 ## The contract
 
-A client implements `slayer.sql.client.SqlClient`. Every method is `async` except `close()`.
+A client implements `slayer.database.client.SqlClient`. Every method is `async` except `close()`.
 
 | Member | Returns | Meaning |
 |---|---|---|
 | `datasource` | `DatasourceConfig` | The datasource the client serves. |
-| `execute(sql)` | `ExecutionResult(rows=[{column: value}, ...])` | Run a rendered statement **verbatim** — `:name` and `%` are literal text. A statement that returns no rows (DDL) yields `rows=[]`. |
+| `execute(sql)` | `ExecutionResult(rows=[{column: value}, ...])` | Run a rendered statement **verbatim** — `:name` and `%` are literal text. A statement that returns no rows (DDL) yields `rows=[]`. The default client refuses a statement that leads with a session or transaction keyword (`USE`, `SET`, `RESET`, `ALTER SESSION`, `DISCARD`, `BEGIN`, `START TRANSACTION`, `COMMIT`, `ROLLBACK`, `END`, `ABORT`, `SAVEPOINT`, `RELEASE`, `SAVE`, `XA`) with `SessionStatementRefused`, sending nothing; session state changed through a function such as Postgres `set_config` is not detected, so don't change it that way. |
+| `explain(statements)` | `ExecutionResult` | Run an `ExplainStatements` on one connection, each statement verbatim and in its own batch: `session_on` (if set), then `statement`, whose rows are the plan, then `session_off` even when `statement` fails or is cancelled; a connection whose `session_off` is not confirmed must never be reused. |
 | `get_result_column_types(sql)` | `{column: ResultColumnType(type, element_type, db_type)}` | Each result column's SLayer `type` (`DataType`), a list's `element_type`, and the database's type name (`db_type`, `None` only when the driver names none), without fetching data beyond what certifying integers needs. |
 | `server_profile()` | `ServerProfile` | Server facts SLayer gates features on (ClickHouse); `ServerProfile()` when there are none. |
 | `ping()` | `None` | Raise unless the database answers. |
@@ -30,6 +31,8 @@ A client implements `slayer.sql.client.SqlClient`. Every method is `async` excep
 | `close()` | `None` | Release everything; idempotent. |
 
 A client written for 1.6.0, whose type probe is `get_column_types(sql)` returning `number` / `string` / `time` / `boolean`, keeps working until SLayer 2.0: each probe reads those categories as DOUBLE, TEXT, TIMESTAMP and BOOLEAN and warns, as does `DelegatingSqlClient.get_column_types`.
+
+A client without `explain` (one written from scratch without it, or a `DelegatingSqlClient` subclass overriding `execute` but not `explain`) has a single-statement EXPLAIN run through its `execute` with a warning until SLayer 2.0, and SQL Server's EXPLAIN, which needs `session_on` / `session_off`, refused with `ExplainUnsupportedError`.
 
 A `TableLocation(name, schema_name=None, catalog=None)` names a table; an unset part is the
 connection's current one.
@@ -58,7 +61,8 @@ The smallest gateway routes only the statements and keeps the default client for
 ```python
 from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.client import DelegatingSqlClient, ExecutionResult, ResultColumnType, SlayerSQLClient
+from slayer.database.client import DelegatingSqlClient, ExecutionResult, ResultColumnType, SlayerSQLClient
+from slayer.sql.dialects.base import ExplainStatements
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -66,6 +70,9 @@ class GatewayClient(DelegatingSqlClient):
     async def execute(self, sql: str) -> ExecutionResult:
         # Send ``sql`` to your gateway here; this one runs it on the wrapped client.
         return await self.inner.execute(sql)
+
+    async def explain(self, statements: ExplainStatements) -> ExecutionResult:
+        return await self.inner.explain(statements)
 
     async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
         return await self.inner.get_result_column_types(sql)
@@ -100,11 +107,11 @@ always use the default client.
 
 ## Verifying a client
 
-`slayer.sql.conformance` checks a client against the contract without a test framework. Load the
+`slayer.database.conformance` checks a client against the contract without a test framework. Load the
 fixture into the database behind your client, then run the suite:
 
 ```python
-from slayer.sql.conformance import capabilities_for, fixture_statements, run_conformance
+from slayer.database.conformance import capabilities_for, fixture_statements, run_conformance
 
 for statement in fixture_statements(dialect="postgres"):
     ...  # run it on the database your client reaches

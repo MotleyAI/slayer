@@ -1,4 +1,4 @@
-"""The one door for deprecations scheduled for removal: a call to ``warn_deprecated`` is the tag.
+"""The one door for deprecations scheduled for removal: a call to ``warn_deprecated`` or ``raise_moved`` is the tag.
 
 ``tests/test_law_removal_tripwire.py`` scans for these calls and fails once the package's
 major version reaches a call's ``removal``.
@@ -8,6 +8,7 @@ import contextlib
 import sys
 import warnings
 from collections.abc import Generator
+from typing import NoReturn
 
 from pydantic import BaseModel
 
@@ -35,6 +36,12 @@ def warn_deprecated(
         warnings.warn_explicit(
             message, FutureWarning, filename=location.filename, lineno=location.lineno, module=location.module,
         )
+
+
+def raise_moved(old: str, new: str, *, removal: str) -> NoReturn:
+    """Raise an ``ImportError`` saying ``old`` moved to ``new`` in SLayer 2.0; ``removal`` as in ``warn_deprecated``."""
+    del removal  # read statically by the tripwire
+    raise ImportError(f"{old} moved to {new} in SLayer 2.0")
 
 
 @contextlib.contextmanager

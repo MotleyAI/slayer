@@ -47,11 +47,11 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine import ingestion
+from slayer.live_schema import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import client as client_module
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.database import client as client_module
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects.reflection import TableLocation
 from slayer.storage.yaml_storage import YAMLStorage
 from tests.integration._dev2015_server import (
@@ -85,9 +85,11 @@ from tests.integration._consecutive_periods_calendar import (
     seed_statements,
     streak_model,
 )
+from tests.integration._one_request import PATHS, assert_one_request_each, run_three
 
 pytest.importorskip("testcontainers.mysql")
 
+import aiomysql  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
 import pymysql  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
 from testcontainers.mysql import MySqlContainer  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
 
@@ -293,7 +295,7 @@ def _mysql_env_storage(mysql_container, tmp_path_factory):
 def mysql_env(_mysql_env_storage) -> SlayerQueryEngine:
     """Per-test SlayerQueryEngine wrapping the module-scoped storage. The
     engine is recreated per-test because its async SA engine binds to the
-    current event loop (slayer/sql/client.py:148)."""
+    current event loop (slayer/database/client.py:148)."""
     return SlayerQueryEngine(storage=_mysql_env_storage)
 
 
@@ -1807,3 +1809,68 @@ async def test_aiomysql_sync_bridge_after_async_use(mysql_probe_ds: DatasourceCo
         await engine.aclose()
         engine.close()
     assert first.rows == bridged.rows == after.rows == [{"x": 1}]
+
+
+# ---------------------------------------------------------------------------
+# A warm statement costs one request
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mysql_general_log(mysql_container):
+    """The server's general query log, on for the test; reads one connection's requests."""
+    conn = _admin_connect(mysql_container)
+    with conn.cursor() as cur:
+        cur.execute("SET GLOBAL log_output = 'TABLE'")
+        cur.execute("SET GLOBAL general_log = 'ON'")
+
+    def _requests(connection_id: int) -> list[str]:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT command_type, CONVERT(argument USING utf8mb4) FROM mysql.general_log WHERE thread_id = %s",
+                (connection_id,),
+            )
+            return [f"{kind}: {argument}" for kind, argument in cur.fetchall()]
+
+    try:
+        yield _requests
+    finally:
+        with conn.cursor() as cur:
+            cur.execute("SET GLOBAL general_log = 'OFF'")
+        conn.close()
+
+
+@pytest.fixture
+def mysql_pings(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Every driver-level ``COM_PING`` (the general log does not record pings)."""
+    pings: list[str] = []
+
+    def _spy(cls: type) -> None:
+        real = cls.ping
+
+        # The drivers' own signature: SQLAlchemy reads it to pick its call form.
+        def _ping(self: Any, reconnect: bool = True) -> Any:
+            pings.append(cls.__module__)
+            return real(self, reconnect)
+
+        monkeypatch.setattr(cls, "ping", _ping)
+
+    _spy(pymysql.connections.Connection)
+    _spy(aiomysql.Connection)
+    return pings
+
+
+@pytest.mark.integration
+@pytest.mark.filterwarnings("ignore::FutureWarning")
+@pytest.mark.parametrize("path", PATHS)
+@pytest.mark.parametrize("driver", ["pymysql", "aiomysql"])
+def test_warm_statement_costs_one_request(
+    mysql_probe_ds: DatasourceConfig, mysql_general_log, mysql_pings: list[str], driver: str, path: str,
+) -> None:
+    ds = _aiomysql(mysql_probe_ds) if driver == "aiomysql" else mysql_probe_ds
+    rows = run_three(
+        SlayerSQLClient(datasource=ds), path=path,
+        sql=lambda marker: f"SELECT CONNECTION_ID() AS cid, '{marker}' AS m",
+    )
+    assert_one_request_each(mysql_general_log(rows[0][0]["cid"]))
+    assert mysql_pings == []

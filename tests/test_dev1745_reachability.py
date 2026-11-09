@@ -42,7 +42,7 @@ from slayer.core.keys import (
 )
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.filter_reachability import (
+from slayer.engine.population.filter_reachability import (
     UnhandledValueKindError,
     filter_reachability_for,
     recompute_filter_reachability,

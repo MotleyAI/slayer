@@ -21,9 +21,10 @@ from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, StarKey, Tim
 from slayer.core.models import ModelJoin, SlayerModel
 from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope
-from slayer.engine import bind_inputs, param_binding, schema_drift
+from slayer.engine import bind_inputs, param_binding
+from slayer.live_schema import schema_drift
 from slayer.engine.binding import bind_expr, bind_time_dimension
-from slayer.engine.join_safety import attributable_from_root, reroot_from_root
+from slayer.engine.cardinality.join_safety import attributable_from_root, reroot_from_root
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle

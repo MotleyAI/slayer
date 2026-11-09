@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.query import SlayerQuery
-from slayer.engine.population import infer_population
+from slayer.engine.population.inference import infer_population
 from slayer.engine.query_engine import SlayerQueryEngine
 
 from tests._dev1866_fixtures import DS_CHAIN, DS_FAN, make_inference_storage

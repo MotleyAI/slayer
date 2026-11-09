@@ -1,4 +1,4 @@
-"""Quoted text is never a reference, and reported variable demand is binding's (system §3.18)."""
+"""Quoted text is never a reference, and reported variable demand is binding's (system §3.8)."""
 
 from __future__ import annotations
 

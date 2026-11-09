@@ -23,11 +23,11 @@ import sqlalchemy as sa
 import sqlalchemy.ext.asyncio as sa_asyncio
 from pydantic import BaseModel, ConfigDict, Field
 
-import slayer.sql.client as client_module
+import slayer.database.client as client_module
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -35,7 +35,7 @@ BACKEND_SUFFIX = "__gateway_backend"
 DS_NAME = "shop"
 
 # Every client operation of the contract (statements, metadata, lifecycle).
-STATEMENT_OPS = ("execute", "get_result_column_types", "server_profile")
+STATEMENT_OPS = ("execute", "explain", "get_result_column_types", "server_profile")
 METADATA_OPS = (
     "ping", "list_schemas", "default_schema", "current_catalog", "list_objects",
     "reflect_columns", "reflect_table_keys", "table_comment", "schema_description",
@@ -151,6 +151,9 @@ class RecordingClient:
     async def execute(self, *args: Any, **kwargs: Any) -> Any:
         return await self._forward("execute", *args, **kwargs)
 
+    async def explain(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._forward("explain", *args, **kwargs)
+
     async def get_result_column_types(self, *args: Any, **kwargs: Any) -> Any:
         return await self._forward("get_result_column_types", *args, **kwargs)
 
@@ -196,10 +199,13 @@ class RecordingClient:
         return [c.op for c in self.calls]
 
     def statements(self) -> list[str]:
-        """SQL text of every ``execute`` / ``get_result_column_types`` call, in order."""
+        """SQL text of every ``execute`` / ``explain`` / ``get_result_column_types`` call, in order."""
         out = []
         for call in self.calls:
-            if call.op in ("execute", "get_result_column_types"):
+            if call.op == "explain":
+                explained = call.args[0] if call.args else call.kwargs["statements"]
+                out.extend(s for s in (explained.session_on, explained.statement, explained.session_off) if s)
+            elif call.op in ("execute", "get_result_column_types"):
                 out.append(call.args[0] if call.args else call.kwargs["sql"])
         return out
 

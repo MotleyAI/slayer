@@ -12,7 +12,7 @@ from slayer.core.enums import JoinCardinality
 from slayer.core.errors import AmbiguousJoinPathError
 from slayer.core.keys import ColumnKey
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.engine.join_safety import (
+from slayer.engine.cardinality.join_safety import (
     _route_via_common_prefix,
     attributable_from_root,
     broadcast_reason,

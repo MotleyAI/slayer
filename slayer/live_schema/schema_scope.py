@@ -1,0 +1,563 @@
+"""Schema identity and ingest-scope resolution.
+
+``SchemaRef`` is the single owner of a schema's identity — its catalog, its
+name, whether it was explicitly requested, and whether it is the connection
+default. Every surface that qualifies an ingested table (``sql_table``), probes
+columns / PKs / comments, or lists ingestable objects goes through a
+``SchemaRef`` rather than passing a bare schema string around, so the
+catalog-qualified token that keeps DuckDB's ``Inspector`` from sweeping every
+attached catalog is carried end to end.
+
+Dialect facts (the connection default, catalog-qualified tokens) come from the
+``SqlDialect`` registry. The behavioural contract
+(qualify matrix, dialect-gated catalog split, system-schema filter, scope
+conflict validation) is pinned by ``tests/test_schema_scope.py``; resolution
+precedence / dedup / current-catalog preference is pinned end-to-end on DuckDB
+by ``tests/test_ingestion_schema_qualification.py``.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Optional, TypedDict
+
+from pydantic import BaseModel, model_validator
+from sqlalchemy.sql.elements import quoted_name
+from sqlglot import exp
+from sqlglot.errors import SqlglotError
+
+from slayer.core.models import DatasourceConfig
+from slayer.database.client import AuthenticationRefused, DatabaseUnavailable, SqlClient
+from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, dialect_for_sa_backend
+from slayer.sql.dialects.reflection import TableLocation
+from slayer.sql.naming import denoted_name, render_table_name
+from slayer.sql.render.parse import parse_table
+
+logger = logging.getLogger(__name__)
+
+
+class SchemaEnumerationError(Exception):
+    """``get_schema_names()`` failed, so the schema list is unknown. Raised only
+    for ``all_schemas`` — an empty scope there would masquerade as an empty
+    datasource; the default / requested branches still work from a bare default.
+    """
+
+
+# System / bookkeeping schemas never ingested. Matched on the LAST dotted
+# segment (``system.information_schema`` → ``information_schema``) …
+_SYSTEM_LAST_SEGMENTS = frozenset(
+    {
+        "information_schema",
+        "pg_catalog",
+        "pg_toast",
+        "performance_schema",
+        "mysql",
+        "sys",
+        "sys_temp",
+    }
+)
+# … or the FIRST segment for DuckDB's own catalogs (``system.*`` / ``temp.*``).
+_SYSTEM_FIRST_SEGMENTS = frozenset({"system", "temp"})
+
+
+def _dialect_qualifies_tokens(dialect_name: Optional[str]) -> bool:
+    return dialect_for_sa_backend((dialect_name or "").lower()).catalog_qualified_schema_tokens
+
+
+def is_quoted_name(name: object) -> bool:
+    """Whether ``name`` is a SQLAlchemy ``quoted_name`` naming its object exactly (a lower-case Snowflake name)."""
+    return getattr(name, "quote", None) is True
+
+
+def live_key(name: str) -> tuple[str, bool]:
+    """A live name's identity: SQLAlchemy reports Snowflake's ``FOO`` and ``"foo"`` alike, the quote flag apart."""
+    return str(name), is_quoted_name(name)
+
+
+def live_name(name: str, *, quoted: bool) -> str:
+    """``name`` in SQLAlchemy's spelling, a ``quoted_name`` when ``quoted``."""
+    return quoted_name(name, True) if quoted else name
+
+
+class SchemaRef(BaseModel, frozen=True):
+    """One schema's identity — the single owner of schema qualification.
+
+    ``catalog`` / ``name`` locate the schema (``catalog`` is populated only on
+    catalog-qualifying dialects). ``requested`` holds the exact spelling a user
+    asked for, when they asked; ``is_default`` marks the connection default.
+    Frozen so a resolved ref is hashable and can be de-duplicated by identity.
+    """
+
+    catalog: Optional[str] = None
+    name: Optional[str] = None
+    requested: Optional[str] = None
+    is_default: bool = False
+    quoted: bool = False  # SQLAlchemy's ``quoted_name`` flag on ``name``
+
+    @model_validator(mode="before")
+    @classmethod
+    def _quoted_from_name(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "quoted" not in data:
+            return {**data, "quoted": is_quoted_name(data.get("name"))}
+        return data
+
+    def _live(self, name: str) -> str:
+        return live_name(name, quoted=self.quoted)
+
+    @property
+    def live_name(self) -> Optional[str]:
+        """``name`` in SQLAlchemy's spelling."""
+        return self._live(self.name) if self.name else self.name
+
+    @property
+    def explicit(self) -> bool:
+        """True when a user named this schema (so it is emitted verbatim)."""
+        return self.requested is not None
+
+    @property
+    def token(self) -> Optional[str]:
+        """The catalog-qualified token to hand ``Inspector`` methods."""
+        if self.catalog and self.name:
+            return f"{self.catalog}.{self.name}"
+        return self.live_name
+
+    def qualify(self, obj_name: str, *, dialect: SqlDialect) -> str:
+        """The persisted ``sql_table`` of live object ``obj_name`` in this schema.
+
+        An explicit request names its schema exactly as typed (a catalog only
+        when typed). An auto-resolved default (or a dialect with no schema
+        concept) stays bare; an auto-resolved non-default names its bare schema
+        (never the catalog — the datasource already points at one catalog).
+        """
+        if self.requested is not None:
+            *catalog, schema = (self.requested.split(".", 1) if dialect.catalog_qualified_schema_tokens
+                                else [self.requested])
+            qualifiers = [*catalog, self._live(schema)]
+        elif self.is_default or not self.name:
+            qualifiers = []
+        else:
+            qualifiers = [self._live(self.name)]
+        return render_table_name(parts=[*qualifiers, obj_name], dialect=dialect)
+
+
+class SkippedSchema(BaseModel):
+    """A visible schema left out of scope, with an actionable reason."""
+
+    token: str
+    reason: str
+
+
+class IngestScope(BaseModel):
+    """The resolved set of schemas to ingest, plus hints and skips."""
+
+    schemas: list[SchemaRef]
+    #: Own-catalog schemas present but NOT in scope — the source of the
+    #: "new schema available" hint. Populated only when exactly one schema is
+    #: in scope and ``all_schemas`` is off.
+    other_schemas: list[str] = []
+    #: Foreign-catalog / system schemas explicitly dropped, never silently.
+    skipped: list[SkippedSchema] = []
+
+
+def table_live_parts(table: exp.Table) -> list[str]:
+    """``table``'s ``[[catalog,] schema,] object`` names in SQLAlchemy's spelling, a quoted part flagged quoted."""
+    return [live_name(p.name, quoted=p.quoted)
+            for p in (table.args.get("catalog"), table.args.get("db"), table.this) if isinstance(p, exp.Identifier)]
+
+
+def sql_table_parts(sql_table: str, *, dialect: SqlDialect) -> list[str]:
+    """The live names a persisted ``sql_table`` reads (``[[catalog,] schema,] object``); unparseable: itself."""
+    try:
+        table = parse_table(name=sql_table, dialect=dialect)
+    except SqlglotError:
+        return [sql_table]
+    return table_live_parts(table)
+
+
+def sql_table_location(sql_table: str, *, dialect: SqlDialect) -> TableLocation:
+    """The live table a persisted ``sql_table`` names, each part with its own quote flag."""
+    *qualifiers, name = sql_table_parts(sql_table, dialect=dialect)
+    return TableLocation(name=name, schema_name=qualifiers[-1] if qualifiers else None,
+                         catalog=qualifiers[-2] if len(qualifiers) > 1 else None)
+
+
+def schema_ref_from_token(
+    token: str,
+    *,
+    dialect_name: Optional[str],
+    requested: Optional[str] = None,
+    is_default: bool = False,
+) -> SchemaRef:
+    """Build a ``SchemaRef`` from an enumerated schema token.
+
+    The catalog is peeled off only on catalog-qualifying dialects (DuckDB);
+    elsewhere the whole token is the schema name.
+    """
+    catalog: Optional[str] = None
+    name = token
+    if _dialect_qualifies_tokens(dialect_name) and "." in token:
+        catalog, _, name = token.partition(".")
+        catalog = catalog or None
+    return SchemaRef(
+        catalog=catalog, name=name, requested=requested, is_default=is_default
+    )
+
+
+def requested_schema_ref(token: Optional[str], *, client: SqlClient) -> Optional[SchemaRef]:
+    """The ref a user's schema token names, or ``None`` (the connection default) when absent."""
+    if not token:
+        return None
+    return schema_ref_from_token(token, dialect_name=client.datasource.type, requested=token)
+
+
+async def table_schema_ref(*, catalog: Optional[str], schema: Optional[str], client: SqlClient) -> Optional[SchemaRef]:
+    """The ref locating a parsed table's schema; a catalog the connection cannot reach raises."""
+    if catalog and not qualifies_tokens(client.datasource):
+        named = denoted_name(exp.to_identifier(catalog, quoted=is_quoted_name(catalog) or None),
+                             dialect=dialect_for_ds_type(client.datasource.type))
+        if named != await _current_database(client):
+            raise ValueError(f"catalog {catalog!r} is not reachable over this connection")
+        catalog = None
+    if not schema:
+        return None
+    return SchemaRef(catalog=catalog or None, name=schema, requested=schema)
+
+
+async def _current_database(client: SqlClient) -> Optional[str]:
+    """The connection's current database (``current_database()``), or None."""
+    try:
+        rows = (await client.execute("SELECT current_database()")).rows
+    except UNREACHABLE:
+        raise
+    except Exception:  # noqa: BLE001 — best-effort; absence just means "no catalog"
+        return None
+    value = next(iter(rows[0].values()), None) if rows else None
+    return value if isinstance(value, str) else None
+
+
+def is_system_schema(token: str, *, qualifies: bool = False) -> bool:
+    """True for catalog/bookkeeping schemas that are never ingested.
+
+    ``qualifies`` (catalog-qualifying dialects, i.e. DuckDB): the token may be
+    ``catalog.schema``, so it is split and the own-catalog names ``system`` /
+    ``temp`` are matched on the first segment. Elsewhere a dot is part of the
+    schema name (``CREATE SCHEMA "temp.x"``) so it is never split, and ``system``
+    / ``temp`` are ordinary user schemas — only the bookkeeping-name check applies.
+    """
+    if not token:
+        return False
+    if qualifies:
+        parts = token.split(".")
+        if parts[0].lower() in _SYSTEM_FIRST_SEGMENTS:
+            return True
+        last = parts[-1].lower()
+    else:
+        last = token.lower()
+    if last in _SYSTEM_LAST_SEGMENTS:
+        return True
+    return last.startswith(("pg_temp_", "pg_toast_temp_"))
+
+
+class IngestScopeArgs(TypedDict, total=False):
+    """The scan-scope keywords every ingestion entry point takes."""
+
+    include_tables: list[str] | None
+    exclude_tables: list[str] | None
+    schema: str | None
+    schemas: list[str] | None
+    all_schemas: bool
+    include_views: bool
+    surface_internals: bool
+
+
+def validate_scope_args(
+    *,
+    schema: Optional[str] = None,
+    schemas: Optional[list[str]] = None,
+    all_schemas: bool = False,
+) -> None:
+    """Reject conflicting scope requests at every entry point.
+
+    ``all_schemas`` is exclusive with any named schema, and the legacy single
+    ``schema`` is exclusive with the plural ``schemas``.
+    """
+    if all_schemas and (schema is not None or schemas is not None):
+        raise ValueError(
+            "all_schemas cannot be combined with an explicit schema / schemas "
+            "request — choose one."
+        )
+    if schema is not None and schemas is not None:
+        raise ValueError(
+            "Pass either a single schema or a list of schemas, not both."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Live connection helpers
+# ---------------------------------------------------------------------------
+
+
+#: Failures that mean the datasource gave no answer at all; never read as "nothing there".
+UNREACHABLE = (DatabaseUnavailable, AuthenticationRefused)
+
+
+def qualifies_tokens(datasource: DatasourceConfig) -> bool:
+    """True when the datasource's dialect emits catalog-qualified schema tokens (DuckDB)."""
+    return dialect_for_ds_type(datasource.type).catalog_qualified_schema_tokens
+
+
+async def default_schema_ref(client: SqlClient) -> SchemaRef:
+    """The catalog-qualified connection default, so a bare lookup never sweeps an attached catalog."""
+    catalog = await client.current_catalog() if qualifies_tokens(client.datasource) else None
+    return SchemaRef(catalog=catalog, name=await client.default_schema(), is_default=True)
+
+
+# ---------------------------------------------------------------------------
+# Scope resolution
+# ---------------------------------------------------------------------------
+
+
+def _dedup_requested(requested: Optional[list[str]]) -> Optional[list[str]]:
+    """Dedup a requested list, preserving first-seen order."""
+    if not requested:
+        return None
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in requested:
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
+def _dedup_refs(refs: list[SchemaRef]) -> list[SchemaRef]:
+    """Collapse refs that resolve to the same token (the double-scan bug)."""
+    seen: set[Optional[str]] = set()
+    out: list[SchemaRef] = []
+    for ref in refs:
+        if ref.token in seen:
+            continue
+        seen.add(ref.token)
+        out.append(ref)
+    return out
+
+
+def _hint_schemas(
+    own_refs: list[SchemaRef], in_scope: list[SchemaRef]
+) -> list[str]:
+    """Own-catalog schema names present but not covered by ``in_scope``."""
+    covered = {r.name for r in in_scope}
+    out: list[str] = []
+    for ref in own_refs:
+        if ref.name and ref.name not in covered and ref.name not in out:
+            out.append(ref.name)
+    return out
+
+
+async def _listed_schemas(client: SqlClient) -> Optional[list[str]]:
+    """The visible schema tokens, ``None`` when they cannot be listed (an unreachable database raises)."""
+    try:
+        return await client.list_schemas()
+    except UNREACHABLE:
+        raise
+    except Exception:  # noqa: BLE001 — no schema listing → default-only scope
+        return None
+
+
+def _enumerate_own_schemas(
+    *,
+    tokens: Optional[list[str]],
+    dialect: Optional[str],
+    qualifies: bool,
+    current_catalog: Optional[str],
+) -> tuple[list[SchemaRef], list[SkippedSchema], bool]:
+    """Split the visible schemas into own-catalog non-system refs and skips.
+
+    A schema in an attached catalog other than the connection's own is dropped
+    to ``skipped``, never silently ingested. Third value ``enum_ok`` is False
+    when the schemas could not be listed (``tokens`` is None), so ``all_schemas``
+    can raise rather than return a silent empty scope.
+    """
+    own_refs: list[SchemaRef] = []
+    skipped: list[SkippedSchema] = []
+    enum_ok = tokens is not None
+    for tok in tokens or []:
+        if is_system_schema(tok, qualifies=qualifies):
+            continue
+        ref = schema_ref_from_token(tok, dialect_name=dialect)
+        is_foreign = (
+            qualifies
+            and ref.catalog
+            and current_catalog
+            and ref.catalog != current_catalog
+        )
+        if is_foreign:
+            skipped.append(
+                SkippedSchema(
+                    token=tok,
+                    reason=(
+                        f"schema belongs to attached catalog {ref.catalog!r}; "
+                        f"point a separate datasource at {ref.catalog!r} to "
+                        f"ingest it"
+                    ),
+                )
+            )
+            continue
+        own_refs.append(ref)
+    return own_refs, skipped, enum_ok
+
+
+def _resolve_requested_name(
+    name: str,
+    *,
+    own_by_name: dict[Optional[str], SchemaRef],
+    default_schema: Optional[str],
+    dialect: Optional[str],
+    qualifies: bool,
+    current_catalog: Optional[str],
+    requested_spelling: Optional[str],
+) -> SchemaRef:
+    """Resolve one requested schema name to a ref, preferring the enumerated
+    entry (so its catalog is the connection's own) and stamping default/spelling.
+    """
+    is_def = name == default_schema
+    base = own_by_name.get(name)
+    if base is not None:
+        return base.model_copy(
+            update={"requested": requested_spelling, "is_default": is_def}
+        )
+    ref = schema_ref_from_token(
+        name, dialect_name=dialect, requested=requested_spelling, is_default=is_def
+    )
+    if qualifies and ref.catalog is None and current_catalog is not None:
+        ref = ref.model_copy(update={"catalog": current_catalog})
+    return ref
+
+
+def _drop_out_of_scope_refs(
+    schemas: list[SchemaRef],
+    *,
+    qualifies: bool,
+    current_catalog: Optional[str],
+    skipped: list[SkippedSchema],
+) -> list[SchemaRef]:
+    """Drop refs that must never be ingested into ``skipped`` (in place),
+    returning the kept refs. Applied AFTER an explicit / persisted name is
+    resolved (enumeration's filter only sees the discovered set): a foreign
+    attached catalog, or a system schema (``--schema information_schema``).
+    """
+    kept: list[SchemaRef] = []
+    for ref in schemas:
+        is_foreign = (
+            qualifies
+            and ref.catalog
+            and current_catalog
+            and ref.catalog != current_catalog
+        )
+        if is_foreign:
+            skipped.append(
+                SkippedSchema(
+                    token=ref.token or "",
+                    reason=(
+                        f"requested schema belongs to attached catalog "
+                        f"{ref.catalog!r}; point a separate datasource at "
+                        f"{ref.catalog!r} to ingest it"
+                    ),
+                )
+            )
+            continue
+        if is_system_schema(ref.token or ref.name or "", qualifies=qualifies):
+            skipped.append(
+                SkippedSchema(
+                    token=ref.token or ref.name or "",
+                    reason="system / bookkeeping schema is never ingested",
+                )
+            )
+            continue
+        kept.append(ref)
+    return kept
+
+
+async def resolve_ingest_scope(
+    *,
+    client: SqlClient,
+    requested: Optional[list[str]],
+    all_schemas: bool,
+    datasource_schema: Optional[str],
+) -> IngestScope:
+    """Resolve which schemas to ingest, as ``SchemaRef``s.
+
+    Precedence: ``all_schemas`` → every own-catalog non-system schema;
+    a ``requested`` list → those schemas (a single name is emitted verbatim,
+    several are resolved against the enumerated set with the default staying
+    bare); else a persisted ``datasource_schema`` (verbatim); else the bare
+    connection default. Foreign attached catalogs and system schemas — whether
+    discovered, requested, or persisted — are reported in ``skipped``. When
+    exactly one schema is in scope (and ``all_schemas`` is off) the remaining
+    own schemas are offered as ``other_schemas`` hints.
+
+    Raises :class:`SchemaEnumerationError` for ``all_schemas`` when the schema
+    list can't be read (the other branches resolve from a bare default instead).
+    """
+    dialect = client.datasource.type
+    qualifies = qualifies_tokens(client.datasource)
+    current_catalog = await client.current_catalog() if qualifies else None
+    default_schema = await client.default_schema()
+
+    own_refs, skipped, enum_ok = _enumerate_own_schemas(
+        tokens=await _listed_schemas(client), dialect=dialect, qualifies=qualifies,
+        current_catalog=current_catalog,
+    )
+    own_by_name: dict[Optional[str], SchemaRef] = {}
+    for ref in own_refs:
+        own_by_name.setdefault(ref.name, ref)
+
+    if all_schemas:
+        if not enum_ok:
+            raise SchemaEnumerationError(
+                "--all-schemas requested but the datasource's schema list could "
+                "not be read (revoked metadata permission or a transient error); "
+                "refusing to report an empty scope, which would look like an "
+                "empty datasource."
+            )
+        schemas = [
+            ref.model_copy(
+                update={"is_default": ref.name == default_schema, "requested": None}
+            )
+            for ref in own_refs
+        ]
+        return IngestScope(schemas=schemas, other_schemas=[], skipped=skipped)
+
+    def _resolve(name: str, requested_spelling: Optional[str]) -> SchemaRef:
+        return _resolve_requested_name(
+            name, own_by_name=own_by_name, default_schema=default_schema,
+            dialect=dialect, qualifies=qualifies, current_catalog=current_catalog,
+            requested_spelling=requested_spelling,
+        )
+
+    req = _dedup_requested(requested)
+    if req and len(req) == 1:
+        schemas = [_resolve(req[0], req[0])]
+    elif req:
+        schemas = _dedup_refs([_resolve(name, None) for name in req])
+    elif datasource_schema:
+        schemas = [_resolve(datasource_schema, datasource_schema)]
+    else:
+        base = own_by_name.get(default_schema)
+        schemas = [
+            base.model_copy(update={"is_default": True})
+            if base is not None
+            else SchemaRef(catalog=current_catalog, name=default_schema,
+                           is_default=True)
+        ]
+
+    # Defence-in-depth (Codex review): a resolved request that names a foreign
+    # attached catalog OR a system/bookkeeping schema is dropped to ``skipped``,
+    # never ingested — enumeration's filter only covers the discovered set.
+    schemas = _drop_out_of_scope_refs(
+        schemas, qualifies=qualifies, current_catalog=current_catalog,
+        skipped=skipped,
+    )
+
+    other = _hint_schemas(own_refs, schemas) if len(schemas) == 1 else []
+    return IngestScope(schemas=schemas, other_schemas=other, skipped=skipped)

@@ -44,6 +44,19 @@ model {
       elaborate = node 'Elaborate'
       compile = node 'Compile'
       plan = node 'Plan'
+      population = node 'Population'
+      cardinality = node 'Cardinality'
+    }
+    database = node 'Database access' {
+      metadata {
+        package 'slayer.database'
+        specs ['database']
+      }
+    }
+    live_schema = node 'Live schema' {
+      metadata {
+        package 'slayer.live_schema'
+      }
     }
     ir = node 'Intermediate representation' {
       metadata {
@@ -114,16 +127,39 @@ model {
     engine.elaborate -> engine.elaborate_env
     engine.plan -> engine.compile
     engine.plan -> engine.elaborate
+    engine.binding -> engine.population
+    engine.bind_inputs -> engine.population
+    engine.bind_inputs -> engine.cardinality
+    engine.elaborate -> engine.population
+    engine.elaborate -> engine.cardinality
+    engine.compile -> engine.population
+    engine.compile -> engine.cardinality
+    engine.plan -> engine.cardinality
+    engine.population -> engine.cardinality
+    engine.cardinality -> engine.elaborate_env
+    database -> core
+    database -> sql
     engine -> core
+    engine -> database
+    engine -> live_schema
     engine -> ir
     engine -> memories
-    engine -> search
     engine -> sql
     engine -> storage
     importers -> core
+    importers -> database
+    importers -> live_schema
     importers -> engine
     importers -> sql
     ir -> core
+    live_schema -> core
+    live_schema -> database
+    live_schema -> engine
+    live_schema -> ir
+    live_schema -> memories
+    live_schema -> search
+    live_schema -> sql
+    live_schema -> storage
     memories -> core
     memories -> engine
     memories -> search
@@ -138,17 +174,20 @@ model {
     sql -> core
     sql -> ir
     storage -> core
+    storage -> database
     storage -> engine
+    storage -> live_schema
     storage -> memories
     storage -> search
     storage -> sql
     surfaces -> core
+    surfaces -> database
     surfaces -> engine
     surfaces -> importers
+    surfaces -> live_schema
     surfaces -> memories
     surfaces -> protocols
     surfaces -> search
-    surfaces -> sql
     surfaces -> storage
     protocols -> usage_reporting
     surfaces -> usage_reporting

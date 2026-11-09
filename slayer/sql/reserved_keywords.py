@@ -167,15 +167,28 @@ def prequote_reserved_identifiers(sql: str, *, dialect: str) -> str:
     (``sql="grant"``) and the qualified form (``sql="t.grant + 1"`` → dot-adjacent)
     both work; only bare statement-keyword columns in expressions do not.
     """
+    return prequote_reserved_identifiers_mapped(sql, dialect=dialect)[0]
+
+
+def prequote_reserved_identifiers_mapped(sql: str, *, dialect: str) -> tuple[str, list[int | None]]:
+    """:func:`prequote_reserved_identifiers`, with each output character's offset in ``sql`` (``None``: an inserted
+    quote)."""
     try:
         toks = sqlglot.tokenize(sql, dialect=dialect)
     except Exception:  # unsupported lexer construct — leave unchanged
-        return sql
+        toks = []
     edits = [
         edit
         for i in range(len(toks))
         if (edit := _reserved_dot_edit(sql, toks, i, dialect)) is not None
     ]
-    for start, end, replacement in sorted(edits, reverse=True):
-        sql = sql[:start] + replacement + sql[end + 1:]
-    return sql
+    out: list[str] = []
+    origin: list[int | None] = []
+    pos = 0
+    for start, end, replacement in sorted(edits):
+        out += [sql[pos:start], replacement]
+        origin += [*range(pos, start), None, *range(start, end + 1), None]
+        pos = end + 1
+    out.append(sql[pos:])
+    origin += range(pos, len(sql))
+    return "".join(out), origin

@@ -1,4 +1,4 @@
-"""Each Postgres driver a URL names serves every client operation (spec: sql/execution, sql/client-contract)."""
+"""Each Postgres driver a URL names serves every client operation (spec: database/execution, database/client-contract)."""
 
 from __future__ import annotations
 
@@ -12,9 +12,9 @@ from sqlalchemy.engine.url import make_url
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
-from slayer.sql import client as client_module
-from slayer.sql import engine_factory
-from slayer.sql.client import ResultColumnType, SlayerSQLClient
+from slayer.database import client as client_module
+from slayer.database import engine_factory
+from slayer.database.client import ResultColumnType, SlayerSQLClient
 from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.dialects.reflection import ReflectedForeignKey, TableKeys, TableLocation
 from tests._pg_helpers import pg_database

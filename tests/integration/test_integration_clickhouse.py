@@ -49,10 +49,10 @@ from slayer.core.models import (
 from slayer.core.policy import JoinFilterRule, JoinFilterRuleset, SessionPolicy
 from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
-from slayer.engine import ingestion
+from slayer.live_schema import ingestion
 from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine
-from slayer.sql import engine_factory
-from slayer.sql.client import DelegatingSqlClient, ExecutionResult, SlayerSQLClient, SqlClient
+from slayer.database import engine_factory
+from slayer.database.client import DelegatingSqlClient, ExecutionResult, SlayerSQLClient, SqlClient
 from slayer.sql.dialects.base import ServerProfile
 from slayer.storage.yaml_storage import YAMLStorage
 from tests.integration._dev2015_server import (
@@ -94,6 +94,7 @@ from tests._dev2137_fixtures import assignments_model, assignments_statements, c
 from tests._engine_helpers import disposable_engine
 from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_model, mixed_numbers_statements
 from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
+from tests.integration._one_request import PATHS, assert_one_request_each, run_three
 
 pytest.importorskip("testcontainers.clickhouse")
 pytest.importorskip("clickhouse_sqlalchemy")
@@ -2036,3 +2037,31 @@ class TestClickHouseLists:
         tags = model.get_column("tags")
         assert tags is not None
         assert (tags.type, tags.element_type) == (DataType.ARRAY, DataType.TEXT)
+
+
+# ---------------------------------------------------------------------------
+# A warm statement costs one request
+# ---------------------------------------------------------------------------
+
+
+def _query_log_since(clickhouse_container, since: str) -> list[str]:
+    """Every client query the server started since ``since``, in order."""
+    with disposable_engine(_admin_url(clickhouse_container)) as engine, engine.connect() as conn:
+        conn.exec_driver_sql("SYSTEM FLUSH LOGS")
+        rows = conn.exec_driver_sql(
+            "SELECT query FROM system.query_log WHERE type = 'QueryStart' AND is_initial_query"
+            f" AND event_time_microseconds >= toDateTime64('{since}', 6) ORDER BY event_time_microseconds",
+        ).fetchall()
+    return [query for (query,) in rows]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("path", PATHS)
+def test_warm_statement_costs_one_request(clickhouse_container, path: str) -> None:
+    with disposable_engine(_admin_url(clickhouse_container)) as engine, engine.connect() as conn:
+        since = conn.exec_driver_sql("SELECT toString(now64(6))").scalar()
+    run_three(
+        SlayerSQLClient(datasource=_ds_config(clickhouse_container, "default")), path=path,
+        sql=lambda marker: f"SELECT '{marker}' AS m",
+    )
+    assert_one_request_each(_query_log_since(clickhouse_container, since))

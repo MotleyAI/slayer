@@ -1,4 +1,4 @@
-"""A leading qualifier naming the query root resolves to the root at bind time (system §3.9)."""
+"""A leading qualifier naming the query root resolves to the root at bind time (semantics.arc42.md Principle 1)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from slayer.core.enums import DataType
 from slayer.core.errors import RefinementConflictError
 from slayer.core.models import Column
 from slayer.core.query import SlayerQuery
-from slayer.engine.population import spine_datasource
+from slayer.engine.population.inference import spine_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 
 from tests._dev1866_fixtures import DS_FAN, make_inference_storage

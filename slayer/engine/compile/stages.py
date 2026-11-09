@@ -48,12 +48,12 @@ from slayer.core.join_walker import (
     aggregation_owner,
     canonical_token,
     follow,
+    join_key_columns,
     model_column_type,
-    physical_join_pairs,
     reverse_token,
     unique_key_sets,
 )
-from slayer.engine.join_safety import (
+from slayer.engine.cardinality.join_safety import (
     UNREACHABLE_NO_PATH,
     attributable_from_root,
     broadcast_reason,
@@ -108,7 +108,7 @@ from slayer.ir.bound import BoundExpr, BoundFilter, DeclaredMeasure, OrderSpec, 
 from slayer.engine.compile.discovery import RootDisposition, discover_roots, row_attach_inputs
 from slayer.ir.elaborated import ConjunctTyping, ElaboratedProducer, ElaboratedQuery, ElaboratedStage
 from slayer.ir.terms import Aggregate
-from slayer.engine.filter_reachability import (
+from slayer.engine.population.filter_reachability import (
     key_has_host_local_ref,
 )
 from slayer.ir.planned import (
@@ -147,7 +147,7 @@ from slayer.engine.compile.spine import (
     spine_column,
 )
 from slayer.engine.compile.shift import carried_placeholders
-from slayer.engine.unrelated import crosses_product_hop
+from slayer.engine.cardinality.unrelated import crosses_product_hop
 from slayer.engine.compile.staging import stage_slots
 from slayer.engine.key_metadata import (
     dimension_key_metadata,
@@ -1446,11 +1446,12 @@ def _path_edges_exist(
 
 def _register_hop(
     nodes: Dict[Tuple[str, ...], SemiJoinHop], *, node_path: Tuple[str, ...],
-    target_model: str, pairs: List[Tuple[str, str]], declared_left: bool, lateral: Optional[str] = None,
+    target_model: str, keys: List[Tuple[Column, Column]], declared_left: bool, lateral: Optional[str] = None,
 ) -> None:
     nodes.setdefault(node_path, SemiJoinHop(
         target_model=target_model,
-        join_pairs=tuple((s, t) for s, t in pairs),
+        join_pairs=tuple((s.physical_name, t.physical_name) for s, t in keys),
+        quoted=tuple((s.physical_quoted, t.physical_quoted) for s, t in keys),
         node_path=node_path,
         declared_left=declared_left,
         lateral=lateral,
@@ -1486,8 +1487,7 @@ def _forward_hops(
             continue  # the root list child's parent row is already in the producer's FROM
         _register_hop(
             nodes, node_path=node_path, target_model=edge.target_model,
-            pairs=physical_join_pairs(edge=edge, source=models[edge.source_model],
-                                      target=models[edge.target_model]),
+            keys=join_key_columns(edge=edge, source=models[edge.source_model], target=models[edge.target_model]),
             declared_left=edge.join_type == JoinType.LEFT,
             lateral=_forward_lateral(edge),
         )
@@ -1529,9 +1529,7 @@ def _reverse_hops(
     by_name = {**models_by_name, host_model.name: host_model}
     for edge in reversed(fwd):
         node_path = (*node_path, reverse_token(edge))
-        physical = physical_join_pairs(
-            edge=edge, source=by_name[edge.source_model], target=by_name[edge.target_model],
-        )
+        keys = join_key_columns(edge=edge, source=by_name[edge.source_model], target=by_name[edge.target_model])
         # A list child's parent is its own row, already in the producer's FROM: no hop.
         if edge.lateral is not None:
             continue
@@ -1539,7 +1537,7 @@ def _reverse_hops(
         # never null-extended.
         _register_hop(
             nodes, node_path=node_path, target_model=edge.source_model,
-            pairs=[(tgt, src) for src, tgt in physical],
+            keys=[(tgt, src) for src, tgt in keys],
             declared_left=False,
         )
     return node_path

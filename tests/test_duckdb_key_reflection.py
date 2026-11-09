@@ -18,13 +18,13 @@ from sqlalchemy.engine.reflection import Inspector
 
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.models import DatasourceConfig, SlayerModel
-from slayer.engine import ingestion
-from slayer.engine.ingestion import (
+from slayer.live_schema import ingestion
+from slayer.live_schema.ingestion import (
     IngestionScanReport,
     introspect_table_to_model,
 )
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
 
 _REGCLASS = "Catalog Error: Type with name REGCLASS does not exist!"

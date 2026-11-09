@@ -26,7 +26,7 @@ from tests._dev1747_fixtures import (
     seed_dev1747_sqlite,
 )
 import inspect
-from slayer.engine import join_safety
+from slayer.engine.cardinality import join_safety
 from slayer.engine.compile import stages
 
 #: Cross-model aggregate + a dimension a hop past the target → planner re-roots the CTE at ``customers``.

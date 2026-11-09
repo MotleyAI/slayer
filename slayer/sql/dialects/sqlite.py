@@ -636,7 +636,6 @@ class SqliteDialect(SqlDialect):
     legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories()
     primary_key_inspector_only: bool = True
     explain_prefix: str | None = "EXPLAIN QUERY PLAN"
-    explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
     # Numeric affinity stores INTEGER/REAL — nothing exact to preserve.

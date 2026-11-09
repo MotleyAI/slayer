@@ -12,13 +12,14 @@ from sqlglot import exp
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.errors import ExplainUnsupportedError
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.engine_factory import client_cache_key
-from slayer.sql.dialects.base import StatAgg1Name
+from slayer.database.engine_factory import client_cache_key
+from slayer.sql.dialects.base import ExplainStatements, StatAgg1Name
 from slayer.sql.dialects.tsql import TsqlDialect
-from slayer.sql.client import DelegatingSqlClient, ExecutionResult, SlayerSQLClient
+from slayer.database.client import DelegatingSqlClient, ExecutionResult, SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1965_fixtures import (
@@ -38,10 +39,8 @@ def test_tsql_sqlglot_name() -> None:
     assert TsqlDialect().sqlglot_name == "tsql"
 
 
-def test_tsql_explain_prefix_and_postfix() -> None:
-    d = TsqlDialect()
-    assert d.explain_prefix == "SET SHOWPLAN_ALL ON;"
-    assert d.explain_postfix == "; SET SHOWPLAN_ALL OFF"
+def test_tsql_has_no_explain_prefix() -> None:
+    assert TsqlDialect().explain_prefix is None
 
 
 def test_tsql_log_native_flags() -> None:
@@ -184,14 +183,13 @@ def test_tsql_build_covar_2arg_covar_pop_uses_varp() -> None:
     assert "VARP" in sql
 
 
-# build_explain_sql — wraps in SHOWPLAN session toggle pair
+# build_explain_sql — deprecated; SHOWPLAN is session state it cannot express
 
 
-def test_tsql_build_explain_sql_wraps_in_showplan_pair() -> None:
-    d = TsqlDialect()
-    assert d.build_explain_sql("SELECT 1") == (
-        "SET SHOWPLAN_ALL ON; SELECT 1; SET SHOWPLAN_ALL OFF"
-    )
+def test_tsql_build_explain_sql_refuses() -> None:
+    dialect = TsqlDialect()
+    with pytest.warns(FutureWarning, match="explain_statements"), pytest.raises(ExplainUnsupportedError):
+        dialect.build_explain_sql("SELECT 1")
 
 
 # Outer wrap: T-SQL accepts WITH only as a statement prefix, so the chain's CTEs
@@ -400,6 +398,9 @@ class _FakeTsqlClient(DelegatingSqlClient):
         self._rows = rows
 
     async def execute(self, sql: str) -> ExecutionResult:  # noqa: ARG002 — stub signature  # NOSONAR(S7503) — must remain async to match SlayerSQLClient.execute (awaited by engine.execute)
+        return ExecutionResult(rows=[dict(row) for row in self._rows])
+
+    async def explain(self, statements: ExplainStatements) -> ExecutionResult:  # noqa: ARG002 — stub signature  # NOSONAR(S7503) — must remain async to match SlayerSQLClient.explain
         return ExecutionResult(rows=[dict(row) for row in self._rows])
 
 

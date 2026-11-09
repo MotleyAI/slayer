@@ -28,28 +28,30 @@ flowchart TD
     sql__window_detect["Window detect"]
   end
   engine["Query engine"]
+  database["Database access"]
+  live_schema["Live schema"]
   ir["Intermediate representation"]
   storage["Storage backends"]
   importers("Importers")
   subgraph usage_reporting["Usage reporting"]
     usage_reporting__features["Features"]
   end
-  surfaces("User-facing surfaces")
   core__models -.-> sql__dialects
   core__models -.-> sql__sql_predicate
   core__models -.-> sql__window_detect
   core__query -.-> sql__window_detect
   sql__render --> sql__dialects
   sql__sql_predicate --> sql__window_detect
+  database --> sql
   engine --> sql
   importers --> sql
+  live_schema --> sql
   sql --> core
   sql --> ir
   storage --> sql
-  surfaces --> sql
   usage_reporting__features --> sql
   classDef leaf fill:none;
-  class core__query,core__models,sql__render,sql__dialects,sql__sql_predicate,sql__window_detect,engine,ir,storage,importers,usage_reporting__features,surfaces leaf;
+  class core__query,core__models,sql__render,sql__dialects,sql__sql_predicate,sql__window_detect,engine,database,live_schema,ir,storage,importers,usage_reporting__features leaf;
 ```
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:sql_focus -->
@@ -57,8 +59,8 @@ flowchart TD
 ## 3. Principles
 
 1. **AST end to end**: statements are built and composed as sqlglot AST and
-   rendered to text once; text round-trips of already-emitted SQL are forbidden
-   (dotted aliases corrupt on re-parse) [target: DEV-1972] [target: DEV-1961]. A dialect
+   rendered to text once (EXPLAIN prefix excepted, system §3.4); text
+   round-trips of already-emitted SQL are forbidden (dotted aliases corrupt on re-parse) [target: DEV-1972] [target: DEV-1961]. A dialect
    hook returning AST takes only typed, non-`str`, non-callable operands.
    [review] [enforced: test:tests/test_law_ast_dialect_hooks.py]
    [enforced: test:tests/test_law_no_statement_reparse.py]
@@ -101,25 +103,7 @@ flowchart TD
     host row count or any other column's value.
     [enforced: test:tests/test_dev1837_dimension_measure_matrix.py]
     [enforced: test:tests/test_dev2063_grain_guarantee.py]
-13. **Rendered SQL executes verbatim**: every statement reaches its executing
-    client unchanged; `client.py` hands it to the DBAPI through one door
-    (`exec_driver_sql`, no parameters); SQLAlchemy `text()` never touches
-    rendered SQL — `:name` is never a bind parameter, `%` never a format
-    directive. [enforced: test:tests/test_dev1933_verbatim_execution.py]
-14. **One engine owner**: every SQLAlchemy engine is disposed by exactly one
-    owner — `engine_factory` for the engines it caches (eviction and
-    `reset_cache` always dispose; `:memory:` is built by its single StaticPool
-    builder, keyed per datasource), `SlayerSQLClient` for its private in-memory
-    engine (via `close()`, with a finalizer backstop) and its async engines, one
-    per event loop, each released only on its own loop. `create_engine` runs only
-    in the factory and the dialects' build hooks; `create_async_engine` only in
-    the client's async builder. [enforced: test:tests/test_law_resource_ownership.py]
-    [enforced: test:tests/test_sql_client_event_loops.py]
-15. **One driver per client**: a client reaches its database through one driver
-    only — its caller's engine's, else its URL's (the one named, else the type's
-    default); no URL is rewritten to another driver.
-    [enforced: test:tests/test_one_driver_per_client.py]
-16. **One relation door**: a model reaches SQL only through one door, as its filtered dataset (semantics Axiom 3.3) — never as its bare table, and never filtered afterwards by an enclosing WHERE. [enforced: test:tests/test_law_relation_door.py]
+13. **One relation door**: a model reaches SQL only through one door, as its filtered dataset (semantics Axiom 3.3) — never as its bare table, and never filtered afterwards by an enclosing WHERE. [enforced: test:tests/test_law_relation_door.py]
 
 ## 4. Rationale
 

@@ -18,6 +18,9 @@ import asyncio
 import gc
 import json
 import logging
+import os
+import select
+import signal
 import sqlite3
 import sys
 import threading
@@ -29,10 +32,10 @@ import pytest
 import sqlalchemy as sa
 
 from slayer.core.models import DatasourceConfig
-from slayer.engine import schema_drift
+from slayer.live_schema import schema_drift
 from slayer.engine.query_engine import _sql_client_cache_key
-from slayer.sql import client as sql_client
-from slayer.sql import engine_factory
+from slayer.database import client as sql_client
+from slayer.database import engine_factory
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.drivers import load_driver
 from tests._engine_helpers import disposable_engine
@@ -80,14 +83,24 @@ class TestGetEngine:
         ds = DatasourceConfig(
             name="pg", type="postgres", host="h", username="u", password="p", database="db",  # NOSONAR(S2068) — test fixture; obvious placeholder value
         )
-        with patch("slayer.sql.engine_factory.sa.create_engine") as create_engine_mock:
+        with patch("slayer.database.engine_factory.sa.create_engine") as create_engine_mock:
             fake = MagicMock()
             create_engine_mock.return_value = fake
             result = engine_factory.get_engine(ds)
         assert result is fake
         args, kwargs = create_engine_mock.call_args
         assert args[0].startswith("postgresql+psycopg://")
-        assert kwargs.get("pool_pre_ping") is True
+        assert "pool_pre_ping" not in kwargs
+
+
+def _recording_listens_for(registered: list[tuple[str, str]]) -> Any:
+    """A ``listens_for`` stand-in recording ``(event, listener name)`` for every registration."""
+    def _listens_for(_target: Any, event: str, *_a: Any, **_k: Any) -> Any:
+        def _register(fn: Any) -> Any:
+            registered.append((event, fn.__name__))
+            return fn
+        return _register
+    return _listens_for
 
 
 class TestSessionOverridesListener:
@@ -108,15 +121,12 @@ class TestSessionOverridesListener:
         ):
             # Warm-up: the driver's first import registers its own listeners.
             load_driver(ds, ds.get_connection_string(), dialect=dialect_for_ds_type(ds.type), is_async=False)
+            registered: list[tuple[str, str]] = []
             with patch.object(engine_factory.sa_event, "listens_for") as listens_for_mock:
-                listens_for_mock.return_value = lambda fn: fn
+                listens_for_mock.side_effect = _recording_listens_for(registered)
                 engine_factory.get_engine(ds)
-        listens_for_mock.assert_called_once()
-        _engine_arg, event_name = listens_for_mock.call_args.args
-        # Use ``checkout`` (not ``connect``) so session state
-        # is re-applied on every pool checkout, not just on the first
-        # physical connection.
-        assert event_name == "checkout"
+        # Once per physical connection: ``connect``, not ``checkout``.
+        assert [event for event, name in registered if name == "_slayer_session_overrides"] == ["connect"]
 
     def test_non_snowflake_engine_skips_session_overrides_listener(self) -> None:
         """Postgres / SQLite / etc. don't override apply_session_overrides,
@@ -128,10 +138,11 @@ class TestSessionOverridesListener:
             warehouse="should_not_fire",
             role="should_not_fire",
         )
+        registered: list[tuple[str, str]] = []
         with patch.object(engine_factory.sa_event, "listens_for") as listens_for_mock:
-            listens_for_mock.return_value = lambda fn: fn
+            listens_for_mock.side_effect = _recording_listens_for(registered)
             engine_factory.get_engine(ds)
-        listens_for_mock.assert_not_called()
+        assert "_slayer_session_overrides" not in [name for _event, name in registered]
 
     def test_session_listener_invokes_dialect_apply_session_overrides(self) -> None:
         """When the engine opens a connection, the listener body must
@@ -151,7 +162,7 @@ class TestSessionOverridesListener:
                 ) as apply_mock:
                     engine = engine_factory.get_engine(ds)
                     with engine.connect() as _:
-                        pass  # NOSONAR(S108) — empty body is intentional; opening + closing fires the checkout-event listener under test
+                        pass  # NOSONAR(S108) — empty body is intentional; opening fires the connect-event listener under test
         assert apply_mock.call_count >= 1
         # Listener calls ``apply_session_overrides(dbapi_connection=..., datasource=...)``
         # by name; the datasource is the kwarg, not a positional arg.
@@ -224,7 +235,7 @@ class TestCallSiteMigration:
 
     def test_schema_drift_uses_engine_factory(self) -> None:
         source = open(schema_drift.__file__).read()
-        assert "engine_factory.get_engine" in source or "from slayer.sql.engine_factory" in source
+        assert "engine_factory.get_engine" in source or "from slayer.database.engine_factory" in source
 
     def test_sql_client_uses_engine_factory_for_engine_creation(self) -> None:
         source = open(sql_client.__file__).read()
@@ -764,7 +775,7 @@ class TestConfigSnapshot:
         engine_factory.reset_cache()
 
     def test_session_overrides_listener_is_insulated_from_later_mutation(self) -> None:
-        """The listener fires on every checkout for the life of the engine. It
+        """The listener fires on every new connection for the life of the engine. It
         must keep applying the fields this engine was cached under, not whatever
         the caller's config says later — those fields *are* its cache key."""
         pytest.importorskip("snowflake.connector")
@@ -786,7 +797,7 @@ class TestConfigSnapshot:
                 engine = engine_factory.get_engine(ds)
                 ds.warehouse = "WH_MUTATED_AFTER"
                 with engine.connect() as _:
-                    pass  # NOSONAR(S108) — opening + closing fires the checkout listener
+                    pass  # NOSONAR(S108) — opening fires the connect listener
         assert apply_mock.call_args.kwargs["datasource"].warehouse == "WH_AT_BUILD"
         engine_factory.reset_cache()
 
@@ -926,3 +937,31 @@ class TestInMemoryFactoryCoherence:
         if _ON_313:
             unclosed = [w for w in caught if "unclosed database" in str(w.message).lower()]
             assert not unclosed, [str(w.message) for w in unclosed]
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX fork")
+@pytest.mark.filterwarnings("ignore:.*fork.*:DeprecationWarning")
+def test_a_child_forked_while_the_cache_lock_is_held_can_build_engines(tmp_path) -> None:
+    ds = DatasourceConfig(name="f", type="sqlite", database=str(tmp_path / "fork.db"))
+    read_fd, write_fd = os.pipe()
+    with engine_factory._cache_lock:
+        pid = os.fork()
+        if pid == 0:  # pragma: no cover - child
+            try:
+                os.close(read_fd)
+                with engine_factory.get_engine(ds).connect() as conn:
+                    conn.exec_driver_sql("SELECT 1")
+                os.write(write_fd, b"ok")
+            finally:
+                os._exit(0)
+    os.close(write_fd)
+    try:
+        ready, _, _ = select.select([read_fd], [], [], 15)
+        if not ready:
+            os.kill(pid, signal.SIGKILL)
+        report = os.read(read_fd, 64) if ready else b"child deadlocked"
+    finally:
+        os.close(read_fd)
+        os.waitpid(pid, 0)
+        engine_factory.invalidate_engine(ds)
+    assert report == b"ok"

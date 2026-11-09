@@ -17,9 +17,9 @@ from slayer.api.server import create_app
 from slayer.core.enums import DataType
 from slayer.core.errors import MissingDriverError, SlayerError
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.sql import client as client_module
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.database import client as client_module
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects import PostgresDialect
 from slayer.storage.yaml_storage import YAMLStorage
 

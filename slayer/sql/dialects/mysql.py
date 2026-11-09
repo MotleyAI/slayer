@@ -28,6 +28,7 @@ from slayer.core.regex_pattern import RegexPattern, RegexReplacement, parse_rege
 from slayer.sql.dialects.base import (
     LegacyTypeCategories,
     NativeFn,
+    TransactionMode,
     set_statement,
     FALSE_WORDS,
     INT64_BOUNDS,
@@ -131,6 +132,7 @@ class MysqlDialect(SqlDialect):
         other="string",
     )
     ds_type_aliases: frozenset[str] = frozenset({"mysql"})
+    transaction_mode: ClassVar[TransactionMode] = "driver_autocommit"
     sa_backend_names: frozenset[str] = frozenset({"mysql"})
     regex_flavour: ClassVar[Optional[RegexFlavour]] = ICU
     library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
@@ -257,7 +259,6 @@ class MysqlDialect(SqlDialect):
         )
         return case((valid, self.build_try_cast(trimmed, to)))
     explain_prefix: str | None = "EXPLAIN FORMAT=JSON"
-    explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
     # Conservative: MySQL allows 256 for column aliases but errors (not truncates).

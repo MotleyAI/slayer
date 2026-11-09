@@ -94,8 +94,8 @@ def test_trino_log_native_flags() -> None:
     assert d.should_use_native_log(2) is True
 
 
-def test_trino_build_explain_sql() -> None:
-    assert TrinoDialect().build_explain_sql("SELECT 1") == "EXPLAIN ANALYZE SELECT 1"
+def test_trino_explain_statements() -> None:
+    assert TrinoDialect().explain_statements("SELECT 1").statement == "EXPLAIN ANALYZE SELECT 1"
 
 
 # ---------------------------------------------------------------------------
@@ -431,7 +431,7 @@ class TestBuildEngineScheme:
         assert _build(url) is sentinel.engine
         built, kwargs = _built(create_engine)
         assert kwargs["connect_args"] == {"http_scheme": "https"}
-        assert kwargs["pool_pre_ping"] is True
+        assert "pool_pre_ping" not in kwargs
         assert built == make_url(url)
 
     def test_password_on_non_443_port_connects_over_https(self, create_engine: MagicMock) -> None:

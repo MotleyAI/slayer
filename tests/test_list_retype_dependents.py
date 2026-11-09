@@ -22,13 +22,13 @@ from slayer.cli import _run_ingest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.warnings import BrokenDependentWarning, SlayerBrokenDependentWarning
-from slayer.engine.broken_dependents import FoundBreak, report_broken
-from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.live_schema.broken_dependents import FoundBreak, report_broken
+from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import IdempotentIngestResult
+from slayer.live_schema.schema_drift import IdempotentIngestResult
 from slayer.mcp.server import create_mcp_server
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 LIVE = (

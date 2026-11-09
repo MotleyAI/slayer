@@ -23,4 +23,14 @@ views {
     title 'Engine seam'
     include engine
   }
+
+  view database_focus of python {
+    title 'Database access in context'
+    include database, database -> *, * -> database
+  }
+
+  view live_schema_focus of python {
+    title 'Live schema in context'
+    include live_schema, live_schema -> *, * -> live_schema
+  }
 }

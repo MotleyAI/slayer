@@ -42,7 +42,7 @@ from slayer.core.models import (
 )
 from slayer.core.errors import SlayerError
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.base import StorageBackend, storage_base_dir
 from slayer.storage.document_loading import DocumentLoadFailures
 
