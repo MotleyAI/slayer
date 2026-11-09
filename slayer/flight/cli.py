@@ -115,7 +115,7 @@ def run_flight_serve(
     try:
         serve_until_terminated(run=server.wait, stop=server.shutdown)
     finally:
-        engine.close()  # each RPC already released its loop-bound resources
+        engine.close()  # releases the connections the RPCs kept open
 
 
 def _resolve_host(*, host_arg: str | None, demo: bool, token: str | None) -> str:

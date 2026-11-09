@@ -20,6 +20,7 @@ from slayer.sql.dialects.base import (
     CONSTANT_INPUT,
     PORTABLE_LIBRARY,
     IdentifierFolding,
+    TransactionMode,
     set_statement,
     NativeFn,
     ListFn,
@@ -159,6 +160,7 @@ class PostgresDialect(SqlDialect):
     # NAMEDATALEN: 63 usable bytes; over-length names are SILENTLY truncated.
     max_identifier_bytes: int | None = 63
     statement_timeout_best_effort: bool = True
+    transaction_mode: ClassVar[TransactionMode] = "driver_autocommit"
     json_db_types: ClassVar[frozenset[str]] = frozenset({"JSON", "JSONB"})
     url_scheme: str | None = "postgresql+psycopg"
     install_extra: str | None = "postgres"
@@ -355,7 +357,9 @@ class PostgresDialect(SqlDialect):
         ))
 
     def statement_timeout(self, timeout_seconds: int) -> Expression | None:
-        """Transaction-local, so it never outlives the call on a pooled connection."""
+        return set_statement(name="statement_timeout", value=timeout_seconds * 1000)
+
+    def transaction_local_statement_timeout(self, timeout_seconds: int) -> Expression | None:
         return set_statement(name="statement_timeout", value=timeout_seconds * 1000, kind="LOCAL")
 
     def rewrite_target_ast(self, tree: exp.Expression) -> exp.Expression:

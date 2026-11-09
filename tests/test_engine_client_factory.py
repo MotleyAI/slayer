@@ -271,6 +271,7 @@ class TestEngineOwnsItsClients:
         assert _n(await engine.execute(COUNT_ORDERS, data_source=DS_NAME)) == 4
 
     def test_synchronous_calls_repeat_safely(self, shop: Shop) -> None:
+        """A custom client has no end-of-workflow release: sync calls leave it open."""
         factory = GatewayFactory()
         client = SlayerClient(storage=shop.storage, client_factory=factory)
 
@@ -278,23 +279,17 @@ class TestEngineOwnsItsClients:
             return sum(c.acloses for c in factory.clients)
 
         for _ in range(3):
-            before = acloses()
             assert client.query_sync(COUNT_ORDERS).data[0]["orders.n"] == 4
-            assert acloses() > before
 
         async def _inside_a_loop() -> int:
             return client.query_sync(COUNT_ORDERS).data[0]["orders.n"]
 
-        before = acloses()
         assert asyncio.run(_inside_a_loop()) == 4
-        assert acloses() > before
-
-        before = acloses()
         with pytest.raises(SlayerError):
             client.query_sync({"source_model": "no_such_model", "measures": [{"formula": "*:count"}]})
-        assert acloses() > before
+        assert acloses() == 0
 
-    def test_run_sync_releases_clients_when_the_workflow_is_cancelled(self, shop: Shop) -> None:
+    def test_run_sync_leaves_custom_clients_open_when_cancelled(self, shop: Shop) -> None:
         factory = GatewayFactory()
         engine = SlayerQueryEngine(storage=shop.storage, client_factory=factory)
 
@@ -308,50 +303,57 @@ class TestEngineOwnsItsClients:
         workflow = _cancelled()
         with pytest.raises(asyncio.CancelledError):
             engine.run_sync(workflow)
-        assert factory.clients[0].acloses >= 1
+        assert factory.clients[0].acloses == 0
 
-    def test_run_sync_returns_the_workflow_result_and_releases_clients(self, shop: Shop) -> None:
+    def test_run_sync_returns_the_workflow_result_and_leaves_custom_clients_open(self, shop: Shop) -> None:
         factory = GatewayFactory()
         engine = SlayerQueryEngine(storage=shop.storage, client_factory=factory)
         response = engine.run_sync(engine.execute(COUNT_ORDERS))
         assert _n(response) == 4
-        assert factory.clients[0].acloses == 1
+        assert factory.clients[0].acloses == 0
 
     def test_a_failing_client_release_neither_skips_others_nor_masks_the_result(
-        self, tmp_path: Path, shop: Shop,
+        self, tmp_path: Path, shop: Shop, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         twin_db = str(tmp_path / "twin.db")
         shutil.copy(shop.db, twin_db)
         run_sync(shop.storage.save_datasource(shop_datasource(twin_db, name="twin")))
         run_sync(shop.storage.save_model(orders_model(data_source="twin"), _validate=False))
-        factory = GatewayFactory()
-        engine = SlayerQueryEngine(storage=shop.storage, client_factory=factory)
+        released: list[str] = []
+
+        async def _release(self: SlayerSQLClient) -> None:
+            released.append(self.datasource.name)
+            if self.datasource.name == DS_NAME:
+                raise RuntimeError("release failed")
+
+        monkeypatch.setattr(SlayerSQLClient, "release_local_connections", _release)
+        engine = SlayerQueryEngine(storage=shop.storage)
 
         async def _both() -> int:
             await engine.execute(COUNT_ORDERS, data_source=DS_NAME)
-            factory.clients[0].aclose = _failing_aclose  # type: ignore[method-assign]
             return _n(await engine.execute(COUNT_ORDERS, data_source="twin"))
 
-        async def _failing_aclose() -> None:
-            raise RuntimeError("release failed")
-
-        assert engine.run_sync(_both()) == 4
-        assert factory.clients[1].acloses == 1
+        try:
+            assert engine.run_sync(_both()) == 4
+        finally:
+            engine.close()
+        assert released.count("twin") == 1
 
     def test_create_model_from_query_sync_releases_clients(self, shop: Shop, monkeypatch: pytest.MonkeyPatch) -> None:
-        engine = SlayerQueryEngine(storage=shop.storage, client_factory=GatewayFactory())
+        engine = SlayerQueryEngine(storage=shop.storage)
         released: list[bool] = []
 
-        async def _aclose() -> None:
+        async def _release() -> None:
             released.append(True)
 
-        monkeypatch.setattr(engine, "aclose", _aclose)
-        model = engine.create_model_from_query_sync(REVENUE_BY_STATUS, name="rev_by_status")
+        monkeypatch.setattr(engine, "release_local_connections", _release)
+        try:
+            model = engine.create_model_from_query_sync(REVENUE_BY_STATUS, name="rev_by_status")
+        finally:
+            engine.close()
         assert model.name == "rev_by_status"
         assert released == [True]
 
-
-class TestEntryPoints:
     async def test_the_local_python_client_passes_the_factory_through(self, shop: Shop) -> None:
         factory = GatewayFactory()
         client = SlayerClient(storage=shop.storage, client_factory=factory)

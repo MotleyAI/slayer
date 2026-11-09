@@ -116,6 +116,7 @@ class FakeSyncConn:
         self.db = db
         self.id = conn_id
         self.invalidated = False
+        self.info: dict[str, Any] = {}
         self.connection = SimpleNamespace(dbapi_connection=SimpleNamespace())
 
     def exec_driver_sql(self, sql: str, execution_options: Any = None) -> _Result:
@@ -161,6 +162,7 @@ class FakeAsyncConn:
         self.db = db
         self.id = conn_id
         self.invalidated = False
+        self.info: dict[str, Any] = {}
 
     async def exec_driver_sql(self, sql: str, execution_options: Any = None) -> _Result:
         return await self.db.run_async(self.id, sql, execution_options)

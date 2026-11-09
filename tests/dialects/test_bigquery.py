@@ -468,7 +468,7 @@ def test_build_engine_with_credentials_json_passes_info_to_create_engine() -> No
     assert engine is not None
     assert captured["url"] == "bigquery://my-project"
     assert captured["kwargs"]["credentials_info"] == sa_info
-    assert captured["kwargs"]["pool_pre_ping"] is True
+    assert "pool_pre_ping" not in captured["kwargs"]
 
 
 def test_build_engine_with_invalid_credentials_json_raises() -> None:
@@ -679,7 +679,7 @@ def test_build_engine_oauth_uses_user_supplied_client() -> None:
     assert engine is not None
     assert captured["url"].query["user_supplied_client"] == "true"
     assert captured["kwargs"]["connect_args"] == {"client": fake_client}
-    assert captured["kwargs"]["pool_pre_ping"] is True
+    assert "pool_pre_ping" not in captured["kwargs"]
     # No ``credentials_info`` — that kwarg would send us back through
     # ``service_account.Credentials`` and defeat the whole path.
     assert "credentials_info" not in captured["kwargs"]

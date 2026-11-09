@@ -18,9 +18,10 @@ from sqlglot.expressions.core import Expr, Expression
 from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
+from slayer.sql import connection_policy
 from slayer.sql.dialects.base import (
     LegacyTypeCategories,
-    LIST_VALUE, PORTABLE_LIBRARY, ExtremumFn, IdentifierFolding, NativeFn, ListRelation, SqlDialect, TextFn, anon, as_text,
+    LIST_VALUE, PORTABLE_LIBRARY, ExtremumFn, IdentifierFolding, NativeFn, TransactionMode, ListRelation, SqlDialect, TextFn, anon, as_text,
     case, either,
     element_lambda, lit, operand_copy, setting, text_try_cast,
 )
@@ -161,6 +162,8 @@ class SnowflakeDialect(SqlDialect):
     # INFORMATION_SCHEMA has no KEY_COLUMN_USAGE.
     primary_key_inspector_only: bool = True
     ds_type_aliases: frozenset[str] = frozenset({"snowflake"})
+    # Its SQLAlchemy dialect sends ROLLBACK / COMMIT even in autocommit.
+    transaction_mode: ClassVar[TransactionMode] = "dialect_autocommit"
     legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories(
         names={
             "number": "number", "float": "number", "date": "time", "timestamp": "time", "timestamp_ltz": "time",
@@ -396,8 +399,8 @@ class SnowflakeDialect(SqlDialect):
                         f"snowflake-connector bridge. Set ``warehouse`` / "
                         f"``role`` / ``database`` / ``schema_name`` on the "
                         f"typed ``DatasourceConfig`` fields instead — those "
-                        f"fire via ``apply_session_overrides`` on every "
-                        f"pool checkout."
+                        f"fire via ``apply_session_overrides`` once per "
+                        f"new connection."
                     )
         if not _is_connection_name_sentinel(connection_string):
             return None
@@ -407,11 +410,9 @@ class SnowflakeDialect(SqlDialect):
             sf = import_driver(_CONNECTOR_MODULE, datasource=datasource, dialect=self)
             return sf.connect(connection_name=name)
 
-        return sa.create_engine(
-            "snowflake://",
-            creator=_create_snowflake_connection,
-            pool_pre_ping=True,
-        )
+        return sa.create_engine("snowflake://", **connection_policy.engine_kwargs(
+            url="snowflake://", dialect=self, datasource=datasource, creator=_create_snowflake_connection,
+        ))
 
     def deferred_driver_modules(self, connection_string: str) -> tuple[str, ...]:
         """The sentinel's connector is imported only by the connect-time ``creator``."""
@@ -456,6 +457,10 @@ class SnowflakeDialect(SqlDialect):
                     cur.execute(exp.Use(kind=exp.Var(this=kind), this=target).sql(dialect="snowflake"))
         finally:
             cur.close()
+
+    def autocommit_in_force(self, dbapi_connection: Any) -> bool:
+        """The connector tracks the session's AUTOCOMMIT parameter as the server reports it."""
+        return bool(getattr(dbapi_connection, "_session_parameters", {}).get("AUTOCOMMIT"))
 
     def statement_timeout(self, timeout_seconds: int) -> Expression | None:
         """Session-wide ``STATEMENT_TIMEOUT_IN_SECONDS``."""

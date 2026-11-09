@@ -622,6 +622,10 @@ def _digest(secret: str | None) -> str:
 # How the database reads an unquoted identifier: as written, ASCII letters lowercased, or uppercased.
 IdentifierFolding = Literal["none", "lower", "upper"]
 
+# How connections avoid a transaction around every statement (see ``connection_policy``): the driver's
+# own mode, DBAPI autocommit, or autocommit whose transaction ends the dialect makes local.
+TransactionMode = Literal["driver", "driver_autocommit", "dialect_autocommit"]
+
 
 def ascii_lower(name: str) -> str:
     """``name`` with its ASCII letters lowercased (Postgres's unquoted-identifier rule)."""
@@ -830,6 +834,8 @@ class SqlDialect(BaseModel):
 
     # Whether quoting an identifier changes which object it names, and how an unquoted one is folded.
     identifier_folding: ClassVar[IdentifierFolding] = "none"
+
+    transaction_mode: ClassVar[TransactionMode] = "driver"
 
     def unquoted_identifier(self, name: str) -> str:
         """The exact name the database resolves ``name``, written unquoted, to."""
@@ -2003,6 +2009,14 @@ class SqlDialect(BaseModel):
     def statement_timeout(self, timeout_seconds: int) -> Expression | None:  # NOSONAR(S1172) — no-op hook default
         """Hook: statement that sets the timeout before the query, or ``None``."""
         return None
+
+    def transaction_local_statement_timeout(self, timeout_seconds: int) -> Expression | None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: the timeout statement scoped to the current transaction, or ``None``."""
+        return None
+
+    def autocommit_in_force(self, dbapi_connection: Any) -> bool:  # NOSONAR(S1172) — no-op hook default
+        """Hook (``dialect_autocommit``): whether ``dbapi_connection`` is in autocommit."""
+        return False
 
     def set_connection_timeout(self, dbapi_connection: Any, timeout_seconds: int) -> object:  # NOSONAR(S1172) — hook
         """Hook: put the timeout on the DBAPI connection; returns the prior state for restore."""

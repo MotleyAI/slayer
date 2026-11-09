@@ -101,7 +101,7 @@ SQL generation is covered by unit tests, but not verified against live instances
     BigQuery, ClickHouse, and similar analytical warehouses typically don't have foreign keys, so auto-ingestion won't discover joins. Define joins manually in your model YAML. Snowflake is an exception — it stores declarative (non-enforced) FK constraints AND exposes them via the Inspector, so auto-ingestion discovers joins like Postgres / MySQL / SQLite.
 
 !!! note "Statement timeouts"
-    SLayer sends ClickHouse's timeout as a per-request `max_execution_time` setting (a `SETTINGS` clause in your SQL wins), skips it for a `readonly = 1` user with a `statement_timeout_skipped` warning (grant `readonly = 2` to keep it), sets MariaDB's timeout with `max_statement_time`, and sends Trino's as the `query_max_run_time` session property of the query alone.
+    SLayer sends ClickHouse's timeout as a per-request `max_execution_time` setting (a `SETTINGS` clause in your SQL wins), skips it for a `readonly = 1` user with a `statement_timeout_skipped` warning (grant `readonly = 2` to keep it), sets MariaDB's timeout with `max_statement_time`, and sends Trino's as the `query_max_run_time` session property of the query alone. A timeout set by a statement (Postgres, MySQL, MariaDB, Snowflake) is sent once per connection, and again only when the value a query needs changes (a `transaction_pooler` datasource sets it in each statement's transaction instead).
 
 ### Snowflake
 
@@ -142,8 +142,8 @@ warehouse: COMPUTE_WH
 role: PUBLIC
 ```
 
-Both forms flow through a shared engine factory that wires a per-connection
-`USE WAREHOUSE / USE ROLE / USE DATABASE / USE SCHEMA` listener when those
+Both forms flow through a shared engine factory that sends
+`USE ROLE / USE WAREHOUSE / USE DATABASE / USE SCHEMA` once, when each connection opens, when those
 typed fields are set. The `connection_name` profile's defaults are overridden
 by anything you set on the DatasourceConfig.
 
@@ -175,6 +175,7 @@ Statement-level timeout is enforced via
 | `credentials_json` | string | No | BigQuery service-account key JSON |
 | `oauth_credentials_json` | string | No | BigQuery OAuth authorized-user grant JSON |
 | `schema_name` | string | No | Default schema name |
+| `transaction_pooler` | bool | No | Postgres only: set it when the datasource is reached through a transaction-mode pooler (e.g. PgBouncer `pool_mode = transaction`), so the statement timeout is set per transaction instead of once per connection (default `false`) |
 | `granularities` | list | No | [Custom granularities](../concepts/time.md#custom-granularities) `{name, base, multiple, origin}` |
 
 !!! note

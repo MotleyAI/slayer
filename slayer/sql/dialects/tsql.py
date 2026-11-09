@@ -24,6 +24,7 @@ from slayer.sql.dialects.base import (
     LegacyTypeCategories,
     PORTABLE_LIBRARY,
     NativeFn,
+    TransactionMode,
     REGEX_LIBRARY,
     DottedAliasManglingMixin,
     ExtremumFn,
@@ -213,6 +214,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     )
     database_name: ClassVar[str] = "SQL Server"
     ds_type_aliases: frozenset[str] = frozenset({"mssql", "sqlserver", "tsql"})
+    transaction_mode: ClassVar[TransactionMode] = "driver_autocommit"
     vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({
         exp.DataType.Type.MONEY, exp.DataType.Type.SMALLMONEY,
     })

@@ -956,23 +956,34 @@ class SlayerQueryEngine:
             except Exception:
                 logger.warning("Failed to release a SQL client during engine aclose.", exc_info=True)
 
+    async def release_local_connections(self) -> None:
+        """Free the clients' idle connections holding a local database file; a client without that release is skipped."""
+        for client in list(self._sql_clients.values()):  # NOSONAR(S7504) — snapshot: a concurrent client_for may add a client during the await
+            release = getattr(client, "release_local_connections", None)
+            if release is None:
+                continue
+            try:
+                await release()
+            except Exception:
+                logger.warning("Failed to release a SQL client's local connections.", exc_info=True)
+
     def run_sync(self, workflow: Coroutine[Any, Any, _T]) -> _T:
-        """Run one whole synchronous workflow in one bridged loop, releasing the clients' loop-bound
-        resources at its end — also when it raises or is cancelled."""
+        """Run one whole synchronous workflow on the bridge loop, releasing idle local-file connections at
+        its end — also when it raises or is cancelled; networked connections stay open."""
 
         async def _run() -> _T:
             try:
                 return await workflow
             finally:
-                await asyncio.shield(self.aclose())
+                await asyncio.shield(self.release_local_connections())
 
         return run_sync(_run())
 
     def close(self) -> None:
         """Close every client this engine built and forget them; a later query rebuilds its clients.
 
-        Idempotent; continues past a client that fails to close. Loop-bound async
-        resources are released by ``aclose()`` on their event loop, not here.
+        Idempotent; continues past a client that fails to close. Clients release their bridge-loop
+        connections here; other loops' async resources are released by ``aclose()`` on their loop.
         """
         try:
             for client in list(self._sql_clients.values()):  # NOSONAR(S7504) — snapshot: another thread's client_for may add a client meanwhile

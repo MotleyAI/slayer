@@ -271,13 +271,13 @@ class TestTimeout:
         db = FakeDb()
         await _PG_CLIENTS[path](monkeypatch, db).explain(SESSION_STATEMENTS)
         started = db.started(1)
-        timeout = next(i for i, sql in enumerate(started) if sql.startswith("SET LOCAL statement_timeout"))
+        timeout = next(i for i, sql in enumerate(started) if sql.startswith("SET statement_timeout"))
         assert timeout < started.index(SESSION_ON)
 
     async def test_a_skipped_timeout_is_reported(self, path: str, monkeypatch: pytest.MonkeyPatch) -> None:
         db = FakeDb()
         client = _PG_CLIENTS[path](monkeypatch, db)
-        timeout_sql = "SET LOCAL statement_timeout = 120000"
+        timeout_sql = "SET statement_timeout = 120000"
         db.fail(timeout_sql, sqlalchemy.exc.ProgrammingError(timeout_sql, {}, Exception("permission denied")))
         with pytest.warns(SlayerStatementTimeoutSkippedWarning):
             result = await client.explain(SESSION_STATEMENTS)

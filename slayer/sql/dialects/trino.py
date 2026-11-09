@@ -13,6 +13,7 @@ from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGra
 from slayer.core.errors import SlayerError
 from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
+from slayer.sql import connection_policy
 from slayer.sql.dialects.base import (
     PORTABLE_LIBRARY,
     NativeFn, ListRelation, SqlDialect, TrimFn, anon, any_null, case, element_lambda, is_not_null, lit,
@@ -259,8 +260,7 @@ class TrinoDialect(PrestoFamilyDialect):
             raise SlayerError(
                 f"Datasource '{datasource.name}': http_scheme must be 'http' or 'https', got {scheme!r}."
             )
-        return sa.create_engine(
-            url.difference_update_query([_HTTP_SCHEME]),
-            pool_pre_ping=True,
-            connect_args={_HTTP_SCHEME: scheme},
-        )
+        url = url.difference_update_query([_HTTP_SCHEME])
+        return sa.create_engine(url, **connection_policy.engine_kwargs(
+            url=url, dialect=self, datasource=datasource, connect_args={_HTTP_SCHEME: scheme},
+        ))
