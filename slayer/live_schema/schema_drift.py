@@ -8,7 +8,7 @@ import logging
 import re
 import time
 from collections import OrderedDict
-from collections.abc import AsyncGenerator, Awaitable, Callable, Collection, Coroutine
+from collections.abc import AsyncGenerator, Awaitable, Callable, Collection, Coroutine, Iterable
 from contextlib import asynccontextmanager
 from typing import (
     Annotated,
@@ -59,6 +59,7 @@ from slayer.core.join_search import reachable
 from slayer.core.join_walker import OrientedJoin, resolve_hop, walk
 from slayer.sql.column_expansion import resolve_ref_target
 from slayer.engine.population.dimension_routing import short_form_route_or_none
+from slayer.engine.statement_reads import JoinRead, StatementReads
 from slayer.core.syntax import (
     AggCall,
     DottedRef,
@@ -193,6 +194,32 @@ class RetypeFinding(BaseModel):
             model_name=model.name, data_source=model.data_source, column=column.name, stored_type=column.type,
             live_type=live_type, live_db_type=live_db_type, remedy_kind=remedy_kind,
         )
+
+
+def touches(reads: StatementReads, entry: Any) -> bool:
+    """Whether a drift entry or finding of a read model removes or re-types something the statement reads."""
+    if isinstance(entry, WholeModelDelete):
+        return entry.cause == "schema_drift"
+    if isinstance(entry, RetypeFinding):
+        return (entry.model_name, entry.column) in reads.columns
+    if not isinstance(entry, EditModelDelete):
+        return False
+    model, remove = entry.model_name, entry.remove
+    return bool(entry.remove_filters) or any((
+        any((model, c) in reads.columns for c in remove.columns),
+        any((model, m) in reads.measures for m in remove.measures),
+        any((model, a) in reads.aggregations for a in remove.aggregations),
+        any(_reads_edge(reads.joins, model=model, edge=e) for e in remove.join_edges),
+    ))
+
+
+def _reads_edge(joins: Iterable[JoinRead], *, model: str, edge: JoinEdgeRef) -> bool:
+    pairs = frozenset((p[0], p[1]) for p in edge.join_pairs)
+    return any(
+        declaring == model and target == edge.target_model and read_pairs == pairs
+        and (edge.name is None or name == edge.name)
+        for declaring, target, name, read_pairs in joins
+    )
 
 
 class NarrowedAccessFinding(BaseModel):

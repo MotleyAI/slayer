@@ -37,6 +37,7 @@
 - [x] 6.1 `docs/configuration/sql-clients.md`, `docs/concepts/ingestion.md`, `examples/seed.py` new paths; `CLAUDE.md` principle list and pointers match the new system §3; grep docs for every old path
 - [x] 6.2 Root-fix the 5 baselined basedpyright errors in moved files; verify `poetry run basedpyright` shows no new errors and the baseline only shrank
 - [x] 6.3 `la-arch-diagrams`; verify `la-arch-check` green and the legacy baseline still 7
+- [x] 6.4 `slayer.engine.statement_reads` imports first in a fresh process: `StatementReads.touched_by` becomes `schema_drift.touches(reads, entry)`, so `statement_reads` imports nothing from `live_schema`; the fresh-import test covers it
 
 ## 7. Move gate (implement stage)
 

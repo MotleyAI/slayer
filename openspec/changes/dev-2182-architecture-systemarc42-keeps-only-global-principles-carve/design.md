@@ -98,6 +98,7 @@ The exact wording of every arc42 edit is presented for approval in the tests sta
 19. rejected (codex): "system §3 must keep only the issue's global list (drop 9–12)" — the user classified the newer items in decision 1.
 20. rejected (codex): "add compatibility re-export shims" — replaced by decision 14.
 21. Principles the model's arrows already express are deleted, not relocated: system §3.1 (target layering), ir P2 (`ir` imports `core` only), and system §2's node enumeration. The core ban (system §3.2) stays as core P7: it bars approving any new `core →` arrow, which the model alone cannot say. (user)
+22. The fresh-import cycles found on main: `schema_drift`, `broken_dependents` and `statement_reads` are fixed here (module imports; `touched_by` moves into `schema_drift`); `rank_direction_migration` goes to its own issue (migration-registry split). (user)
 
 ## Risks / Trade-offs
 

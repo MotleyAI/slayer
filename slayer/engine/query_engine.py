@@ -1926,9 +1926,9 @@ class SlayerQueryEngine:
             # An "invalid_sql" entry restates the query failure itself, so it is no drift evidence.
             filtered = [
                 e for e in entries
-                if reads.touched_by(e) and getattr(e, "cause", "schema_drift") != "invalid_sql"
+                if schema_drift.touches(reads, e) and getattr(e, "cause", "schema_drift") != "invalid_sql"
             ]
-            findings = [f for f in found if reads.touched_by(f)]
+            findings = [f for f in found if schema_drift.touches(reads, f)]
             if filtered or findings:
                 raise SchemaDriftError(
                     models=sorted({e.model_name for e in [*filtered, *findings]}),
