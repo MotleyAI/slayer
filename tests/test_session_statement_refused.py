@@ -1,4 +1,4 @@
-"""The default client refuses session-changing and transaction-control statements (spec: sql/client-contract)."""
+"""The default client refuses session-changing and transaction-control statements (spec: database/client-contract)."""
 
 from __future__ import annotations
 

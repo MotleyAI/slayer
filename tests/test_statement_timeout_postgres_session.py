@@ -1,4 +1,4 @@
-"""Postgres session timeout, probe guard and transaction_pooler on a live server (spec: sql/execution)."""
+"""Postgres session timeout, probe guard and transaction_pooler on a live server (spec: database/execution)."""
 
 from __future__ import annotations
 

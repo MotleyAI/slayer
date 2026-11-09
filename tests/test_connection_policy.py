@@ -1,5 +1,5 @@
 """Connection policy: per-dialect transaction mode, ping after idle, Snowflake overrides on connect,
-and the ``transaction_pooler`` opt-in (spec: sql/execution, sql/client-contract)."""
+and the ``transaction_pooler`` opt-in (spec: database/execution, database/client-contract)."""
 
 from __future__ import annotations
 

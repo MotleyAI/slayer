@@ -1,4 +1,4 @@
-"""The long-lived bridge loop behind the synchronous entry points (spec: sql/execution)."""
+"""The long-lived bridge loop behind the synchronous entry points (spec: database/execution)."""
 
 from __future__ import annotations
 

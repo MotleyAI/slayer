@@ -1,4 +1,4 @@
-"""python.sql.arc42.md §3: one request per statement on a warm connection (spec: sql/execution)."""
+"""python.database.arc42.md §3.5: one request per statement on a warm connection (spec: database/execution)."""
 
 from __future__ import annotations
 

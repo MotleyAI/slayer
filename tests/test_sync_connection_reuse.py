@@ -1,4 +1,4 @@
-"""Synchronous calls reuse networked connections and release only local files (spec: sql/execution)."""
+"""Synchronous calls reuse networked connections and release only local files (spec: database/execution)."""
 
 from __future__ import annotations
 

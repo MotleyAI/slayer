@@ -1,4 +1,4 @@
-"""The statement timeout is set once per connection, on mocked engines (spec: sql/execution)."""
+"""The statement timeout is set once per connection, on mocked engines (spec: database/execution)."""
 
 from __future__ import annotations
 
