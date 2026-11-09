@@ -32,10 +32,10 @@ import pytest
 import sqlalchemy as sa
 
 from slayer.core.models import DatasourceConfig
-from slayer.engine import schema_drift
+from slayer.live_schema import schema_drift
 from slayer.engine.query_engine import _sql_client_cache_key
-from slayer.sql import client as sql_client
-from slayer.sql import engine_factory
+from slayer.database import client as sql_client
+from slayer.database import engine_factory
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.drivers import load_driver
 from tests._engine_helpers import disposable_engine
@@ -83,7 +83,7 @@ class TestGetEngine:
         ds = DatasourceConfig(
             name="pg", type="postgres", host="h", username="u", password="p", database="db",  # NOSONAR(S2068) — test fixture; obvious placeholder value
         )
-        with patch("slayer.sql.engine_factory.sa.create_engine") as create_engine_mock:
+        with patch("slayer.database.engine_factory.sa.create_engine") as create_engine_mock:
             fake = MagicMock()
             create_engine_mock.return_value = fake
             result = engine_factory.get_engine(ds)
@@ -235,7 +235,7 @@ class TestCallSiteMigration:
 
     def test_schema_drift_uses_engine_factory(self) -> None:
         source = open(schema_drift.__file__).read()
-        assert "engine_factory.get_engine" in source or "from slayer.sql.engine_factory" in source
+        assert "engine_factory.get_engine" in source or "from slayer.database.engine_factory" in source
 
     def test_sql_client_uses_engine_factory_for_engine_creation(self) -> None:
         source = open(sql_client.__file__).read()

@@ -9,7 +9,7 @@ import pytest
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.core.syntax import parse_expr
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.sql_string_migration import sql_quote_strings
 from tests._stored_upgrade_fixtures import (
     BACKENDS,

@@ -20,8 +20,8 @@ from slayer.core.errors import NotReadOnlyQueryError
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.engine_factory import client_cache_key
-from slayer.sql.client import (
+from slayer.database.engine_factory import client_cache_key
+from slayer.database.client import (
     ResultColumnType,
     SlayerSQLClient,
     TypeProbe,

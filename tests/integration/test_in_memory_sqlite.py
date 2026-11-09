@@ -15,8 +15,8 @@ import pytest
 import sqlalchemy as sa
 
 from slayer.core.models import DatasourceConfig
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient
 
 
 def _setup(client: SlayerSQLClient, statements: Iterable[str]) -> None:

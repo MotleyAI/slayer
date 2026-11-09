@@ -13,9 +13,9 @@ import sqlalchemy as sa
 import sqlalchemy.exc
 
 from slayer.core.models import DatasourceConfig
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning
-from slayer.sql.client import AuthenticationRefused, ExecutionResult, SlayerSQLClient
+from slayer.database.client import AuthenticationRefused, ExecutionResult, SlayerSQLClient
 from slayer.sql.dialects.base import ExplainStatements
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import disposable_engine

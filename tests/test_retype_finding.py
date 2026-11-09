@@ -19,11 +19,11 @@ from slayer.api.server import create_app
 from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
-from slayer.engine import schema_drift
+from slayer.live_schema import schema_drift
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
-from slayer.sql import engine_factory
-from slayer.sql.client import DelegatingSqlClient, SlayerSQLClient, SqlClient
+from slayer.database import engine_factory
+from slayer.database.client import DelegatingSqlClient, SlayerSQLClient, SqlClient
 from slayer.sql.dialects.reflection import ReflectedColumn, TableLocation, column_from_sa_type
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage

@@ -14,8 +14,8 @@ import sqlglot
 
 from slayer.core.models import DatasourceConfig
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
-from slayer.sql import client as sql_client
-from slayer.sql.client import ExecutionResult, SlayerSQLClient, get_column_types_sync, render_type_probe
+from slayer.database import client as sql_client
+from slayer.database.client import ExecutionResult, SlayerSQLClient, get_column_types_sync, render_type_probe
 from slayer.sql.dialects import PostgresDialect
 from tests._ch_fake_http import route_engine
 

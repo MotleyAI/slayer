@@ -16,7 +16,7 @@ from slayer.facade.catalog import FacadeJoin, build_catalog, _facade_join_from
 from slayer.facade.translator import translate
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.parser import parse_osi_path
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 
 from tests._engine_helpers import disposable_engine
 

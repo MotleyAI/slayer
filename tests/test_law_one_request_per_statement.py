@@ -1,4 +1,4 @@
-"""python.sql.arc42.md §3: one request per statement on a warm connection (spec: sql/execution)."""
+"""python.database.arc42.md §3.5: one request per statement on a warm connection (spec: database/execution)."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ import pytest
 from pytest_postgresql import factories
 
 from slayer.core.models import DatasourceConfig
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient
 from tests._pg_helpers import pg_database
 from tests._pg_statement_log import LOGGED_POSTGRES_OPTIONS, LoggedEntry, ServerLog, between
 

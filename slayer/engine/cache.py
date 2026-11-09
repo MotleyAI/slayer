@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlglot import exp, parse_one
 from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
 
-from slayer.sql.engine_factory import EngineCacheKey
+from slayer.database.engine_factory import EngineCacheKey
 
 # Marker alias prefix for refresh-key scan projections. Also lets tests
 # distinguish a refresh-key scan query from a data query.

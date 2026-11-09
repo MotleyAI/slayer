@@ -25,8 +25,8 @@ from slayer.core.policy import (
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient, TypeProbe
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient, TypeProbe
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.base import ExplainStatements, ServerProfile
 from slayer.sql.session_policy import ScopedTable, apply_session_policy

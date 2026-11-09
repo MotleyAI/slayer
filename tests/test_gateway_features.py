@@ -1,6 +1,6 @@
 """A gateway with no direct database access serves every feature, and no live access blocks the loop.
 
-Spec: sql/execution. Each parity test runs a feature once on a default engine and once, with
+Spec: database/execution. Each parity test runs a feature once on a default engine and once, with
 every direct path refused, on an engine whose factory returns a gateway; the results must match.
 """
 
@@ -23,12 +23,12 @@ from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject, DbtRegularModel
-from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.models import OSIDocument
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage

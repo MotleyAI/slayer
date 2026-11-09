@@ -1,4 +1,4 @@
-"""The long-lived bridge loop behind the synchronous entry points (spec: sql/execution)."""
+"""The long-lived bridge loop behind the synchronous entry points (spec: database/execution)."""
 
 from __future__ import annotations
 
@@ -24,8 +24,8 @@ import sqlalchemy.event as sa_event
 from slayer import async_utils
 from slayer.async_utils import on_caller_thread, run_sync, run_sync_on_caller_thread
 from slayer.core.models import DatasourceConfig
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient
 from tests import conftest
 from tests._engine_helpers import disposable_engine
 
@@ -530,7 +530,7 @@ _RESTARTED_BRIDGE_SCRIPT = textwrap.dedent("""
     from unittest.mock import AsyncMock, MagicMock
     from slayer import async_utils
     from slayer.core.models import DatasourceConfig
-    from slayer.sql import client as sql_client
+    from slayer.database import client as sql_client
 
     def _fake(*_a, **_k):
         fake = MagicMock()

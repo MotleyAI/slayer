@@ -1,7 +1,7 @@
 """DEV-1450 stage 7b.14 — schema-drift measure-ref extraction via the typed
 Mode-B parser.
 
-Pins the migration of ``slayer/engine/schema_drift.py`` off the legacy
+Pins the migration of ``slayer/live_schema/schema_drift.py`` off the legacy
 ``the legacy formula parser`` / ``legacy mixed-arithmetic node`` field-spec union walk and onto
 ``parse_expr`` + ``walk_parsed_refs`` (the new scope-free typed parser).
 
@@ -25,7 +25,7 @@ from __future__ import annotations
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery
-from slayer.engine.schema_drift import (
+from slayer.live_schema.schema_drift import (
     _attribute_ref_to_base,
     _build_stage_graph,
     _filter_refs_dsl,

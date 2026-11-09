@@ -1,4 +1,4 @@
-"""One encoding of each result value on every output path (spec: results/value-encoding; principle 19)."""
+"""One encoding of each result value on every output path (spec: results/value-encoding; system principle 9)."""
 
 from __future__ import annotations
 

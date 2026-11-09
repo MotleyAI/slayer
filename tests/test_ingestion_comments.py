@@ -23,12 +23,12 @@ import sqlalchemy as sa
 import sqlglot
 from sqlglot import exp
 
-import slayer.engine.ingestion as ingestion_mod
+import slayer.live_schema.ingestion as ingestion_mod
 from slayer.async_utils import run_sync
 from slayer.cli import _run_datasources_create
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.engine.ingestion import (
+from slayer.live_schema.ingestion import (
     IngestionScanReport,
     IntrospectedColumn,
     _additive_merge_existing,
@@ -39,10 +39,10 @@ from slayer.engine.ingestion import (
     ingest_datasource_idempotent,
     introspect_table_to_model,
 )
-from slayer.engine.schema_drift import IdempotentIngestResult, ModelAddition
-from slayer.engine.schema_scope import SchemaRef
+from slayer.live_schema.schema_drift import IdempotentIngestResult, ModelAddition
+from slayer.live_schema.schema_scope import SchemaRef
 from slayer.mcp.server import _render_ingest_result
-from slayer.sql.client import DelegatingSqlClient, SlayerSQLClient
+from slayer.database.client import DelegatingSqlClient, SlayerSQLClient
 from slayer.sql.dialects import ReflectedColumn, SqlDialect, TableKeys, dialect_for_ds_type, dialect_for_sa_backend
 from slayer.sql.dialects.reflection import TableLocation, clean_comment
 from slayer.storage.sqlite_conn import transaction
@@ -352,7 +352,7 @@ class TestSqliteProbePreservesComments:
     async def test_non_affinity_engine_keeps_comments(self) -> None:
         cols = [IntrospectedColumn(name="a", type=DataType.INT, comment="kept")]
         async with _client(DatasourceConfig(name="mem", type="duckdb", database=":memory:")) as client:
-            with patch("slayer.sql.sqlite_introspect.probe_sqlite_integer_column") as probe:
+            with patch("slayer.database.sqlite_introspect.probe_sqlite_integer_column") as probe:
                 out = await _sqlite_probe_integer_columns(client=client, sql_table="t", columns=cols)
         probe.assert_not_called()
         assert out[0].comment == "kept"

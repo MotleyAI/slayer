@@ -62,10 +62,10 @@ from slayer.storage.legacy_alias_rewrite import (
     extract_dunder_chains,
     mode_a_surface_texts,
 )
-from slayer.sql.client import SqlClient
+from slayer.database.client import SqlClient
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.sql_template import check_aggregation_definition
-from slayer.storage.type_refinement import (
+from slayer.live_schema.type_refinement import (
     has_refineable_columns,
     has_sqlite_widenable_columns,
     refine_dict_with_live_schema,
@@ -702,7 +702,7 @@ class StorageBackend(ABC):
             self._granularities_settled = True
 
     async def _with_library_granularities_renamed(self, *, name: str, data: Any) -> Any:
-        """A stored datasource dict with each granularity a library name reserves renamed (system P11.2), its
+        """A stored datasource dict with each granularity a library name reserves renamed (storage P3.2), its
         dependants persisted before it so an interrupted rename converges."""
         if not isinstance(data, dict):
             return data

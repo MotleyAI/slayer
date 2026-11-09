@@ -14,20 +14,20 @@ import sqlalchemy as sa
 from slayer.async_utils import run_sync
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.enums import DataType
-from slayer.engine import ingestion
-from slayer.engine.ingestion import (
+from slayer.live_schema import ingestion
+from slayer.live_schema.ingestion import (
     IngestableObject,
     list_ingestable_objects,
 )
-from slayer.engine.schema_drift import (
+from slayer.live_schema.schema_drift import (
     ModelAddition,
     WholeModelDelete,
     _live_schema_for_datasource,
     validate_datasource,
 )
-from slayer.engine.ingestion import _print_ingest_addition
+from slayer.live_schema.ingestion import _print_ingest_addition
 from slayer.mcp.server import _fetch_tables
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
 
 _T = TypeVar("_T")

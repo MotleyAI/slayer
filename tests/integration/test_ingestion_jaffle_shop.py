@@ -28,8 +28,8 @@ from slayer.demo.jaffle_shop import (
     generate_data,
     load_data,
 )
-from slayer.engine import ingestion
-from slayer.sql.client import SlayerSQLClient
+from slayer.live_schema import ingestion
+from slayer.database.client import SlayerSQLClient
 from slayer.storage import migrations as mig
 from slayer.storage.yaml_storage import YAMLStorage
 

@@ -25,10 +25,10 @@ from slayer.core.format import NumberFormat, encode_json
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import QueryRefinement, SlayerQuery, SourceSpec
 from slayer.async_utils import run_sync
-from slayer.engine import ingestion as engine_ingestion
+from slayer.live_schema import ingestion as engine_ingestion
 from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine
-from slayer.sql.client import SqlClientError
-from slayer.engine.schema_scope import validate_scope_args
+from slayer.database.client import SqlClientError
+from slayer.live_schema.schema_scope import validate_scope_args
 from slayer.inspect.service import InspectService
 from slayer.memories.help_seed import seed_help_memories
 from slayer.memories.service import MemoryService

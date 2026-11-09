@@ -22,13 +22,13 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.async_utils import run_sync
 from slayer.core.models import DatasourceConfig, ModelMeasure
-from slayer.engine.ingestion import ingest_datasource
+from slayer.live_schema.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.flight import _flight_sql_pb2 as fsql_pb
 from slayer.flight.handlers import FlightHandlers
 from slayer.flight.server import build_server
 from slayer.pg_facade.connection import PgConnection
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2120_fixtures import seed_contractors
 

@@ -10,7 +10,7 @@ from slayer.core.errors import UnknownReferenceError
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import Memory
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.migrations import CURRENT_VERSIONS
 from tests._stored_upgrade_fixtures import (
     BACKENDS,

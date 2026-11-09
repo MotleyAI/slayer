@@ -1,7 +1,7 @@
 """Removal tripwire: compatibility code tagged for removal fails the suite once its major version ships.
 
-The tag is a call to ``slayer.core.deprecation.warn_deprecated`` (any import spelling) with a
-string-literal ``removal``. Spec: compatibility/removal-tripwire.
+The tag is a call to ``slayer.core.deprecation.warn_deprecated`` or ``raise_moved`` (any import
+spelling) with a string-literal ``removal``. Spec: compatibility/removal-tripwire.
 """
 
 from __future__ import annotations
@@ -17,32 +17,45 @@ from tests.test_law_resource_ownership import _canonical, _import_bindings
 
 REPO = Path(__file__).resolve().parent.parent
 SLAYER = REPO / "slayer"
-HELPER = "slayer.core.deprecation.warn_deprecated"
+HELPERS = frozenset({"slayer.core.deprecation.warn_deprecated", "slayer.core.deprecation.raise_moved"})
 HELPER_MODULE = "slayer/core/deprecation.py"
 
-#: Every covered workaround: (file, a token its warning message spells literally).
-PINNED: frozenset[tuple[str, str]] = frozenset({
-    ("slayer/engine/ingestion.py", "ingest_datasource()"),
-    ("slayer/engine/ingestion.py", "ingest_datasource_report()"),
-    ("slayer/engine/ingestion.py", "ingest_datasource_idempotent()"),
-    ("slayer/engine/schema_drift.py", "validate_datasource()"),
-    ("slayer/dbt/converter.py", "DbtToSlayerConverter"),
-    ("slayer/osi/converter.py", "OsiToSlayerConverter"),
-    ("slayer/storage/legacy_backends.py", "save_datasource"),
-    ("slayer/storage/legacy_backends.py", "_list_memories_rows"),
-    ("slayer/cli.py", "--models-dir"),
-    ("slayer/storage/base.py", "SLAYER_MODELS_DIR"),
-    ("slayer/mcp/server.py", "inspect_model"),
-    ("slayer/core/errors.py", ".identifier"),
-    ("slayer/sql/client.py", "get_column_types_sync()"),
-    ("slayer/sql/client.py", "SlayerSQLClient.get_column_types()"),
-    ("slayer/engine/query_engine.py", "SlayerQueryEngine.get_column_types()"),
-    ("slayer/sql/client.py", "stops installing"),
-    ("slayer/sql/client.py", "A SQL client's get_column_types()"),
-    ("slayer/sql/client.py", "DelegatingSqlClient.get_column_types()"),
-    ("slayer/sql/dialects/base.py", "build_explain_sql()"),
-    ("slayer/sql/client.py", "A SQL client without explain()"),
-})
+#: Every covered workaround: (file, a token its message spells literally) -> removal version.
+PINNED: dict[tuple[str, str], str] = {
+    ("slayer/live_schema/ingestion.py", "ingest_datasource()"): "2.0",
+    ("slayer/live_schema/ingestion.py", "ingest_datasource_report()"): "2.0",
+    ("slayer/live_schema/ingestion.py", "ingest_datasource_idempotent()"): "2.0",
+    ("slayer/live_schema/schema_drift.py", "validate_datasource()"): "2.0",
+    ("slayer/dbt/converter.py", "DbtToSlayerConverter"): "2.0",
+    ("slayer/osi/converter.py", "OsiToSlayerConverter"): "2.0",
+    ("slayer/storage/legacy_backends.py", "save_datasource"): "2.0",
+    ("slayer/storage/legacy_backends.py", "_list_memories_rows"): "2.0",
+    ("slayer/cli.py", "--models-dir"): "2.0",
+    ("slayer/storage/base.py", "SLAYER_MODELS_DIR"): "2.0",
+    ("slayer/mcp/server.py", "inspect_model"): "2.0",
+    ("slayer/core/errors.py", ".identifier"): "2.0",
+    ("slayer/database/client.py", "get_column_types_sync()"): "2.0",
+    ("slayer/database/client.py", "SlayerSQLClient.get_column_types()"): "2.0",
+    ("slayer/engine/query_engine.py", "SlayerQueryEngine.get_column_types()"): "2.0",
+    ("slayer/database/client.py", "stops installing"): "2.0",
+    ("slayer/database/client.py", "A SQL client's get_column_types()"): "2.0",
+    ("slayer/database/client.py", "DelegatingSqlClient.get_column_types()"): "2.0",
+    ("slayer/sql/dialects/base.py", "build_explain_sql()"): "2.0",
+    ("slayer/database/client.py", "A SQL client without explain()"): "2.0",
+    **{
+        (f"slayer/{old.replace('.', '/')}.py", f"slayer.{old}"): "3.0"
+        for old in (
+            "sql.client", "sql.engine_factory", "sql.sqlite_introspect", "sql.conformance",
+            "engine.ingestion", "engine.schema_drift", "engine.schema_scope", "engine.introspect_utils",
+            "engine.broken_dependents", "engine.internal_tables", "engine.fk_edges", "storage.type_refinement",
+            "engine.home", "engine.dimension_routing", "engine.filter_reachability",
+            "engine.join_safety", "engine.unrelated",
+        )
+    },
+    ("slayer/engine/population/__init__.py", "slayer.engine.population."): "3.0",
+    ("slayer/engine/cardinality/__init__.py", "slayer.engine.cardinality."): "3.0",
+}
+MOVED_PATH_SITES = frozenset(k for k, removal in PINNED.items() if removal == "3.0")
 
 
 class Site(BaseModel):
@@ -99,7 +112,7 @@ def _sites_in(source: str, *, rel: str) -> list[Site]:
     bindings = _bindings(tree, rel=rel)
     out: list[Site] = []
     for node in ast.walk(tree):
-        if not (isinstance(node, ast.Call) and _canonical(node.func, bindings) == HELPER):
+        if not (isinstance(node, ast.Call) and _canonical(node.func, bindings) in HELPERS):
             continue
         keywords = {k.arg: k.value for k in node.keywords}
         removal = keywords.get("removal")
@@ -107,7 +120,7 @@ def _sites_in(source: str, *, rel: str) -> list[Site]:
             file=rel,
             line=node.lineno,
             removal=removal.value if isinstance(removal, ast.Constant) and isinstance(removal.value, str) else None,
-            message=_literal_text(node.args[0] if node.args else keywords.get("message")),
+            message=_literal_text(node.args[0] if node.args else keywords.get("message", keywords.get("old"))),
         ))
     return out
 
@@ -146,14 +159,24 @@ def test_tagged_sites_are_exactly_the_covered_workarounds() -> None:
     assert not unmatched, "tagged sites matching no (or several) pinned workarounds:\n" + "\n".join(unmatched)
     features = [_feature(s) for s in sites]
     assert sorted(f for f in features if f is not None) == sorted(PINNED)
-    assert all(s.removal == "2.0" for s in sites)
+    wrong = [f"{s.where}: {s.removal}" for s in sites if (f := _feature(s)) is not None and s.removal != PINNED[f]]
+    assert not wrong, "tagged sites with a removal version other than the pinned one:\n" + "\n".join(wrong)
 
 
-def test_at_2_0_0_the_tripwire_names_every_pinned_site(monkeypatch) -> None:
-    monkeypatch.setattr(slayer, "__version__", "2.0.0")
+def _named_at(version: str, monkeypatch) -> set[tuple[str, str] | None]:
+    monkeypatch.setattr(slayer, "__version__", version)
     sites = _scan()
     problems = _problems(sites, version=_package_version())
-    named = {_feature(s) for s in sites if any(p.startswith(f"{s.where}: ") for p in problems)}
+    return {_feature(s) for s in sites if any(p.startswith(f"{s.where}: ") for p in problems)}
+
+
+def test_at_2_0_0_the_tripwire_names_every_2_0_site(monkeypatch) -> None:
+    assert _named_at("2.0.0", monkeypatch) == set(PINNED) - MOVED_PATH_SITES
+
+
+def test_at_3_0_0_the_moved_module_paths_are_named(monkeypatch) -> None:
+    named = _named_at("3.0.0", monkeypatch)
+    assert MOVED_PATH_SITES <= named
     assert named == set(PINNED)
 
 
@@ -175,15 +198,22 @@ def test_aliased_and_relative_uses_are_found() -> None:
         from slayer.core import deprecation
         from slayer.core.deprecation import warn_deprecated as _wd
         from .deprecation import warn_deprecated
+        from slayer.core.deprecation import raise_moved as _moved
+        from .deprecation import raise_moved
 
         def f():
             dep.warn_deprecated("a", removal="2.0")
             deprecation.warn_deprecated("b", removal="2.0")
             _wd("c", removal="2.0")
             warn_deprecated(message="d", removal="2.0")
+            dep.raise_moved("e", "e2", removal="3.0")
+            _moved("f", "f2", removal="3.0")
+            raise_moved(old="g", new="g2", removal="3.0")
     """)
     sites = _sites_in(source, rel="slayer/core/x.py")
-    assert [(s.message, s.removal) for s in sites] == [("a", "2.0"), ("b", "2.0"), ("c", "2.0"), ("d", "2.0")]
+    assert sorted((s.message, s.removal) for s in sites) == [
+        ("a", "2.0"), ("b", "2.0"), ("c", "2.0"), ("d", "2.0"), ("e", "3.0"), ("f", "3.0"), ("g", "3.0"),
+    ]
 
 
 def test_a_non_literal_removal_version_is_rejected() -> None:
@@ -197,6 +227,19 @@ def test_a_non_literal_removal_version_is_rejected() -> None:
     sites = _sites_in(source, rel="slayer/x.py")
     assert _problems(sites, version="1.6.0") == [
         "slayer/x.py:6: removal version is not a string literal: {}() is deprecated",
+    ]
+
+
+def test_a_non_literal_removal_version_on_a_moved_path_is_rejected() -> None:
+    source = textwrap.dedent("""
+        from slayer.core.deprecation import raise_moved
+        REMOVAL = "3.0"
+
+        raise_moved("slayer.old.mod", "slayer.new.mod", removal=REMOVAL)
+    """)
+    sites = _sites_in(source, rel="slayer/old/mod.py")
+    assert _problems(sites, version="1.6.0") == [
+        "slayer/old/mod.py:5: removal version is not a string literal: slayer.old.mod",
     ]
 
 
@@ -218,12 +261,12 @@ LEGACY_DIALECT_FILES = frozenset({
     "slayer/sql/dialects/postgres.py", "slayer/sql/dialects/mysql.py", "slayer/sql/dialects/tsql.py",
     "slayer/sql/dialects/snowflake.py", "slayer/sql/dialects/duckdb.py", "slayer/sql/dialects/sqlite.py",
 })
-CATEGORY_READER = ("slayer/sql/client.py", "type_categories")
+CATEGORY_READER = ("slayer/database/client.py", "type_categories")
 #: The tagged deprecated probes: the only readers of ``type_categories``.
 CATEGORY_PROBES = frozenset({
-    ("slayer/sql/client.py", "get_column_types_sync"),
-    ("slayer/sql/client.py", "SlayerSQLClient.get_column_types"),
-    ("slayer/sql/client.py", "DelegatingSqlClient.get_column_types"),
+    ("slayer/database/client.py", "get_column_types_sync"),
+    ("slayer/database/client.py", "SlayerSQLClient.get_column_types"),
+    ("slayer/database/client.py", "DelegatingSqlClient.get_column_types"),
     ("slayer/engine/query_engine.py", "SlayerQueryEngine.get_column_types"),
 })
 
@@ -296,5 +339,5 @@ def test_a_classification_read_outside_type_categories_is_found() -> None:
         def elsewhere(dialect):
             return dialect.legacy_type_categories
     """)
-    uses = _uses_in(source, rel="slayer/sql/client.py", name=LEGACY_TABLE)
+    uses = _uses_in(source, rel="slayer/database/client.py", name=LEGACY_TABLE)
     assert [(u.scope, u.declares) for u in uses] == [("D", True), ("type_categories", False), ("elsewhere", False)]

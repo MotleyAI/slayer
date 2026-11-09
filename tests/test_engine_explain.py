@@ -16,9 +16,9 @@ from slayer.core.enums import DataType
 from slayer.core.errors import ExplainUnsupportedError, SchemaDriftError
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import client as client_module
-from slayer.sql import engine_factory
-from slayer.sql.client import DelegatingSqlClient, ExecutionResult, SlayerSQLClient, SqlClient
+from slayer.database import client as client_module
+from slayer.database import engine_factory
+from slayer.database.client import DelegatingSqlClient, ExecutionResult, SlayerSQLClient, SqlClient
 from slayer.sql.dialects.base import ExplainStatements
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage

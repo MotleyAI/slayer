@@ -1,5 +1,5 @@
 """Connection policy: per-dialect transaction mode, ping after idle, Snowflake overrides on connect,
-and the ``transaction_pooler`` opt-in (spec: sql/execution, sql/client-contract)."""
+and the ``transaction_pooler`` opt-in (spec: database/execution, database/client-contract)."""
 
 from __future__ import annotations
 
@@ -21,9 +21,9 @@ from sqlalchemy.engine.url import make_url
 from sqlalchemy.pool import QueuePool
 
 from slayer.core.models import DatasourceConfig
-from slayer.sql import client as sql_client
-from slayer.sql import engine_factory
-from slayer.sql.client import DelegatingSqlClient, SlayerSQLClient
+from slayer.database import client as sql_client
+from slayer.database import engine_factory
+from slayer.database.client import DelegatingSqlClient, SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import disposable_engine, plant_async_engine
 from tests._pg_helpers import pg_database
@@ -202,7 +202,7 @@ def test_a_dead_idle_connection_is_replaced_before_the_statement(
                 await client.aclose()
 
         try:
-            with caplog.at_level(logging.WARNING, logger="slayer.sql.client"):
+            with caplog.at_level(logging.WARNING, logger="slayer.database.client"):
                 first, second = asyncio.run(_go())
         finally:
             client.close()

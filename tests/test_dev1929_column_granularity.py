@@ -20,8 +20,8 @@ from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.binding import bind_time_dimension
 from slayer.engine.elaborate_env import check_time_dimension_column
-from slayer.engine.ingestion import ingest_datasource_idempotent
-from slayer.sql.client import SlayerSQLClient
+from slayer.live_schema.ingestion import ingest_datasource_idempotent
+from slayer.database.client import SlayerSQLClient
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,

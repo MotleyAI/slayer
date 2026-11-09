@@ -33,7 +33,7 @@ from slayer.core.query import (
     SourceSpec,
     TimeDimension,
 )
-from slayer.engine.cardinality import declares_solo_unique
+from slayer.engine.cardinality.inference import declares_solo_unique
 from slayer.facade.catalog import (
     CATALOG_NAME,
     FacadeCatalog,

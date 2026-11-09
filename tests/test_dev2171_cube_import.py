@@ -12,7 +12,7 @@ from slayer.core.models import DatasourceConfig
 from slayer.core.syntax import AggCall, Ref, parse_expr
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.models import CubeProject
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from tests._dev2171_fixtures import (
     collect_over_engine,
     DS, MASKED, by_id, column, counts_by, cube_issues, cube_report_messages, deletes, drift_entries, has_column,

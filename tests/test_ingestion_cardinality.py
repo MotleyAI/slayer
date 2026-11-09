@@ -11,14 +11,14 @@ import sqlalchemy as sa
 
 from slayer.core.enums import JoinCardinality
 from slayer.core.models import DatasourceConfig
-from slayer.engine import ingestion
-from slayer.engine.ingestion import (
+from slayer.live_schema import ingestion
+from slayer.live_schema.ingestion import (
     _generate_joins,
     _is_cross_schema_fk,
     ingest_datasource_idempotent,
 )
-from slayer.engine.schema_drift import IdempotentIngestResult
-from slayer.sql.client import DelegatingSqlClient, SlayerSQLClient, SqlClient
+from slayer.live_schema.schema_drift import IdempotentIngestResult
+from slayer.database.client import DelegatingSqlClient, SlayerSQLClient, SqlClient
 from slayer.sql.dialects import PostgresDialect, SqliteDialect, TableKeys
 from slayer.sql.dialects.reflection import ReflectedForeignKey, TableLocation
 from slayer.storage.sqlite_conn import transaction

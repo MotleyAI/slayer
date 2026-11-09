@@ -11,7 +11,7 @@ import psycopg
 from psycopg import sql as pg_sql
 
 from slayer.core.models import DatasourceConfig
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 
 
 @contextlib.contextmanager

@@ -1,19 +1,16 @@
-"""The persisted elements a rendered statement reads, and whether a drift entry touches them (system P10 closure)."""
+"""The persisted elements a rendered statement reads (engine P10 closure)."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any
 
 from pydantic import BaseModel, Field
 
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
-from slayer.core.join_edges import JoinEdgeRef
 from slayer.core.join_walker import aggregation_owner, follow, resolved_terminal, with_list_children
 from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, StarKey, ValueKey, walk_value_keys
 from slayer.core.models import SlayerModel, aggregation_definition
 from slayer.engine.column_dependency import definition_reads
-from slayer.engine.schema_drift import EditModelDelete, RetypeFinding, WholeModelDelete
 from slayer.ir.planned import plan_value_keys_by_root
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
@@ -28,31 +25,6 @@ class StatementReads(BaseModel):
     joins: set[JoinRead] = Field(default_factory=set)
     measures: set[tuple[str, str]] = Field(default_factory=set)
     aggregations: set[tuple[str, str]] = Field(default_factory=set)
-
-    def touched_by(self, entry: Any) -> bool:
-        """Whether a drift entry or finding of a read model removes or re-types something the statement reads."""
-        if isinstance(entry, WholeModelDelete):
-            return entry.cause == "schema_drift"
-        if isinstance(entry, RetypeFinding):
-            return (entry.model_name, entry.column) in self.columns
-        if not isinstance(entry, EditModelDelete):
-            return False
-        model, remove = entry.model_name, entry.remove
-        return bool(entry.remove_filters) or any((
-            any((model, c) in self.columns for c in remove.columns),
-            any((model, m) in self.measures for m in remove.measures),
-            any((model, a) in self.aggregations for a in remove.aggregations),
-            any(_reads_edge(self.joins, model=model, edge=e) for e in remove.join_edges),
-        ))
-
-
-def _reads_edge(joins: Iterable[JoinRead], *, model: str, edge: JoinEdgeRef) -> bool:
-    pairs = frozenset((p[0], p[1]) for p in edge.join_pairs)
-    return any(
-        declaring == model and target == edge.target_model and read_pairs == pairs
-        and (edge.name is None or name == edge.name)
-        for declaring, target, name, read_pairs in joins
-    )
 
 
 def statement_reads(

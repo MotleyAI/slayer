@@ -13,7 +13,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.client import ResultColumnType, SlayerSQLClient
+from slayer.database.client import ResultColumnType, SlayerSQLClient
 from tests._gateway_harness import (
     DirectAccessAttempted,
     RecordingClient,

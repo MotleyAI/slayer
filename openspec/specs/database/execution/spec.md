@@ -1,4 +1,4 @@
-# sql/execution Specification
+# database/execution Specification
 
 ## Purpose
 Governs how rendered SQL reaches the database: the client hands every statement

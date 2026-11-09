@@ -40,7 +40,7 @@ from slayer.core.models import (
 )
 from slayer.core.query import SlayerQuery
 from slayer.core.scope import ModelScope
-from slayer.engine import join_safety
+from slayer.engine.cardinality import join_safety
 from slayer.engine.binding import bind_expr
 from slayer.engine.compile.stages import _canonical_path
 from slayer.engine.query_engine import SlayerQueryEngine

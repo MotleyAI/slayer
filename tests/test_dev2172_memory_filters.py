@@ -1,4 +1,4 @@
-"""Memory entity tagging reads query filters through the parse tree (principle 18)."""
+"""Memory entity tagging reads query filters through the parse tree (system principle 8)."""
 
 from __future__ import annotations
 

@@ -6,7 +6,7 @@ import pytest
 import sqlglot
 
 from slayer.core.models import DatasourceConfig
-from slayer.sql.client import SlayerSQLClient, TypeProbe, get_column_types_sync, render_type_probe
+from slayer.database.client import SlayerSQLClient, TypeProbe, get_column_types_sync, render_type_probe
 from slayer.sql.dialects import PostgresDialect
 
 factories = pytest.importorskip("pytest_postgresql.factories")

@@ -39,8 +39,8 @@ from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.engine.compile import stages
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle, resolve_scope
-from slayer.sql import client as sql_client
-from slayer.sql import engine_factory
+from slayer.database import client as sql_client
+from slayer.database import engine_factory
 from slayer.sql.dialects import SQLGLOT_NAMES, dialect_for_ds_type
 from slayer.storage.yaml_storage import YAMLStorage
 

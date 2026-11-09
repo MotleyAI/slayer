@@ -16,10 +16,10 @@ import duckdb
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.profiling import ensure_samples_fresh
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.client import ExecutionResult, ObjectListing
+from slayer.database.client import ExecutionResult, ObjectListing
 from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.dialects.reflection import ReflectedColumn, TableKeys, TableLocation
 from slayer.storage.yaml_storage import YAMLStorage
@@ -31,9 +31,9 @@ SLAYER = REPO / "slayer"
 
 #: The trusted boundary: the default client and the connection / dialect code it owns.
 BOUNDARY = (
-    "slayer/sql/client.py",
-    "slayer/sql/engine_factory.py",
-    "slayer/sql/sqlite_introspect.py",
+    "slayer/database/client.py",
+    "slayer/database/engine_factory.py",
+    "slayer/database/sqlite_introspect.py",
     "slayer/sql/dialects/",
 )
 #: SLayer's own databases: storage's SQLite, the facade-local catalog DuckDB, demo data generation.
@@ -112,7 +112,7 @@ def test_the_scanner_sees_every_kind_of_door() -> None:
         import sqlalchemy as sa
         from sqlalchemy import inspect
         from sqlalchemy.ext.asyncio import create_async_engine
-        from slayer.sql import engine_factory
+        from slayer.database import engine_factory
 
         def f(ds, sa_engine, eng, conn):
             engine_factory.get_engine(ds)

@@ -8,9 +8,9 @@ from decimal import Decimal
 import pytest
 
 from slayer.core.models import DatasourceConfig, ModelMeasure
-from slayer.engine.ingestion import ingest_datasource
+from slayer.live_schema.ingestion import ingest_datasource
 from slayer.mcp.server import create_mcp_server
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2172_fixtures import FacadeStore, mcp_rows, mcp_text, pg_query, serve, strict_json
 

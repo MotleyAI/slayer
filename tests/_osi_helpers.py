@@ -17,8 +17,8 @@ from slayer.importers.column_types import LiveSource
 from slayer.ingest_report import ConversionResult, ConversionWarning
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.models import OSIDocument
-from slayer.sql import engine_factory
-from slayer.sql.client import SqlClient
+from slayer.database import engine_factory
+from slayer.database.client import SqlClient
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import build_exec_engine, disposable_engine
 

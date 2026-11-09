@@ -11,8 +11,8 @@ from sqlglot import exp
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
-from slayer.sql import client as sql_client
-from slayer.sql.client import (
+from slayer.database import client as sql_client
+from slayer.database.client import (
     _execute_with_retry_async,
     _execute_with_retry_sync,
     _execute_with_retry_threaded,
@@ -228,7 +228,7 @@ class TestRetryEmptySqlExcerpt:
 
         monkeypatch.setattr(sql_client, "_execute_sql_async", fake_execute)
 
-        with caplog.at_level(logging.WARNING, logger="slayer.sql.client"):
+        with caplog.at_level(logging.WARNING, logger="slayer.database.client"):
             result = await _execute_with_retry_async(
                 sql=sql,
                 engine=None,
@@ -261,7 +261,7 @@ class TestRetryEmptySqlExcerpt:
 
         monkeypatch.setattr(sql_client, "_execute_sql_sync", fake_execute)
 
-        with caplog.at_level(logging.WARNING, logger="slayer.sql.client"):
+        with caplog.at_level(logging.WARNING, logger="slayer.database.client"):
             result = await _execute_with_retry_threaded(
                 sql=sql,
                 db_type="sqlite",
@@ -294,7 +294,7 @@ class TestRetryEmptySqlExcerpt:
 
         monkeypatch.setattr(sql_client, "_execute_sql_sync", fake_execute)
 
-        with caplog.at_level(logging.WARNING, logger="slayer.sql.client"):
+        with caplog.at_level(logging.WARNING, logger="slayer.database.client"):
             result = _execute_with_retry_sync(
                 sql=sql,
                 db_type="sqlite",
@@ -389,7 +389,7 @@ class TestClientDiscardsEngineOnAuthFailure:
         boom = Exception("invalid_grant: Token has been expired or revoked.")
         with (
             patch.object(sql_client.SlayerSQLClient, "_execute", side_effect=boom),
-            patch("slayer.sql.engine_factory.invalidate_engine") as invalidate,
+            patch("slayer.database.engine_factory.invalidate_engine") as invalidate,
         ):
             with pytest.raises(Exception, match="invalid_grant"):
                 await client.execute("SELECT 1")
@@ -402,7 +402,7 @@ class TestClientDiscardsEngineOnAuthFailure:
         client._sync_engine = engine
         with (
             patch.object(sql_client.SlayerSQLClient, "_execute", side_effect=Exception("no such table: orders")),
-            patch("slayer.sql.engine_factory.invalidate_engine") as invalidate,
+            patch("slayer.database.engine_factory.invalidate_engine") as invalidate,
         ):
             with pytest.raises(Exception, match="no such table"):
                 await client.execute("SELECT 1")
@@ -418,7 +418,7 @@ class TestClientDiscardsEngineOnAuthFailure:
         plant_async_engine(monkeypatch, client, async_engine)
         with (
             patch.object(sql_client.SlayerSQLClient, "_execute", side_effect=Exception("invalid_grant")),
-            patch("slayer.sql.engine_factory.invalidate_engine"),
+            patch("slayer.database.engine_factory.invalidate_engine"),
         ):
             with pytest.raises(Exception, match="invalid_grant"):
                 await client.execute("SELECT 1")
@@ -436,7 +436,7 @@ class TestClientDiscardsEngineOnAuthFailure:
                 sql_client.SlayerSQLClient, "_get_result_column_types",
                 side_effect=Exception("invalid_grant"),
             ),
-            patch("slayer.sql.engine_factory.invalidate_engine") as invalidate,
+            patch("slayer.database.engine_factory.invalidate_engine") as invalidate,
         ):
             with pytest.raises(Exception, match="invalid_grant"):
                 await client.get_result_column_types(probe)
@@ -449,9 +449,9 @@ class TestClientDiscardsEngineOnAuthFailure:
         client = self._client()
         client._sync_engine = object()
         with (
-            patch("slayer.sql.client._execute_with_retry_sync", side_effect=Exception("invalid_grant")),
+            patch("slayer.database.client._execute_with_retry_sync", side_effect=Exception("invalid_grant")),
             patch.object(sql_client.SlayerSQLClient, "_get_sync_engine_for_client", return_value=None),
-            patch("slayer.sql.engine_factory.invalidate_engine") as invalidate,
+            patch("slayer.database.engine_factory.invalidate_engine") as invalidate,
         ):
             with pytest.raises(Exception, match="invalid_grant"):
                 client.execute_sync("SELECT 1")
@@ -463,9 +463,9 @@ class TestClientDiscardsEngineOnAuthFailure:
         engine = object()
         client._sync_engine = engine
         with (
-            patch("slayer.sql.client._execute_with_retry_sync", side_effect=Exception("no such table")),
+            patch("slayer.database.client._execute_with_retry_sync", side_effect=Exception("no such table")),
             patch.object(sql_client.SlayerSQLClient, "_get_sync_engine_for_client", return_value=None),
-            patch("slayer.sql.engine_factory.invalidate_engine") as invalidate,
+            patch("slayer.database.engine_factory.invalidate_engine") as invalidate,
         ):
             with pytest.raises(Exception, match="no such table"):
                 client.execute_sync("SELECT 1")
@@ -477,7 +477,7 @@ class TestClientDiscardsEngineOnAuthFailure:
         client = self._client()
         with (
             patch.object(sql_client.SlayerSQLClient, "_execute", side_effect=Exception("invalid_grant")),
-            patch("slayer.sql.engine_factory.invalidate_engine", side_effect=RuntimeError("cache busted")),
+            patch("slayer.database.engine_factory.invalidate_engine", side_effect=RuntimeError("cache busted")),
         ):
             with pytest.raises(Exception, match="invalid_grant"):
                 await client.execute("SELECT 1")

@@ -16,10 +16,10 @@ from slayer.core.errors import ExplainUnsupportedError
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.engine_factory import client_cache_key
+from slayer.database.engine_factory import client_cache_key
 from slayer.sql.dialects.base import ExplainStatements, StatAgg1Name
 from slayer.sql.dialects.tsql import TsqlDialect
-from slayer.sql.client import DelegatingSqlClient, ExecutionResult, SlayerSQLClient
+from slayer.database.client import DelegatingSqlClient, ExecutionResult, SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1965_fixtures import (

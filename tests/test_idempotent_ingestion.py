@@ -34,19 +34,19 @@ from slayer.core.models import (
 )
 from slayer.core.query import SlayerQuery
 from slayer.embeddings import client as embedding_client
-from slayer.engine.ingestion import (
+from slayer.live_schema.ingestion import (
     _print_ingest_addition,
     _refresh_datasource_embeddings,
     ingest_datasource_idempotent,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import (
+from slayer.live_schema.schema_drift import (
     IdempotentIngestResult,
     ModelAddition,
     WholeModelDelete,
     EditModelDelete,
 )
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -826,7 +826,7 @@ class TestSqliteProbeWideningOnReingest:
         await _persist_int_model(storage, "ds", "t", "qty")
 
         with patch(
-            "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
+            "slayer.database.sqlite_introspect.probe_sqlite_integer_column",
             side_effect=AssertionError("probe must not run on DuckDB"),
         ):
             await _ingest(datasource=ds, storage=storage)
@@ -975,7 +975,7 @@ class TestSqliteProbeWideningOnReingest:
             column_format=custom_format,
         )
 
-        with caplog.at_level(_logging.INFO, logger="slayer.engine.ingestion"):
+        with caplog.at_level(_logging.INFO, logger="slayer.live_schema.ingestion"):
             await _ingest(datasource=ds, storage=storage)
 
         loaded = await storage.get_model("sensordata", data_source="ds")

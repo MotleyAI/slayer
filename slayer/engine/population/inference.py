@@ -24,7 +24,7 @@ from slayer.core.join_walker import canonical_path, provably_to_one, terminal_mo
 from slayer.core.models import SlayerModel
 from slayer.core.query import ComputedDimension, SlayerQuery
 from slayer.core.time_spine import TIME_SPINE_MODEL, reads_spine, names_spine
-from slayer.engine.dimension_routing import resolve_route, safe_route_reachable
+from slayer.engine.population.dimension_routing import resolve_route, safe_route_reachable
 from slayer.core.syntax import (
     AggCall,
     DottedRef,

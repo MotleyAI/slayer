@@ -18,8 +18,8 @@ from slayer.cli import _run_datasources_create, _run_ingest, main
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.enums import DataType
 from slayer.core.query import SlayerQuery
-from slayer.engine import ingestion as ing
-from slayer.engine.ingestion import (
+from slayer.live_schema import ingestion as ing
+from slayer.live_schema.ingestion import (
     IntrospectedColumn,
     InternalTable,
     SkippedTable,
@@ -28,9 +28,9 @@ from slayer.engine.ingestion import (
     _print_ingest_drift_and_errors,
     ingest_datasource_idempotent,
 )
-from slayer.engine.internal_tables import internal_table_rule
+from slayer.live_schema.internal_tables import internal_table_rule
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import (
+from slayer.live_schema.schema_drift import (
     IdempotentIngestResult,
     ModelAddition,
     validate_datasource,
@@ -42,7 +42,7 @@ from slayer.mcp.server import (
     create_mcp_server,
 )
 from slayer.search.index import build_in_memory_corpus
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
@@ -896,7 +896,7 @@ def _patch_ingest(monkeypatch, result, captured: dict | None = None) -> None:
         return result
 
     monkeypatch.setattr(
-        "slayer.engine.ingestion.ingest_datasource_idempotent", _fake
+        "slayer.live_schema.ingestion.ingest_datasource_idempotent", _fake
     )
     monkeypatch.setattr(
         "slayer.cli._resolve_storage",
@@ -1094,7 +1094,7 @@ class TestRest:
             return IdempotentIngestResult()
 
         monkeypatch.setattr(
-            "slayer.engine.ingestion.ingest_datasource_idempotent", _fake
+            "slayer.live_schema.ingestion.ingest_datasource_idempotent", _fake
         )
         db_path, _ = _ds(workspace, _MIXED)
         client = _api_client(workspace, db_path)
@@ -1114,7 +1114,7 @@ class TestRest:
             return IdempotentIngestResult()
 
         monkeypatch.setattr(
-            "slayer.engine.ingestion.ingest_datasource_idempotent", _fake
+            "slayer.live_schema.ingestion.ingest_datasource_idempotent", _fake
         )
         db_path, _ = _ds(workspace, _MIXED)
         client = _api_client(workspace, db_path)

@@ -1,4 +1,4 @@
-"""The executable client contract (spec: sql/client-contract — the client contract is executable)."""
+"""The executable client contract (spec: database/client-contract — the client contract is executable)."""
 
 from __future__ import annotations
 
@@ -14,13 +14,13 @@ import pytest
 from psycopg import sql as pg_sql
 from pytest_postgresql import factories
 
-import slayer.sql.conformance as conformance
+import slayer.database.conformance as conformance
 from slayer.core.models import DatasourceConfig
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.core.enums import DataType
-from slayer.sql.client import DelegatingSqlClient, ExecutionResult, ObjectNotFound, ResultColumnType, SlayerSQLClient
+from slayer.database.client import DelegatingSqlClient, ExecutionResult, ObjectNotFound, ResultColumnType, SlayerSQLClient
 from slayer.sql.dialects.base import ExplainStatements
-from slayer.sql.conformance import ConformanceReport, capabilities_for, fixture_statements, run_conformance
+from slayer.database.conformance import ConformanceReport, capabilities_for, fixture_statements, run_conformance
 from slayer.storage.sqlite_conn import transaction
 
 postgresql_proc = factories.postgresql_proc(port=None)

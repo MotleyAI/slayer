@@ -170,7 +170,7 @@ class TestDerivedColumnEdgeCases:
 
 class TestCardinalityInvariant:
     async def test_adding_broadcast_measure_keeps_rows_and_siblings(self, orders_engine):
-        """Adding the broadcast C measure keeps the status rows and amount:sum sibling values (system principle 8)."""
+        """Adding the broadcast C measure keeps the status rows and amount:sum sibling values (semantics Law 7)."""
         base = await orders_engine.execute(bcast_q(
             dimensions=["status"],
             measures=[ModelMeasure(formula="amount:sum", name="tot")]))

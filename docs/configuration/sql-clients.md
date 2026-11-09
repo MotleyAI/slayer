@@ -9,7 +9,7 @@ example a gateway that holds the database credentials and enforces its own gover
 
 ## The contract
 
-A client implements `slayer.sql.client.SqlClient`. Every method is `async` except `close()`.
+A client implements `slayer.database.client.SqlClient`. Every method is `async` except `close()`.
 
 | Member | Returns | Meaning |
 |---|---|---|
@@ -61,7 +61,7 @@ The smallest gateway routes only the statements and keeps the default client for
 ```python
 from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.client import DelegatingSqlClient, ExecutionResult, ResultColumnType, SlayerSQLClient
+from slayer.database.client import DelegatingSqlClient, ExecutionResult, ResultColumnType, SlayerSQLClient
 from slayer.sql.dialects.base import ExplainStatements
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -107,11 +107,11 @@ always use the default client.
 
 ## Verifying a client
 
-`slayer.sql.conformance` checks a client against the contract without a test framework. Load the
+`slayer.database.conformance` checks a client against the contract without a test framework. Load the
 fixture into the database behind your client, then run the suite:
 
 ```python
-from slayer.sql.conformance import capabilities_for, fixture_statements, run_conformance
+from slayer.database.conformance import capabilities_for, fixture_statements, run_conformance
 
 for statement in fixture_statements(dialect="postgres"):
     ...  # run it on the database your client reaches

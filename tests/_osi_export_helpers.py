@@ -28,7 +28,7 @@ from slayer.osi.dialects import read, render, select_expression
 from slayer.osi.exporter import OsiExportResult, export_osi
 from slayer.osi.models import OSIDocument, OSIExpression
 from slayer.osi.source import parse_source
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import disposable_engine
 from tests._osi_export_fixtures import DATASOURCE, EXPORT_DDL

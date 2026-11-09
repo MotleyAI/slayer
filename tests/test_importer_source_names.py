@@ -27,7 +27,7 @@ from slayer.importers.column_types import LiveDatasource, LiveSource
 from slayer.ingest_report import ConversionResult
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.models import OSIDocument
-from slayer.sql.client import DelegatingSqlClient, ResultColumnType, SqlClient, TypeProbe
+from slayer.database.client import DelegatingSqlClient, ResultColumnType, SqlClient, TypeProbe
 from slayer.sql.dialects import SqliteDialect
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2171_fixtures import column, typing_notes, write_yaml

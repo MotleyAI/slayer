@@ -25,14 +25,14 @@ from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine import ingestion
-from slayer.engine.ingestion import (
+from slayer.live_schema import ingestion
+from slayer.live_schema.ingestion import (
     ingest_datasource_idempotent,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import EditModelDelete, validate_datasource
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient, SqlClient
+from slayer.live_schema.schema_drift import EditModelDelete, validate_datasource
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient, SqlClient
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._cast_fixtures import check_try_cast_targets
 from tests._dev2120_fixtures import (

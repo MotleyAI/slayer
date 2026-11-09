@@ -1,4 +1,4 @@
-"""The Flight engine builder passes the client factory to the engine it builds (spec: sql/execution)."""
+"""The Flight engine builder passes the client factory to the engine it builds (spec: database/execution)."""
 
 from __future__ import annotations
 

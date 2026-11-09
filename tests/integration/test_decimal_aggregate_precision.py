@@ -6,7 +6,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig, ModelJoin
-from slayer.engine import ingestion
+from slayer.live_schema import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 

@@ -16,7 +16,7 @@ import slayer.storage.base as storage_base
 from slayer.core.enums import JoinType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.dbt.converter import DbtToSlayerConverter
-from slayer.engine import join_safety
+from slayer.engine.cardinality import join_safety
 from slayer.storage.base import resolve_storage
 
 

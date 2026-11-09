@@ -11,9 +11,9 @@ from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine import ingestion
+from slayer.live_schema import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 duckdb = pytest.importorskip("duckdb")
@@ -24,7 +24,7 @@ def _duckdb_env_storage(tmp_path_factory):
     """Module-scoped: per-module DuckDB file with seeded customers/orders, plus
     a YAMLStorage with the orders + customers models pre-saved. The per-test
     ``duckdb_env`` fixture wraps a fresh engine around the returned storage
-    (engines bind to their event loop — see slayer/sql/client.py:144)."""
+    (engines bind to their event loop — see slayer/database/client.py:144)."""
     tmp_path = tmp_path_factory.mktemp("duckdb_env")
     db_path = tmp_path / "test.duckdb"
     conn = duckdb.connect(str(db_path))

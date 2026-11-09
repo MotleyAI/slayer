@@ -30,32 +30,32 @@ from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine import ingestion as mod
-from slayer.engine import schema_drift as drift_mod
-from slayer.engine.ingestion import (
+from slayer.live_schema import ingestion as mod
+from slayer.live_schema import schema_drift as drift_mod
+from slayer.live_schema.ingestion import (
     _print_ingest_addition,
     ingest_datasource_idempotent,
     introspect_table_to_model,
     list_ingestable_objects,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import (
+from slayer.live_schema.schema_drift import (
     LiveTable,
     ModelAddition,
     _live_schema_refs,
     _resolve_live_table,
     validate_datasource,
 )
-from slayer.engine.schema_scope import (
+from slayer.live_schema.schema_scope import (
     SchemaEnumerationError,
     resolve_ingest_scope,
 )
 from slayer.mcp.server import _fetch_tables, create_mcp_server
-from slayer.sql.client import DelegatingSqlClient, SlayerSQLClient
+from slayer.database.client import DelegatingSqlClient, SlayerSQLClient
 from slayer.sql.dialects import DuckdbDialect, ReflectedColumn, TableKeys, dialect_for_sa_backend
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.sqlite_conn import transaction
-from slayer.storage.type_refinement import _parse_sql_table_with_default_schema
+from slayer.live_schema.type_refinement import _parse_sql_table_with_default_schema
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import disposable_engine

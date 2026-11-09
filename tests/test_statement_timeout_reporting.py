@@ -14,7 +14,7 @@ from slayer.core.warnings import (
     StatementTimeoutSkippedWarning,
 )
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
-from slayer.sql.client import ExecutionResult, SlayerSQLClient
+from slayer.database.client import ExecutionResult, SlayerSQLClient
 from slayer.sql.dialects.base import ExplainStatements
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage

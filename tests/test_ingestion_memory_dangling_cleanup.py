@@ -19,9 +19,9 @@ from sqlalchemy.exc import OperationalError as SAOperationalError
 
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.ingestion import ingest_datasource_idempotent
-from slayer.engine.schema_drift import IdempotentIngestResult
-from slayer.sql.client import SlayerSQLClient
+from slayer.live_schema.ingestion import ingest_datasource_idempotent
+from slayer.live_schema.schema_drift import IdempotentIngestResult
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.base import StorageBackend
 from slayer.storage.yaml_storage import YAMLStorage
 

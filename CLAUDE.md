@@ -49,9 +49,9 @@ poetry run la-arch-diagrams                          # regenerate arc42 diagrams
 - Pydantic v2 for all models; NEVER use dataclasses
 - Use keyword arguments for functions with more than 1 parameter
 - Imports at the top of files
-- Cross-cutting code principles (AST-built SQL, async-first, the cardinality invariant,
-  dotted-canonical references, the two expression layers, versioned persistence, …) are
-  `architecture/system.arc42.md` §3 — all code MUST obey them
+- Cross-cutting code principles (AST-built SQL, async-first, one reader of Mode B, one
+  typing, fail at save time, …) are `architecture/system.arc42.md` §3, each node's own in
+  its `architecture/*.arc42.md` — all code MUST obey them
 
 ## Testing
 

@@ -21,9 +21,9 @@ from slayer.core.models import (
     physical_column_sql,
 )
 from slayer.core.query import ModelExtension, SlayerQuery
-from slayer.engine.join_safety import audit_join_safety
+from slayer.engine.cardinality.join_safety import audit_join_safety
 from slayer.engine.query_engine import SlayerQueryEngine, _detection_skip_reason
-from slayer.engine.schema_drift import (
+from slayer.live_schema.schema_drift import (
     EditModelDelete,
     LiveTable,
     compute_datasource_drops,
@@ -32,10 +32,10 @@ from slayer.engine.schema_drift import (
 from slayer.ir.source_bundle import apply_extension_overlay
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
-from slayer.storage.type_refinement import refine_dict_with_live_schema
+from slayer.live_schema.type_refinement import refine_dict_with_live_schema
 from slayer.async_utils import run_sync
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1902_fixtures import customers_model, orders_model, regions_model

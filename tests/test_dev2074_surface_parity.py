@@ -16,7 +16,7 @@ from slayer.core.errors import PopulationErrorReason, PopulationInferenceError, 
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.core.time_spine import spine_model
-from slayer.engine.dimension_routing import route_dotted_target
+from slayer.engine.population.dimension_routing import route_dotted_target
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.facade.catalog import build_catalog
 from slayer.osi.converter import OsiToSlayerConverter

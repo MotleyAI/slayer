@@ -16,8 +16,8 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import client as sql_client
-from slayer.sql.client import SlayerSQLClient
+from slayer.database import client as sql_client
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import plant_async_engine

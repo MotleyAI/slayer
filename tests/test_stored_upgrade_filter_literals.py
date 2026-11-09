@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.models import DatasourceConfig
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from tests._stored_upgrade_fixtures import (
     BACKENDS,
     DS,

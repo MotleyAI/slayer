@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 
 from slayer.core.models import DatasourceConfig
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects.base import ExplainStatements
 from tests._engine_helpers import disposable_engine
 

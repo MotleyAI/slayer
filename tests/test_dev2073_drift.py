@@ -11,7 +11,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import EditModelDelete, WholeModelDelete, validate_datasource
+from slayer.live_schema.schema_drift import EditModelDelete, WholeModelDelete, validate_datasource
 from slayer.mcp.server import create_mcp_server
 
 from tests._dev2073_fixtures import (

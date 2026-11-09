@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 _ROOT = Path(__file__).resolve().parents[1]
-_FILES = ("slayer/engine/ingestion.py", "slayer/engine/introspect_utils.py")
+_FILES = ("slayer/live_schema/ingestion.py", "slayer/live_schema/introspect_utils.py")
 _BACKENDS = frozenset({
     "sqlite", "postgres", "postgresql", "duckdb", "mysql", "mariadb", "snowflake", "clickhouse",
     "bigquery", "mssql", "tsql", "sqlserver", "trino", "presto", "redshift", "oracle",

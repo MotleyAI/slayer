@@ -1,4 +1,4 @@
-"""Synchronous calls reuse networked connections and release only local files (spec: sql/execution)."""
+"""Synchronous calls reuse networked connections and release only local files (spec: database/execution)."""
 
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ from pytest_postgresql import factories
 
 from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._pg_helpers import pg_database
 
@@ -303,7 +303,7 @@ def test_aclose_fully_disposes_the_running_loops_resources(
 _EXIT_SCRIPT = textwrap.dedent("""
     import json, sys
     from slayer.core.models import DatasourceConfig
-    from slayer.sql.client import SlayerSQLClient
+    from slayer.database.client import SlayerSQLClient
 
     for raw in json.loads(sys.argv[1]):
         client = SlayerSQLClient(DatasourceConfig.model_validate(raw))

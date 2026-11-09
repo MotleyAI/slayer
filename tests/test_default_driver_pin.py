@@ -13,8 +13,9 @@ from sqlalchemy.engine.url import make_url
 
 from slayer.core.errors import MissingDriverError
 from slayer.core.models import DatasourceConfig
-from slayer.sql import dialects, engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.sql import dialects
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.base import DriverFacts
 

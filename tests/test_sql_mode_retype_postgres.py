@@ -5,7 +5,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2120_fixtures import contractors_statements
 from tests._sql_mode_retype_fixtures import (

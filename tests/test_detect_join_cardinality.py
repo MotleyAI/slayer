@@ -13,9 +13,9 @@ from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.errors import ForcedFilterError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
-from slayer.engine.cardinality import CardinalityVerdict, JoinCardinalityReport
+from slayer.engine.cardinality.inference import CardinalityVerdict, JoinCardinalityReport
 from slayer.engine.query_engine import SlayerQueryEngine, _physical_keys
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
 

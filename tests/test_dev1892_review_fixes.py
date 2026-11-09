@@ -13,7 +13,7 @@ from slayer.core.errors import (
 )
 from slayer.core.keys import ColumnKey, Grain
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.engine.join_safety import grain_determines
+from slayer.engine.cardinality.join_safety import grain_determines
 
 from tests._dev1841_fixtures import (
     ModelMeasure,

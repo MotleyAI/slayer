@@ -13,7 +13,7 @@ import yaml
 from slayer.core.enums import DataType, JoinCardinality, JoinType
 from slayer.core.models import ModelJoin, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._osi_export_fixtures import (
     BASIC_MEASURES, DATASOURCE, col, customers, measure, monthly_revenue, orders, orders_columns, rich_orders, visits,

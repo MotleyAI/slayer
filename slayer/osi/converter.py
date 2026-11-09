@@ -34,9 +34,9 @@ from slayer.engine.binding import bind_model_formula
 from slayer.sql.column_expansion import root_scope_column_ids, resolve_ref_target
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.render.parse import fold_source_identifiers
-from slayer.engine.ingestion import introspect_table_to_model
+from slayer.live_schema.ingestion import introspect_table_to_model
 from slayer.engine.query_engine import run_over_caller_engine
-from slayer.engine.schema_scope import live_name, requested_schema_ref
+from slayer.live_schema.schema_scope import live_name, requested_schema_ref
 from slayer.core.join_search import blocking_pairs, shortest_route, shortest_routes
 from slayer.importers.column_types import LiveDatasource, LiveSource
 from slayer.importers.aggregates import (
@@ -44,7 +44,7 @@ from slayer.importers.aggregates import (
 )
 from slayer.importers.physical import PhysicalIndex, live_exact_name, unreadable_columns
 from slayer.ingest_report import ConversionResult, ConversionWarning
-from slayer.sql.client import ResultColumnType, SqlClient, adapt_client
+from slayer.database.client import ResultColumnType, SqlClient, adapt_client
 from slayer.osi.dialects import Selection, is_native, read, reader_for, render, select_expression
 from slayer.osi.models import (
     OSSIE_DATATYPES,

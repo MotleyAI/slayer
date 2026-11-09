@@ -2,7 +2,7 @@
 
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.models import Column, is_key_set_unique
-from slayer.engine.cardinality import (
+from slayer.engine.cardinality.inference import (
     classify_cardinality,
     declares_solo_unique,
     infer_structural_cardinality,

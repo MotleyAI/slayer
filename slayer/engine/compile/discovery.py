@@ -33,7 +33,7 @@ from slayer.engine.elaborate_env import (
     is_grained_aggregate,
     position_classes,
 )
-from slayer.engine.join_safety import (
+from slayer.engine.cardinality.join_safety import (
     crossing_local_root_predicate,
     grain_member_attributable,
     reads_population_spine,

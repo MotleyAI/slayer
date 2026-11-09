@@ -1,4 +1,4 @@
-"""The default client refuses session-changing and transaction-control statements (spec: sql/client-contract)."""
+"""The default client refuses session-changing and transaction-control statements (spec: database/client-contract)."""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ import duckdb
 import pytest
 
 from slayer.core.models import DatasourceConfig
-from slayer.sql import client as sql_client
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient, SqlClientError, admit_statement
+from slayer.database import client as sql_client
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient, SqlClientError, admit_statement
 from slayer.sql.dialects import PostgresDialect
 
 _URLS = {

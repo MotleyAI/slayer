@@ -22,7 +22,7 @@ from slayer.core.keys import SCALAR_SPECS
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects.base import ServerProfile
 from slayer.storage.sqlite_conn import transaction
 from tests._dev1737_fixtures import SERVER_TYPES, TableSpec, as_temporal, seed_backend

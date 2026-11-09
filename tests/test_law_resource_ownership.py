@@ -30,9 +30,9 @@ TESTS = REPO / "tests"
 
 #: The single home permitted for each concern (repo-relative posix paths).
 DOOR = "slayer/storage/sqlite_conn.py"
-ENGINE_FACTORY = "slayer/sql/engine_factory.py"
+ENGINE_FACTORY = "slayer/database/engine_factory.py"
 ENGINE_HELPERS = "tests/_engine_helpers.py"
-CLIENT = "slayer/sql/client.py"
+CLIENT = "slayer/database/client.py"
 DIALECTS = "slayer/sql/dialects/"
 
 _ON_313 = sys.version_info >= (3, 13)
@@ -236,7 +236,7 @@ class TestMatcherSelfChecks:
         assert _is_allowed(ENGINE_FACTORY, "dispose", ())
         assert _is_allowed(CLIENT, "dispose", ())
         assert _is_allowed("tests/test_x.py", "dispose", ())
-        assert not _is_allowed("slayer/engine/ingestion.py", "dispose", ())
+        assert not _is_allowed("slayer/live_schema/ingestion.py", "dispose", ())
 
     def test_async_engine_allowed_only_in_the_builder(self) -> None:
         assert _is_allowed(CLIENT, "async_engine", ("_get_async_engine",))

@@ -37,8 +37,8 @@ from slayer.core.query import QueryRefinement, SlayerQuery
 from slayer.core.recommend import render_recommendation_markdown
 from slayer.core.warnings import NarrowedAccessWarning, ResponseTruncationWarning
 from slayer import async_utils
-from slayer.engine import ingestion as engine_ingestion
-from slayer.engine.ingestion import (
+from slayer.live_schema import ingestion as engine_ingestion
+from slayer.live_schema.ingestion import (
     _empty_ingest_message as _shared_empty_ingest_message,
     _friendly_db_error,
     _get_schemas,
@@ -47,10 +47,10 @@ from slayer.engine.ingestion import (
     IngestableObject,
     list_ingestable_objects,
 )
-from slayer.engine.schema_scope import schema_ref_from_token, validate_scope_args
+from slayer.live_schema.schema_scope import schema_ref_from_token, validate_scope_args
 from slayer.search.service import handle_edit_refresh
 from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine, SlayerResponse
-from slayer.sql.client import SqlClient, SqlClientError
+from slayer.database.client import SqlClient, SqlClientError
 from slayer.memories.help_seed import seed_help_memories
 from slayer.inspect.model_render import (  # noqa: F401 — re-exported for backward-compat (tests + other modules import these names from slayer.mcp.server)
     _build_sample_query_args,

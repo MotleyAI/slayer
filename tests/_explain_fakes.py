@@ -12,8 +12,8 @@ from typing import Any
 import pytest
 
 from slayer.core.models import DatasourceConfig
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects import TsqlDialect
 from slayer.sql.dialects.base import ExplainStatements
 from tests._engine_helpers import plant_async_engine

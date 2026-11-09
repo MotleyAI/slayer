@@ -1,0 +1,861 @@
+"""Join-arity safety: a hop is *provably many-to-one* iff, on its traversal
+orientation, its target-side columns cover a declared PK/unique set or its
+oriented cardinality is ``many_to_one``/``one_to_one``. Unknown = unsafe.
+Both orientations of every declared edge participate; proof is per orientation,
+so one direction may be provably to-one while the other fans out."""
+
+from __future__ import annotations
+
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, TypeVar, cast
+
+from pydantic import BaseModel
+
+from slayer.core.enums import JoinCardinality
+from slayer.core.errors import AmbiguousJoinPathError, UnresolvableDimensionJoinError
+from slayer.core.join_search import HopFilter, routes
+from slayer.core.join_walker import (
+    OrientedJoin,
+    OrientedLike,
+    canonical_path,
+    edges_between,
+    follow,
+    is_product_edge,
+    provably_to_one,
+    resolve_hop,
+    reverse_token,
+    unique_key_sets,
+)
+from slayer.core.time_spine import TIME_SPINE_COLUMN, TIME_SPINE_MODEL
+from slayer.core.keys import (
+    is_ranked,
+    SLOT_COMPOSITE_KINDS,
+    AggregateKey,
+    ColumnKey,
+    ColumnSqlKey,
+    Grain,
+    LiteralKey,
+    SqlFragmentKey,
+    StarKey,
+    TimeTruncKey,
+    ValueKey,
+    reroot_value_key,
+    source_anchor_path,
+    substitute_value_keys,
+    walk_value_keys,
+    window_kwarg_of,
+)
+from slayer.core.models import ModelJoin, SlayerModel, join_key_error
+from slayer.core.refs import key_display
+from slayer.core.scope import ModelScope, StageSchema
+from slayer.engine.reference_closure import (
+    aggregate_input_closure,
+    column_default_key,
+    definition_refs,
+    key_closure,
+)
+from slayer.engine.elaborate_env import check_partition_key_attributable
+from slayer.engine.cardinality.unrelated import crosses_product_hop
+from slayer.ir.prebound import walk_key_path
+from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.engine.cardinality.inference import (
+    CardinalityVerdict,
+    JoinCardinalityReport,
+)
+
+__all__ = [
+    "provably_fans",
+    "safe_reachable",
+    "may_inline_crossing_inputs",
+    "audit_join_safety",
+    "JoinSafetyFinding",
+]
+
+
+def may_inline_crossing_inputs(crossed_paths: Sequence[tuple]) -> bool:  # NOSONAR(S1172) — crossed_paths is the documented seam; the cardinality-aware decision reads it, hardcoded False until then.
+    """Whether a crossing-input local aggregate may stay inline in the host base.
+    Hardcoded ``False`` (always a producer); the seam that will flip."""
+    return False
+
+
+def provably_fans(*, edge: OrientedLike, target_model: SlayerModel) -> bool:
+    """Is ``edge`` provably fanning onto ``target_model`` in its orientation?
+    True iff it is NOT provably many-to-one and its declared cardinality is
+    ``one_to_many``/``many_to_many`` — proof beats a contradictory to-many
+    declaration, so a reverse-PK-covered or undeclared hop is unproven, not
+    fanning (absence of a target unique key permits a fan but does not prove one)."""
+    if provably_to_one(edge=edge, target_model=target_model):
+        return False
+    return edge.cardinality in (
+        JoinCardinality.ONE_TO_MANY, JoinCardinality.MANY_TO_MANY,
+    )
+
+
+def safe_reachable(
+    *,
+    root: SlayerModel,
+    path: Sequence[str],
+    models_by_name: dict[str, SlayerModel],
+) -> bool:
+    """Is the (possibly composed) ``path`` a reachable chain of provably many-to-one hops
+    from ``root``? Any declared edge traverses in either orientation; an unresolvable
+    hop fails the walk. Empty path is safe. An ambiguous hop raises."""
+    chain = follow(root=root, path=path, models_by_name=models_by_name)
+    if chain is None:
+        return False
+    for edge in chain:
+        target_model = models_by_name.get(edge.target_model)
+        if target_model is None or not provably_to_one(
+            edge=edge, target_model=target_model
+        ):
+            return False
+    return True
+
+
+class JoinSafetyFinding(BaseModel):
+    """One audit record per declared edge: the provability of both orientations
+    plus, when the declared (forward) orientation is unproven, the broadcast
+    consequence and remedies. Detection contradictions are separate findings."""
+
+    data_source: str
+    model: str
+    target_model: str
+    message: str
+    severity: str = "warning"
+    forward_provably_to_one: bool = False
+    reverse_provably_to_one: bool = False
+    contradiction: bool = False
+
+
+_UNPROVEN_REMEDY = (
+    "declare `cardinality` many_to_one/one_to_one, declare a covering unique "
+    "key on the target, or run cardinality detection"
+)
+
+
+def audit_join_safety(
+    *,
+    models: Sequence[SlayerModel],
+    detection: Optional[JoinCardinalityReport] = None,
+) -> list[JoinSafetyFinding]:
+    """One finding per declared edge, recording both orientations' provability.
+    The forward-unproven edges carry the broadcast consequence and remedies;
+    data-contradicted declarations are appended as separate error findings."""
+    # Joins resolve within the parent model's datasource — no cross-datasource shadowing.
+    models_by_key = {(m.data_source, m.name): m for m in models}
+    findings: list[JoinSafetyFinding] = []
+    for model in models:
+        for join in model.joins:
+            target = models_by_key.get((model.data_source, join.target_model))
+            if target is not None:
+                findings.extend(_key_findings(model=model, join=join, target=target))
+                findings.append(_edge_finding(model=model, join=join, target=target))
+    if detection is not None:
+        findings.extend(
+            _contradiction_finding(finding)
+            for finding in detection.findings
+            if finding.verdict is CardinalityVerdict.CONTRADICTS_HARD
+        )
+    return findings
+
+
+def _key_findings(
+    *, model: SlayerModel, join: ModelJoin, target: SlayerModel,
+) -> list[JoinSafetyFinding]:
+    """An error finding per key that is not a declared base column on its side."""
+    errors = [
+        join_key_error(model=model.name, target=join.target_model, key=key,
+                       side=side.name, columns=side.columns)
+        for pair in join.join_pairs
+        for key, side in zip(pair, (model, target))
+    ]
+    return [
+        JoinSafetyFinding(
+            data_source=model.data_source, model=model.name,
+            target_model=join.target_model, message=str(err), severity="error",
+        )
+        for err in errors if err is not None
+    ]
+
+
+def _edge_finding(
+    *, model: SlayerModel, join: ModelJoin, target: SlayerModel
+) -> JoinSafetyFinding:
+    """Provability of one declared edge in both orientations. Picks THIS
+    declaration by position (never by pairs — parallel edges may share them)."""
+    idx = next(i for i, j in enumerate(j for j in model.joins if j.target_model == join.target_model)
+               if j is join)
+    fwd_edge = edges_between(source=model, target=target)[idx]
+    back = edges_between(source=target, target=model)
+    rev_edge = back[len(back) - sum(1 for j in model.joins if j.target_model == join.target_model) + idx]
+    fwd_ok = provably_to_one(edge=fwd_edge, target_model=target)
+    rev_ok = provably_to_one(edge=rev_edge, target_model=model)
+    if fwd_ok:
+        message = (
+            f"Join {model.name} → {join.target_model} is provably "
+            f"to-one; the reverse hop "
+            f"{join.target_model} → {model.name} "
+            f"{'is provably to-one' if rev_ok else 'fans out'}."
+        )
+    else:
+        message = (
+            f"Join {model.name} → {join.target_model} is unproven: "
+            f"metrics crossing it will broadcast rather than join "
+            f"through. Remedies: {_UNPROVEN_REMEDY}."
+        )
+    return JoinSafetyFinding(
+        data_source=model.data_source,
+        model=model.name,
+        target_model=join.target_model,
+        message=message,
+        severity="warning" if not fwd_ok else "info",
+        forward_provably_to_one=fwd_ok,
+        reverse_provably_to_one=rev_ok,
+    )
+
+
+def _contradiction_finding(finding) -> JoinSafetyFinding:
+    return JoinSafetyFinding(
+        data_source=finding.data_source,
+        model=finding.model,
+        target_model=finding.target_model,
+        message=(
+            f"Join {finding.model} → {finding.target_model} declares "
+            f"{finding.stored}, but cardinality detection contradicts "
+            f"it (observed {finding.detected})."
+        ),
+        severity="error",
+        contradiction=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Attributability / re-rooting analysis shared by binding, elaboration and compilation
+# ---------------------------------------------------------------------------
+
+
+
+def key_host_path(key: ValueKey) -> Tuple[str, ...]:
+    if isinstance(key, TimeTruncKey):
+        return source_anchor_path(key)
+    return tuple(getattr(key, "path", ()) or ())
+
+
+def _common_prefix_len(a: Tuple[str, ...], b: Tuple[str, ...]) -> int:
+    """Shared prefix length; token equality is edge identity on canonical paths."""
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def _route_via_common_prefix(
+    *, host_name: str, target_path: Tuple[str, ...], host_path: Tuple[str, ...],
+    models_by_name: Dict[str, SlayerModel],
+) -> Tuple[str, ...]:
+    """The route from the aggregate's root (at ``target_path``) to a
+    host-coordinate ``host_path`` (both canonical): step back only to the two paths'
+    longest common prefix — the reversed per-hop tokens of ``target_path`` past
+    it — then forward along ``host_path``'s own suffix (an empty ``host_path`` gives
+    the reverse path back to the host); an ambiguous reverse hop propagates."""
+    host_model = models_by_name.get(host_name)
+    host_token = host_model.spelling if host_model is not None else host_name
+    if host_model is None or not target_path:
+        return (host_token, *host_path)
+    chain = follow(root=host_model, path=target_path, models_by_name=models_by_name)
+    if chain is None:
+        return (host_token, *host_path)
+    cp = _common_prefix_len(target_path, host_path)
+    reverse_suffix = tuple(reversed([reverse_token(edge) for edge in chain[cp:]]))
+    return (*reverse_suffix, *host_path[cp:])
+
+
+def spine_routes(
+    *, dataset: SlayerModel, models_by_name: dict[str, SlayerModel], cap: int = 2,
+) -> list[list[OrientedJoin]]:
+    """Up to ``cap`` minimal routes ``dataset → time_spine`` over provably to-one addressable hops."""
+    return [list(r.edges) for r in routes(
+        root=dataset, target=TIME_SPINE_MODEL, models_by_name=models_by_name,
+        hop_filter=HopFilter.TO_ONE, cap=cap, shortest_only=True,
+    )]
+
+
+def spine_route_error(*, dataset: str, routes: list[list[OrientedJoin]], leaf: str) -> UnresolvableDimensionJoinError:
+    """The ambiguous-spine-route error, naming each tied canonical route."""
+    return UnresolvableDimensionJoinError(
+        reference=f"{dataset}.{leaf}", root_model=TIME_SPINE_MODEL,
+        reason="equal-length routes to the time spine: " + ", ".join(
+            ".".join((dataset, *canonical_path(r))) for r in routes
+        ) + "; give the model a default_time_dimension, or query its facts through one of the routes",
+    )
+
+
+def _factor_free(models_by_name: Dict[str, SlayerModel]) -> Dict[str, SlayerModel]:
+    return {n: m.as_population_factor(False) if m.population_spine else m for n, m in models_by_name.items()}
+
+
+def _is_product_path(host_path: Tuple[str, ...], *, host_name: Optional[str], models_by_name: Dict[str, SlayerModel]) -> bool:
+    """``host_path`` starts at the population's product hop to the spine."""
+    host = models_by_name.get(host_name) if host_name is not None else None
+    return host is not None and host.population_spine and bool(host_path) and host_path[0] == TIME_SPINE_MODEL
+
+
+def reads_population_spine(key: ValueKey, *, host: Optional[SlayerModel]) -> bool:
+    """``key`` reads a spine population's product hop (the spine as the population sees it)."""
+    return host is not None and host.population_spine and any(
+        isinstance(r, ColumnKey) and r.path[:1] == (TIME_SPINE_MODEL,) for r in walk_value_keys(key)
+    )
+
+
+def home_spine_route(
+    *, root_model: SlayerModel, models_by_name: Dict[str, SlayerModel], leaf: str = TIME_SPINE_COLUMN,
+) -> Optional[Tuple[str, ...]]:
+    """The home's canonical route to the spine; ``None`` without one; equal-length routes raise."""
+    universe = _factor_free(models_by_name)
+    home = universe.get(root_model.name, root_model.as_population_factor(False))
+    routes = spine_routes(dataset=home, models_by_name={**universe, home.name: home})
+    if len(routes) > 1:
+        raise spine_route_error(dataset=home.name, routes=routes, leaf=leaf)
+    return canonical_path(routes[0]) if routes else None
+
+
+def attributable_from_root(
+    *, host_path: Tuple[str, ...], target_path: Tuple[str, ...],
+    root_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
+    host_name: Optional[str] = None,
+) -> bool:
+    """Is a host-coordinate path attributable from the aggregate's root over provably many-to-one hops only?"""
+    tp, hp = tuple(target_path), tuple(host_path)
+    if _is_product_path(hp, host_name=host_name, models_by_name=models_by_name) or (
+        not tp and root_model.population_spine and hp[:1] == (TIME_SPINE_MODEL,)
+    ):
+        return home_spine_route(root_model=root_model, models_by_name=models_by_name) is not None
+    if hp[: len(tp)] == tp:
+        return safe_reachable(
+            root=root_model, path=hp[len(tp):], models_by_name=models_by_name,
+        )
+    if host_name is None or (tp and host_name == tp[0]):
+        return False
+    if hp and not _common_prefix_len(tp, hp) and safe_reachable(
+        root=root_model, path=hp, models_by_name=models_by_name,
+    ):
+        return True
+    route = _route_via_common_prefix(
+        host_name=host_name, target_path=tp, host_path=hp,
+        models_by_name=models_by_name,
+    )
+    return safe_reachable(
+        root=root_model, path=route, models_by_name=models_by_name,
+    )
+
+
+def _effective_dependency_paths(
+    closure: Tuple[Tuple[str, ...], ...], own: Tuple[str, ...],
+) -> List[Tuple[str, ...]]:
+    """The paths a reference actually depends on, for attributability /
+    determination: the MAXIMAL closure paths (a full derived crossing, not the
+    intermediate join prefixes the join builder needs) plus the reference's OWN
+    path always (a host-declared derived column's ``()`` host-locality, which a
+    maximal filter would swallow as a prefix)."""
+    paths = set(closure)
+    maximal = [
+        p for p in paths
+        if not any(q != p and len(q) > len(p) and q[: len(p)] == p for q in paths)
+    ]
+    if own not in maximal:
+        maximal.append(own)
+    return maximal
+
+
+def key_attributable_from_root(
+    *, key: ValueKey, target_path: Tuple[str, ...], root_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+    host_model: SlayerModel, host_name: Optional[str] = None,
+) -> bool:
+    """Is every path in ``key``'s dependency closure attributable from the
+    aggregate's root? A derived reference is unattributable exactly
+    when its definition crosses a fanning hop; an unanalysable closure is
+    unattributable (fail closed)."""
+    closure = key_closure(
+        key=key, anchor_model=host_model, anchor_relation=host_model.name,
+        bundle=bundle,
+    )
+    if closure is None:
+        return False
+    return all(
+        attributable_from_root(
+            host_path=p, target_path=target_path, root_model=root_model,
+            models_by_name=models_by_name, host_name=host_name,
+        )
+        for p in _effective_dependency_paths(closure, key_host_path(key))
+    )
+
+
+def key_broadcast_reason(
+    *, key: ValueKey, target_path: Tuple[str, ...], root_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+    host_model: SlayerModel, host_name: Optional[str] = None,
+) -> str:
+    """Why ``key`` broadcasts: the first path in its dependency closure not
+    attributable from the root names the fanning hop — so a derived
+    fanning dimension's warning names ``region_events``, not 'unreachable'."""
+    closure = key_closure(
+        key=key, anchor_model=host_model, anchor_relation=host_model.name,
+        bundle=bundle,
+    )
+    paths = (_effective_dependency_paths(closure, key_host_path(key))
+             if closure is not None else [key_host_path(key)])
+    for p in paths:
+        if not attributable_from_root(
+            host_path=p, target_path=target_path, root_model=root_model,
+            models_by_name=models_by_name, host_name=host_name,
+        ):
+            return broadcast_reason(
+                host_path=p, target_path=target_path, root_model=root_model,
+                models_by_name=models_by_name, host_name=host_name,
+            )
+    return UNREACHABLE_NO_PATH
+
+
+def _reroot_leaf_via_host(
+    r: ValueKey, *, target_path: Tuple[str, ...], root_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], host_name: str,
+) -> Optional[ValueKey]:
+    if not isinstance(r, (ColumnKey, ColumnSqlKey, StarKey, TimeTruncKey)):
+        return None
+    if isinstance(r, TimeTruncKey) and not isinstance(r.source, (ColumnKey, ColumnSqlKey)):
+        return None  # an expression's leaves reroot one by one
+    hp = key_host_path(r)
+    if isinstance(r, ColumnKey) and _is_product_path(hp, host_name=host_name, models_by_name=models_by_name):
+        route = home_spine_route(root_model=root_model, models_by_name=models_by_name)
+        return r if route is None else r.model_copy(update={"path": route})
+    if hp[: len(target_path)] == target_path:
+        return None  # reroot_value_key strips the prefix
+    if target_path and host_name == target_path[0]:
+        return None
+    via_host = _route_via_common_prefix(
+        host_name=host_name, target_path=target_path, host_path=hp,
+        models_by_name=models_by_name,
+    )
+    if not safe_reachable(
+        root=root_model, path=via_host, models_by_name=models_by_name,
+    ) and hp and not _common_prefix_len(target_path, hp) and safe_reachable(
+        root=root_model, path=hp, models_by_name=models_by_name,
+    ):
+        return None  # resolved through the root's own join to the sibling
+    if isinstance(r, TimeTruncKey):
+        return r.model_copy(update={
+            "source": cast(ColumnKey | ColumnSqlKey, r.source).model_copy(update={"path": via_host}),
+        })
+    return r.model_copy(update={"path": via_host})
+
+
+_RerootableT = TypeVar("_RerootableT", bound=ValueKey)
+_PATH_LEAVES = (ColumnKey, ColumnSqlKey, StarKey)
+
+
+def reroot_from_root(
+    key: _RerootableT, *, target_path: Tuple[str, ...], root_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], host_name: str,
+) -> _RerootableT:
+    """Re-anchor a host-coordinate key into the root's coordinates, per leaf, by the same rules ``attributable_from_root`` proves safety with."""
+    tp = tuple(target_path)
+    mapping: Dict[ValueKey, ValueKey] = {}
+    for r in walk_value_keys(key):
+        # A column bucket reroots whole (substitute matches it pre-order, so its
+        # inner-column entry is inert); an expression bucket's leaves reroot alone.
+        rerooted = _reroot_leaf_via_host(
+            r, target_path=tp, root_model=root_model,
+            models_by_name=models_by_name, host_name=host_name,
+        )
+        if rerooted is not None:
+            mapping[r] = rerooted
+        elif isinstance(r, _PATH_LEAVES):
+            mapping[r] = reroot_value_key(r, target_path=tp)
+    # One pass, each host leaf mapped once: a stripped leaf equal to a host key
+    # is never re-mapped, a via-host leaf never stripped.
+    return lower_axis_hops(
+        substitute_value_keys(key, mapping), root_model=root_model, models_by_name=models_by_name,
+    )
+
+
+def lower_axis_hops(
+    key: _RerootableT, *, root_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
+) -> _RerootableT:
+    """The spine column reached over an axis edge is the axis column itself (never a join)."""
+    universe = _factor_free(models_by_name)
+    root = universe.get(root_model.name, root_model)
+    mapping: Dict[ValueKey, ValueKey] = {}
+    for r in walk_value_keys(key):
+        if not (isinstance(r, ColumnKey) and r.path and r.leaf == TIME_SPINE_COLUMN):
+            continue
+        try:
+            chain = follow(root=root, path=r.path, models_by_name=universe)
+        except AmbiguousJoinPathError:
+            continue
+        if not chain or chain[-1].target_model != TIME_SPINE_MODEL or is_product_edge(chain[-1]):
+            continue
+        owner = universe.get(chain[-1].source_model)
+        axis = chain[-1].join_pairs[0][0]
+        mapping[r] = (
+            column_default_key(path=r.path[:-1], leaf=axis, base=owner)
+            if owner is not None else ColumnKey(path=r.path[:-1], leaf=axis)
+        )
+    return substitute_value_keys(key, mapping) if mapping else key
+
+
+UNREACHABLE_NO_PATH = "unreachable from the aggregate's root (no join path from it)"
+
+
+def _hop_walk_reason(
+    *, root_model: SlayerModel, path: Tuple[str, ...],
+    models_by_name: Dict[str, SlayerModel],
+) -> Optional[str]:
+    """Walk ``path`` from ``root_model`` (bidirectional): the
+    fanning/unproven-hop reason if the path resolves but a hop is not provably
+    many-to-one, else ``None`` (an unresolvable/ambiguous path is unreachable)."""
+    try:
+        chain = follow(root=root_model, path=path, models_by_name=models_by_name)
+    except AmbiguousJoinPathError:
+        return None
+    if chain is None:
+        return None
+    for i, edge in enumerate(chain):
+        tgt = models_by_name.get(edge.target_model)
+        if tgt is None:
+            return None
+        if not provably_to_one(edge=edge, target_model=tgt):
+            token = path[i] if i < len(path) else edge.target_model
+            return f"crosses a fanning or unproven join hop to {token}"
+    return None
+
+
+def broadcast_reason(
+    *, host_path: Tuple[str, ...], target_path: Tuple[str, ...],
+    root_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
+    host_name: Optional[str] = None,
+) -> str:
+    """Why a dimension broadcasts: crosses an unproven/fanning join hop (forward
+    from the root, or back through the reverse hop), or unreachable if no path."""
+    tp, hp = tuple(target_path), tuple(host_path)
+    if _is_product_path(hp, host_name=host_name, models_by_name=models_by_name):
+        return f"{root_model.name} has no route to the time spine"
+    if hp[: len(tp)] == tp:
+        reason = _hop_walk_reason(
+            root_model=root_model, path=hp[len(tp):], models_by_name=models_by_name,
+        )
+        return reason or UNREACHABLE_NO_PATH
+    # Off the forward path: reachable only back through the reverse (fanning) hop?
+    if host_name is not None and not (tp and host_name == tp[0]):
+        route = _route_via_common_prefix(
+            host_name=host_name, target_path=tp, host_path=hp,
+            models_by_name=models_by_name,
+        )
+        reason = _hop_walk_reason(
+            root_model=root_model, path=route, models_by_name=models_by_name,
+        )
+        if reason is not None:
+            return reason
+    return UNREACHABLE_NO_PATH
+
+
+def assert_partition_key_attributable(
+    *, key: ValueKey, pk: ValueKey, label: str,
+    scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
+) -> None:
+    """A partition key whose dependency closure crosses a fanning hop is unattributable; the checker raises. Path-less keys are judged from the host, path-bearing from the aggregate's root."""
+    # StageSchema binds flat stage outputs — no join graph, so no fanning closure exists.
+    host_m = scope.source_model if isinstance(scope, ModelScope) else None
+    if host_m is None:
+        return
+    models_by_name = bundle.models_by_name
+    hp = key_host_path(pk)
+    if crosses_product_hop(host=host_m, path=hp, models_by_name=models_by_name):
+        return  # a row-level read across a product hop: the checker refuses it (Axiom 3.1)
+    if not hp:
+        # Path-less derived key: a fan from its own host is a mode-invariant safety
+        # error; a host-safe key's cross-model-root concern stays the planner's.
+        root, target, host_name = host_m, (), None
+    else:
+        target = source_anchor_path(key.source) if isinstance(key, AggregateKey) else ()
+        root = walk_key_path(model=host_m, path=target, bundle=bundle) or host_m
+        host_name = host_m.name if target else None
+    attributable = key_attributable_from_root(
+        key=pk, target_path=target, root_model=root,
+        models_by_name=models_by_name, bundle=bundle, host_model=host_m,
+        host_name=host_name,
+    )
+    reason = None if attributable else key_broadcast_reason(
+        key=pk, target_path=target, root_model=root,
+        models_by_name=models_by_name, bundle=bundle, host_model=host_m,
+        host_name=host_name,
+    )
+    check_partition_key_attributable(
+        label=label, pk=pk, attributable=attributable, reason=reason,
+    )
+
+
+def shared_join_key_reroot(
+    *, key: ValueKey, target_path: Tuple[str, ...], host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel],
+) -> Optional[ValueKey]:
+    """A host-local dimension that IS a source-side join column of the single hop to the root: return the root's target-side key, else ``None``."""
+    leaf = _grain_leaf_name(key)
+    if leaf is None or key_host_path(key) or len(target_path) != 1:
+        return None
+    try:
+        edge = resolve_hop(
+            current=host_model, token=target_path[0],
+            models_by_name=models_by_name,
+        )
+    except AmbiguousJoinPathError:
+        return None
+    root_model = models_by_name.get(edge.target_model) if edge is not None else None
+    if edge is None or root_model is None:
+        return None
+    for src, tgt in edge.join_pairs:
+        if src == leaf:
+            return column_default_key(path=(), leaf=tgt, base=root_model)
+    return None
+
+
+def grain_member_attributable(
+    *, key: ValueKey, target_path: Tuple[str, ...], root_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+    host_model: SlayerModel, host_name: Optional[str] = None,
+) -> bool:
+    """Is a grain member attributable from the aggregate's root? Every column it
+    references must be — judged on its dependency closure so a derived
+    fanning reference is unattributable; every nested aggregate must be too."""
+    saw = False
+    for r in walk_value_keys(key):
+        if isinstance(r, AggregateKey):
+            saw = True
+            if not attributable_from_root(
+                host_path=source_anchor_path(r.source), target_path=target_path,
+                root_model=root_model, models_by_name=models_by_name,
+            ):
+                return False
+        elif isinstance(r, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
+            saw = True
+            if not key_attributable_from_root(
+                key=r, target_path=target_path, root_model=root_model,
+                models_by_name=models_by_name, bundle=bundle,
+                host_model=host_model, host_name=host_name,
+            ):
+                return False
+    return saw
+
+
+def _grain_leaf_name(key: ValueKey) -> Optional[str]:
+    """The column name a column-ish grain member / dimension names, else None."""
+    if isinstance(key, ColumnKey):
+        return key.leaf
+    if isinstance(key, ColumnSqlKey):
+        return key.column_name
+    return None
+
+
+def undetermined_witness(
+    *, key: ValueKey, leaf_determined: Callable[[ValueKey], bool],
+    anchor_model: SlayerModel, bundle: ResolvedSourceBundle,
+    is_member: Callable[[ValueKey], bool] = lambda _k: False,
+    _visiting: frozenset = frozenset(),
+) -> Optional[ValueKey]:
+    """The first sub-key of ``key`` not determined, else ``None`` — determination
+    closed under row-level combination (Axiom 2.2); unknown kinds fail closed."""
+    if is_member(key) or isinstance(key, LiteralKey):
+        return None
+    if isinstance(key, (ColumnKey, ColumnSqlKey)) and leaf_determined(key):
+        return None
+    visiting = _visiting
+    if isinstance(key, ColumnSqlKey) and key not in _visiting:
+        operands = definition_refs(key=key, anchor_model=anchor_model, bundle=bundle)
+        visiting = _visiting | {key}
+    else:
+        operands = _determination_operands(key)
+    if operands is None:
+        return key
+    for operand in operands:
+        witness = undetermined_witness(
+            key=operand, leaf_determined=leaf_determined, anchor_model=anchor_model,
+            bundle=bundle, is_member=is_member, _visiting=visiting,
+        )
+        if witness is not None:
+            return witness
+    return None
+
+
+def _determination_operands(key: ValueKey) -> Optional[Iterable[ValueKey]]:
+    """The operands whose determination decides ``key``'s, else ``None`` (opaque)."""
+    if isinstance(key, TimeTruncKey):
+        return (key.source,)
+    if isinstance(key, AggregateKey):
+        return key.partition_keys
+    if isinstance(key, (*SLOT_COMPOSITE_KINDS, SqlFragmentKey)):
+        return key.children()
+    return None
+
+
+def grain_witness(
+    *, key: ValueKey, grain: Grain, host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+) -> Optional[ValueKey]:
+    """The first sub-key of ``key`` the dataset grain does not determine (Axiom 1), else ``None``."""
+    return undetermined_witness(
+        key=key, is_member=grain.__contains__, anchor_model=host_model, bundle=bundle,
+        leaf_determined=lambda leaf: _column_pinned(
+            key=leaf, grain=grain, host_model=host_model,
+            models_by_name=models_by_name, bundle=bundle,
+        ),
+    )
+
+
+def grain_determines(
+    *, key: ValueKey, grain: Grain, host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel],
+    bundle: ResolvedSourceBundle,
+) -> bool:
+    """Does a dataset grain determine ``key``? (see ``grain_witness``)"""
+    return grain_witness(
+        key=key, grain=grain, host_model=host_model,
+        models_by_name=models_by_name, bundle=bundle,
+    ) is None
+
+
+def _column_pinned(
+    *, key: ValueKey, grain: Grain, host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+) -> bool:
+    """Every dependency-closure path of a column is pinned by the grain over
+    provably to-one hops; an unanalysable closure is not."""
+    closure = key_closure(
+        key=key, anchor_model=host_model, anchor_relation=host_model.name,
+        bundle=bundle,
+    )
+    if closure is None:
+        return False
+    # Each dependency is pinned at its OWN depth (reseeded per hop), so check the
+    # effective (maximal + own) paths — a join prefix is pinned implicitly by the
+    # deeper walk that passes through it, never independently.
+    return all(
+        _path_grain_determined(
+            path=p, grain=grain, host_model=host_model, models_by_name=models_by_name,
+        )
+        for p in _effective_dependency_paths(closure, key_host_path(key))
+    )
+
+
+CANNOT_BE_ANALYSED = "cannot be analysed for determination by the operand grain"
+
+
+def determination_broadcast_reason(
+    *, witness: ValueKey, host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+) -> str:
+    """Why a dimension the operand grain does not determine broadcasts, from its witness."""
+    if not isinstance(witness, (ColumnKey, ColumnSqlKey)) or key_closure(
+        key=witness, anchor_model=host_model, anchor_relation=host_model.name,
+        bundle=bundle,
+    ) is None:
+        return CANNOT_BE_ANALYSED
+    if key_attributable_from_root(
+        key=witness, target_path=(), root_model=host_model, models_by_name=models_by_name,
+        bundle=bundle, host_model=host_model, host_name=host_model.name,
+    ):
+        return (
+            f"not determined by the operand grain — add {key_display(witness)} "
+            f"(or its model's key) to the inner partition_by="
+        )
+    return key_broadcast_reason(
+        key=witness, target_path=(), root_model=host_model, models_by_name=models_by_name,
+        bundle=bundle, host_model=host_model, host_name=host_model.name,
+    )
+
+
+def _grain_leaves(*, grain: Grain, at: Tuple[str, ...]) -> set:
+    return {
+        leaf for g in grain
+        if key_host_path(g) == at and (leaf := _grain_leaf_name(g)) is not None
+    }
+
+
+def _entity_seeded(*, grain: Grain, model: SlayerModel, at: Tuple[str, ...]) -> bool:
+    """The grain pins ``model`` at ``at`` iff its leaves there cover a unique key set."""
+    here = _grain_leaves(grain=grain, at=at)
+    return any(ks and set(ks) <= here for ks in unique_key_sets(model))
+
+
+def _hop_pins(
+    *, edge, tgt: SlayerModel, grain: Grain,
+    path: Tuple[str, ...], i: int, pinned_before: bool,
+) -> bool:
+    """The to-one target of ``edge`` stays pinned iff its own entity key is seeded,
+    its host-side FK columns are grain members, or the source was pinned and the hop
+    is provably to-one."""
+    to_one = provably_to_one(edge=edge, target_model=tgt)
+    src_leaves = _grain_leaves(grain=grain, at=path[:i])
+    fk_seed = to_one and bool(edge.join_pairs) and all(
+        src in src_leaves for src, _ in edge.join_pairs)
+    return (
+        _entity_seeded(grain=grain, model=tgt, at=path[: i + 1])
+        or fk_seed
+        or (pinned_before and to_one)
+    )
+
+
+def _path_grain_determined(
+    *, path: Tuple[str, ...], grain: Grain, host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel],
+) -> bool:
+    """One closure path of ``grain_determines``: pinned from the host over provably
+    to-one hops, each hop reseeded by an entity or FK key in the grain."""
+    try:
+        chain = follow(root=host_model, path=path, models_by_name=models_by_name)
+    except AmbiguousJoinPathError:
+        return False
+    if path and chain is None:
+        return False
+    pinned = _entity_seeded(grain=grain, model=host_model, at=())
+    for i, e in enumerate(chain or []):
+        tgt = models_by_name.get(e.target_model)
+        if tgt is None:
+            return False
+        pinned = _hop_pins(
+            edge=e, tgt=tgt, grain=grain,
+            path=path, i=i, pinned_before=pinned,
+        )
+    return pinned
+
+
+def crossing_local_root_predicate(
+    *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
+) -> Callable[[ValueKey], bool]:
+    """Predicate for a LOCAL plain aggregate whose inputs cross a join (desugars onto a HOST-rooted producer); windowed / ranked roots excluded."""
+    host_model = scope.source_model if isinstance(scope, ModelScope) else None
+
+    def _pred(k: ValueKey) -> bool:
+        return (
+            isinstance(k, AggregateKey)
+            and k.partition_keys is None
+            and not source_anchor_path(k.source)
+            # A host-locus wrap already compiles inline at the producer grain; its
+            # attached parameter's crossing closure must not re-route it onto a
+            # host-rooted producer (as ``_local_broadcasts`` excludes).
+            and k.locus != "host"
+            and window_kwarg_of(k) is None
+            and not is_ranked(k)
+            and host_model is not None
+            and _crosses(k, host=host_model)
+        )
+
+    def _crosses(k: AggregateKey, *, host: SlayerModel) -> bool:
+        crossed = aggregate_input_closure(
+            key=k, anchor_model=host, anchor_relation=host.name, bundle=bundle,
+        )
+        if crossed is None:
+            return True  # unanalysable input → own producer (fail closed downstream)
+        return bool(crossed) and not may_inline_crossing_inputs(crossed)
+
+    return _pred

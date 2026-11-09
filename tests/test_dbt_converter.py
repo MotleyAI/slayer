@@ -32,7 +32,7 @@ from slayer.dbt.models import (
 )
 from slayer.dbt.parser import parse_dbt_project
 from slayer.ingest_report import ConversionResult
-from slayer.sql.client import SqlClient
+from slayer.database.client import SqlClient
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1902_fixtures import AMOUNT_BY_CUSTOMER, cells, make_exec_engine
 

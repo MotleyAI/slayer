@@ -15,7 +15,7 @@ import pytest
 from slayer.core.enums import JoinType
 from slayer.core.join_search import count_routes, reachable
 from slayer.core.query import SlayerQuery
-from slayer.engine.join_safety import safe_reachable
+from slayer.engine.cardinality.join_safety import safe_reachable
 
 from tests._dev1853_fixtures import chain_engine, chain_models
 

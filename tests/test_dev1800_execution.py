@@ -8,7 +8,7 @@ Two datasets:
   ``amount:wscaled_sum`` crosses a fragment) — for the failing composite class,
   asserted by *invariance*: the composite equals the same expression built from
   its separately-selected operands (which already render today), and selecting an
-  operand on its own changes nothing (system P8 cardinality invariant);
+  operand on its own changes nothing (semantics Law 7, measure closure);
 * the **attributable** dataset (``_dev1800_fixtures``: the cross-model inner
   varies along the customer-signup axis) — for hand-computed absolute oracles.
 
@@ -204,7 +204,7 @@ class TestAttributableComposite:
 
     async def test_selecting_operand_on_its_own_changes_nothing(self, attr_engine) -> None:
         """Scenario: also selecting ``amount:sum`` leaves the composite, the row
-        count and every other column identical (system P8)."""
+        count and every other column identical (semantics Law 7)."""
         alone = by_signup(await attr_engine.execute(SlayerQuery(
             source_model="orders", time_dimensions=signup_td(),
             measures=[ModelMeasure(formula=f"change({CM}) + amount:sum", name="c")],

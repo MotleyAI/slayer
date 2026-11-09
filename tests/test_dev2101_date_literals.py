@@ -6,7 +6,7 @@ import pytest
 
 from slayer.core.errors import TimeLiteralError
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from tests._dev2101_fixtures import EXEC_BACKENDS, TIER1, by_key, emit, engine_for, ids, make_exec_engine, q
 
 

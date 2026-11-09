@@ -15,17 +15,17 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
-import slayer.engine.schema_drift as schema_drift
+import slayer.live_schema.schema_drift as schema_drift
 from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.engine import ingestion
-from slayer.engine.ingestion import IngestableObject
+from slayer.live_schema import ingestion
+from slayer.live_schema.ingestion import IngestableObject
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import EditModelDelete, LiveTable, WholeModelDelete
-from slayer.engine.schema_scope import SchemaRef
-from slayer.sql import sqlite_introspect
-from slayer.sql.client import DatabaseUnavailable, SlayerSQLClient
+from slayer.live_schema.schema_drift import EditModelDelete, LiveTable, WholeModelDelete
+from slayer.live_schema.schema_scope import SchemaRef
+from slayer.database import sqlite_introspect
+from slayer.database.client import DatabaseUnavailable, SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 

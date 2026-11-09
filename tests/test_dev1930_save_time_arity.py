@@ -17,9 +17,9 @@ import pytest
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.errors import DerivedColumnAmbiguousError, DerivedColumnFanningError, SlayerError
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.engine import join_safety
+from slayer.engine.cardinality import join_safety
 from slayer.engine.column_dependency import validate_derived_columns
-from slayer.engine.join_safety import provably_fans
+from slayer.engine.cardinality.join_safety import provably_fans
 from slayer.storage.yaml_storage import YAMLStorage
 
 DS = "ds"

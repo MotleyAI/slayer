@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 
 MARKERS = ("one-request-m1", "one-request-m2", "one-request-m3")
 PATHS = ("async", "sync")

@@ -29,13 +29,13 @@ from slayer.core.models import (
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import (
+from slayer.live_schema.schema_drift import (
     IntrospectionUnavailable,
     WholeModelDelete,
     _collect_sql_table_diffs,
     _live_schema_for_datasource,
 )
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import disposable_engine
@@ -417,7 +417,7 @@ class TestIntrospectionUnavailable:
             ds = self._ds_with_one_table(tmpdir)
             async with _client(ds) as client:
                 with patch(
-                    "slayer.engine.schema_drift._introspect_one_table",
+                    "slayer.live_schema.schema_drift._introspect_one_table",
                     side_effect=PermissionError("403 Access Denied"),
                 ), pytest.raises(IntrospectionUnavailable):
                     await _live_schema_for_datasource(client=client, datasource=ds)
@@ -431,7 +431,7 @@ class TestIntrospectionUnavailable:
             )
             async with _client(ds) as client:
                 with patch(
-                    "slayer.engine.schema_drift._introspect_one_table",
+                    "slayer.live_schema.schema_drift._introspect_one_table",
                     side_effect=PermissionError("403 Access Denied"),
                 ):
                     diffs = await _collect_sql_table_diffs(

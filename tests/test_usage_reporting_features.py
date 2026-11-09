@@ -14,7 +14,7 @@ import pytest
 
 import slayer.cli
 from slayer.core.models import DatasourceConfig
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._fake_uvicorn import fake_uvicorn
 from tests._saved_query_refinement_fixtures import AVG_CUSTOMER_REVENUE, MONTH_TD

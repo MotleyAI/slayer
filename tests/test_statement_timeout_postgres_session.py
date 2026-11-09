@@ -1,4 +1,4 @@
-"""Postgres session timeout, probe guard and transaction_pooler on a live server (spec: sql/execution)."""
+"""Postgres session timeout, probe guard and transaction_pooler on a live server (spec: database/execution)."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from pytest_postgresql import factories
 from sqlalchemy.engine.url import make_url
 
 from slayer.core.models import DatasourceConfig
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient
 from tests._pg_helpers import pg_database
 from tests._pg_statement_log import LOGGED_POSTGRES_OPTIONS, ServerLog
 

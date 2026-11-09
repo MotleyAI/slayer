@@ -9,7 +9,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import WholeModelDelete
+from slayer.live_schema.schema_drift import WholeModelDelete
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 

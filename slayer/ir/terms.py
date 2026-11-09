@@ -60,7 +60,7 @@ class Aggregate(_Term, frozen=True):
 
     ``home_path`` is the resolved home dataset (Axiom 2) as a join path relative
     to the environment's host: the deepest dataset that determines every input;
-    ``()`` is the host itself. Resolved once in the elaborator (``engine/home``).
+    ``()`` is the host itself. Resolved once in the elaborator (``engine/population/home``).
     """
 
     home: DatasetT

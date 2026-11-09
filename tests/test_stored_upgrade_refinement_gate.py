@@ -12,8 +12,8 @@ from sqlalchemy import event
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient
 from slayer.storage import base as storage_base
 from slayer.storage import migrations as mig
 from slayer.storage.sqlite_conn import transaction

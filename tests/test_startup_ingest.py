@@ -28,12 +28,12 @@ import pytest
 from slayer import cli
 from slayer.core.models import DatasourceConfig
 from slayer.embeddings import client as embedding_client
-from slayer.engine import ingestion as ingestion_module
-from slayer.engine.ingestion import (
+from slayer.live_schema import ingestion as ingestion_module
+from slayer.live_schema.ingestion import (
     StartupIngestSummary,
     ingest_all_datasources_idempotent,
 )
-from slayer.engine.schema_drift import (
+from slayer.live_schema.schema_drift import (
     IdempotentIngestResult,
     IngestionError,
     ModelAddition,
@@ -43,7 +43,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
 
 import slayer.api.server as api_server
-import slayer.engine.schema_drift as _sd
+import slayer.live_schema.schema_drift as _sd
 import slayer.mcp.server as mcp_server_mod
 from slayer.api.server import create_app
 from slayer.engine.query_engine import SlayerQueryEngine

@@ -329,7 +329,7 @@ def seed(connection_string: str) -> None:
     UDF registration listener.
     """
     from slayer.core.models import DatasourceConfig  # ALLOW(import-not-top): verify scripts import this module's data without slayer installed
-    from slayer.sql import engine_factory  # ALLOW(import-not-top): verify scripts import this module's data without slayer installed
+    from slayer.database import engine_factory  # ALLOW(import-not-top): verify scripts import this module's data without slayer installed
 
     # Build a minimal DatasourceConfig from the URL so the dialect
     # strategy class can route correctly.

@@ -6,7 +6,7 @@ for the auto-ingestion INT/DOUBLE distinction.
 
 This is a **pure dict transform**. The DB-introspection refinement step
 (``DOUBLE → INT`` for base columns where the live SQL type is integer)
-lives in ``slayer.storage.type_refinement`` and is invoked by storage
+lives in ``slayer.live_schema.type_refinement`` and is invoked by storage
 backends after this dict-migrator runs.
 """
 

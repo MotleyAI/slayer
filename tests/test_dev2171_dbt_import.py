@@ -12,7 +12,7 @@ from slayer.core.models import DatasourceConfig
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject
 from slayer.dbt.parser import parse_dbt_project
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from tests._dev2171_fixtures import (
     DS, MASKED, column, counts_by, deletes, drift_entries, entries, has_column, has_measure, import_dbt, models_of,
     run_cli, save_datasource, seed, source_column, stored_model, unreachable_engine, value, write_yaml,

@@ -311,7 +311,7 @@ class TestDeletedSymbols:
         ("slayer.engine.compile.stages", "_bare_combined_roots"),
         ("slayer.engine.compile.stages", "_discover_roots"),
         ("slayer.engine.compile.stages", "_answers_need_nested_regroups"),
-        ("slayer.engine.join_safety", "local_crossing_input_paths"),
+        ("slayer.engine.cardinality.join_safety", "local_crossing_input_paths"),
         ("slayer.ir.prebound", "position_typing_context"),
     ])
     def test_symbol_gone(self, module, name):

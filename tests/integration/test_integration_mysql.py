@@ -47,11 +47,11 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine import ingestion
+from slayer.live_schema import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import client as client_module
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.database import client as client_module
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects.reflection import TableLocation
 from slayer.storage.yaml_storage import YAMLStorage
 from tests.integration._dev2015_server import (
@@ -295,7 +295,7 @@ def _mysql_env_storage(mysql_container, tmp_path_factory):
 def mysql_env(_mysql_env_storage) -> SlayerQueryEngine:
     """Per-test SlayerQueryEngine wrapping the module-scoped storage. The
     engine is recreated per-test because its async SA engine binds to the
-    current event loop (slayer/sql/client.py:148)."""
+    current event loop (slayer/database/client.py:148)."""
     return SlayerQueryEngine(storage=_mysql_env_storage)
 
 

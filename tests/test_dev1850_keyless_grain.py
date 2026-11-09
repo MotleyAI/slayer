@@ -21,7 +21,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.ir.planned import MaskTyping
-from slayer.engine.join_safety import crossing_local_root_predicate
+from slayer.engine.cardinality.join_safety import crossing_local_root_predicate
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.engine.elaborate_env import type_and_split_filters
