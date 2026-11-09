@@ -560,6 +560,27 @@ def test_an_engine_on_a_restarted_bridge_drops_the_old_release() -> None:
     assert proc.stdout.strip() == "False True"
 
 
+_FORK_TOKEN_SCRIPT = textwrap.dedent("""
+    from slayer import async_utils
+
+    async def _release():
+        return None
+
+    inherited = async_utils.register_shutdown(_release)
+    async_utils._reset_after_fork()
+    own = async_utils.register_shutdown(_release)
+    print(own != inherited, async_utils.unregister_shutdown(inherited), async_utils.unregister_shutdown(own))
+""")
+
+
+def test_a_forked_child_never_reissues_a_parent_token() -> None:
+    proc = subprocess.run(
+        [sys.executable, "-c", _FORK_TOKEN_SCRIPT], cwd=str(REPO), capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "True False True"
+
+
 def test_no_shutdown_callback_is_taken_while_shutdown_runs(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _release() -> None:
         return None
