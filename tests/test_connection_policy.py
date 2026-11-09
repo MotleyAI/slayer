@@ -270,6 +270,16 @@ def test_a_non_postgres_driver_with_the_flag_fails_to_connect() -> None:
         client.execute_sync("SELECT 1")
 
 
+@pytest.mark.parametrize("ds_type", ["sqlite", "postgres"])
+def test_an_in_memory_sqlite_with_the_flag_fails_to_connect(ds_type: str) -> None:
+    ds = _ds("sqlite:///:memory:", ds_type=ds_type, transaction_pooler=True)
+    with pytest.raises(ValueError, match="sqlite"):
+        engine_factory.get_engine(ds)
+    client = SlayerSQLClient(ds)
+    with pytest.raises(ValueError, match="sqlite"):
+        client.execute_sync("SELECT 1")
+
+
 def test_the_flag_splits_the_engine_cache() -> None:
     url = "postgresql+psycopg2://u@db.invalid/d"
     plain, pooled = _ds(url, ds_type="postgres"), _ds(url, ds_type="postgres", transaction_pooler=True)

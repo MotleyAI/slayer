@@ -233,10 +233,10 @@ def build_in_memory_sqlite_engine(connection_string: str) -> sa.Engine:
 
 def _build_engine(*, datasource: DatasourceConfig, connection_string: str) -> sa.Engine:
     """Build a new engine (no cache). In-memory SQLite goes through the one StaticPool builder; otherwise ``build_engine``, falling back to ``sa.create_engine`` when the dialect declines."""
+    connection_policy.check_transaction_pooler_backend(datasource, url=connection_string)
     if _is_in_memory_sqlite(connection_string):
         return build_in_memory_sqlite_engine(connection_string)
     dialect = dialect_for_ds_type(datasource.type)
-    connection_policy.check_transaction_pooler_backend(datasource, url=connection_string)
     load_driver(datasource, connection_string, dialect=dialect, is_async=False)
     engine = dialect.build_engine(datasource, connection_string=connection_string)
     if engine is None:

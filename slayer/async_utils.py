@@ -138,60 +138,70 @@ async def _contained(coro: Coroutine[Any, Any, T]) -> tuple[bool, Any]:
         return False, exc
 
 
-def _submit(coro: Coroutine[Any, Any, T], context: contextvars.Context) -> tuple["concurrent.futures.Future[T]", Callable[[], None]]:
-    """Start ``coro`` on the bridge loop in ``context``; returns its outcome and a thread-safe cancel."""
-    done: concurrent.futures.Future[T] = concurrent.futures.Future()
-    started: list[asyncio.Task[tuple[bool, Any]]] = []
-    cancelled = threading.Event()
+class _Workflow:
+    """A coroutine bound for the bridge loop in ``context``: its outcome, and a thread-safe cancel valid from creation."""
 
-    def _transfer(task: asyncio.Task[tuple[bool, Any]]) -> None:
+    def __init__(self, coro: Coroutine[Any, Any, Any], context: contextvars.Context) -> None:
+        self.coro, self.context = coro, context
+        self.done: concurrent.futures.Future[Any] = concurrent.futures.Future()
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.task: asyncio.Task[tuple[bool, Any]] | None = None
+        self.cancelled = threading.Event()
+
+    def start(self) -> None:
+        bridge = _bridge
+        with bridge.lock:  # scheduled before any shutdown starts, which then cancels it
+            if bridge.closing:
+                raise RuntimeError("The SLayer bridge event loop is shutting down.")
+            self.loop = _bridge_loop_locked(bridge)
+            self.done.add_done_callback(functools.partial(_settled, bridge))
+            bridge.in_flight.add(self.done)
+            self.loop.call_soon_threadsafe(self._run, self.loop)
+
+    def _run(self, loop: asyncio.AbstractEventLoop) -> None:
+        if not self.done.set_running_or_notify_cancel():
+            return  # cancelled before it ran; the canceller closed the coroutine
+        self.task = loop.create_task(_contained(self.coro), context=self.context)
+        self.task.add_done_callback(self._transfer)
+        if self.cancelled.is_set():
+            self.task.cancel()
+
+    def _transfer(self, task: asyncio.Task[tuple[bool, Any]]) -> None:
         try:
             returned, value = task.result()
         except BaseException as exc:  # noqa: BLE001  # NOSONAR(S5754) — the outcome, cancellation included, goes to the caller
-            done.set_exception(exc)
+            self.done.set_exception(exc)
             return
         if returned:
-            done.set_result(value)
+            self.done.set_result(value)
         else:
-            done.set_exception(value)
+            self.done.set_exception(value)
 
-    def _start() -> None:
-        task = loop.create_task(_contained(coro), context=context)
-        started.append(task)
-        task.add_done_callback(_transfer)
-        if cancelled.is_set():
-            task.cancel()
-
-    def _cancel() -> None:
-        cancelled.set()
-        if started:
-            loop.call_soon_threadsafe(started[0].cancel)
-
-    bridge = _bridge
-    with bridge.lock:  # scheduled before any shutdown starts, which then cancels it
-        if bridge.closing:
-            coro.close()
-            raise RuntimeError("The SLayer bridge event loop is shutting down.")
-        loop = _bridge_loop_locked(bridge)
-        bridge.in_flight.add(done)
-        done.add_done_callback(functools.partial(_settled, bridge))
-        loop.call_soon_threadsafe(_start)
-    return done, _cancel
+    def cancel(self) -> bool:
+        """Cancel the workflow; returns whether it may still be running (its cleanup is worth waiting for)."""
+        self.cancelled.set()
+        if self.done.cancel():
+            self.coro.close()
+            return False
+        if self.done.done():
+            return False
+        if self.task is not None and self.loop is not None:
+            with contextlib.suppress(RuntimeError):  # the loop closed under a concurrent shutdown
+                self.loop.call_soon_threadsafe(self.task.cancel)
+        return True
 
 
-def _await_interruptibly(done: "concurrent.futures.Future[T]", cancel: Callable[[], None], *, serve: "queue.SimpleQueue[_CallerCall | None] | None" = None) -> T:
-    """``done``'s result; an interruption cancels the work, waits bounded for its cleanup, then re-raises."""
+def _await_interruptibly(workflow: _Workflow, *, serve: "queue.SimpleQueue[_CallerCall | None]") -> Any:
+    """Start ``workflow`` and return its result; an interruption cancels it, waits bounded for its cleanup, then
+    re-raises."""
     try:
-        if serve is not None:
-            _serve_caller_calls(serve)
-        return done.result()
+        workflow.done.add_done_callback(lambda _: serve.put(None))
+        workflow.start()
+        _serve_caller_calls(serve)
+        return workflow.done.result()
     except BaseException:
-        if not done.done():
-            cancel()
-            if serve is not None:
-                _serve_caller_calls(serve, until=done)
-            else:
-                concurrent.futures.wait([done], timeout=_CLEANUP_SECONDS)
+        if workflow.cancel():
+            _serve_caller_calls(serve, until=workflow.done)
         raise
 
 
@@ -217,10 +227,10 @@ def _serve_caller_calls(
                 result.set_exception(exc)
 
 
-def _run_private(coro: Coroutine[Any, Any, T], calls: "queue.SimpleQueue[_CallerCall | None]") -> T:
+def _run_private(coro: Coroutine[Any, Any, T], context: contextvars.Context, calls: "queue.SimpleQueue[_CallerCall | None]") -> T:
     """``coro`` on a private loop in a helper thread, ``calls`` served here: for a call from the bridge thread."""
     with concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="slayer-nested") as pool:
-        result = pool.submit(contextvars.copy_context().run, asyncio.run, coro)
+        result = pool.submit(context.run, asyncio.run, coro)
         result.add_done_callback(lambda _: calls.put(None))
         _serve_caller_calls(calls)
         return result.result()
@@ -232,16 +242,11 @@ def run_sync(coro: Coroutine[Any, Any, T]) -> T:
     Its ``on_caller_thread`` work runs on this thread, which serves it while the coroutine runs.
     """
     calls: queue.SimpleQueue[_CallerCall | None] = queue.SimpleQueue()
-
-    async def _serve_from_caller() -> T:
-        _caller_calls.set(calls)
-        return await coro
-
+    context = contextvars.copy_context()
+    context.run(_caller_calls.set, calls)
     if on_bridge_thread():
-        return _run_private(_serve_from_caller(), calls)
-    done, cancel = _submit(_serve_from_caller(), contextvars.copy_context())
-    done.add_done_callback(lambda _: calls.put(None))
-    return _await_interruptibly(done, cancel, serve=calls)
+        return _run_private(coro, context, calls)
+    return _await_interruptibly(_Workflow(coro, context), serve=calls)
 
 
 def marked_coroutine_function(func: F) -> F:

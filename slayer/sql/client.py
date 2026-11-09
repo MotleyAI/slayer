@@ -87,6 +87,7 @@ class SessionStatementRefused(SqlClientError):
 _SESSION_LEADS = (
     ("ALTER", "SESSION"), ("START", "TRANSACTION"),
     ("USE",), ("SET",), ("RESET",), ("DISCARD",), ("BEGIN",), ("COMMIT",), ("ROLLBACK",),
+    ("END",), ("ABORT",), ("SAVEPOINT",), ("RELEASE",), ("SAVE",), ("XA",),
 )
 
 # Leading keywords of a statement that only reads.
@@ -886,6 +887,7 @@ class SlayerSQLClient:
             return self._sync_engine
         ds = self._connection_datasource()
         conn_str = ds.get_connection_string()
+        connection_policy.check_transaction_pooler_backend(ds, url=conn_str)
         if engine_factory._is_in_memory_sqlite(conn_str):
             engine = engine_factory.build_in_memory_sqlite_engine(conn_str)
             self._sync_engine = engine

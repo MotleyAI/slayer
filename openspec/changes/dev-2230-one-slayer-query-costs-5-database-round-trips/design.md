@@ -141,7 +141,8 @@ pinged. StaticPool engines get no listener.
 The default client's `execute` / `execute_sync` tokenise the text with sqlglot's tokenizer for the
 datasource's dialect (no parse). They split it into statements at top-level `;` and refuse, with a
 new `SessionStatementRefused(SqlClientError)`, any statement whose leading keywords are `USE`,
-`SET`, `RESET`, `ALTER SESSION`, `DISCARD`, `BEGIN`, `START TRANSACTION`, `COMMIT` or `ROLLBACK`.
+`SET`, `RESET`, `ALTER SESSION`, `DISCARD`, `BEGIN`, `START TRANSACTION`, `COMMIT`, `ROLLBACK`,
+`END`, `ABORT`, `SAVEPOINT`, `RELEASE`, `SAVE` or `XA`.
 Literals, quoted identifiers and comments are tokens, so `SELECT 'SET x'` passes. The client's own
 session statements (timeouts, probe transaction) do not pass through this check; they are built by
 dialect hooks. Where the tokenizer raises, the text is refused (fail closed).
@@ -231,3 +232,5 @@ not log.
 28. At the end of a synchronous workflow, only clients that implement the end-of-workflow release
     are released; other `SqlClient`s stay open until `close()`, and `DelegatingSqlClient` forwards
     the release. Options: release only where implemented / fall back to `aclose()`. (user)
+29. The refused list includes the transaction-control aliases `END`, `ABORT`, `SAVEPOINT`,
+    `RELEASE`, `SAVE` and `XA`. Options: add them / keep the list. (codex, review)

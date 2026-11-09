@@ -19,6 +19,7 @@ _URLS = {
     "postgres": "postgresql+psycopg://u@db.invalid/d",
     "mysql": "mysql+pymysql://u@db.invalid/d",
     "snowflake": "snowflake://u@acct/d",
+    "sqlserver": "mssql+pyodbc://u@db.invalid/d",
     None: "postgresql+psycopg://u@db.invalid/d",
 }
 
@@ -38,6 +39,13 @@ _REFUSED = [
     ("postgres", "Commit", "COMMIT"),
     ("postgres", "ROLLBACK", "ROLLBACK"),
     ("mysql", "COMMIT", "COMMIT"),
+    ("postgres", "END", "END"),
+    ("postgres", "abort", "ABORT"),
+    ("postgres", "SAVEPOINT a", "SAVEPOINT"),
+    ("postgres", "RELEASE SAVEPOINT a", "RELEASE"),
+    ("sqlserver", "SAVE TRANSACTION a", "SAVE"),
+    ("mysql", "XA START 'x'", "XA"),
+    ("postgres", "SELECT 1; END", "END"),
     (None, "SET search_path = other", "SET"),
     ("postgres", "SELECT 1; SET statement_timeout = 0", "SET"),
     ("postgres", "SELECT 1;\n  -- next\n  begin", "BEGIN"),

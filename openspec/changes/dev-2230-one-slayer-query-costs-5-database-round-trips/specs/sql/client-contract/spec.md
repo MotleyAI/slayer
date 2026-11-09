@@ -4,8 +4,8 @@
 The default client's `execute` SHALL refuse, with a typed SQL-client error naming the statement's
 leading keywords, any text in which a statement changes the connection's session state or controls
 transactions: `USE`, `SET`, `RESET`, `ALTER SESSION`, `DISCARD`, `BEGIN`, `START TRANSACTION`,
-`COMMIT` and `ROLLBACK`, in any letter case, as the first statement or as any later statement of a
-multi-statement text. A refused text SHALL send nothing to the database. Queries, DDL and DML SHALL
+`COMMIT`, `ROLLBACK`, `END`, `ABORT`, `SAVEPOINT`, `RELEASE`, `SAVE` and `XA`, in any letter case,
+as the first statement or as any later statement of a multi-statement text. A refused text SHALL send nothing to the database. Queries, DDL and DML SHALL
 be unaffected, including when a refused keyword appears inside a string literal, a quoted identifier,
 a comment, or later in a statement that leads with another keyword.
 
@@ -20,7 +20,8 @@ a comment, or later in a statement that leads with another keyword.
 - **THEN** each is refused with a typed SQL-client error and nothing is sent
 
 #### Scenario: Transaction control is refused
-- **WHEN** a default client executes `BEGIN`, `START TRANSACTION`, `COMMIT` or `ROLLBACK`
+- **WHEN** a default client executes `BEGIN`, `START TRANSACTION`, `COMMIT`, `ROLLBACK`, `END`,
+  `ABORT`, `SAVEPOINT a`, `RELEASE SAVEPOINT a`, `SAVE TRANSACTION a` or `XA START 'x'`
 - **THEN** each is refused with a typed SQL-client error and nothing is sent
 
 #### Scenario: A trailing session statement is refused

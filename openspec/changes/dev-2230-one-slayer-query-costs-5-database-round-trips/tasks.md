@@ -54,7 +54,7 @@
 ## 10. Snowflake suite (D8)
 
 - [x] 10.1 Size the reserved-alias sweep's worker count to the pool; one raw connection per seeding fixture. Verify the alias sweep still passes live.
-- [ ] 10.2 Measure the Snowflake job time locally and in CI against the 5-minute target; verify `.github/workflows/integration-snowflake.yml` keeps `timeout-minutes: 15`.
+- [x] 10.2 Measure the Snowflake job time locally and in CI against the 5-minute target; verify `.github/workflows/integration-snowflake.yml` keeps `timeout-minutes: 15`.
 - [ ] 10.3 Before closing DEV-2230 (pr-review stage), revisit batching the two sweeps with the user, using the measured times.
 
 ## 11. Verification
