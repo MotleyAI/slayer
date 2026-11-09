@@ -360,7 +360,8 @@ A query engine SHALL be the only party that closes the clients it built; code th
 - **THEN** each call returns or raises its own result, and after each the idle connections holding a local database file are released
 
 #### Scenario: Closing an engine releases its synchronous connections
-- **WHEN** a query engine that served synchronous calls on a Postgres datasource is closed
+- **WHEN** a query engine that served synchronous calls on a Postgres datasource whose driver is
+  psycopg (the default) is closed
 - **THEN** no connection it opened remains open on the server
 
 ### Requirement: Live database access never blocks the event loop
