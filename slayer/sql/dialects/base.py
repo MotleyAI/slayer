@@ -6,11 +6,11 @@ import hashlib
 import re
 from datetime import date, datetime
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, Optional, TypeGuard, get_args
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, Optional, Self, TypeGuard, get_args
 from collections.abc import Callable, Iterable, Mapping, Sequence
 
 import sqlalchemy as sa
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy.engine.url import URL, make_url
 from sqlalchemy.exc import ArgumentError
 from sqlglot import exp
@@ -19,8 +19,10 @@ from sqlglot.expressions.core import Expr, Expression
 from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
 from sqlglot.errors import SqlglotError
 
+from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
 from slayer.core.errors import (
+    ExplainUnsupportedError,
     IdentifierCollisionError,
     IdentifierLengthError,
     ServerVersionError,
@@ -689,6 +691,22 @@ class ServerProfile(BaseModel):
         return value
 
 
+class ExplainStatements(BaseModel):
+    """An EXPLAIN as its dialect runs it: the plan statement, between plan-mode session switches when it has them."""
+
+    model_config = ConfigDict(frozen=True)
+
+    statement: str
+    session_on: str | None = None
+    session_off: str | None = None
+
+    @model_validator(mode="after")
+    def _paired(self) -> Self:
+        if (self.session_on is None) != (self.session_off is None):
+            raise ValueError("session_on and session_off are given together or not at all")
+        return self
+
+
 class DriverFacts(BaseModel):
     """The URL scheme, drivers and pip extra one datasource type connects with."""
 
@@ -751,7 +769,6 @@ class SqlDialect(BaseModel):
     sqlglot_name: str = "postgres"
     ds_type_aliases: frozenset[str] = frozenset()
     explain_prefix: str | None = "EXPLAIN"
-    explain_postfix: str = ""
     log10_native: bool = False
     log2_native: bool = False
 
@@ -1910,14 +1927,38 @@ class SqlDialect(BaseModel):
         """Hook: register UDFs on every fresh connection."""
         return None
 
-    def build_explain_sql(self, sql: str) -> str:
-        """Wrap ``sql`` in the dialect's EXPLAIN prefix/postfix pair."""
+    def explain_session(self, enabled: bool) -> Expression | None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: the statement switching session plan mode on (``enabled``) or off; ``None`` without one."""
+        return None
+
+    def explain_statements(self, sql: str) -> ExplainStatements:
+        """The EXPLAIN of rendered ``sql``: in session plan mode, else behind the keyword prefix."""
+        on, off = self.explain_session(True), self.explain_session(False)
+        if on is not None and off is not None:
+            return ExplainStatements(
+                statement=sql, session_on=on.sql(dialect=self.sqlglot_name), session_off=off.sql(dialect=self.sqlglot_name),
+            )
         if self.explain_prefix is None:
-            raise ValueError(
+            raise ExplainUnsupportedError(
                 f"EXPLAIN is not supported for dialect '{self.sqlglot_name}'. "
                 "Use dry_run=True to inspect the generated SQL instead."
             )
-        return f"{self.explain_prefix} {sql}{self.explain_postfix}"
+        return ExplainStatements(statement=f"{self.explain_prefix} {sql}")
+
+    def build_explain_sql(self, sql: str) -> str:
+        """Deprecated: the EXPLAIN as one text; use ``explain_statements``."""
+        warn_deprecated(
+            "SqlDialect.build_explain_sql() is removed in SLayer 2.0; use explain_statements(), "
+            "which also expresses an EXPLAIN that switches session plan mode.",
+            removal="2.0",
+        )
+        statements = self.explain_statements(sql)
+        if statements.session_on is not None:
+            raise ExplainUnsupportedError(
+                f"The {self.sqlglot_name} EXPLAIN switches session plan mode, which one text cannot express; "
+                "use explain_statements()."
+            )
+        return statements.statement
 
     # Runtime hooks: keep dialect conditionals out of engine_factory / client.
 

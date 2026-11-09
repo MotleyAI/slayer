@@ -313,7 +313,7 @@ Every read of or statement against a user datasource — query and explain state
 
 #### Scenario: Query statements reach the factory client
 - **WHEN** an engine built with a client factory executes a query and an explain query
-- **THEN** both statements reach the factory's client verbatim, and no direct database connection is opened
+- **THEN** the query's statement reaches the factory client's statement execution and the explain's statements reach its explain operation, each verbatim, and no direct database connection is opened
 
 #### Scenario: Engine-internal statements reach the factory client
 - **WHEN** that engine runs a column-type probe, a cache refresh scan, join-cardinality profiling, and a query on a ClickHouse datasource that needs the server profile

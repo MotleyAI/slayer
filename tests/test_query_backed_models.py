@@ -14,7 +14,6 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
-import slayer.engine.query_engine as qe
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
@@ -945,9 +944,9 @@ class TestRunByNamePlanFlags:
         finally:
             tmp.cleanup()
 
-    async def test_explain_kwarg_routes_through_explain_builder(self, monkeypatch) -> None:
-        """Caller passes explain=True; engine should invoke the EXPLAIN-SQL
-        builder rather than executing the raw query.
+    async def test_explain_kwarg_routes_through_client_explain(self, monkeypatch) -> None:
+        """Caller passes explain=True; engine should invoke the client's explain
+        rather than executing the raw query.
         """
         saved = SlayerModel(
             name="rev_by_region",
@@ -960,19 +959,19 @@ class TestRunByNamePlanFlags:
         )
         engine, tmp = await _engine_with_orders(saved)
         try:
-            real_explain = qe._build_explain_sql
+            real_explain = SlayerSQLClient.explain
             calls: list = []
 
-            def tracking_explain(*, dialect, sql):
-                calls.append(sql)
-                return real_explain(dialect=dialect, sql=sql)
+            async def tracking_explain(self, statements, *args, **kwargs):
+                calls.append(statements)
+                return await real_explain(self, statements, *args, **kwargs)
 
-            monkeypatch.setattr(qe, "_build_explain_sql", tracking_explain)
+            monkeypatch.setattr(SlayerSQLClient, "explain", tracking_explain)
             # Don't care about the actual EXPLAIN output (no table created);
             # we just want to confirm the explain path was reached.
             with pytest.raises(Exception):  # noqa: BLE001 — DB error is fine
                 await engine.execute("rev_by_region", explain=True)
-            assert calls, "explain=True must route through _build_explain_sql"
+            assert calls, "explain=True must route through the client's explain"
         finally:
             tmp.cleanup()
 

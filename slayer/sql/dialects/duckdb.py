@@ -118,7 +118,6 @@ class DuckdbDialect(SqlDialect):
     )
     sa_backend_names: frozenset[str] = frozenset({"duckdb"})
     explain_prefix: str | None = "EXPLAIN ANALYZE"
-    explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
     max_identifier_bytes: int | None = 256  # safe documented ceiling

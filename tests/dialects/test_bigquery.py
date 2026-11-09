@@ -13,6 +13,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.errors import ExplainUnsupportedError
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -79,10 +80,10 @@ def test_log_native_flags() -> None:
     assert d.should_use_native_log(2) is False
 
 
-def test_build_explain_sql_raises() -> None:
+def test_explain_statements_raise() -> None:
     d = BigqueryDialect()
-    with pytest.raises(ValueError, match="EXPLAIN is not supported"):
-        d.build_explain_sql("SELECT 1")
+    with pytest.raises(ExplainUnsupportedError):
+        d.explain_statements("SELECT 1")
 
 
 # build_date_trunc — WEEK_SUNDAY override
