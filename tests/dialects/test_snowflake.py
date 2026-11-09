@@ -46,10 +46,6 @@ def test_snowflake_explain_prefix() -> None:
     assert SnowflakeDialect().explain_prefix == "EXPLAIN USING JSON"
 
 
-def test_snowflake_explain_postfix() -> None:
-    assert SnowflakeDialect().explain_postfix == ""
-
-
 def test_snowflake_log_native_flags() -> None:
     d = SnowflakeDialect()
     assert d.should_use_native_log(10) is False
@@ -57,8 +53,8 @@ def test_snowflake_log_native_flags() -> None:
     assert d.should_use_native_log(2) is False
 
 
-def test_snowflake_build_explain_sql() -> None:
-    assert SnowflakeDialect().build_explain_sql("X") == "EXPLAIN USING JSON X"
+def test_snowflake_explain_statements() -> None:
+    assert SnowflakeDialect().explain_statements("X").statement == "EXPLAIN USING JSON X"
 
 
 def test_snowflake_registered_via_ds_type_aliases() -> None:

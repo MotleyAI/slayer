@@ -162,11 +162,11 @@ def test_postgres_register_udfs_is_noop() -> None:
     PostgresDialect().register_udfs(None)  # accepts any arg without side effects
 
 
-# build_explain_sql
+# explain_statements
 
 
-def test_postgres_build_explain_sql() -> None:
-    assert PostgresDialect().build_explain_sql("SELECT 1") == "EXPLAIN ANALYZE SELECT 1"
+def test_postgres_explain_statements() -> None:
+    assert PostgresDialect().explain_statements("SELECT 1").statement == "EXPLAIN ANALYZE SELECT 1"
 
 
 # rewrite_target_ast — numeric cast for 2-arg ROUND
