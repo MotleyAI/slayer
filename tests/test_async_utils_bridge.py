@@ -525,6 +525,41 @@ def test_shutdown_releases_a_caller_whose_workflow_outlasts_it() -> None:
     assert proc.stdout.strip() == "['CancelledError']"
 
 
+_RESTARTED_BRIDGE_SCRIPT = textwrap.dedent("""
+    from unittest.mock import AsyncMock, MagicMock
+    from slayer import async_utils
+    from slayer.core.models import DatasourceConfig
+    from slayer.sql import client as sql_client
+
+    def _fake(*_a, **_k):
+        fake = MagicMock()
+        fake.dispose = AsyncMock()
+        return fake
+
+    sql_client.create_async_engine = _fake
+    client = sql_client.SlayerSQLClient(DatasourceConfig(
+        name="pg", type="postgres", connection_string="postgresql+psycopg://u@db.invalid/d",
+    ))
+
+    async def _build():
+        client._get_async_engine()
+
+    async_utils.run_sync(_build())
+    first = client._bridge_release
+    async_utils.shutdown_bridge()
+    async_utils.run_sync(_build())
+    print(first.alive, client._bridge_release is not first and client._bridge_release.alive)
+""")
+
+
+def test_an_engine_on_a_restarted_bridge_drops_the_old_release() -> None:
+    proc = subprocess.run(
+        [sys.executable, "-c", _RESTARTED_BRIDGE_SCRIPT], cwd=str(REPO), capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "False True"
+
+
 def test_no_shutdown_callback_is_taken_while_shutdown_runs(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _release() -> None:
         return None

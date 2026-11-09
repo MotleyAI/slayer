@@ -869,6 +869,8 @@ class SlayerSQLClient:
         with self._async_lock:
             engine = self._async_engines.setdefault(loop, built)
             if engine is built and async_utils.is_bridge_loop(loop):
+                if self._bridge_release is not None:
+                    self._bridge_release.detach()  # its bridge shut down or belongs to a parent process
                 token = async_utils.register_shutdown(engine.dispose)
                 if token is not None:
                     self._bridge_release = weakref.finalize(self, _release_bridge_engine, engine, token)
