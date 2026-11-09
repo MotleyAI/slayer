@@ -191,12 +191,13 @@ def test_interrupt_cancels_the_workflow_and_waits_for_its_cleanup() -> None:
 
 
 def _interrupt_scheduling(monkeypatch: pytest.MonkeyPatch, *, after: threading.Event | None) -> None:
-    """The caller's first bridge-loop scheduling is interrupted: after ``after`` is set, or before it schedules."""
+    """The next workflow's scheduling is interrupted: after ``after`` is set, or before it schedules."""
     loop = run_sync(_running_loop())
     real, fired = loop.call_soon_threadsafe, threading.Event()
 
     def _interrupted(callback: Any, *args: Any, **kwargs: Any) -> Any:
-        if async_utils.on_bridge_thread() or fired.is_set():
+        # Only the workflow's own scheduling: a finalizer from an earlier test may schedule too.
+        if fired.is_set() or not isinstance(getattr(callback, "__self__", None), async_utils._Workflow):
             return real(callback, *args, **kwargs)
         fired.set()
         if after is None:
