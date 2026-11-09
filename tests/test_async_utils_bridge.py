@@ -529,7 +529,7 @@ _RESTARTED_BRIDGE_SCRIPT = textwrap.dedent("""
     from unittest.mock import AsyncMock, MagicMock
     from slayer import async_utils
     from slayer.core.models import DatasourceConfig
-    from slayer.sql import client as sql_client
+    from slayer.database import client as sql_client
 
     def _fake(*_a, **_k):
         fake = MagicMock()
