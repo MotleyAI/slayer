@@ -173,7 +173,6 @@ class SnowflakeDialect(SqlDialect):
     )
     sa_backend_names: frozenset[str] = frozenset({"snowflake"})
     explain_prefix: str | None = "EXPLAIN USING JSON"
-    explain_postfix: str = ""
     log10_native: bool = False
     log2_native: bool = False
     max_identifier_bytes: int | None = 255

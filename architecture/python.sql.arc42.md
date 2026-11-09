@@ -59,8 +59,8 @@ flowchart TD
 ## 3. Principles
 
 1. **AST end to end**: statements are built and composed as sqlglot AST and
-   rendered to text once; text round-trips of already-emitted SQL are forbidden
-   (dotted aliases corrupt on re-parse) [target: DEV-1972] [target: DEV-1961]. A dialect
+   rendered to text once (EXPLAIN prefix excepted, system §3.4); text
+   round-trips of already-emitted SQL are forbidden (dotted aliases corrupt on re-parse) [target: DEV-1972] [target: DEV-1961]. A dialect
    hook returning AST takes only typed, non-`str`, non-callable operands.
    [review] [enforced: test:tests/test_law_ast_dialect_hooks.py]
    [enforced: test:tests/test_law_no_statement_reparse.py]

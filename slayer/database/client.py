@@ -33,12 +33,13 @@ from slayer import async_utils
 from slayer.async_utils import on_caller_thread, run_sync
 from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import DataType
+from slayer.core.errors import ExplainUnsupportedError
 from slayer.core.models import DatasourceConfig
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
 from slayer.database import engine_factory
 from slayer.sql import connection_policy
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
-from slayer.sql.dialects.base import ServerProfile, describe_type_name_code
+from slayer.sql.dialects.base import ExplainStatements, ServerProfile, describe_type_name_code
 from slayer.sql.dialects.drivers import load_driver, plugin_errors
 from slayer.sql.dialects.reflection import (
     LiveName,
@@ -687,6 +688,8 @@ class SqlClient(Protocol):
 
     async def execute(self, sql: str) -> ExecutionResult: ...
 
+    async def explain(self, statements: ExplainStatements) -> ExecutionResult: ...
+
     async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]: ...
 
     async def server_profile(self) -> ServerProfile: ...
@@ -991,6 +994,32 @@ class SlayerSQLClient:
             transaction_local=self.datasource.transaction_pooler,
             writes=writes,
             run=self._blocking,
+        )
+
+    async def explain(self, statements: ExplainStatements, timeout_seconds: int = 120) -> ExecutionResult:
+        """The plan rows of ``statements``, run on one connection whose plan mode is always switched back off."""
+        try:
+            return await self._explain(statements=statements, timeout_seconds=timeout_seconds)
+        except Exception as exc:
+            await self._typed(exc)
+            raise
+
+    async def _explain(self, *, statements: ExplainStatements, timeout_seconds: int) -> ExecutionResult:
+        ds = self.datasource
+        async_engine = self._async_engine_here()
+        if async_engine is not None:
+            call = functools.partial(
+                _explain_async, statements, engine=async_engine, db_type=ds.type, timeout_seconds=timeout_seconds,
+                datasource_name=ds.name, transaction_local=ds.transaction_pooler,
+            )
+        else:
+            call = functools.partial(
+                self._blocking, _explain_sync, statements, engine=self._get_sync_engine_for_client(),
+                db_type=ds.type, timeout_seconds=timeout_seconds, datasource_name=ds.name,
+                transaction_local=ds.transaction_pooler,
+            )
+        return await _retry_with_backoff(
+            sql=statements.statement, do_call=call, max_attempts=3, initial_delay=1.0, max_delay=10.0,
         )
 
     async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
@@ -1561,6 +1590,115 @@ def _execute_sql_sync(
     return ExecutionResult(rows=rows, warnings=skipped)
 
 
+def _explain_sync(
+    statements: ExplainStatements, *, engine: sa.Engine, db_type: str | None, timeout_seconds: int,
+    datasource_name: str, transaction_local: bool,
+) -> ExecutionResult:
+    """One explain attempt on one connection; never commits."""
+    dialect = dialect_for_ds_type(db_type)
+    with engine.connect() as conn, _statement_timeout(
+        conn, engine=engine, dialect=dialect, datasource_name=datasource_name, timeout_seconds=timeout_seconds,
+        transaction_local=transaction_local,
+    ) as skipped:
+        rows = _plan_rows_sync(conn, statements, dialect=dialect)
+    return ExecutionResult(rows=rows, warnings=skipped)
+
+
+def _plan_rows_sync(conn: Any, statements: ExplainStatements, *, dialect: SqlDialect) -> list[dict[str, Any]]:
+    """The plan rows; plan mode is switched off whatever happens, and ``conn`` invalidated unless that is confirmed."""
+    if statements.session_on is None or statements.session_off is None:
+        return _fetch_rows(_exec_verbatim(conn, statements.statement), dialect=dialect)
+    try:
+        _exec_verbatim(conn, statements.session_on)
+        rows = _fetch_rows(_exec_verbatim(conn, statements.statement), dialect=dialect)
+    except BaseException:
+        if _switch_off_sync(conn, statements.session_off) is not None:
+            conn.invalidate()
+        raise
+    failure = _switch_off_sync(conn, statements.session_off)
+    if failure is not None:
+        conn.invalidate()
+        raise failure
+    return rows
+
+
+def _switch_off_sync(conn: Any, sql: str) -> Exception | None:
+    try:
+        _exec_verbatim(conn, sql)
+    except Exception as exc:  # noqa: BLE001 — the caller decides which error wins
+        return exc
+    return None
+
+
+async def _explain_async(
+    statements: ExplainStatements, *, engine: AsyncEngine, db_type: str | None, timeout_seconds: int,
+    datasource_name: str, transaction_local: bool,
+) -> ExecutionResult:
+    """Async sibling of ``_explain_sync``."""
+    dialect = dialect_for_ds_type(db_type)
+    async with engine.connect() as conn, _statement_timeout_async(
+        conn, engine=engine, dialect=dialect, datasource_name=datasource_name, timeout_seconds=timeout_seconds,
+        transaction_local=transaction_local,
+    ) as skipped:
+        rows = await _plan_rows_async(conn, statements, dialect=dialect)
+    return ExecutionResult(rows=rows, warnings=skipped)
+
+
+async def _plan_rows_async(conn: Any, statements: ExplainStatements, *, dialect: SqlDialect) -> list[dict[str, Any]]:
+    """Async sibling of ``_plan_rows_sync``; a cancelled plan statement also invalidates ``conn``."""
+    if statements.session_on is None or statements.session_off is None:
+        return _fetch_rows(await _exec_verbatim_async(conn, statements.statement), dialect=dialect)
+    try:
+        await _exec_verbatim_async(conn, statements.session_on)
+        rows = _fetch_rows(await _exec_verbatim_async(conn, statements.statement), dialect=dialect)
+    except BaseException as exc:
+        failure = await _switch_off_async(conn, statements.session_off)
+        if failure is not None or isinstance(exc, asyncio.CancelledError):
+            await _invalidate_async(conn)
+        raise
+    failure = await _switch_off_async(conn, statements.session_off)
+    if failure is not None:
+        await _invalidate_async(conn)
+        raise failure
+    return rows
+
+
+async def _switch_off_async(conn: Any, sql: str) -> BaseException | None:
+    """Run ``sql`` to its end, shielded from cancellation; its failure. A cancellation meanwhile invalidates ``conn``
+    and is re-raised."""
+    try:
+        return await _outlast(_exec_verbatim_async(conn, sql))
+    except asyncio.CancelledError:
+        await _invalidate_async(conn)
+        raise
+
+
+async def _invalidate_async(conn: Any) -> None:
+    """Invalidate ``conn``, shielded from cancellation."""
+    failure = await _outlast(conn.invalidate())
+    if failure is not None:
+        raise failure
+
+
+async def _outlast(aw: Awaitable[Any]) -> BaseException | None:
+    """Run ``aw`` to its end, shielded from cancellation; its failure. A cancellation meanwhile is re-raised once it
+    ends."""
+    fut = asyncio.ensure_future(aw)
+    await _until_done(fut)
+    return fut.exception()
+
+
+async def _until_done(fut: asyncio.Future[Any]) -> None:
+    """Wait until ``fut`` is done; a cancellation meanwhile is re-raised once it is, ``fut``'s failure retrieved."""
+    try:
+        await asyncio.wait({fut})
+    except asyncio.CancelledError:
+        await _until_done(fut)
+        if not fut.cancelled():
+            fut.exception()
+        raise
+
+
 def _fetch_rows(result, *, dialect: SqlDialect) -> list[dict[str, Any]]:
     """A row-returning result's rows, each cell read by its dialect reader and each driver tuple as a Python
     list; a statement returning none (DDL) yields ``[]``."""
@@ -1641,6 +1779,9 @@ class DelegatingSqlClient:
 
     async def execute(self, sql: str) -> ExecutionResult:
         return await self.inner.execute(sql)
+
+    async def explain(self, statements: ExplainStatements) -> ExecutionResult:
+        return await self.inner.explain(statements)
 
     async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
         return await self.inner.get_result_column_types(sql)
@@ -1727,14 +1868,41 @@ class _CategoryProbeClient(DelegatingSqlClient):
         return {name: ResultColumnType(type=_CATEGORY_TYPES.get(c, DataType.TEXT)) for name, c in categories.items()}
 
 
+class _ExecuteExplainClient(DelegatingSqlClient):
+    """A client written before ``explain``: a single-statement explain runs through its ``execute``."""
+
+    async def explain(self, statements: ExplainStatements) -> ExecutionResult:
+        if statements.session_on is not None:
+            raise ExplainUnsupportedError(
+                f"The {self.datasource.type} EXPLAIN switches session plan mode, which a SQL client without explain() "
+                "cannot run; implement explain(statements)."
+            )
+        warn_deprecated(
+            "A SQL client without explain() has EXPLAIN run through its execute(), which stops in SLayer 2.0; "
+            "implement explain(statements).",
+            removal="2.0",
+        )
+        return await self.inner.execute(statements.statement)
+
+
+def _overridden(client: DelegatingSqlClient, name: str) -> bool:
+    return getattr(type(client), name) is not getattr(DelegatingSqlClient, name)
+
+
+def _served(client: SqlClient, name: str) -> bool:
+    """Whether a client not built on ``DelegatingSqlClient`` has its own ``name``, not the protocol stub."""
+    method = getattr(client, name, None)
+    return method is not None and getattr(method, "__func__", None) is not getattr(SqlClient, name)
+
+
 def adapt_client(client: SqlClient) -> SqlClient:
-    """``client``, wrapped to probe through its 1.6.0 ``get_column_types`` when that is the only probe it serves."""
+    """``client``, wrapped to serve through its older forms what it serves only that way: the 1.6.0
+    ``get_column_types`` probe, and EXPLAIN through ``execute``."""
     if isinstance(client, DelegatingSqlClient):
-        cls = type(client)
-        legacy = (cls.get_result_column_types is DelegatingSqlClient.get_result_column_types
-                  and cls.get_column_types is not DelegatingSqlClient.get_column_types)
+        probe_160 = not _overridden(client, "get_result_column_types") and _overridden(client, "get_column_types")
+        explains = _overridden(client, "explain") or not _overridden(client, "execute")
     else:
-        typed = getattr(client, "get_result_column_types", None)
-        stub = typed is None or getattr(typed, "__func__", None) is SqlClient.get_result_column_types
-        legacy = stub and hasattr(client, "get_column_types")
-    return _CategoryProbeClient(client) if legacy else client
+        probe_160 = not _served(client, "get_result_column_types") and hasattr(client, "get_column_types")
+        explains = _served(client, "explain")
+    adapted = _CategoryProbeClient(client) if probe_160 else client
+    return adapted if explains else _ExecuteExplainClient(adapted)

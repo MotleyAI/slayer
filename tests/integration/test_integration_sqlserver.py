@@ -53,6 +53,7 @@ from typing import Optional
 
 import pytest
 import sqlalchemy as sa
+import sqlalchemy.exc
 from tests._dev1737_fixtures import (
     DT,
     DateCase,
@@ -83,6 +84,7 @@ from slayer.live_schema import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient
+from slayer.sql.dialects import TsqlDialect
 from slayer.storage.yaml_storage import YAMLStorage
 from tests.integration._dev2015_server import (
     check_all,
@@ -1890,6 +1892,53 @@ async def test_money_columns_are_exact(sqlserver_container, tmp_path) -> None:
     assert totals.data == [{"ledger.amount_sum": Decimal("0.3000"), "ledger.small_sum": Decimal("0.3000")}]
     assert {r["ledger.id"]: (r["ledger.doubled"], r["ledger.small_doubled"]) for r in doubled.data} == {
         1: (Decimal("0.2000"), Decimal("0.2000")), 2: (Decimal("0.4000"), Decimal("0.4000"))}
+
+
+@pytest.fixture
+async def sqlserver_one_connection(_sqlserver_env_storage):
+    """An engine whose client runs over a caller engine pooling exactly one connection."""
+    ds = await _sqlserver_env_storage.get_datasource("testmssql")
+    assert ds is not None
+    with disposable_engine(ds.get_connection_string(), pool_size=1, max_overflow=0) as sa_engine:
+        clients: list[SlayerSQLClient] = []
+
+        def factory(datasource: DatasourceConfig) -> SlayerSQLClient:
+            clients.append(SlayerSQLClient(datasource=datasource, sa_engine=sa_engine))
+            return clients[-1]
+
+        engine = SlayerQueryEngine(storage=_sqlserver_env_storage, client_factory=factory)
+        try:
+            yield engine, clients
+        finally:
+            await engine.aclose()
+            engine.close()
+
+
+_EXPLAINED = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "*:count"}]})
+
+
+@pytest.mark.integration
+class TestSQLServerExplain:
+    async def test_explain_returns_the_plan_and_restores_the_session(self, sqlserver_one_connection) -> None:
+        engine, _ = sqlserver_one_connection
+        dry = await engine.execute(query=_EXPLAINED, dry_run=True)
+        explained = await engine.execute(query=_EXPLAINED, explain=True)
+        assert explained.sql == dry.sql
+        assert explained.data
+        assert all("StmtText" in row for row in explained.data)
+        after = await engine.execute(query=_EXPLAINED)
+        assert after.data == [{"orders._count": 6}]
+
+    async def test_a_failing_plan_statement_raises_unchanged_and_restores_the_session(
+        self, sqlserver_one_connection,
+    ) -> None:
+        engine, clients = sqlserver_one_connection
+        await engine.execute(query=_EXPLAINED)
+        statements = TsqlDialect().explain_statements("SELECT * FROM no_such_table")
+        with pytest.raises(sqlalchemy.exc.ProgrammingError, match="no_such_table"):
+            await clients[0].explain(statements)
+        after = await engine.execute(query=_EXPLAINED)
+        assert after.data == [{"orders._count": 6}]
 
 
 # ---------------------------------------------------------------------------

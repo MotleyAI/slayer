@@ -94,8 +94,8 @@ def test_trino_log_native_flags() -> None:
     assert d.should_use_native_log(2) is True
 
 
-def test_trino_build_explain_sql() -> None:
-    assert TrinoDialect().build_explain_sql("SELECT 1") == "EXPLAIN ANALYZE SELECT 1"
+def test_trino_explain_statements() -> None:
+    assert TrinoDialect().explain_statements("SELECT 1").statement == "EXPLAIN ANALYZE SELECT 1"
 
 
 # ---------------------------------------------------------------------------

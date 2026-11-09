@@ -10,6 +10,7 @@ from sqlglot.dialects.dialect import Dialect
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.errors import ExplainUnsupportedError
 from slayer.sql.dialects import (
     _ALL_DIALECTS,
     ClickhouseDialect,
@@ -226,19 +227,19 @@ def test_default_register_udfs_is_noop_via_spy_connection() -> None:
     )
 
 
-# build_explain_sql — default impl from prefix/postfix fields
+# explain_statements — default impl from the prefix field
 
 
-def test_default_build_explain_sql_uses_prefix() -> None:
+def test_default_explain_statements_use_prefix() -> None:
     """Base class defaults to ``"EXPLAIN"`` prefix."""
-    assert SqlDialect().build_explain_sql("SELECT 1") == "EXPLAIN SELECT 1"
+    assert SqlDialect().explain_statements("SELECT 1").statement == "EXPLAIN SELECT 1"
 
 
-def test_bigquery_build_explain_sql_raises() -> None:
-    """BigQuery has no EXPLAIN, so ``build_explain_sql`` raises ValueError."""
+def test_bigquery_explain_statements_raise() -> None:
+    """BigQuery has no EXPLAIN, so ``explain_statements`` raises."""
     d = BigqueryDialect()
-    with pytest.raises(ValueError, match="EXPLAIN is not supported"):
-        d.build_explain_sql("SELECT 1")
+    with pytest.raises(ExplainUnsupportedError):
+        d.explain_statements("SELECT 1")
 
 
 # Pydantic v2 frozen instance — defensive

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from slayer.core.enums import DataType
 from slayer.database.client import ObjectNotFound, SqlClient, SqlClientError
+from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.dialects.reflection import TableLocation
 
@@ -116,6 +117,13 @@ def _checks(client: SqlClient, caps: Capabilities) -> list[tuple[str, bool, Call
             return
         raise _Failed("an invalid statement succeeded")
 
+    async def explain() -> None:
+        statements = dialect_for_ds_type(client.datasource.type).explain_statements(
+            "SELECT id FROM conf_customers ORDER BY id",
+        )
+        _expect(bool((await client.explain(statements)).rows), "no plan rows")
+        await execute_rows()
+
     async def get_result_column_types() -> None:
         types = await client.get_result_column_types("SELECT id, name FROM conf_customers")
         _expect({k: t.type for k, t in types.items()} == {"id": DataType.INT, "name": DataType.TEXT}, f"types {types!r}")
@@ -193,6 +201,7 @@ def _checks(client: SqlClient, caps: Capabilities) -> list[tuple[str, bool, Call
         ("execute_rows", True, execute_rows),
         ("execute_verbatim_literals", True, execute_verbatim_literals),
         ("execute_error_unchanged", True, execute_error_unchanged),
+        ("explain", True, explain),
         ("get_result_column_types", True, get_result_column_types),
         ("server_profile", True, server_profile),
         ("ping", True, ping),

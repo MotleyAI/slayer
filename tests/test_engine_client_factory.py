@@ -24,7 +24,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from slayer.pg_facade.connection import PgConnection
 from slayer.database.client import ExecutionResult, ResultColumnType, SlayerSQLClient
-from slayer.sql.dialects.base import ServerProfile
+from slayer.sql.dialects.base import ExplainStatements, ServerProfile
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1840_fixtures import dev1840_models, q
 from tests._gateway_harness import (
@@ -183,6 +183,9 @@ class ProfileClient:
     async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
         self.ops.append("get_result_column_types")
         return {}
+
+    async def explain(self, statements: ExplainStatements) -> ExecutionResult:
+        raise AssertionError(f"no explain expected: {statements.statement}")
 
     async def _no_metadata(self, *_args: Any, **_kwargs: Any) -> Any:
         raise AssertionError("no metadata read expected")

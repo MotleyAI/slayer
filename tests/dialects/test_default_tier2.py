@@ -97,7 +97,7 @@ def test_oracle_log_native_flags() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tier-2 explain SQL is just prefix + sql + postfix (where postfix is "")
+# Tier-2 explain SQL is just prefix + sql
 # ---------------------------------------------------------------------------
 
 
@@ -111,5 +111,5 @@ def test_oracle_log_native_flags() -> None:
         (OracleDialect, "EXPLAIN PLAN FOR SELECT 1"),
     ],
 )
-def test_tier2_build_explain_sql(dialect_cls, expected: str) -> None:
-    assert dialect_cls().build_explain_sql("SELECT 1") == expected
+def test_tier2_explain_statements(dialect_cls, expected: str) -> None:
+    assert dialect_cls().explain_statements("SELECT 1").statement == expected

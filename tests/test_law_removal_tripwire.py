@@ -40,6 +40,8 @@ PINNED: dict[tuple[str, str], str] = {
     ("slayer/database/client.py", "stops installing"): "2.0",
     ("slayer/database/client.py", "A SQL client's get_column_types()"): "2.0",
     ("slayer/database/client.py", "DelegatingSqlClient.get_column_types()"): "2.0",
+    ("slayer/sql/dialects/base.py", "build_explain_sql()"): "2.0",
+    ("slayer/database/client.py", "A SQL client without explain()"): "2.0",
     **{
         (f"slayer/{old.replace('.', '/')}.py", f"slayer.{old}"): "3.0"
         for old in (

@@ -11,7 +11,6 @@ from slayer.core.enums import TimeGranularity
 
 if TYPE_CHECKING:
     from slayer.core.join_walker import OrientedJoin  # noqa: F401
-    from slayer.live_schema.schema_drift import ToDeleteEntry  # noqa: F401
 
 
 class SlayerError(ValueError):
@@ -277,6 +276,10 @@ class UnsupportedDriverError(SlayerError):
             summary=f"Datasource {datasource_name!r} (type {ds_type!r}) cannot use driver {driver!r}: {reason}",
             suggestion=hint,
         ))
+
+
+class ExplainUnsupportedError(SlayerError):
+    """An EXPLAIN its dialect, or the client serving it, cannot run."""
 
 
 class ModelSqlValidationError(SlayerError, ValueError):
