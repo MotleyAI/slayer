@@ -112,7 +112,7 @@ def test_the_scanner_sees_every_kind_of_door() -> None:
         import sqlalchemy as sa
         from sqlalchemy import inspect
         from sqlalchemy.ext.asyncio import create_async_engine
-        from slayer.sql import engine_factory
+        from slayer.database import engine_factory
 
         def f(ds, sa_engine, eng, conn):
             engine_factory.get_engine(ds)

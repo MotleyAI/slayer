@@ -118,7 +118,7 @@ async def trip(request: pytest.FixtureRequest, tmp_path: Path) -> tuple[Env, Env
     return env, imported
 
 
-@pytest.mark.timeout(300)  # temporary: back to the suite's 120 s once DEV-2230 cuts per-query cost
+@pytest.mark.timeout(300)  # temporary: back to the suite's 120 s once DEV-2236 cuts per-query planning cost
 async def test_same_results_after_round_trip(trip: tuple[Env, Env]) -> None:
     env, imported = trip
     payloads: list[dict[str, Any]] = []

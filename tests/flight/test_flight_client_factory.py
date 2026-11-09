@@ -91,7 +91,7 @@ async def test_flight_server_stop_closes_the_factory_clients(tmp_path: Path, mon
     assert all(c.closes == 1 for c in factory.clients)
 
 
-async def test_flight_query_execution_releases_the_engine_clients(tmp_path: Path) -> None:
+async def test_flight_query_execution_leaves_custom_clients_open(tmp_path: Path) -> None:
     db = str(tmp_path / "shop.db")
     seed_shop(db)
     storage = await shop_storage(
@@ -103,6 +103,6 @@ async def test_flight_query_execution_releases_the_engine_clients(tmp_path: Path
     result = handlers._translate(sql)
     assert isinstance(result, QueryResult), result
     handlers._derive_query_schema(result)
-    assert [c.acloses for c in factory.clients] == [1]
+    assert [c.acloses for c in factory.clients] == [0]
     handlers._execute_full(result)
-    assert [c.acloses for c in factory.clients] == [2]
+    assert [c.acloses for c in factory.clients] == [0]

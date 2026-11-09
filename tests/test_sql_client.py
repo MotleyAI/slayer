@@ -665,3 +665,26 @@ class TestProbeRollsBack:
                 )
             assert types == {"a": ResultColumnType(type=DataType.INT), "b": ResultColumnType(type=DataType.TEXT)}
             assert "rollback" in seen
+
+
+def _lost_connection() -> sqlalchemy.exc.OperationalError:
+    return sqlalchemy.exc.OperationalError("SELECT 1", {}, Exception("terminating connection"), connection_invalidated=True)
+
+
+def test_a_lost_connection_is_transient_only_for_a_read() -> None:
+    assert _is_transient_db_error(_lost_connection()) is True
+    assert _is_transient_db_error(_lost_connection(), writes=True) is False
+
+
+def test_a_write_is_not_resent_after_a_lost_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[bool] = []
+
+    def _fail(**kwargs: object) -> object:
+        calls.append(bool(kwargs["writes"]))
+        raise _lost_connection()
+
+    monkeypatch.setattr(sql_client, "_execute_sql_sync", _fail)
+    engine = MagicMock()
+    with pytest.raises(sqlalchemy.exc.OperationalError):
+        _execute_with_retry_sync("INSERT INTO t VALUES (1)", "postgres", engine=engine, writes=True, initial_delay=0)
+    assert calls == [True]

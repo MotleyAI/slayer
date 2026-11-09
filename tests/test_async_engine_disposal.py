@@ -7,7 +7,7 @@ import math
 import tempfile
 from pathlib import Path
 from typing import Any, TypeVar, cast
-from collections.abc import Awaitable, Iterator
+from collections.abc import Awaitable, Coroutine, Iterator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -16,6 +16,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.database import client as sql_client
 from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
@@ -78,6 +79,20 @@ async def _planted_then(
     return await work
 
 
+def _no_second_build(*_a: Any, **_k: Any) -> Any:
+    raise AssertionError("a second async engine was built")
+
+
+async def _reused_then(client: SlayerSQLClient, fake: MagicMock, work: Coroutine[Any, Any, _T]) -> _T:
+    """Check ``client`` still holds ``fake`` on the bridged loop, then run ``work`` there."""
+    try:
+        assert client._get_async_engine() is fake
+    except BaseException:
+        work.close()
+        raise
+    return await work
+
+
 class TestAsyncEngineDisposal:
 
     async def test_aclose_disposes_cached_async_engine(self, workspace: Path, monkeypatch) -> None:
@@ -117,8 +132,8 @@ class TestAsyncEngineDisposal:
         )
         await engine.aclose()  # does not raise
 
-    def test_bridge_disposes_its_loops_engine_on_success(self, workspace: Path, monkeypatch) -> None:
-        """``run_sync`` releases the engines built on its loop in its ``finally``, before the loop closes."""
+    def test_bridge_keeps_its_loops_engine_until_close(self, workspace: Path, monkeypatch) -> None:
+        """The bridge loop outlives ``run_sync``: its engine is disposed by ``close()``, not per call."""
         engine = _sqlite_engine(workspace, rows="(1.0), (2.0), (3.0)")
         client = _pg_client()
         engine._sql_clients[("leaky-extra", "postgres")] = client
@@ -128,11 +143,11 @@ class TestAsyncEngineDisposal:
             monkeypatch, client, fake, engine.execute(SlayerQuery.model_validate({"source_model": "t", "measures": ["val:sum"]})),
         ))
         assert math.isclose(result.data[0]["t.val_sum"], 6.0)
+        fake.dispose.assert_not_awaited()
+        engine.close()
         fake.dispose.assert_awaited_once()
-        assert engine._sql_clients
 
-    def test_bridge_disposes_its_loops_engine_even_on_error(self, workspace: Path, monkeypatch) -> None:
-        """Disposal runs in ``finally`` even when the query raises."""
+    def test_bridge_keeps_its_loops_engine_until_close_even_on_error(self, workspace: Path, monkeypatch) -> None:
         engine, client = _engine_with_pg_client(workspace)
         fake = _fake_async_engine()
         q = SlayerQuery(
@@ -141,29 +156,29 @@ class TestAsyncEngineDisposal:
         workflow = _planted_then(monkeypatch, client, fake, engine.execute(q))
         with pytest.raises(Exception):
             engine.run_sync(workflow)
+        fake.dispose.assert_not_awaited()
+        engine.close()
         fake.dispose.assert_awaited_once()
 
-    def test_no_leak_across_repeated_bridges(self, workspace: Path, monkeypatch) -> None:
-        """Each of 20 bridges builds a fresh engine on its own loop and disposes it exactly once
+    def test_repeated_bridges_share_one_engine(self, workspace: Path, monkeypatch) -> None:
+        """20 bridges reuse the one engine built on the bridge loop; ``close()`` disposes it once
         (the Storyline N-block pattern)."""
         engine = _sqlite_engine(workspace, rows="(1.0)")
         client_i = SlayerSQLClient(datasource=DatasourceConfig(
             name="fake", type="postgres", host="x.invalid", port=5432, database="x",
         ))
         engine._sql_clients[("fake", "postgres")] = client_i
+        fake = _fake_async_engine()
+        count = SlayerQuery.model_validate({"source_model": "t", "measures": ["*:count"]})
 
-        fakes: list[Any] = []
-        for i in range(20):
-            fake = _fake_async_engine()
-            fakes.append(fake)
-            engine.run_sync(_planted_then(
-                monkeypatch, client_i, fake, engine.execute(SlayerQuery.model_validate({"source_model": "t", "measures": ["*:count"]})),
-            ))
+        engine.run_sync(_planted_then(monkeypatch, client_i, fake, engine.execute(count)))
+        monkeypatch.setattr(sql_client, "create_async_engine", _no_second_build)
+        for i in range(19):
+            engine.run_sync(_reused_then(client_i, fake, engine.execute(count)))
             assert client_i in engine._sql_clients.values(), f"iter {i}"
-
-        for i, fake in enumerate(fakes):
-            fake.dispose.assert_awaited_once_with()
-            assert fake.dispose.await_count == 1, f"iter {i}"
+        fake.dispose.assert_not_awaited()
+        engine.close()
+        fake.dispose.assert_awaited_once_with()
 
     def test_sync_engine_survives_across_execute_sync_calls(
         self, workspace: Path,
@@ -207,3 +222,22 @@ class TestAsyncEngineDisposal:
         assert client._sync_engine is sync_engine_first, (
             "_sync_engine rebuilt — :memory: data would be lost"
         )
+
+
+async def test_a_concurrent_first_use_converges_on_one_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _pg_client()
+    built: list[MagicMock] = []
+    inner: list[Any] = []
+
+    def _create(*_a: Any, **_k: Any) -> MagicMock:
+        engine = _fake_async_engine()
+        built.append(engine)
+        if len(built) == 1:  # another first use on this loop finishes while this one builds
+            inner.append(client._get_async_engine())
+        return engine
+
+    monkeypatch.setattr(sql_client, "create_async_engine", _create)
+    outer = client._get_async_engine()
+    assert outer is inner[0] is built[1]
+    assert client._get_async_engine() is outer
+    built[0].sync_engine.dispose.assert_called_once_with(close=False)

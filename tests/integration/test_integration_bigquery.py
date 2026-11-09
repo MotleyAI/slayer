@@ -55,6 +55,7 @@ from tests._sql_mode_retype_fixtures import (
     sql_shapes,
     stale_sql_model,
 )
+from tests.integration._one_request import PATHS, assert_one_request_each, run_three
 from tests._reserved_alias_probe import (
     BIGQUERY_KEYWORDS,
     keyword_universe,
@@ -520,3 +521,32 @@ async def test_sql_mode_list_retype(bq_lists, sql: str, column: str, element: Da
     await check_validation_finding(engine, data_source=ds.name, column=column)
     await check_query_carries_finding(engine, column=column)
     await check_reingest_retypes(engine, datasource=ds, table="contractors", column=column, element=element)
+
+
+# ---------------------------------------------------------------------------
+# A warm statement costs one request
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_warm_statement_costs_one_request(bq_dataset, monkeypatch: pytest.MonkeyPatch, path: str) -> None:
+    sent: list[str] = []
+
+    def _spy(name: str) -> None:
+        real = getattr(bigquery.Client, name)
+
+        def _call(self: Any, query: str, *args: Any, **kwargs: Any) -> Any:
+            sent.append(query)
+            return real(self, query, *args, **kwargs)
+
+        monkeypatch.setattr(bigquery.Client, name, _call)
+
+    # Each query job is one request to the service.
+    _spy("query")
+    _spy("query_and_wait")
+    _, dataset_id = bq_dataset
+    run_three(
+        SlayerSQLClient(datasource=_ds_config(dataset_id)), path=path,
+        sql=lambda marker: f"SELECT '{marker}' AS m",
+    )
+    assert_one_request_each(sent)

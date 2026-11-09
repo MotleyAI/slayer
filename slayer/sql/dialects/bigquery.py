@@ -20,6 +20,7 @@ from sqlglot.expressions.core import Expression
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
+from slayer.sql import connection_policy
 from slayer.sql.dialects.base import (
     NativeFn,
     COMPARISON_NODES,
@@ -437,11 +438,9 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
                 f"service-account key. Put OAuth grants in "
                 f"oauth_credentials_json instead."
             )
-        return sa.create_engine(
-            url=connection_string,
-            credentials_info=credentials_info,
-            pool_pre_ping=True,
-        )
+        return sa.create_engine(url=connection_string, **connection_policy.engine_kwargs(
+            url=connection_string, dialect=self, datasource=datasource, credentials_info=credentials_info,
+        ))
 
     def _build_oauth_engine(
         self,
@@ -477,13 +476,11 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
                 f"Datasource '{datasource.name}': oauth_credentials_json is not "
                 f"a usable authorized-user grant: {exc}"
             ) from exc
-        return sa.create_engine(
-            url=url.update_query_dict({"user_supplied_client": "true"}),
-            connect_args={"client": bigquery.Client(
-                project=project, credentials=credentials,
-            )},
-            pool_pre_ping=True,
-        )
+        url = url.update_query_dict({"user_supplied_client": "true"})
+        return sa.create_engine(url=url, **connection_policy.engine_kwargs(
+            url=url, dialect=self, datasource=datasource,
+            connect_args={"client": bigquery.Client(project=project, credentials=credentials)},
+        ))
 
     def credential_fingerprint(self, datasource: "DatasourceConfig") -> str:
         """Identity across both auth paths; the OAuth half digests the durable grant."""

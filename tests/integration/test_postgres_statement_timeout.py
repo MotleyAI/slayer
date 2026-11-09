@@ -1,4 +1,4 @@
-"""Postgres statement timeout on real asyncpg + psycopg: transaction-local, and the probe keeps its read-only guard."""
+"""Postgres statement timeout on real asyncpg + psycopg: in force, and the probe keeps its read-only guard."""
 
 import uuid
 
@@ -64,11 +64,6 @@ class TestPostgresStatementTimeout:
         result = pg_client.execute_sync(_TIMEOUT_SQL, timeout_seconds=7)
         assert result.rows == [{"t": "7s"}]
         assert result.warnings == []
-
-    def test_timeout_is_transaction_local(self, pg_client: SlayerSQLClient) -> None:
-        pg_client.execute_sync(_TIMEOUT_SQL, timeout_seconds=7)
-        with pg_client._get_sync_engine_for_client().connect() as conn:
-            assert conn.exec_driver_sql("SHOW statement_timeout").scalar() == "0"
 
     async def test_async_probe_infers_types(self, pg_client: SlayerSQLClient) -> None:
         assert await pg_client.get_column_types(_probe("SELECT 1 AS n, 'a' AS s")) == {"n": "number", "s": "string"}

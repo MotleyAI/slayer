@@ -57,6 +57,11 @@ flowchart TD
    only — its caller's engine's, else its URL's (the one named, else the type's
    default); no URL is rewritten to another driver.
    [enforced: test:tests/test_one_driver_per_client.py]
+5. **One request per statement**: on a warm connection a statement costs the database one
+   request — session state is set once per connection and re-set only when it changes, liveness is
+   checked only after idle, and connections persist across calls, synchronous ones included; a
+   datasource marked as reached through a transaction-mode pooler keeps its timeout
+   transaction-local instead. [enforced: test:tests/test_law_one_request_per_statement.py]
 
 ## 4. Rationale
 

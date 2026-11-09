@@ -65,6 +65,7 @@ from tests.integration._consecutive_periods_calendar import (
     streak_model,
 )
 from tests.integration._dev2015_server import check_all, server_models, server_models_ts, server_statements, with_granularities
+from tests.integration._one_request import PATHS, assert_one_request_each, run_three
 
 pytest.importorskip("testcontainers.trino")
 pytest.importorskip("trino.sqlalchemy")
@@ -1355,3 +1356,23 @@ class TestTrinoLists:
         model = next(m for m in ingestion.ingest_datasource(datasource=_trino_lists[1]) if m.name == "contractors")
         typed = {c.name: (c.type, c.element_type) for c in model.columns if c.name in ("skills", "scores")}
         assert typed == {"skills": (DataType.ARRAY, DataType.TEXT), "scores": (DataType.ARRAY, DataType.INT)}
+
+
+# ---------------------------------------------------------------------------
+# A warm statement costs one request
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("path", PATHS)
+def test_warm_statement_costs_one_request(trino_container, _trino_base, path: str) -> None:
+    ((since,),) = _run(trino_container, ["SELECT current_timestamp"])
+    run_three(
+        SlayerSQLClient(datasource=_ds_config(trino_container, _trino_base[1])), path=path,
+        sql=lambda marker: f"SELECT '{marker}' AS m",
+    )
+    started = _run(trino_container, [
+        "SELECT query FROM system.runtime.queries"
+        f" WHERE created >= from_iso8601_timestamp('{since.isoformat()}') ORDER BY query_id",
+    ])
+    assert_one_request_each([query for (query,) in started])

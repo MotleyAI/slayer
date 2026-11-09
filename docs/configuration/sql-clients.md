@@ -14,7 +14,7 @@ A client implements `slayer.database.client.SqlClient`. Every method is `async` 
 | Member | Returns | Meaning |
 |---|---|---|
 | `datasource` | `DatasourceConfig` | The datasource the client serves. |
-| `execute(sql)` | `ExecutionResult(rows=[{column: value}, ...])` | Run a rendered statement **verbatim** — `:name` and `%` are literal text. A statement that returns no rows (DDL) yields `rows=[]`. |
+| `execute(sql)` | `ExecutionResult(rows=[{column: value}, ...])` | Run a rendered statement **verbatim** — `:name` and `%` are literal text. A statement that returns no rows (DDL) yields `rows=[]`. The default client refuses a statement that changes session state or controls transactions (`USE`, `SET`, `RESET`, `ALTER SESSION`, `DISCARD`, `BEGIN`, `START TRANSACTION`, `COMMIT`, `ROLLBACK`) with `SessionStatementRefused`, sending nothing. |
 | `get_result_column_types(sql)` | `{column: ResultColumnType(type, element_type, db_type)}` | Each result column's SLayer `type` (`DataType`), a list's `element_type`, and the database's type name (`db_type`, `None` only when the driver names none), without fetching data beyond what certifying integers needs. |
 | `server_profile()` | `ServerProfile` | Server facts SLayer gates features on (ClickHouse); `ServerProfile()` when there are none. |
 | `ping()` | `None` | Raise unless the database answers. |

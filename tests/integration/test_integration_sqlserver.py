@@ -67,6 +67,7 @@ from tests._dev1737_fixtures import (
 )
 from tests._engine_helpers import disposable_engine
 from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
+from tests.integration._one_request import PATHS, assert_one_request_each, run_three
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
@@ -1889,3 +1890,83 @@ async def test_money_columns_are_exact(sqlserver_container, tmp_path) -> None:
     assert totals.data == [{"ledger.amount_sum": Decimal("0.3000"), "ledger.small_sum": Decimal("0.3000")}]
     assert {r["ledger.id"]: (r["ledger.doubled"], r["ledger.small_doubled"]) for r in doubled.data} == {
         1: (Decimal("0.2000"), Decimal("0.2000")), 2: (Decimal("0.4000"), Decimal("0.4000"))}
+
+
+# ---------------------------------------------------------------------------
+# A warm statement costs one request
+# ---------------------------------------------------------------------------
+
+
+class _CountingCursor:
+    """A pyodbc cursor logging every statement it sends."""
+
+    def __init__(self, cursor: Any, log: list[str]) -> None:
+        object.__setattr__(self, "_cursor", cursor)
+        object.__setattr__(self, "_log", log)
+
+    def execute(self, sql: str, *args: Any, **kwargs: Any) -> Any:
+        self._log.append(sql)
+        return self._cursor.execute(sql, *args, **kwargs)
+
+    def executemany(self, sql: str, *args: Any, **kwargs: Any) -> Any:
+        self._log.append(sql)
+        return self._cursor.executemany(sql, *args, **kwargs)
+
+    def __iter__(self) -> Any:
+        return iter(self._cursor)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._cursor, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self._cursor, name, value)
+
+
+class _CountingConnection:
+    """A pyodbc connection logging its statements, and each commit/rollback that reaches the server."""
+
+    def __init__(self, conn: Any, log: list[str]) -> None:
+        object.__setattr__(self, "_conn", conn)
+        object.__setattr__(self, "_log", log)
+
+    def cursor(self, *args: Any, **kwargs: Any) -> _CountingCursor:
+        return _CountingCursor(self._conn.cursor(*args, **kwargs), self._log)
+
+    def execute(self, sql: str, *args: Any, **kwargs: Any) -> Any:
+        self._log.append(sql)
+        return self._conn.execute(sql, *args, **kwargs)
+
+    def _end(self, kind: str) -> None:
+        # Under autocommit the driver ends no transaction, so nothing is sent.
+        if not self._conn.autocommit:
+            self._log.append(kind)
+        getattr(self._conn, kind.lower())()
+
+    def commit(self) -> None:
+        self._end("COMMIT")
+
+    def rollback(self) -> None:
+        self._end("ROLLBACK")
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self._conn, name, value)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("path", PATHS)
+def test_warm_statement_costs_one_request(
+    sqlserver_container, monkeypatch: pytest.MonkeyPatch, path: str,
+) -> None:
+    ds = _ds_config(sqlserver_container, "master")
+    engine_factory.invalidate_engine(ds)
+    sent: list[str] = []
+    real_connect = pyodbc.connect
+    monkeypatch.setattr(pyodbc, "connect", lambda *a, **kw: _CountingConnection(real_connect(*a, **kw), sent))
+    try:
+        run_three(SlayerSQLClient(datasource=ds), path=path, sql=lambda marker: f"SELECT '{marker}' AS m")
+    finally:
+        engine_factory.invalidate_engine(ds)
+    assert_one_request_each(sent)

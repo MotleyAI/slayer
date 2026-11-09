@@ -17,12 +17,13 @@ import os
 import pathlib
 import tomllib
 import uuid
-from typing import Any, NoReturn
+from typing import Any, NoReturn, cast
 
 import pytest
 import sqlalchemy as sa
 import sqlglot
 from sqlalchemy import event
+from sqlalchemy.pool import QueuePool
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, JoinCardinality, TimeGranularity
@@ -57,6 +58,7 @@ from tests._dev2120_fixtures import (
 )
 from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
 from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_model, mixed_numbers_statements
+from tests.integration._one_request import MARKERS, PATHS, assert_one_request_each, run_three
 from tests._reserved_alias_probe import (
     SNOWFLAKE_KEYWORDS,
     keyword_universe,
@@ -935,7 +937,7 @@ def test_dev1645_mixed_case_column_executes(sf_dev1645_storage) -> None:
 def test_every_snowflake_alias_failure_is_quoted(sf_engine) -> None:
     assert unquoted_alias_failures(
         dialect="snowflake", words=keyword_universe(SNOWFLAKE_KEYWORDS), table="regions", column="id",
-        fails=sa_statement_fails(sf_engine), workers=8,
+        fails=sa_statement_fails(sf_engine), workers=cast(QueuePool, sf_engine.pool).size(),
     ) == []
 
 
@@ -1092,6 +1094,93 @@ def test_reingest_reinfers_only_unknown_elements(sf_lists, sf_datasource: Dataso
         cur.execute("DROP TABLE IF EXISTS reingested")
     typed = {c.name: c.element_type for c in model.columns if c.name in ("ints", "empty")}
     assert typed == {"ints": DataType.INT, "empty": DataType.INT}
+
+
+# ---------------------------------------------------------------------------
+# A warm statement costs one request
+# ---------------------------------------------------------------------------
+
+
+def _session_history(session_id: str) -> list[str]:
+    """The statements one Snowflake session sent, in order."""
+    conn = snowflake.connector.connect(connection_name=_CONNECTION_NAME)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT query_text FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION("
+            "SESSION_ID => %s, RESULT_LIMIT => 1000)) ORDER BY start_time",
+            (int(session_id),),
+        )
+        return [text for (text,) in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _first_value(rows: list[dict[str, Any]]) -> Any:
+    return next(iter(rows[0].values()))
+
+
+def _overrides_datasource(schema: str) -> DatasourceConfig:
+    profile = _profile_or_skip()
+    if not all(profile.get(k) for k in ("role", "warehouse", "database")):
+        pytest.skip("profile lacks role / warehouse / database to override")
+    return DatasourceConfig(
+        name="sf_overrides", type="snowflake", connection_name=_CONNECTION_NAME,
+        role=profile["role"], warehouse=profile["warehouse"], database=profile["database"], schema_name=schema,
+    )
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_warm_statement_costs_one_request(sf_datasource: DatasourceConfig, path: str) -> None:
+    engine_factory.invalidate_engine(sf_datasource)
+    try:
+        rows = run_three(
+            client.SlayerSQLClient(datasource=sf_datasource), path=path,
+            sql=lambda marker: f"SELECT CURRENT_SESSION() AS sid, '{marker}' AS m",
+        )
+    finally:
+        engine_factory.invalidate_engine(sf_datasource)
+    assert_one_request_each(_session_history(_first_value(rows[0])))
+
+
+def test_session_overrides_are_set_once_per_connection(sf_transient_schema: str) -> None:
+    ds = _overrides_datasource(sf_transient_schema)
+    engine_factory.invalidate_engine(ds)
+    try:
+        rows = run_three(
+            client.SlayerSQLClient(datasource=ds), path="sync",
+            sql=lambda marker: (
+                "SELECT CURRENT_SESSION() AS sid, CURRENT_ROLE() AS r, CURRENT_WAREHOUSE() AS w,"
+                f" CURRENT_DATABASE() AS d, CURRENT_SCHEMA() AS s, '{marker}' AS m"
+            ),
+        )
+    finally:
+        engine_factory.invalidate_engine(ds)
+    states = [tuple(r[0].values()) for r in rows]
+    assert {state[0] for state in states} == {states[0][0]}, "statements ran on more than one connection"
+    expected = tuple(v.upper() for v in (ds.role, ds.warehouse, ds.database, ds.schema_name))  # type: ignore[union-attr]
+    assert [state[1:5] for state in states] == [expected] * 3
+    history = _session_history(states[0][0])
+    first = next(i for i, text in enumerate(history) if MARKERS[0] in text)
+    uses = [text.upper() for text in history if text.lstrip().upper().startswith("USE ")]
+    assert [u.split()[1] for u in uses] == ["ROLE", "WAREHOUSE", "DATABASE", "SCHEMA"], history
+    assert all(text.upper() not in uses for text in history[first:]), history
+
+
+def test_use_statement_is_refused(sf_transient_schema: str) -> None:
+    ds = _overrides_datasource(sf_transient_schema)
+    engine_factory.invalidate_engine(ds)
+    sql_client = client.SlayerSQLClient(datasource=ds)
+    try:
+        session_id = _first_value(sql_client.execute_sync("SELECT CURRENT_SESSION() AS sid").rows)
+        with pytest.raises(client.SessionStatementRefused, match="USE"):
+            sql_client.execute_sync("USE WAREHOUSE other_wh")
+        warehouse = _first_value(sql_client.execute_sync("SELECT CURRENT_WAREHOUSE() AS w").rows)
+    finally:
+        sql_client.close()
+        engine_factory.invalidate_engine(ds)
+    assert warehouse == ds.warehouse.upper()  # type: ignore[union-attr]
+    assert not any("OTHER_WH" in text.upper() for text in _session_history(session_id))
 
 
 def test_quoted_lowercase_table_ingests_types_and_queries(sf_datasource, sf_engine, sf_transient_schema,

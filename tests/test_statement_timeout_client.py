@@ -137,9 +137,9 @@ def _run_recording(run: Runner, client: SlayerSQLClient, *, timeout: int = 120) 
     [
         ("mysql", "SET max_execution_time = 120000"),
         ("mariadb", "SET max_statement_time = 120"),
-        ("postgres", "SET LOCAL statement_timeout = 120000"),
-        (None, "SET LOCAL statement_timeout = 120000"),
-        ("totally_unknown", "SET LOCAL statement_timeout = 120000"),
+        ("postgres", "SET statement_timeout = 120000"),
+        (None, "SET statement_timeout = 120000"),
+        ("totally_unknown", "SET statement_timeout = 120000"),
         ("snowflake", "ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 120"),
     ],
 )
@@ -172,14 +172,14 @@ def test_duckdb_sends_no_timeout_and_warns_nothing(monkeypatch, run: Runner) -> 
 
 
 @pytest.mark.parametrize("ds_type", ["postgres", None, "totally_unknown"])
-def test_postgres_rejected_timeout_rolls_back_and_runs(monkeypatch, run: Runner, ds_type: str | None) -> None:
+def test_postgres_rejected_timeout_runs_without_rollback(monkeypatch, run: Runner, ds_type: str | None) -> None:
     rec = Recorder(
-        reject_prefix="SET LOCAL statement_timeout",
-        reject_exc=sqlalchemy.exc.ProgrammingError("SET LOCAL", {}, Exception("unrecognized configuration parameter")),
+        reject_prefix="SET statement_timeout",
+        reject_exc=sqlalchemy.exc.ProgrammingError("SET", {}, Exception("unrecognized configuration parameter")),
     )
     rec.install(monkeypatch)
     result, record = _run_recording(run, _client(ds_type, name="pg_ds"))
-    assert rec.log == ["SET LOCAL statement_timeout = 120000", ROLLBACK, SQL]
+    assert rec.log == ["SET statement_timeout = 120000", SQL]
     assert result.rows == [{"x": 1}]
     expected = StatementTimeoutSkippedWarning(datasource="pg_ds", timeout_seconds=120, reason="timeout_rejected")
     assert result.warnings == [expected]
@@ -217,9 +217,9 @@ def _probe(client: SlayerSQLClient) -> tuple[dict[str, str], list[warnings.Warni
 @pytest.mark.parametrize(
     ("ds_type", "prelude"),
     [
-        ("postgres", ["SET LOCAL statement_timeout = 60000", "SET TRANSACTION READ ONLY"]),
-        ("totally_unknown", ["SET LOCAL statement_timeout = 60000", "SET TRANSACTION READ ONLY"]),
-        (None, ["SET LOCAL statement_timeout = 60000", "SET TRANSACTION READ ONLY"]),
+        ("postgres", ["SET statement_timeout = 60000", "SET TRANSACTION READ ONLY"]),
+        ("totally_unknown", ["SET statement_timeout = 60000", "SET TRANSACTION READ ONLY"]),
+        (None, ["SET statement_timeout = 60000", "SET TRANSACTION READ ONLY"]),
         ("mysql", ["SET max_execution_time = 60000"]),
         ("mariadb", ["SET max_statement_time = 60"]),
         ("snowflake", ["ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 60"]),
@@ -240,13 +240,13 @@ def test_probe_timeout_before_read_only_guard(monkeypatch, ds_type: str | None, 
 @pytest.mark.parametrize("ds_type", ["postgres", "totally_unknown", None])
 def test_probe_rejected_timeout_keeps_guard_and_warns(monkeypatch, ds_type: str | None) -> None:
     rec = Recorder(
-        reject_prefix="SET LOCAL statement_timeout",
-        reject_exc=sqlalchemy.exc.ProgrammingError("SET LOCAL", {}, Exception("unrecognized configuration parameter")),
+        reject_prefix="SET statement_timeout",
+        reject_exc=sqlalchemy.exc.ProgrammingError("SET", {}, Exception("unrecognized configuration parameter")),
     )
     rec.install(monkeypatch)
     types, record = _probe(_client(ds_type, name="pg_ds"))
-    assert rec.log[:3] == ["SET LOCAL statement_timeout = 60000", ROLLBACK, "SET TRANSACTION READ ONLY"]
-    assert SQL in rec.log[3]
+    assert rec.log[:2] == ["SET statement_timeout = 60000", "SET TRANSACTION READ ONLY"]
+    assert SQL in rec.log[2]
     assert types == {"x": "number"}
     assert _skipped(record) == [
         StatementTimeoutSkippedWarning(datasource="pg_ds", timeout_seconds=60, reason="timeout_rejected"),
@@ -268,7 +268,7 @@ def test_probe_fail_closed_rejected_timeout_raises(monkeypatch) -> None:
 @pytest.mark.parametrize(
     ("ds_type", "prelude"),
     [
-        ("postgres", ["SET LOCAL statement_timeout = 60000", "SET TRANSACTION READ ONLY"]),
+        ("postgres", ["SET statement_timeout = 60000", "SET TRANSACTION READ ONLY"]),
         ("mysql", ["SET max_execution_time = 60000"]),
         ("mariadb", ["SET max_statement_time = 60"]),
         ("snowflake", ["ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 60"]),

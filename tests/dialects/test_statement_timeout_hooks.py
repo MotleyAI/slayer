@@ -27,8 +27,8 @@ class TestStatementTimeout:
     def test_mariadb_seconds(self) -> None:
         assert _rendered(MariadbDialect(), 120) == "SET max_statement_time = 120"
 
-    def test_postgres_transaction_local(self) -> None:
-        assert _rendered(PostgresDialect(), 120) == "SET LOCAL statement_timeout = 120000"
+    def test_postgres_session(self) -> None:
+        assert _rendered(PostgresDialect(), 120) == "SET statement_timeout = 120000"
 
     def test_snowflake_unchanged(self) -> None:
         assert _rendered(SnowflakeDialect(), 120) == (
@@ -42,7 +42,7 @@ class TestStatementTimeout:
     @pytest.mark.parametrize("ds_type", [None, "", "totally_unknown", "postgresql"])
     def test_untyped_and_unknown_take_postgres(self, ds_type: str | None) -> None:
         dialect = dialect_for_ds_type(ds_type)
-        assert _rendered(dialect, 120) == "SET LOCAL statement_timeout = 120000"
+        assert _rendered(dialect, 120) == "SET statement_timeout = 120000"
         assert dialect.statement_timeout_best_effort is True
 
 
