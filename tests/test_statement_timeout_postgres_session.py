@@ -9,6 +9,7 @@ from typing import Any, TypeVar
 
 import psycopg
 import pytest
+import sqlalchemy.exc
 from pytest_postgresql import factories
 from sqlalchemy.engine.url import make_url
 
@@ -192,7 +193,7 @@ def test_a_probe_whose_rollback_fails_leaves_a_usable_pool(postgresql_logged: An
 
         async def _work() -> tuple[Any, Any]:
             before = (await client.execute(_STATE_SQL)).rows[0]
-            with pytest.raises(Exception):  # noqa: B017 — the connection dies mid-probe
+            with pytest.raises(sqlalchemy.exc.OperationalError):  # the connection dies mid-probe
                 await client.get_result_column_types("SELECT die() AS n")
             return before, (await client.execute(_STATE_SQL)).rows[0]
 

@@ -339,7 +339,7 @@ def _forget_parent_pools() -> None:
     closing the parent's connections."""
     global _cache_lock
     _cache_lock = threading.Lock()
-    for engine in list(_engine_cache.values()):
+    for engine in _engine_cache.values():
         engine.dispose(close=False)
 
 
