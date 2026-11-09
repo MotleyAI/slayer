@@ -692,6 +692,7 @@ class StorageBackend(ABC):
             try:
                 for name, data in (await self._raw_datasource_dicts()).items():
                     with contextlib.suppress(ValueError):
+                        _validate_path_component(name, kind="datasource name")
                         await self._with_library_granularities_renamed(name=name, data=data)
             finally:
                 _SETTLING.reset(token)

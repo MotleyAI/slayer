@@ -266,15 +266,15 @@ class TestSettleBeforeFirstLoad:
             assert f.read() == text
         assert not os.path.exists(os.path.join(store.base, "datasources", "shop.yaml"))
 
-    async def test_a_refused_yaml_datasource_name_is_skipped(self, tmp_path: Any) -> None:
-        store = await _contains_store(tmp_path=tmp_path, backend="yaml")
+    @pytest.mark.parametrize("backend", BACKENDS)
+    async def test_a_refused_datasource_name_is_skipped(self, tmp_path: Any, backend: str) -> None:
+        store = await _contains_store(tmp_path=tmp_path, backend=backend)
         doc = datasource_doc(db_path=os.path.join(store.base, "live.db"), granularities=["contains"], name="shop.v1")
-        text = yaml.safe_dump(doc)
+        text = _serialized(backend=backend, doc=doc)
         _write_raw_datasource(store, name="shop.v1", text=text)
         assert _td_granularity(await _stage(store.storage, "bucketed")) == "contains_granularity"
         _assert_datasource_renamed(store)
-        with open(os.path.join(store.base, "datasources", "shop.v1.yaml"), encoding="utf-8") as f:  # NOSONAR(S7493) — test read
-            assert f.read() == text
+        assert store.raw()["datasources/shop.v1"] == text
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
