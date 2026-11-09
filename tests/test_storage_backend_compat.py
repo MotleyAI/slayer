@@ -229,3 +229,81 @@ async def test_new_style_backend_keeps_failure_reporting() -> None:
     assert _ids(listed) == [good.id]
     assert [e.name for e in failures.errors] == ["9"]
     assert any(issubclass(w.category, SlayerUnloadableDocumentWarning) for w in caught)
+
+
+class SelfBuildingBackend(_DictStore):
+    """Builds datasources from its own records; models and memories decode through the base load pipeline."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.raw_models: dict[tuple[str, str], dict] = {}
+        self.calls: list[str] = []
+
+    async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
+        self.datasources[datasource.name] = datasource
+
+    async def _save_model_impl(self, model: SlayerModel) -> None:
+        self.raw_models[(model.data_source, model.name)] = model.model_dump(mode="json", exclude_none=True)
+
+    async def _list_all_model_identities(self) -> list[tuple[str, str]]:
+        return list(self.raw_models)
+
+    async def get_model(self, name: str, data_source: str | None = None) -> SlayerModel | None:
+        for (ds, n), raw in self.raw_models.items():
+            if n == name and data_source in (None, ds):
+                return await self._migrate_and_refine_on_load(name=n, data=raw, data_source=ds)
+        return None
+
+    async def get_datasource(self, name: str) -> DatasourceConfig | None:
+        self.calls.append("get_datasource")
+        return await super().get_datasource(name)
+
+    async def list_datasources(self) -> list[str]:
+        self.calls.append("list_datasources")
+        return await super().list_datasources()
+
+    async def _raw_datasource_dicts(self) -> dict[str, dict]:
+        self.calls.append("_raw_datasource_dicts")
+        return await super()._raw_datasource_dicts()
+
+    async def _get_memory_row(self, memory_id: str) -> Memory | None:
+        raw = self.memories.get(memory_id)
+        return None if raw is None else await self._memory_from_stored(memory_id=memory_id, decode=lambda: raw)
+
+    async def _list_memories_rows(self, *, entities: list[str] | None) -> Loaded[Memory]:
+        rows = [await self._memory_from_stored(memory_id=str(raw["id"]), decode=lambda raw=raw: raw)
+                for raw in _matching(entities, self.memories)]
+        return rows, []
+
+
+def _self_building_backend() -> SelfBuildingBackend:
+    """A fresh instance holding datasource ``shop``, model ``shop.orders`` and memory ``1``."""
+    backend = SelfBuildingBackend()
+    backend.datasources["shop"] = _valid()
+    model = SlayerModel.model_validate({"name": "orders", "data_source": "shop", "sql_table": "orders",
+                                        "columns": [{"name": "id", "type": "INT", "primary_key": True}]})
+    backend.raw_models[("shop", "orders")] = model.model_dump(mode="json", exclude_none=True)
+    memory = Memory.model_validate({"id": "1", "learning": "note", "entities": ["shop.orders"]})
+    backend.memories["1"] = memory.model_dump(mode="json")
+    return backend
+
+
+class TestLibraryGranularitySettle:
+    @pytest.mark.parametrize("first", ["model", "memory"])
+    async def test_self_building_backend_never_lists_or_loads_datasources(self, first: str) -> None:
+        backend = _self_building_backend()
+
+        async def load_model() -> None:
+            assert await backend.get_model("orders", data_source="shop") is not None
+            models, failed = await backend.load_models()
+            assert ([m.name for m in models], failed) == (["orders"], [])
+
+        async def load_memory() -> None:
+            assert (await backend.get_memory("1")).learning == "note"
+            memories, failed = await backend.load_memories()
+            assert ([m.id for m in memories], failed) == (["1"], [])
+
+        loads = [load_model, load_memory] if first == "model" else [load_memory, load_model]
+        for load in loads:
+            await load()
+        assert backend.calls == ["_raw_datasource_dicts"]
