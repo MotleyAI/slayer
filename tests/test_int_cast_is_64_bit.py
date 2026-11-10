@@ -62,6 +62,7 @@ async def _values(tmp_path: Path, ds: DatasourceConfig) -> list[Any]:
     try:
         return [row["t.big"] for row in (await engine.execute(_QUERY)).data]
     finally:
+        await engine.aclose()
         engine.close()
 
 

@@ -53,6 +53,13 @@ def test_urls_name_apache_ossie() -> None:
     assert "/repos/apache/ossie/" in drift_check.COMMITS_URL
 
 
+def test_workflow_installs_pyyaml_from_a_wheel() -> None:
+    workflow = yaml.safe_load((drift_check.ROOT / ".github" / "workflows" / "ossie-schema-drift.yml").read_text(encoding="utf-8"))
+    commands = [step.get("run", "") for step in workflow["jobs"]["drift"]["steps"]]
+    assert any("--only-binary :all:" in c and "PyYAML==" in c for c in commands)
+    assert "python scripts/ossie_schema_drift.py" in commands
+
+
 def test_reformatted_schema_is_not_drift() -> None:
     schema = json.loads(VENDORED[SCHEMA])
     assert drift_check.drift(vendored=schema, upstream=json.loads(json.dumps(schema, sort_keys=True))) == []
