@@ -124,19 +124,19 @@ def _tsales_model() -> SlayerModel:
 # --------------------------------------------------------------------------- #
 class TestSingleColumnUnchanged:
     async def test_single_column_aggregate_sql_unchanged(self) -> None:
-        sql = _norm(await gen(sales_q(measures=[_measure("q_amount:sum")])))
+        sql = _norm(await gen(sales_q(measures=[_measure("sum(q_amount)")])))
         assert "SUM(CASE WHEN" in sql.upper().replace("SUM (", "SUM("), sql
         assert "'Q'" in sql
         assert "amount" in sql
 
     async def test_single_column_value(self, exec_backend) -> None:
-        resp = await exec_backend.execute(sales_q(measures=[_measure("q_amount:sum")]))
+        resp = await exec_backend.execute(sales_q(measures=[_measure("sum(q_amount)")]))
         assert float(resp.data[0]["sales.m"]) == pytest.approx(QAMT_SUM)
 
     async def test_ranked_over_filtered_picks_masked_value_sql(self) -> None:
         # q_amount:last needs a ranking time column; the masked value is picked.
         sql = await gen(
-            SlayerQuery(source_model="tsales", measures=[_measure("q_amount:last")]),
+            SlayerQuery(source_model="tsales", measures=[_measure("last(q_amount)")]),
             models=[_tsales_model()])
         assert "CASE WHEN" in sql.upper(), sql
         assert "'Q'" in sql, sql
@@ -149,7 +149,7 @@ class TestSingleColumnUnchanged:
             (3, "P", 999.0, "2024-06-01"),
         ])
         resp = await engine.execute(
-            SlayerQuery(source_model="tsales", measures=[_measure("q_amount:last")]))
+            SlayerQuery(source_model="tsales", measures=[_measure("last(q_amount)")]))
         assert resp.data[0]["tsales.m"] is None
 
     @pytest.mark.parametrize("position", ["measure", "dimension", "filter", "last"])
@@ -159,13 +159,13 @@ class TestSingleColumnUnchanged:
         model.columns.append(
             Column(name="amt", type=DataType.DOUBLE, filter="product = 'Q'"))
         query = {
-            "measure": SlayerQuery(source_model="tsales", measures=[_measure("amt:sum")]),
+            "measure": SlayerQuery(source_model="tsales", measures=[_measure("sum(amt)")]),
             "dimension": SlayerQuery(
                 source_model="tsales", dimensions=[ColumnRef(name="amt")],
-                measures=[_measure("id:count")]),
+                measures=[_measure("count(id)")]),
             "filter": SlayerQuery(
-                source_model="tsales", measures=[_measure("id:count")], filters=["amt > 0"]),
-            "last": SlayerQuery(source_model="tsales", measures=[_measure("amt:last")]),
+                source_model="tsales", measures=[_measure("count(id)")], filters=["amt > 0"]),
+            "last": SlayerQuery(source_model="tsales", measures=[_measure("last(amt)")]),
         }[position]
         sql = await gen(query, models=[model])
         expected = 2 if position == "dimension" else 1  # projection + GROUP BY
@@ -179,7 +179,7 @@ class TestSingleColumnUnchanged:
             (2, "Q", 70.0, "2024-06-01"),
         ])
         resp = await engine.execute(
-            SlayerQuery(source_model="tsales", measures=[_measure("q_amount:last")]))
+            SlayerQuery(source_model="tsales", measures=[_measure("last(q_amount)")]))
         assert float(resp.data[0]["tsales.m"]) == pytest.approx(70.0)
 
 
@@ -213,7 +213,7 @@ class TestBehaviourChanges:
         """#3: grouping by q_amount reads the masked value — non-Q rows form the
         NULL group, each Q amount its own cell."""
         resp = await exec_backend.execute(
-            sales_q(dimensions=["q_amount"], measures=[_measure("*:count", "n")]))
+            sales_q(dimensions=["q_amount"], measures=[_measure("count(*)", "n")]))
         counts = {k[0]: int(v["sales.n"]) for k, v in rows_by(resp, "sales.q_amount").items()}
         assert counts == COUNT_BY_QAMOUNT
 
@@ -226,12 +226,12 @@ class TestFilteredColumnPositions:
         expected = sum(r[4] for r in _SALES_ROWS
                        if r[3] == "Q" and r[4] is not None and r[4] > 10)
         resp = await exec_backend.execute(
-            sales_q(measures=[_measure("amount:sum")], filters=["q_amount > 10"]))
+            sales_q(measures=[_measure("sum(amount)")], filters=["q_amount > 10"]))
         assert float(resp.data[0]["sales.m"]) == pytest.approx(expected)
 
     async def test_order_reads_masked_value(self, exec_backend) -> None:
         query = sales_q(
-            dimensions=["q_amount"], measures=[_measure("amount:sum")],
+            dimensions=["q_amount"], measures=[_measure("sum(amount)")],
             order=[OrderItem(column=ColumnRef(name="q_amount"), direction="asc")])
         resp = await exec_backend.execute(query)
         ordered = [row["sales.q_amount"] for row in resp.data]
@@ -246,7 +246,7 @@ class TestFilteredColumnPositions:
     async def test_partition_key_reads_masked_value(self, exec_backend) -> None:
         query = sales_q(
             dimensions=["q_amount"],
-            measures=[_measure("amount:sum(partition_by=q_amount)")])
+            measures=[_measure("sum(amount, partition_by=q_amount)")])
         resp = await exec_backend.execute(query)
         cells = {row["sales.q_amount"] for row in resp.data}
         assert cells == set(COUNT_BY_QAMOUNT)  # one cell per masked value, incl. NULL
@@ -364,14 +364,14 @@ class TestDerivedOverFiltered:
         model = sales_model()
         model.columns.append(
             Column(name="q_double", type=DataType.DOUBLE, sql="q_amount * 2"))
-        sql = await gen(sales_q(measures=[_measure("q_double:sum")]), models=[model])
+        sql = await gen(sales_q(measures=[_measure("sum(q_double)")]), models=[model])
         assert "CASE WHEN" in sql.upper(), sql
         assert "'Q'" in sql, sql
 
     async def test_derived_column_expands_wrapped_value_exec(self, exec_qdouble) -> None:
         # q_double = q_amount * 2, so sum over Q rows = 2 * QAMT_SUM; a wrong
         # expansion (raw amount) would sum every row and miss this value.
-        resp = await exec_qdouble.execute(sales_q(measures=[_measure("q_double:sum")]))
+        resp = await exec_qdouble.execute(sales_q(measures=[_measure("sum(q_double)")]))
         assert float(resp.data[0]["sales.m"]) == pytest.approx(2 * QAMT_SUM)
 
 
@@ -385,7 +385,7 @@ class TestVariableSubstitution:
             name="vcol", type=DataType.DOUBLE, sql="amount * {mult}",
             filter="product = '{prod}'"))
         sql = await gen(
-            sales_q(measures=[_measure("vcol:sum")], variables={"mult": 2, "prod": "Q"}),
+            sales_q(measures=[_measure("sum(vcol)")], variables={"mult": 2, "prod": "Q"}),
             models=[model])
         assert "{" not in sql, sql
         assert "'Q'" in sql, sql
@@ -458,7 +458,7 @@ class TestCycleAndPathValidation:
                 Column(name="val", type=DataType.DOUBLE, sql="val", filter="val > 0"),
             ])
         sql = await gen(
-            SlayerQuery(source_model="fself", measures=[_measure("val:sum")]),
+            SlayerQuery(source_model="fself", measures=[_measure("sum(val)")]),
             models=[model])
         masks = re.findall(r"CASE\s+WHEN\s+fself\.val > 0", sql, flags=re.I)
         assert len(masks) == 1, sql

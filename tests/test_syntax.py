@@ -146,7 +146,7 @@ class TestAggregations:
 
 class TestTransforms:
     def test_cumsum(self):
-        result = parse_expr("cumsum(revenue:sum)")
+        result = parse_expr("cumsum(sum(revenue))")
         assert isinstance(result, TransformCall)
         assert result.op == "cumsum"
         assert result.input == AggCall(source=Ref(name="revenue"), agg="sum")
@@ -154,13 +154,13 @@ class TestTransforms:
         assert result.kwargs == ()
 
     def test_rank(self):
-        result = parse_expr("rank(revenue:sum, direction='desc')")
+        result = parse_expr("rank(sum(revenue), direction='desc')")
         assert isinstance(result, TransformCall)
         assert result.op == "rank"
 
     def test_change_with_partition_by(self):
         # change(revenue:sum, partition_by=region) — C6 routing kwarg.
-        result = parse_expr("change(revenue:sum, partition_by=region)")
+        result = parse_expr("change(sum(revenue), partition_by=region)")
         assert isinstance(result, TransformCall)
         assert result.op == "change"
         assert result.input == AggCall(source=Ref(name="revenue"), agg="sum")
@@ -168,7 +168,7 @@ class TestTransforms:
 
     def test_nested_transform(self):
         # change(cumsum(revenue:sum))
-        result = parse_expr("change(cumsum(revenue:sum))")
+        result = parse_expr("change(cumsum(sum(revenue)))")
         assert isinstance(result, TransformCall)
         assert result.op == "change"
         assert isinstance(result.input, TransformCall)
@@ -176,21 +176,21 @@ class TestTransforms:
 
     def test_ntile_with_n(self):
         # ntile(revenue:sum, n=4)
-        result = parse_expr("ntile(revenue:sum, n=4)")
+        result = parse_expr("ntile(sum(revenue), n=4)")
         assert isinstance(result, TransformCall)
         assert result.op == "ntile"
         assert result.kwargs == (("n", Literal(value=Decimal(4))),)
 
     def test_first_transform(self):
         # One AggCall; dispatches to the transform at bind.
-        result = parse_expr("first(revenue:sum)")
+        result = parse_expr("first(sum(revenue))")
         assert result == AggCall(
             source=AggCall(source=Ref(name="revenue"), agg="sum"), agg="first",
         )
 
     def test_last_transform(self):
         # One AggCall; dispatches to the transform at bind.
-        result = parse_expr("last(revenue:sum)")
+        result = parse_expr("last(sum(revenue))")
         assert result == AggCall(
             source=AggCall(source=Ref(name="revenue"), agg="sum"), agg="last",
         )
@@ -206,7 +206,7 @@ class TestTransforms:
     def test_transform_op_recognised(self, op):
         # Every documented transform name parses as a TransformCall rather
         # than falling through to the unknown-function rejection.
-        result = parse_expr(f"{op}(revenue:sum)")
+        result = parse_expr(f"{op}(sum(revenue))")
         assert isinstance(result, TransformCall)
         assert result.op == op
 
@@ -214,7 +214,7 @@ class TestTransforms:
         # time_shift(x, -1) — the row-based form; `periods` is positional in
         # the documented DSL surface and stays a positional arg at parse time
         # (the binder maps it onto the `periods` kwarg).
-        result = parse_expr("time_shift(revenue:sum, -1)")
+        result = parse_expr("time_shift(sum(revenue), -1)")
         assert isinstance(result, TransformCall)
         assert result.op == "time_shift"
         assert result.input == AggCall(source=Ref(name="revenue"), agg="sum")
@@ -225,7 +225,7 @@ class TestTransforms:
     def test_time_shift_positional_periods_and_granularity(self):
         # time_shift(x, -1, 'year') — the calendar-based form; both
         # positionals survive parsing in order.
-        result = parse_expr("time_shift(revenue:sum, -1, 'year')")
+        result = parse_expr("time_shift(sum(revenue), -1, 'year')")
         assert isinstance(result, TransformCall)
         assert result.op == "time_shift"
         assert result.args == (
@@ -236,7 +236,7 @@ class TestTransforms:
     def test_transform_over_arithmetic_input(self):
         # cumsum(revenue:sum / *:count) — a transform whose INPUT is
         # arithmetic (the mirror of test_transform_inside_arithmetic).
-        result = parse_expr("cumsum(revenue:sum / *:count)")
+        result = parse_expr("cumsum(sum(revenue) / count(*))")
         assert isinstance(result, TransformCall)
         assert result.op == "cumsum"
         assert isinstance(result.input, Arith)
@@ -244,7 +244,7 @@ class TestTransforms:
 
     def test_rank_partition_by_dotted_path(self):
         # partition_by may name a joined column via a dotted path.
-        result = parse_expr("rank(revenue:sum, partition_by=customers.region, direction='desc')")
+        result = parse_expr("rank(sum(revenue), partition_by=customers.region, direction='desc')")
         assert isinstance(result, TransformCall)
         assert result.kwargs == (
             ("partition_by", DottedRef(parts=("customers", "region"))),
@@ -253,7 +253,7 @@ class TestTransforms:
 
     def test_triple_nested_transforms(self):
         # last(change(cumsum(revenue:sum))) — three levels deep.
-        result = parse_expr("last(change(cumsum(revenue:sum)))")
+        result = parse_expr("last(change(cumsum(sum(revenue))))")
         assert isinstance(result, AggCall)
         assert result.agg == "last"
         assert isinstance(result.source, TransformCall)
@@ -313,7 +313,7 @@ class TestScalarFunctions:
 
     def test_scalar_call_wrapping_aggregate(self):
         # nullif(revenue:max, 0) — scalar function over an aggregate.
-        result = parse_expr("nullif(revenue:max, 0)")
+        result = parse_expr("nullif(max(revenue), 0)")
         assert isinstance(result, ScalarCall)
         assert result.name == "nullif"
         assert result.args[0] == AggCall(source=Ref(name="revenue"), agg="max")
@@ -332,7 +332,7 @@ class TestScalarFunctions:
         # — the motivating Cube-translation shape
         # ``COALESCE(((SUM(a)/NULLIF(SUM(b),0)) - 1), -999999)``. Scalars must
         # nest over arithmetic over aggregates without losing either aggregate.
-        result = parse_expr("coalesce((a:sum / nullif(b:sum, 0)) - 1, -999999)")
+        result = parse_expr("coalesce((sum(a) / nullif(sum(b), 0)) - 1, -999999)")
         assert isinstance(result, ScalarCall)
         assert result.name == "coalesce"
         outer_arith = result.args[0]
@@ -355,7 +355,7 @@ class TestScalarFunctions:
 
 class TestOperators:
     def test_add(self):
-        result = parse_expr("revenue:sum + 1")
+        result = parse_expr("sum(revenue) + 1")
         assert isinstance(result, Arith)
         assert result.op == "+"
         assert result.left == AggCall(source=Ref(name="revenue"), agg="sum")
@@ -363,7 +363,7 @@ class TestOperators:
 
     def test_divide_two_aggregates(self):
         # revenue:sum / *:count → the AOV formula.
-        result = parse_expr("revenue:sum / *:count")
+        result = parse_expr("sum(revenue) / count(*)")
         assert isinstance(result, Arith)
         assert result.op == "/"
         assert isinstance(result.left, AggCall)
@@ -371,7 +371,7 @@ class TestOperators:
         assert result.right.source == StarSource()
 
     def test_subtract(self):
-        result = parse_expr("revenue:sum - cost:sum")
+        result = parse_expr("sum(revenue) - sum(cost)")
         assert isinstance(result, Arith)
         assert result.op == "-"
 
@@ -382,26 +382,26 @@ class TestOperators:
 
     def test_parens_dont_change_tree(self):
         # (revenue:sum) is still an AggCall — parens just group.
-        result = parse_expr("(revenue:sum)")
+        result = parse_expr("(sum(revenue))")
         assert result == AggCall(source=Ref(name="revenue"), agg="sum")
 
     def test_comparison_lt(self):
-        result = parse_expr("revenue:sum < 100")
+        result = parse_expr("sum(revenue) < 100")
         assert isinstance(result, Cmp)
         assert result.op == "<"
 
     def test_comparison_le(self):
-        result = parse_expr("revenue:sum <= 100")
+        result = parse_expr("sum(revenue) <= 100")
         assert isinstance(result, Cmp)
         assert result.op == "<="
 
     def test_comparison_gt(self):
-        result = parse_expr("revenue:sum > 100")
+        result = parse_expr("sum(revenue) > 100")
         assert isinstance(result, Cmp)
         assert result.op == ">"
 
     def test_comparison_ge(self):
-        result = parse_expr("revenue:sum >= 100")
+        result = parse_expr("sum(revenue) >= 100")
         assert isinstance(result, Cmp)
         assert result.op == ">="
 
@@ -556,7 +556,7 @@ class TestRejection:
 class TestCombinations:
     def test_transform_inside_arithmetic(self):
         # cumsum(revenue:sum) / *:count
-        result = parse_expr("cumsum(revenue:sum) / *:count")
+        result = parse_expr("cumsum(sum(revenue)) / count(*)")
         assert isinstance(result, Arith)
         assert result.op == "/"
         assert isinstance(result.left, TransformCall)
@@ -564,14 +564,14 @@ class TestCombinations:
 
     def test_complex_filter_predicate(self):
         # (revenue:sum > 100) and (status == 'paid')
-        result = parse_expr("(revenue:sum > 100) and (status == 'paid')")
+        result = parse_expr("(sum(revenue) > 100) and (status == 'paid')")
         assert isinstance(result, BoolOp)
         assert result.op == "and"
         assert len(result.operands) == 2
 
     def test_change_filter(self):
         # change(revenue:sum) > 0 — desugar handled later by lowering, not parser.
-        result = parse_expr("change(revenue:sum) > 0")
+        result = parse_expr("change(sum(revenue)) > 0")
         assert isinstance(result, Cmp)
         assert result.op == ">"
         assert isinstance(result.left, TransformCall)
@@ -580,9 +580,9 @@ class TestCombinations:
     def test_consecutive_periods_predicate_then_compared(self):
         # DEV-1484 backfill from the deleted TestFormulaParser tests
         # test_consecutive_periods_predicate / _comparison:
-        # ``consecutive_periods(revenue:sum > 0) >= 3`` — a predicate INSIDE
+        # ``consecutive_periods(sum(revenue) > 0) >= 3`` — a predicate INSIDE
         # the transform and a comparison OUTSIDE it in one expression.
-        result = parse_expr("consecutive_periods(revenue:sum > 0) >= 3")
+        result = parse_expr("consecutive_periods(sum(revenue) > 0) >= 3")
         assert isinstance(result, Cmp)
         assert result.op == ">="
         assert result.right == Literal(value=Decimal(3))
@@ -832,7 +832,7 @@ class TestFilterOperatorNormalization:
         # is the same failure mode as transform kwargs — the colon-agg
         # callee `percentile` is not a SCALAR_FUNCTION, so the scanner
         # preserves `p=0.5` as a kwarg on the AggCall.
-        result = parse_expr("revenue:percentile(p=0.5) > 100")
+        result = parse_expr("percentile(revenue, p=0.5) > 100")
         assert isinstance(result, Cmp)
         assert result.op == ">"
         assert isinstance(result.left, AggCall)
@@ -848,7 +848,7 @@ class TestFilterOperatorNormalization:
         # DEV-1492 (Codex review): the scanner skips whitespace when
         # checking the `IDENT = value` shape, so a spaced kwarg still
         # parses as a kwarg, not a positional comparison.
-        result = parse_expr("ntile(revenue:sum, n = 4) <= 1")
+        result = parse_expr("ntile(sum(revenue), n = 4) <= 1")
         assert isinstance(result, Cmp)
         assert isinstance(result.left, TransformCall)
         assert result.left.op == "ntile"
@@ -904,7 +904,7 @@ class TestFilterOperatorNormalization:
         # previous-token tracking. Both the kwarg `n=4` and the top-level
         # `status = '),='` must be classified correctly.
         result = parse_expr(
-            "ntile(revenue:sum, n=4) <= 1 and status = '),='"
+            "ntile(sum(revenue), n=4) <= 1 and status = '),='"
         )
         assert isinstance(result, BoolOp)
         assert result.op == "and"
@@ -928,7 +928,7 @@ class TestFilterOperatorNormalization:
         # a `:`. Built-in `first`/`last` take the order column positionally
         # today, but custom aggregations overriding these names can declare
         # any kwarg shape; this pins the architectural rule.
-        result = parse_expr("revenue:first(order=created_at) > 0")
+        result = parse_expr("first(revenue, order=created_at) > 0")
         assert isinstance(result, Cmp)
         assert result.op == ">"
         assert isinstance(result.left, AggCall)
@@ -944,7 +944,7 @@ class TestFilterOperatorNormalization:
         # A bare-ref SQL equality (`status = 'paid'`) as the first positional
         # arg of a transform must NOT be misread as a kwarg — transforms only
         # accept kwargs AFTER the value (i.e. after the first `,`). The colon-
-        # agg form (`revenue:sum > 0`) already worked because the `:` token
+        # agg form (`sum(revenue) > 0`) already worked because the `:` token
         # breaks the LPAREN/IDENT pattern; the bare-ref form is the gap.
         result = parse_expr("consecutive_periods(status = 'paid') >= 2")
         assert isinstance(result, Cmp)

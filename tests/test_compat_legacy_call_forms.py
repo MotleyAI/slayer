@@ -73,7 +73,7 @@ V7_ORDERS = {
         {"name": "amount", "type": "DOUBLE"},
     ],
 }
-COUNT_ORDERS = {"source_model": "orders", "measures": [{"formula": "*:count", "name": "n"}]}
+COUNT_ORDERS = {"source_model": "orders", "measures": [{"formula": "count(*)", "name": "n"}]}
 
 INGEST = ("ingest_datasource()", ("engine.ingest_sync(", "engine.ingest(", "client=engine.client_for("))
 REPORT = ("ingest_datasource_report()", ("ingest_datasource_report_async(", "client=engine.client_for("))

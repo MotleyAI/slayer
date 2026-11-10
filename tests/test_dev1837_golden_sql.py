@@ -43,38 +43,38 @@ def _cases() -> dict:
         "lift/band_time_shift_plain": q(
             dimensions=["region", BAND], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
-                ModelMeasure(formula="time_shift(amount:sum, -1)", name="prev"),
+                ModelMeasure(formula="sum(amount)", name="m"),
+                ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
             ],
         ),
         "lift/band_part_time_shift_cross": q(
             dimensions=["region", BAND], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
-                ModelMeasure(formula="amount:sum(partition_by=region)", name="rt"),
-                ModelMeasure(formula="time_shift(amount:sum, -1)", name="prev"),
+                ModelMeasure(formula="sum(amount)", name="m"),
+                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
+                ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
             ],
         ),
         "lift/band_cumsum": q(
             dimensions=["region", BAND], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
-                ModelMeasure(formula="cumsum(amount:sum)", name="c"),
+                ModelMeasure(formula="sum(amount)", name="m"),
+                ModelMeasure(formula="cumsum(sum(amount))", name="c"),
             ],
         ),
         "lift/bare_cumsum": q(
             dimensions=["region", {"expression": BARE_DIM, "name": "ct"}],
             time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
-                ModelMeasure(formula="cumsum(amount:sum)", name="c"),
+                ModelMeasure(formula="sum(amount)", name="m"),
+                ModelMeasure(formula="cumsum(sum(amount))", name="c"),
             ],
         ),
         "lift/part_time_shift_fixed": q(
             dimensions=["region"], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum(partition_by=region)", name="rt"),
-                ModelMeasure(formula="time_shift(amount:sum, -1)", name="prev"),
+                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
+                ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
             ],
         ),
     }

@@ -93,7 +93,7 @@ class TestPartitionKeyFilter:
         resp = await exec_engine.execute(_q(
             dimensions=["region", _band("customer_id", 50)],
             measures=[ModelMeasure(formula="sum(amount)", name="s"),
-                      ModelMeasure(formula="amount:sum(partition_by=band)", name="bt")],
+                      ModelMeasure(formula="sum(amount, partition_by=band)", name="bt")],
             filters=["customer_id is not null"],
         ))
         assert _rows(resp, "region", "band", "s", "bt") == [
@@ -110,21 +110,21 @@ class TestGrainConsumersUnderPartitionKeyFilter:
     async def test_ranked_measure(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=[_band("customer_id", 50)],
-            measures=[ModelMeasure(formula="amount:last(ordered_at)", name="v")],
+            measures=[ModelMeasure(formula="last(amount, ordered_at)", name="v")],
             filters=["customer_id is not null"],
         ))
         assert _rows(resp, "band", "v") == [("high", 60.0), ("other", 25.0)]
 
     @pytest.mark.parametrize("formula,extra_filters,expected", [
-        ("cumsum(amount:sum)", [], [
+        ("cumsum(sum(amount))", [], [
             ("high", "2024-01", 30.0), ("high", "2024-02", 100.0), ("high", "2024-03", 160.0),
             ("other", "2024-01", 25.0), ("other", "2024-03", 50.0),
         ]),
-        ("amount:sum(window='60d')", [], [
+        ("sum(amount, window='60d')", [], [
             ("high", "2024-01", 30.0), ("high", "2024-02", 100.0), ("high", "2024-03", 130.0),
             ("other", "2024-01", 25.0), ("other", "2024-03", 25.0),
         ]),
-        ("amount:sum(window='60d')", ["ordered_at >= '2024-02-01'"], [
+        ("sum(amount, window='60d')", ["ordered_at >= '2024-02-01'"], [
             ("high", "2024-02", 100.0), ("high", "2024-03", 130.0), ("other", "2024-03", 25.0),
         ]),
     ])
@@ -158,8 +158,8 @@ class TestJoinedPartitionKeyFilter:
 class TestOrderKeyBesideRankedMeasure:
     @pytest.mark.parametrize("order_col", ["city", "customers.regions.name"])
     @pytest.mark.parametrize("formula,expected", [
-        ("amount:last(ordered_at)", 60.0),
-        ("amount:first(ordered_at)", 10.0),
+        ("last(amount, ordered_at)", 60.0),
+        ("first(amount, ordered_at)", 10.0),
     ])
     async def test_zero_dimension_query_is_one_row(
         self, exec_engine, formula, expected, order_col,
@@ -174,7 +174,7 @@ class TestOrderKeyBesideRankedMeasure:
         # Regression guard: a dimensioned query already wraps the sort key.
         resp = await exec_engine.execute(_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:last(ordered_at)", name="v")],
+            measures=[ModelMeasure(formula="last(amount, ordered_at)", name="v")],
             order=[{"column": "city", "direction": "desc"}],
         ))
         assert _rows(resp, "region", "v") == [("North", 30.0), ("South", 25.0), (None, 60.0)]
@@ -188,7 +188,7 @@ class TestProducerGrainCoverage:
         resp = await exec_engine.execute(_q(
             dimensions=["region", _band("customer_id", 50)],
             measures=[ModelMeasure(formula="sum(amount)", name="s"),
-                      ModelMeasure(formula="amount:sum(partition_by=band)", name="bt")],
+                      ModelMeasure(formula="sum(amount, partition_by=band)", name="bt")],
         ))
         assert _rows(resp, "region", "band", "s", "bt") == [
             ("North", "high", 100.0, 160.0),
@@ -226,7 +226,7 @@ class TestPlannedGrain:
             _slot_id_by_alias(pq, "ordered_at"),
         ]
 
-    @pytest.mark.parametrize("formula", ["sum(amount)", "amount:last(ordered_at)"])
+    @pytest.mark.parametrize("formula", ["sum(amount)", "last(amount, ordered_at)"])
     def test_grouped_zero_dimension_grain_is_empty(self, formula) -> None:
         pq = _plan(measures=[ModelMeasure(formula=formula, name="v")])
         assert pq.grain == []

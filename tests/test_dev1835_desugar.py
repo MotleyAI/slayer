@@ -75,12 +75,12 @@ class TestBareExplicitTwins:
         _, engine = exec_backend
         bare = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="amount:sum(window='1y')", name="w")],
+            measures=[ModelMeasure(formula="sum(amount, window='1y')", name="w")],
         ))
         explicit = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
             measures=[ModelMeasure(
-                formula="amount:sum(window='1y', partition_by=region)", name="w",
+                formula="sum(amount, window='1y', partition_by=region)", name="w",
             )],
         ))
         _assert_map(_by_region_month(bare, "w"), COL_WM)
@@ -90,12 +90,12 @@ class TestBareExplicitTwins:
         _, engine = exec_backend
         bare = await engine.execute(q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:last", name="l")],
+            measures=[ModelMeasure(formula="last(amount)", name="l")],
         ))
         explicit = await engine.execute(q(
             dimensions=["region"],
             measures=[ModelMeasure(
-                formula="amount:last(partition_by=region)", name="l",
+                formula="last(amount, partition_by=region)", name="l",
             )],
         ))
         _assert_map(_by_region(bare, "l"), REGION_LAST)
@@ -106,9 +106,9 @@ class TestBareExplicitTwins:
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum(window='1y')", name="wb"),
+                ModelMeasure(formula="sum(amount, window='1y')", name="wb"),
                 ModelMeasure(
-                    formula="amount:sum(window='1y', partition_by=region)",
+                    formula="sum(amount, window='1y', partition_by=region)",
                     name="we",
                 ),
             ],
@@ -128,8 +128,8 @@ class TestMigratedFamilyValuePins:
         query = q(
             dimensions=["region", "city"], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
-                ModelMeasure(formula="amount:sum(window='1y')", name="w"),
+                ModelMeasure(formula="sum(amount)", name="m"),
+                ModelMeasure(formula="sum(amount, window='1y')", name="w"),
             ],
         )
         resp = await engine.execute(query)
@@ -147,7 +147,7 @@ class TestMigratedFamilyValuePins:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="amount:sum(window='45d')", name="w")],
+            measures=[ModelMeasure(formula="sum(amount, window='45d')", name="w")],
         ))
         _assert_map(_by_region_month(resp, "w"), TRAILING_45D_REGION)
 
@@ -155,7 +155,7 @@ class TestMigratedFamilyValuePins:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula="amount:last", name="l")],
+            measures=[ModelMeasure(formula="last(amount)", name="l")],
         )
         resp = await engine.execute(query)
         got = {
@@ -170,7 +170,7 @@ class TestMigratedFamilyValuePins:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region", "city"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="amount:last", name="l")],
+            measures=[ModelMeasure(formula="last(amount)", name="l")],
         ))
         got = {
             (r["orders.region"], r["orders.city"],
@@ -183,7 +183,7 @@ class TestMigratedFamilyValuePins:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:first", name="f")],
+            measures=[ModelMeasure(formula="first(amount)", name="f")],
         ))
         _assert_map(_by_region(resp, "f"), REGION_FIRST)
 
@@ -193,7 +193,7 @@ class TestMigratedFamilyValuePins:
         _, engine = exec_backend
         resp = await engine.execute(q(
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="amount:sum(window='90d')", name="w")],
+            measures=[ModelMeasure(formula="sum(amount, window='90d')", name="w")],
         ))
         got = {
             month_key(r["orders.ordered_at"]): r["orders.w"] for r in resp.data
@@ -205,8 +205,8 @@ class TestMigratedFamilyValuePins:
         single-row CROSS JOIN attach post-migration)."""
         dialect, engine = exec_backend
         query = q(measures=[
-            ModelMeasure(formula="amount:sum", name="m"),
-            ModelMeasure(formula="amount:last", name="l"),
+            ModelMeasure(formula="sum(amount)", name="m"),
+            ModelMeasure(formula="last(amount)", name="l"),
         ])
         resp = await engine.execute(query)
         assert len(resp.data) == 1
@@ -219,8 +219,8 @@ class TestOrderOnlyHiddenProducers:
     async def test_order_only_bare_windowed_orders_by_the_window(
         self, exec_backend,
     ) -> None:
-        """An order-only ``amount:sum(window='90d')`` beside a declared plain
-        ``amount:sum`` must order by the WINDOWED value. Today the order ref
+        """An order-only ``sum(amount, window='90d')`` beside a declared plain
+        ``sum(amount)`` must order by the WINDOWED value. Today the order ref
         silently binds to the plain measure (the canonical column name
         ``amount_sum`` matches it and the window is dropped — no ``_wm_`` CTE
         is planned); the desugar routes the order role through a hidden
@@ -229,8 +229,8 @@ class TestOrderOnlyHiddenProducers:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="amount:sum", name="m")],
-            order=[{"column": "amount:sum(window='90d')", "direction": "desc"}],
+            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            order=[{"column": "sum(amount, window='90d')", "direction": "desc"}],
         ))
         got = [
             (r["orders.region"], month_key(r["orders.ordered_at"]))
@@ -245,8 +245,8 @@ class TestOrderOnlyHiddenProducers:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:sum", name="m")],
-            order=[{"column": "amount:last", "direction": "desc"}],
+            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            order=[{"column": "last(amount)", "direction": "desc"}],
         ))
         # REGION_LAST desc: NULL 60, North 30, South 25.
         assert [r["orders.region"] for r in resp.data] == [None, "North", "South"]
@@ -256,8 +256,8 @@ class TestOrderOnlyHiddenProducers:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"],
-            filters=["amount:last > 28"],
-            measures=[ModelMeasure(formula="amount:sum", name="m")],
+            filters=["last(amount) > 28"],
+            measures=[ModelMeasure(formula="sum(amount)", name="m")],
         ))
         _assert_map(_by_region(resp, "m"), {"North": 100.0, None: 60.0})
 
@@ -269,13 +269,13 @@ class TestFilteredMeasureNeutrality:
         _, engine = exec_backend
         base = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="amount:sum", name="m")],
+            measures=[ModelMeasure(formula="sum(amount)", name="m")],
         ))
         plus = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
-                ModelMeasure(formula="ok_amount:sum(window='90d')", name="w"),
+                ModelMeasure(formula="sum(amount)", name="m"),
+                ModelMeasure(formula="sum(ok_amount, window='90d')", name="w"),
             ],
         ))
         _assert_map(_by_region_month(plus, "m"), _by_region_month(base, "m"))
@@ -283,17 +283,17 @@ class TestFilteredMeasureNeutrality:
         _assert_map(_by_region_month(plus, "w"), OK_W90)
 
     async def test_filtered_last_beside_unfiltered(self, exec_backend) -> None:
-        """``ok_amount:last`` masks the value at the latest row (NULL when that
+        """``last(ok_amount)`` masks the value at the latest row (NULL when that
         row is not ok — DEV-1832: Column.filter masks, it never restricts the
-        ranking); the all-NULL ``nomatch:last`` discriminates the filter reaching
+        ranking); the all-NULL ``last(nomatch)`` discriminates the filter reaching
         the producer."""
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"],
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
-                ModelMeasure(formula="ok_amount:last", name="ol"),
-                ModelMeasure(formula="nomatch:last", name="nl"),
+                ModelMeasure(formula="sum(amount)", name="m"),
+                ModelMeasure(formula="last(ok_amount)", name="ol"),
+                ModelMeasure(formula="last(nomatch)", name="nl"),
             ],
         ))
         assert len(resp.data) == 3
@@ -311,7 +311,7 @@ class TestDerivedColumnDimension:
         _, engine = shipped_backend
         resp = await engine.execute(q(
             dimensions=["region", "city_key"],
-            measures=[ModelMeasure(formula="amount:last", name="l")],
+            measures=[ModelMeasure(formula="last(amount)", name="l")],
         ))
         got = {
             (r["orders.region"], r["orders.city_key"]): r["orders.l"]
@@ -329,7 +329,7 @@ class TestDerivedColumnDimension:
         _, engine = shipped_backend
         resp = await engine.execute(q(
             dimensions=["region", "city_key"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="amount:sum(window='1y')", name="w")],
+            measures=[ModelMeasure(formula="sum(amount, window='1y')", name="w")],
         ))
         got = {
             (r["orders.region"], r["orders.city_key"],
@@ -354,14 +354,14 @@ class TestDualRoleWithBareWindowed:
         region total as a banding dimension AND a measure, next to a bare
         windowed measure."""
         dialect, engine = exec_backend
-        band = "CASE WHEN amount:sum(partition_by=region) > 55 THEN 1 ELSE 0 END"
+        band = "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END"
         query = q(
             dimensions=["region", {"expression": band, "name": "rband"}],
             time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
-                ModelMeasure(formula="amount:sum(partition_by=region)", name="rt"),
-                ModelMeasure(formula="amount:sum(window='1y')", name="w"),
+                ModelMeasure(formula="sum(amount)", name="m"),
+                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
+                ModelMeasure(formula="sum(amount, window='1y')", name="w"),
             ],
         )
         resp = await engine.execute(query)

@@ -58,7 +58,7 @@ def _make_op_error(orig_message: str = "database is locked") -> sqlalchemy.exc.O
     Uses ``sqlite3.OperationalError`` as the wrapped DBAPI exception — that's
     the actual class SQLAlchemy puts in ``.orig`` when the SQLite driver
     raises an OperationalError, so the fake mirrors production semantics
-    while satisfying Sonar's ``python:S112`` (no bare ``Exception``).
+    while satisfying Sonar's ``S112(python)`` (no bare ``Exception``).
     """
     return sqlalchemy.exc.OperationalError(
         "SELECT 1", {}, sqlite3.OperationalError(orig_message),

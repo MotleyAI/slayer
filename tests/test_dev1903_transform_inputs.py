@@ -77,14 +77,14 @@ class TestMessagesMatchTheLedger:
     @pytest.mark.parametrize("op", ["change", "change_pct"])
     def test_boolean_message(self, op):
         with pytest.raises(ValueError) as ei:
-            _check(f"{op}(revenue:sum > 100)")
+            _check(f"{op}(sum(revenue) > 100)")
         msg = str(ei.value)
         assert _ledger_pattern(BOOLEAN).fullmatch(msg.removeprefix("TransformInputError: ")), msg
         assert f"\n  at transform '{op}'\n" in msg
 
     @pytest.mark.parametrize("formula", [
-        "time_shift(revenue:sum > 100, -1)", "cumsum(revenue:sum > 100)",
-        "rank(revenue:sum > 100, direction='desc')",
+        "time_shift(sum(revenue) > 100, -1)", "cumsum(sum(revenue) > 100)",
+        "rank(sum(revenue) > 100, direction='desc')",
     ])
     def test_boolean_input_accepted_elsewhere(self, formula):
         _check(formula)
@@ -123,7 +123,7 @@ class TestTraversal:
         pytest.param("count(cumsum(weight) > 0)", id="predicate"),
         pytest.param("first(cumsum(weight))", id="under-first"),
         pytest.param("last(cumsum(weight))", id="under-last"),
-        pytest.param("cumsum(revenue:sum) + cumsum(weight)", id="composite"),
+        pytest.param("cumsum(sum(revenue)) + cumsum(weight)", id="composite"),
     ])
     def test_row_leaf_transform_found(self, formula):
         with pytest.raises(ValueError) as ei:
@@ -131,7 +131,7 @@ class TestTraversal:
         assert _row_leaf_op(str(ei.value)) == "cumsum"
 
     def test_filter_position(self):
-        measures = [ModelMeasure(formula="revenue:sum", name="r")]
+        measures = [ModelMeasure(formula="sum(revenue)", name="r")]
         with pytest.raises(ValueError) as ei:
             _plan(measures=measures, filters=["cumsum(weight) > 0"])
         assert _row_leaf_op(str(ei.value)) == "cumsum"
@@ -140,7 +140,7 @@ class TestTraversal:
         _check("cumsum(weight)", projected=frozenset({ColumnKey(path=(), leaf="weight")}))
 
     def test_partition_and_time_keys_are_not_leaves(self):
-        key = _key("cumsum(revenue:sum)")
+        key = _key("cumsum(sum(revenue))")
         assert isinstance(key, TransformKey)
         keyed = key.model_copy(update={
             "partition_keys": Grain.of([ColumnKey(path=(), leaf="store")]),
@@ -150,7 +150,7 @@ class TestTraversal:
         check_transform_inputs(roots=[keyed], projected_grain_keys=frozenset())
 
     @pytest.mark.parametrize("formula", [
-        "first(revenue:sum)", "last(sum(revenue) + 1)", "avg(cumsum(revenue:sum))",
+        "first(sum(revenue))", "last(sum(revenue) + 1)", "avg(cumsum(sum(revenue)))",
     ])
     def test_attached_inputs_pass(self, formula):
         _check(formula)

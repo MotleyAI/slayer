@@ -225,7 +225,7 @@ def _pre_ping_values(tree: ast.AST) -> list[ast.expr]:
 
 def _pool_pre_ping_sites() -> list[str]:
     return [
-        f"{path.relative_to(REPO).as_posix()}:{value.lineno}"
+        f"{value.lineno}({path.relative_to(REPO).as_posix()})"
         for path in sorted((REPO / "slayer").rglob("*.py"))
         for value in _pre_ping_values(ast.parse(path.read_text(encoding="utf-8")))
     ]

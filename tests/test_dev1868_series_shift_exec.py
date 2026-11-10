@@ -66,9 +66,9 @@ class TestNestedTransformInput:
     async def test_shifts_the_inner_series(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="time_shift(cumsum(revenue:sum), -1)",
+            measures=[ModelMeasure(formula="time_shift(cumsum(sum(revenue)), -1)",
                                    name="t"),
-                      ModelMeasure(formula="revenue:sum", name="r")],
+                      ModelMeasure(formula="sum(revenue)", name="r")],
         ))
         _assert_months(resp, name="sales.t", expected=SHIFTED_CUMSUM)
         # The shifted measure changes neither the row count nor its sibling.
@@ -79,7 +79,7 @@ class TestNestedTransformInput:
     async def test_partitions_by_the_query_dimension(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["store"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="time_shift(cumsum(revenue:sum), -1)",
+            measures=[ModelMeasure(formula="time_shift(cumsum(sum(revenue)), -1)",
                                    name="t")],
         ))
         by = keyed_by_month(resp, "sales.store")
@@ -94,7 +94,7 @@ class TestNestedTransformInput:
     async def test_inner_series_is_computed_once(self) -> None:
         sql = await gen(_q(
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="time_shift(cumsum(revenue:sum), -1)",
+            measures=[ModelMeasure(formula="time_shift(cumsum(sum(revenue)), -1)",
                                    name="t")],
         ))
         assert len(re.findall(r"OVER\s*\(", sql)) == 1, sql
@@ -105,7 +105,7 @@ class TestCrossModelCompositeLeaf:
         resp = await exec_engine.execute(_q(
             time_dimensions=month_td(),
             measures=[ModelMeasure(
-                formula="time_shift(revenue:sum + regions.factor:sum, -1)",
+                formula="time_shift(sum(revenue) + sum(regions.factor), -1)",
                 name="t")],
         ))
         _assert_months(resp, name="sales.t", expected=SHIFTED_REV_PLUS_FACTOR)
@@ -114,7 +114,7 @@ class TestCrossModelCompositeLeaf:
         sql = await gen(_q(
             time_dimensions=month_td(),
             measures=[ModelMeasure(
-                formula="time_shift(revenue:sum + regions.factor:sum, -1)",
+                formula="time_shift(sum(revenue) + sum(regions.factor), -1)",
                 name="t")],
         ))
         assert len(set(re.findall(r"_cm_\w+", sql))) == 1, sql
@@ -124,7 +124,7 @@ class TestAggregateTypedPredicateInput:
     async def test_in_predicate_shifts_as_a_boolean_series(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="time_shift(revenue:sum in (100, 999), -1)",
+            measures=[ModelMeasure(formula="time_shift(sum(revenue) in (100, 999), -1)",
                                    name="t")],
         ))
         _assert_months(resp, name="sales.t", expected=SHIFTED_IN_PRED, boolean=True)
@@ -134,7 +134,7 @@ class TestAggregateTypedPredicateInput:
     ) -> None:
         resp = await exec_engine.execute(_q(
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="time_shift(revenue:sum > 80, -1)",
+            measures=[ModelMeasure(formula="time_shift(sum(revenue) > 80, -1)",
                                    name="t")],
         ))
         _assert_months(resp, name="sales.t", expected=SHIFTED_GT_PRED, boolean=True)
@@ -144,7 +144,7 @@ class TestAggregateTypedPredicateInput:
         # silent 0/1 arithmetic and no engine-level error.
         query = _q(
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="change(revenue:sum > 100)",
+            measures=[ModelMeasure(formula="change(sum(revenue) > 100)",
                                    name="t")],
         )
         with pytest.raises(ValueError, match=r"(?i)boolean"):
@@ -159,7 +159,7 @@ class TestSeriesEdgeVsReaggregation:
     async def test_series_input_is_null_outside_the_range(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             time_dimensions=_dr_td(),
-            measures=[ModelMeasure(formula="time_shift(cumsum(revenue:sum), -1)",
+            measures=[ModelMeasure(formula="time_shift(cumsum(sum(revenue)), -1)",
                                    name="t")],
         ))
         _assert_months(resp, name="sales.t",
@@ -170,7 +170,7 @@ class TestSeriesEdgeVsReaggregation:
     ) -> None:
         resp = await exec_engine.execute(_q(
             time_dimensions=_dr_td(),
-            measures=[ModelMeasure(formula="time_shift(revenue:sum > 80, -1)",
+            measures=[ModelMeasure(formula="time_shift(sum(revenue) > 80, -1)",
                                    name="t")],
         ))
         _assert_months(resp, name="sales.t",
@@ -179,7 +179,7 @@ class TestSeriesEdgeVsReaggregation:
     async def test_bare_leaf_keeps_the_lookback(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             time_dimensions=_dr_td(),
-            measures=[ModelMeasure(formula="time_shift(revenue:sum, -1)",
+            measures=[ModelMeasure(formula="time_shift(sum(revenue), -1)",
                                    name="t")],
         ))
         _assert_months(resp, name="sales.t",
@@ -188,7 +188,7 @@ class TestSeriesEdgeVsReaggregation:
     async def test_local_composite_keeps_the_lookback(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             time_dimensions=_dr_td(),
-            measures=[ModelMeasure(formula="time_shift(revenue:sum / qty:sum, -1)",
+            measures=[ModelMeasure(formula="time_shift(sum(revenue) / sum(qty), -1)",
                                    name="t")],
         ))
         _assert_months(resp, name="sales.t",
@@ -199,7 +199,7 @@ class TestFiltersApplyOnce:
     async def test_row_filter_shapes_the_series_once(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             time_dimensions=month_td(), filters=["status = 'a'"],
-            measures=[ModelMeasure(formula="time_shift(cumsum(revenue:sum), -1)",
+            measures=[ModelMeasure(formula="time_shift(cumsum(sum(revenue)), -1)",
                                    name="t")],
         ))
         _assert_months(resp, name="sales.t", expected=SHIFTED_CUMSUM_STATUS_A)
@@ -207,7 +207,7 @@ class TestFiltersApplyOnce:
     async def test_the_predicate_renders_once(self) -> None:
         sql = await gen(_q(
             time_dimensions=month_td(), filters=["status = 'a'"],
-            measures=[ModelMeasure(formula="time_shift(cumsum(revenue:sum), -1)",
+            measures=[ModelMeasure(formula="time_shift(cumsum(sum(revenue)), -1)",
                                    name="t")],
         ))
         assert sql.count("= 'a'") == 1, sql
@@ -230,7 +230,7 @@ class TestManyToOneCalendarShift:
             source_model="daily",
             time_dimensions=[TimeDimension(dimension="ordered_at",
                                            granularity=TimeGranularity.DAY)],
-            measures=[ModelMeasure(formula="time_shift(cumsum(revenue:sum), -1, 'month')",
+            measures=[ModelMeasure(formula="time_shift(cumsum(sum(revenue)), -1, 'month')",
                                    name="t")],
         ))
         td_key = next(k for k in resp.data[0] if k.endswith(".ordered_at"))
@@ -259,7 +259,7 @@ class TestRowLeafStaysFailClosed:
     async def test_mixed_aggregate_and_row_composite(self, exec_engine) -> None:
         await self._assert_row_leaf_rejected(exec_engine, _q(
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="time_shift(revenue:sum * weight, -1)",
+            measures=[ModelMeasure(formula="time_shift(sum(revenue) * weight, -1)",
                                    name="t")],
         ))
 
@@ -283,6 +283,6 @@ class TestRowLeafStaysFailClosed:
         await self._assert_row_leaf_rejected(exec_engine, _q(
             time_dimensions=month_td(),
             measures=[ModelMeasure(
-                formula="time_shift(revenue:sum + cumsum(weight), -1)",
+                formula="time_shift(sum(revenue) + cumsum(weight), -1)",
                 name="t")],
         ), op="cumsum")

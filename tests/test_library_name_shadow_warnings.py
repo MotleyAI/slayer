@@ -150,8 +150,7 @@ class TestEverySpelling:
             got = await _both(engine.execute(_query(f"{spelling}(a)")))
         assert got == ([("t", spelling, spelling)],) * 2
 
-    @pytest.mark.parametrize(("formula", "written"), [("REVERSE(a)", "REVERSE"), ("a:Reverse", "Reverse"),
-                                                       ("t.reverse(a)", "reverse")])
+    @pytest.mark.parametrize(("formula", "written"), [("REVERSE(a)", "REVERSE"), ("t.reverse(a)", "reverse")])
     async def test_the_function_as_written(self, formula: str, written: str) -> None:
         async with stored_engine(models=[t_doc(aggregations=[_REVERSE])]) as engine:
             got = await _both(engine.execute(_query(formula)))

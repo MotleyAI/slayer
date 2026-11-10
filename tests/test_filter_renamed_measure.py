@@ -189,7 +189,7 @@ class TestOrderByRenamedMeasureRemap:
             measures=[
                 ModelMeasure(formula="count_distinct(customer_id)", name="num_customers"),
             ],
-            order=[OrderItem(column="count_distinct(customer_id)", direction="desc")],
+            order=[OrderItem.model_validate({"column": "count_distinct(customer_id)", "direction": "desc"})],
         )
         sql = await _generate(query, model)
 

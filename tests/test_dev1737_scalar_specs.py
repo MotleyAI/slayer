@@ -60,11 +60,11 @@ class TestSpecTable:
 
 class TestFormulaParser:
     @pytest.mark.parametrize("text", [
-        "date_diff('day', created_at:min, created_at:max)",
-        "revenue:sum / date_part('day', created_at:max)",
-        "date_part('year', date_add(created_at:max, 1, 'month'))",
-        "date_diff('day', created_at:max, now())",
-        "DATE_DIFF('day', created_at:min, current_date())",
+        "date_diff('day', min(created_at), max(created_at))",
+        "sum(revenue) / date_part('day', max(created_at))",
+        "date_part('year', date_add(max(created_at), 1, 'month'))",
+        "date_diff('day', max(created_at), now())",
+        "DATE_DIFF('day', min(created_at), current_date())",
     ])
     def test_recognises_date_functions(self, text: str) -> None:
         parsed = parse_expr(text)
@@ -76,7 +76,7 @@ class TestFormulaParser:
         model = SlayerModel(name="orders", sql_table="orders", data_source="t",
                             columns=[Column(name="revenue", type=DataType.DOUBLE)])
         bundle = ResolvedSourceBundle(dialect="postgres", source_model=model, referenced_models=[])
-        parsed, scope = parse_expr("bogus_fn(revenue:sum)"), ModelScope(source_model=model)
+        parsed, scope = parse_expr("bogus_fn(sum(revenue))"), ModelScope(source_model=model)
         with pytest.raises(ValueError, match="date_diff"):
             bind_expr(parsed, scope=scope, bundle=bundle, allow_measures=True)
 

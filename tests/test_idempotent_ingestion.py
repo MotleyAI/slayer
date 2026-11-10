@@ -300,10 +300,10 @@ class TestSkipNonSqlTableModes:
         # so the cache populates correctly.
         engine = SlayerQueryEngine(storage=storage)
         await engine.create_model_from_query(
-            query=SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "amount:sum", "name": "total"}],
-            ),
+            query=SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(amount)", "name": "total"}],
+            }),
             name="orders_summary",
         )
         result = await _ingest(datasource=ds, storage=storage)

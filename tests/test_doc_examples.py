@@ -449,7 +449,7 @@ def test_shared_extractor_never_imports_slayer() -> None:
 _PAGES = [load_page(path) for path in in_scope_pages()]
 
 _QUERIES = [
-    pytest.param(page.path, q, id=f"{page.path}:{q.line}")
+    pytest.param(page.path, q, id=f"{q.line}({page.path})")
     for page in _PAGES
     for q in page.checked_queries()
 ]
@@ -473,7 +473,7 @@ def test_documented_query_returns_rows(doc_demo_storage: YAMLStorage, path: str,
 
 
 def test_every_source_model_block_yields_a_query_or_is_marked() -> None:
-    unextracted = [f"{page.path}:{b.line}" for page in _PAGES for b in page.unextracted_blocks()]
+    unextracted = [f"{b.line}({page.path})" for page in _PAGES for b in page.unextracted_blocks()]
     assert unextracted == []
 
 

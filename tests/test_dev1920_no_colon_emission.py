@@ -56,7 +56,11 @@ def _catalog() -> FacadeCatalog:
             Column(name="status", type=DataType.TEXT),
         ],
         measures=[ModelMeasure(name="aov", formula="sum(revenue) / count(*)", type=DataType.DOUBLE)],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]], cardinality="many_to_one")],
+        joins=[ModelJoin.model_validate({
+            "target_model": "customers",
+            "join_pairs": [["customer_id", "id"]],
+            "cardinality": "many_to_one",
+        })],
     )
     customers = SlayerModel(
         name="customers", data_source="jaffle", sql_table="customers",

@@ -7,7 +7,7 @@ import pytest
 
 from tests._library_names_fixtures import MAX_A, SUM_A, agg, measure, saved_query_doc, stored_engine, t_doc, value
 
-_SPELLINGS = ["{f}(a)", "{F}(a)", "a:{f}", "t.{f}(a)", "{C}(a)"]
+_SPELLINGS = ["{f}(a)", "{F}(a)", "t.{f}(a)", "{C}(a)"]
 _BUILTINS = [pytest.param("sum", SUM_A, id="sum"), pytest.param("max", MAX_A, id="max")]
 
 

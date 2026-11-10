@@ -74,7 +74,7 @@ class TestTransformFilterAndOrderPositions:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
             filters=[f"cumsum({CM_PART_TIER}) > 200"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         by = keyed_by_month(resp, TIER)
         # Only gold's running total clears 200, from February on.
@@ -86,7 +86,7 @@ class TestTransformFilterAndOrderPositions:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
             filters=["customers.tier is not null"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
             order=[{"column": f"cumsum({CM_PART_TIER})", "direction": "desc"}],
         ))
         by = keyed_by_month(resp, TIER)

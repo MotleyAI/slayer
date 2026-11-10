@@ -66,14 +66,14 @@ def unpinned(
     *, live: Mapping[str, frozenset[str]], pinned: Mapping[str, frozenset[str]],
     migrated: Mapping[str, tuple[str, int]],
 ) -> list[str]:
-    """``vocabulary:name`` for each newly reserved name that neither yields to a stored definition nor is migrated."""
+    """``name(vocabulary)`` for each newly reserved name that neither yields to a stored definition nor is migrated."""
     out: list[str] = []
     for vocabulary, names in live.items():
         if vocabulary in SHADOWABLE:
             continue
         for name in sorted(names - pinned.get(vocabulary, frozenset())):
             if migrated.get(name) not in migrations._REGISTRY:
-                out.append(f"{vocabulary}:{name}")
+                out.append(f"{name}({vocabulary})")
     return out
 
 

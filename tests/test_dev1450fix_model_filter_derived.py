@@ -155,7 +155,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
             sql_table="orders",
             data_source="prod",
             columns=_base_cols(),
-            measures=[ModelMeasure(formula="amount:sum", name="tot")],
+            measures=[ModelMeasure(formula="sum(amount)", name="tot")],
             filters=["tot > 100"],
         ),
         _validate=False,
@@ -165,7 +165,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
 
 async def test_model_filter_inlines_same_model_derived(engine):
     """A model filter naming a same-model derived column inlines its SQL."""
-    q = SlayerQuery(source_model="orders_big", measures=[{"formula": "*:count"}])
+    q = SlayerQuery.model_validate({"source_model": "orders_big", "measures": [{"formula": "count(*)"}]})
     dry = await engine.execute(q, dry_run=True)
     sql = dry.sql
     assert sql is not None
@@ -181,7 +181,7 @@ async def test_model_filter_inlines_same_model_derived(engine):
 async def test_model_filter_derived_crosses_join(engine):
     """A derived column whose SQL crosses a join pulls the LEFT JOIN into the
     FROM and qualifies the predicate to the join alias."""
-    q = SlayerQuery(source_model="orders_eu", measures=[{"formula": "*:count"}])
+    q = SlayerQuery.model_validate({"source_model": "orders_eu", "measures": [{"formula": "count(*)"}]})
     dry = await engine.execute(q, dry_run=True)
     sql = dry.sql
     assert sql is not None
@@ -197,7 +197,7 @@ async def test_model_filter_derived_crosses_join(engine):
 
 async def test_base_only_model_filter_unchanged(engine):
     """The base-column model-filter path is unaffected (regression guard)."""
-    q = SlayerQuery(source_model="orders_base", measures=[{"formula": "*:count"}])
+    q = SlayerQuery.model_validate({"source_model": "orders_base", "measures": [{"formula": "count(*)"}]})
     dry = await engine.execute(q, dry_run=True)
     sql = dry.sql
     assert sql is not None
@@ -209,13 +209,13 @@ async def test_base_only_model_filter_unchanged(engine):
 
 async def test_windowed_derived_column_model_filter_raises(engine):
     """A model filter referencing a windowed ``Column.sql`` still raises."""
-    q = SlayerQuery(source_model="orders_win", measures=[{"formula": "*:count"}])
+    q = SlayerQuery.model_validate({"source_model": "orders_win", "measures": [{"formula": "count(*)"}]})
     with pytest.raises(ValueError, match="window"):
         await engine.execute(q)
 
 
 async def test_measure_ref_model_filter_raises(engine):
     """A model filter referencing a same-model ModelMeasure still raises."""
-    q = SlayerQuery(source_model="orders_meas", measures=[{"formula": "*:count"}])
+    q = SlayerQuery.model_validate({"source_model": "orders_meas", "measures": [{"formula": "count(*)"}]})
     with pytest.raises(ValueError, match="measure"):
         await engine.execute(q)

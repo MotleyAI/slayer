@@ -68,7 +68,7 @@ class TestPositionalErrors:
 
     async def test_parameterless_aggregation_rejects_positional_aggregate(self, exec_engine):
         with pytest.raises(ValueError, match="takes no parameters"):
-            await _rows(exec_engine, "amount:sum(sum(amount, partition_by=region))")
+            await _rows(exec_engine, "sum(amount, sum(amount, partition_by=region))")
 
     async def test_ranked_rejects_aggregate_ranking_key(self, exec_engine):
         with pytest.raises(ValueError, match="ranks by a column"):

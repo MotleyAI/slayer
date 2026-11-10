@@ -1,6 +1,6 @@
 """Query-time aggregation gating, with focus on cross-model resolution.
 
-Cross-model measures (``customers.id:sum``) must apply the same gate stack
+Cross-model measures (``sum(customers.id)``) must apply the same gate stack
 as local measures: PK rule, type-default eligibility, and `allowed_aggregations`
 whitelist. Today the cross-model path checks only ``NUMERIC_ONLY_AGGREGATIONS``
 against string columns, silently passing PK/type/whitelist violations through.
@@ -82,14 +82,14 @@ def _orders_with_status() -> SlayerModel:
 
 class TestCrossModelGating:
     async def test_cross_model_pk_aggregation_rejected(self) -> None:
-        """``customers.id:sum`` — PK column, sum is forbidden by the PK rule."""
+        """``sum(customers.id)`` — PK column, sum is forbidden by the PK rule."""
         orders = _orders_model()
         customers = _customers_model()
         with pytest.raises(ValueError, match="primary[- ]key|count"):
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "customers.id:sum", "name": "result"}],
+                measures=[{"formula": "sum(customers.id)", "name": "result"}],
             )
 
     async def test_cross_model_pk_count_allowed(self) -> None:
@@ -97,34 +97,34 @@ class TestCrossModelGating:
         sql = await _generate_sql(
             orders=_orders_model(),
             customers=_customers_model(),
-            measures=[{"formula": "customers.id:count", "name": "result"}],
+            measures=[{"formula": "count(customers.id)", "name": "result"}],
         )
         assert "COUNT" in sql.upper()
 
     async def test_cross_model_string_sum_rejected(self) -> None:
-        """``customers.name:sum`` — string + sum is forbidden by type defaults."""
+        """``sum(customers.name)`` — string + sum is forbidden by type defaults."""
         orders = _orders_model()
         customers = _customers_model()
         with pytest.raises(ValueError, match="not applicable|string"):
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "customers.name:sum", "name": "result"}],
+                measures=[{"formula": "sum(customers.name)", "name": "result"}],
             )
 
     async def test_cross_model_string_min_allowed(self) -> None:
-        """``customers.name:min`` is allowed (string min/max is type-default-eligible)."""
+        """``min(customers.name)`` is allowed (string min/max is type-default-eligible)."""
         sql = await _generate_sql(
             orders=_orders_model(),
             customers=_customers_model(),
-            measures=[{"formula": "customers.name:min", "name": "result"}],
+            measures=[{"formula": "min(customers.name)", "name": "result"}],
         )
         assert "MIN" in sql.upper()
 
     async def test_cross_model_whitelist_enforced(self) -> None:
         """A whitelist on the joined column restricts further than type defaults.
         ``rating`` is NUMBER (sum is type-eligible) but the whitelist is ``["avg"]``,
-        so ``customers.rating:sum`` must raise.
+        so ``sum(customers.rating)`` must raise.
         """
         customers = _customers_model(
             extra_columns=[
@@ -141,7 +141,7 @@ class TestCrossModelGating:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "customers.rating:sum", "name": "result"}],
+                measures=[{"formula": "sum(customers.rating)", "name": "result"}],
             )
 
     async def test_cross_model_whitelist_match_allowed(self) -> None:
@@ -159,7 +159,7 @@ class TestCrossModelGating:
         sql = await _generate_sql(
             orders=_orders_model(),
             customers=customers,
-            measures=[{"formula": "customers.rating:avg", "name": "result"}],
+            measures=[{"formula": "avg(customers.rating)", "name": "result"}],
         )
         assert "AVG" in sql.upper()
 
@@ -171,7 +171,7 @@ class TestCrossModelGating:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "customers.name:bogus_agg", "name": "result"}],
+                measures=[{"formula": "bogus_agg(customers.name)", "name": "result"}],
             )
 
     async def test_cross_model_custom_aggregation_allowed(self) -> None:
@@ -189,7 +189,7 @@ class TestCrossModelGating:
         sql = await _generate_sql(
             orders=_orders_model(),
             customers=customers,
-            measures=[{"formula": "customers.name:name_concat", "name": "result"}],
+            measures=[{"formula": "name_concat(customers.name)", "name": "result"}],
         )
         assert "STRING_AGG" in sql.upper()
 
@@ -234,7 +234,7 @@ class TestStatAggregationEligibility:
         sql = await _generate_sql(
             orders=numeric_orders,
             customers=_customers_model(),
-            measures=[{"formula": f"amount:{agg}", "name": "result"}],
+            measures=[{"formula": f"{agg}(amount)", "name": "result"}],
         )
         # Pin the function-call shape: family name immediately followed by
         # the qualified value column. The earlier "( in sql" check passed
@@ -260,7 +260,7 @@ class TestStatAggregationEligibility:
             orders=numeric_orders,
             customers=_customers_model(),
             measures=[
-                {"formula": f"amount:{agg}(other=quantity)", "name": "result"}
+                {"formula": f"{agg}(amount, other=quantity)", "name": "result"}
             ],
         )
         # Both legs must be qualified and appear in the function call's
@@ -279,7 +279,7 @@ class TestStatAggregationEligibility:
             await _generate_sql(
                 orders=numeric_orders,
                 customers=customers,
-                measures=[{"formula": f"status:{agg}", "name": "result"}],
+                measures=[{"formula": f"{agg}(status)", "name": "result"}],
             )
 
     @pytest.mark.parametrize(
@@ -295,7 +295,7 @@ class TestStatAggregationEligibility:
             await _generate_sql(
                 orders=numeric_orders,
                 customers=customers,
-                measures=[{"formula": f"id:{agg}", "name": "result"}],
+                measures=[{"formula": f"{agg}(id)", "name": "result"}],
             )
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
@@ -313,7 +313,7 @@ class TestStatAggregationEligibility:
                 orders=numeric_orders,
                 customers=customers,
                 measures=[
-                    {"formula": f"status:{agg}(other=quantity)", "name": "result"}
+                    {"formula": f"{agg}(status, other=quantity)", "name": "result"}
                 ],
             )
 
@@ -327,7 +327,7 @@ class TestStatAggregationEligibility:
                 orders=numeric_orders,
                 customers=customers,
                 measures=[
-                    {"formula": f"id:{agg}(other=quantity)", "name": "result"}
+                    {"formula": f"{agg}(id, other=quantity)", "name": "result"}
                 ],
             )
 
@@ -343,13 +343,13 @@ class TestStatAggregationEligibility:
             await _generate_sql(
                 orders=numeric_orders,
                 customers=customers,
-                measures=[{"formula": f"amount:{agg}", "name": "result"}],
+                measures=[{"formula": f"{agg}(amount)", "name": "result"}],
             )
 
 
 class TestCrossModelColumnFilter:
     """Codex Major 2: a Column.filter on a joined column must apply when
-    that column is referenced cross-model (e.g. ``customers.completed_rev:sum``).
+    that column is referenced cross-model (e.g. ``sum(customers.completed_rev)``).
     """
 
     async def test_cross_model_column_filter_applied(self) -> None:
@@ -370,7 +370,7 @@ class TestCrossModelColumnFilter:
             orders=_orders_model(),
             customers=customers,
             measures=[
-                {"formula": "customers.completed_rev:sum", "name": "result"}
+                {"formula": "sum(customers.completed_rev)", "name": "result"}
             ],
         )
         assert "CASE" in sql.upper()
@@ -389,7 +389,7 @@ class TestDev1576UnknownVsDisallowed:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "amount:bogus", "name": "result"}],
+                measures=[{"formula": "bogus(amount)", "name": "result"}],
             )
 
     async def test_unknown_name_lists_known_aggregations(self) -> None:
@@ -399,7 +399,7 @@ class TestDev1576UnknownVsDisallowed:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "amount:bogus", "name": "result"}],
+                measures=[{"formula": "bogus(amount)", "name": "result"}],
             )
 
     async def test_unknown_name_suggests_close_match(self) -> None:
@@ -411,7 +411,7 @@ class TestDev1576UnknownVsDisallowed:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "amount:stdev", "name": "result"}],
+                measures=[{"formula": "stdev(amount)", "name": "result"}],
             )
 
     async def test_type_disallowed_keeps_not_applicable_wording(self) -> None:
@@ -423,7 +423,7 @@ class TestDev1576UnknownVsDisallowed:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "status:sum", "name": "result"}],
+                measures=[{"formula": "sum(status)", "name": "result"}],
             )
 
     async def test_type_disallowed_is_not_reported_as_unknown(self) -> None:
@@ -433,13 +433,13 @@ class TestDev1576UnknownVsDisallowed:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "status:sum", "name": "result"}],
+                measures=[{"formula": "sum(status)", "name": "result"}],
             )
         assert "Unknown function" not in str(exc.value)
 
     async def test_star_unknown_gets_standard_message(self) -> None:
         # DEV-1826: the binder validates the aggregation NAME globally before
-        # any per-column gate, so ``*:bogus`` gets the standard unknown-
+        # any per-column gate, so ``bogus(*)`` gets the standard unknown-
         # aggregation error instead of escaping to SQL generation (where it
         # used to surface as the star-specific message).
         orders = _orders_with_status()
@@ -448,7 +448,7 @@ class TestDev1576UnknownVsDisallowed:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "*:bogus", "name": "result"}],
+                measures=[{"formula": "bogus(*)", "name": "result"}],
             )
 
     async def test_custom_agg_known_but_disallowed_keeps_not_allowed(self) -> None:
@@ -478,7 +478,7 @@ class TestDev1576UnknownVsDisallowed:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "rating:myagg", "name": "result"}],
+                measures=[{"formula": "myagg(rating)", "name": "result"}],
             )
         assert "Unknown function" not in str(exc.value)
         assert "not allowed" in str(exc.value)
@@ -501,7 +501,7 @@ class TestDev1576UnknownVsDisallowed:
         sql = await _generate_sql(
             orders=orders,
             customers=_customers_model(),
-            measures=[{"formula": "amount:myagg", "name": "result"}],
+            measures=[{"formula": "myagg(amount)", "name": "result"}],
         )
         assert "SUM" in sql.upper()
 
@@ -511,7 +511,7 @@ class TestDev1576UnknownVsDisallowed:
         sql = await _generate_sql(
             orders=_orders_with_status(),
             customers=_customers_model(),
-            measures=[{"formula": "amount:countd", "name": "result"}],
+            measures=[{"formula": "countd(amount)", "name": "result"}],
         )
         assert "COUNT(DISTINCT" in sql.upper()
 
@@ -524,12 +524,12 @@ class TestDev1576UnknownVsDisallowed:
         # Binding-time healing must also fire on the filter path (DEV-1833
         # migrated filters onto the typed parser): an aliased aggregation in a
         # HAVING predicate heals just like a measure.
-        query = SlayerQuery(
-            source_model="orders",
-            dimensions=["status"],
-            measures=[{"formula": "amount:sum", "name": "total"}],
-            filters=[f"amount:{raw} > 5"],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": ["status"],
+            "measures": [{"formula": "sum(amount)", "name": "total"}],
+            "filters": [f"{raw}(amount) > 5"],
+        })
         sql = await _engine_generate(
             query=query, model=_orders_with_status(),
             extra_models=[_customers_model()], dialect="postgres",
@@ -549,7 +549,7 @@ class TestDev1576RoundAbsGeneration:
         sql = await _generate_sql(
             orders=_orders_model(),
             customers=_customers_model(),
-            measures=[{"formula": "round(amount:sum, 2)", "name": "r"}],
+            measures=[{"formula": "round(sum(amount), 2)", "name": "r"}],
             dialect="postgres",
         )
         up = sql.upper()
@@ -561,7 +561,7 @@ class TestDev1576RoundAbsGeneration:
         sql = await _generate_sql(
             orders=_orders_model(),
             customers=_customers_model(),
-            measures=[{"formula": "round(amount:sum, 2)", "name": "r"}],
+            measures=[{"formula": "round(sum(amount), 2)", "name": "r"}],
             dialect=dialect,
         )
         up = sql.upper()
@@ -574,7 +574,7 @@ class TestDev1576RoundAbsGeneration:
         sql = await _generate_sql(
             orders=_orders_model(),
             customers=_customers_model(),
-            measures=[{"formula": "round(amount:sum)", "name": "r"}],
+            measures=[{"formula": "round(sum(amount))", "name": "r"}],
             dialect="postgres",
         )
         up = sql.upper()
@@ -586,7 +586,7 @@ class TestDev1576RoundAbsGeneration:
         sql = await _generate_sql(
             orders=_orders_model(),
             customers=_customers_model(),
-            measures=[{"formula": "abs(amount:sum)", "name": "a"}],
+            measures=[{"formula": "abs(sum(amount))", "name": "a"}],
             dialect=dialect,
         )
         assert "ABS(" in sql.upper()
@@ -630,7 +630,7 @@ class TestDev1576UnknownNamePrecedence:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": f"{column}:bogus", "name": "result"}],
+                measures=[{"formula": f"bogus({column})", "name": "result"}],
             )
 
     async def test_known_list_includes_custom_aggregations(self) -> None:
@@ -640,7 +640,7 @@ class TestDev1576UnknownNamePrecedence:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "amount:bogus", "name": "result"}],
+                measures=[{"formula": "bogus(amount)", "name": "result"}],
             )
         assert "myagg" in str(exc.value)
 
@@ -651,7 +651,7 @@ class TestDev1576UnknownNamePrecedence:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "amount:zzzzz", "name": "result"}],
+                measures=[{"formula": "zzzzz(amount)", "name": "result"}],
             )
         assert "Did you mean" not in str(exc.value)
 
@@ -679,7 +679,7 @@ class TestDev1576CustomAggPrecedence:
         sql = await _generate_sql(
             orders=orders,
             customers=_customers_model(),
-            measures=[{"formula": "amount:countd", "name": "result"}],
+            measures=[{"formula": "countd(amount)", "name": "result"}],
         )
         # The custom formula (… + 1) must win, not the healed builtin
         # count_distinct (plain COUNT(DISTINCT …)).
@@ -691,7 +691,7 @@ class TestDev1576CustomAggPrecedence:
         sql = await _generate_sql(
             orders=_orders_model(),
             customers=_customers_model(),
-            measures=[{"formula": "amount:countd", "name": "result"}],
+            measures=[{"formula": "countd(amount)", "name": "result"}],
         )
         assert "COUNT(DISTINCT" in sql.upper()
         assert "+ 1" not in sql

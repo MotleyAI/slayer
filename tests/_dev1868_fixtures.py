@@ -22,14 +22,14 @@ from slayer.storage.sqlite_conn import transaction
 # --------------------------------------------------------------------------- #
 # W1 — cross-model first/last × partition_by (DEV-1836 stack).
 # --------------------------------------------------------------------------- #
-LAST_TIER = "customers.spend:last(customers.signup_at, partition_by=customers.tier)"
+LAST_TIER = "last(customers.spend, customers.signup_at, partition_by=customers.tier)"
 FIRST_REGION = (
-    "customers.spend:first(customers.signup_at, partition_by=customers.regions.name)"
+    "first(customers.spend, customers.signup_at, partition_by=customers.regions.name)"
 )
 LAST_REGION = (
-    "customers.spend:last(customers.signup_at, partition_by=customers.regions.name)"
+    "last(customers.spend, customers.signup_at, partition_by=customers.regions.name)"
 )
-CM_PART_TIER = "customers.spend:sum(partition_by=customers.tier)"
+CM_PART_TIER = "sum(customers.spend, partition_by=customers.tier)"
 
 #: last spend by signup within tier: gold c3 (03-15) wins over c1 (01-05).
 LAST_SPEND_BY_TIER = {"gold": 60.0, "silver": 150.0, "bronze": 40.0, None: None}

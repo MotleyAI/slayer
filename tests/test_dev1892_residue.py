@@ -46,7 +46,7 @@ from tests._dev1892_fixtures import (
 )
 
 _ATTACHED_ON_ROW = (
-    "customers.spend:weighted_avg(weight=sum(amount, partition_by=customers.regions.name))"
+    "weighted_avg(customers.spend, weight=sum(amount, partition_by=customers.regions.name))"
 )
 
 

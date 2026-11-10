@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import re
 from contextvars import ContextVar
+from typing import Protocol
 from collections.abc import Callable, Mapping, Sequence, Set as AbstractSet
 
 import sqlglot
@@ -25,6 +26,7 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType, JoinCardinality, JoinType, TimeGranularity
 from slayer.core.models import ModelJoin, SlayerModel
+from slayer.core.refs import functional_agg_text
 from slayer.core.query import (
     ColumnRef,
     ModelExtension,
@@ -33,6 +35,7 @@ from slayer.core.query import (
     SourceSpec,
     TimeDimension,
 )
+from slayer.core.syntax import measure_text_at_path
 from slayer.engine.cardinality.inference import declares_solo_unique
 from slayer.facade.catalog import (
     CATALOG_NAME,
@@ -668,10 +671,10 @@ def _detect_aggregate(  # NOSONAR(S3776) — flat per-aggregate-kind dispatch; s
 
 
 def _agg_formula(call: _AggCall) -> str:
-    """The internal legacy colon-form measure formula for a recognised aggregate."""
+    """The functional measure formula for a recognised aggregate."""
     if call.is_count_star:
-        return "*:count"
-    return f"{call.inner_ref}:{call.agg}"
+        return "count(*)"
+    return functional_agg_text(source=call.inner_ref or "", suffix=call.agg)
 
 
 def _saved_measure_names(table: FacadeTable) -> set[str]:
@@ -1485,12 +1488,12 @@ def _apply_where(
     reads_aggregate = False
     time_dim_names = set(time_dims_built.keys())
     for conj in _split_and_chain(where.this):
-        colon_form = _metric_filter(
+        metric_form = _metric_filter(
             conj, items_by_projected_name, strip_prefix=strip_prefix, alias_map=alias_map,
             metrics_by_name=metrics_by_name, temporal_columns=temporal_columns | time_dim_names,
         )
-        if colon_form is not None:
-            filters_out.append(colon_form)
+        if metric_form is not None:
+            filters_out.append(metric_form)
             reads_aggregate = True
             continue
         lifted, verbatim = _classify_where_conjunct(
@@ -1530,12 +1533,12 @@ def _apply_having(
         metrics_by_formula.update(extra_metrics_by_formula)
     for conj in _split_and_chain(having.this):
         # Metric-name form (``HAVING "rev" > 1000``) wins before the agg-call form.
-        colon_form = _metric_filter(
+        metric_form = _metric_filter(
             conj, items_by_projected_name, strip_prefix=strip_prefix, alias_map=alias_map,
             metrics_by_name=metrics_by_name, temporal_columns=temporal_columns,
         )
-        if colon_form is not None:
-            filters_out.append(colon_form)
+        if metric_form is not None:
+            filters_out.append(metric_form)
             continue
         while isinstance(conj, exp.Paren):
             conj = conj.this
@@ -2215,13 +2218,12 @@ def _route_catalog_query(
 
 # Lightweight Protocol so the translator doesn't pull catalog_sql at import
 # time (which would create a duckdb-at-import dependency for Flight).
-class CatalogSqlExecutorProtocol:
+class CatalogSqlExecutorProtocol(Protocol):
     """Protocol the catalog SQL executor must satisfy. Defined here so
     ``translate`` can type-annotate its parameter without importing
     catalog_sql (which imports duckdb)."""
 
-    def execute(self, *, parsed: Expression, sql: str) -> RowBatch:
-        raise NotImplementedError
+    def execute(self, *, parsed: Expression, sql: str) -> RowBatch: ...
 
 
 class _ProjectionPlan(BaseModel):
@@ -2713,10 +2715,7 @@ def _materialise_dynamic_join_lookups(
             dimension_ref=ref,
         )
     for m in local_metrics:
-        if m.measure_formula == "*:count":
-            formula = f"{prefix}.*:count"
-        else:
-            formula = f"{prefix}.{m.measure_formula}"
+        formula = measure_text_at_path(m.measure_formula, path=[prefix])
         new_metric = FacadeMetric(
             name=f"{prefix}.{m.name}",
             description=m.description,

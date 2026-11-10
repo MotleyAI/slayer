@@ -39,7 +39,7 @@ class TestMeasurePosition:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"],
             measures=[ModelMeasure(formula=LAST_TIER, name="l"),
-                      ModelMeasure(formula="amount:sum", name="s")],
+                      ModelMeasure(formula="sum(amount)", name="s")],
         ))
         by = rows_by(resp, TIER)
         assert len(resp.data) == 4  # sibling grain unchanged
@@ -56,7 +56,7 @@ class TestMeasurePosition:
         resp = await exec_engine.execute(q(
             dimensions=["customers.regions.name"],
             measures=[ModelMeasure(formula=FIRST_REGION, name="f"),
-                      ModelMeasure(formula="amount:sum", name="s")],
+                      ModelMeasure(formula="sum(amount)", name="s")],
         ))
         by = rows_by(resp, REGION)
         for region, expected in FIRST_SPEND_BY_REGION.items():
@@ -70,7 +70,7 @@ class TestFilterPosition:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"],
             filters=[f"{LAST_TIER} > 100"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         # Only silver's last spend (150) clears 100.
         assert [(r[TIER], float(r["orders.s"])) for r in resp.data] == [
@@ -82,7 +82,7 @@ class TestOrderPosition:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"],
             filters=["customers.tier is not null"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
             order=[{"column": LAST_TIER, "direction": "desc"}],
         ))
         # silver 150 > gold 60 > bronze 40; the sort key stays hidden.
@@ -95,7 +95,7 @@ class TestDimensionPosition:
         band = f"CASE WHEN {LAST_TIER} > 100 THEN 'hi' ELSE 'lo' END"
         resp = await exec_engine.execute(q(
             dimensions=[{"expression": band, "name": "band"}],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         by = rows_by(resp, "orders.band")
         # hi = silver (30); lo = gold + bronze + NULL-customer (40+40+7).
@@ -115,7 +115,7 @@ class TestRanklessTargetStaysTyped:
         query = q(
             dimensions=["customers.tier"],
             measures=[ModelMeasure(
-                formula="customers.spend:last(partition_by=customers.tier)",
+                formula="last(customers.spend, partition_by=customers.tier)",
                 name="l")],
         )
         with pytest.raises(ValueError, match=r"ranking time column"):

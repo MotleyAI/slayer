@@ -268,7 +268,7 @@ async def _every_operation(engine: SlayerQueryEngine) -> None:
     assert await engine.get_column_types("spend")
     await engine.detect_join_cardinality(data_source="test", model="customers")
     await engine.create_model_from_query(
-        {"source_model": "orders", "dimensions": ["status"], "measures": ["amount:sum"]}, name="by_status",
+        {"source_model": "orders", "dimensions": ["status"], "measures": ["sum(amount)"]}, name="by_status",
     )
 
 

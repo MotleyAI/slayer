@@ -39,11 +39,11 @@ def _flags(model: SlayerModel) -> dict:
 
 C_BY_ID = {
     "name": "c", "source_model": "customers", "dimensions": ["id"],
-    "measures": [{"formula": "tier:max", "name": "tr"}],
+    "measures": [{"formula": "max(tier)", "name": "tr"}],
 }
 C_BY_ID_TIER = {
     "name": "c", "source_model": "customers", "dimensions": ["id", "tier"],
-    "measures": [{"formula": "spend:sum", "name": "sp"}],
+    "measures": [{"formula": "sum(spend)", "name": "sp"}],
 }
 ORDERS_JOIN_C = {
     "source_name": "orders",
@@ -56,7 +56,7 @@ class TestSiblingJoins:
     async def test_join_onto_sibling_grain_is_proven(self, engine) -> None:
         resp = await engine.execute(_stages(C_BY_ID, {
             "source_model": ORDERS_JOIN_C, "dimensions": ["c.tr"],
-            "measures": [{"formula": "amount:sum", "name": "amt"}],
+            "measures": [{"formula": "sum(amount)", "name": "amt"}],
         }))
         assert _by(resp, "orders.c.tr", "orders.amt") == pytest.approx(AMOUNT_BY_TIER)
         assert broadcast_warnings(resp) == []
@@ -64,11 +64,11 @@ class TestSiblingJoins:
     async def test_join_onto_sibling_grain_through_a_chain(self, engine) -> None:
         b = {
             "name": "b", "source_model": ORDERS_JOIN_C, "dimensions": ["c.tr"],
-            "measures": [{"formula": "amount:sum", "name": "amt"}],
+            "measures": [{"formula": "sum(amount)", "name": "amt"}],
         }
         root = {
             "source_model": "b", "dimensions": ["c__tr"],
-            "measures": [{"formula": "amt:sum", "name": "total"}],
+            "measures": [{"formula": "sum(amt)", "name": "total"}],
         }
         resp = await engine.execute(_stages(C_BY_ID, b, root))
         assert _by(resp, "b.c__tr", "b.total") == pytest.approx(AMOUNT_BY_TIER)
@@ -77,7 +77,7 @@ class TestSiblingJoins:
     async def test_join_on_part_of_composite_sibling_grain_broadcasts(self, engine) -> None:
         resp = await engine.execute(_stages(C_BY_ID_TIER, {
             "source_model": ORDERS_JOIN_C, "dimensions": ["c.tier"],
-            "measures": [{"formula": "amount:sum", "name": "amt"}],
+            "measures": [{"formula": "sum(amount)", "name": "amt"}],
         }))
         assert len(broadcast_warnings(resp)) == 1
         assert {r["orders.amt"] for r in resp.data} == {AMOUNT_TOTAL}
@@ -91,7 +91,7 @@ class TestSiblingJoins:
         }
         resp = await engine.execute(_stages(C_BY_ID, {
             "source_model": ext, "dimensions": ["tr_up"],
-            "measures": [{"formula": "orders.amount:sum", "name": "amt"}],
+            "measures": [{"formula": "sum(orders.amount)", "name": "amt"}],
         }))
         assert _by(resp, "c.tr_up", "c.amt") == pytest.approx(
             {"GOLD": 40.0, "SILVER": 30.0, "BRONZE": 40.0},
@@ -102,7 +102,7 @@ class TestSiblingJoins:
         x = {**C_BY_ID_TIER, "name": "x"}
         resp = await engine.execute(_stages(x, {
             "source_model": "x", "dimensions": ["id"],
-            "measures": [{"formula": "tier:max", "name": "tr"}],
+            "measures": [{"formula": "max(tier)", "name": "tr"}],
         }))
         assert _by(resp, "x.id", "x.tr") == TIERS_BY_ID
 
@@ -111,31 +111,31 @@ class TestQueryBacked:
     async def test_composite_grain_member_stays_aggregatable(self, engine) -> None:
         model = await engine.create_model_from_query(SlayerQuery.model_validate({
             "source_model": "customers", "dimensions": ["id", "tier"],
-            "measures": [{"formula": "spend:sum", "name": "sp"}],
+            "measures": [{"formula": "sum(spend)", "name": "sp"}],
         }), "vm_id_tier")
         assert _flags(model) == {"id": (True, False), "tier": (True, False), "sp": (False, False)}
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "vm_id_tier", "measures": [{"formula": "tier:max", "name": "mt"}],
+            "source_model": "vm_id_tier", "measures": [{"formula": "max(tier)", "name": "mt"}],
         }))
         assert resp.data[0]["vm_id_tier.mt"] == "silver"
 
     async def test_single_column_grain_is_unique_not_identifier(self, engine) -> None:
         model = await engine.create_model_from_query(SlayerQuery.model_validate({
             "source_model": "customers", "dimensions": ["tier"],
-            "measures": [{"formula": "*:count", "name": "n"}],
+            "measures": [{"formula": "count(*)", "name": "n"}],
         }), "vm_tier")
         assert _flags(model) == {"tier": (False, True), "n": (False, False)}
         join = ModelJoin(target_model="vm_tier", join_pairs=[["tier", "tier"]])
         assert provably_to_one(edge=join, target_model=model)
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "vm_tier", "measures": [{"formula": "tier:max", "name": "mt"}],
+            "source_model": "vm_tier", "measures": [{"formula": "max(tier)", "name": "mt"}],
         }))
         assert resp.data[0]["vm_tier.mt"] == "silver"
 
     async def test_metric_across_unique_grain_join_is_exact(self, engine) -> None:
         await engine.create_model_from_query(SlayerQuery.model_validate({
             "source_model": "customers", "dimensions": ["tier"],
-            "measures": [{"formula": "*:count", "name": "n"}],
+            "measures": [{"formula": "count(*)", "name": "n"}],
         }), "vm_tier_n")
         host = customers_model()
         host.name = "customers_t"
@@ -143,7 +143,7 @@ class TestQueryBacked:
         await engine.storage.save_model(host, _validate=False)
         resp = await engine.execute(SlayerQuery.model_validate({
             "source_model": "customers_t", "dimensions": ["tier"],
-            "measures": [{"formula": "vm_tier_n.n:sum", "name": "n"}],
+            "measures": [{"formula": "sum(vm_tier_n.n)", "name": "n"}],
         }))
         assert _by(resp, "customers_t.tier", "customers_t.n") == {"gold": 2, "silver": 1, "bronze": 1}
         assert broadcast_warnings(resp) == []
@@ -187,7 +187,7 @@ class TestAggregateValuedGrainMember:
         await engine.storage.save_model(host, _validate=False)
         resp = await engine.execute(SlayerQuery.model_validate({
             "source_model": "two_ok", "dimensions": ["vm_ctot.status"],
-            "measures": [{"formula": "*:count", "name": "n"}],
+            "measures": [{"formula": "count(*)", "name": "n"}],
         }))
         assert len(broadcast_warnings(resp)) == 1
         assert resp.data

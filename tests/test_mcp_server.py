@@ -312,7 +312,7 @@ Column(name="revenue", sql="amount", label="Revenue", description="USD total", t
             name="m", sql_table="t", data_source="test",
             columns=[Column(name="revenue", type=DataType.DOUBLE)],
             measures=[ModelMeasure(
-                name="aov", formula="revenue:sum / *:count",
+                name="aov", formula="sum(revenue) / count(*)",
                 meta={"kb_id": "abc-123"},
             )],
         ))
@@ -371,7 +371,7 @@ Column(name="revenue", sql="amount", label="Revenue", description="USD total", t
         await storage.save_model(SlayerModel(
             name="m", sql_table="t", data_source="test",
             columns=[Column(name="amount", type=DataType.DOUBLE)],
-            measures=[ModelMeasure(name="aov", formula="amount:sum")],
+            measures=[ModelMeasure(name="aov", formula="sum(amount)")],
             aggregations=[Aggregation(name="my_agg", formula="SUM({expr})")],
         ))
         md = await _call(mcp_server, name="inspect_model", arguments={
@@ -461,7 +461,7 @@ class TestInspectModelQueryBacked:
             data_source="test",
             source_queries=[SlayerQuery(
                 source_model="upstream",
-                measures=[{"formula": "amount:sum"}],
+                measures=[{"formula": "sum(amount)"}],
                 dimensions=["region"],
                 filters=["amount > {threshold}"],
                 dry_run=True,
@@ -508,7 +508,7 @@ class TestInspectModelQueryBacked:
             data_source="test",
             source_queries=[SlayerQuery(
                 source_model="upstream",
-                measures=[{"formula": "amount:sum"}],
+                measures=[{"formula": "sum(amount)"}],
                 filters=["amount > {threshold}"],
                 dry_run=True,
             )],
@@ -667,8 +667,8 @@ class TestInspectModelSectionGating:
                 Column(name="product_id", type=DataType.INT, hidden=True),
             ],
             measures=[
-                ModelMeasure(name="aov", formula="amount:sum / *:count", description="Average order value"),
-                ModelMeasure(name="rev", formula="amount:sum"),
+                ModelMeasure(name="aov", formula="sum(amount) / count(*)", description="Average order value"),
+                ModelMeasure(name="rev", formula="sum(amount)"),
             ],
             aggregations=[
                 Aggregation(
@@ -900,7 +900,7 @@ class TestInspectModelDescriptionsMaxChars:
             name="m", sql_table="t", data_source="test",
             description="A" * 100,
             columns=[Column(name="status", type=DataType.TEXT, description="B" * 100)],
-            measures=[ModelMeasure(name="rev", formula="*:count", description="C" * 100)],
+            measures=[ModelMeasure(name="rev", formula="count(*)", description="C" * 100)],
             aggregations=[Aggregation(
                 name="wavg", formula="SUM({x})", description="D" * 100,
             )],
@@ -1028,7 +1028,7 @@ class TestInspectModelJsonGating:
                 Column(name="status", type=DataType.TEXT),
                 Column(name="customer_id", type=DataType.INT, hidden=True),
             ],
-            measures=[ModelMeasure(name="aov", formula="*:count")],
+            measures=[ModelMeasure(name="aov", formula="count(*)")],
             aggregations=[Aggregation(
                 name="wavg",
                 formula="SUM({a})",
@@ -1473,7 +1473,7 @@ class TestCreateModel:
                 {"name": "revenue", "sql": "amount", "type": "number"},
             ],
             "measures": [
-                {"name": "aov", "formula": "revenue:sum / *:count",
+                {"name": "aov", "formula": "sum(revenue) / count(*)",
                  "meta": {"kb_id": "abc-123", "tags": ["finance", "kpi"]}},
             ],
         })
@@ -1489,7 +1489,7 @@ class TestCreateModel:
     async def test_create_from_query_rejects_mixed_params(self, mcp_server) -> None:
         result = await _call(mcp_server, name="create_model", arguments={
             "name": "bad",
-            "query": {"source_model": "orders", "measures": ["*:count"]},
+            "query": {"source_model": "orders", "measures": ["count(*)"]},
             "sql_table": "public.orders",
         })
         assert "Error" in result
@@ -1499,7 +1499,7 @@ class TestCreateModel:
     async def test_create_from_query_rejects_data_source(self, mcp_server) -> None:
         result = await _call(mcp_server, name="create_model", arguments={
             "name": "bad",
-            "query": {"source_model": "orders", "measures": ["*:count"]},
+            "query": {"source_model": "orders", "measures": ["count(*)"]},
             "data_source": "mydb",
         })
         assert "Error" in result
@@ -1513,7 +1513,7 @@ class TestCreateModel:
         ))
         result = await _call(mcp_server, name="create_model", arguments={
             "name": "summary",
-            "query": {"source_model": "orders", "measures": ["amount:sum"]},
+            "query": {"source_model": "orders", "measures": ["sum(amount)"]},
             "dimensions": [],
             "measures": [],
         })
@@ -1528,7 +1528,7 @@ class TestCreateModel:
         ))
         result = await _call(mcp_server, name="create_model", arguments={
             "name": "summary",
-            "query": {"source_model": "orders", "measures": ["amount:sum"]},
+            "query": {"source_model": "orders", "measures": ["sum(amount)"]},
         })
         # Should fail on missing datasource, not on "missing sql_table"
         assert "Datasource" in result
@@ -1549,7 +1549,7 @@ class TestCreateModel:
             "name": "summary",
             "query": {
                 "source_model": "orders",
-                "measures": ["amount:sum"],
+                "measures": ["sum(amount)"],
             },
         })
         assert "Error" not in result, result
@@ -1653,30 +1653,30 @@ class TestEditModel:
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
-            "measures": [{"name": "aov", "formula": "revenue:sum / *:count"}],
+            "measures": [{"name": "aov", "formula": "sum(revenue) / count(*)"}],
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
         assert any("created measure 'aov'" in c for c in parsed["changes"])
         model = await storage.get_model("orders")
         assert len(model.measures) == 1
-        assert model.measures[0].formula == "revenue:sum / *:count"
+        assert model.measures[0].formula == "sum(revenue) / count(*)"
 
     async def test_upsert_existing_measure_formula(self, mcp_server, storage: YAMLStorage) -> None:
 
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
             columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
-            measures=[ModelMeasure(name="aov", formula="revenue:sum / *:count")],
+            measures=[ModelMeasure(name="aov", formula="sum(revenue) / count(*)")],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
-            "measures": [{"name": "aov", "formula": "revenue:avg"}],
+            "measures": [{"name": "aov", "formula": "avg(revenue)"}],
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
         model = await storage.get_model("orders")
-        assert model.measures[0].formula == "revenue:avg"
+        assert model.measures[0].formula == "avg(revenue)"
 
     async def test_upsert_multiple_mixed_create_update(self, mcp_server, storage: YAMLStorage) -> None:
         """One new + one existing column in the same call."""
@@ -1990,7 +1990,7 @@ class TestEditModel:
             "model_name": "orders",
             "source_queries": [{
                 "source_model": "orders_source",
-                "measures": [{"formula": "amount:sum"}],
+                "measures": [{"formula": "sum(amount)"}],
             }],
         })
         parsed = json.loads(result)
@@ -2019,7 +2019,7 @@ class TestEditModel:
             data_source="test",
             source_queries=[SlayerQuery(
                 source_model="upstream",
-                measures=[{"formula": "amount:sum"}],
+                measures=[{"formula": "sum(amount)"}],
                 filters=["amount > {threshold}"],
                 dry_run=True,
             )],
@@ -2062,7 +2062,7 @@ class TestEditModel:
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "measures": [{
-                "name": "aov", "formula": "revenue:sum / *:count",
+                "name": "aov", "formula": "sum(revenue) / count(*)",
                 "meta": {"kb_id": 1},
             }],
         })
@@ -2077,12 +2077,12 @@ class TestEditModel:
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
             columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
-            measures=[ModelMeasure(name="aov", formula="revenue:sum / *:count")],
+            measures=[ModelMeasure(name="aov", formula="sum(revenue) / count(*)")],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "measures": [{
-                "name": "aov", "formula": "revenue:sum / *:count",
+                "name": "aov", "formula": "sum(revenue) / count(*)",
                 "meta": {"kb_id": 1},
             }],
         })
@@ -2135,7 +2135,7 @@ class TestEditModel:
             name="orders", sql_table="t", data_source="test",
             columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             measures=[ModelMeasure(
-                name="aov", formula="revenue:sum / *:count",
+                name="aov", formula="sum(revenue) / count(*)",
                 meta={"a": 1},
             )],
         ))
@@ -2155,7 +2155,7 @@ class TestEditModel:
             name="orders", sql_table="t", data_source="test",
             columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             measures=[ModelMeasure(
-                name="aov", formula="revenue:sum / *:count",
+                name="aov", formula="sum(revenue) / count(*)",
                 meta={"kb_id": 9},
             )],
         ))
@@ -2229,10 +2229,10 @@ class TestEditModelDatasourceMoveSafety:
         await engine.save_model(SlayerModel(
             name="qb",
             data_source="db_a",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "amount:sum"}],
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(amount)"}],
+            })],
         ))
         assert await storage.get_model("qb", data_source="db_a") is not None
         assert await storage.get_model("qb", data_source="db_b") is None
@@ -2337,8 +2337,8 @@ class TestEditModelMultiStageRename:
         """Renaming an inner-stage measure old→new refreshes the cached SQL/columns."""
         await self._setup_orders_with_two_stage_model(
             storage,
-            inner_measures=[{"formula": "amount:sum", "name": "old"}],
-            outer_measures=[{"formula": "old:sum"}],
+            inner_measures=[{"formula": "sum(amount)", "name": "old"}],
+            outer_measures=[{"formula": "sum(old)"}],
         )
         # Sanity: initial cache reflects 'old'.
         before = await storage.get_model("qb")
@@ -2354,11 +2354,11 @@ class TestEditModelMultiStageRename:
                     "name": "raw",
                     "source_model": "orders",
                     "dimensions": ["region"],
-                    "measures": [{"formula": "amount:sum", "name": "new"}],
+                    "measures": [{"formula": "sum(amount)", "name": "new"}],
                 },
                 {
                     "source_model": "raw",
-                    "measures": [{"formula": "new:sum"}],
+                    "measures": [{"formula": "sum(new)"}],
                 },
             ],
         })
@@ -2391,10 +2391,10 @@ class TestEditModelMultiStageRename:
         await self._setup_orders_with_two_stage_model(
             storage,
             inner_measures=[
-                {"formula": "amount:sum", "name": "rev"},
-                {"formula": "*:count", "name": "n"},
+                {"formula": "sum(amount)", "name": "rev"},
+                {"formula": "count(*)", "name": "n"},
             ],
-            outer_measures=[{"formula": "rev:sum"}],
+            outer_measures=[{"formula": "sum(rev)"}],
         )
         before = await storage.get_model("qb")
         assert before is not None
@@ -2417,15 +2417,15 @@ class TestEditModelMultiStageRename:
                     "source_model": "orders",
                     "dimensions": ["region"],
                     "measures": [
-                        {"formula": "amount:sum", "name": "rev"},
-                        {"formula": "amount:avg", "name": "avg_amount"},
+                        {"formula": "sum(amount)", "name": "rev"},
+                        {"formula": "avg(amount)", "name": "avg_amount"},
                     ],
                 },
                 {
                     "source_model": "raw",
                     "measures": [
-                        {"formula": "rev:sum"},
-                        {"formula": "avg_amount:avg"},
+                        {"formula": "sum(rev)"},
+                        {"formula": "avg(avg_amount)"},
                     ],
                 },
             ],
@@ -2472,7 +2472,7 @@ class TestEditModelColumnsRejected:
             data_source="test",
             source_queries=[SlayerQuery(
                 source_model="upstream",
-                measures=[{"formula": "amount:sum"}],
+                measures=[{"formula": "sum(amount)"}],
                 dry_run=True,
             )],
         ))
@@ -2515,7 +2515,7 @@ class TestInspectModelRequiredVariables:
             data_source="test",
             source_queries=[SlayerQuery(
                 source_model="upstream",
-                measures=[{"formula": "amount:sum"}],
+                measures=[{"formula": "sum(amount)"}],
                 filters=["amount > {x}"],
                 variables={"x": 1},
                 dry_run=True,
@@ -2544,11 +2544,10 @@ class TestRunByNamePlanFlagsMCP:
         await storage.save_model(SlayerModel(
             name="qb_dr",
             data_source="test",
-            source_queries=[SlayerQuery(
-                source_model="upstream",
-                measures=[{"formula": "amount:sum"}],
-                # NOTE: no dry_run on the stage; only the caller asks.
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "upstream",
+                "measures": [{"formula": "sum(amount)"}],
+            })],
         ))
         execute_calls = 0
         real_execute = SlayerSQLClient.execute
@@ -2590,7 +2589,7 @@ class TestQueryAcceptsInlineSourceModel:
         result = await _call(mcp_server, name="query", arguments={
             "query": {
                 "source_model": "orders",
-                "measures": [{"formula": "*:count"}],
+                "measures": [{"formula": "count(*)"}],
             },
             "dry_run": True,
         })
@@ -2610,7 +2609,7 @@ class TestQueryAcceptsInlineSourceModel:
                         {"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"},
                     ],
                 },
-                "measures": [{"formula": "double_amount:sum"}],
+                "measures": [{"formula": "sum(double_amount)"}],
             },
             "dry_run": True,
         })
@@ -2636,7 +2635,7 @@ class TestQueryAcceptsInlineSourceModel:
                         {"name": "x", "sql": "x", "type": "DOUBLE"},
                     ],
                 },
-                "measures": [{"formula": "x:sum"}],
+                "measures": [{"formula": "sum(x)"}],
             },
             "dry_run": True,
         })
@@ -2670,14 +2669,14 @@ class TestQueryListMultiStage:
                 {
                     "name": "monthly",
                     "source_model": "orders",
-                    "measures": [{"formula": "amount:sum"}],
+                    "measures": [{"formula": "sum(amount)"}],
                     "time_dimensions": [
                         {"dimension": "created_at", "granularity": "month"},
                     ],
                 },
                 {
                     "source_model": "monthly",
-                    "measures": [{"formula": "amount_sum:avg"}],
+                    "measures": [{"formula": "avg(amount_sum)"}],
                 },
             ],
             "dry_run": True,
@@ -2703,16 +2702,16 @@ class TestQueryListMultiStage:
                 {
                     "name": "a",
                     "source_model": "b",
-                    "measures": [{"formula": "amount_sum:avg"}],
+                    "measures": [{"formula": "avg(amount_sum)"}],
                 },
                 {
                     "name": "b",
                     "source_model": "orders",
-                    "measures": [{"formula": "amount:sum"}],
+                    "measures": [{"formula": "sum(amount)"}],
                 },
                 {
                     "source_model": "a",
-                    "measures": [{"formula": "amount_sum_avg:max"}],
+                    "measures": [{"formula": "max(amount_sum_avg)"}],
                 },
             ],
             "dry_run": True,
@@ -2726,9 +2725,9 @@ class TestQueryListMultiStage:
         with pytest.raises(ToolError, match=r"[Cc]ycle"):
             await _call(mcp_server, name="query", arguments={
                 "query": [
-                    {"name": "a", "source_model": "b", "measures": [{"formula": "amount:sum"}]},
-                    {"name": "b", "source_model": "a", "measures": [{"formula": "amount:sum"}]},
-                    {"source_model": "orders", "measures": [{"formula": "amount:sum"}]},
+                    {"name": "a", "source_model": "b", "measures": [{"formula": "sum(amount)"}]},
+                    {"name": "b", "source_model": "a", "measures": [{"formula": "sum(amount)"}]},
+                    {"source_model": "orders", "measures": [{"formula": "sum(amount)"}]},
                 ],
                 "dry_run": True,
             })
@@ -2738,7 +2737,7 @@ class TestQueryListMultiStage:
         with pytest.raises(ToolError, match="Invalid format"):
             await _call(mcp_server, name="query", arguments={
                 "query": [
-                    {"source_model": "orders", "measures": [{"formula": "*:count"}]},
+                    {"source_model": "orders", "measures": [{"formula": "count(*)"}]},
                 ],
                 "format": "xml",
             })

@@ -15,34 +15,34 @@
 
 ## 2. Parser: refusal, twin and span rewrite (`core/syntax.py`)
 
-- [ ] 2.1 Turn the colon production into a recogniser that raises the typed colon-spelling parse error carrying the span (source text, name, args text); one twin renderer per design Decision 1–2. Verify: 1.1 parser-level cases pass.
-- [ ] 2.2 Add the accepting, location-capturing rewrite mode (Decision 6) returning the rewritten text with innermost-first edits. Verify: 1.2 passes.
-- [ ] 2.3 `canonical_measure_text` renders functional; add `legacy_result_name_seed` from the same renderer (Decision 10). Verify: 1.5 still passes after 3.2.
-- [ ] 2.4 Parse-and-re-root helper for join-path prefixing (Decision 12). Verify: unit-tested via 1.6.
-- [ ] 2.5 `split_entity_agg_ref` reads only through the parser; delete `split_agg_suffix`, `strip_agg_suffix`, `AGG_REF_RE` from `core/refs.py`. Verify: 1.1 entity-ref cases pass; `rg AGG_REF_RE slayer/` empty.
+- [x] 2.1 Turn the colon production into a recogniser that raises the typed colon-spelling parse error carrying the span (source text, name, args text); one twin renderer per design Decision 1–2. Verify: 1.1 parser-level cases pass.
+- [x] 2.2 Add the accepting, location-capturing rewrite mode (Decision 6) returning the rewritten text with innermost-first edits. Verify: 1.2 passes.
+- [x] 2.3 `canonical_measure_text` renders functional; add `legacy_result_name_seed` from the same renderer (Decision 10). Verify: 1.5 still passes after 3.2.
+- [x] 2.4 Parse-and-re-root helper for join-path prefixing (Decision 12). Verify: unit-tested via 1.6.
+- [x] 2.5 `split_entity_agg_ref` reads only through the parser; delete `split_agg_suffix`, `strip_agg_suffix`, `AGG_REF_RE` from `core/refs.py`. Verify: 1.1 entity-ref cases pass; `rg AGG_REF_RE slayer/` empty.
 
 ## 3. Query layer and naming
 
-- [ ] 3.1 `core/query.py`: delete `_colon_spelled_name`, the `":" in v` branch and the `col:gran` fallback in `granularity_call_argument`; colon error re-raised through `_parsed_or_none`-based classifiers (Decision 7). Verify: 1.1 order/dimension cases pass with the concrete error type.
-- [ ] 3.2 Route `formula_text_alias` and `computed_dimension_name` through `legacy_result_name_seed`; explicit-vs-auto compares against the seed (Decision 11). Verify: 1.5 and 1.3 computed-dimension cases pass.
-- [ ] 3.3 `sql/sql_predicate.py`: local colon regex after literal masking (Decision 14). Verify: 1.7 passes.
+- [x] 3.1 `core/query.py`: delete `_colon_spelled_name`, the `":" in v` branch and the `col:gran` fallback in `granularity_call_argument`; colon error re-raised through `_parsed_or_none`-based classifiers (Decision 7). Verify: 1.1 order/dimension cases pass with the concrete error type.
+- [x] 3.2 Route `formula_text_alias` and `computed_dimension_name` through `legacy_result_name_seed`; explicit-vs-auto compares against the seed (Decision 11). Verify: 1.5 and 1.3 computed-dimension cases pass.
+- [x] 3.3 `sql/sql_predicate.py`: local colon regex after literal masking (Decision 14). Verify: 1.7 passes.
 
 ## 4. Storage migration
 
-- [ ] 4.1 `storage/colon_spelling_migration.py`: stored-only steps at SlayerModel 18, SlayerQuery 9, Memory 7 using the shared walkers, plus its own order-item re-coercion (Decision 9); bump `CURRENT_VERSIONS` to 19 / 10 / 8; import it at the bottom of `migrations.py`. Verify: 1.3, 1.4, 1.11 pass.
-- [ ] 4.2 Confirm `test_dev2172_one_mode_b_reader.py` passes with no allowlist change. Verify: test passes.
+- [x] 4.1 `storage/colon_spelling_migration.py`: stored-only steps at SlayerModel 18, SlayerQuery 9, Memory 7 using the shared walkers, plus its own order-item re-coercion (Decision 9); bump `CURRENT_VERSIONS` to 19 / 10 / 8; import it at the bottom of `migrations.py`. Verify: 1.3, 1.4, 1.11 pass.
+- [x] 4.2 Confirm `test_dev2172_one_mode_b_reader.py` passes with no allowlist change. Verify: test passes.
 
 ## 5. Producers
 
-- [ ] 5.1 Facade `catalog.py` / `translator.py` per Decision 12, incl. the `*:count` consumers and docstrings. Verify: 1.6 facade cases and 1.10 facade pins pass.
-- [ ] 5.2 `live_schema/broken_dependents.py` probe → `count(*)`. Verify: 1.6 probe case passes.
-- [ ] 5.3 `memories/resolver.py` structured tokens (Decision 13). Verify: 1.6 memory case passes.
-- [ ] 5.4 `rg` for remaining colon construction in `slayer/` (code and docstrings) and remove it. Verify: `test_functional_emission.py` and 1.6 pass.
+- [x] 5.1 Facade `catalog.py` / `translator.py` per Decision 12, incl. the `*:count` consumers and docstrings. Verify: 1.6 facade cases and 1.10 facade pins pass.
+- [x] 5.2 `live_schema/broken_dependents.py` probe → `count(*)`. Verify: 1.6 probe case passes.
+- [x] 5.3 `memories/resolver.py` structured tokens (Decision 13). Verify: 1.6 memory case passes.
+- [x] 5.4 `rg` for remaining colon construction in `slayer/` (code and docstrings) and remove it. Verify: `test_functional_emission.py` and 1.6 pass.
 
 ## 6. Incidental test input, examples, docs
 
-- [ ] 6.1 Mechanically respell the incidental colon input in `tests/` (≈6,600 lines in ≈500 files, ≈55 f-string templates such as `f"amount:{agg}"`, helper modules, `perf/compare/corpus.py` and the keys of `perf/dev2101_old_parser_baseline.json`) with the span rewriter; stored fixtures (`tests/fixtures/upgrade/v0_10_2/**`, raw versioned docs) untouched. Verify: the full unit suite passes with unchanged assertions.
-- [ ] 6.2 Respell `examples/trino/verify.py`; add one sentence to `docs/concepts/formulas.md` (colon spelling removed in 2.0, stored text upgraded on load). Verify: `test_functional_emission.py` passes.
+- [x] 6.1 Mechanically respell the incidental colon input in `tests/` (≈6,600 lines in ≈500 files, ≈55 f-string templates such as `f"amount:{agg}"`, helper modules, `perf/compare/corpus.py` and the keys of `perf/dev2101_old_parser_baseline.json`) with the span rewriter; stored fixtures (`tests/fixtures/upgrade/v0_10_2/**`, raw versioned docs) untouched. Verify: the full unit suite passes with unchanged assertions.
+- [x] 6.2 Respell `examples/trino/verify.py`; add one sentence to `docs/concepts/formulas.md` (colon spelling removed in 2.0, stored text upgraded on load). Verify: `test_functional_emission.py` passes.
 
 ## 7. Finish
 

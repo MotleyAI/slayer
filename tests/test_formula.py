@@ -123,12 +123,12 @@ class TestOrderColumnNormalization:
         assert item.raw_formula is None
 
     def test_parameterized_agg_preserved(self) -> None:
-        item = OrderItem(column="last(revenue, ordered_at)", direction="desc")
+        item = OrderItem.model_validate({"column": "last(revenue, ordered_at)", "direction": "desc"})
         assert item.column.name == _FUNCSTYLE_PENDING
         assert item.raw_formula == "last(revenue, ordered_at)"
 
     def test_weighted_avg_args_preserved(self) -> None:
-        item = OrderItem(column="weighted_avg(price, weight=qty)", direction="asc")
+        item = OrderItem.model_validate({"column": "weighted_avg(price, weight=qty)", "direction": "asc"})
         assert item.column.name == _FUNCSTYLE_PENDING
         assert item.raw_formula == "weighted_avg(price, weight=qty)"
 

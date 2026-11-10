@@ -66,8 +66,8 @@ def _assert_flat_and_unique(
 TWO_PRODUCERS = dict(
     dimensions=["region", "city"],
     measures=[
-        ModelMeasure(formula="amount:last(partition_by=region)", name="a"),
-        ModelMeasure(formula="amount:last(partition_by=city)", name="b"),
+        ModelMeasure(formula="last(amount, partition_by=region)", name="a"),
+        ModelMeasure(formula="last(amount, partition_by=city)", name="b"),
     ],
 )
 
@@ -97,7 +97,7 @@ class TestThreeLevelNesting:
     #: transform-bearing dimension producer, a windowed producer, and a ranked
     #: producer in one query.
     CBAND = (
-        "CASE WHEN cumsum(amount:sum(partition_by=[region, ordered_at])) > 50 "
+        "CASE WHEN cumsum(sum(amount, partition_by=[region, ordered_at])) > 50 "
         "THEN 1 ELSE 0 END"
     )
 
@@ -106,11 +106,11 @@ class TestThreeLevelNesting:
             dimensions=["region", {"expression": self.CBAND, "name": "cband"}],
             time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum", name="s"),
+                ModelMeasure(formula="sum(amount)", name="s"),
                 ModelMeasure(
-                    formula="amount:sum(window='90d', partition_by=region)", name="w",
+                    formula="sum(amount, window='90d', partition_by=region)", name="w",
                 ),
-                ModelMeasure(formula="amount:last(partition_by=region)", name="l"),
+                ModelMeasure(formula="last(amount, partition_by=region)", name="l"),
             ],
         )
 
@@ -170,10 +170,10 @@ class TestTruncatingDialect:
             dimensions=["grp"],
             measures=[
                 ModelMeasure(
-                    formula=f"{LONG_PREFIX}_alpha:last(partition_by=grp)", name="a",
+                    formula=f"last({LONG_PREFIX}_alpha, partition_by=grp)", name="a",
                 ),
                 ModelMeasure(
-                    formula=f"{LONG_PREFIX}_beta:last(partition_by=[])", name="b",
+                    formula=f"last({LONG_PREFIX}_beta, partition_by=[])", name="b",
                 ),
             ],
         )

@@ -83,7 +83,7 @@ class TestForwardDerivedGrainShape:
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.ltv_x2"],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
+            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -106,7 +106,7 @@ class TestForwardDerivedGrainShape:
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
+            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -124,7 +124,7 @@ class TestForwardDerivedGrainShape:
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.deep_gdp"],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
+            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -141,7 +141,7 @@ class TestForwardDerivedGrainShape:
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.ltv_third"],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
+            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -154,12 +154,12 @@ class TestForwardDerivedGrainShape:
 
     async def test_grain_equals_aggregate_source_derived(self) -> None:
         """The derived grain dim and the aggregate source can be the SAME derived
-        column (``deep_pop`` dim + ``deep_pop:sum``) — grouped and aggregated on
+        column (``deep_pop`` dim + ``sum(deep_pop)``) — grouped and aggregated on
         the same expanded expression, one pulled join."""
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="customers_v2.deep_pop:sum")],
+            measures=[ModelMeasure(formula="sum(customers_v2.deep_pop)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -174,7 +174,7 @@ class TestForwardDerivedGrainShape:
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.ltv_x2"],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:count_distinct")],
+            measures=[ModelMeasure(formula="count_distinct(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -189,8 +189,8 @@ class TestForwardDerivedGrainShape:
             source_model="orders_x",
             dimensions=["customers_v2.ltv_x2"],
             measures=[
-                ModelMeasure(formula="customers_v2.lifetime_value:sum"),
-                ModelMeasure(formula="customers_v2.region_id:max"),
+                ModelMeasure(formula="sum(customers_v2.lifetime_value)"),
+                ModelMeasure(formula="max(customers_v2.region_id)"),
             ],
         )
         sql = await _gen(query)
@@ -210,7 +210,7 @@ class TestForwardDerivedGrainShape:
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
+            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
             filters=["customers_v2.deep_pop > 50"],
         )
         sql = await _gen(query)
@@ -234,7 +234,7 @@ class TestForwardDerivedGrainShape:
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.ltv_x2"],
-            measures=[ModelMeasure(formula="customers_v2.regions.population:sum")],
+            measures=[ModelMeasure(formula="sum(customers_v2.regions.population)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -259,7 +259,7 @@ class TestFirstLastDerivedGrain:
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.ltv_x2"],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:last")],
+            measures=[ModelMeasure(formula="last(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -285,7 +285,7 @@ class TestFirstLastDerivedGrain:
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:last")],
+            measures=[ModelMeasure(formula="last(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -314,7 +314,7 @@ class TestFirstLastDerivedGrain:
             time_dimensions=[TimeDimension(
                 dimension="customers_v2.region_opened_eff",
                 granularity=TimeGranularity.MONTH)],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:last")],
+            measures=[ModelMeasure(formula="last(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -340,7 +340,7 @@ class TestFirstLastDerivedGrain:
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.deep_pop_x2"],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:last")],
+            measures=[ModelMeasure(formula="last(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -364,7 +364,7 @@ class TestFirstLastDerivedGrain:
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:last")],
+            measures=[ModelMeasure(formula="last(customers_v2.lifetime_value)")],
         )
         sql1 = await _gen(query)
         sql2 = await _gen(query)
@@ -380,7 +380,7 @@ class TestFirstLastDerivedGrain:
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:last")],
+            measures=[ModelMeasure(formula="last(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query, customers_extra=customers_extra)
         assert_scope_closed(sql)
@@ -400,7 +400,7 @@ class TestFirstLastDerivedGrain:
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:last")],
+            measures=[ModelMeasure(formula="last(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query, customers_extra=customers_extra)
         assert_scope_closed(sql)
@@ -421,7 +421,7 @@ class TestSiblingPathsDerivedGrain:
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.deep_pop", "customers_v2.regions.name"],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
+            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -446,7 +446,7 @@ class TestSiblingPathsDerivedGrain:
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="amt_hi:sum")],
+            measures=[ModelMeasure(formula="sum(amt_hi)")],
         )
         sql = await _gen(query, orders_extra=orders_extra)
         assert_scope_closed(sql)
@@ -476,7 +476,7 @@ class TestUnchangedBehaviourGuards:
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["amt_bucket"],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
+            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query, orders_extra=orders_extra)
         assert_scope_closed(sql)
@@ -487,7 +487,7 @@ class TestUnchangedBehaviourGuards:
         renders (DEV-1526 territory), unchanged by the gate removal."""
         query = SlayerQuery(
             source_model="orders_x",
-            measures=[ModelMeasure(formula="customers_v2.deep_pop:sum")],
+            measures=[ModelMeasure(formula="sum(customers_v2.deep_pop)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -498,7 +498,7 @@ class TestUnchangedBehaviourGuards:
         """A derived crossing FILTER (no derived grain) still renders."""
         query = SlayerQuery(
             source_model="orders_x",
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
+            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
             filters=["customers_v2.deep_pop > 1"],
         )
         sql = await _gen(query)
@@ -514,7 +514,7 @@ class TestUnchangedBehaviourGuards:
             time_dimensions=[TimeDimension(
                 dimension="customers_v2.region_opened_eff",
                 granularity=TimeGranularity.MONTH)],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
+            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -629,7 +629,7 @@ class TestDerivedGrainExecution:
         resp = await sqlite_engine.execute(SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.ltv_x2"],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
+            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
         ))
         by_grain = {r["orders_x.customers_v2.ltv_x2"]: r for r in resp.data}
         # Four distinct grains, one per customer — no group swallowed.
@@ -646,7 +646,7 @@ class TestDerivedGrainExecution:
         resp = await sqlite_engine.execute(SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
+            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
         ))
         by_pop = {r["orders_x.customers_v2.deep_pop"]: r for r in resp.data}
         assert by_pop[100.0]["orders_x.customers_v2.lifetime_value_sum"] == 40.0, resp.data
@@ -658,7 +658,7 @@ class TestDerivedGrainExecution:
         resp = await sqlite_engine.execute(SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
+            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
         ))
         by_pop = {r["orders_x.customers_v2.deep_pop"]: r for r in resp.data}
         assert None in by_pop, resp.data
@@ -672,7 +672,7 @@ class TestDerivedGrainExecution:
         resp = await sqlite_engine.execute(SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.ltv_third"],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
+            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
         ))
         by_grain = {r["orders_x.customers_v2.ltv_third"]: r for r in resp.data}
         # ltv 10 → 10/3.0 = 3.33 → INT 3; the group must survive the join-back.
@@ -689,7 +689,7 @@ class TestDerivedGrainExecution:
         resp = await sqlite_engine.execute(SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:last(customers_v2.signup_at)")],
+            measures=[ModelMeasure(formula="last(customers_v2.lifetime_value, customers_v2.signup_at)")],
         ))
         by_pop = {r["orders_x.customers_v2.deep_pop"]: r for r in resp.data}
         key = "orders_x.customers_v2.lifetime_value_last_customers_v2_signup_at"
@@ -706,7 +706,7 @@ class TestDerivedGrainExecution:
         resp = await sqlite_engine.execute(SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:first(customers_v2.signup_at)")],
+            measures=[ModelMeasure(formula="first(customers_v2.lifetime_value, customers_v2.signup_at)")],
         ))
         by_pop = {r["orders_x.customers_v2.deep_pop"]: r for r in resp.data}
         key = "orders_x.customers_v2.lifetime_value_first_customers_v2_signup_at"
@@ -724,7 +724,7 @@ class TestDerivedGrainExecution:
         resp = await sqlite_engine.execute(SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="amt_hi:sum")],
+            measures=[ModelMeasure(formula="sum(amt_hi)")],
         ))
         by_pop = {r["orders_x.customers_v2.deep_pop"]: r for r in resp.data}
         key = "orders_x.amt_hi_sum"
@@ -746,7 +746,7 @@ class TestDerivedGrainExecution:
         resp = await sqlite_engine.execute(SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:last(customers_v2.signup_at)")],
+            measures=[ModelMeasure(formula="last(customers_v2.lifetime_value, customers_v2.signup_at)")],
             filters=["customers_v2.lifetime_value < 25"],
         ))
         by_pop = {r["orders_x.customers_v2.deep_pop"]: r for r in resp.data}

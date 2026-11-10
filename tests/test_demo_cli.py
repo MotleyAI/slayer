@@ -267,11 +267,11 @@ class TestDemoEnrichment:
 
     def test_duplicate_measure_names_not_added(self):
         model = self._orders_model()
-        model.measures = [ModelMeasure(name="total_revenue", formula="subtotal:sum")]
+        model.measures = [ModelMeasure(name="total_revenue", formula="sum(subtotal)")]
         jaffle_shop.apply_demo_enrichment(model)
         revenue = [m for m in model.measures if m.name == "total_revenue"]
         assert len(revenue) == 1
-        assert revenue[0].formula == "subtotal:sum"
+        assert revenue[0].formula == "sum(subtotal)"
 
     def test_unknown_model_untouched(self):
         model = SlayerModel(name="unrelated", sql_table="t", data_source="other")

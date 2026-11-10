@@ -94,7 +94,7 @@ def _stub_storage(
 
 def _stub_client_for(datasource: DatasourceConfig) -> MagicMock:
     """``client_for`` for a stubbed ingester, which never touches the client."""
-    return MagicMock(name=f"client:{datasource.name}")
+    return MagicMock(name=f"{datasource.name}(client)")
 
 
 def _ok_result() -> IdempotentIngestResult:

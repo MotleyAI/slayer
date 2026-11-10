@@ -314,11 +314,11 @@ def _messages(caplog: pytest.LogCaptureFixture) -> Generator[list[str]]:
 
 async def _assert_refused_unrewritten(storage: Any, payload: dict) -> None:
     """``payload`` keeps its colon text and fails with the colon-spelling error."""
+    query = SlayerQuery.model_validate(payload)
+    assert [m.formula for m in query.measures or []] == ["amount:sum"]
     engine = SlayerQueryEngine(storage=storage)
     try:
         with pytest.raises(ValueError) as ei:
-            query = SlayerQuery.model_validate(payload)
-            assert [m.formula for m in query.measures or []] == ["amount:sum"]
             await engine.execute(query, dry_run=True)
     finally:
         engine.close()

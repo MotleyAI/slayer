@@ -143,12 +143,12 @@ class TestFlavorAOrderByUnprojected:
         """Regression guard: ordering by a projected measure alias keeps the
         whole-quoted composite ``"orders.rev"`` form (that IS the real output
         column name via ``AS "orders.rev"``)."""
-        query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[{"formula": "revenue:sum", "name": "rev"}],
-            order=[OrderItem(column=ColumnRef(name="rev"), direction="desc")],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": [ColumnRef(name="status")],
+            "measures": [{"formula": "sum(revenue)", "name": "rev"}],
+            "order": [OrderItem(column=ColumnRef(name="rev"), direction="desc")],
+        })
         sql = _norm(await _engine_generate(query=query, model=orders_model))
         assert 'ORDER BY "orders.rev" DESC' in sql
 
@@ -208,12 +208,12 @@ class TestFlavorAOrderByUnprojected:
             ],
             joins=[ModelJoin(target_model="clusters", join_pairs=[["clu_ref", "id"]])],
         )
-        query = SlayerQuery(
-            source_model="accts",
-            dimensions=[ColumnRef(name="status")],
-            measures=[{"formula": "clusters.score:sum", "name": "sc"}],
-            order=[OrderItem(column=ColumnRef(name="sc"), direction="desc")],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "accts",
+            "dimensions": [ColumnRef(name="status")],
+            "measures": [{"formula": "sum(clusters.score)", "name": "sc"}],
+            "order": [OrderItem(column=ColumnRef(name="sc"), direction="desc")],
+        })
         sql = _norm(await _engine_generate(
             query=query, model=accts, extra_models=[clusters],
         ))
@@ -241,7 +241,7 @@ class TestFlavorAOrderByUnprojected:
         orders, joined = _orders_customers_regions()
         query = SlayerQuery(
             source_model="orders",
-            measures=[{"formula": "amount:sum", "name": "rev"}],
+            measures=[{"formula": "sum(amount)", "name": "rev"}],
             order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
         )
         sql = _norm(await _engine_generate(
@@ -261,12 +261,12 @@ class TestFlavorAOrderByUnprojected:
         host base. The CTE re-applies the filter rather than depending on the
         base's copy, so the two scopes agree on which rows the extreme is over."""
         orders, joined = _orders_customers_regions()
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:sum", "name": "rev"}],
-            filters=["customers.regions.name == 'US'"],
-            order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+            "filters": ["customers.regions.name == 'US'"],
+            "order": [OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
+        })
         sql = _norm(await _engine_generate(
             query=query, model=orders, extra_models=joined,
         ))
@@ -283,7 +283,7 @@ class TestFlavorAOrderByUnprojected:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
-            measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],  # windowed -> combined CTE path
+            measures=[{"formula": "cumsum(sum(amount))", "name": "cs"}],  # windowed -> combined CTE path
             filters=["customers.regions.name == 'US'"],  # pulls the join into resolved_joins
             order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
         )
@@ -300,12 +300,12 @@ class TestFlavorAOrderByUnprojected:
         the joined sort key takes the same host MAX wrap as beside ``sum`` —
         never a ``_base`` GROUP BY key, which would split the one-row result."""
         orders, joined = _orders_customers_regions()
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:last(created_at)", "name": "latest"}],  # ranked-subquery wrap
-            filters=["customers.regions.name == 'US'"],  # pulls the join into resolved_joins
-            order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "last(amount, created_at)", "name": "latest"}],
+            "filters": ["customers.regions.name == 'US'"],
+            "order": [OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
+        })
         sql = _norm(await _engine_generate(
             query=query, model=orders, extra_models=joined,
         ))
@@ -330,12 +330,12 @@ class TestFlavorAJoinedOrderByResolves:
 
     async def test_joined_orderby_with_filter_in_scope_resolves(self) -> None:
         orders, joined = _orders_customers_regions()
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:sum", "name": "rev"}],
-            filters=["customers.regions.name == 'US'"],
-            order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+            "filters": ["customers.regions.name == 'US'"],
+            "order": [OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
+        })
         sql = _norm(await _engine_generate(
             query=query, model=orders, extra_models=joined,
         ))
@@ -347,11 +347,11 @@ class TestFlavorAJoinedOrderByResolves:
         """With nothing else referencing the join, it is pulled into the sort
         key's CTE — and only there."""
         orders, joined = _orders_customers_regions()
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:sum", "name": "rev"}],
-            order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+            "order": [OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
+        })
         sql = _norm(await _engine_generate(
             query=query, model=orders, extra_models=joined,
         ))
@@ -360,13 +360,13 @@ class TestFlavorAJoinedOrderByResolves:
 
     async def test_joined_orderby_in_cte_wrapped_scope_resolves(self) -> None:
         orders, joined = _orders_customers_regions()
-        query = SlayerQuery(
-            source_model="orders",
-            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
-            measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],
-            filters=["customers.regions.name == 'US'"],
-            order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "time_dimensions": [TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
+            "measures": [{"formula": "cumsum(sum(amount))", "name": "cs"}],
+            "filters": ["customers.regions.name == 'US'"],
+            "order": [OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
+        })
         sql = _norm(await _engine_generate(
             query=query, model=orders, extra_models=joined,
         ))
@@ -408,11 +408,11 @@ class TestFlavorBMixedCaseQuoting:
         """The headline ``fake_account_23`` repro: a filter referencing a
         derived column whose SQL holds a mixed-case ident flows through
         ``_parse_predicate`` and must emit the quoted form in the WHERE."""
-        query = SlayerQuery(
-            source_model="accounts",
-            measures=[{"formula": "*:count", "name": "cnt"}],
-            filters=["is_inactive == True"],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "accounts",
+            "measures": [{"formula": "count(*)", "name": "cnt"}],
+            "filters": ["is_inactive == True"],
+        })
         sql = _norm(await _engine_generate(query=query, model=accounts_model))
         assert "WHERE" in sql
         assert '"StateFlag"' in sql
@@ -426,7 +426,7 @@ class TestFlavorBMixedCaseQuoting:
             filters=["StateFlag IS NOT NULL"],
             columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True)],
         )
-        query = SlayerQuery(source_model="accounts", measures=[{"formula": "*:count"}])
+        query = SlayerQuery.model_validate({"source_model": "accounts", "measures": [{"formula": "count(*)"}]})
         sql = _norm(await _engine_generate(query=query, model=model))
         assert "WHERE" in sql
         assert '"StateFlag"' in sql
@@ -448,7 +448,7 @@ class TestFlavorBMixedCaseQuoting:
                 ),
             ],
         )
-        query = SlayerQuery(source_model="accounts", measures=[{"formula": "amount:sum"}])
+        query = SlayerQuery.model_validate({"source_model": "accounts", "measures": [{"formula": "sum(amount)"}]})
         sql = _norm(await _engine_generate(query=query, model=model))
         assert '"StateFlag"' in sql
 
@@ -525,11 +525,11 @@ class TestFlavorBMixedCaseQuoting:
                 Column(name="ts", sql="ts", type=DataType.TIMESTAMP),
             ],
         )
-        query = SlayerQuery(
-            source_model="events",
-            dimensions=[ColumnRef(name="RegionCode")],
-            measures=[{"formula": "amount:last(ts)", "name": "latest"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "events",
+            "dimensions": [ColumnRef(name="RegionCode")],
+            "measures": [{"formula": "last(amount, ts)", "name": "latest"}],
+        })
         sql = _norm(await _engine_generate(query=query, model=model))
         # The OUTER group-by / projection reference must be quoted so it
         # matches the ranked subquery's ``model.*`` output column. The typed
@@ -553,7 +553,10 @@ class TestFlavorBMixedCaseQuoting:
                 Column(name="MixedAmt", sql="MixedAmt", type=DataType.DOUBLE),
             ],
         )
-        query = SlayerQuery(source_model="accounts", measures=[{"formula": "MixedAmt:sum", "name": "s"}])
+        query = SlayerQuery.model_validate({
+            "source_model": "accounts",
+            "measures": [{"formula": "sum(MixedAmt)", "name": "s"}],
+        })
         sql = _norm(await _engine_generate(query=query, model=model))
         assert 'SUM(accounts."MixedAmt")' in sql
 
@@ -593,13 +596,13 @@ class TestFlavorBMixedCaseQuoting:
             data_source="test",
             columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True)],
         )
-        query = SlayerQuery(source_model="accounts", measures=[{"formula": "*:count"}])
+        query = SlayerQuery.model_validate({"source_model": "accounts", "measures": [{"formula": "count(*)"}]})
         sql = _norm(await _engine_generate(query=query, model=model))
         assert '"MyAccounts"' in sql
 
     async def test_lowercase_only_expression_unchanged(self, orders_model: SlayerModel) -> None:
         """No spurious quoting: an all-lowercase expression emits unchanged."""
-        query = SlayerQuery(source_model="orders", measures=[{"formula": "revenue:sum"}])
+        query = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(revenue)"}]})
         sql = _norm(await _engine_generate(query=query, model=orders_model))
         assert "SUM(orders.amount)" in sql
         assert '"amount"' not in sql
@@ -616,7 +619,7 @@ class TestFlavorBMixedCaseQuoting:
                 Column(name="j", sql="COALESCE(RawVal, 0)", type=DataType.DOUBLE),
             ],
         )
-        query = SlayerQuery(source_model="accounts", measures=[{"formula": "j:sum"}])
+        query = SlayerQuery.model_validate({"source_model": "accounts", "measures": [{"formula": "sum(j)"}]})
         sql = _norm(await _engine_generate(query=query, model=model))
         assert "COALESCE" in sql
         assert '"COALESCE"' not in sql

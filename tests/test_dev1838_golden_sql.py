@@ -31,30 +31,30 @@ def _cases() -> dict:
     return {
         "fuse/plain_hidden_order": q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="amount:sum", name="m")],
-            order=[OrderItem(column="amount:avg", direction="desc")],
+            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            order=[OrderItem.model_validate({"column": "avg(amount)", "direction": "desc"})],
         ),
         "fuse/post_filter_on_transform": q(
             dimensions=["status"], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
-                ModelMeasure(formula="cumsum(amount:sum)", name="x"),
+                ModelMeasure(formula="sum(amount)", name="m"),
+                ModelMeasure(formula="cumsum(sum(amount))", name="x"),
             ],
-            filters=["cumsum(amount:sum) > 50"],
+            filters=["cumsum(sum(amount)) > 50"],
         ),
         "fuse/multi_alias": q(
             dimensions=["status"],
             measures=[
-                ModelMeasure(formula="amount:sum", name="m1"),
-                ModelMeasure(formula="amount:sum", name="m2"),
+                ModelMeasure(formula="sum(amount)", name="m1"),
+                ModelMeasure(formula="sum(amount)", name="m2"),
             ],
         ),
         "fuse/dim_only_dedup": q(dimensions=["region", "city"]),
         "fuse/scalar_local": q(
-            measures=[ModelMeasure(formula="amount:sum", name="m")],
+            measures=[ModelMeasure(formula="sum(amount)", name="m")],
         ),
         "fuse/scalar_cm_spine": q(
-            measures=[ModelMeasure(formula="customers.spend:sum", name="cm")],
+            measures=[ModelMeasure(formula="sum(customers.spend)", name="cm")],
         ),
     }
 

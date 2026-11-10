@@ -128,7 +128,7 @@ async def test_clickhouse_orders_by_the_projection_not_its_dotted_alias() -> Non
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
     )
     sql = await _engine_generate(query=query, model=model, dialect="clickhouse")
     assert sql[sql.rindex("ORDER BY"):].split("\n", 1)[1].strip() == "dateTrunc('MONTH', orders.created_at) ASC"

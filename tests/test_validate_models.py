@@ -762,15 +762,15 @@ class TestCascadeRules:
             name="qb_orders_summary",
             data_source="ds",
             source_queries=[
-                SlayerQuery(
-                    name="stage_a",
-                    source_model="orders",
-                    measures=[{"formula": "sum(amount)", "name": "total"}],
-                ),
-                SlayerQuery(
-                    source_model="stage_a",
-                    measures=[{"formula": "max(total)", "name": "peak"}],
-                ),
+                SlayerQuery.model_validate({
+                    "name": "stage_a",
+                    "source_model": "orders",
+                    "measures": [{"formula": "sum(amount)", "name": "total"}],
+                }),
+                SlayerQuery.model_validate({
+                    "source_model": "stage_a",
+                    "measures": [{"formula": "max(total)", "name": "peak"}],
+                }),
             ],
         )
         # 'amount' on orders dropped — qb_orders_summary stage_a refs it
@@ -801,12 +801,11 @@ class TestCascadeRules:
             name="qb_orders_filtered",
             data_source="ds",
             source_queries=[
-                SlayerQuery(
-                    source_model="orders",
-                    measures=[{"formula": "sum(amount)", "name": "total"}],
-                    # Parsed by the DSL parser so 'amount' surfaces as a ref.
-                    filters=["sum(amount) > 100"],
-                ),
+                SlayerQuery.model_validate({
+                    "source_model": "orders",
+                    "measures": [{"formula": "sum(amount)", "name": "total"}],
+                    "filters": ["sum(amount) > 100"],
+                }),
             ],
         )
         edit = EditModelDelete(
@@ -833,10 +832,10 @@ class TestCascadeRules:
             name="qb_orders",
             data_source="ds",
             source_queries=[
-                SlayerQuery(
-                    source_model="orders",
-                    measures=[{"formula": "sum(amount)", "name": "total"}],
-                ),
+                SlayerQuery.model_validate({
+                    "source_model": "orders",
+                    "measures": [{"formula": "sum(amount)", "name": "total"}],
+                }),
             ],
         )
         whole = WholeModelDelete(model_name="orders", data_source="ds")

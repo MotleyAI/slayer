@@ -33,10 +33,10 @@ INLINE_QB: Dict[str, Any] = {
     "data_source": "test",
     "source_queries": [{
         "source_model": "orders", "dimensions": ["status"],
-        "measures": [{"formula": "amount:sum", "name": "rev"}],
+        "measures": [{"formula": "sum(amount)", "name": "rev"}],
     }],
 }
-OUTER: Dict[str, Any] = {"dimensions": ["status"], "measures": [{"formula": "rev:sum", "name": "t"}]}
+OUTER: Dict[str, Any] = {"dimensions": ["status"], "measures": [{"formula": "sum(rev)", "name": "t"}]}
 
 
 def _assert_ban(exc: BaseException, name: str = "iqb") -> None:
@@ -116,7 +116,7 @@ class TestOtherInlineSourcesAccepted:
                         {"name": "amount", "type": "DOUBLE"}],
         }
         resp = await engine.execute(query(
-            source_model=inline, dimensions=["customer_id"], measures=[m("amount:sum", "a")]))
+            source_model=inline, dimensions=["customer_id"], measures=[m("sum(amount)", "a")]))
         assert rows_by(resp.data, key="orders_inline.customer_id", value="orders_inline.a") == CUST_REV
 
     async def test_inline_sql_backed(self, engine) -> None:
@@ -128,13 +128,13 @@ class TestOtherInlineSourcesAccepted:
                         {"name": "amount", "type": "DOUBLE"}],
         }
         resp = await engine.execute(query(
-            source_model=inline, dimensions=["customer_id"], measures=[m("amount:sum", "a")]))
+            source_model=inline, dimensions=["customer_id"], measures=[m("sum(amount)", "a")]))
         assert rows_by(resp.data, key="orders_sql.customer_id", value="orders_sql.a") == CUST_REV
 
     async def test_extension_over_a_stored_query_backed_model(self, engine) -> None:
         ext = {"source_name": "cust_rev",
                "columns": [{"name": "rev2", "sql": "rev * 2", "type": "DOUBLE"}]}
         resp = await engine.execute(query(
-            source_model=ext, dimensions=["customer_id"], measures=[m("rev2:sum", "r2")]))
+            source_model=ext, dimensions=["customer_id"], measures=[m("sum(rev2)", "r2")]))
         assert rows_by(resp.data, key="cust_rev.customer_id", value="cust_rev.r2") == {
             c: 2 * v for c, v in CUST_REV.items()}

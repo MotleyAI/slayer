@@ -87,11 +87,16 @@ class TestParser:
         parse_expr(text)
 
 
+async def _dry_run(engine: SlayerQueryEngine, query: dict) -> None:
+    """Validate ``query`` and dry-run it; the refusal may come from either step."""
+    await engine.execute(SlayerQuery.model_validate(query), dry_run=True)
+
+
 async def _query_failure(storage: StorageBackend, query: dict) -> BaseException:
     engine = SlayerQueryEngine(storage=storage)
     try:
         with pytest.raises(ValueError) as ei:
-            await engine.execute(SlayerQuery.model_validate(query), dry_run=True)
+            await _dry_run(engine, query)
     finally:
         engine.close()
     return ei.value
@@ -181,10 +186,11 @@ class TestFreshQueries:
 
 
 async def _save_failure(storage: StorageBackend, doc: dict) -> BaseException:
+    model = SlayerModel.model_validate(doc)
     engine = SlayerQueryEngine(storage=storage)
     try:
         with pytest.raises(ValueError) as ei:
-            await engine.save_model(SlayerModel.model_validate(doc))
+            await engine.save_model(model)
     finally:
         engine.close()
     return ei.value

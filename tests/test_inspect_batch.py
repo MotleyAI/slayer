@@ -39,6 +39,7 @@ from slayer.core.models import (
     DatasourceConfig,
     SlayerModel,
 )
+from slayer.inspect.model_render import _TRUNCATION_MARKER
 from slayer.inspect.service import InspectService
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -445,8 +446,6 @@ class TestPerIdFieldsAcrossList:
     async def test_descriptions_max_chars_applied_per_element(
         self, svc: InspectService
     ) -> None:
-        from slayer.inspect.model_render import _TRUNCATION_MARKER
-
         arr = json.loads(await svc.inspect(
             reference=["mydb.orders.amount", "mydb.orders.big"],
             entity_type="column", compact=True, format="json",

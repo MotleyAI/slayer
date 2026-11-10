@@ -264,7 +264,7 @@ def test_log_base_x_known_value_via_udf(sqlite_conn):
     # NOSONAR(S125) — mathematical equation in prose ("log base 10 of 1000
     # equals 3"), not commented-out Python. Sonar's python:S7632 rule
     # requires alphanumeric-only rule keys inside the suppression
-    # parentheses, so the prefixed `python:S125` form is invalid; the
+    # parentheses, so the prefixed `S125(python)` form is invalid; the
     # bare `S125` short name is the compliant one.
     # The UDF registers unconditionally, overriding any built-in `log(B, X)` on SQLite >=3.35.
     assert _scalar(sqlite_conn, "log(10, 1000)") == pytest.approx(3.0)

@@ -19,6 +19,7 @@ from slayer.core.granularity import resolve_granularity, unknown_granularity_mes
 from slayer.core.time_spine import TIME_SPINE_MODEL, spine_model
 from slayer.core.errors import (
     AmbiguousModelError,
+    ColonSpellingError,
     IdCollisionError,
     MemoryNotFoundError,
     DefaultTimeDimensionTypeError,
@@ -37,6 +38,7 @@ from slayer.core.models import (
     shadows_library_function,
 )
 from slayer.core.query import SlayerQuery
+from slayer.core.syntax import parse_expr
 from slayer.core.warnings import LibraryNameShadowWarning, SlayerLibraryNameShadowWarning, caller_announces
 from slayer.embeddings.models import Embedding
 from slayer.sql import connection_policy
@@ -475,6 +477,17 @@ def _validate_path_component(value: str, *, kind: str) -> None:
             )
 
 
+def _refuse_colon_measures(model: SlayerModel) -> None:
+    """A measure formula in a removed colon spelling fails the save; other parse errors surface at binding."""
+    for measure in model.measures:
+        try:
+            parse_expr(measure.formula)
+        except ColonSpellingError:
+            raise
+        except Exception:  # noqa: BLE001, S112 — reported when a query binds it
+            continue
+
+
 def _validate_default_time_dimension(model: SlayerModel) -> None:
     column = model.get_column(model.default_time_dimension) if model.default_time_dimension else None
     if column is not None and column.type not in (DataType.DATE, DataType.TIMESTAMP):
@@ -509,6 +522,7 @@ class StorageBackend(ABC):
         """Reserved-name and case-collision rejection, derived-column and model-filter well-formedness (reference arity + cycles) and join-edge validation against this store's peers; then a warning per dependent the save breaks, unless ``failures`` is unreported."""
         if model.name == TIME_SPINE_MODEL:
             raise ReservedModelNameError(name=model.name)
+        _refuse_colon_measures(model)
         if self._ids_collide_as_filenames:
             await self._check_model_identity_collision(model)
         # A skipped (unloadable) peer is invisible to these checks; its edge names go unchecked.

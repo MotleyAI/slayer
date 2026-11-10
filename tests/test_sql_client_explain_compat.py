@@ -39,7 +39,7 @@ from tests._gateway_harness import (
     shop_storage,
 )
 
-COUNT_ORDERS = {"source_model": "orders", "measures": [{"formula": "*:count", "name": "n"}]}
+COUNT_ORDERS = {"source_model": "orders", "measures": [{"formula": "count(*)", "name": "n"}]}
 DEPRECATION = r"A SQL client without explain\(\).*SLayer 2\.0"
 _PLAN = [{"plan": "scan"}]
 

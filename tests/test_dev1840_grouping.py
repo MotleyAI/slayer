@@ -19,9 +19,9 @@ from tests._dev1840_fixtures import (
     q,
 )
 
-M = ModelMeasure(formula="amount:sum", name="m")
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
-RM = ModelMeasure(formula="stores.rent:sum", name="rm")
+M = ModelMeasure(formula="sum(amount)", name="m")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+RM = ModelMeasure(formula="sum(stores.rent)", name="rm")
 
 
 def _plan(query, models=None):

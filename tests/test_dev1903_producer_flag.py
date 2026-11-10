@@ -149,7 +149,7 @@ class TestTwoEntryPoints:
 def _producer_env():
     bundle = _dev1836_bundle()
     query = dev1836_q(dimensions=["status"],
-                      measures=[ModelMeasure(formula="amount:sum", name="s")])
+                      measures=[ModelMeasure(formula="sum(amount)", name="s")])
     scope = resolve_scope(query=query, bundle=bundle, stage_schemas={})
     prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope, stage_schemas={})
     return query, prebound, elaborate_mod.elaborate_synthesized(
@@ -214,17 +214,17 @@ class TestEverySiteStatesItsPopulation:
     @pytest.mark.parametrize(("plan", "expected"), [
         pytest.param(lambda: plan_query(query=dev1836_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.spend:sum", name="cm")]),
+            measures=[ModelMeasure(formula="sum(customers.spend)", name="cm")]),
             bundle=_dev1836_bundle()), {"NoInheritedPopulation"}, id="cross-model"),
         pytest.param(lambda: plan_query(query=dev1836_q(
             dimensions=["status", "channel"],
-            measures=[ModelMeasure(formula="amount:sum(partition_by=channel)", name="pt")]),
+            measures=[ModelMeasure(formula="sum(amount, partition_by=channel)", name="pt")]),
             bundle=_dev1836_bundle()), {"InheritedPopulation"}, id="local-regroup"),
         pytest.param(lambda: plan_query(query=cust_q(
-            dimensions=["tier"], measures=[ModelMeasure(formula="spend:sum", name="sp")],
+            dimensions=["tier"], measures=[ModelMeasure(formula="sum(spend)", name="sp")],
             order=[{"column": "orders.amount", "direction": "asc"}]),
             bundle=_customers_bundle()), {"InheritedPopulation"}, id="wrap"),
-        pytest.param(lambda: _monthly_plan("time_shift(amount:sum, -1)"),
+        pytest.param(lambda: _monthly_plan("time_shift(sum(amount), -1)"),
                      {"InheritedPopulation"}, id="shifted"),
         pytest.param(lambda: plan_query(query=sales_q(
             dimensions=["region"], measures=[reagg("avg", INNER_CR, name="a")]),
@@ -244,8 +244,8 @@ class TestTopOnlySteps:
         bundle = _dev1836_bundle()
         query = dev1836_q(
             dimensions=["status", "channel"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
-            filters=["status = 'ok' and amount:sum(partition_by=channel) > 0"])
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            filters=["status = 'ok' and sum(amount, partition_by=channel) > 0"])
         top = elaborate_query(query=query, bundle=bundle)
         assert top.prebound is not None
         assert len(top.prebound.bound_filters) == 2
@@ -261,7 +261,7 @@ class TestTopOnlySteps:
         """A fanning row filter rides the host EXISTS at the top; a producer with no
         inherited population keeps it as its own mask."""
         query = cust_q(dimensions=["tier"],
-                       measures=[ModelMeasure(formula="spend:sum", name="sp")],
+                       measures=[ModelMeasure(formula="sum(spend)", name="sp")],
                        filters=["orders.status = 'ok'"])
         assert _semi_join_and_mask_counts(
             plan_query(query=query, bundle=_customers_bundle())) == [(1, 0)]
@@ -290,12 +290,12 @@ class TestTopOnlySteps:
         producer does neither."""
         calls = _count_top_only(monkeypatch)
         s1 = cust_q(name="s1", dimensions=["tier"], measures=[
-            ModelMeasure(formula="spend:sum", name="sp"),
-            ModelMeasure(formula="spend:sum(partition_by=tier)", name="pt")],
+            ModelMeasure(formula="sum(spend)", name="sp"),
+            ModelMeasure(formula="sum(spend, partition_by=tier)", name="pt")],
             filters=["orders.status = 'ok'"])
         root = SlayerQuery.model_validate({
             "source_model": "s1", "dimensions": ["tier"],
-            "measures": [{"formula": "sp:sum", "name": "t"}]})
+            "measures": [{"formula": "sum(sp)", "name": "t"}]})
         stage_plans = plan_stages(queries=[s1, root], bundle=_customers_bundle())
         assert calls == {"dispose": 2, "total_routing": 2}
         assert [len(p.semi_join_filters) for p in stage_plans] == [1, 0]
@@ -303,11 +303,11 @@ class TestTopOnlySteps:
 
     @pytest.mark.parametrize("plan", [
         pytest.param(lambda: plan_query(query=cust_q(
-            dimensions=["tier"], measures=[ModelMeasure(formula="spend:sum", name="sp")],
+            dimensions=["tier"], measures=[ModelMeasure(formula="sum(spend)", name="sp")],
             filters=["orders.status = 'ok'"],
             order=[{"column": "orders.amount", "direction": "asc"}]),
             bundle=_customers_bundle()), id="late-wrap"),
-        pytest.param(lambda: _monthly_plan("time_shift(amount:sum, -1)"), id="shifted"),
+        pytest.param(lambda: _monthly_plan("time_shift(sum(amount), -1)"), id="shifted"),
     ])
     def test_late_producers_never_run_top_only_steps(self, monkeypatch, plan):
         calls = _count_top_only(monkeypatch)
@@ -319,7 +319,7 @@ class TestTopOnlySteps:
         """Blinded discovery raises at the top; a producer holds the root inline."""
         monkeypatch.setattr(stages, "discover_roots", lambda *_a, **_k: [])
         query = dev1836_q(dimensions=["status", "channel"], measures=[
-            ModelMeasure(formula="amount:sum(partition_by=channel)", name="pt")])
+            ModelMeasure(formula="sum(amount, partition_by=channel)", name="pt")])
         bundle = _dev1836_bundle()
         with pytest.raises(ValueError, match="no routing disposition"):
             plan_query(query=query, bundle=bundle)
@@ -358,9 +358,9 @@ class TestStrictSubsetNesting:
             == [["city"], ["region"]]
 
     @pytest.mark.parametrize(("formula", "dimensions", "bundle"), [
-        pytest.param("loss_payment_amt:sum", ["claim.claim_number"],
+        pytest.param("sum(loss_payment_amt)", ["claim.claim_number"],
                      lambda: _bundle(_claim_amount()), id="filter-crossing"),
-        pytest.param("region_pay:sum", None, _s5_bundle, id="input-crossing"),
+        pytest.param("sum(region_pay)", None, _s5_bundle, id="input-crossing"),
     ])
     def test_own_answer_at_producer_grain_never_nests(self, formula, dimensions, bundle):
         host = bundle().source_model
@@ -403,7 +403,7 @@ class TestShiftedProducerNesting:
     """Pins: the shifted producer already runs with nested discovery on."""
 
     def test_own_grain_ranked_answer_does_not_nest(self):
-        attach = _shifted(_monthly_plan("time_shift(amount:last, -1)"))
+        attach = _shifted(_monthly_plan("time_shift(last(amount), -1)"))
         assert attach.kernel.kind == "ranked"
         assert attach.producer_plan.regroup_attach_plans == []
         [slot] = attach.producer_plan.aggregate_slots
@@ -412,8 +412,8 @@ class TestShiftedProducerNesting:
         assert attach.answer_slot_id == slot.id
 
     @pytest.mark.parametrize(("formula", "kernel"), [
-        pytest.param("time_shift(amount:last / 2, -1)", "ranked", id="ranked"),
-        pytest.param("time_shift(amount:sum(window='90d') / 2, -1)", "trailing-window",
+        pytest.param("time_shift(last(amount) / 2, -1)", "ranked", id="ranked"),
+        pytest.param("time_shift(sum(amount, window='90d') / 2, -1)", "trailing-window",
                      id="windowed"),
     ])
     def test_strict_constituent_nests(self, formula, kernel):
@@ -428,7 +428,7 @@ class TestShiftedProducerNesting:
         assert nested.attach_phase == "combined"
 
     def test_carried_attach_is_reused_not_renested(self):
-        pq = _monthly_plan("time_shift(amount:sum / amount:sum(partition_by=[region]), -1)")
+        pq = _monthly_plan("time_shift(sum(amount) / sum(amount, partition_by=[region]), -1)")
         attach = _shifted(pq)
         [base] = [a for a in pq.regroup_attach_plans if a.attach_phase == "combined"]
         [carried] = attach.producer_plan.regroup_attach_plans

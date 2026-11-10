@@ -38,15 +38,6 @@ IDENTIFIER_RE = re.compile(r"^[a-zA-Z_]\w*$")
 # An identifier or dotted path; used to scan formula text for reference candidates.
 IDENT_OR_PATH_RE = re.compile(r"[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*")
 
-# Legacy colon aggregation spelling (``revenue:sum``, ``*:count``). Group 1 measure name,
-# group 2 aggregation name, group 3 optional ``(...)`` arglist.
-AGG_REF_RE = re.compile(
-    r"(\*|[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*(?:\.\*)?)"  # measure / *
-    r":"
-    r"([a-zA-Z_]\w*)"
-    r"(\([^)]*\))?"
-)
-
 
 # Aggregation-suffix utilities
 
@@ -454,38 +445,8 @@ def canonical_agg_name(
     return f"{measure_name}_{aggregation_name}{suffix}"
 
 
-def strip_agg_suffix(raw: str) -> tuple[str, str | None]:
-    """Return ``(prefix, agg_name)`` stripping a trailing legacy colon suffix ``:agg``/``:agg(...)`` (arglist discarded); locates the outermost colon (outside parens) so ``revenue:last(created_at)`` isn't fooled."""
-    depth = 0
-    for i, ch in enumerate(raw):
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-        elif ch == ":" and depth == 0:
-            prefix = raw[:i]
-            tail = raw[i + 1:]
-            agg = tail.split("(", 1)[0]
-            return prefix, agg
-    return raw, None
-
-
-def split_agg_suffix(raw: str) -> tuple[str, str | None]:
-    """Return ``(prefix, suffix)`` splitting a trailing legacy colon suffix ``:agg`` but keeping the full suffix (args included) — unlike :func:`strip_agg_suffix`, so a re-rooted reference re-attaches it verbatim."""
-    depth = 0
-    for i, ch in enumerate(raw):
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-        elif ch == ":" and depth == 0:
-            return raw[:i], raw[i + 1:]
-    return raw, None
-
-
 def functional_agg_text(*, source: str, suffix: str) -> str:
-    """Functional text of ``(source, suffix)``, the inverse of :func:`split_agg_suffix`:
-    ``("price", "percentile(p=0.9)")`` → ``percentile(price, p=0.9)``."""
+    """Functional text of ``(source, suffix)``: ``("price", "percentile(p=0.9)")`` → ``percentile(price, p=0.9)``."""
     name, paren, rest = suffix.strip().partition("(")
     args = rest.rstrip()[:-1].strip() if paren else ""
     inner = f"{source}, {args}" if args else source

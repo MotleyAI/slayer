@@ -24,7 +24,12 @@ from pydantic import (
 from slayer.core.direction import normalize_direction
 from slayer.core.enums import BUILTIN_AGGREGATIONS, GRANULARITY_NAMES, TimeGranularity, normalize_aggregation_name, ALL_TRANSFORMS
 from slayer.core.keys import RESERVED_SCALAR_NAMES
-from slayer.core.errors import DistinctDimensionValuesError, GranularityCallError, RefinementConflictError
+from slayer.core.errors import (
+    ColonSpellingError,
+    DistinctDimensionValuesError,
+    GranularityCallError,
+    RefinementConflictError,
+)
 from slayer.core.granularity import GranularitySpec, granularity_key
 from slayer.core.models import (
     Column,
@@ -44,6 +49,7 @@ from slayer.core.syntax import (
     call_source,
     canonical_measure_text,
     drop_root_qualifier,
+    legacy_result_name_seed,
     parse_expr,
     parse_template,
     root_relative,
@@ -87,8 +93,11 @@ def _single_col_of_source(node: AggCall) -> str | None:
 
 
 def _parsed_or_none(text: str) -> Any:
+    """``text`` parsed, ``None`` when unparseable; a removed colon spelling is refused."""
     try:
         return parse_expr(text)
+    except ColonSpellingError:
+        raise
     except Exception:  # noqa: BLE001 — the caller reports unparseable text
         return None
 
@@ -97,6 +106,8 @@ def call_callee(entry: str) -> tuple[Any, str | None]:
     """``entry`` parsed as a template (``None`` when unparseable) and its whole-call callee, if any."""
     try:
         node: Any = parse_template(entry)
+    except ColonSpellingError:
+        raise
     except Exception:  # noqa: BLE001 — the caller reports unparseable text
         node = None
     if isinstance(node, AggCall):
@@ -120,8 +131,10 @@ def granularity_call_argument(node: Any, entry: str) -> str | None:
     if not isinstance(node, AggCall) or node.args or node.kwargs or isinstance(node.source, StarSource):
         return None
     call = call_source(entry)
-    if call is None or len(call.callee) != 1:
-        return _single_col_of_source(node)  # the legacy ``col:gran`` spelling
+    if call is None:
+        return None
+    if len(call.callee) != 1:
+        return _single_col_of_source(node)
     # ``date_trunc('unit', expr)``: the unit is a plain literal
     arguments = call.arguments[1:] if call.callee[0].lower() == "date_trunc" else call.arguments
     return arguments[0] if len(arguments) == 1 else None
@@ -650,9 +663,13 @@ class ComputedDimension(BaseModel):
 
 
 def computed_dimension_name(expression: str) -> str:
-    """An unnamed computed dimension's name: its expression's canonical text, sanitised, so every
+    """An unnamed computed dimension's name: its expression's legacy naming seed, sanitised, so every
     spelling of one expression names it alike."""
-    return auto_name_from_expression(_canonical_expression_text(expression))
+    try:
+        seed = legacy_result_name_seed(parse_expr(expression))
+    except Exception:  # noqa: BLE001 — an unparseable expression is reported at binding
+        seed = expression
+    return auto_name_from_expression(seed)
 
 
 def _time_dimension_name_identity(td: "TimeDimension") -> tuple[str, tuple] | None:
@@ -694,10 +711,7 @@ def _order_formula_candidate(v: str) -> str | None:
     Binding judges whether the expression is legal there."""
     if _is_valid_column_ref_name(v):
         return None
-    if _parsed_or_none(v) is None:
-        # Rejected text: a colon spelling reaches binding, which reports the syntax error.
-        return v if ":" in v else None
-    return v
+    return None if _parsed_or_none(v) is None else v
 
 
 def _is_valid_column_ref_name(name: str) -> bool:
@@ -709,22 +723,10 @@ def _is_valid_column_ref_name(name: str) -> bool:
     return True
 
 
-def _colon_spelled_name(node: Any) -> str | None:
-    """A legacy colon-spelled aggregation's result name (``revenue:sum`` → ``revenue_sum``), else ``None``."""
-    if not isinstance(node, AggCall) or node.filter is not None:
-        return None
-    base = "*" if isinstance(node.source, StarSource) else _single_col_of_source(node)
-    if base is None:
-        return None
-    name = f"_{node.agg}" if base == "*" else f"{base}_{node.agg}"
-    return name if _is_valid_column_ref_name(name) else None
-
-
 def _coerce_order_column(v: Any) -> Any:
-    """Coerce an ORDER BY column. Legacy colon-spelling aggregations normalize to the
-    underscore form (``revenue:sum`` → ``revenue_sum``); call-style entries (``sum(revenue)``,
-    ``my_agg(price)``) emit a placeholder whose ``raw_formula`` the planner binds;
-    other non-column expressions carry ``raw_formula`` under ``_EXPR_PENDING``."""
+    """Coerce an ORDER BY column. Call-style entries (``sum(revenue)``, ``my_agg(price)``) emit a placeholder
+    whose ``raw_formula`` the planner binds; other non-column expressions carry ``raw_formula`` under
+    ``_EXPR_PENDING``."""
     if not isinstance(v, str):
         return v
     if _order_formula_candidate(v) is None:
@@ -732,7 +734,7 @@ def _coerce_order_column(v: Any) -> Any:
     call = call_source(v)
     if call is not None:
         return {"name": _FUNCSTYLE_PENDING if len(call.callee) == 1 else _EXPR_PENDING}
-    return {"name": _colon_spelled_name(_parsed_or_none(v)) or _EXPR_PENDING}
+    return {"name": _EXPR_PENDING}
 
 
 def _is_direction(value: Any) -> bool:
@@ -1356,6 +1358,8 @@ class SlayerQuery(BaseModel):
         if self.filters:
             for f in self.filters:
                 _validate_query_filter_string(f)
+        if self.main_time_dimension is not None:
+            _parsed_or_none(self.main_time_dimension)
         self._validate_distinct_dimension_values()
         return self
 

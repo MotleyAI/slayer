@@ -77,14 +77,14 @@ class TestWindowedTransforms:
     async def test_cumsum_over_bare_windowed(self, exec_backend) -> None:
         dialect, engine = exec_backend
         resp = await _run_x(engine, dialect, measures=[
-            ModelMeasure(formula="cumsum(amount:sum(window='90d'))", name="x"),
+            ModelMeasure(formula="cumsum(sum(amount, window='90d'))", name="x"),
         ])
         _assert_map(_by_region_month(resp, "x"), CUMSUM_OVER_W90)
 
     async def test_time_shift_over_bare_windowed(self, exec_backend) -> None:
         dialect, engine = exec_backend
         resp = await _run_x(engine, dialect, measures=[
-            ModelMeasure(formula="time_shift(amount:sum(window='90d'), -1)", name="x"),
+            ModelMeasure(formula="time_shift(sum(amount, window='90d'), -1)", name="x"),
         ])
         expected = with_nulls(CUMSUM_OVER_W90.keys(), TS_OVER_W90)
         _assert_map(_by_region_month(resp, "x"), expected)
@@ -96,15 +96,15 @@ class TestWindowedComposites:
     async def test_windowed_over_plain_ratio(self, exec_backend) -> None:
         dialect, engine = exec_backend
         resp = await _run_x(engine, dialect, measures=[
-            ModelMeasure(formula="amount:sum", name="m"),
-            ModelMeasure(formula="amount:sum(window='90d') / amount:sum", name="x"),
+            ModelMeasure(formula="sum(amount)", name="m"),
+            ModelMeasure(formula="sum(amount, window='90d') / sum(amount)", name="x"),
         ])
         _assert_map(_by_region_month(resp, "x"), W90_RATIO)
 
     async def test_windowed_halved(self, exec_backend) -> None:
         dialect, engine = exec_backend
         resp = await _run_x(engine, dialect, measures=[
-            ModelMeasure(formula="amount:sum(window='1y') / 2", name="x"),
+            ModelMeasure(formula="sum(amount, window='1y') / 2", name="x"),
         ])
         _assert_map(
             _by_region_month(resp, "x"), {k: v / 2 for k, v in COL_WM.items()},
@@ -121,8 +121,8 @@ class TestWindowedFilters:
         dialect, engine = exec_backend
         resp = await _run_x(
             engine, dialect,
-            measures=[ModelMeasure(formula="amount:sum", name="m")],
-            filters=["amount:sum(window='90d') > 40"],
+            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            filters=["sum(amount, window='90d') > 40"],
         )
         _assert_map(_by_region_month(resp, "m"), {
             ("North", "2024-02"): 70.0, ("South", "2024-03"): 25.0,
@@ -135,8 +135,8 @@ class TestWindowedFilters:
         dialect, engine = exec_backend
         resp = await _run_x(
             engine, dialect,
-            measures=[ModelMeasure(formula="amount:sum", name="m")],
-            filters=["amount:sum(window='90d') > amount:sum"],
+            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            filters=["sum(amount, window='90d') > sum(amount)"],
         )
         _assert_map(_by_region_month(resp, "m"), {
             ("North", "2024-02"): 70.0, ("South", "2024-03"): 25.0,
@@ -148,8 +148,8 @@ class TestWindowedFilters:
         dialect, engine = exec_backend
         resp = await _run_x(
             engine, dialect,
-            measures=[ModelMeasure(formula="amount:sum", name="m")],
-            filters=["amount:sum(window='90d') > 40 and status = 'ok'"],
+            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            filters=["sum(amount, window='90d') > 40 and status = 'ok'"],
         )
         # OK rows only: South loses its March bucket; the windowed values are
         # computed over the OK population, then > 40 keeps (N,Feb) and (NULL,Mar).
@@ -161,8 +161,8 @@ class TestWindowedFilters:
         dialect, engine = exec_backend
         resp = await _run_x(
             engine, dialect,
-            measures=[ModelMeasure(formula="amount:sum", name="m")],
-            filters=["amount:sum(window='90d') > 40", "status = 'ok'"],
+            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            filters=["sum(amount, window='90d') > 40", "status = 'ok'"],
         )
         _assert_map(_by_region_month(resp, "m"), {
             ("North", "2024-02"): 70.0, (None, "2024-03"): 60.0,
@@ -176,8 +176,8 @@ class TestWindowedFilters:
         _, engine = exec_backend
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
-            filters=["amount:sum(window='90d') > 40 or status = 'ok'"],
-            measures=[ModelMeasure(formula="amount:sum", name="m")],
+            filters=["sum(amount, window='90d') > 40 or status = 'ok'"],
+            measures=[ModelMeasure(formula="sum(amount)", name="m")],
         )
         with pytest.raises(ValueError, match="neither a field nor a measure"):
             await engine.execute(query)
@@ -189,7 +189,7 @@ class TestTemporalOverRanked:
     async def test_time_shift_over_bare_last(self, exec_backend) -> None:
         dialect, engine = exec_backend
         resp = await _run_x(engine, dialect, measures=[
-            ModelMeasure(formula="time_shift(amount:last, -1)", name="x"),
+            ModelMeasure(formula="time_shift(last(amount), -1)", name="x"),
         ])
         keys = {
             ("North", "2024-01"), ("North", "2024-02"), ("South", "2024-01"),
@@ -200,7 +200,7 @@ class TestTemporalOverRanked:
     async def test_change_over_bare_last(self, exec_backend) -> None:
         dialect, engine = exec_backend
         resp = await _run_x(engine, dialect, measures=[
-            ModelMeasure(formula="change(amount:last)", name="x"),
+            ModelMeasure(formula="change(last(amount))", name="x"),
         ])
         keys = {
             ("North", "2024-01"), ("North", "2024-02"), ("South", "2024-01"),
@@ -211,7 +211,7 @@ class TestTemporalOverRanked:
     async def test_change_pct_over_bare_last(self, exec_backend) -> None:
         dialect, engine = exec_backend
         resp = await _run_x(engine, dialect, measures=[
-            ModelMeasure(formula="change_pct(amount:last)", name="x"),
+            ModelMeasure(formula="change_pct(last(amount))", name="x"),
         ])
         keys = {
             ("North", "2024-01"), ("North", "2024-02"), ("South", "2024-01"),
@@ -226,7 +226,7 @@ class TestChangeOverAttached:
     """``change``/``change_pct`` over an attached partition-grain value: the
     region total is constant across a region's buckets, so the only bucket with
     a previous calendar month sees a difference of exactly 0 — attached-value
-    semantics, distinct from ``change(amount:sum)`` (which gives 40)."""
+    semantics, distinct from ``change(sum(amount))`` (which gives 40)."""
 
     @pytest.mark.parametrize(("op", "expected"), [
         ("change", {("North", "2024-02"): 0.0}),
@@ -235,7 +235,7 @@ class TestChangeOverAttached:
     async def test_change_over_partitioned(self, exec_backend, op, expected) -> None:
         dialect, engine = exec_backend
         resp = await _run_x(engine, dialect, measures=[
-            ModelMeasure(formula=f"{op}(amount:sum(partition_by=region))", name="x"),
+            ModelMeasure(formula=f"{op}(sum(amount, partition_by=region))", name="x"),
         ])
         keys = {
             ("North", "2024-01"), ("North", "2024-02"), ("South", "2024-01"),

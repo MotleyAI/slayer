@@ -240,10 +240,10 @@ class TestHeadlineOracle:
         """Scenario: Adding a mixed measure is cardinality-neutral."""
         base = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:sum", name="tot")]))
+            measures=[ModelMeasure(formula="sum(amount)", name="tot")]))
         with_mixed = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:sum", name="tot"),
+            measures=[ModelMeasure(formula="sum(amount)", name="tot"),
                       ModelMeasure(formula=MIXED_SUM, name="m")]))
         assert len(with_mixed.data) == len(base.data)
         a = {k: v["sales.tot"] for k, v in region_key(base).items()}
@@ -350,7 +350,7 @@ class TestFilterAndOrderPositions:
         measure, pruning rows with surviving values unchanged."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"], filters=[f"{MIXED_SUM} > 40"],
-            measures=[ModelMeasure(formula="amount:sum", name="tot")]))
+            measures=[ModelMeasure(formula="sum(amount)", name="tot")]))
         vals = _region_vals(resp, "sales.tot")
         assert set(vals) == {"North", "South", "East"}
         for region in vals:
@@ -360,7 +360,7 @@ class TestFilterAndOrderPositions:
     async def test_order_position_sorts_by_the_mixed_value(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:sum", name="tot")],
+            measures=[ModelMeasure(formula="sum(amount)", name="tot")],
             order=[{"column": MIXED_SUM, "direction": "desc"}]))
         order = [r["sales.region"] for r in resp.data]
         assert order == ["South", "North", "East", "Gap", "Void"]
@@ -372,7 +372,7 @@ class TestDimensionPosition:
         mixed value groups rows with unchanged cardinality."""
         resp = await exec_engine.execute(sales_q(
             dimensions=[{"expression": MIXED_BAND_EXPR, "name": "mixed_band"}],
-            measures=[ModelMeasure(formula="amount:sum", name="tot")]))
+            measures=[ModelMeasure(formula="sum(amount)", name="tot")]))
         by = rows_by(resp, "sales.mixed_band")
         assert len(resp.data) == len(AMOUNT_BY_MIXED_BAND)
         for band, expected in AMOUNT_BY_MIXED_BAND.items():
@@ -467,7 +467,7 @@ class TestWindowedConstituent:
             source_model="sales", time_dimensions=month_td(),
             measures=[ModelMeasure(formula=self._FORMULA, name="m"),
                       ModelMeasure(formula="sum(revenue, window='90d')", name="w"),
-                      ModelMeasure(formula="qty:sum", name="q")]))
+                      ModelMeasure(formula="sum(qty)", name="q")]))
         got = {month_key(r["sales.ordered_at"]):
                (r["sales.m"], r["sales.w"], r["sales.q"]) for r in resp.data}
         assert set(got) == set(MIXED_INNER_W90_BY_MONTH)

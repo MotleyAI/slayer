@@ -705,7 +705,7 @@ class TestHavingValidationWiring:
                 dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
             filters=["_count > 1 and status == 'completed'"],
         )
         sql = await _engine_generate(query=query, model=_status_orders_model())
@@ -720,7 +720,7 @@ class TestHavingValidationWiring:
                 dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
             filters=["_count > 1 or status == 'completed'"],
         )
         model = _status_orders_model()
@@ -731,7 +731,7 @@ class TestHavingValidationWiring:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
             filters=["_count > 1 and status == 'completed'"],
         )
         sql = await _engine_generate(query=query, model=_status_orders_model())

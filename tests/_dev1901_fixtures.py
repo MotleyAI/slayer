@@ -108,7 +108,7 @@ def dev1901_models() -> List[SlayerModel]:
         _w("wmix_q", '"group" + orders.amount'),
         _w("wstore", "stores.rent"),
     ])
-    customers.measures.append(ModelMeasure(name="wsaved", formula="spend:wshadow"))
+    customers.measures.append(ModelMeasure(name="wsaved", formula="wshadow(spend)"))
     return models
 
 

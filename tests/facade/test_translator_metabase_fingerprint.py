@@ -30,6 +30,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
 from slayer.facade.catalog import FacadeCatalog, build_catalog
+from slayer.facade.rows import FacadeColumn, RowBatch
 from slayer.facade.translator import QueryResult, TranslationError, translate
 
 
@@ -134,9 +135,6 @@ def test_qualified_table_exact_match_wins_over_public_alias() -> None:
     distinct table, ``public.X`` must resolve via exact match instead of
     short-circuiting to the bare-name lookup (which would silently pick
     a different schema's same-named table)."""
-    from slayer.core.enums import DataType
-    from slayer.core.models import Column, SlayerModel
-    from slayer.facade.catalog import build_catalog
     public_orders = SlayerModel(
         name="orders", data_source="public", sql_table="orders",
         columns=[Column(name="id", type=DataType.INT, primary_key=True),
@@ -253,7 +251,6 @@ def test_translate_accepts_lazy_catalog_executor_factory() -> None:
 
     class _RecordingExecutor:
         def execute(self, *, parsed, sql):
-            from slayer.facade.rows import FacadeColumn, RowBatch
             return RowBatch(
                 columns=[FacadeColumn(name="x", type=DataType.INT)],
                 rows=[{"x": 1}],

@@ -22,7 +22,7 @@ from tests._dev1966_fixtures import customers_model, m, orders_model, query, see
 
 def _qb(name: str, source: str) -> SlayerModel:
     return SlayerModel(name=name, data_source="test", source_queries=[
-        query(source_model=source, measures=[m("amount:sum", "amount")])])
+        query(source_model=source, measures=[m("sum(amount)", "amount")])])
 
 
 #: shape → (stored models, the model the surface starts from, the expected ordered path).
@@ -35,7 +35,7 @@ _SHAPES = {
 async def _raise_via(surface: str, engine: SlayerQueryEngine, models: List[SlayerModel],
                      start: str) -> BaseException:
     calls: dict[str, Callable[[], Awaitable[object]]] = {
-        "consumer": lambda: engine.execute(query(source_model=start, measures=[m("amount:sum", "t")])),
+        "consumer": lambda: engine.execute(query(source_model=start, measures=[m("sum(amount)", "t")])),
         "run_by_name": lambda: engine.execute(start),
         "save_model": lambda: engine.save_model(next(x for x in models if x.name == start)),
         "get_column_types": lambda: engine.get_column_types(start),

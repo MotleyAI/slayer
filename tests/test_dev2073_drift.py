@@ -92,7 +92,7 @@ class TestQueryBackedCascadeFollowsTheEdge:
     async def test_only_a_stage_walking_the_dropped_edge_is_whole_dropped(self, drifted: Live, prefix: str) -> None:
         for name, edge in (("by_shipping", "shipping_address"), ("by_billing", "billing_address")):
             stage = SlayerQuery.model_validate(
-                {"source_model": "orders", "dimensions": [f"{prefix}{edge}.city"], "measures": [{"formula": "*:count"}]},
+                {"source_model": "orders", "dimensions": [f"{prefix}{edge}.city"], "measures": [{"formula": "count(*)"}]},
             )
             await drifted.storage.save_model(SlayerModel(name=name, data_source=DS, source_queries=[stage]))
         models = list((await drifted.models()).values())
@@ -147,7 +147,7 @@ class TestEveryHopOfTheRouteCounts:
                 await lv.storage.save_model(model)
             for name, dim in (("full", "subscription.customer.consumer.email"), ("short", "consumer.email")):
                 stage = SlayerQuery.model_validate(
-                    {"source_model": "invoice", "dimensions": [dim], "measures": [{"formula": "*:count"}]},
+                    {"source_model": "invoice", "dimensions": [dim], "measures": [{"formula": "count(*)"}]},
                 )
                 await lv.storage.save_model(SlayerModel(name=name, data_source=DS, source_queries=[stage]))
             models = list((await lv.models()).values())

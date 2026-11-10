@@ -140,7 +140,10 @@ class TestAsyncEngineDisposal:
         fake = _fake_async_engine()
 
         result = engine.run_sync(_planted_then(
-            monkeypatch, client, fake, engine.execute(SlayerQuery.model_validate({"source_model": "t", "measures": ["val:sum"]})),
+            monkeypatch, client, fake, engine.execute(SlayerQuery.model_validate({
+                "source_model": "t",
+                "measures": ["sum(val)"],
+            })),
         ))
         assert math.isclose(result.data[0]["t.val_sum"], 6.0)
         fake.dispose.assert_not_awaited()
@@ -151,7 +154,7 @@ class TestAsyncEngineDisposal:
         engine, client = _engine_with_pg_client(workspace)
         fake = _fake_async_engine()
         q = SlayerQuery(
-            source_model="missing", measures=["*:count"],  # type: ignore[arg-type]
+            source_model="missing", measures=["count(*)"],  # type: ignore[arg-type]
         )
         workflow = _planted_then(monkeypatch, client, fake, engine.execute(q))
         with pytest.raises(Exception):
@@ -169,7 +172,7 @@ class TestAsyncEngineDisposal:
         ))
         engine._sql_clients[("fake", "postgres")] = client_i
         fake = _fake_async_engine()
-        count = SlayerQuery.model_validate({"source_model": "t", "measures": ["*:count"]})
+        count = SlayerQuery.model_validate({"source_model": "t", "measures": ["count(*)"]})
 
         engine.run_sync(_planted_then(monkeypatch, client_i, fake, engine.execute(count)))
         monkeypatch.setattr(sql_client, "create_async_engine", _no_second_build)
@@ -205,18 +208,14 @@ class TestAsyncEngineDisposal:
         )))
         engine = SlayerQueryEngine(storage=storage)
 
-        r1 = engine.execute_sync(SlayerQuery(
-            source_model="t", measures=["*:count", "v:sum"],
-        ))
+        r1 = engine.execute_sync(SlayerQuery.model_validate({"source_model": "t", "measures": ["count(*)", "sum(v)"]}))
         assert r1.data[0]["t._count"] == 3
         assert r1.data[0]["t.v_sum"] == 60
         assert len(engine._sql_clients) == 1
         client = cast(SlayerSQLClient, next(iter(engine._sql_clients.values())))
         sync_engine_first = client._sync_engine
 
-        r2 = engine.execute_sync(SlayerQuery(
-            source_model="t", measures=["*:count", "v:sum"],
-        ))
+        r2 = engine.execute_sync(SlayerQuery.model_validate({"source_model": "t", "measures": ["count(*)", "sum(v)"]}))
         assert r2.data[0]["t._count"] == 3
         assert client in engine._sql_clients.values()
         assert client._sync_engine is sync_engine_first, (

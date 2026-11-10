@@ -27,8 +27,8 @@ ALLOWED_DELTAS: dict[str, str] = {}
 
 _TD = {"dimension": "ordered_at", "granularity": "month"}
 _TD_DR = {**_TD, "date_range": ["2024-02-01", "2024-03-31"]}
-_SHARE = "amount:sum / amount:sum(partition_by=[ordered_at])"
-_REGION_SHARE = "amount:sum / amount:sum(partition_by=[region])"
+_SHARE = "sum(amount) / sum(amount, partition_by=[ordered_at])"
+_REGION_SHARE = "sum(amount) / sum(amount, partition_by=[region])"
 _EVENT = "customers.regions.region_events.value"
 
 
@@ -49,43 +49,43 @@ def _cases() -> dict:
         "leaf/change": _monthly(f"change({_SHARE})"),
         "leaf/change_pct": _monthly(f"change_pct({_SHARE})"),
         "leaf/trivial_composite": _monthly(
-            "time_shift(amount:sum(partition_by=[ordered_at]) / 2, -1)"),
+            "time_shift(sum(amount, partition_by=[ordered_at]) / 2, -1)"),
         "leaf/non_time_partition": _monthly(f"time_shift({_REGION_SHARE}, -1)"),
         "leaf/reaggregation": _monthly(
-            "avg(time_shift(amount:sum(partition_by=[region, ordered_at]) "
-            "/ amount:sum(partition_by=[ordered_at]), -1))", dims=()),
-        "leaf/ranked_composite": _monthly("time_shift(amount:last / 2, -1)"),
-        "leaf/windowed_composite": _monthly("time_shift(amount:sum(window='90d') / 2, -1)"),
+            "avg(time_shift(sum(amount, partition_by=[region, ordered_at]) "
+            "/ sum(amount, partition_by=[ordered_at]), -1))", dims=()),
+        "leaf/ranked_composite": _monthly("time_shift(last(amount) / 2, -1)"),
+        "leaf/windowed_composite": _monthly("time_shift(sum(amount, window='90d') / 2, -1)"),
         "leaf/carried_degenerate": _monthly(
-            "time_shift(amount:sum / max(amount:sum(partition_by=[region]), "
+            "time_shift(sum(amount) / max(sum(amount, partition_by=[region]), "
             "partition_by=region), -1)"),
         "frame/bare_partitioned": _monthly(
-            "time_shift(amount:sum(partition_by=[ordered_at]), -1)", dr=True),
-        "frame/bare_ranked": _monthly("time_shift(amount:last, -1)", dr=True),
-        "frame/bare_windowed": _monthly("time_shift(amount:sum(window='90d'), -1)", dr=True),
+            "time_shift(sum(amount, partition_by=[ordered_at]), -1)", dr=True),
+        "frame/bare_ranked": _monthly("time_shift(last(amount), -1)", dr=True),
+        "frame/bare_windowed": _monthly("time_shift(sum(amount, window='90d'), -1)", dr=True),
         "frame/non_time_partition": _monthly(f"time_shift({_REGION_SHARE}, -1)", dr=True),
         "frame/mixed_conjunction": _monthly(
-            "time_shift(amount:sum + amount:sum(partition_by=[ordered_at]), -1)",
+            "time_shift(sum(amount) + sum(amount, partition_by=[ordered_at]), -1)",
             filters=["ordered_at >= '2024-02-01' and region = 'North'"]),
         "join/two_offsets": {**_monthly(""), "measures": [
             {"formula": f"time_shift({_SHARE}, -1)", "name": "t1"},
             {"formula": f"time_shift({_SHARE}, -2)", "name": "t2"}]},
-        "join/unaligned_day": _monthly("time_shift(amount:sum, -1, 'day')"),
+        "join/unaligned_day": _monthly("time_shift(sum(amount), -1, 'day')"),
         "population/association_filter": _orders(
             f"time_shift({_SHARE}, -1)", dims=["status"], filters=[f"{_EVENT} > 40"]),
         "population/associate_dimension": _orders(
-            "time_shift(amount:sum, -1)", dims=[_EVENT], to_many_handling="associate"),
+            "time_shift(sum(amount), -1)", dims=[_EVENT], to_many_handling="associate"),
         "population/tier_partition": _orders(
-            "time_shift(amount:sum / amount:sum(partition_by=[customers.tier]), -1)",
+            "time_shift(sum(amount) / sum(amount, partition_by=[customers.tier]), -1)",
             dims=["customers.tier"]),
         "population/fanning_partition": _orders(
-            f"time_shift(amount:sum / amount:sum(partition_by=[{_EVENT}]), -1)",
+            f"time_shift(sum(amount) / sum(amount, partition_by=[{_EVENT}]), -1)",
             dims=["status"]),
         "stage/share": [
             {"name": "s1", "source_model": "monthly", "dimensions": ["region"],
-             "time_dimensions": [_TD], "measures": [{"formula": "amount:sum", "name": "rev"}]},
+             "time_dimensions": [_TD], "measures": [{"formula": "sum(amount)", "name": "rev"}]},
             {"source_model": "s1", "dimensions": ["region"], "time_dimensions": [_TD_DR],
-             "measures": [{"formula": "time_shift(rev:sum / rev:sum(partition_by=[ordered_at]), -1)",
+             "measures": [{"formula": "time_shift(sum(rev) / sum(rev, partition_by=[ordered_at]), -1)",
                            "name": "t"}]}],
     }
 

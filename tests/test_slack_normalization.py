@@ -157,10 +157,10 @@ class TestMisplacedMeasure:
     def test_aggregation_measures_kept(self):
         # Aggregations (`sum(revenue)`, `count(*)`) are real
         # measures — never reclassified as dimensions.
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "sum(revenue)"}, {"formula": "count(*)"}],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(revenue)"}, {"formula": "count(*)"}],
+        })
         result = normalize_query(q, model=_orders())
         assert len(result.query.measures) == 2
         assert not result.query.dimensions
@@ -169,10 +169,7 @@ class TestMisplacedMeasure:
     # DEV-1484 backfill from TestAutoMoveDimensions.test_arithmetic_kept
     def test_arithmetic_formula_kept(self):
         # An arithmetic-over-aggregates formula stays a measure.
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "sum(revenue) / count(*)"}],
-        )
+        q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(revenue) / count(*)"}]})
         result = normalize_query(q, model=_orders())
         assert len(result.query.measures) == 1
         assert not any(w.rule_id == "MISPLACED_MEASURE" for w in result.warnings)
@@ -183,10 +180,10 @@ class TestMisplacedMeasure:
         # local column, so MISPLACED_MEASURE leaves it in measures (the
         # binder errors later if the path is invalid). This also covers the
         # legacy dotted-named-measure case — every dotted ref is kept.
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "customers.nonexistent"}, {"formula": "sum(revenue)"}],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "customers.nonexistent"}, {"formula": "sum(revenue)"}],
+        })
         result = normalize_query(q, model=_orders())
         assert len(result.query.measures) == 2
         assert not any(w.rule_id == "MISPLACED_MEASURE" for w in result.warnings)
@@ -197,10 +194,10 @@ class TestMisplacedMeasure:
         # A dotted ref to a named ModelMeasure on a joined model
         # (`customers.name_count`) is dotted, so MISPLACED_MEASURE keeps it
         # in measures rather than moving it to dimensions.
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "customers.name_count"}, {"formula": "sum(revenue)"}],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "customers.name_count"}, {"formula": "sum(revenue)"}],
+        })
         result = normalize_query(q, model=_orders())
         assert len(result.query.measures) == 2
         assert not any(w.rule_id == "MISPLACED_MEASURE" for w in result.warnings)
@@ -222,11 +219,11 @@ class TestMisplacedMeasure:
         m = _orders().model_copy(update={
             "columns": _orders().columns + [Column(name="customer_id", type=DataType.INT)],
         })
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "customer_id"}, {"formula": "sum(revenue)"}],
-            dimensions=["status"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "customer_id"}, {"formula": "sum(revenue)"}],
+            "dimensions": ["status"],
+        })
         result = normalize_query(q, model=m)
         assert len(result.query.measures) == 1
         assert result.query.measures[0].formula == "sum(revenue)"
@@ -250,11 +247,11 @@ class TestMisplacedMeasure:
 
 class TestResult:
     def test_canonical_input_returns_unchanged_query(self):
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "sum(revenue)"}],
-            dimensions=["status"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(revenue)"}],
+            "dimensions": ["status"],
+        })
         result = normalize_query(q, model=_orders())
         assert isinstance(result, NormalizationResult)
         assert result.warnings == []
@@ -297,11 +294,11 @@ class TestEngineWiring:
             await storage.save_model(_orders())
             engine = SlayerQueryEngine(storage=storage)
 
-            q = SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "sum(revenue)"}],
-                dimensions=["status"],
-            )
+            q = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(revenue)"}],
+                "dimensions": ["status"],
+            })
             resp = await engine.execute(q, dry_run=True)
             assert resp.warnings == []
 
@@ -374,10 +371,10 @@ class TestEngineWiring:
                 joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
             ))
             engine = SlayerQueryEngine(storage=storage)
-            q = SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "customers.name"}, {"formula": "sum(revenue)"}],
-            )
+            q = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "customers.name"}, {"formula": "sum(revenue)"}],
+            })
             with pytest.raises(PositionTypingError) as ei:
                 await engine.execute(q, dry_run=True)
             assert ei.value.location == "measure 'customers_name'"
@@ -550,11 +547,11 @@ class TestJoinedCustomAggFunctional:
                     {"formula": "rolling_avg(customers.score)", "name": "ravg"},
                 ],
             )
-            root = SlayerQuery(
-                source_model="stage1",
-                dimensions=["status"],
-                measures=[{"formula": "max(ravg)"}],
-            )
+            root = SlayerQuery.model_validate({
+                "source_model": "stage1",
+                "dimensions": ["status"],
+                "measures": [{"formula": "max(ravg)"}],
+            })
             resp = await engine.execute([stage1, root], dry_run=True)
             assert not _slack_rewrite_warnings(resp.warnings), resp.warnings
             assert "AVG(" in resp.sql, resp.sql
@@ -566,12 +563,12 @@ class TestJoinedCustomAggFunctional:
         try:
             await storage.save_model(_customers_with_rolling_avg())
             await storage.save_model(_orders_joining_customers())
-            q = SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "sum(revenue)"}],
-                dimensions=["status"],
-                filters=["rolling_avg(customers.score) > 100"],
-            )
+            q = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(revenue)"}],
+                "dimensions": ["status"],
+                "filters": ["rolling_avg(customers.score) > 100"],
+            })
             resp = await engine.execute(q, dry_run=True)
             assert not _slack_rewrite_warnings(resp.warnings), resp.warnings
             assert "AVG(" in resp.sql, resp.sql

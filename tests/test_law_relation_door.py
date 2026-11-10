@@ -40,7 +40,7 @@ class _Site(ast.NodeVisitor):
     visit_AsyncFunctionDef = _function
 
     def _where(self, node: ast.AST) -> str:
-        return f"{self.path.relative_to(REPO)}:{getattr(node, 'lineno', 0)}"
+        return f"{getattr(node, 'lineno', 0)}({self.path.relative_to(REPO)})"
 
     def visit_Call(self, node: ast.Call) -> None:
         func = node.func

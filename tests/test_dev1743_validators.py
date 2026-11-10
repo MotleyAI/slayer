@@ -60,7 +60,7 @@ class TestDotAndColonStillRejected:
     @pytest.mark.parametrize("bad", ["a.b", "a:b"])
     def test_dotted_or_coloned_measure_name_rejected(self, bad: str) -> None:
         with pytest.raises(ValueError):
-            ModelMeasure(name=bad, formula="amount:sum")
+            ModelMeasure(name=bad, formula="sum(amount)")
 
     @pytest.mark.parametrize("bad", ["a.b", "a:b"])
     def test_dotted_or_coloned_query_name_rejected(self, bad: str) -> None:
@@ -95,7 +95,7 @@ class TestSlayerPrefixReservedOnNames:
 
     def test_measure_name_reserved(self) -> None:
         with pytest.raises(ValueError):
-            ModelMeasure(name="__slayer_x", formula="amount:sum")
+            ModelMeasure(name="__slayer_x", formula="sum(amount)")
 
 
 # --------------------------------------------------------------------------- #
@@ -132,7 +132,7 @@ class TestParserSlayerPrefixReservation:
     def test_dunder_bearing_identifier_now_parses(self) -> None:
         # A bare __-bearing reference is no longer rejected by the parser
         # (binding legality is the binder's concern, not the parser's). A
-        # colon-agg like ``a__b.col:sum`` would hide the dunder inside the
+        # aggregation like ``sum(a__b.col)`` would hide the dunder inside the
         # placeholder map, so a BARE name is the real probe for the relaxation.
         parsed = parse_expr("a__b")
         assert parsed is not None

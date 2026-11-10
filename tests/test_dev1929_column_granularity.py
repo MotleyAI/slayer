@@ -213,7 +213,7 @@ class TestQueryBackedCache:
             engine = await _seeded_engine("sqlite", tmp)
             model = await engine.create_model_from_query(
                 query={"source_model": "orders",
-                       "measures": [{"formula": "amount:sum", "name": "rev"}],
+                       "measures": [{"formula": "sum(amount)", "name": "rev"}],
                        "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]},
                 name="monthly",
             )
@@ -229,7 +229,7 @@ class TestQueryBackedCache:
             engine = await _seeded_engine("sqlite", tmp)
             plain = await engine.create_model_from_query(
                 query={"source_model": "orders", "dimensions": ["created_at"],
-                       "measures": [{"formula": "amount:sum", "name": "rev"}]},
+                       "measures": [{"formula": "sum(amount)", "name": "rev"}]},
                 name="raw_ts",
             )
             assert all(c.granularity is None for c in plain.columns)
@@ -237,11 +237,11 @@ class TestQueryBackedCache:
             await engine.execute(query=SlayerQuery.model_validate({
                 "source_model": "raw_ts",
                 "time_dimensions": [{"dimension": "created_at", "granularity": "day"}],
-                "measures": [{"formula": "rev:sum"}],
+                "measures": [{"formula": "sum(rev)"}],
             }), dry_run=True)
             maxed = await engine.create_model_from_query(
                 query={"source_model": "orders", "dimensions": ["region"],
-                       "measures": [{"formula": "created_at:max"}]},
+                       "measures": [{"formula": "max(created_at)"}]},
                 name="maxed",
             )
             assert all(c.granularity is None for c in maxed.columns)
@@ -250,14 +250,14 @@ class TestQueryBackedCache:
             await engine.execute(query=SlayerQuery.model_validate({
                 "source_model": "maxed",
                 "time_dimensions": [{"dimension": agg_col, "granularity": "day"}],
-                "measures": [{"formula": "*:count"}],
+                "measures": [{"formula": "count(*)"}],
             }), dry_run=True)
             # A computed dimension is cached without a granularity.
-            band = "CASE WHEN amount:sum(partition_by=region) > 100 THEN 'big' ELSE 'small' END"
+            band = "CASE WHEN sum(amount, partition_by=region) > 100 THEN 'big' ELSE 'small' END"
             banded = await engine.create_model_from_query(
                 query={"source_model": "orders",
                        "dimensions": [{"expression": band, "name": "size_band"}],
-                       "measures": [{"formula": "amount:sum", "name": "rev"}]},
+                       "measures": [{"formula": "sum(amount)", "name": "rev"}]},
                 name="banded",
             )
             assert all(c.granularity is None for c in banded.columns)
@@ -267,13 +267,13 @@ class TestQueryBackedCache:
             engine = await _seeded_engine("sqlite", tmp)
             await engine.create_model_from_query(
                 query={"source_model": "orders",
-                       "measures": [{"formula": "amount:sum", "name": "rev"}],
+                       "measures": [{"formula": "sum(amount)", "name": "rev"}],
                        "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]},
                 name="monthly",
             )
             yearly = await engine.create_model_from_query(
                 query={"source_model": "monthly",
-                       "measures": [{"formula": "rev:sum"}],
+                       "measures": [{"formula": "sum(rev)"}],
                        "time_dimensions": [{"dimension": "created_at", "granularity": "year"}]},
                 name="yearly",
             )
@@ -281,7 +281,7 @@ class TestQueryBackedCache:
             finer = SlayerQuery.model_validate({
                 "source_model": "yearly",
                 "time_dimensions": [{"dimension": "created_at", "granularity": "day"}],
-                "measures": [{"formula": "rev_sum:sum"}],
+                "measures": [{"formula": "sum(rev_sum)"}],
             })
             with pytest.raises(TimeDimensionColumnError):
                 await engine.execute(query=finer, dry_run=True)
@@ -296,7 +296,7 @@ class TestQueryBackedExecuted:
         engine = await _seeded_engine(backend, tmp)
         await engine.create_model_from_query(
             query={"source_model": "orders",
-                   "measures": [{"formula": "amount:sum", "name": "rev"}],
+                   "measures": [{"formula": "sum(amount)", "name": "rev"}],
                    "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]},
             name="monthly",
         )
@@ -308,7 +308,7 @@ class TestQueryBackedExecuted:
             finer = SlayerQuery.model_validate({
                 "source_model": "monthly",
                 "time_dimensions": [{"dimension": "created_at", "granularity": "day"}],
-                "measures": [{"formula": "rev:sum"}],
+                "measures": [{"formula": "sum(rev)"}],
             })
             with pytest.raises(TimeDimensionColumnError):
                 await engine.execute(query=finer)
@@ -319,7 +319,7 @@ class TestQueryBackedExecuted:
             resp = await engine.execute(query=SlayerQuery.model_validate({
                 "source_model": "monthly",
                 "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
-                "measures": [{"formula": "rev:sum"}],
+                "measures": [{"formula": "sum(rev)"}],
             }))
             assert _by_bucket(resp.data) == _MONTH_SUMS
 
@@ -329,7 +329,7 @@ class TestQueryBackedExecuted:
             resp = await engine.execute(query=SlayerQuery.model_validate({
                 "source_model": "monthly",
                 "time_dimensions": [{"dimension": "created_at", "granularity": "year"}],
-                "measures": [{"formula": "rev:sum"}],
+                "measures": [{"formula": "sum(rev)"}],
             }))
             assert _by_bucket(resp.data) == _YEAR_SUMS
 
@@ -345,20 +345,20 @@ class TestHandSetExecuted:
             finer = SlayerQuery.model_validate({
                 "source_model": "orders",
                 "time_dimensions": [{"dimension": "created_at", "granularity": "hour"}],
-                "measures": [{"formula": "amount:sum", "name": "rev"}],
+                "measures": [{"formula": "sum(amount)", "name": "rev"}],
             })
             with pytest.raises(TimeDimensionColumnError):
                 await engine.execute(query=finer, dry_run=True)
             day = await engine.execute(query=SlayerQuery.model_validate({
                 "source_model": "orders",
                 "time_dimensions": [{"dimension": "created_at", "granularity": "day"}],
-                "measures": [{"formula": "amount:sum", "name": "rev"}],
+                "measures": [{"formula": "sum(amount)", "name": "rev"}],
             }))
             assert len(day.data) == len(_SEED)
             month = await engine.execute(query=SlayerQuery.model_validate({
                 "source_model": "orders",
                 "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
-                "measures": [{"formula": "amount:sum", "name": "rev"}],
+                "measures": [{"formula": "sum(amount)", "name": "rev"}],
             }))
             assert _by_bucket(month.data) == _MONTH_SUMS
 
@@ -384,14 +384,14 @@ class TestHandSetJoinPath:
         finer = SlayerQuery.model_validate({
             "source_model": "orders",
             "time_dimensions": [{"dimension": "customers.signup_at", "granularity": "day"}],
-            "measures": [{"formula": "*:count", "name": "n"}],
+            "measures": [{"formula": "count(*)", "name": "n"}],
         })
         with pytest.raises(TimeDimensionColumnError):
             await engine.execute(query=finer, dry_run=True)
         await engine.execute(query=SlayerQuery.model_validate({
             "source_model": "orders",
             "time_dimensions": [{"dimension": "customers.signup_at", "granularity": "year"}],
-            "measures": [{"formula": "*:count", "name": "n"}],
+            "measures": [{"formula": "count(*)", "name": "n"}],
         }), dry_run=True)
 
 
@@ -443,15 +443,15 @@ class TestSiblingStandIns:
             engine = await _seeded_engine("sqlite", tmp)
             s1 = {"name": "s1", "source_model": "orders",
                   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
-                  "measures": [{"formula": "amount:sum", "name": "rev"}]}
+                  "measures": [{"formula": "sum(amount)", "name": "rev"}]}
             finer = {"source_model": {"source_name": "s1"},
                      "time_dimensions": [{"dimension": "created_at", "granularity": "day"}],
-                     "measures": [{"formula": "rev:sum"}]}
+                     "measures": [{"formula": "sum(rev)"}]}
             with pytest.raises(TimeDimensionColumnError):
                 await engine.execute(query=[s1, finer], dry_run=True)
             coarser = {"source_model": {"source_name": "s1"},
                        "time_dimensions": [{"dimension": "created_at", "granularity": "year"}],
-                       "measures": [{"formula": "rev:sum"}]}
+                       "measures": [{"formula": "sum(rev)"}]}
             resp = await engine.execute(query=[s1, coarser])
             assert _by_bucket(resp.data) == _YEAR_SUMS
 
@@ -460,7 +460,7 @@ class TestSiblingStandIns:
             engine = await _seeded_engine("sqlite", tmp)
             s1 = {"name": "s1", "source_model": "orders", "dimensions": ["id"],
                   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
-                  "measures": [{"formula": "amount:sum", "name": "rev"}]}
+                  "measures": [{"formula": "sum(amount)", "name": "rev"}]}
 
             def outer(gran: str) -> dict:
                 return {
@@ -468,7 +468,7 @@ class TestSiblingStandIns:
                                      "joins": [{"target_model": "s1", "join_pairs": [["id", "id"]]}]},
                     "dimensions": ["id"],
                     "time_dimensions": [{"dimension": "s1.created_at", "granularity": gran}],
-                    "measures": [{"formula": "amount:sum", "name": "x"}],
+                    "measures": [{"formula": "sum(amount)", "name": "x"}],
                 }
             finer = outer("day")
             with pytest.raises(TimeDimensionColumnError):
@@ -485,22 +485,22 @@ class TestUnifiedMessage:
             engine = await _seeded_engine("sqlite", tmp)
             s1 = {"name": "s1", "source_model": "orders",
                   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
-                  "measures": [{"formula": "amount:sum", "name": "rev"}]}
+                  "measures": [{"formula": "sum(amount)", "name": "rev"}]}
             stage_outer = {"source_model": "s1",
                            "time_dimensions": [{"dimension": "created_at", "granularity": "day"}],
-                           "measures": [{"formula": "rev:sum"}]}
+                           "measures": [{"formula": "sum(rev)"}]}
             with pytest.raises(TimeDimensionColumnError) as stage_exc:
                 await engine.execute(query=[s1, stage_outer], dry_run=True)
             await engine.create_model_from_query(
                 query={"source_model": "orders",
-                       "measures": [{"formula": "amount:sum", "name": "rev"}],
+                       "measures": [{"formula": "sum(amount)", "name": "rev"}],
                        "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]},
                 name="monthly",
             )
             model_finer = SlayerQuery.model_validate({
                 "source_model": "monthly",
                 "time_dimensions": [{"dimension": "created_at", "granularity": "day"}],
-                "measures": [{"formula": "rev:sum"}]})
+                "measures": [{"formula": "sum(rev)"}]})
             with pytest.raises(TimeDimensionColumnError) as model_exc:
                 await engine.execute(query=model_finer, dry_run=True)
             assert str(stage_exc.value) == str(model_exc.value)

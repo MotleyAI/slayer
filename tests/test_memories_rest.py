@@ -102,7 +102,7 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
                 Column(name="amount", sql="amount", type=DataType.DOUBLE),
                 Column(name="status", sql="status", type=DataType.TEXT),
             ],
-            measures=[ModelMeasure(formula="amount:sum", name="rev")],
+            measures=[ModelMeasure(formula="sum(amount)", name="rev")],
         )
     )
     await storage.save_model(
@@ -153,7 +153,7 @@ class TestPostMemories:
                 "learning": "Revenue by status",
                 "linked_entities": {
                     "source_model": "orders",
-                    "measures": [{"formula": "amount:sum"}],
+                    "measures": [{"formula": "sum(amount)"}],
                 },
             },
         )

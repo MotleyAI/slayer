@@ -98,6 +98,6 @@ async def test_query_keys(make_store: StoreFactory, fields: dict, keys: list[str
 @pytest.mark.parametrize(("expression", "name"), DIMENSION_NAMES)
 def test_computed_dimension_auto_name(expression: str, name: str) -> None:
     assert ComputedDimension(expression=expression).name == name
-    [dim] = SlayerQuery(source_model="orders", dimensions=[expression]).dimensions or []
+    [dim] = SlayerQuery.model_validate({"source_model": "orders", "dimensions": [expression]}).dimensions or []
     assert isinstance(dim, ComputedDimension)
     assert dim.name == name

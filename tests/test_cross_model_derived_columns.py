@@ -565,7 +565,7 @@ async def test_measure_aggregation_over_cross_model_derived(tmp_path) -> None:
     model_a = await _save_a_b(storage, a_columns=[])
     query = SlayerQuery(
         source_model="A",
-        measures=[ModelMeasure(formula="B.foo_normalized:sum")],
+        measures=[ModelMeasure(formula="sum(B.foo_normalized)")],
     )
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
@@ -595,7 +595,7 @@ async def test_measure_aggregation_via_local_columnsql_referencing_derived(tmp_p
     ])
     query = SlayerQuery(
         source_model="A",
-        measures=[ModelMeasure(formula="ratio_using_derived:sum")],
+        measures=[ModelMeasure(formula="sum(ratio_using_derived)")],
     )
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
@@ -770,7 +770,7 @@ async def test_multihop_cross_model_measure_over_derived_target(tmp_path) -> Non
     model_a = await _save_a_b_c(storage)
     query = SlayerQuery(
         source_model="A",
-        measures=[ModelMeasure(formula="B.C.x_derived:sum")],
+        measures=[ModelMeasure(formula="sum(B.C.x_derived)")],
     )
     sql = await _gen_sql(engine, query, model_a)
     # Parse-sanity first so a malformed query short-circuits before the
@@ -819,7 +819,7 @@ async def test_multihop_filter_on_derived_target_column(tmp_path) -> None:
 
 async def test_multihop_time_dim_to_derived_target_column(tmp_path) -> None:
     """Multi-hop time-dimension on a derived target column. The time-dim
-    callsite (``enrichment.py:_resolve_time_dimensions``) takes a separate
+    callsite (``_resolve_time_dimensions(enrichment.py)``) takes a separate
     path through ``_maybe_expand`` from regular dims; pin it."""
     engine, storage = _engine_with_storage(tmp_path)
     model_a = await _save_a_b_c(storage, c_columns=[
@@ -895,7 +895,7 @@ async def test_dev_1339_solar_panels_repro(tmp_path) -> None:
     measure_sql = await _gen_sql(
         engine,
         SlayerQuery(source_model="solar_arrays",
-                    measures=[ModelMeasure(formula="solar_panels.panel_efficiency:avg")]),
+                    measures=[ModelMeasure(formula="avg(solar_panels.panel_efficiency)")]),
         arrays,
     )
     norm = _norm(measure_sql)
@@ -906,7 +906,7 @@ async def test_dev_1339_solar_panels_repro(tmp_path) -> None:
 
 async def test_diamond_path_cross_model_measure_over_derived_target(tmp_path) -> None:
     """Diamond join: orders → customers → regions and orders → warehouses → regions.
-    A cross-model measure on ``customers.regions.name_upper:max`` must qualify
+    A cross-model measure on ``max(customers.regions.name_upper)`` must qualify
     the inner ``name_raw`` to the diamond-side path alias, never to the wrong
     sibling path."""
     engine, storage = _engine_with_storage(tmp_path)
@@ -952,7 +952,7 @@ async def test_diamond_path_cross_model_measure_over_derived_target(tmp_path) ->
     await storage.save_model(orders)
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="customers.regions.name_upper:max")],
+        measures=[ModelMeasure(formula="max(customers.regions.name_upper)")],
     )
     sql = await _gen_sql(engine, query, orders)
     norm = _norm(sql)
@@ -1091,7 +1091,7 @@ async def test_dev1334_query_filter_on_bare_derived_col_with_cross_table_sql_add
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="*:count", name="n")],
+        measures=[ModelMeasure(formula="count(*)", name="n")],
         filters=["is_eu = 1"],
     )
     sql = await _gen_sql(engine, query, orders)
@@ -1130,7 +1130,7 @@ async def test_dev1334_query_filter_on_chained_local_derived_cols_adds_join(
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="*:count", name="n")],
+        measures=[ModelMeasure(formula="count(*)", name="n")],
         filters=["is_premium_eu = 1"],
     )
     sql = await _gen_sql(engine, query, orders)
@@ -1180,7 +1180,7 @@ async def test_dev1334_query_filter_on_multi_hop_derived_col_adds_all_prefixes(
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="*:count", name="n")],
+        measures=[ModelMeasure(formula="count(*)", name="n")],
         filters=["region_label = 'US'"],
     )
     sql = await _gen_sql(engine, query, orders)
@@ -1201,7 +1201,7 @@ async def test_dev1334_model_level_filter_on_bare_derived_col_with_cross_table_s
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="*:count", name="n")],
+        measures=[ModelMeasure(formula="count(*)", name="n")],
     )
     sql = await _gen_sql(engine, query, orders)
     assert "customers" in _join_aliases(sql), (
@@ -1236,7 +1236,7 @@ async def test_dev1334_column_level_filter_attribute_with_cross_table_ref_adds_j
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="eu_amount:sum", name="eu_total")],
+        measures=[ModelMeasure(formula="sum(eu_amount)", name="eu_total")],
     )
     sql = await _gen_sql(engine, query, orders)
     assert "customers" in _join_aliases(sql), (
@@ -1328,7 +1328,7 @@ async def test_dev1494_column_filter_dotted_base_ref_adds_join(tmp_path) -> None
         claim_columns=[
             Column(name="loss_amt", sql="amount", filter="loss_payment.status = 'paid'", type=DataType.DOUBLE),
         ],
-        measures=[ModelMeasure(formula="loss_amt:sum", name="amt")],
+        measures=[ModelMeasure(formula="sum(loss_amt)", name="amt")],
     )
     assert "loss_payment" in _join_aliases(sql), (
         f"loss_payment join not discovered from dotted-base column filter:\n{sql}"
@@ -1366,7 +1366,7 @@ async def test_dev1494_column_filter_dotted_derived_ref_crossing_further_join(
         claim_columns=[
             Column(name="deep_amt", sql="amount", filter="loss_payment.deep_flag = 1", type=DataType.DOUBLE),
         ],
-        measures=[ModelMeasure(formula="deep_amt:sum", name="amt")],
+        measures=[ModelMeasure(formula="sum(deep_amt)", name="amt")],
     )
     aliases = _join_aliases(sql)
     assert "loss_payment" in aliases, f"intermediate loss_payment join missing: {aliases}\nSQL:\n{sql}"
@@ -1401,7 +1401,7 @@ async def test_dev1494_model_filter_dotted_derived_ref_inlined(tmp_path) -> None
         claim_columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
         claim_joins=[_CLAIM_LP_JOIN_INNER],
         claim_filters=["loss_payment.has_flag = 1"],
-        measures=[ModelMeasure(formula="amount:sum", name="amt")],
+        measures=[ModelMeasure(formula="sum(amount)", name="amt")],
     )
     assert "loss_payment" in _join_aliases(sql), (
         f"placeholder join not kept for model-filter has_flag idiom:\n{sql}"
@@ -1434,8 +1434,8 @@ async def test_dev1494_column_filter_does_not_disturb_sibling_unfiltered_measure
             Column(name="paid_amt", sql="amount", filter="loss_payment.status = 'paid'", type=DataType.DOUBLE),
         ],
         measures=[
-            ModelMeasure(formula="total_amt:sum", name="total"),
-            ModelMeasure(formula="paid_amt:sum", name="paid"),
+            ModelMeasure(formula="sum(total_amt)", name="total"),
+            ModelMeasure(formula="sum(paid_amt)", name="paid"),
         ],
     )
     # The unfiltered measure is a plain SUM over the base column, unguarded by
@@ -1467,7 +1467,7 @@ async def test_dev1494_column_filter_exists_subquery_ref_not_scanned_for_joins(
             filter="EXISTS (SELECT 1 FROM Loss_Payment AS loss_payment WHERE loss_payment.status = 'paid')",
             type=DataType.DOUBLE,
         )],
-        measures=[ModelMeasure(formula="exists_amt:sum", name="amt")],
+        measures=[ModelMeasure(formula="sum(exists_amt)", name="amt")],
     )
     # No OUTER join to loss_payment is added from the inner-scope ref.
     assert "loss_payment" not in _join_aliases(sql), (
@@ -1491,7 +1491,7 @@ async def test_dev1494_column_filter_constant_placeholder_join_kept_sqlite(
             Column(name="loss_amt", sql="amount", filter="loss_payment.has_flag = 1", type=DataType.DOUBLE),
         ],
         claim_joins=[_CLAIM_LP_JOIN_INNER],
-        measures=[ModelMeasure(formula="loss_amt:sum", name="amt")],
+        measures=[ModelMeasure(formula="sum(loss_amt)", name="amt")],
     )
     assert "loss_payment" in _join_aliases(sql), f"placeholder join not kept:\n{sql}"
     assert _no_bare_derived_ref(sql, "loss_payment", "has_flag"), (
@@ -1528,7 +1528,7 @@ async def test_dev1494_column_filter_multihop_dotted_input_adds_all_joins(
         claim_columns=[
             Column(name="amt", sql="amount", filter="loss_payment.claim.state = 'open'", type=DataType.DOUBLE),
         ],
-        measures=[ModelMeasure(formula="amt:sum", name="a")],
+        measures=[ModelMeasure(formula="sum(amt)", name="a")],
     )
     aliases = _join_aliases(sql)
     assert "loss_payment" in aliases, f"intermediate join missing: {aliases}\nSQL:\n{sql}"
@@ -1540,7 +1540,7 @@ async def test_dev1494_column_filter_join_discovered_in_composite_measure(
     tmp_path,
 ) -> None:
     """A cross-table-filtered aggregate nested in a COMPOSITE measure
-    (``paid_amt:sum + total_amt:sum``) must still pull its ``Column.filter`` join
+    (``sum(paid_amt) + sum(total_amt)``) must still pull its ``Column.filter`` join
     into the FROM. The slot key is an ``ArithmeticKey`` (rendered by
     ``_render_aggregate_composite_expr``), so join discovery must recurse into
     aggregate operands — naive top-level-only discovery would miss it.
@@ -1554,7 +1554,7 @@ async def test_dev1494_column_filter_join_discovered_in_composite_measure(
             Column(name="total_amt", sql="amount", type=DataType.DOUBLE),
             Column(name="paid_amt", sql="amount", filter="loss_payment.status = 'paid'", type=DataType.DOUBLE),
         ],
-        measures=[ModelMeasure(formula="paid_amt:sum + total_amt:sum", name="combo")],
+        measures=[ModelMeasure(formula="sum(paid_amt) + sum(total_amt)", name="combo")],
     )
     assert "loss_payment" in _join_aliases(sql), (
         f"composite-measure filtered-aggregate join not discovered:\n{sql}"
@@ -1603,7 +1603,7 @@ async def test_dev1494_cross_model_cte_target_filter_adds_join(tmp_path) -> None
     query = SlayerQuery(
         source_model="orders",
         dimensions=[ColumnRef(name="status")],
-        measures=[ModelMeasure(formula="customers.premium_rev:sum", name="prem")],
+        measures=[ModelMeasure(formula="sum(customers.premium_rev)", name="prem")],
     )
     sql = await _gen_sql(engine, query, orders)
     assert "regions" in _join_aliases(sql), (
@@ -1637,7 +1637,7 @@ async def test_dev1334_filter_with_mixed_dotted_and_bare_derived_refs(tmp_path) 
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="*:count", name="n")],
+        measures=[ModelMeasure(formula="count(*)", name="n")],
         # Dotted ref → warehouses; bare-name ref → customers (via is_eu's chain).
         filters=["is_eu = 1 and warehouses.name = 'WH-1'"],
     )
@@ -1671,7 +1671,7 @@ async def test_dev1334_filter_with_various_comparison_operators_on_derived_col(
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="*:count", name="n")],
+        measures=[ModelMeasure(formula="count(*)", name="n")],
         filters=[filter_expr],
     )
     sql = await _gen_sql(engine, query, orders)
@@ -1708,7 +1708,7 @@ async def test_dev1334_filter_on_self_referential_derived_chain_raises_cycle_err
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="*:count", name="n")],
+        measures=[ModelMeasure(formula="count(*)", name="n")],
         filters=["a = 0"],
     )
     with pytest.raises(ValueError, match=r"[Cc]ircular|[Cc]ycle") as exc_info:
@@ -1750,7 +1750,7 @@ async def test_dev1334_dialect_threaded_into_join_discovery(tmp_path) -> None:
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="*:count", name="n")],
+        measures=[ModelMeasure(formula="count(*)", name="n")],
         filters=["bracket_eu = 1"],
     )
     sql = await _gen_sql(engine, query, orders, dialect="tsql")

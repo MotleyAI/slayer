@@ -142,7 +142,7 @@ class TestDev1527KwargExpansion:
         ])
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount:weighted_avg(weight=dbl_qty)")],
+            measures=[ModelMeasure(formula="weighted_avg(amount, weight=dbl_qty)")],
         )
         sql = await _engine_generate(query=query, model=orders)
         assert "quantity * 2" in sql
@@ -153,7 +153,7 @@ class TestDev1527KwargExpansion:
         # str-kind path is byte-identical to today (regression guard).
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount:percentile(p=0.95)")],
+            measures=[ModelMeasure(formula="percentile(amount, p=0.95)")],
         )
         sql = await _engine_generate(query=query, model=_orders())
         assert "PERCENTILE_CONT" in sql
@@ -162,7 +162,7 @@ class TestDev1527KwargExpansion:
     async def test_weighted_avg_plain_column_unchanged(self) -> None:
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount:weighted_avg(weight=quantity)")],
+            measures=[ModelMeasure(formula="weighted_avg(amount, weight=quantity)")],
         )
         sql = await _engine_generate(query=query, model=_orders())
         assert "SUM(" in sql
@@ -174,7 +174,7 @@ class TestDev1527KwargExpansion:
         # (quantity) must appear in the CORR call, str-kind, byte-identical.
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount:corr(other=quantity)")],
+            measures=[ModelMeasure(formula="corr(amount, other=quantity)")],
         )
         sql = await _engine_generate(query=query, model=_orders())
         assert "CORR(" in sql.upper()
@@ -191,7 +191,7 @@ class TestDev1527KwargExpansion:
         ])
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount:corr(other=region_weight)")],
+            measures=[ModelMeasure(formula="corr(amount, other=region_weight)")],
         )
         sql = await _engine_generate(
             query=query, model=orders, extra_models=[_customers(), _regions()],
@@ -203,7 +203,7 @@ class TestDev1527KwargExpansion:
 
     async def test_composite_crossing_kwarg_expands_each_operand(self) -> None:
         # A crossing derived kwarg inside an AGGREGATE-phase COMPOSITE
-        # (``weighted_avg(weight=region_weight) + quantity:sum``) must expand the
+        # (``weighted_avg(weight=region_weight) + sum(quantity)``) must expand the
         # same way the direct form does. The composite render path threads the
         # host scope's resolved_agg_kwargs down to each operand leaf, so the
         # weight operand is the expanded joined ref — not the bare, non-existent
@@ -215,7 +215,7 @@ class TestDev1527KwargExpansion:
         query = SlayerQuery(
             source_model="orders",
             measures=[ModelMeasure(
-                formula="amount:weighted_avg(weight=region_weight) + quantity:sum")],
+                formula="weighted_avg(amount, weight=region_weight) + sum(quantity)")],
         )
         sql = await _engine_generate(
             query=query, model=orders, extra_models=[_customers(), _regions()],
@@ -241,8 +241,8 @@ class TestDev1527KwargExpansion:
         query = SlayerQuery(
             source_model="orders",
             dimensions=["id"],
-            measures=[ModelMeasure(formula="amount:weighted_avg(weight=region_weight)")],
-            filters=["amount:weighted_avg(weight=region_weight) > 5"],
+            measures=[ModelMeasure(formula="weighted_avg(amount, weight=region_weight)")],
+            filters=["weighted_avg(amount, weight=region_weight) > 5"],
         )
         sql = await _engine_generate(
             query=query, model=orders, extra_models=[_customers(), _regions()],
@@ -268,7 +268,7 @@ class TestDev1527KwargExpansion:
         )]
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount:scaled_sum(scale=100)")],
+            measures=[ModelMeasure(formula="scaled_sum(amount, scale=100)")],
         )
         sql = await _engine_generate(query=query, model=orders)
         assert "SUM(orders.amount)" in _norm(sql)
@@ -313,7 +313,7 @@ class TestDev1527F1BasePull:
         )
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount:weighted_avg(weight=li_weight)")],
+            measures=[ModelMeasure(formula="weighted_avg(amount, weight=li_weight)")],
         )
         line_items = _line_items()
         with pytest.raises(ValueError) as ei:
@@ -333,7 +333,7 @@ class TestDev1527F1BasePull:
         ])
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount:weighted_avg(weight=region_weight)")],
+            measures=[ModelMeasure(formula="weighted_avg(amount, weight=region_weight)")],
         )
         sql = await _engine_generate(
             query=query, model=orders, extra_models=[_customers(), _regions()],

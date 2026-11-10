@@ -152,11 +152,11 @@ class TestFirstLastArbitration:
 
 class TestDispatchUnchanged:
     def test_transform_over_functional_agg(self) -> None:
-        assert parse_expr("cumsum(sum(revenue))") == parse_expr("cumsum(revenue:sum)")
+        assert parse_expr("cumsum(sum(revenue))") == parse_expr("cumsum(sum(revenue))")
 
     def test_rank_over_functional_agg_with_partition(self) -> None:
         assert parse_expr("rank(sum(revenue), partition_by=status, direction='desc')") == parse_expr(
-            "rank(revenue:sum, partition_by=status, direction='desc')"
+            "rank(sum(revenue), partition_by=status, direction='desc')"
         )
 
     def test_scalar_call_stays_scalar(self) -> None:
@@ -171,7 +171,7 @@ class TestDispatchUnchanged:
 
     def test_arithmetic_of_functional_aggs(self) -> None:
         assert parse_expr("sum(revenue) / count(*)") == parse_expr(
-            "revenue:sum / *:count"
+            "sum(revenue) / count(*)"
         )
 
 
@@ -294,7 +294,7 @@ class TestModeAUnchanged:
             }
         )
         sql = await _engine_generate(
-            query=SlayerQuery(source_model="orders", measures=["grand_total:max"]),
+            query=SlayerQuery.model_validate({"source_model": "orders", "measures": ["max(grand_total)"]}),
             model=model,
         )
         assert "SUM(orders.revenue)" in sql

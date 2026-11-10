@@ -207,7 +207,7 @@ def _orders_model() -> SlayerModel:
 
 
 async def test_mysql_time_shift_inner_cte_uses_backticks_not_ansi_quotes() -> None:
-    """``change_pct(total:sum)`` CTEs must not embed ANSI double-quoted identifiers."""
+    """``change_pct(sum(total))`` CTEs must not embed ANSI double-quoted identifiers."""
     q = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
@@ -216,8 +216,8 @@ async def test_mysql_time_shift_inner_cte_uses_backticks_not_ansi_quotes() -> No
             date_range=["2024-03-01", "2024-03-31"],
         )],
         measures=[
-            ModelMeasure(formula="total:sum"),
-            ModelMeasure(formula="change_pct(total:sum)", name="pct"),
+            ModelMeasure(formula="sum(total)"),
+            ModelMeasure(formula="change_pct(sum(total))", name="pct"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -265,7 +265,7 @@ def _monthly_orders_query() -> SlayerQuery:
     return SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
         order=[OrderItem.model_validate({"column": "month(created_at)"})],
     )
 

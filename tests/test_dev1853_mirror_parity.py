@@ -24,9 +24,11 @@ QUERIES = {
         source_model="customers", dimensions=["name", "orders.status"]),
     "forward_dims": SlayerQuery(
         source_model="orders", dimensions=["status", "customers.name"]),
-    "reverse_aggregate": SlayerQuery(
-        source_model="customers", dimensions=["name"],
-        measures=[{"formula": "orders.amount:sum", "name": "t"}]),
+    "reverse_aggregate": SlayerQuery.model_validate({
+        "source_model": "customers",
+        "dimensions": ["name"],
+        "measures": [{"formula": "sum(orders.amount)", "name": "t"}],
+    }),
     "multi_hop": SlayerQuery(
         source_model="regions", dimensions=["name", "customers.orders.status"]),
 }

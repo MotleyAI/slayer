@@ -54,7 +54,7 @@ async def _seed(storage: YAMLStorage) -> None:
                 description="FK to customers.",
             ),
         ],
-        measures=[ModelMeasure(name="aov", formula="amount:sum / *:count")],
+        measures=[ModelMeasure(name="aov", formula="sum(amount) / count(*)")],
         aggregations=[Aggregation(name="big", formula="MAX({col})")],
     ))
     await storage.set_datasource_priority(["mydb"])

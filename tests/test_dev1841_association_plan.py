@@ -11,7 +11,7 @@ from slayer.engine.plan import plan_query
 from tests._dev1840_fixtures import bundle, dev1840_models
 from tests._dev1841_fixtures import ModelMeasure, assoc_q
 
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
 
 
 def _association_attaches(planned) -> list:
@@ -32,7 +32,7 @@ class TestAssociationKernel:
         """An unattributable explicit partition key attributes under associate."""
         planned = plan_query(
             query=assoc_q(dimensions=["status"], measures=[ModelMeasure(
-                formula="customers.spend:sum(partition_by=status)", name="cm")]),
+                formula="sum(customers.spend, partition_by=status)", name="cm")]),
             bundle=bundle())
         assert len(_association_attaches(planned)) == 1
 
@@ -55,7 +55,7 @@ class TestModeThreadsIntoNestedProducer:
         an unattributable computed-dimension aggregate resolves via the kernel."""
         band = {
             "expression": (
-                "CASE WHEN customers.spend:sum(partition_by=status) > 400 "
+                "CASE WHEN sum(customers.spend, partition_by=status) > 400 "
                 "THEN 'hi' ELSE 'lo' END"),
             "name": "band",
         }

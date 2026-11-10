@@ -58,7 +58,7 @@ class TestCyclesIngestVerbatim:
             }
             resp = await lv.query(
                 source_model="stores", dimensions=["name"],
-                measures=[{"formula": "sales.total:sum", "name": "t"}],
+                measures=[{"formula": "sum(sales.total)", "name": "t"}],
             )
             assert {r["stores.name"]: r["stores.t"] for r in resp.data} == {"North": 25.0, "South": 4.0}
 
@@ -80,7 +80,7 @@ class TestCyclesIngestVerbatim:
             await lv.ingest()
             resp = await lv.query(
                 source_model="offices", dimensions=["city"],
-                measures=[{"formula": "depts.employees.salary:sum", "name": "s"}],
+                measures=[{"formula": "sum(depts.employees.salary)", "name": "s"}],
             )
             assert {r["offices.city"]: r["offices.s"] for r in resp.data} == {"Paris": 150.0, "Rome": 80.0}
 

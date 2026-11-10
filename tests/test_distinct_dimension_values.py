@@ -790,7 +790,7 @@ class TestMCPSurface:
         """Case 26: MCP ``query`` tool with flag=False returns raw rows.
 
         Uses ``mcp_server.call_tool(name=..., arguments=...)`` — same
-        pattern as ``tests/test_mcp_server.py:_call``."""
+        pattern as ``tests/_call(test_mcp_server.py)``."""
         engine = sqlite_orders_env
         server = create_mcp_server(storage=engine.storage)
         content_blocks, _ = await server.call_tool(

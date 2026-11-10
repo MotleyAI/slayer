@@ -92,7 +92,7 @@ class TestStoredShadow:
 
 
 class TestCaseResolution:
-    @pytest.mark.parametrize("formula", ["REVERSE(a)", "Reverse(a)", "a:REVERSE"])
+    @pytest.mark.parametrize("formula", ["REVERSE(a)", "Reverse(a)", "REVERSE(a)"])
     async def test_a_case_insensitive_match(self, formula: str) -> None:
         async with stored_engine(models=[t_doc(aggregations=[agg("reverse")])]) as engine:
             resp = await engine.execute(_query(measure(formula)))

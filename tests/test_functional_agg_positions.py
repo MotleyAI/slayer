@@ -171,19 +171,19 @@ class TestFilterPosition:
 class TestOrderPosition:
     async def test_order_by_functional_agg(self) -> None:
         f = await _dry(_q(measures=["sum(revenue)"], dimensions=["status"],
-                          order=[OrderItem(column="sum(revenue)", direction="desc")]))
+                          order=[OrderItem.model_validate({"column": "sum(revenue)", "direction": "desc"})]))
         assert "ORDER BY" in f.sql.upper()
 
     async def test_order_by_functional_star_count(self) -> None:
         await _dry(_q(measures=["count(*)"], dimensions=["status"],
-                      order=[OrderItem(column="count(*)", direction="desc")]))
+                      order=[OrderItem.model_validate({"column": "count(*)", "direction": "desc"})]))
 
     async def test_order_custom_agg_placeholder(self) -> None:
         model = _orders(
             aggregations=[Aggregation(name="my_agg", formula="AVG({value})")]
         )
         await _dry(_q(measures=["my_agg(price)"], dimensions=["status"],
-                      order=[OrderItem(column="my_agg(price)", direction="desc")]), model=model)
+                      order=[OrderItem.model_validate({"column": "my_agg(price)", "direction": "desc"})]), model=model)
 
     async def test_order_serialization_round_trip(self) -> None:
         q1 = _q(
@@ -223,6 +223,7 @@ class TestModelMeasurePosition:
         path.write_text(text.replace("max(revenue)", "sum(revenue)"))
         engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=str(tmp_path)))
         resp = await engine.execute(_q(measures=["rev"], dimensions=["status"]), dry_run=True)
+        assert resp.sql is not None
         assert "SUM(" in resp.sql.upper()
         assert "orders.rev" in resp.columns
 
@@ -235,7 +236,7 @@ class TestModelMeasurePosition:
 class TestExtensionPositions:
     async def test_model_extension_measure(self) -> None:
         ext = ModelExtension(source_name="orders", measures=[ModelMeasure(name="rev", formula="sum(revenue)")])
-        f = await _dry(SlayerQuery(source_model=ext, measures=["rev"], dimensions=["status"]))
+        f = await _dry(SlayerQuery.model_validate({"source_model": ext, "measures": ["rev"], "dimensions": ["status"]}))
         assert "orders.rev" in f.columns
 
     async def test_inline_source_model_measure(self) -> None:
@@ -243,7 +244,11 @@ class TestExtensionPositions:
             "source_name": "orders",
             "measures": [{"name": "rev", "formula": "sum(revenue)"}],
         })
-        f = await _dry(SlayerQuery(source_model=inline, measures=["rev"], dimensions=["status"]))
+        f = await _dry(SlayerQuery.model_validate({
+            "source_model": inline,
+            "measures": ["rev"],
+            "dimensions": ["status"],
+        }))
         assert "orders.rev" in f.columns
 
 
@@ -254,17 +259,17 @@ class TestExtensionPositions:
 
 class TestStagePositions:
     async def test_stage_formula(self) -> None:
-        stage1 = SlayerQuery(
-            name="stage1",
-            source_model="orders",
-            dimensions=["status"],
-            measures=[{"formula": "sum(revenue)"}],
-        )
-        root = SlayerQuery(
-            source_model="stage1",
-            dimensions=["status"],
-            measures=[{"formula": "max(revenue_sum)"}],
-        )
+        stage1 = SlayerQuery.model_validate({
+            "name": "stage1",
+            "source_model": "orders",
+            "dimensions": ["status"],
+            "measures": [{"formula": "sum(revenue)"}],
+        })
+        root = SlayerQuery.model_validate({
+            "source_model": "stage1",
+            "dimensions": ["status"],
+            "measures": [{"formula": "max(revenue_sum)"}],
+        })
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)
             await storage.save_datasource(
@@ -281,16 +286,18 @@ class TestStagePositions:
             name="daily",
             data_source="test",
             source_queries=[
-                SlayerQuery(
-                    source_model="orders",
-                    dimensions=["status"],
-                    measures=[{"formula": "sum(revenue)", "name": "rev"}],
-                )
+                SlayerQuery.model_validate({
+                    "source_model": "orders",
+                    "dimensions": ["status"],
+                    "measures": [{"formula": "sum(revenue)", "name": "rev"}],
+                })
             ],
         )
-        query = SlayerQuery(
-            source_model="daily", dimensions=["status"], measures=["max(rev)"]
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "daily",
+            "dimensions": ["status"],
+            "measures": ["max(rev)"],
+        })
         f = await _dry(query, model=_orders(), extra_models=[_customers(), backed])
         assert "daily.rev_max" in f.columns
 
@@ -329,15 +336,16 @@ class TestComputedDimensionPosition:
         assert await gen40(_band_query(_CASE_FUNC))
 
     async def test_bare_aggregate_guard(self) -> None:
+        query = _band_query("CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END")
         with pytest.raises(ValueError, match="partition_by"):
-            await gen40(_band_query("CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END"))
+            await gen40(query)
 
     async def test_raw_rows_rejection(self) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            dimensions=[{"expression": _CASE_FUNC, "name": "band"}],
-            distinct_dimension_values=False,
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": [{"expression": _CASE_FUNC, "name": "band"}],
+            "distinct_dimension_values": False,
+        })
         with pytest.raises(DistinctDimensionValuesError):
             await gen40(query)
 

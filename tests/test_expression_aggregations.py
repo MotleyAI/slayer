@@ -228,11 +228,11 @@ class TestExpressionSql:
             dimensions=["status"],
             measures=[{"formula": "sum(amount - cost)"}],
         )
-        root = SlayerQuery(
-            source_model="stage1",
-            dimensions=["status"],
-            measures=[{"formula": "max(amount_cost_sum)"}],
-        )
+        root = SlayerQuery.model_validate({
+            "source_model": "stage1",
+            "dimensions": ["status"],
+            "measures": [{"formula": "max(amount_cost_sum)"}],
+        })
         model = _orders()
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)
@@ -442,8 +442,9 @@ class TestExpressionGates:
         assert resp.sql
 
     async def test_single_column_functional_still_gated(self) -> None:
+        q = _q(measures=["sum(quantity)"])
         with pytest.raises(ValueError):
-            await _dry(_q(measures=["sum(quantity)"]))
+            await _dry(q)
 
     async def test_confidently_non_numeric_rejected(self) -> None:
         q = _q(measures=["sum(lower(name))"])

@@ -21,7 +21,7 @@ def test_string_dimension_with_placeholder() -> None:
     assert q.dimensions == [ComputedDimension(expression="amount * {k}", name="amount_k")]
 
 
-@pytest.mark.parametrize("column", ["sum(amount) * {k}", "amount:sum * {k}"])
+@pytest.mark.parametrize("column", ["sum(amount) * {k}", "sum(amount) * {k}"])
 def test_order_expression_with_placeholder(column: str) -> None:
     q = build(order=[{"column": column, "direction": "desc"}])
     assert q.order is not None

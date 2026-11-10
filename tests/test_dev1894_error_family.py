@@ -192,7 +192,7 @@ class TestRawRowsConstruction:
 
     def test_measures_fail_with_the_stable_format(self) -> None:
         exc = self._underlying(
-            dimensions=[ColumnRef(name="status")], measures=[ModelMeasure(formula="*:count")],
+            dimensions=[ColumnRef(name="status")], measures=[ModelMeasure(formula="count(*)")],
         )
         assert isinstance(exc, DistinctDimensionValuesError)
         assert isinstance(exc, QueryTypeError)
