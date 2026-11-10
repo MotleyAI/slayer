@@ -21,6 +21,7 @@ from slayer.live_schema.ingestion import (
 )
 from slayer.database.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
+from tests._key_read_failure import fail_key_read
 from sqlalchemy.pool import QueuePool
 
 
@@ -325,23 +326,7 @@ class TestSkipBackstop:
             """,
         )
 
-        real_inspect = sa.inspect
-
-        def _patched_inspect(target):
-            insp = real_inspect(target)
-            original = insp.get_foreign_keys
-
-            def _maybe_raise(table_name, schema=None, **kwargs):
-                if table_name == "v_orders":
-                    raise sa.exc.NoSuchTableError("views have no FKs here")
-                return original(table_name, schema=schema, **kwargs)
-
-            insp.get_foreign_keys = _maybe_raise
-            return insp
-
-        monkeypatch.setattr(
-            "slayer.database.client.sa.inspect", _patched_inspect
-        )
+        fail_key_read(monkeypatch, table="v_orders", reads=("foreign keys",))
 
         report = await _report(ds)
         names = {m.name for m in report.models}
