@@ -51,7 +51,7 @@ _AGG_NAMES = sorted(BUILTIN_AGGREGATIONS | {"agg", "sum_sq"}, key=len, reverse=T
 _COLON_AGG_TEXT = re.compile(
     r"[\w*)\]>]:(?:<(?:agg|aggregation)\w*>|(?:" + "|".join(_AGG_NAMES) + r")\b)"
 )
-# Any `<ref>:<name>` token; too broad for docs (`pass(user)`, `port(host)`).
+# Any `<ref>:<name>` token; too broad for docs (`user:pass`, `host:port`).
 _COLON_ANY = re.compile(r"(?<![\w-])(?!memory:|https?:)(?:[A-Za-z_][\w.]*|\*)(?<!\.):[a-z_]\w*\b")
 
 

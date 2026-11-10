@@ -827,11 +827,7 @@ class TestFilterOperatorNormalization:
         assert first.right == Literal(value="paid")
         assert second == Literal(value=False)
 
-    def test_colon_agg_kwarg_preserved_in_filter(self):
-        # DEV-1492: parametric aggregation kwarg (e.g. percentile(p=...))
-        # is the same failure mode as transform kwargs — the colon-agg
-        # callee `percentile` is not a SCALAR_FUNCTION, so the scanner
-        # preserves `p=0.5` as a kwarg on the AggCall.
+    def test_agg_kwarg_preserved_in_filter(self):
         result = parse_expr("percentile(revenue, p=0.5) > 100")
         assert isinstance(result, Cmp)
         assert result.op == ">"
@@ -919,15 +915,8 @@ class TestFilterOperatorNormalization:
         assert right.left == Ref(name="status")
         assert right.right == Literal(value="),=")
 
-    def test_colon_agg_with_ambiguous_name_preserves_kwarg_in_filter(self):
-        # DEV-1492 iteration 3 (Codex review): `first` and `last` are in
-        # both ALL_TRANSFORMS (FIRST_VALUE window) and BUILTIN_AGGREGATIONS
-        # (per-group first/last). The colon makes them aggregation calls,
-        # so a kwarg after `(` must be preserved — the transform-only
-        # COMMA-after-IDENT rule does NOT apply when the call sits after
-        # a `:`. Built-in `first`/`last` take the order column positionally
-        # today, but custom aggregations overriding these names can declare
-        # any kwarg shape; this pins the architectural rule.
+    def test_agg_with_ambiguous_name_preserves_kwarg_in_filter(self):
+        # `first`/`last` are both transforms and aggregations; as an aggregation call a kwarg is kept.
         result = parse_expr("first(revenue, order=created_at) > 0")
         assert isinstance(result, Cmp)
         assert result.op == ">"

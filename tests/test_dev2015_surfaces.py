@@ -297,14 +297,14 @@ class TestDbtImporter:
         result = DbtToSlayerConverter(project=_dbt_project("fill_nulls_with", 0), data_source="test").convert()
         measure = _converted_measure(result, "gap_filled_rev")
         assert measure is not None
-        assert measure.formula.replace(" ", "") in {"coalesce(sum(amount),0)", "coalesce(sum(amount),0)"}
+        assert measure.formula.replace(" ", "") == "coalesce(sum(amount),0)"
         assert not any(e.metric_name == "gap_filled_rev" for e in result.unconverted_metrics)
 
     def test_join_to_timespine_is_accepted_with_a_note(self) -> None:
         result = DbtToSlayerConverter(project=_dbt_project("join_to_timespine", True), data_source="test").convert()
         measure = _converted_measure(result, "gap_filled_rev")
         assert measure is not None
-        assert measure.formula.replace(" ", "") in {"sum(amount)", "sum(amount)"}
+        assert measure.formula.replace(" ", "") == "sum(amount)"
         notes = [e for e in (*result.unconverted_metrics, *result.warnings) if e.metric_name == "gap_filled_rev"]
         assert notes
         assert all(e.severity == "info" for e in notes)

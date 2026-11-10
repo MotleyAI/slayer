@@ -151,7 +151,7 @@ def _source_path_reads() -> list[str]:
             for node in ast.walk(tree):
                 if (_is_source_path_read(node) or _is_getattr_source_path(node)
                         or _is_key_host_path_source(node)):
-                    sites.append(f"{getattr(node, 'lineno', 0)}({path})")
+                    sites.append(f"{path}:{getattr(node, 'lineno', 0)}")
     assert scanned > 0, "no engine/sql modules scanned — guard is dead"
     return sites
 

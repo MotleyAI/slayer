@@ -1752,7 +1752,7 @@ class TestJoinPolicyReadonly:
 @pytest.fixture(scope="module", params=["25.4", "25.8"])
 def versioned_clickhouse(request):
     """A ClickHouse server of the given version with the RLS / semi-join dataset seeded."""
-    container = ClickHouseContainer(f"clickhouse/clickhouse-{request.param}(server)").with_env(
+    container = ClickHouseContainer(f"clickhouse/clickhouse-server:{request.param}").with_env(
         "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT", "1"
     )
     with container as c:

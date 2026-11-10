@@ -169,7 +169,6 @@ class TestSpellingInvariantAssociation:
     @pytest.mark.parametrize("formula", [
         "sum(customers.spend)",
         "sum(customers.spend, partition_by=status)",
-        "sum(customers.spend, partition_by=status)",
     ])
     async def test_orders_rooted_null_cell_holds_the_orderless_customer(
             self, null_engine, formula):

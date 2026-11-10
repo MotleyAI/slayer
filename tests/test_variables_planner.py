@@ -384,13 +384,12 @@ class TestFormulaSurfaces:
         out = apply_variables_to_query(query=_q(dimensions=["region"]), variables={"k": 1})
         assert out.dimensions == [ColumnRef(name="region")]
 
-    @pytest.mark.parametrize("column", ["sum(amount) * {k}", "sum(amount) * {k}"])
-    def test_order_expression_substituted(self, column: str) -> None:
+    def test_order_expression_substituted(self) -> None:
         out = apply_variables_to_query(
-            query=_q(order=[{"column": column, "direction": "desc"}]), variables={"k": -1},
+            query=_q(order=[{"column": "sum(amount) * {k}", "direction": "desc"}]), variables={"k": -1},
         )
         assert out.order is not None
-        assert out.order[0].raw_formula == column.replace("{k}", "-1")
+        assert out.order[0].raw_formula == "sum(amount) * -1"
         assert out.order[0].direction == "desc"
 
     def test_date_range_bounds_substituted(self) -> None:

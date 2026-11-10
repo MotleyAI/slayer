@@ -66,7 +66,7 @@ class Site(BaseModel):
 
     @property
     def where(self) -> str:
-        return f"{self.line}({self.file})"
+        return f"{self.file}:{self.line}"
 
 
 def _package_version() -> str:
@@ -182,7 +182,7 @@ def test_at_3_0_0_the_moved_module_paths_are_named(monkeypatch) -> None:
 
 def test_only_the_helper_emits_future_warnings() -> None:
     offenders = [
-        f"{node.lineno}({path.relative_to(REPO).as_posix()})"
+        f"{path.relative_to(REPO).as_posix()}:{node.lineno}"
         for path in sorted(SLAYER.rglob("*.py"))
         if path.relative_to(REPO).as_posix() != HELPER_MODULE
         for node in ast.walk(ast.parse(path.read_text()))

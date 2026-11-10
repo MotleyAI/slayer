@@ -110,7 +110,7 @@ def _outcome(query: SlayerQuery):
 class TestParseIsOneNode:
     @pytest.mark.parametrize("fn", ["first", "last"])
     @pytest.mark.parametrize("arg", [
-        "revenue", "1", "sum(revenue)", "sum(revenue)", "sum(revenue) + 1",
+        "revenue", "1", "sum(revenue)", "sum(revenue) + 1",
         "sum(revenue) > 100", "cumsum(weight)", "rev", "rev * 2",
         "qty * avg(revenue, partition_by=store)",
     ])

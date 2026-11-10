@@ -209,7 +209,7 @@ class TestEligibility:
                                           filters=["name IN ('Cid', 'Dee', 'Eve')"]))
         assert num(resp.data[0]["contractors.n"]) == 2
 
-    async def test_counting_lists_colon_spelling(self, engine) -> None:
+    async def test_counting_lists_unnamed_measure(self, engine) -> None:
         resp = await engine.execute(query(measures=["count(skills)"]))
         assert num(next(iter(resp.data[0].values()))) == 4
 

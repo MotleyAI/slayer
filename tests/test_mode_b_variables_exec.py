@@ -51,11 +51,10 @@ class TestQuerySurfaces:
         got = {float(r["orders.amount_k"]): r["orders._count"] for r in resp.data}
         assert got == {100.0: 1, 200.0: 1, 250.0: 2, 300.0: 1, 400.0: 1, 600.0: 1}
 
-    @pytest.mark.parametrize("column", ["sum(amount) * {k}", "sum(amount) * {k}"])
-    async def test_order_expression(self, exec_engine, column: str) -> None:
+    async def test_order_expression(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region"], measures=["sum(amount)"],
-            order=[{"column": column, "direction": "desc"}], variables={"k": -1},
+            order=[{"column": "sum(amount) * {k}", "direction": "desc"}], variables={"k": -1},
         ))
         assert [r["orders.amount_sum"] for r in resp.data] == [50.0, 60.0, 100.0]
 
@@ -119,9 +118,8 @@ class TestQuerySurfaces:
 
 
 class TestTemplateNaming:
-    @pytest.mark.parametrize("measure", ["sum(amount) * {k} / 100", "sum(amount) * {k} / 100"])
-    async def test_template_derived_key(self, exec_engine, measure: str) -> None:
-        resp = await exec_engine.execute(q(measures=[measure], variables={"k": 10}))
+    async def test_template_derived_key(self, exec_engine) -> None:
+        resp = await exec_engine.execute(q(measures=["sum(amount) * {k} / 100"], variables={"k": 10}))
         assert only_row(resp) == {"orders.amount_sum_k_100": pytest.approx(21.0)}
 
     async def test_equal_unnamed_template_measures_merge(self, exec_engine) -> None:

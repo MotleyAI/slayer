@@ -545,7 +545,7 @@ async def _associated_star_sql(formula: str) -> str:
 
 class TestCountStarOverride:
     @pytest.mark.parametrize(("formula", "rendered"), [
-        ("count(*)", "COUNT(*) * 7"), ("count(*, k=3)", "COUNT(*) * 3"), ("count(*)", "COUNT(*) * 7"),
+        ("count(*)", "COUNT(*) * 7"), ("count(*, k=3)", "COUNT(*) * 3"),
     ])
     async def test_star_renders_the_override(self, formula: str, rendered: str) -> None:
         assert rendered in await _star_sql(formula)

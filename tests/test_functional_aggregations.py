@@ -30,6 +30,7 @@ from slayer.core.syntax import (
     Ref,
     ScalarCall,
     StarSource,
+    TransformCall,
     parse_expr,
 )
 from slayer.memories.resolver import extract_entities_from_query, resolve_entity
@@ -150,13 +151,17 @@ class TestFirstLastArbitration:
         assert node.agg == "last"
 
 
+_SUM_REVENUE = AggCall(source=Ref(name="revenue"), agg="sum")
+
+
 class TestDispatchUnchanged:
     def test_transform_over_functional_agg(self) -> None:
-        assert parse_expr("cumsum(sum(revenue))") == parse_expr("cumsum(sum(revenue))")
+        assert parse_expr("cumsum(sum(revenue))") == TransformCall(op="cumsum", input=_SUM_REVENUE)
 
     def test_rank_over_functional_agg_with_partition(self) -> None:
-        assert parse_expr("rank(sum(revenue), partition_by=status, direction='desc')") == parse_expr(
-            "rank(sum(revenue), partition_by=status, direction='desc')"
+        assert parse_expr("rank(sum(revenue), partition_by=status, direction='desc')") == TransformCall(
+            op="rank", input=_SUM_REVENUE,
+            kwargs=(("partition_by", Ref(name="status")), ("direction", Literal(value="desc"))),
         )
 
     def test_scalar_call_stays_scalar(self) -> None:
@@ -170,8 +175,8 @@ class TestDispatchUnchanged:
         )
 
     def test_arithmetic_of_functional_aggs(self) -> None:
-        assert parse_expr("sum(revenue) / count(*)") == parse_expr(
-            "sum(revenue) / count(*)"
+        assert parse_expr("sum(revenue) / count(*)") == Arith(
+            op="/", left=_SUM_REVENUE, right=AggCall(source=StarSource(), agg="count")
         )
 
 

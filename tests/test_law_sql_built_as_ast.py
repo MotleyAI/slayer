@@ -85,7 +85,7 @@ def _exempt_call(call: ast.Call, *, arg: ast.expr, raised: bool) -> bool:
 
 
 def violations(source: str, *, path: str = "<src>") -> list[str]:
-    """``line(path)`` of every composed string that starts a SQL statement in ``source``."""
+    """``path:line`` of every composed string that starts a SQL statement in ``source``."""
     tree = ast.parse(source)
     parents: dict[ast.AST, ast.AST] = {}
     for parent in ast.walk(tree):
@@ -104,7 +104,7 @@ def violations(source: str, *, path: str = "<src>") -> list[str]:
         if isinstance(consumer, ast.Call) and isinstance(node, ast.expr) and _exempt_call(
                 consumer, arg=node, raised=isinstance(parents.get(consumer), ast.Raise)):
             continue  # only the call taking the string directly may exempt it
-        found.append(f"{getattr(node, 'lineno', 0)}({path})")
+        found.append(f"{path}:{getattr(node, 'lineno', 0)}")
     return found
 
 

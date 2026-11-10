@@ -819,7 +819,7 @@ async def test_multihop_filter_on_derived_target_column(tmp_path) -> None:
 
 async def test_multihop_time_dim_to_derived_target_column(tmp_path) -> None:
     """Multi-hop time-dimension on a derived target column. The time-dim
-    callsite (``_resolve_time_dimensions(enrichment.py)``) takes a separate
+    callsite (``enrichment.py:_resolve_time_dimensions``) takes a separate
     path through ``_maybe_expand`` from regular dims; pin it."""
     engine, storage = _engine_with_storage(tmp_path)
     model_a = await _save_a_b_c(storage, c_columns=[
