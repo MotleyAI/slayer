@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import AbstractSet, Callable, Dict, Mapping
 
 from slayer.core.keys import REGROUP_LEAF_PREFIX, AggregateKey, ColumnKey, ValueKey, substitute_value_keys, walk_value_keys
-from slayer.sql.naming import ROW_IDENTITY_COLUMN, canonical_aggregate_alias
+from slayer.sql.naming import canonical_aggregate_alias
 from slayer.ir.bound import BoundFilter
 
 __all__ = [
@@ -20,11 +20,11 @@ __all__ = [
 
 
 def reserved_prefix_columns(model) -> list:
-    """``model`` columns colliding with the reserved regroup placeholder prefix (the minted row identity never does)."""
+    """``model`` columns colliding with the reserved regroup placeholder prefix."""
     if model is None:
         return []
     return [c.name for c in getattr(model, "columns", []) or []
-            if c.name.startswith(REGROUP_LEAF_PREFIX) and c.name != ROW_IDENTITY_COLUMN]
+            if c.name.startswith(REGROUP_LEAF_PREFIX)]
 
 
 class RegroupPlaceholderRegistry:

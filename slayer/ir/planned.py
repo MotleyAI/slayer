@@ -29,6 +29,7 @@ from slayer.core.keys import (
 from slayer.core.models import EmptyValue, SlayerModel
 from slayer.core.scope import StageSchema, StaleSpelling
 from slayer.ir.bound import BoundExpr, GranularityConflict, WholeListRead
+from slayer.ir.prebound import ModePolicy
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 SlotId = str
@@ -495,6 +496,8 @@ class PlannedQuery(BaseModel):
     semi_join_filters: List[SemiJoinFilter] = Field(default_factory=list)
     # The host of a spine population renders its spine as this bucket series.
     spine: Optional[SpineFactor] = None
+    # This stage's own resolved ``to_many_handling``.
+    mode_policy: ModePolicy = ModePolicy()
 
     @model_validator(mode="after")
     def _projection_is_public_and_well_formed(self) -> "PlannedQuery":

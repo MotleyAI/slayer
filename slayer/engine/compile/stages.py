@@ -4480,6 +4480,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         empty_base_plan=empty_base_plan,
         semi_join_filters=pop_semi_join_groups,
         spine=spine_factor,
+        mode_policy=prebound.mode_policy,
     )
     return planned
 

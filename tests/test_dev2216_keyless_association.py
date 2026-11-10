@@ -7,10 +7,13 @@ from __future__ import annotations
 import re
 
 import pytest
+from pydantic import ValidationError
 from pytest_postgresql import factories
 
-from slayer.core.enums import JoinCardinality
+from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.errors import SlayerError
+from slayer.core.models import Column
+from slayer.sql.naming import ROW_IDENTITY_COLUMN
 from tests._dev1841_fixtures import keyless_root_models
 from tests._dev1841_fixtures import make_exec_engine as dev1841_engine
 from tests._dev2216_fixtures import (
@@ -130,6 +133,18 @@ class TestRowIdentity:
                 source_model="orders", dimensions=["status"], measures=[measure("sum(customers.spend)", "sp")],
                 **mode))
         assert cells(resp, "status", "sp") == {"completed": 30.0, "pending": 20.0}
+
+    async def test_a_regroup_prefixed_home_column_does_not_shadow_the_row_identity(self, dialect) -> None:
+        models = ossie_models()
+        models[1].columns = [*models[1].columns, Column(name="__regroup__row_id", sql="id", type=DataType.INT)]
+        async with ossie_engine(dialect, models=models) as engine:
+            resp = await engine.execute(query(
+                source_model="orders", dimensions=["status"], measures=[measure("sum(customers.spend)", "sp")]))
+        assert cells(resp, "status", "sp") == SPEND_BY_STATUS
+
+    def test_no_model_column_can_take_the_row_identity_name(self) -> None:
+        with pytest.raises(ValidationError):
+            Column(name=ROW_IDENTITY_COLUMN, type=DataType.INT)
 
     async def test_postgres_executes(self, request) -> None:
         async with ossie_engine("postgres", request=request, duplicate=True) as engine:

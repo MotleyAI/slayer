@@ -144,7 +144,6 @@ from slayer.engine.response_meta import (
     projection_result_keys,
 )
 from slayer.sql.column_expansion import expand_derived_refs_sync
-from slayer.ir.prebound import ModePolicy
 from slayer.ir.source_bundle import ResolvedSourceBundle, model_from_stage_schema
 from slayer.engine.stage_ordering import localize_stages, topologically_order_stages
 from slayer.engine.statement_reads import StatementReads, statement_reads
@@ -1350,10 +1349,11 @@ class SlayerQueryEngine:
             _plan_label(planned=p, index=i, root=query if p is planned_list[-1] else None)
             for i, p in enumerate(planned_list) if id(p) in emitted_ids
         ]
-        broadcast_warnings = _collect_broadcast_warnings(planned_list=plans, labels=labels)
-        if ModePolicy.resolve(query.to_many_handling).refuses:
-            _raise_on_error_events(broadcasts=broadcast_warnings)
-        warnings.extend(broadcast_warnings)
+        refusing = [(p, label) for p, label in zip(plans, labels) if p.mode_policy.refuses]
+        _raise_on_error_events(broadcasts=_collect_broadcast_warnings(
+            planned_list=[p for p, _ in refusing], labels=[label for _, label in refusing],
+        ))
+        warnings.extend(_collect_broadcast_warnings(planned_list=plans, labels=labels))
         warnings.extend(_collect_associated_warnings(planned_list=plans, labels=labels))
         warnings.extend(_collect_unrelated_warnings(planned_list=plans, labels=labels))
         warnings.extend(_collect_semi_join_pushed_warnings(planned_list=plans, labels=labels))

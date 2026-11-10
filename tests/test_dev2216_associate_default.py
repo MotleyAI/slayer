@@ -45,6 +45,7 @@ LAST = ModelMeasure(formula="last(customers.spend, customers.signup_at)", name="
 WINDOWED = ModelMeasure(formula="sum(customers.spend, window='90d')", name="win")
 MIXED = ModelMeasure(
     formula="last(customers.spend, customers.signup_at) + sum(customers.spend, window='90d')", name="mix")
+STAGE_ROWS = ModelMeasure(formula="*:count", name="k")
 SIGNUP_MONTH = [TimeDimension(dimension="customers.signup_at", granularity=TimeGranularity.MONTH)]
 FIRST_LAST = re.compile(r"first|last", re.IGNORECASE)
 WINDOW = re.compile(r"window", re.IGNORECASE)
@@ -231,6 +232,18 @@ class TestBroadcastFallback:
         query = _q("error", measures=[measure], **kw)
         with pytest.raises(SlayerError):
             await engine.execute(query)
+
+    async def test_a_stages_error_mode_refuses_under_a_default_root(self, engine) -> None:
+        stages = [_q("error", name="s", dimensions=["status"], measures=[CM]),
+                  _q(None, source_model="s", measures=[STAGE_ROWS])]
+        with pytest.raises(SlayerError):
+            await engine.execute(query=stages)
+
+    async def test_a_root_error_mode_spares_a_default_stages_fallback(self, engine) -> None:
+        stage = _q(None, name="s", dimensions=["status"], measures=[LAST])
+        resp = await engine.execute(query=[stage, _q("error", source_model="s", measures=[STAGE_ROWS])])
+        assert resp.data[0]["s.k"] == len(ASSOC_SPEND_BY_STATUS)
+        assert _fallbacks(resp)
 
     async def test_requested_grain_is_never_broadcast(self, engine) -> None:
         part = ModelMeasure(formula="last(customers.spend, customers.signup_at, partition_by=status)", name="lp")

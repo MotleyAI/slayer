@@ -15,7 +15,6 @@ from slayer.core.time_spine import TIME_SPINE_MODEL
 from slayer.core.enums import DataType
 from slayer.core.errors import IdentifierCollisionError
 from slayer.core.keys import (
-    REGROUP_LEAF_PREFIX,
     AggregateKey,
     ColumnKey,
     ColumnSqlKey,
@@ -242,8 +241,8 @@ def flat_name(dotted: str, *, strip_relation: Optional[str] = None) -> str:
 
 OUTER_WRAP_ALIAS = "_outer"
 STAGE_INNER_ALIAS = "_stage_inner"
-#: A keyless association home's per-query row number (reserved prefix: no model column collides).
-ROW_IDENTITY_COLUMN = f"{REGROUP_LEAF_PREFIX}row_id"
+#: A keyless association home's per-query row number (``__slayer_`` is reserved at save time: no model column collides).
+ROW_IDENTITY_COLUMN = "__slayer_row_id"
 
 
 def with_row_identity(model: SlayerModel) -> SlayerModel:
