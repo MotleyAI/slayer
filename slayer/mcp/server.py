@@ -43,6 +43,8 @@ from slayer.live_schema.ingestion import (
     _hidden_internal_line,
     _unhide_hint,
     IngestableObject,
+    key_read_failure_line,
+    key_read_failures_header,
     list_ingestable_objects,
 )
 from slayer.live_schema.schema_scope import schema_ref_from_token, validate_scope_args
@@ -395,6 +397,12 @@ def _render_skipped_schemas_section(skipped_schemas: list[Any]) -> list[str]:
     return out
 
 
+def _render_key_read_failures_section(lost: list[Any]) -> list[str]:
+    if not lost:
+        return []
+    return ["", key_read_failures_header(len(lost)), *(f"- {key_read_failure_line(entry)}" for entry in lost)]
+
+
 def _render_hidden_internals_section(
     hidden: list[Any], *, data_source: str | None = None
 ) -> list[str]:
@@ -443,9 +451,11 @@ async def _render_ingest_result(
     skipped_schemas = list(getattr(result, "skipped_schemas", None) or [])
     hidden_internals = list(getattr(result, "hidden_internals", None) or [])
     broken = list(getattr(result, "broken_dependents", None) or [])
+    lost = list(getattr(result, "key_read_failures", None) or [])
     datasource_described = bool(getattr(result, "datasource_described", False))
     if (
         not broken
+        and not lost
         and not additions
         and not result.to_delete
         and not result.errors
@@ -478,6 +488,7 @@ async def _render_ingest_result(
     # Same order as the CLI renderer, so the two surfaces read alike.
     lines.extend(_render_skipped_section(skipped))
     lines.extend(_render_skipped_schemas_section(skipped_schemas))
+    lines.extend(_render_key_read_failures_section(lost))
     lines.extend(
         _render_hidden_internals_section(hidden_internals, data_source=ds.name)
     )
@@ -1363,6 +1374,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         if save_errors:
             lines.append(f"Failed to save {len(save_errors)} model(s):")
             lines.extend(save_errors)
+        lines.extend(_render_key_read_failures_section(ingest_output.key_read_failures))
 
         return "\n".join(lines)
 

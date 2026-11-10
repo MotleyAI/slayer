@@ -171,14 +171,19 @@ curl -X POST http://localhost:5143/ingest \
   -d '{"datasource": "my_postgres", "schema_name": "public"}'
 ```
 
-Response:
+The response is the ingest result (`additions`, `to_delete`, `errors`, `skipped`, `objects`, `skipped_schemas`, `broken_dependents`, …); `key_read_failures` lists each key read that failed (table `location`, `read`, `error`); a re-ingest that reads the key fills it, unless a stored column with a key column's name reads something else. A 200 response:
 
 ```json
 {
-  "status": "ingested",
-  "models": ["orders", "customers", "products"]
+  "additions": [],
+  "errors": [],
+  "key_read_failures": [
+    {"read": "primary key", "error": "...", "location": {"name": "customers", "schema_name": "main", "catalog": null}}
+  ]
 }
 ```
+
+When `errors` is non-empty the status is 422 and the same result sits under `detail`: `{"detail": {"additions": [], "errors": [...], ...}}`.
 
 ### Inspect (single-entity point lookup)
 

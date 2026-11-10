@@ -63,7 +63,7 @@ def test_coerce_distinct_limit_default_is_1000():
 @pytest.fixture
 def sqlite_engine(tmp_path: Path):
     """A file-backed SQLite engine. File-backed so multi-schema ATTACH tests
-    work; in-memory ``StaticPool`` works for single-connection cases but the
+    work; the in-memory engine works for single-connection cases but the
     ATTACH-DATABASE tests need a path."""
     db_path = tmp_path / "probe.db"
     with disposable_engine(f"sqlite:///{db_path}") as engine:

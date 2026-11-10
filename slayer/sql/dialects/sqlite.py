@@ -12,6 +12,7 @@ from collections.abc import Callable, Sequence
 from typing import Any, ClassVar, Optional
 
 from pydantic import BaseModel
+from sqlalchemy.dialects.sqlite.base import SQLiteDialect as SaSqliteDialect
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
@@ -42,7 +43,18 @@ from slayer.sql.dialects.base import (
     slayer_type_of,
 )
 from slayer.sql.dialects.patterns import PYTHON, RegexFlavour, like_text
-from slayer.sql.dialects.reflection import ResultColumnType
+from slayer.sql.dialects.reflection import (
+    CatalogConnection,
+    KeyReadFailure,
+    ReflectedColumn,
+    ReflectedForeignKey,
+    ResultColumnType,
+    TableKeys,
+    best_effort,
+    column_from_sa_type,
+    fetch,
+    keys_of_reads,
+)
 
 # Rows sampled to certify integers; a sample of ``PROBE_SCAN_CAP + 1`` rows is saturated.
 PROBE_SCAN_CAP: int = 100_000
@@ -620,6 +632,81 @@ def _like_source(pattern: LikePattern) -> str:
     return like_text(pattern)
 
 
+# Reads SQLite's type-affinity rules; never connects.
+_SA_SQLITE = SaSqliteDialect()
+_GENERATED_TYPE_WORDS = re.compile(r"\b(?:GENERATED|ALWAYS)\b", re.IGNORECASE)
+
+
+def _pragma(
+    connection: CatalogConnection | None, name: str, *args: str, columns: Sequence[str],
+    where: Expression | None = None, order_by: Sequence[str] = (),
+) -> list[tuple[Any, ...]]:
+    """``columns`` of the table-valued pragma ``name(args)`` (the last argument is the schema)."""
+    def column(c: str) -> exp.Column:
+        return exp.column(exp.to_identifier(c, quoted=True))
+
+    query = exp.select(*(column(c) for c in columns)).from_(
+        exp.Table(this=exp.Anonymous(this=name, expressions=[exp.Literal.string(a) for a in args])),
+    )
+    if where is not None:
+        query = query.where(where)
+    if order_by:
+        query = query.order_by(*(column(c) for c in order_by))
+    return fetch(connection, query, dialect="sqlite")
+
+
+def _primary_key(connection: CatalogConnection | None, *, table: str, schema: str) -> list[str]:
+    rows = _pragma(
+        connection, "pragma_table_xinfo", table, schema, columns=["name"],
+        where=exp.GT(this=exp.column(exp.to_identifier("pk", quoted=True)), expression=exp.Literal.number(0)),
+        order_by=["pk"],
+    )
+    return [name for (name,) in rows]
+
+
+def _foreign_keys(
+    connection: CatalogConnection | None, *, table: str, schema: str, referred_schema: str | None,
+) -> list[ReflectedForeignKey]:
+    """FKs grouped by id; an FK naming no parent columns refers to the parent's primary key."""
+    groups: dict[int, tuple[str, list[str], list[str | None]]] = {}
+    for fk_id, referred, column, target in _pragma(
+        connection, "pragma_foreign_key_list", table, schema, columns=["id", "table", "from", "to"],
+        order_by=["id", "seq"],
+    ):
+        _, columns, targets = groups.setdefault(fk_id, (referred, [], []))
+        columns.append(column)
+        targets.append(target)
+    out: list[ReflectedForeignKey] = []
+    for referred, columns, targets in groups.values():
+        named = [t for t in targets if t is not None]
+        referred_columns = named if named else _primary_key(connection, table=referred, schema=schema)
+        if referred_columns:
+            out.append(ReflectedForeignKey(
+                columns=columns, referred_schema=referred_schema, referred_table=referred,
+                referred_columns=referred_columns,
+            ))
+    return out
+
+
+def _unique_sets(connection: CatalogConnection | None, *, table: str, schema: str, origin: str) -> list[list[str]]:
+    """Unique column sets of the non-partial indexes of ``origin`` (``u`` constraint, ``c`` created index); an
+    index with an expression member constrains no column set."""
+    sets: list[list[str]] = []
+    for name, unique, index_origin, partial in _pragma(
+        connection, "pragma_index_list", table, schema, columns=["name", "unique", "origin", "partial"],
+    ):
+        if not unique or partial or index_origin != origin:
+            continue
+        members = _pragma(
+            connection, "pragma_index_xinfo", name, schema, columns=["cid", "name"],
+            where=exp.EQ(this=exp.column(exp.to_identifier("key", quoted=True)), expression=exp.Literal.number(1)),
+            order_by=["seqno"],
+        )
+        if members and all(cid >= 0 and column is not None for cid, column in members):
+            sets.append([column for _, column in members])
+    return sets
+
+
 class SqliteDialect(SqlDialect):
     sqlglot_name: str = "sqlite"
     database_name: ClassVar[str] = "SQLite"
@@ -631,7 +718,6 @@ class SqliteDialect(SqlDialect):
     probes_integer_affinity: bool = True
     temporal_text_compatible: bool = True
     cursor_reports_types: bool = False
-    primary_key_inspector_only: bool = True
     explain_prefix: str | None = "EXPLAIN QUERY PLAN"
     log10_native: bool = True
     log2_native: bool = True
@@ -640,6 +726,50 @@ class SqliteDialect(SqlDialect):
     max_identifier_bytes: int | None = None  # unbounded
     url_scheme: str | None = "sqlite"
     result_census_rows: int | None = PROBE_SCAN_CAP + 1
+
+    # Structure comes from SQLite's own catalog, scoped to the table's schema (none is ``main``), never the Inspector.
+
+    def reflect_columns(
+        self, *, connection: CatalogConnection | None, inspector: Any,  # NOSONAR(S1172) — hook signature
+        table: str, schema: str | None, catalog: str | None,  # NOSONAR(S1172) — hook signature
+    ) -> list[ReflectedColumn]:
+        """``pragma_table_xinfo``'s columns, hidden ones skipped, typed by SQLite's affinity rules."""
+        rows = _pragma(
+            connection, "pragma_table_xinfo", table, schema or "main", columns=["name", "type", "hidden"],
+            order_by=["cid"],
+        )
+        return [
+            column_from_sa_type(
+                name=name,
+                sa_type=_SA_SQLITE._resolve_type_affinity(  # pyright: ignore[reportPrivateUsage]
+                    (_GENERATED_TYPE_WORDS.sub("", declared) if hidden else declared).upper().strip(),
+                ),
+                zoned_types=self.zoned_timestamp_db_types, json_types=self.json_db_types, sa_dialect=_SA_SQLITE,
+            )
+            for name, declared, hidden in rows
+            if hidden != 1
+        ]
+
+    def reflect_table_keys(
+        self, *, connection: CatalogConnection | None, inspector: Any,  # NOSONAR(S1172) — hook signature
+        table: str, schema: str | None, catalog: str | None,  # NOSONAR(S1172) — hook signature
+    ) -> TableKeys:
+        """PK, FKs and unique key sets from SQLite's own catalog; each read best-effort, a failure listed."""
+        scope = schema or "main"
+
+        def read(what: str, fn: Callable[[], list[Any]]) -> tuple[list[Any], KeyReadFailure | None]:
+            return best_effort(fn, connection=connection, default=[], table=table, what=what)
+
+        return keys_of_reads(
+            primary_key=read("primary key", lambda: _primary_key(connection, table=table, schema=scope)),
+            foreign_keys=read("foreign keys", lambda: _foreign_keys(
+                connection, table=table, schema=scope, referred_schema=schema,
+            )),
+            unique_sets=[
+                read("unique constraints", lambda: _unique_sets(connection, table=table, schema=scope, origin="u")),
+                read("unique indexes", lambda: _unique_sets(connection, table=table, schema=scope, origin="c")),
+            ],
+        )
 
     def result_census_select(self, columns: Sequence[str]) -> list[Expression]:
         """``COUNT(*)``, then each column's :func:`census_counts`."""

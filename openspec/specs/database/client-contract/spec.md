@@ -35,11 +35,19 @@ A client SHALL report an unreachable database as an unavailable failure, rejecte
 
 ### Requirement: Reflected metadata uses SLayer types
 
-Column metadata returned by a client SHALL carry SLayer data types, a float flag, the database's type name where it is opaque or exact-numeric, and the column comment; it SHALL NOT carry driver-library type objects. Ingestion and drift SHALL produce the same model types and drift verdicts through any conforming client as through the default client over the same database.
+Column metadata returned by a client SHALL carry SLayer data types, a float flag, the database's type name where it is opaque or exact-numeric, and the column comment; it SHALL NOT carry driver-library type objects. Ingestion and drift SHALL produce the same model types and drift verdicts through any conforming client as through the default client over the same database. On SQLite the default client SHALL read columns from SQLite's own catalog, scoped to the table's schema, including generated columns and excluding hidden ones, with the types SLayer gave them before this change; no SQLite column read SHALL run a statement that fails.
 
 #### Scenario: Default reflection keeps today's types
 - **WHEN** a table with integer, exact-numeric, float, text, timestamp, boolean, UUID and opaque columns is ingested through the default client
 - **THEN** the model's column types, formats and recorded database types are those ingestion produced before this change
+
+#### Scenario: SQLite columns keep their types without a failing statement
+- **WHEN** a SQLite table whose columns cover the declared-type spellings SQLite's affinity rules distinguish, including an empty declared type and a generated column, is reflected through the default client
+- **THEN** every column, the generated one included, has the type SLayer gave it before this change, and no statement executed while reading the columns fails
+
+#### Scenario: SQLite missing and virtual tables
+- **WHEN** the default client reflects the columns of a SQLite table that does not exist, and of a virtual table with hidden columns
+- **THEN** the missing table is a not-found failure, and the virtual table's columns exclude its hidden ones
 
 ### Requirement: The default client keeps each dialect's connection behaviour
 
@@ -97,6 +105,10 @@ SLayer SHALL ship a conformance suite that runs against any client over a databa
 - **WHEN** the suite runs against a delegating client that overrides only statement execution and column-type probing
 - **THEN** every applicable check passes
 
+#### Scenario: The conformance suite checks the current contract
+- **WHEN** `run_conformance` is given a client serving only the 1.6.0 `get_column_types`
+- **THEN** its `get_result_column_types` check fails
+
 ### Requirement: Column-type probes report SLayer types and database type names
 
 A client's column-type probe SHALL return, for every result column of a statement, a SLayer data type and the database's own name for the column's type, without fetching the statement's data beyond what type certification needs. The type SHALL be the one reflection gives the same database type: integer types INT; exact-numeric types INT at scale 0 and DOUBLE at a positive or unknown scale; floating types DOUBLE; character types TEXT; boolean types BOOLEAN; date types DATE; timestamp types TIMESTAMP; container types and unrecognised types as reflection maps them; and only the types reflection treats as opaque UNKNOWN. A probe SHALL NOT report INT for a column it has not proven integer: on a database whose cursor reports no types, a number is INT only when every value in a sample of at most 100 000 rows is an integer and the sample is not saturated, and DOUBLE otherwise. The database type name SHALL be present whenever the driver names the type or reports a code SLayer can name, carrying precision and scale for an exact-numeric type when the database reports them, and SHALL be absent only when the driver supplies no type name. The probe's answer for a datasource SHALL NOT depend on whether it was requested from synchronous or asynchronous code.
@@ -144,58 +156,6 @@ A client's column-type probe SHALL return, for every result column of a statemen
 #### Scenario: asyncpg reports no exact-numeric scale
 - **WHEN** a Postgres statement selecting a `NUMERIC(12,0)` and a `NUMERIC(12,3)` column is probed on a datasource whose URL names `asyncpg`
 - **THEN** both columns are DOUBLE and carry the type name `numeric`
-
-### Requirement: The 1.5.0 category probes keep working and warn
-
-The deprecated category probes — the synchronous entry point over an engine, the default client's probe, the query engine's per-model probe and `DelegatingSqlClient.get_column_types` — SHALL keep returning one of `number`, `string`, `time` or `boolean` per column, and SHALL emit a deprecation warning naming the typed replacement. Each column's category SHALL be the one SLayer 1.6.0 returned for the same database type on the same database: each dialect declares its 1.6.0 classification of database type names, and a column whose type the dialect does not classify falls back to its SLayer type (INT and DOUBLE as `number`; TEXT, UNKNOWN and ARRAY as `string`; DATE and TIMESTAMP as `time`; BOOLEAN as `boolean`). A column whose type the database does not report (no type code: a value-typed result, SQLite's storage census) SHALL take its SLayer type's category.
-
-#### Scenario: A 1.5.0 caller
-- **WHEN** code written for 1.5.0 probes a statement with an integer and a text column through the synchronous entry point
-- **THEN** it receives `number` and `string` and a deprecation warning naming the typed probe
-
-#### Scenario: Types whose classification was refined since 1.6.0
-- **WHEN** a deprecated category probe reads a Postgres or DuckDB `interval` column, a DuckDB `time with time zone` column, or a MySQL `YEAR` or `BIT` column
-- **THEN** it returns `time` for the interval, time-with-time-zone and `YEAR` columns and `number` for the `BIT` column, as 1.6.0 did
-
-#### Scenario: Parity with every 1.6.0 classification
-- **WHEN** each cursor description 1.6.0 classified — every Postgres OID, MySQL field type, ODBC SQL type and Snowflake field type in its tables, DuckDB type names and an unknown code — is probed through a deprecated category probe
-- **THEN** each returns the category 1.6.0 returned for it
-
-#### Scenario: Untyped columns take their SLayer type's category
-- **WHEN** a deprecated category probe reads a result column the database reports no type for (a SQLite column, an absent type code)
-- **THEN** it returns the category of that column's typed-probe SLayer type
-
-### Requirement: A 1.6.0 client's category probe keeps working and warns
-
-A client whose only type probe is the 1.6.0 `get_column_types` — one without `get_result_column_types`, or a `DelegatingSqlClient` subclass overriding `get_column_types` but not `get_result_column_types` — SHALL be probed through its `get_column_types` wherever SLayer takes a client, reading `number` as DOUBLE, `string` as TEXT, `time` as TIMESTAMP, `boolean` as BOOLEAN and any other category as TEXT, with no type name, and each such probe SHALL emit a deprecation warning naming `get_result_column_types` and SLayer 2.0. A client serving `get_result_column_types` SHALL be used unchanged. `DelegatingSqlClient.get_column_types` SHALL keep returning the categories of the wrapped client's typed probe, with a deprecation warning naming `get_result_column_types`.
-
-#### Scenario: A 1.6.0 client built from scratch
-- **WHEN** an engine's client factory returns a client implementing the 1.6.0 contract and a SQL-backed model's column types are probed
-- **THEN** the probe runs through the client's `get_column_types`, a numeric column is DOUBLE, and a deprecation warning names `get_result_column_types`
-
-#### Scenario: A 1.6.0 gateway overriding the probe
-- **WHEN** the factory returns a `DelegatingSqlClient` subclass overriding only `get_column_types` and a column type is probed
-- **THEN** the probe runs through that override, not the wrapped client, and warns
-
-#### Scenario: OSI import through a 1.6.0 client
-- **WHEN** OSI `collect_metadata` is given a 1.6.0 client and a derived field `amount * 2` needs a type
-- **THEN** the field is DOUBLE, probed through the client's `get_column_types`, with a deprecation warning
-
-#### Scenario: Drift validation through a 1.6.0 client
-- **WHEN** `validate_datasource` is given a 1.6.0 client and validates a SQL-backed model
-- **THEN** the model's SQL is probed through the client's `get_column_types`, with a deprecation warning
-
-#### Scenario: A 1.6.0 gateway deferring to the base probe
-- **WHEN** a `DelegatingSqlClient` subclass's `get_column_types` returns `super().get_column_types(sql)`
-- **THEN** it receives `number` for an integer column and `string` for a text column, with a deprecation warning
-
-#### Scenario: A current client
-- **WHEN** the client is the default client, a plain `DelegatingSqlClient`, or a subclass overriding `get_result_column_types`
-- **THEN** SLayer uses it unchanged
-
-#### Scenario: The conformance suite checks the current contract
-- **WHEN** `run_conformance` is given a client serving only the 1.6.0 `get_column_types`
-- **THEN** its `get_result_column_types` check fails
 
 ### Requirement: The default client refuses session and transaction statements
 The default client's `execute` SHALL refuse, with a typed SQL-client error naming the statement's
@@ -264,26 +224,14 @@ An explain query SHALL be expressed by its dialect as one plan statement — the
 - **WHEN** a query on a BigQuery datasource is executed with `explain=True`
 - **THEN** it raises an explain-unsupported error, which is a `ValueError`, and no statement reaches the client
 
-### Requirement: A client written before explain keeps working and warns
+### Requirement: A key read lists the reads that failed
 
-A client without its own explain operation — one built from scratch without `explain`, or a `DelegatingSqlClient` subclass that overrides statement execution but not `explain`, at any depth of subclassing — SHALL have an explain query whose dialect needs no session statements run through its statement execution, as the single plan statement, with a deprecation warning naming `explain` and SLayer 2.0. An explain query needing session statements on such a client SHALL be refused with an explain-unsupported error, and no statement SHALL reach the client. A client serving `explain` — the default client, a plain `DelegatingSqlClient`, or a subclass overriding `explain` — SHALL be used unchanged, with no warning. The deprecated single-text EXPLAIN builder on a dialect SHALL keep returning its single statement for dialects that need no session statements, raise an explain-unsupported error for the others, and warn, naming its replacement and SLayer 2.0.
+A client's key read SHALL list each of its reads — primary key, foreign keys, unique constraints, unique indexes — that failed, with the error, alongside the keys it did read. A client that reports no failed reads SHALL be treated as having none, so a client built before this change stays conforming.
 
-#### Scenario: A client built from scratch without explain
-- **WHEN** an engine's client factory returns a client implementing every contract member except `explain`, and a SQLite query is explained
-- **THEN** the client's statement execution receives the EXPLAIN statement, the plan rows are returned, and a deprecation warning names `explain` and SLayer 2.0
+#### Scenario: The default client lists a failed read
+- **WHEN** the default client's primary-key read of a table fails and its other key reads succeed
+- **THEN** the key read returns the foreign keys and unique keys, no primary key, and lists the primary-key read as failed with its error
 
-#### Scenario: A statements-only gateway written before explain
-- **WHEN** the factory returns a `DelegatingSqlClient` subclass overriding statement execution but not `explain`, directly or through an intermediate subclass, and a SQLite query is explained
-- **THEN** the EXPLAIN statement reaches that override, not the wrapped client, with a deprecation warning
-
-#### Scenario: Session-mode explain on a client written before explain
-- **WHEN** such a client serves a SQL Server datasource and a query is explained
-- **THEN** an explain-unsupported error is raised and the client receives no statement
-
-#### Scenario: A current client is used unchanged
-- **WHEN** the client is the default client, a plain `DelegatingSqlClient`, or a subclass overriding `explain`, and a query is explained
-- **THEN** its explain operation serves it, and no deprecation warning is emitted
-
-#### Scenario: The deprecated single-text builder
-- **WHEN** the deprecated EXPLAIN builder of the Postgres, the SQL Server and the BigQuery dialect is called
-- **THEN** Postgres returns its single EXPLAIN statement, SQL Server and BigQuery raise an explain-unsupported error, and each call warns, naming the replacement
+#### Scenario: A client that lists nothing
+- **WHEN** a gateway client's key read returns keys without listing any failed read, and a datasource is ingested through it
+- **THEN** ingestion succeeds and reports no failed key read

@@ -33,6 +33,7 @@ from slayer.core.models import (
 from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
 from slayer.core.refs import IDENTIFIER_RE
 from slayer.core.warnings import BrokenDependentWarning
+from slayer.sql.dialects.reflection import TableKeyReadFailure
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.live_schema.introspect_utils import reflect_columns
 from slayer.live_schema.schema_scope import (
@@ -291,6 +292,8 @@ class IdempotentIngestResult(BaseModel):
     skipped_schemas: list[Any] = Field(default_factory=list)
     # Stored definitions a list re-type this pass breaks.
     broken_dependents: list[BrokenDependentWarning] = Field(default_factory=list)
+    # Key reads that failed: those keys are missing until a re-ingest reads them.
+    key_read_failures: list[TableKeyReadFailure] = Field(default_factory=list)
 
 
 class AppliedEntry(BaseModel):

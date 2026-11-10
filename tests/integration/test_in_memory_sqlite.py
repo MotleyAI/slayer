@@ -1,7 +1,7 @@
 """Regression guard: file-backed SQLite must not be affected by the in-memory fix.
 
-The fix for #72 special-cases ``:memory:`` SQLite to use a per-client
-``StaticPool`` engine. File-backed SQLite must NOT take that path — the
+``:memory:`` SQLite is special-cased to a per-client one-connection
+engine. File-backed SQLite must NOT take that path — the
 underlying file is shared across connections, and the existing
 module-level engine cache must remain in effect.
 

@@ -36,7 +36,13 @@ from slayer.live_schema.introspect_utils import dialect_of, reflect_columns, ref
 from slayer.database import sqlite_introspect
 from slayer.database.client import ObjectNotFound, SqlClient, render_type_probe, sql_model_trial_query
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
-from slayer.sql.dialects.reflection import ReflectedColumn, ResultColumnType, TableKeys
+from slayer.sql.dialects.reflection import (
+    ReflectedColumn,
+    ResultColumnType,
+    TableKeyReadFailure,
+    TableKeys,
+    TableLocation,
+)
 from slayer.live_schema.schema_scope import (
     SchemaRef,
     UNREACHABLE,
@@ -175,11 +181,13 @@ async def _generate_joins(
     schema_name: str | None = None,
     keys_by_table: dict[str, TableKeys] | None = None,
     default_schema: str | None | _Unread = _UNREAD,
+    lost: list[TableKeyReadFailure] | None = None,
 ) -> list[ModelJoin]:
     """Direct ModelJoins from the table's own FKs; one grouped join per composite FK.
 
     Joins name the MODEL (via ``model_name_by_table``); a target with no model is dropped.
-    ``keys_by_table`` memoizes each table's keys across calls; ``default_schema`` is read when not given.
+    ``keys_by_table`` memoizes each table's keys across calls; ``default_schema`` is read when not given;
+    ``lost`` collects each key read that fails.
     """
     resolved_default = await client.default_schema() if isinstance(default_schema, _Unread) else default_schema
     ref = _ref_from_token(client, schema)
@@ -188,6 +196,12 @@ async def _generate_joins(
     async def keys_of(table: str) -> TableKeys:
         if table not in cache:
             cache[table] = await reflect_table_keys(client=client, table_name=table, ref=ref)
+            if lost is not None:
+                location = table_location(table, ref)
+                lost.extend(
+                    TableKeyReadFailure(location=location, read=f.read, error=f.error)
+                    for f in cache[table].failed_reads
+                )
         return cache[table]
 
     source_keys = await keys_of(source_table)
@@ -654,6 +668,8 @@ class IngestionScanReport(BaseModel):
     other_schemas: list[str] = Field(default_factory=list)
     # Requested schemas dropped from scope, with a reason.
     skipped_schemas: list[SkippedSchema] = Field(default_factory=list)
+    # Key reads that failed: those keys are missing until a re-ingest reads them.
+    key_read_failures: list[TableKeyReadFailure] = Field(default_factory=list)
 
     @property
     def hidden_internals(self) -> list[InternalTable]:
@@ -766,11 +782,12 @@ async def _build_one_model(
     internal_tool: str | None = None,
     keys_by_table: dict[str, TableKeys] | None = None,
     default_schema: str | None | _Unread = _UNREAD,
+    lost: list[TableKeyReadFailure] | None = None,
 ) -> SlayerModel:
     """Introspect one live object into a model; raises on failure.
 
     A set ``internal_tool`` builds it ``hidden`` with a ``meta.internal_table`` breadcrumb.
-    ``keys_by_table`` memoizes each table's keys across the schema's objects.
+    ``keys_by_table`` memoizes each table's keys across the schema's objects; ``lost`` collects failed key reads.
     """
     table = obj.live_name
     sql_table = ref.qualify(table, dialect=dialect_of(client))
@@ -784,6 +801,7 @@ async def _build_one_model(
         schema_name=ref.name,
         keys_by_table=keys_by_table,
         default_schema=default_schema,
+        lost=lost,
     )
     keys = keys_by_table[obj.name]
     columns = await _introspect_table_columns(
@@ -844,8 +862,8 @@ async def _scan_one_schema(
     entries: list[tuple[str, IngestableObject]],
     data_source: str,
     surface_internals: bool,
-) -> tuple[list[SlayerModel], list[SkippedTable], list[InternalTable]]:
-    """Build every winning model for one schema; joins resolve within this schema only."""
+) -> tuple[list[SlayerModel], list[SkippedTable], list[InternalTable], list[TableKeyReadFailure]]:
+    """Build every winning model for one schema, and every failed key read; joins resolve within this schema only."""
     table_set = {obj.name for _, obj in entries}
     name_by_object = {obj.name: mn for mn, obj in entries}
 
@@ -853,6 +871,7 @@ async def _scan_one_schema(
     skipped: list[SkippedTable] = []
     internal_tables: list[InternalTable] = []
     keys_by_table: dict[str, TableKeys] = {}
+    lost: list[TableKeyReadFailure] = []
     default_schema: str | None | _Unread = _UNREAD
     try:
         default_schema = await client.default_schema() if entries else None
@@ -874,6 +893,7 @@ async def _scan_one_schema(
                     internal_tool=None if surface_internals else tool,
                     keys_by_table=keys_by_table,
                     default_schema=default_schema,
+                    lost=lost,
                 )
             )
         except Exception as exc:  # noqa: BLE001 — per-object isolation
@@ -896,7 +916,18 @@ async def _scan_one_schema(
                     hidden=not surface_internals,
                 )
             )
-    return models, skipped, internal_tables
+    return models, skipped, internal_tables, lost
+
+
+def _each_once(failures: list[TableKeyReadFailure]) -> list[TableKeyReadFailure]:
+    """``failures`` with each location and read once."""
+    seen: set[tuple[TableLocation, str]] = set()
+    out: list[TableKeyReadFailure] = []
+    for failure in failures:
+        if (failure.location, failure.read) not in seen:
+            seen.add((failure.location, failure.read))
+            out.append(failure)
+    return out
 
 
 def _plan_scanned_edges(models: list[SlayerModel]) -> list[SlayerModel]:
@@ -960,8 +991,9 @@ async def ingest_datasource_report_async(
 
     models: list[SlayerModel] = []
     internal_tables: list[InternalTable] = []
+    lost: list[TableKeyReadFailure] = []
     for ref, entries in by_schema.values():
-        m, s, i = await _scan_one_schema(
+        m, s, i, k = await _scan_one_schema(
             client=client,
             ref=ref,
             entries=entries,
@@ -971,6 +1003,7 @@ async def ingest_datasource_report_async(
         models.extend(m)
         skipped.extend(s)
         internal_tables.extend(i)
+        lost.extend(k)
 
     schema_description = None
     if not datasource.description:
@@ -987,6 +1020,7 @@ async def ingest_datasource_report_async(
         schema_description=schema_description,
         other_schemas=scope.other_schemas,
         skipped_schemas=scope.skipped,
+        key_read_failures=_each_once(lost),
     )
 
 
@@ -1936,6 +1970,7 @@ async def ingest_datasource_idempotent(
         schema_hint=_schema_hint_message(scan.other_schemas),
         skipped_schemas=list(scan.skipped_schemas),
         broken_dependents=broken,
+        key_read_failures=list(scan.key_read_failures),
     )
 
 
@@ -2065,6 +2100,17 @@ def _hidden_internal_line(entry) -> str:
     return f"{target}: {entry.tool}"
 
 
+def key_read_failures_header(count: int) -> str:
+    return f"Lost key reads ({count}) — ingested without these keys (their joins and uniqueness); re-ingest to read them:"
+
+
+def key_read_failure_line(entry: TableKeyReadFailure) -> str:
+    """``<table>: <read> — <error>``, the table qualified by its catalog and schema."""
+    location = entry.location
+    table = ".".join(p for p in (location.catalog, location.schema_name, location.name) if p)
+    return f"{table}: {entry.read} — {entry.error}"
+
+
 def _unhide_hint(data_source: str | None = None) -> str:
     """The ``edit_model`` call that un-hides an internal (qualified: internals collide across datasources)."""
     if data_source:
@@ -2104,6 +2150,10 @@ def _print_ingest_drift_and_errors(
         header=f"\nSkipped schemas ({len(skipped_schemas)}):",
         line=lambda e: f"{e.token}: {e.reason}",
         out=out,
+    )
+    lost = getattr(result, "key_read_failures", None) or []
+    _print_report_section(
+        entries=lost, header=f"\n{key_read_failures_header(len(lost))}", line=key_read_failure_line, out=out,
     )
     # Hidden internals never affect the exit code: nothing was declined.
     hidden_internals = getattr(result, "hidden_internals", None) or []

@@ -20,6 +20,7 @@ from slayer.live_schema.ingestion import (
 from slayer.live_schema.schema_drift import IdempotentIngestResult
 from slayer.database.client import DelegatingSqlClient, SlayerSQLClient, SqlClient
 from slayer.sql.dialects import PostgresDialect, SqliteDialect, TableKeys
+from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.dialects.reflection import ReflectedForeignKey, TableLocation
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
@@ -58,9 +59,9 @@ class _KeysInspector:
 
 
 def _base_keys(inspector: _KeysInspector) -> TableKeys:
-    """The base key hook through SQLite (PK Inspector-authoritative, no catalog fallback)."""
+    """The base key hook over an empty SQLite database (its catalog PK fallback finds nothing)."""
     with disposable_engine("sqlite://") as engine, engine.connect() as conn:
-        return SqliteDialect().reflect_table_keys(
+        return SqlDialect().reflect_table_keys(
             connection=conn, inspector=cast(sa.engine.Inspector, inspector),
             table="t", schema=None, catalog=None,
         )
