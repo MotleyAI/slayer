@@ -70,4 +70,3 @@ def test_text_without_spans_is_unchanged(text: str) -> None:
 ])
 def test_rewrite_parses_like_the_functional_text(stored: str, rewritten: str) -> None:
     assert parse_expr(rewrite_colon_spans(stored)) == parse_expr(rewritten)
-

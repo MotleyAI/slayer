@@ -22,4 +22,3 @@ from slayer.core import refs
 )
 def test_renders_functional(source: str, suffix: str, expected: str) -> None:
     assert refs.functional_agg_text(source=source, suffix=suffix) == expected
-
