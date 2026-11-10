@@ -658,8 +658,7 @@ class TestCrossModelAndMultistageTrino:
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         ))
         assert result.row_count == 3
-        global_avg = pytest.approx((90.0 + 60.0 + 80.0) / 3)
-        assert [float(r["orders.customers.avg_score_avg"]) for r in result.data] == [global_avg] * 3
+        assert [float(r["orders.customers.avg_score_avg"]) for r in result.data] == pytest.approx([90.0, 60.0, 85.0])
 
     async def test_query_list_named(self, trino_cross_model_env: SlayerQueryEngine) -> None:
         inner = SlayerQuery(

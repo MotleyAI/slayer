@@ -648,10 +648,7 @@ class TestCrossModelAndMultistageMySQL:
         )
         result = await mysql_cross_model_env.execute(query=query)
         assert result.row_count == 3
-        global_avg = pytest.approx((90.0 + 60.0 + 80.0) / 3)
-        assert float(result.data[0]["orders.customers.avg_score_avg"]) == global_avg
-        assert float(result.data[1]["orders.customers.avg_score_avg"]) == global_avg
-        assert float(result.data[2]["orders.customers.avg_score_avg"]) == global_avg
+        assert [float(r["orders.customers.avg_score_avg"]) for r in result.data] == pytest.approx([90.0, 60.0, 85.0])
 
     async def test_query_list_named(self, mysql_cross_model_env: SlayerQueryEngine) -> None:
         inner = SlayerQuery(

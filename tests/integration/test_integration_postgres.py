@@ -505,13 +505,8 @@ class TestCrossModelAndMultistage:
         )
         result = await pg_cross_model_env.execute(query=query)
         assert result.row_count == 3
-        # customers model has no join back to orders, so the time dimension is
-        # unreachable from the re-rooted CTE → dropped → scalar AVG CROSS JOINed.
-        # Global avg: (90 + 60 + 80) / 3 = 76.67
-        global_avg = pytest.approx((90.0 + 60.0 + 80.0) / 3)
-        assert float(result.data[0]["orders.customers.avg_score_avg"]) == global_avg
-        assert float(result.data[1]["orders.customers.avg_score_avg"]) == global_avg
-        assert float(result.data[2]["orders.customers.avg_score_avg"]) == global_avg
+        # Associated: each month averages the distinct customers its orders reach.
+        assert [float(r["orders.customers.avg_score_avg"]) for r in result.data] == pytest.approx([90.0, 60.0, 85.0])
 
     async def test_query_list_named(self, pg_cross_model_env: SlayerQueryEngine) -> None:
         """Query list: named sub-query referenced by main query."""

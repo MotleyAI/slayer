@@ -1236,14 +1236,13 @@ class TestF1F4SemanticValues:
 
     async def test_cross_model_scalar_broadcasts_to_every_host_group(self, f1f4_env) -> None:
         # A cross-model aggregate that shares no grain with the host dimension
-        # (customers.balance:sum by orders.status) is a scalar broadcast to
-        # every host group — each status shows the full 700. This pins current
-        # behavior and complements the F1 no-dedup SQL-shape pin in
-        # tests/test_carrier_scope_matrix.py::TestSemanticPinsSqlShape.
+        # (customers.balance:sum by orders.status) is, under explicit broadcast,
+        # a scalar broadcast to every host group — each status shows the full 700.
         query = SlayerQuery(
             source_model="orders",
             measures=[ModelMeasure(formula="customers.balance:sum")],
             dimensions=[ColumnRef(name="status")],
+            to_many_handling="broadcast",
         )
         result = await f1f4_env.execute(query=query)
         by_status = {

@@ -5308,12 +5308,11 @@ class SQLGenerator:
 
     def _numbered_relation(self, relation: Expression, *, alias: str) -> Expression:
         """``(SELECT alias.*, <row number> AS row_id FROM relation) AS alias``: the filtered rows, each numbered once."""
-        ident = relation.args["alias"].this
         rows = exp.select(
-            exp.Column(this=exp.Star(), table=ident.copy()),
+            exp.Column(this=exp.Star(), table=exp.to_identifier(alias)),
             self._dialect.row_number().as_(exp.to_identifier(ROW_IDENTITY_COLUMN)),
         ).from_(relation)
-        return exp.Subquery(this=rows, alias=exp.TableAlias(this=ident.copy()))
+        return exp.Subquery(this=rows, alias=exp.TableAlias(this=exp.to_identifier(alias)))
 
     def _backing_relation(self, *, model, alias: str) -> Expression:
         """``model``'s rows before its filters; a stage relation must be one the statement declared it reads."""

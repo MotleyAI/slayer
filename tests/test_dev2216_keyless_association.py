@@ -121,6 +121,16 @@ class TestRowIdentity:
                 filters=["orders.amount >= 50"], **mode))
         assert cells(resp, "status", "sp") == FILTERED_SPEND_BY_STATUS
 
+    @pytest.mark.parametrize("mode", MODES)
+    async def test_filtered_keyless_home_numbers_its_filtered_rows(self, dialect, mode) -> None:
+        models = ossie_models()
+        models[1].filters = ["spend >= 20"]
+        async with ossie_engine(dialect, models=models) as engine:
+            resp = await engine.execute(query(
+                source_model="orders", dimensions=["status"], measures=[measure("sum(customers.spend)", "sp")],
+                **mode))
+        assert cells(resp, "status", "sp") == {"completed": 30.0, "pending": 20.0}
+
     async def test_postgres_executes(self, request) -> None:
         async with ossie_engine("postgres", request=request, duplicate=True) as engine:
             resp = await engine.execute(query(
