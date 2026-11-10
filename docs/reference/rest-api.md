@@ -172,7 +172,7 @@ The response is the ingest result (`additions`, `to_delete`, `errors`, `skipped`
 
 ```json
 {
-  "additions": [...],
+  "additions": [],
   "errors": [],
   "key_read_failures": [
     {"read": "primary key", "error": "...", "location": {"name": "customers", "schema_name": "main", "catalog": null}}
