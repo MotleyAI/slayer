@@ -1,11 +1,11 @@
-"""Stage 7a.3 (DEV-1450) — Mode-B Python-AST parser tests.
+"""Mode-B parser tests.
 
 The parser at ``slayer.core.syntax.parse_expr`` consumes a Mode-B
 expression string (the SLayer DSL) and emits a typed ``ParsedExpr`` AST
 the binder (stage 7a.5) compiles to ``BoundExpr``. Coverage:
 
 - Bare refs, dotted refs, star, literals.
-- Colon-syntax aggregations (``revenue:sum``, ``*:count``, parametric).
+- Functional aggregations (``sum(revenue)``, ``count(*)``, parametric).
 - Transforms (``cumsum`` / ``rank`` / etc.).
 - Scalar functions (closed allowlist from ``SCALAR_FUNCTIONS``).
 - Arithmetic, comparison, boolean, unary ops.
@@ -93,34 +93,33 @@ class TestRefsAndLiterals:
 
 
 # ---------------------------------------------------------------------------
-# Aggregations (colon syntax)
+# Aggregations
 # ---------------------------------------------------------------------------
 
 
 class TestAggregations:
     def test_local_aggregation(self):
-        assert parse_expr("revenue:sum") == AggCall(
+        assert parse_expr("sum(revenue)") == AggCall(
             source=Ref(name="revenue"), agg="sum",
         )
 
     def test_cross_model_aggregation(self):
-        assert parse_expr("customers.revenue:sum") == AggCall(
+        assert parse_expr("sum(customers.revenue)") == AggCall(
             source=DottedRef(parts=("customers", "revenue")), agg="sum",
         )
 
     def test_star_count(self):
-        assert parse_expr("*:count") == AggCall(
+        assert parse_expr("count(*)") == AggCall(
             source=StarSource(), agg="count",
         )
 
     def test_count_distinct(self):
-        assert parse_expr("customer_id:count_distinct") == AggCall(
+        assert parse_expr("count_distinct(customer_id)") == AggCall(
             source=Ref(name="customer_id"), agg="count_distinct",
         )
 
     def test_aggregation_with_positional_arg(self):
-        # revenue:last(ordered_at) — `ordered_at` is a positional arg.
-        result = parse_expr("revenue:last(ordered_at)")
+        result = parse_expr("last(revenue, ordered_at)")
         assert isinstance(result, AggCall)
         assert result.source == Ref(name="revenue")
         assert result.agg == "last"
@@ -128,16 +127,14 @@ class TestAggregations:
         assert result.kwargs == ()
 
     def test_aggregation_with_kwarg(self):
-        # price:weighted_avg(weight=quantity)
-        result = parse_expr("price:weighted_avg(weight=quantity)")
+        result = parse_expr("weighted_avg(price, weight=quantity)")
         assert isinstance(result, AggCall)
         assert result.source == Ref(name="price")
         assert result.agg == "weighted_avg"
         assert result.kwargs == (("weight", Ref(name="quantity")),)
 
     def test_aggregation_with_numeric_kwarg(self):
-        # revenue:percentile(p=0.5)
-        result = parse_expr("revenue:percentile(p=0.5)")
+        result = parse_expr("percentile(revenue, p=0.5)")
         assert isinstance(result, AggCall)
         assert result.kwargs == (("p", Literal(value=Decimal("0.5"))),)
 
@@ -474,12 +471,8 @@ class TestOperators:
 
 class TestRejection:
     def test_unknown_function_defers_to_binding(self):
-        # DEV-1826: an unknown name with an aggregatable first argument is an
-        # AggCall candidate (parity with `revenue:random_func`); only a call
-        # with no aggregatable first arg still raises.
-        assert parse_expr("random_func(revenue)") == parse_expr(
-            "revenue:random_func"
-        )
+        # An unknown name over an aggregatable first argument is an AggCall candidate; with none it raises.
+        assert parse_expr("random_func(revenue)") == AggCall(source=Ref(name="revenue"), agg="random_func")
         with pytest.raises(UnknownFunctionError):
             parse_expr("random_func(p=1)")
 
@@ -498,7 +491,7 @@ class TestRejection:
 
     def test_syntax_error_raises(self):
         with pytest.raises(ValueError):
-            parse_expr("revenue:sum +")
+            parse_expr("sum(revenue) +")
 
     def test_transform_with_no_arguments_raises(self):
         # DEV-1484 backfill from the deleted
@@ -508,14 +501,9 @@ class TestRejection:
             parse_expr("cumsum()")
 
     def test_unknown_function_inside_arithmetic_raises(self):
-        # DEV-1484 backfill from the deleted
-        # TestUnifiedScalarPassthrough::test_unknown_call_rejected_inside_arithmetic
-        # — the allowlist is enforced at every depth, not just the root. An
-        # unknown name over an AGGREGATABLE operand now defers to binding as a
-        # custom-aggregation candidate (DEV-1847); a transform operand cannot
-        # be one, so it still rejects at parse.
+        # The allowlist holds at every depth; a transform operand cannot be a custom-aggregation candidate.
         with pytest.raises(UnknownFunctionError):
-            parse_expr("revenue:sum + magic_fn(cumsum(other))")
+            parse_expr("sum(revenue) + magic_fn(cumsum(other))")
 
     def test_double_underscore_in_ref_now_parses(self):
         # DEV-1743: the parser no longer rejects `__` in identifiers —
@@ -534,14 +522,6 @@ class TestRejection:
         with pytest.raises(ValueError, match="__slayer_"):
             parse_expr("__slayer_agg_0__")
 
-    def test_function_style_aggregation_first_class(self):
-        # DEV-1826: the functional spelling is native grammar — it collapses
-        # to the SAME AggCall as colon syntax, no normalization involved.
-        assert parse_expr("sum(revenue)") == parse_expr("revenue:sum")
-
-    def test_function_style_count_star_first_class(self):
-        assert parse_expr("count(*)") == parse_expr("*:count")
-
     def test_chained_comparison_rejected(self):
         # `1 < x < 10` in Python is a chained comparison — DSL rejects
         # to keep `Cmp.op` single-valued. Users split as
@@ -549,19 +529,13 @@ class TestRejection:
         with pytest.raises(ValueError, match="chain|chained|single"):
             parse_expr("1 < x < 10")
 
-    def test_double_colon_aggregation_rejected(self):
-        # `revenue:sum:avg` — extra trailing colon after the agg name.
-        with pytest.raises(ValueError):
-            parse_expr("revenue:sum:avg")
-
     def test_equals_inside_scalar_call_is_comparison(self):
         assert parse_expr("lower(name='x')") == ScalarCall(
             name="lower", args=(Cmp(op="==", left=Ref(name="name"), right=Literal(value="x")),),
         )
 
     def test_colon_inside_string_literal_preserved(self):
-        # `status == 'revenue:sum'` — the string literal is data, not
-        # syntax. Must NOT be rewritten by the colon preprocessor.
+        # The string literal is data, not syntax.
         result = parse_expr("status == 'revenue:sum'")
         assert isinstance(result, Cmp)
         assert result.op == "=="
@@ -639,7 +613,7 @@ class TestFilterOperatorNormalization:
 
     def test_transform_no_kwargs_in_filter(self):
         # The no-kwargs top-N form is unaffected by the operator rewrite.
-        result = parse_expr("dense_rank(revenue:sum, direction='desc') <= 5")
+        result = parse_expr("dense_rank(sum(revenue), direction='desc') <= 5")
         assert isinstance(result, Cmp)
         assert isinstance(result.left, TransformCall)
         assert result.left.op == "dense_rank"
@@ -694,10 +668,8 @@ class TestFilterOperatorNormalization:
         assert result.right == Literal(value="a like b")
 
     def test_transform_kwarg_preserved_in_filter(self):
-        # DEV-1492: ntile(revenue:sum, n=4) <= 1 — the n=4 kwarg must
-        # survive the SQL operator-normalization (the previous '=' -> '=='
-        # rewrite mangled kwargs inside call parens).
-        result = parse_expr("ntile(revenue:sum, n=4) <= 1")
+        # The n=4 kwarg survives the SQL operator normalization.
+        result = parse_expr("ntile(sum(revenue), n=4) <= 1")
         assert isinstance(result, Cmp)
         assert isinstance(result.left, TransformCall)
         assert result.left.op == "ntile"
@@ -707,7 +679,7 @@ class TestFilterOperatorNormalization:
     def test_rank_partition_by_kwarg_preserved_in_filter(self):
         # Both kwargs survive the operator rewrite; binder turns partition_by into a
         # column ref (covered by SQL-gen tests).
-        result = parse_expr("rank(revenue:sum, partition_by=region, direction='desc') <= 1")
+        result = parse_expr("rank(sum(revenue), partition_by=region, direction='desc') <= 1")
         assert isinstance(result, Cmp)
         assert result.op == "<="
         assert isinstance(result.left, TransformCall)
@@ -719,10 +691,9 @@ class TestFilterOperatorNormalization:
         assert result.right == Literal(value=Decimal(1))
 
     def test_rank_partition_by_list_kwarg_preserved_in_filter(self):
-        # DEV-1492: list-form partition_by kwarg survives. _convert_kwarg_value
-        # converts the list to a tuple of Refs.
+        # A list-form partition_by kwarg survives as a tuple of Refs.
         result = parse_expr(
-            "rank(revenue:sum, partition_by=[region, channel], direction='desc') <= 1"
+            "rank(sum(revenue), partition_by=[region, channel], direction='desc') <= 1"
         )
         assert isinstance(result, Cmp)
         assert isinstance(result.left, TransformCall)
@@ -741,9 +712,8 @@ class TestFilterOperatorNormalization:
     # guarantee is that every arg/kwarg survives parsing as a typed node.
 
     def test_filter_transform_preserves_aggregation_positional_arg(self):
-        # change(revenue:last(ordered_at)) > 0 — the first/last ranking-time
-        # positional arg must survive on the inner AggCall.
-        result = parse_expr("change(revenue:last(ordered_at)) > 0")
+        # The first/last ranking-time positional arg survives on the inner AggCall.
+        result = parse_expr("change(last(revenue, ordered_at)) > 0")
         assert isinstance(result, Cmp)
         inner = result.left
         assert isinstance(inner, TransformCall)
@@ -754,10 +724,9 @@ class TestFilterOperatorNormalization:
         assert agg.args == (Ref(name="ordered_at"),)
 
     def test_filter_transform_preserves_aggregation_kwarg(self):
-        # change(price:weighted_avg(weight=quantity)) > 0 — the aggregation's
-        # own kwarg must survive, distinct from the transform's kwargs.
+        # The aggregation's own kwarg survives, distinct from the transform's kwargs.
         result = parse_expr(
-            "change(price:weighted_avg(weight=quantity)) > 0"
+            "change(weighted_avg(price, weight=quantity)) > 0"
         )
         assert isinstance(result, Cmp)
         inner = result.left
@@ -768,10 +737,9 @@ class TestFilterOperatorNormalization:
         assert agg.kwargs == (("weight", Ref(name="quantity")),)
 
     def test_filter_transform_preserves_mixed_agg_args_and_kwargs(self):
-        # change(price:weighted_avg(col1, weight=quantity)) > 0 — positional
-        # and keyword args on the same aggregation, both preserved.
+        # Positional and keyword args on the same aggregation, both preserved.
         result = parse_expr(
-            "change(price:weighted_avg(col1, weight=quantity)) > 0"
+            "change(weighted_avg(price, col1, weight=quantity)) > 0"
         )
         inner = getattr(result, "left")
         assert isinstance(inner, TransformCall)
@@ -781,10 +749,9 @@ class TestFilterOperatorNormalization:
         assert agg.kwargs == (("weight", Ref(name="quantity")),)
 
     def test_filter_ntile_preserves_both_n_and_partition_by(self):
-        # DEV-1353 regression shape: dropping partition_by would rank globally
-        # instead of within the partition; dropping n would fail to re-parse.
+        # Dropping partition_by would rank globally; dropping n would fail to re-parse.
         result = parse_expr(
-            "ntile(revenue:sum, n=4, partition_by=cohort) <= 1"
+            "ntile(sum(revenue), n=4, partition_by=cohort) <= 1"
         )
         assert isinstance(result, Cmp)
         inner = result.left
@@ -814,11 +781,9 @@ class TestFilterOperatorNormalization:
         assert right.right == Literal(value=Decimal(5))
 
     def test_mixed_transform_kwarg_and_top_level_equality(self):
-        # DEV-1492: a transform kwarg `=` inside a call and a SQL equality
-        # `=` at top level must be classified independently in the same
-        # expression. Proves the scanner is selective, not global.
+        # A transform kwarg `=` and a top-level SQL equality `=` are classified independently.
         result = parse_expr(
-            "ntile(revenue:sum, n=4) <= 1 and status = 'paid'"
+            "ntile(sum(revenue), n=4) <= 1 and status = 'paid'"
         )
         assert isinstance(result, BoolOp)
         assert result.op == "and"

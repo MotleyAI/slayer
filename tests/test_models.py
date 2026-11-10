@@ -83,11 +83,6 @@ class TestColumnRef:
 class TestOrderItem:
     """OrderItem column coercion and raw_formula capture."""
 
-    def test_colon_syntax_normalized(self) -> None:
-        item = OrderItem(column="revenue:sum", direction="desc")
-        assert item.column.name == "revenue_sum"
-        assert item.raw_formula == "revenue:sum"
-
     def test_funcstyle_builtin_agg_preserved(self) -> None:
         """The functional spelling is preserved verbatim — a
         placeholder defers resolution to binding (like custom aggs)."""

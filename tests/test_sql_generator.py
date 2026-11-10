@@ -2616,13 +2616,13 @@ class TestStatAggsViaQueryEnrichment:
     @pytest.mark.parametrize(
         "formula,expected_fragment",
         [
-            ("latency:stddev_samp", "STDDEV_SAMP"),
-            ("latency:stddev_pop", "STDDEV_POP"),
-            ("latency:var_samp", "VAR_SAMP"),
-            ("latency:var_pop", "VAR_POP"),
+            ("stddev_samp(latency)", "STDDEV_SAMP"),
+            ("stddev_pop(latency)", "STDDEV_POP"),
+            ("var_samp(latency)", "VAR_SAMP"),
+            ("var_pop(latency)", "VAR_POP"),
         ],
     )
-    async def test_stat_agg_via_colon_syntax(
+    async def test_stat_agg_functional(
         self,
         formula: str,
         expected_fragment: str,
@@ -2637,13 +2637,13 @@ class TestStatAggsViaQueryEnrichment:
         # Pin the call shape: family name then the qualified column in its single-arg slot; sales.latency inside the call proves generation reached the value column.
         assert f"{expected_fragment}(sales.latency)" in sql
 
-    async def test_corr_via_colon_syntax_with_other_kwarg(
+    async def test_corr_with_other_kwarg(
         self, sales_model: SlayerModel,
     ) -> None:
         gen = SQLGenerator(dialect="postgres")
         query = SlayerQuery(
             source_model="sales",
-            measures=[ModelMeasure(formula="price:corr(other=quantity)")],
+            measures=[ModelMeasure(formula="corr(price, other=quantity)")],
         )
         sql = await _generate(generator=gen, query=query, model=sales_model)
         # Both legs flow through _resolve_sql and qualify under the LHS measure's model_name.
@@ -6673,11 +6673,11 @@ Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
 
 
-class TestOrderByColonSyntax:
-    """ORDER BY should accept colon-aggregation syntax like fields do."""
+class TestOrderByAggregation:
+    """ORDER BY accepts an aggregation like fields do."""
 
-    async def test_order_by_local_measure_colon_syntax(self, generator: SQLGenerator) -> None:
-        """ORDER BY 'revenue:sum' should resolve to the correct measure alias."""
+    async def test_order_by_local_measure_aggregation(self, generator: SQLGenerator) -> None:
+        """ORDER BY 'sum(revenue)' resolves to the measure alias."""
         model = SlayerModel(
             name="orders",
             sql_table="orders",
@@ -6689,16 +6689,16 @@ Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="revenue:sum")],
+            measures=[ModelMeasure(formula="sum(revenue)")],
             dimensions=[ColumnRef(name="status")],
-            order=[OrderItem(column="revenue:sum", direction="desc")],
+            order=[OrderItem(column="sum(revenue)", direction="desc")],
         )
         sql = await _generate(generator, query, model)
         assert "ORDER BY" in sql
         assert "DESC" in sql
 
-    async def test_order_by_star_count_colon_syntax(self, generator: SQLGenerator) -> None:
-        """ORDER BY '*:count' should resolve to the _count alias."""
+    async def test_order_by_star_count(self, generator: SQLGenerator) -> None:
+        """ORDER BY 'count(*)' resolves to the _count alias."""
         model = SlayerModel(
             name="orders",
             sql_table="orders",
@@ -6710,16 +6710,16 @@ Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
             dimensions=[ColumnRef(name="status")],
-            order=[OrderItem(column="*:count", direction="desc")],
+            order=[OrderItem(column="count(*)", direction="desc")],
         )
         sql = await _generate(generator, query, model)
         assert "ORDER BY" in sql
         assert "DESC" in sql
 
-    async def test_order_by_single_hop_cross_model_colon_syntax(self, generator: SQLGenerator) -> None:
-        """ORDER BY 'customers.score:sum' on a cross-model measure."""
+    async def test_order_by_single_hop_cross_model_aggregation(self, generator: SQLGenerator) -> None:
+        """ORDER BY 'sum(customers.score)' on a cross-model measure."""
 
         orders = SlayerModel(
             name="orders",
@@ -6751,9 +6751,9 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
 
             query = SlayerQuery(
                 source_model="orders",
-                measures=[ModelMeasure(formula="customers.score:sum")],
+                measures=[ModelMeasure(formula="sum(customers.score)")],
                 dimensions=[ColumnRef(name="status")],
-                order=[OrderItem(column="customers.score:sum", direction="desc")],
+                order=[OrderItem(column="sum(customers.score)", direction="desc")],
             )
             sql = (await engine.execute(query, dry_run=True)).sql
             _assert_valid_sql(sql, dialect=generator.dialect)
@@ -6761,7 +6761,7 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
             assert "ORDER BY" in sql
             assert "DESC" in sql
 
-    async def test_order_by_two_hop_dimension_with_colon_measure(self, generator: SQLGenerator) -> None:
+    async def test_order_by_two_hop_dimension_with_cross_model_measure(self, generator: SQLGenerator) -> None:
         """ORDER BY a cross-model measure alongside a two-hop dimension."""
 
         orders = SlayerModel(
@@ -6807,9 +6807,9 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
 
             query = SlayerQuery(
                 source_model="orders",
-                measures=[ModelMeasure(formula="customers.score:sum")],
+                measures=[ModelMeasure(formula="sum(customers.score)")],
                 dimensions=[ColumnRef(name="customers.regions.region_name")],
-                order=[OrderItem(column="customers.score:sum", direction="asc")],
+                order=[OrderItem(column="sum(customers.score)", direction="asc")],
             )
             sql = (await engine.execute(query, dry_run=True)).sql
             _assert_valid_sql(sql, dialect=generator.dialect)

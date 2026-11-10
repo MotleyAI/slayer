@@ -1,7 +1,7 @@
 """Positional aggregation parameters fold onto declared parameter order
 (spec: aggregations/functional-form — "Positional parameters fold onto
 declared parameter order"). ``percentile(x, 0.9)`` ≡ ``p=0.9`` for built-in,
-custom, colon, and re-aggregation-outer spellings; duplicates and excess
+custom, and re-aggregation-outer spellings; duplicates and excess
 positionals fail closed; first/last ranking columns are untouched."""
 
 from __future__ import annotations
@@ -35,11 +35,6 @@ class TestPositionalEqualsNamed:
         pos = await _rows(exec_engine, "percentile(amount, 0.9)")
         named = await _rows(exec_engine, "percentile(amount, p=0.9)")
         assert pos == named  # identical values AND result keys
-
-    async def test_percentile_colon(self, exec_engine):
-        pos = await _rows(exec_engine, "amount:percentile(0.9)")
-        named = await _rows(exec_engine, "amount:percentile(p=0.9)")
-        assert pos == named
 
     async def test_custom_aggregation_declared_order(self, exec_engine):
         pos = await _rows(exec_engine, "wavg(amount, id)")

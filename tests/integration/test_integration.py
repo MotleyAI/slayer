@@ -171,39 +171,20 @@ async def test_sum_measure(integration_env):
     assert response.data[0]["orders.total_amount_sum"] == pytest.approx(750.0)
 
 
-async def test_functional_aggregation_parity(integration_env):
-    """sum(total_amount) returns the same rows as total_amount:sum."""
-    engine = integration_env
-
-    colon = await engine.execute(SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="total_amount:sum")],
-    ))
-    func = await engine.execute(SlayerQuery(
+async def test_functional_aggregation(integration_env):
+    func = await integration_env.execute(SlayerQuery(
         source_model="orders",
         measures=[ModelMeasure(formula="sum(total_amount)")],
     ))
-
     assert func.data[0]["orders.total_amount_sum"] == pytest.approx(750.0)
-    assert func.data == colon.data
-    assert list(func.columns) == list(colon.columns)
 
 
-async def test_functional_star_count_parity(integration_env):
-    """count(*) returns the same rows as *:count."""
-    engine = integration_env
-
-    colon = await engine.execute(SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="*:count")],
-    ))
-    func = await engine.execute(SlayerQuery(
+async def test_functional_star_count(integration_env):
+    func = await integration_env.execute(SlayerQuery(
         source_model="orders",
         measures=[ModelMeasure(formula="count(*)")],
     ))
-
     assert func.data[0]["orders._count"] == 6
-    assert func.data == colon.data
 
 
 async def test_expression_aggregation_executes(integration_env):

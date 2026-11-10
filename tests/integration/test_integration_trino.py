@@ -303,11 +303,6 @@ class TestTrinoQueries:
         result = await trino_env.execute(query=SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "total:sum"}]}))
         assert float(result.data[0]["orders.total_sum"]) == pytest.approx(875.0)
 
-    async def test_functional_aggregation_parity(self, trino_env: SlayerQueryEngine) -> None:
-        colon = await trino_env.execute(query=SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "total:sum"}]}))
-        func = await trino_env.execute(query=SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(total)"}]}))
-        assert float(func.data[0]["orders.total_sum"]) == float(colon.data[0]["orders.total_sum"])
-
     async def test_string_hygiene_functions_execute(self, trino_env: SlayerQueryEngine) -> None:
         for filt in ("lower(status) = 'completed'", "substr(status, 1, 4) = 'comp'"):
             result = await trino_env.execute(query=SlayerQuery.model_validate({

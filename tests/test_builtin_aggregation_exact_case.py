@@ -42,7 +42,7 @@ class TestContainers:
         assert float(value(resp)) == SUM_A
 
     async def test_a_saved_query(self) -> None:
-        saved = saved_query_doc(name="sum_q", stage={"source_model": "t", "measures": [measure("a:sum", "total")]})
+        saved = saved_query_doc(name="sum_q", stage={"source_model": "t", "measures": [measure("sum(a)", "total")]})
         async with stored_engine(models=[t_doc(aggregations=[_hijacker("sum")]), saved]) as engine:
             resp = await engine.execute("sum_q")
         assert float(value(resp, name="total")) == SUM_A

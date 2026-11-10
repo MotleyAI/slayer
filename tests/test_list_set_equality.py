@@ -594,7 +594,7 @@ class TestCounts:
         assert {cell(r, "team"): num(cell(r, "n")) for r in resp.data} == expected
 
     async def test_colon_spelling(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(query(measures=["skills:count_distinct"]))
+        resp = await engine.execute(query(measures=["count_distinct(skills)"]))
         assert num(next(iter(resp.data[0].values()))) == 4
 
     async def test_distinct_lists_and_distinct_elements(self, engine: SlayerQueryEngine) -> None:

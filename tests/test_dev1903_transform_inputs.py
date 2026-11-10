@@ -119,7 +119,6 @@ class TestTraversal:
         pytest.param("sum(cumsum(weight))", id="aggregate-source"),
         pytest.param("weighted_avg(revenue, cumsum(weight))", id="aggregate-positional-arg"),
         pytest.param("weighted_avg(revenue, weight=cumsum(weight))", id="aggregate-kwarg"),
-        pytest.param("revenue:weighted_avg(weight=cumsum(weight))", id="colon-kwarg"),
         pytest.param("sum(qty * cumsum(weight))", id="expression-source"),
         pytest.param("count(cumsum(weight) > 0)", id="predicate"),
         pytest.param("first(cumsum(weight))", id="under-first"),

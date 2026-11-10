@@ -31,9 +31,9 @@ class TestStoredShadow:
         async with stored_engine(models=[t_doc(aggregations=[agg("reverse")])]) as engine:
             assert await engine.storage.get_model("t", data_source=DS) is not None
             resp = await engine.execute(_query(
-                measure("reverse(a)", "f"), measure("a:reverse", "c"), measure("t.reverse(a)", "m")))
+                measure("reverse(a)", "f"), measure("t.reverse(a)", "m")))
         row = resp.data[0]
-        assert [float(row[f"t.{k}"]) for k in ("f", "c", "m")] == [SUM_A] * 3
+        assert [float(row[f"t.{k}"]) for k in ("f", "m")] == [SUM_A] * 2
 
     async def test_another_model_keeps_the_library_function(self) -> None:
         async with stored_engine(models=[t_doc(aggregations=[agg("reverse")])]) as engine:
@@ -52,14 +52,12 @@ class TestStoredShadow:
     @pytest.mark.parametrize("spelling", sorted(SCALAR_SPELLINGS))
     async def test_a_parser_spelling_is_shadowed_by_its_own_name(self, spelling: str) -> None:
         async with stored_engine(models=[t_doc(aggregations=[agg(spelling)])]) as engine:
-            resp = await engine.execute(_query(measure(f"{spelling}(a)"), measure(f"a:{spelling}", "c")))
-        row = resp.data[0]
-        assert (float(row["t.v"]), float(row["t.c"])) == (SUM_A, SUM_A)
+            resp = await engine.execute(_query(measure(f"{spelling}(a)")))
+        assert float(resp.data[0]["t.v"]) == SUM_A
 
     @pytest.mark.parametrize(("formula", "expected"), [
         pytest.param("left(a)", SUM_A, id="default"),
         pytest.param("left(a, n=2)", 2 * SUM_A, id="functional-kwarg"),
-        pytest.param("a:left(n=3)", 3 * SUM_A, id="colon-kwarg"),
         pytest.param("t.left(a, n=2)", 2 * SUM_A, id="method-kwarg"),
     ])
     async def test_parameters_the_library_function_would_refuse(self, formula: str, expected: float) -> None:

@@ -122,12 +122,11 @@ class TestExpressionParse:
 
     def test_expression_source_canonical_text_functional(self) -> None:
         # An expression source renders functionally, so its canonical text
-        # can't collide with the distinct parse tree ``amount - (cost:sum)``.
+        # can't collide with the distinct parse tree ``amount - sum(cost)``.
         expr_agg = canonical_measure_text(parse_expr("sum(amount - cost)"))
         assert expr_agg == "sum(amount - cost)"
-        assert expr_agg != canonical_measure_text(parse_expr("amount - cost:sum"))
-        # Column sources keep their colon spelling (functional/colon parity).
-        assert canonical_measure_text(parse_expr("sum(amount)")) == "amount:sum"
+        assert expr_agg != canonical_measure_text(parse_expr("amount - sum(cost)"))
+        assert canonical_measure_text(parse_expr("sum(amount)")) == "sum(amount)"
 
     def test_scalar_call_source(self) -> None:
         node = parse_expr("count_distinct(upper(email))")
@@ -232,7 +231,7 @@ class TestExpressionSql:
         root = SlayerQuery(
             source_model="stage1",
             dimensions=["status"],
-            measures=[{"formula": "amount_cost_sum:max"}],
+            measures=[{"formula": "max(amount_cost_sum)"}],
         )
         model = _orders()
         with tempfile.TemporaryDirectory() as d:
@@ -259,7 +258,7 @@ class TestExpressionSql:
                         "name": "profitable",
                     },
                 ],
-                measures=[ModelMeasure(formula="amount:sum", name="t")],
+                measures=[ModelMeasure(formula="sum(amount)", name="t")],
             )
         )
         assert re.search(r"SUM\s*\(.*?amount.*?-.*?cost.*?\)", _norm(resp.sql)), resp.sql
@@ -275,7 +274,7 @@ class TestExpressionSql:
                     "name": "profitable",
                 },
             ],
-            measures=[ModelMeasure(formula="amount:sum", name="t")],
+            measures=[ModelMeasure(formula="sum(amount)", name="t")],
         )
         with pytest.raises(ValueError, match="partition_by"):
             await _dry(q)
@@ -335,7 +334,7 @@ class TestExpressionNaming:
             _q(
                 measures=[
                     "sum(amount - cost)",
-                    "amount:sum",
+                    "sum(amount)",
                     "count_distinct(upper(email))",
                 ]
             )
@@ -443,14 +442,8 @@ class TestExpressionGates:
         assert resp.sql
 
     async def test_single_column_functional_still_gated(self) -> None:
-        q_func = _q(measures=["sum(quantity)"])
-        with pytest.raises(ValueError) as e_func:
-            await _dry(q_func)
-        q_colon = _q(measures=["quantity:sum"])
-        with pytest.raises(ValueError) as e_colon:
-            await _dry(q_colon)
-        assert type(e_func.value) is type(e_colon.value)
-        assert str(e_func.value) == str(e_colon.value)
+        with pytest.raises(ValueError):
+            await _dry(_q(measures=["sum(quantity)"]))
 
     async def test_confidently_non_numeric_rejected(self) -> None:
         q = _q(measures=["sum(lower(name))"])

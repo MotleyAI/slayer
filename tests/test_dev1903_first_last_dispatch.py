@@ -119,13 +119,6 @@ class TestParseIsOneNode:
         assert isinstance(parsed, AggCall), parsed
         assert parsed.agg == fn
 
-    @pytest.mark.parametrize("colon, functional", [
-        ("revenue:first", "first(revenue)"),
-        ("revenue:last(ordered_at)", "last(revenue, ordered_at)"),
-    ])
-    def test_both_spellings_collapse(self, colon, functional):
-        assert parse_expr(colon) == parse_expr(functional)
-
     def test_aggregated_operand_is_not_decided_in_the_parser(self):
         """engine P2: the parser makes no grain decision."""
         parsed = parse_expr("first(sum(revenue))")

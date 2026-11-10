@@ -297,9 +297,8 @@ def test_metabase_fingerprint_orders_corpus_17() -> None:
 
 
 def test_aggregate_over_three_part_qualified_column() -> None:
-    """DEV-1558 Codex review fold: SUM("public"."orders"."total") must
-    resolve to the `total:sum` metric on the orders model, not to a
-    bogus `public.orders.total:sum` lookup."""
+    """SUM("public"."orders"."total") resolves to the `sum(total)` metric on the orders model, not to a
+    bogus `sum(public.orders.total)` lookup."""
     sql = (
         'SELECT SUM("public"."orders"."total") AS "total_sum" '
         'FROM "public"."orders"'
@@ -311,7 +310,7 @@ def test_aggregate_over_three_part_qualified_column() -> None:
     def _formula(m):
         return m["formula"] if isinstance(m, dict) else m.formula
     measure_formulas = [_formula(m) for m in (result.query.measures or [])]
-    assert "total:sum" in measure_formulas
+    assert "sum(total)" in measure_formulas
 
 
 def test_order_by_three_part_qualified_column() -> None:
@@ -369,7 +368,7 @@ def test_hygiene_wrapper_around_two_part_column_rejected() -> None:
 def test_metabase_gui_question_count_orders_corpus_20() -> None:
     """Corpus #20 — Metabase's compiled GUI question (`COUNT of orders`):
     ``SELECT COUNT(*) AS "count" FROM "public"."orders"``.  This rides on
-    DEV-1486's aggregate-SQL → metric mapping (`COUNT(*)` → `*:count`) plus
+    the aggregate-SQL → metric mapping (`COUNT(*)` → `count(*)`) plus
     the 3-part / 2-part qualified `"public"."orders"` table reference."""
     sql = (
         '-- Metabase:: userID: 1 queryType: MBQL queryHash: a54de39466cbf3e8\n'
@@ -380,10 +379,10 @@ def test_metabase_gui_question_count_orders_corpus_20() -> None:
     aliases = [projected for _alias, projected in result.column_name_mapping]
     assert aliases == ["count"]
     assert result.query.source_model == "orders"
-    # Underlying engine measure is `*:count` (the canonical count-all form).
+    # Underlying engine measure is `count(*)` (the canonical count-all form).
     # The measures list carries pydantic ModelMeasure-shaped entries; accept
     # both dict and attribute access.
     def _formula(m):
         return m["formula"] if isinstance(m, dict) else m.formula
     measure_formulas = [_formula(m) for m in (result.query.measures or [])]
-    assert "*:count" in measure_formulas
+    assert "count(*)" in measure_formulas

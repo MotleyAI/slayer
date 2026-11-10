@@ -99,7 +99,7 @@ class TestSlayerPrefixReservedOnNames:
 
 
 # --------------------------------------------------------------------------- #
-# P3 — the parser rejects a literal __slayer_ spoof but keeps colon-aggs working.
+# P3 — the parser rejects a literal __slayer_ spoof.
 # --------------------------------------------------------------------------- #
 class TestParserSlayerPrefixReservation:
     def test_literal_placeholder_spoof_rejected(self) -> None:
@@ -119,7 +119,7 @@ class TestParserSlayerPrefixReservation:
         assert parsed is not None
 
     def test_dotted_embedded_slayer_run_still_parses(self) -> None:
-        parsed = parse_expr("customers.foo__slayer_bar:sum")
+        parsed = parse_expr("sum(customers.foo__slayer_bar)")
         assert parsed is not None
 
     def test_unicode_embedded_slayer_run_still_parses(self) -> None:
@@ -128,18 +128,6 @@ class TestParserSlayerPrefixReservation:
         # check) and a valid Python identifier, so it stays referenceable.
         assert parse_expr("é__slayer_bar") is not None
         assert parse_expr("变量__slayer_bar") is not None
-
-    def test_colon_aggregation_still_parses(self) -> None:
-        parsed = parse_expr("revenue:sum")
-        assert parsed is not None
-
-    def test_multiple_aggregations_still_parse(self) -> None:
-        parsed = parse_expr("revenue:sum / *:count")
-        assert parsed is not None
-
-    def test_dotted_colon_aggregation_still_parses(self) -> None:
-        parsed = parse_expr("customers.spend:sum")
-        assert parsed is not None
 
     def test_dunder_bearing_identifier_now_parses(self) -> None:
         # A bare __-bearing reference is no longer rejected by the parser

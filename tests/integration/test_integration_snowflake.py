@@ -360,19 +360,13 @@ def test_try_cast_integer_targets(sf_storage_with_models) -> None:
     run_sync(check_try_cast_targets(SlayerQueryEngine(storage=sf_storage_with_models), model="orders"))
 
 
-def test_functional_aggregation_parity(sf_storage_with_models) -> None:
-    """sum(quantity) returns the same value as quantity:sum."""
+def test_functional_aggregation(sf_storage_with_models) -> None:
     engine = SlayerQueryEngine(storage=sf_storage_with_models)
-    colon = run_sync(engine.execute(SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="quantity:sum")],
-    )))
     func = run_sync(engine.execute(SlayerQuery(
         source_model="orders",
         measures=[ModelMeasure(formula="sum(quantity)")],
     )))
     assert int(next(iter(func.data[0].values()))) == 16
-    assert func.data == colon.data
 
 
 def test_query_with_dimension(sf_storage_with_models) -> None:
