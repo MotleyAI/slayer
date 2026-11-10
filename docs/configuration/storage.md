@@ -157,6 +157,8 @@ A backend written against 0.9.x that overrides `save_datasource` or returns a pl
 
 If your backend stores ids as filenames (or another case-insensitive keyspace), set the class attribute `_ids_collide_as_filenames = True` — the base save templates then reject ids differing only by case — and call `await self.check_datasource_id_collision(datasource.name)` at the top of your `_save_datasource_impl`.
 
+Stored-document upgrades that rewrite raw documents, such as renaming a granularity a newer release reserves, run only on backends that expose their raw documents; a backend that builds its own datasource configs is never asked to list or load its datasources for them.
+
 Caches derived from stored content (the search graph, the SQL facade catalog) are keyed by `cache_identity()` (default: one per instance) and reused only while `graph_fingerprint()` returns the same string, so override it to report content changes — the default `None` means a cache is never reused.
 
 Register it for URI-based resolution:

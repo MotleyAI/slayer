@@ -14,6 +14,7 @@ from collections.abc import Callable, Generator, Sequence
 from typing import Any
 
 import pytest
+import yaml
 
 from slayer.core.errors import SlayerError
 from slayer.core.models import DatasourceConfig
@@ -177,6 +178,107 @@ class TestLeft:
         assert [int(v) for v in resp.data[0].values()] == [2]
         by_initial = {r["other_events.initial"]: float(r["other_events.s"]) for r in (await run(store.storage, mem_query)).data}
         assert by_initial == {"o": 5.0, "n": 10.0}
+
+
+def _serialized(*, backend: str, doc: Any) -> str:
+    return yaml.safe_dump(doc) if backend == "yaml" else json.dumps(doc)
+
+
+_INVALID_DATASOURCE = {"version": 2, "name": "broken", "type": 42, "granularities": [{"base": "month"}]}
+#: Stored datasource documents the store cannot load, per backend.
+_BROKEN_DATASOURCES = {
+    "unparseable": {"yaml": "name: [unclosed\n", "sqlite": "{not json"},
+    "non-mapping": {backend: _serialized(backend=backend, doc=["contains"]) for backend in BACKENDS},
+    "invalid-mapping": {backend: _serialized(backend=backend, doc=_INVALID_DATASOURCE) for backend in BACKENDS},
+    "non-list-granularities": {
+        backend: _serialized(backend=backend, doc={**_INVALID_DATASOURCE, "granularities": 42}) for backend in BACKENDS
+    },
+}
+
+
+def _write_raw_datasource(store: _Store, *, name: str, text: str, suffix: str = ".yaml") -> None:
+    """Store ``text`` verbatim as datasource ``name`` (``suffix`` is the YAML file extension)."""
+    if store.backend == "yaml":
+        with open(os.path.join(store.base, "datasources", f"{name}{suffix}"), "w", encoding="utf-8") as f:  # NOSONAR(S7493) — test seed
+            f.write(text)
+        return
+    with transaction(os.path.join(store.base, "store.db")) as conn:
+        conn.execute("INSERT INTO datasources (name, data) VALUES (?, ?)", (name, text))
+
+
+async def _contains_store(*, tmp_path: Any, backend: str) -> _Store:
+    return await _store(
+        tmp_path=tmp_path, backend=backend, granularities=[granularity_definition("contains")],
+        models=[events_doc(), query_backed_doc(name="bucketed", stage=bucket_stage("contains"))],
+        memories=[memory_doc(memory_id="m", query=bucket_stage("contains"))],
+    )
+
+
+def _assert_datasource_renamed(store: _Store) -> None:
+    stored = store.raw()[f"datasources/{DS}"]
+    assert "contains_granularity" in stored
+    assert not _mentions(stored, "contains"), stored
+
+
+class TestSettleBeforeFirstLoad:
+    @pytest.mark.parametrize("backend", BACKENDS)
+    @pytest.mark.parametrize("first", ["model", "memory"])
+    async def test_first_load_sees_the_rename(self, tmp_path: Any, backend: str, first: str) -> None:
+        store = await _contains_store(tmp_path=tmp_path, backend=backend)
+        if first == "model":
+            query = await _stage(store.storage, "bucketed")
+        else:
+            query = await _memory_query(store.storage, "m")
+        assert _td_granularity(query) == "contains_granularity"
+        _assert_datasource_renamed(store)
+
+    @pytest.mark.parametrize("backend", BACKENDS)
+    @pytest.mark.parametrize("broken", list(_BROKEN_DATASOURCES))
+    async def test_an_unloadable_datasource_does_not_block_the_rename(
+        self, tmp_path: Any, backend: str, broken: str,
+    ) -> None:
+        store = await _contains_store(tmp_path=tmp_path, backend=backend)
+        _write_raw_datasource(store, name="broken", text=_BROKEN_DATASOURCES[broken][backend])
+        assert _td_granularity(await _stage(store.storage, "bucketed")) == "contains_granularity"
+        _assert_datasource_renamed(store)
+
+    @pytest.mark.parametrize("backend", BACKENDS)
+    async def test_a_failing_rename_does_not_block_another(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, backend: str,
+    ) -> None:
+        store = await _contains_store(tmp_path=tmp_path, backend=backend)
+        doc = datasource_doc(db_path=os.path.join(store.base, "live.db"), granularities=["collect"], name="broken")
+        _write_raw_datasource(store, name="broken", text=_serialized(backend=backend, doc=doc))
+        original = StorageBackend._with_library_granularities_renamed
+
+        async def failing_for_broken(self: StorageBackend, *, name: str, data: Any) -> Any:
+            if name == "broken":
+                raise ValueError(name)
+            return await original(self, name=name, data=data)
+
+        monkeypatch.setattr(StorageBackend, "_with_library_granularities_renamed", failing_for_broken)
+        assert _td_granularity(await _stage(store.storage, "bucketed")) == "contains_granularity"
+        _assert_datasource_renamed(store)
+
+    async def test_a_yml_datasource_is_left_alone(self, tmp_path: Any) -> None:
+        store = await _store(tmp_path=tmp_path, backend="yaml", granularities=[], models=[events_doc()])
+        db_path = os.path.join(store.base, "live.db")
+        text = yaml.safe_dump(datasource_doc(db_path=db_path, granularities=["contains"], name="shop"))
+        _write_raw_datasource(store, name="shop", text=text, suffix=".yml")
+        assert await store.storage.get_model("events", data_source=DS) is not None
+        with open(os.path.join(store.base, "datasources", "shop.yml"), encoding="utf-8") as f:  # NOSONAR(S7493) — test read
+            assert f.read() == text
+        assert not os.path.exists(os.path.join(store.base, "datasources", "shop.yaml"))
+
+    @pytest.mark.parametrize("backend", BACKENDS)
+    async def test_a_refused_datasource_name_is_skipped(self, tmp_path: Any, backend: str) -> None:
+        store = await _contains_store(tmp_path=tmp_path, backend=backend)
+        doc = datasource_doc(db_path=os.path.join(store.base, "live.db"), granularities=["contains"], name="shop.v1")
+        text = _serialized(backend=backend, doc=doc)
+        _write_raw_datasource(store, name="shop.v1", text=text)
+        assert _td_granularity(await _stage(store.storage, "bucketed")) == "contains_granularity"
+        _assert_datasource_renamed(store)
+        assert store.raw()["datasources/shop.v1"] == text
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
