@@ -517,7 +517,7 @@ class TestSqliteKeyReads:
             ).primary_key
 
     def test_sqlite_no_pk(self):
-        """Empty inspector PK on SQLite returns empty without info_schema query."""
+        """A keyless SQLite table returns an empty PK without an info_schema query."""
         with disposable_engine("sqlite:///:memory:") as engine:
             with engine.connect() as conn:
                 conn.execute(sa.text("CREATE TABLE t (a TEXT, b INTEGER)"))

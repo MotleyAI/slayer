@@ -48,8 +48,8 @@ from slayer.sql.dialects.reflection import (
     column_from_type_string,
     eq_literal,
     fetch,
+    keys_of_reads,
     table_function,
-    without_primary_key,
 )
 
 #: ``json_type`` values that are not a scalar.
@@ -232,30 +232,29 @@ class DuckdbDialect(SqlDialect):
             sets = (_plain_index_columns(sql) for (sql,) in fetch(connection, query, dialect=self.sqlglot_name))
             return [s for s in sets if s]
 
-        pk_rows = best_effort(
+        pk_rows, pk_failure = best_effort(
             lambda: constraints("PRIMARY KEY", "constraint_column_names"),
             connection=connection, default=[], table=table, what="primary key",
         )
-        pk = list(pk_rows[0][0]) if pk_rows else []
-        fks = best_effort(
-            lambda: [
-                ReflectedForeignKey(
-                    columns=list(cols), referred_schema=schema,
-                    referred_table=referred, referred_columns=list(referred_cols),
-                )
-                for cols, referred, referred_cols in constraints(
-                    "FOREIGN KEY", "constraint_column_names", "referenced_table", "referenced_column_names",
-                )
+        return keys_of_reads(
+            primary_key=(list(pk_rows[0][0]) if pk_rows else [], pk_failure),
+            foreign_keys=best_effort(
+                lambda: [
+                    ReflectedForeignKey(
+                        columns=list(cols), referred_schema=schema,
+                        referred_table=referred, referred_columns=list(referred_cols),
+                    )
+                    for cols, referred, referred_cols in constraints(
+                        "FOREIGN KEY", "constraint_column_names", "referenced_table", "referenced_column_names",
+                    )
+                ],
+                connection=connection, default=[], table=table, what="foreign keys",
+            ),
+            unique_sets=[
+                best_effort(
+                    lambda: [list(cols) for (cols,) in constraints("UNIQUE", "constraint_column_names")],
+                    connection=connection, default=[], table=table, what="unique constraints",
+                ),
+                best_effort(unique_indexes, connection=connection, default=[], table=table, what="unique indexes"),
             ],
-            connection=connection, default=[], table=table, what="foreign keys",
-        )
-        uniques = best_effort(
-            lambda: [list(cols) for (cols,) in constraints("UNIQUE", "constraint_column_names")],
-            connection=connection, default=[], table=table, what="unique constraints",
-        )
-        indexes = best_effort(
-            unique_indexes, connection=connection, default=[], table=table, what="unique indexes",
-        )
-        return TableKeys(
-            primary_key=pk, foreign_keys=fks, unique_key_sets=without_primary_key(pk, uniques + indexes),
         )

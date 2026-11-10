@@ -8,12 +8,13 @@ import logging
 import os
 import threading
 from collections import OrderedDict
+from typing import Any
 
 import sqlalchemy as sa
 import sqlalchemy.event as sa_event
 from sqlalchemy.engine.url import URL, make_url
-from sqlalchemy.exc import ArgumentError, NoSuchModuleError
-from sqlalchemy.pool import QueuePool, StaticPool
+from sqlalchemy.exc import ArgumentError, InvalidRequestError, NoSuchModuleError
+from sqlalchemy.pool import ConnectionPoolEntry, QueuePool
 
 from slayer.core.models import DatasourceConfig
 from slayer.sql import connection_policy
@@ -210,19 +211,38 @@ def _is_in_memory_sqlite(connection_string: str) -> bool:
     return False
 
 
-def build_in_memory_sqlite_engine(connection_string: str) -> sa.Engine:
-    """The one in-memory SQLite engine builder.
+class _OneThreadPool(QueuePool):
+    """One connection, held by one thread at a time: a concurrent checkout waits; a nested one fails at once."""
 
-    ``StaticPool`` + ``check_same_thread=False`` pin one connection shared across
-    threads, so the in-memory DB survives across ``asyncio`` worker threads and
-    closes cleanly from any of them. Registers the SQLite UDFs on connect.
-    """
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._holder: int | None = None
+
+    def _do_get(self) -> ConnectionPoolEntry:
+        if self._holder == threading.get_ident():
+            raise InvalidRequestError(
+                "nested checkout of the in-memory SQLite connection: this thread already holds it",
+            )
+        record = super()._do_get()
+        self._holder = threading.get_ident()
+        return record
+
+    def _do_return_conn(self, record: ConnectionPoolEntry) -> None:
+        self._holder = None
+        super()._do_return_conn(record)
+
+
+def build_in_memory_sqlite_engine(connection_string: str) -> sa.Engine:
+    """The one in-memory SQLite engine builder: its one connection (the database) serves one thread at a time and
+    lives until invalidated or disposed. Registers the SQLite UDFs on connect."""
     # make_url rejects bare ":memory:" — normalize to the scheme form first.
     if connection_string == _MEMORY_DB_NAME:
         connection_string = f"sqlite:///{_MEMORY_DB_NAME}"
     engine = sa.create_engine(
         connection_string,
-        poolclass=StaticPool,
+        poolclass=_OneThreadPool,
+        pool_size=1,
+        max_overflow=0,
         connect_args={"check_same_thread": False},
     )
     _attach_register_udfs_for_dialect(
@@ -232,7 +252,7 @@ def build_in_memory_sqlite_engine(connection_string: str) -> sa.Engine:
 
 
 def _build_engine(*, datasource: DatasourceConfig, connection_string: str) -> sa.Engine:
-    """Build a new engine (no cache). In-memory SQLite goes through the one StaticPool builder; otherwise ``build_engine``, falling back to ``sa.create_engine`` when the dialect declines."""
+    """Build a new engine (no cache). In-memory SQLite goes through its one builder; otherwise ``build_engine``, falling back to ``sa.create_engine`` when the dialect declines."""
     connection_policy.check_transaction_pooler_backend(datasource, url=connection_string)
     if _is_in_memory_sqlite(connection_string):
         return build_in_memory_sqlite_engine(connection_string)
@@ -290,7 +310,7 @@ def get_engine(datasource: DatasourceConfig) -> sa.Engine:
 
 def holds_local_file(engine: sa.Engine) -> bool:
     """Whether ``engine``'s idle connections hold a local database file: a file-backed SQLite or DuckDB URL on a
-    QueuePool (the in-memory pools, StaticPool and SingletonThreadPool, close live data when drained)."""
+    QueuePool (an in-memory database closes its live data when drained)."""
     url = engine.url
     if url.get_backend_name() not in _LOCAL_FILE_BACKENDS or not isinstance(engine.pool, QueuePool):
         return False
