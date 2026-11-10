@@ -56,7 +56,6 @@ class TestQueryRefinementModel:
         ("name", "x"),
         ("version", 4),
         ("variables", {"status": "paid"}),
-        ("strict", True),
         ("bogus", 1),
     ])
     def test_forbidden_keys_rejected(self, key: str, value: Any) -> None:

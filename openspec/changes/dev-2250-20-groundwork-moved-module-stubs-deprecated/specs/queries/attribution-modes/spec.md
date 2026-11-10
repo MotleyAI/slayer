@@ -27,7 +27,7 @@
 - **THEN** it fails with a typed error naming `to_many_handling`
 
 #### Scenario: A malformed version is fresh input
-- **WHEN** a query carrying `strict: true` has `version: "abc"`
+- **WHEN** a query carrying `strict: true` has `version: 3.9`
 - **THEN** it converts with a deprecation, exactly as a version-less query does
 
 #### Scenario: Stored strict queries migrate

@@ -1,8 +1,6 @@
-"""DEV-1841 task 1.1 / 1.2 — the ``to_many_handling`` field, ``strict``
-retirement, and the SlayerQuery v3→v4 storage migration.
+"""The ``to_many_handling`` field, ``strict`` as its deprecated alias, and the SlayerQuery v3→v4 storage migration.
 
-Spec: openspec …/specs/queries/attribution-modes — "Query-level mode
-selection", "The strict flag is retired".
+Spec: queries/attribution-modes — "Query-level mode selection", "The strict flag is a deprecated alias".
 """
 
 from __future__ import annotations
@@ -11,6 +9,7 @@ import pytest
 
 from slayer.core.query import SlayerQuery
 from slayer.storage import migrations as mig
+from tests._deprecated_input_helpers import deprecations, recorded
 
 
 def _q(**kw) -> SlayerQuery:
@@ -41,28 +40,32 @@ class TestStrictRetired:
         assert "strict" not in SlayerQuery.model_fields
         assert "to_many_handling" in SlayerQuery.model_fields
 
-    def test_strict_input_rejected_naming_replacement(self) -> None:
-        """Scenario: strict input is rejected with the remedy."""
-        with pytest.raises(ValueError) as ei:
-            _q(strict=True)
-        assert "to_many_handling" in str(ei.value)
+    def test_strict_true_converts_to_error_mode(self) -> None:
+        with recorded() as caught:
+            query = _q(strict=True)
+        assert query.to_many_handling == "error"
+        assert len(deprecations(caught)) == 1
 
-    def test_strict_false_also_rejected(self) -> None:
-        """Even ``strict=False`` is a retired field on input — no silent accept."""
-        with pytest.raises(ValueError) as ei:
-            _q(strict=False)
-        assert "to_many_handling" in str(ei.value)
+    def test_strict_false_is_dropped_with_a_deprecation(self) -> None:
+        with recorded() as caught:
+            query = _q(strict=False)
+        assert query.to_many_handling == "broadcast"
+        assert len(deprecations(caught)) == 1
 
-    @pytest.mark.parametrize("version", [4, "4", "bogus", 3.9])
-    def test_current_or_malformed_version_with_strict_rejects_cleanly(self, version) -> None:
-        """A current-version (int or string), or malformed (non-integral float,
-        non-numeric string) ``version`` carrying retired ``strict`` raises the
-        remedy — never a ``TypeError`` from the pre-coercion comparison, and never
-        a silent float truncation into a stale migratable version."""
+    @pytest.mark.parametrize("version", [4, "4", 3.9])
+    def test_current_or_fractional_version_with_strict_converts(self, version) -> None:
+        """Fresh input — never a silent float truncation into a stale migratable version."""
         payload = {"version": version, "source_model": "orders", "strict": True}
-        with pytest.raises(ValueError) as ei:
+        with recorded() as caught:
+            query = SlayerQuery.model_validate(payload)
+        assert query.to_many_handling == "error"
+        assert len(deprecations(caught)) == 1
+
+    def test_unparseable_version_with_strict_fails_cleanly(self) -> None:
+        """A ``ValueError``, never a ``TypeError`` from a pre-coercion comparison."""
+        payload = {"version": "bogus", "source_model": "orders", "strict": True}
+        with recorded(), pytest.raises(ValueError):
             SlayerQuery.model_validate(payload)
-        assert "to_many_handling" in str(ei.value)
 
 
 class TestStorageMigration:

@@ -1,7 +1,7 @@
 """Removal tripwire: compatibility code tagged for removal fails the suite once its major version ships.
 
-The tag is a call to ``slayer.core.deprecation.warn_deprecated`` or ``raise_moved`` (any import
-spelling) with a string-literal ``removal``. Spec: compatibility/removal-tripwire.
+The tag is a call to ``slayer.core.deprecation.warn_deprecated``, ``raise_moved`` or ``deprecated_input``
+(any import spelling) with a string-literal ``removal``. Spec: compatibility/removal-tripwire.
 """
 
 from __future__ import annotations
@@ -17,7 +17,10 @@ from tests.test_law_resource_ownership import _canonical, _import_bindings
 
 REPO = Path(__file__).resolve().parent.parent
 SLAYER = REPO / "slayer"
-HELPERS = frozenset({"slayer.core.deprecation.warn_deprecated", "slayer.core.deprecation.raise_moved"})
+HELPERS = frozenset({
+    "slayer.core.deprecation.warn_deprecated", "slayer.core.deprecation.raise_moved",
+    "slayer.core.deprecation.deprecated_input",
+})
 HELPER_MODULE = "slayer/core/deprecation.py"
 
 #: Every covered workaround: (file, a token its message spells literally) -> removal version.
@@ -29,11 +32,12 @@ PINNED: dict[tuple[str, str], str] = {
             "engine.ingestion", "engine.schema_drift", "engine.schema_scope", "engine.introspect_utils",
             "engine.broken_dependents", "engine.internal_tables", "engine.fk_edges", "storage.type_refinement",
             "engine.home", "engine.dimension_routing", "engine.filter_reachability",
-            "engine.join_safety", "engine.unrelated",
+            "engine.join_safety", "engine.unrelated", "engine.syntax", "core.formula", "osi.expression",
         )
     },
     ("slayer/engine/population/__init__.py", "slayer.engine.population."): "3.0",
     ("slayer/engine/cardinality/__init__.py", "slayer.engine.cardinality."): "3.0",
+    ("slayer/core/query.py", "strict"): "3.0",
 }
 
 
@@ -173,6 +177,8 @@ def test_aliased_and_relative_uses_are_found() -> None:
         from .deprecation import warn_deprecated
         from slayer.core.deprecation import raise_moved as _moved
         from .deprecation import raise_moved
+        from slayer.core.deprecation import deprecated_input as _di
+        from .deprecation import deprecated_input
 
         def f():
             dep.warn_deprecated("a", removal="2.0")
@@ -182,10 +188,15 @@ def test_aliased_and_relative_uses_are_found() -> None:
             dep.raise_moved("e", "e2", removal="3.0")
             _moved("f", "f2", removal="3.0")
             raise_moved(old="g", new="g2", removal="3.0")
+            dep.deprecated_input("h", "h2", removal="3.0")
+            deprecation.deprecated_input("i", "i2", removal="3.0")
+            _di("j", "j2", removal="3.0")
+            deprecated_input(old="k", new="k2", removal="3.0")
     """)
     sites = _sites_in(source, rel="slayer/core/x.py")
     assert sorted((s.message, s.removal) for s in sites) == [
         ("a", "2.0"), ("b", "2.0"), ("c", "2.0"), ("d", "2.0"), ("e", "3.0"), ("f", "3.0"), ("g", "3.0"),
+        ("h", "3.0"), ("i", "3.0"), ("j", "3.0"), ("k", "3.0"),
     ]
 
 
