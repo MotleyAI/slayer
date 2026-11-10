@@ -411,6 +411,8 @@ class RegroupAttachPlan(BaseModel):
     producer_root_model: Optional[str] = None
     broadcast_measure: Optional[str] = None
     broadcast_dimensions: List[Tuple[str, str]] = Field(default_factory=list)
+    # Why the default mode broadcast instead of associating; ``None`` for a requested broadcast.
+    association_unsupported: Optional[str] = None
     # Associate-mode counterparts: the aggregate resolved by
     # distinct-entity association, and the unattributable dimensions its cells
     # are not additive across (empty for an explicit ``partition_by=`` grain).

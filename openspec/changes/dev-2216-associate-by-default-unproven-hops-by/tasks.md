@@ -34,26 +34,26 @@
 
 ## 2. Mode policy and dispatch
 
-- [ ] 2.1 `SlayerQuery.to_many_handling: Literal[...] | None = None`; drop it from
+- [x] 2.1 `SlayerQuery.to_many_handling: Literal[...] | None = None`; drop it from
   `_NON_NULLABLE_SETTINGS`; reword the field and `measures` descriptions; REST field stays
   optional. Verify: 1.4 field tests pass.
-- [ ] 2.2 Resolve the mode once at bind into a typed policy on `PreboundQuery`
+- [x] 2.2 Resolve the mode once at bind into a typed policy on `PreboundQuery`
   (association requested / fallback allowed / explicit mode); replace every raw-string
   comparison in `stages.py`, `discovery.py`, `elaborate_env.py` and `query_engine.py`.
   Verify: `grep` finds no `to_many_handling ==` outside the resolver; parity tests pass.
-- [ ] 2.3 Classify association eligibility before `_association_arm` (window/first-last,
+- [x] 2.3 Classify association eligibility before `_association_arm` (window/first-last,
   undetermined row-valued parameter) into a typed reason; default → broadcast with the
   reason, explicit `associate` → typed error, explicit `partition_by=` needing association
   → typed error in both. Verify: fallback scenarios pass.
-- [ ] 2.4 Route ungrained re-aggregation inners through the mode (DEV-1932 Case 2).
+- [x] 2.4 Route ungrained re-aggregation inners through the mode (DEV-1932 Case 2).
   Verify: re-aggregation scenarios pass.
 
 ## 3. Row identity for keyless homes
 
-- [ ] 3.1 A row-identity entity key in the IR (`planned.py`), part of `entity_grain` and
+- [x] 3.1 A row-identity entity key in the IR (`planned.py`), part of `entity_grain` and
   determining every column of its row; remove `check_association_root_unique_key`; keep
   `list_rows` untouched. Verify: keyless parameter tests pass.
-- [ ] 3.2 Mint it in a subrelation of the home's filtered rows (relation door) before any
+- [x] 3.2 Mint it in a subrelation of the home's filtered rows (relation door) before any
   association join, named via `naming.py`, carried through joins and filters; dialect
   `ORDER BY` hook in `dialects/` where `ROW_NUMBER()` requires it. Verify: keyless tests
   pass on SQLite/DuckDB; point-check `ROW_NUMBER` spelling live on Postgres, MySQL,
@@ -61,29 +61,29 @@
 
 ## 4. Warnings and messages
 
-- [ ] 4.1 `BroadcastGrainWarningPayload.association_unsupported`, fallback hint, reworded
+- [x] 4.1 `BroadcastGrainWarningPayload.association_unsupported`, fallback hint, reworded
   `DICE_SLICE_HINT`; `BroadcastGrainWarning` carries the reason; merge by
   `(location, measure, association_unsupported)`. Verify: 1.4 warning tests pass.
-- [ ] 4.2 Error-mode remedy text; `column_dependency._unproven_arity_message` (aggregating
+- [x] 4.2 Error-mode remedy text; `column_dependency._unproven_arity_message` (aggregating
   fails at query time); `audit_join_safety` text (dimensions associate, inputs refused).
   Verify: the related tests pass.
 
 ## 5. Storage and reporting
 
-- [ ] 5.1 Stored-only SlayerQuery v9 → v10 migration (bump `CURRENT_VERSIONS`), reaching
+- [x] 5.1 Stored-only SlayerQuery v9 → v10 migration (bump `CURRENT_VERSIONS`), reaching
   nested `source_queries`; fix the v3 → v4 docstring. Verify: 1.3 passes.
-- [ ] 5.2 Usage reporting flags any non-`None` mode. Verify: usage-reporting tests pass.
+- [x] 5.2 Usage reporting flags any non-`None` mode. Verify: usage-reporting tests pass.
 
 ## 6. Architecture, docs, wrap-up
 
-- [ ] 6.1 Apply the approved Axiom 8 and Law 5 wording to `architecture/semantics.arc42.md`
+- [x] 6.1 Apply the approved Axiom 8 and Law 5 wording to `architecture/semantics.arc42.md`
   verbatim (design.md decisions 12–13). Verify: `poetry run la-arch-check`.
-- [ ] 6.2 Docs: `docs/concepts/queries.md` (table row, list example, refine, cross-model
+- [x] 6.2 Docs: `docs/concepts/queries.md` (table row, list example, refine, cross-model
   measures), `docs/concepts/formulas.md`, `docs/reference/{rest-api,mcp,usage-reporting}.md`,
   `slayer/memories/help_content/06_joins.md`, `docs/examples/16_list_columns` (re-run and
   save the notebook), `examples/comparisons/*` where they state the default.
   Verify: `grep -rn 'default.*broadcast\|broadcast.*default' docs slayer/memories` is clean.
-- [ ] 6.3 Full unit suite, `ruff`, `basedpyright` (no new errors vs baseline), the
+- [x] 6.3 Full unit suite, `ruff`, `basedpyright` (no new errors vs baseline), the
   enforcement bundle. Verify: all green.
 - [ ] 6.4 At archive time, update the stale Purpose of
   `openspec/specs/queries/cross-model-aggregates/spec.md` (it still names the broadcast

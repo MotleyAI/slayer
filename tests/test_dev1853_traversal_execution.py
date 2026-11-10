@@ -163,9 +163,9 @@ class TestOrientedCardinalityValues:
         with tempfile.TemporaryDirectory() as d:
             engine = await chain_engine(
                 d, declare="forward", cardinality=None, customers_id_pk=False)
-            resp = await engine.execute(SlayerQuery(
-                source_model="customers", dimensions=["tier"],
-                measures=[{"formula": "orders.amount:sum", "name": "t"}], to_many_handling="broadcast"))
+            resp = await engine.execute(SlayerQuery.model_validate({
+                "source_model": "customers", "dimensions": ["tier"],
+                "measures": [{"formula": "orders.amount:sum", "name": "t"}], "to_many_handling": "broadcast"}))
             assert broadcast_warnings(resp)
             values = {r["customers.t"] for r in resp.data}
             assert values == {CHAIN_UNPROVEN_BROADCAST_TOTAL}

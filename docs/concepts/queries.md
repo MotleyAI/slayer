@@ -18,7 +18,7 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 | `limit` | int | No | Maximum rows to return |
 | `offset` | int | No | Number of rows to skip |
 | `whole_periods_only` | bool | No | Snap time bounds to bucket boundaries and exclude the current incomplete bucket — see [Time](time.md#whole_periods_only) |
-| `to_many_handling` | str | No | How an aggregate resolves query dimensions [unattributable from its root](#cross-model-measures): `broadcast` (default; repeat the safe-grain value across the cells and warn), `associate` (per-cell value over the distinct associated entities), or `error` (refuse). Semi-join-pushed filters are always applied and never error; the retired `strict` flag is rejected with this remedy. |
+| `to_many_handling` | str | No | How an aggregate resolves query dimensions [unattributable from its root](#cross-model-measures). Omitted (the default): per-cell value over the distinct associated rows, falling back to broadcast with a warning where association is unsupported; `associate` (the same, refusing what it cannot associate), `broadcast` (repeat the safe-grain value across the cells and warn), or `error` (refuse). Semi-join-pushed filters are always applied and never error; the retired `strict` flag is rejected with this remedy. |
 
 You can pass a single query or a **list of queries** to `execute()`. When passing a list, earlier queries are named sub-queries that later queries can reference. The last query in the list is the main one whose results are returned. See [Query Lists](#query-lists) for examples.
 
@@ -265,7 +265,7 @@ Query results are returned as a `SlayerResponse`:
 | `row_count` | int | Number of rows |
 | `sql` | string | The generated SQL (useful for debugging) |
 | `attributes` | ResponseAttributes | Field metadata split by type: `attributes.dimensions` and `attributes.measures`, each a dict of column alias → FieldMetadata (label, format) |
-| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a [cross-model measure broadcast](#cross-model-measures) (`"broadcast"` — `measure`, `location`, and per-dimension `dimensions[].reason`), a distinct-entity attribution over an unattributable dimension (`"associated"` — `measure`, `location`, `dimensions`; cells overlap and are not additive), an aggregate over a model no join path reaches (`"unrelated_dataset"` — `dataset`, `population`, `measures`, `location`), a semi-join-pushed filter (`"semi_join_pushed"` — `measure` (`null` for a population-level push), `location`, `filter_text`), a query run without its statement timeout (`"statement_timeout_skipped"` — `datasource`, `timeout_seconds`, `reason`: `readonly_user` or `timeout_rejected`), [`whole_periods_only`](time.md#whole_periods_only) over non-nesting granularities (`"whole_periods_non_nesting"` — `column`, `granularities`, `location`), and a [list](#list-columns) read as its element set (`"whole_list"` — `operation`: `group` or `count_distinct`, `list`) |
+| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a [cross-model measure broadcast](#cross-model-measures) (`"broadcast"` — `measure`, `location`, per-dimension `dimensions[].reason`, and `association_unsupported` when the default fell back to it), a distinct-entity attribution over an unattributable dimension (`"associated"` — `measure`, `location`, `dimensions`; cells overlap and are not additive), an aggregate over a model no join path reaches (`"unrelated_dataset"` — `dataset`, `population`, `measures`, `location`), a semi-join-pushed filter (`"semi_join_pushed"` — `measure` (`null` for a population-level push), `location`, `filter_text`), a query run without its statement timeout (`"statement_timeout_skipped"` — `datasource`, `timeout_seconds`, `reason`: `readonly_user` or `timeout_rejected`), [`whole_periods_only`](time.md#whole_periods_only) over non-nesting granularities (`"whole_periods_non_nesting"` — `column`, `granularities`, `location`), and a [list](#list-columns) read as its element set (`"whole_list"` — `operation`: `group` or `count_distinct`, `list`) |
 
 `columns` — and the key order of each row in `data` — follows the order you
 declared fields in the query: dimensions, then time dimensions, then measures,
@@ -440,13 +440,13 @@ A negated condition on a joined model does not mean "has none": `not orders.stat
 
 ### List columns
 
-A list column `skills` is also a join hop to its elements, one row per non-NULL element with the single column `skills.value`, so `skills.value = 'go'` keeps the contractors having a `go` element, `skills.value` groups by element with `count(skills.*)` counting occurrences, `to_many_handling: "associate"` turns `count(*)` by `skills.value` into the number of contractors per skill (no key needed), every `skills.value` condition in one query reads the same element (so require several with `contains_all(skills, ['go', 'sql'])`, not `AND`), and absence is `NOT contains(skills, 'go')`, since `NOT (skills.value = 'go')` keeps rows with some other element.
+A list column `skills` is also a join hop to its elements, one row per non-NULL element with the single column `skills.value`, so `skills.value = 'go'` keeps the contractors having a `go` element, `skills.value` groups by element with `count(skills.*)` counting occurrences, `count(*)` by `skills.value` is the number of contractors per skill (no key needed), every `skills.value` condition in one query reads the same element (so require several with `contains_all(skills, ['go', 'sql'])`, not `AND`), and absence is `NOT contains(skills, 'go')`, since `NOT (skills.value = 'go')` keeps rows with some other element.
 
 ```json
-{"source_model": "contractors", "dimensions": ["skills.value"], "measures": ["count(*)"], "to_many_handling": "associate"}
+{"source_model": "contractors", "dimensions": ["skills.value"], "measures": ["count(*)"]}
 ```
 
-Under the default `broadcast`, a parent aggregate sliced by `skills.value` repeats its total on every element with a `broadcast` warning.
+With `to_many_handling: "broadcast"`, a parent aggregate sliced by `skills.value` repeats its total on every element with a `broadcast` warning instead.
 
 A whole list groups (a dimension or `partition_by=`), compares (`=`, `<>`, `IS [NOT] DISTINCT FROM`, `skills IN (['go'], ['sql'])`) and counts distinctly (`count_distinct(skills)`) as its element set, its distinct non-NULL elements in ascending order (`['go', 'sql', 'go']` and `['sql', 'go']` are one group, shown as `['go', 'sql']`, and `[NULL]` equals `[]`), with a `whole_list` warning naming `skills.value` for grouping and distinct counting, while a raw-rows query shows each list as stored.
 
@@ -573,7 +573,7 @@ await engine.execute("monthly_revenue", refine={"order": [{"column": "revenue", 
 
 - `dimensions` and `measures` are appended; an entry identical to a saved one (`region` ≡ `orders.region`) collapses, and a same-named entry that differs raises `RefinementConflictError`.
 - `time_dimensions` merge per (column, granularity): a refinement may add a `date_range` or `label` the saved one lacks, but a different value conflicts — narrow a saved window with a filter on the time column instead.
-- `filters` AND with the saved filters; `order`, `limit`, `offset`, `main_time_dimension`, `whole_periods_only`, `distinct_dimension_values` and `to_many_handling` replace the saved value (`{"limit": null}` clears a saved limit).
+- `filters` AND with the saved filters; `order`, `limit`, `offset`, `main_time_dimension`, `whole_periods_only`, `distinct_dimension_values` and `to_many_handling` replace the saved value (`{"limit": null}` clears a saved limit; a null `to_many_handling` keeps the saved mode).
 - `source_model`, `name` and `variables` are not refinable; `refine` with a query object or list is an error.
 
 For a multi-stage saved query only the final stage is refined, so it can use only what the earlier stages project: refining `[{"name": "per_customer", ...}, {"source_model": "per_customer", "measures": [{"formula": "avg(revenue)", "name": "avg_revenue"}]}]` with `{"dimensions": ["region"]}` averages per region, provided `per_customer` projects `region`.
@@ -771,11 +771,11 @@ The method-call spelling `order_items.count(*)` or `order_items.sum(price * qty)
 The sub-query groups by the subset of your dimensions the engine can **prove
 safe** — those reachable from the measure's model over join hops that are
 provably many-to-one (a primary key on the far side, or a declared
-[join `cardinality`](models.md#join-cardinality)). Each remaining dimension gets
-the **broadcast** value (the total over the safe grain, repeated across that
-dimension), and the response carries a `warnings` entry (`kind: "broadcast"`)
-naming the metric and each broadcast dimension with the reason. Declare the
-missing join cardinality (or primary key) to make such a dimension exact.
+[join `cardinality`](models.md#join-cardinality)). Each remaining dimension is
+**associated**: each cell aggregates over the distinct rows of the measure's model
+reaching it, and the response carries a `warnings` entry (`kind: "associated"`)
+because the cells may overlap and are not additive. Declare the missing join
+cardinality (or primary key) to make such a dimension partition the rows.
 
 Query **filters** still restrict the metric: a conjunct the sub-query can only
 reach across an unproven hop is pushed down as a correlated `EXISTS` semi-join —
@@ -797,15 +797,17 @@ fail with a clear error, as does a `readonly = 1` user whose profile leaves
 `allow_experimental_correlated_subqueries` off (the 25.4–25.7 default) — enable it
 in the user's profile, use `readonly = 2`, or upgrade to 25.8+.
 
-`to_many_handling` chooses how a broadcast dimension resolves — `broadcast` (the
-default above), `associate` (each cell aggregates over the distinct entities
-associated with it, warned as `kind: "associated"` because the cells overlap and
-are not additive), or `error` (refuse) — where a stored query's retired
-`strict: true` migrates to `error` (fresh input carrying `strict` is rejected),
-and a semi-join-pushed filter is applied, never erroring, in every mode.
-Example: `{"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "sum(customers.spend)"}], "to_many_handling": "associate"}`.
+`to_many_handling` chooses how such a dimension resolves — omitted (association,
+the default above), `associate`, `broadcast` (the total over the safe grain,
+repeated across the dimension, with a `kind: "broadcast"` warning naming the
+metric and each broadcast dimension with the reason), or `error` (refuse) — where
+a stored query's retired `strict: true` migrates to `error` (fresh input carrying
+`strict` is rejected), a stored query saved with the old `"broadcast"` default
+loads with the mode omitted, and a semi-join-pushed filter is applied, never
+erroring, in every mode.
+Example: `{"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "sum(customers.spend)"}]}` gives each status the spend of the distinct customers with an order in it.
 
-`associate` resolves only *eligible* aggregates — a plain scalar aggregate whose root declares a unique key; an unsupported combination (`window=`/`first`/`last`, a root without a unique key, or an input crossing an unproven hop) returns a typed error rather than a value, so `associate` does not turn every broadcast case exact. Each cell aggregates over the metric's own home rows by the home's join path, so an entity with no population row still counts in the cells its path reaches. An aggregate reads like a field of a model keyed by its grain, so an entity with no related row counts in the NULL cell whenever the result has one, however the query is rooted. A pushed filter binds to the same related row as a dimension it shares a hop with. An attached (aggregate- or transform-valued) parameter or source constituent is computed at its own home and attached per home row in every mode, so `weighted_avg(customers.spend, weight=sum(amount, partition_by=customers.regions.name))` weights each customer by its region's order total under `broadcast`, `associate` and `error` alike.
+Association serves every plain scalar aggregate; a model without a primary or unique key is told apart row by row, so duplicate rows count separately while join copies count once. `window=` and `first`/`last` cannot associate yet: by default they broadcast with a `broadcast` warning whose `association_unsupported` names the reason, while an explicit `associate` (or an explicit `partition_by=` needing association) returns a typed error. An input crossing an unproven hop fails with a typed error in every mode. Each cell aggregates over the metric's own home rows by the home's join path, so an entity with no population row still counts in the cells its path reaches. An aggregate reads like a field of a model keyed by its grain, so an entity with no related row counts in the NULL cell whenever the result has one, however the query is rooted. A pushed filter binds to the same related row as a dimension it shares a hop with. An attached (aggregate- or transform-valued) parameter or source constituent is computed at its own home and attached per home row in every mode, so `weighted_avg(customers.spend, weight=sum(amount, partition_by=customers.regions.name))` weights each customer by its region's order total under `broadcast`, `associate` and `error` alike.
 
 Every input of an aggregate — its source, arguments (`weight=`), definition defaults, and its column-level `filter=` — is traced recursively through derived-column definitions, and an input whose expansion crosses a fanning (not provably to-one) hop fails closed with a typed error instead of silently multiplying rows.
 
@@ -816,12 +818,11 @@ restricts the result rows, uniformly with local aggregate filters — groups tha
 fail the predicate are dropped, not returned with `NULL`.
 
 Cross-model aggregates also support `window=`, `partition_by=`, and `first` /
-`last` when associate-mode resolution is not required (an aggregate that needs
-association cannot use `window=` or `first` / `last`), inside
+`last` (broadcast, as above, where a dimension would need association), inside
 [dimension expressions](#expression-dimensions), and as hidden
 [order-only fields](#ordering-by-something-you-dont-project).
 
-An [aggregated expression](formulas.md#expression-aggregation) may mix host and joined-model columns (`sum(amount - customers.discount)`); it is homed at the deepest dataset that determines every operand, so the join hop's cardinality decides exact-grain vs broadcast exactly as for a single cross-model measure.
+An [aggregated expression](formulas.md#expression-aggregation) may mix host and joined-model columns (`sum(amount - customers.discount)`); it is homed at the deepest dataset that determines every operand, so the join hop's cardinality decides exact grain vs association exactly as for a single cross-model measure.
 
 A cross-model **parametric** aggregate keeps its kwarg signature in the result key, so two variants on the same target column do not collide:
 

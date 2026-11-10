@@ -138,7 +138,7 @@ from slayer.ir.bound import (
     DeclaredMeasure,
     OrderSpec,
 )
-from slayer.ir.prebound import PreboundQuery, partition_declared_measures
+from slayer.ir.prebound import ModePolicy, PreboundQuery, partition_declared_measures
 from slayer.ir.source_bundle import ResolvedSourceBundle, resolve_scope
 from slayer.sql.naming import canonical_aggregate_alias, flat_name as _flatten_dotted, formula_text_alias
 
@@ -786,7 +786,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         limit=query.limit,
         offset=query.offset,
         distinct_dimension_values=query.distinct_dimension_values,
-        to_many_handling=query.to_many_handling,
+        mode_policy=ModePolicy.resolve(query.to_many_handling),
         granularity_conflicts=granularity_conflicts,
         whole_list_reads=list_reads,
     )

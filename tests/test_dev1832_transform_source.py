@@ -645,12 +645,12 @@ class TestWindowedInnerConstituent:
 
 
 class TestCrossModelGrainedInnerBoundary:
-    """queries/partitioned-aggregates › a target-homed inner naming a host time axis is
-    a permanent boundary in EVERY mode: ``ordered_at`` is an orders column reachable from
-    the customers home only across the fanning customers→orders hop — a mode-invariant
-    input-safety error (Axiom 8). DEV-1941 would let associate compute the value."""
+    """queries/partitioned-aggregates › a target-homed inner naming a host time axis resolves
+    per the mode like the bare inner: ``ordered_at`` is reachable from the customers home only
+    across the fanning customers→orders hop, so it associates per bucket by default and under
+    associate, and fails under broadcast and error."""
 
-    @pytest.mark.parametrize("mode", ["broadcast", "error", "associate"])
+    @pytest.mark.parametrize("mode", ["broadcast", "error"])
     async def test_host_time_axis_fails_closed_every_mode(self, mode):
         query = orders_q(
             measures=[ModelMeasure(formula=XMODEL_BOUNDARY, name="m")],
@@ -662,6 +662,15 @@ class TestCrossModelGrainedInnerBoundary:
         assert "attributable" in msg  # names the rule
         assert "cardinality" in msg  # states an actionable remedy
         assert not re.search(r"DEV-\d+", msg)
+
+    @pytest.mark.parametrize("mode", [None, "associate"])
+    async def test_host_time_axis_associates_by_default(self, exec_backend, mode):
+        _, engine = exec_backend
+        resp = await engine.execute(orders_q(
+            measures=[ModelMeasure(formula=XMODEL_BOUNDARY, name="m")],
+            time_dimensions=month_td(), to_many_handling=mode))
+        assert _by_month(resp, "m") == pytest.approx(
+            {"2024-01": 100.0, "2024-02": 150.0, "2024-03": 200.0, "2024-04": 420.0})
 
     async def test_to_one_cross_model_partition_key_executes(self, exec_backend):
         _, engine = exec_backend

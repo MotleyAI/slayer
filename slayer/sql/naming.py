@@ -12,8 +12,10 @@ from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.time_spine import TIME_SPINE_MODEL
+from slayer.core.enums import DataType
 from slayer.core.errors import IdentifierCollisionError
 from slayer.core.keys import (
+    REGROUP_LEAF_PREFIX,
     AggregateKey,
     ColumnKey,
     ColumnSqlKey,
@@ -27,6 +29,7 @@ from slayer.core.keys import (
     column_path,
     source_anchor_path,
 )
+from slayer.core.models import Column, SlayerModel
 from slayer.core.refs import (
     AGG_REF_RE,
     EXPRESSION_SOURCE_KINDS,
@@ -239,6 +242,18 @@ def flat_name(dotted: str, *, strip_relation: Optional[str] = None) -> str:
 
 OUTER_WRAP_ALIAS = "_outer"
 STAGE_INNER_ALIAS = "_stage_inner"
+#: A keyless association home's per-query row number (reserved prefix: no model column collides).
+ROW_IDENTITY_COLUMN = f"{REGROUP_LEAF_PREFIX}row_id"
+
+
+def with_row_identity(model: SlayerModel) -> SlayerModel:
+    """``model`` keyed by its per-query row number, which the relation door mints."""
+    row_id = Column.model_construct(name=ROW_IDENTITY_COLUMN, type=DataType.INT, primary_key=True)
+    return model.model_copy(update={"columns": [*model.columns, row_id]})
+
+
+def is_row_identity(key: ValueKey) -> bool:
+    return isinstance(key, ColumnKey) and not key.path and key.leaf == ROW_IDENTITY_COLUMN
 
 
 # Written out, not ``\W``: Python's ``\W`` is Unicode-aware and would let non-ASCII letters into a bare ASCII identifier.

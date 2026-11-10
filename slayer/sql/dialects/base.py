@@ -1324,6 +1324,10 @@ class SqlDialect(BaseModel):
     def list_contains_all(self, values: Expression, other: Expression) -> Expression:  # NOSONAR(S1172) — hook signature
         self.refuse("contains_all")
 
+    def row_number(self) -> Expression:
+        """An arbitrary distinct number per row of the enclosing relation."""
+        return exp.Window(this=exp.RowNumber())
+
     def result_readers(self, description: Sequence[Any]) -> dict[int, Callable[[Any], Any]]:  # NOSONAR(S1172) — hook default
         """Per result-column position, how to read a non-NULL cell the driver returns as text (default: none)."""
         return {}

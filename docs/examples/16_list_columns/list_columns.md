@@ -26,14 +26,13 @@ A whole list groups, compares and counts distinctly as the set of its distinct e
 
 ## Elements as rows
 
-`ingredients.value` is one row per element and `count(ingredients.*)` counts them. With `to_many_handling: "associate"`, `count(*)` grouped by an element counts the parents holding it:
+`ingredients.value` is one row per element and `count(ingredients.*)` counts them. `count(*)` grouped by an element counts the parents holding it:
 
 ```json
 {
   "source_model": "orders",
   "dimensions": ["item_skus.value"],
-  "measures": ["count(*)", {"formula": "count(item_skus.*)", "name": "units"}],
-  "to_many_handling": "associate"
+  "measures": ["count(*)", {"formula": "count(item_skus.*)", "name": "units"}]
 }
 ```
 

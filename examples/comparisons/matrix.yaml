@@ -123,7 +123,7 @@ rows:
   slayer:
     verdict: 'yes'
     how: "`avg(customers.score)`"
-    caveat: Each aggregate computed at its own model; unproven to-one dimensions broadcast with a warning.
+    caveat: Each aggregate computed at its own model; unproven to-one dimensions are associated with a warning.
   malloy:
     verdict: 'yes'
     how: "`orders.customers.count()`"

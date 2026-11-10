@@ -329,8 +329,9 @@ class TestAssociatedRankedPickStaysTyped:
     }
 
     async def test_cross_model_last_needing_association(self, dev1841_engine):
+        query = f1841.assoc_q(**self.KW)
         with pytest.raises(AssociationError):
-            await dev1841_engine.execute(f1841.assoc_q(**self.KW))
+            await dev1841_engine.execute(query)
 
     async def test_default_mode_broadcasts_with_the_reason(self, dev1841_engine):
         resp = await dev1841_engine.execute(f1841.q(**self.KW))

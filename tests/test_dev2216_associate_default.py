@@ -65,7 +65,7 @@ def _q(mode: str | None, **kw) -> SlayerQuery:
 def _same_rows(a, b) -> bool:
     """Equal result rows, ignoring row order."""
     def canon(resp):
-        return sorted(sorted(row.items(), key=str) for row in resp.data)
+        return sorted((sorted(row.items(), key=str) for row in resp.data), key=str)
     return canon(a) == canon(b)
 
 
@@ -183,7 +183,8 @@ class TestBroadcastFallback:
         assert [d.dimension for d in w.dimensions] == ["status"]
         assert FIRST_LAST.search(w.association_unsupported or "")
         assert w.hint != DICE_SLICE_HINT
-        assert FIRST_LAST.search(w.hint) and REMEDY.search(w.hint)
+        assert FIRST_LAST.search(w.hint)
+        assert REMEDY.search(w.hint)
         assert not associated_warnings(default)
 
     async def test_window_broadcasts_with_its_reason(self, engine) -> None:
@@ -198,7 +199,8 @@ class TestBroadcastFallback:
         (w,) = _fallbacks(default)
         assert WINDOW.search(w.association_unsupported or "")
         assert w.hint != DICE_SLICE_HINT
-        assert WINDOW.search(w.hint) and REMEDY.search(w.hint)
+        assert WINDOW.search(w.hint)
+        assert REMEDY.search(w.hint)
 
     async def test_each_reason_is_reported(self, engine) -> None:
         resp = await engine.execute(_q(
@@ -211,8 +213,9 @@ class TestBroadcastFallback:
     @pytest.mark.parametrize("shape", INELIGIBLE)
     async def test_explicit_associate_keeps_the_typed_error(self, engine, shape) -> None:
         kw, measure = INELIGIBLE[shape]
+        query = _q("associate", measures=[measure], **kw)
         with pytest.raises(AssociationError):
-            await engine.execute(_q("associate", measures=[measure], **kw))
+            await engine.execute(query)
 
     @pytest.mark.parametrize("shape", INELIGIBLE)
     async def test_explicit_broadcast_warns_ordinarily(self, engine, shape) -> None:
@@ -225,28 +228,30 @@ class TestBroadcastFallback:
     @pytest.mark.parametrize("shape", INELIGIBLE)
     async def test_error_mode_refuses(self, engine, shape) -> None:
         kw, measure = INELIGIBLE[shape]
+        query = _q("error", measures=[measure], **kw)
         with pytest.raises(SlayerError):
-            await engine.execute(_q("error", measures=[measure], **kw))
+            await engine.execute(query)
 
     async def test_requested_grain_is_never_broadcast(self, engine) -> None:
         part = ModelMeasure(formula="last(customers.spend, customers.signup_at, partition_by=status)", name="lp")
+        default, associate = (_q(mode, dimensions=["status"], measures=[part]) for mode in (None, "associate"))
         with pytest.raises(AssociationError) as by_default:
-            await engine.execute(_q(None, dimensions=["status"], measures=[part]))
+            await engine.execute(default)
         with pytest.raises(AssociationError) as by_associate:
-            await engine.execute(_q("associate", dimensions=["status"], measures=[part]))
+            await engine.execute(associate)
         assert type(by_default.value) is type(by_associate.value)
 
     @pytest.mark.parametrize("mode", [None, "broadcast", "associate", "error"])
     async def test_input_safety_is_not_a_fallback(self, crossing_engine, mode) -> None:
-        vip = ModelMeasure(formula="customers.vip_spend:sum", name="vip")
+        query = _q(mode, dimensions=["status"], measures=[ModelMeasure(formula="customers.vip_spend:sum", name="vip")])
         with pytest.raises(UnsafeJoinInputError, match="unproven join hop"):
-            await crossing_engine.execute(_q(mode, dimensions=["status"], measures=[vip]))
+            await crossing_engine.execute(query)
 
     async def test_partition_key_fanning_from_its_host_fails_by_default(self, fanning_engine) -> None:
+        query = _q(None, source_model="regions", dimensions=["bad_pop"],
+                   measures=[ModelMeasure(formula="pop:sum(partition_by=bad_pop)", name="w")])
         with pytest.raises(PartitionKeyError, match="region_events"):
-            await fanning_engine.execute(_q(
-                None, source_model="regions", dimensions=["bad_pop"],
-                measures=[ModelMeasure(formula="pop:sum(partition_by=bad_pop)", name="w")]))
+            await fanning_engine.execute(query)
 
     async def test_local_ranked_aggregate_never_raises(self, engine) -> None:
         kw = {"source_model": "customers", "dimensions": ["orders.status"],
@@ -269,8 +274,9 @@ class TestUngrainedReaggregationInner:
         nested = ModelMeasure(formula="sum(sum(customers.spend))", name="ss")
         resp = await engine.execute(_q("broadcast", dimensions=["status"], measures=[nested]))
         assert _status(resp, "ss") == dict.fromkeys(ASSOC_SPEND_BY_STATUS, BCAST_SPEND_CROSS)
+        query = _q("error", dimensions=["status"], measures=[nested])
         with pytest.raises(SlayerError):
-            await engine.execute(_q("error", dimensions=["status"], measures=[nested]))
+            await engine.execute(query)
 
     async def test_ranked_inner_falls_back_by_default(self, engine) -> None:
         nested = ModelMeasure(formula="sum(last(customers.spend, customers.signup_at))", name="sl")
@@ -278,6 +284,7 @@ class TestUngrainedReaggregationInner:
         assert any(FIRST_LAST.search(w.association_unsupported or "") for w in _fallbacks(resp))
 
     async def test_ranked_inner_fails_under_associate(self, engine) -> None:
-        nested = ModelMeasure(formula="sum(last(customers.spend, customers.signup_at))", name="sl")
+        query = _q("associate", dimensions=["status"],
+                   measures=[ModelMeasure(formula="sum(last(customers.spend, customers.signup_at))", name="sl")])
         with pytest.raises(AssociationError):
-            await engine.execute(_q("associate", dimensions=["status"], measures=[nested]))
+            await engine.execute(query)

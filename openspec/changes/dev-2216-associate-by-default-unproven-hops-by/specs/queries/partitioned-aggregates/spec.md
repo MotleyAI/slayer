@@ -42,12 +42,10 @@ time-axis error a dimension-position transform raises, the axis being named in
 `partition_by=` exactly as in dimension position (a top-level measure transform is
 unchanged and keeps evaluating at the query grain over the attached value); an inner
 aggregate homed on a joined model whose `partition_by=` names the host's time axis — a
-key reachable from the inner's own root only across a fanning join hop — SHALL fail with
-the partition-key attributability error in every mode, associate included, the
-mode-invariant input-safety rule for a partition key whose closure fans from the inner's
-host (Axiom 8): not a deferred shape and not a boundary a mode resolves, though a future
-change (DEV-1941) would let associate mode compute it by distinct-entity association per
-bucket; an
+key reachable from the inner's own root only across a fanning join hop — SHALL resolve
+per `to_many_handling` exactly like the same aggregate outside the re-aggregation:
+associated per bucket under the default and `associate`, and failing with the
+partition-key attributability error under `broadcast` and `error`; an
 axis-collapsing transform constituent (`first`, `last`) is typed at that union minus
 its time axis, realised as its axis-preserving evaluation followed by an exact
 per-partition pick, so the axis resolves per `to_many_handling` like any dimension
@@ -131,14 +129,11 @@ measure-local `filter=` on the outer aggregation.
 #### Scenario: Cross-model grained inner naming a host time axis is a permanent boundary
 - **WHEN** a query rooted at `orders` over a month time dimension selects
   `sum(cumsum(sum(customers.spend, partition_by=[customers.tier, ordered_at])))`
-- **THEN** under every mode — omitted, broadcast, error AND associate — it fails at
-  plan time with the partition-key attributability error naming `ordered_at` and the
-  remedy: the inner is homed at `customers`, and `ordered_at` is an `orders` column
-  reachable from `customers` only across the fanning `customers → orders` hop, so it is
-  a mode-invariant input-safety error (Axiom 8) — never a duplicated or misgrained
-  result, and never a deferral wording. The value is well-defined under distinct-entity
-  association (a future change, DEV-1941, would compute it), so this is the boundary a
-  fanning-crossing time key hits today, not a fundamental impossibility.
+- **THEN** under `broadcast` and `error` it fails at plan time with the partition-key
+  attributability error naming `ordered_at` and the remedy; under the default and
+  `associate` it returns Jan 100 · Feb 150 · Mar 200 · Apr 420 per month, the inner
+  associated per (tier, month) over the distinct customers ordering in that month, exactly
+  as the bare inner is.
 
 #### Scenario: A to-one cross-model partition key on a local-homed inner stays legal
 - **WHEN** a query rooted at `orders` over a month time dimension selects

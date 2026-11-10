@@ -53,7 +53,7 @@ from slayer.sql.column_expansion import (
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import SQLGLOT_NAMES
 from slayer.sql.dialects.base import SqlDialect
-from slayer.sql.naming import AliasAllocator, quote_mixed_case_identifiers
+from slayer.sql.naming import AliasAllocator, is_row_identity, quote_mixed_case_identifiers
 from slayer.sql.render.parse import parse_expression, parse_predicate
 from slayer.sql.render.row_expr import render_row_expression
 from slayer.sql.sql_template import sql_template
@@ -399,7 +399,7 @@ class ScopeFrame(BaseModel):
             attached = self.attached_columns.get(ref)
             if attached is not None:
                 return attached.copy()
-            if self.attached_columns and ref.leaf.startswith(REGROUP_LEAF_PREFIX):
+            if self.attached_columns and ref.leaf.startswith(REGROUP_LEAF_PREFIX) and not is_row_identity(ref):
                 raise ValueError(
                     f"Regroup placeholder {ref.leaf!r} has no attached producer "
                     f"column in this scope. A __regroup__ leaf must resolve "

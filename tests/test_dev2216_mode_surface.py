@@ -86,7 +86,7 @@ async def engine(request):
 
 class TestFallbackPythonWarning:
     async def test_names_the_reason_and_survives_transport(self, engine) -> None:
-        query = SlayerQuery(source_model="orders", dimensions=["status"], measures=[LAST])
+        query = SlayerQuery.model_validate({"source_model": "orders", "dimensions": ["status"], "measures": [LAST]})
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             resp = await engine.execute(query)

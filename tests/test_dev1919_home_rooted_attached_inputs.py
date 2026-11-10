@@ -27,7 +27,7 @@ from tests._dev1840_fixtures import (
     make_exec_engine as make_orders_engine,
 )
 from tests._dev1841_fixtures import ModelMeasure, associated_warnings, broadcast_warnings
-from tests._dev1859_fixtures import broadcast_wavg_global, customers_wsum_models
+from tests._dev1859_fixtures import assoc_wavg_region_weight, broadcast_wavg_global, customers_wsum_models
 from tests._dev1892_fixtures import assert_grain_residue, assert_ref_free
 from tests._dev1900_fixtures import (
     make_exec_engine as make_1900_engine,
@@ -202,13 +202,10 @@ class TestAttributableDimensionsNeedNoAssociation:
         assert_cells(tier_vals(resp), {"gold": 55.0, "silver": 80.0, "bronze": 40.0, None: None})
         _assert_no_mode_warnings(resp)
 
-    async def test_association_still_needs_a_unique_key(self, keyless_engine):
-        q = mode_q("associate", dimensions=["status"], measures=[_m(HEADLINE)])
-        with pytest.raises(SlayerError) as ei:
-            await keyless_engine.execute(q)
-        msg = str(ei.value)
-        assert "unique key" in msg
-        assert "customers" in msg
+    async def test_keyless_home_associates_like_the_keyed_one(self, keyless_engine):
+        resp = await keyless_engine.execute(mode_q("associate", dimensions=["status"], measures=[_m(HEADLINE)]))
+        assert status_vals(resp) == pytest.approx(assoc_wavg_region_weight())
+        assert associated_warnings(resp)
 
 
 def _customers_attach(planned):

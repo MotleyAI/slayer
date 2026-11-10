@@ -46,7 +46,7 @@ class TestField:
 
     def test_schema_version_is_18(self) -> None:
         assert CURRENT_VERSIONS["SlayerModel"] == 19
-        assert _model().version == 18
+        assert _model().version == 19
 
     def test_json_round_trip(self) -> None:
         model = _model(access_tags=["hr", "HR Team"], hidden=True)
@@ -71,7 +71,7 @@ async def test_v14_model_loads_untagged_and_writes_back_at_v16(backend: str) -> 
             models=[orders_v10(version=14), customers_v10(version=14)],
         )
         assert (await must_get(storage, "orders", SHOP)).access_tags == []
-        assert (await raw_doc(storage, "orders"))["version"] == 18
+        assert (await raw_doc(storage, "orders"))["version"] == 19
 
 
 class TestMcp:

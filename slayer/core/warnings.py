@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Annotated, Literal, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 _caller_announces: ContextVar[bool] = ContextVar("slayer_caller_announces", default=False)
 
@@ -69,22 +69,37 @@ class BroadcastDimension(BaseModel):
     reason: str
 
 
-#: Unconditional dice–slice disclosure on every broadcast payload.
+#: Dice–slice disclosure on every requested broadcast.
 DICE_SLICE_HINT = (
     "filtering on this dimension restricts the metric by association while "
-    "slicing only repeats the value; set to_many_handling='associate' to "
-    "reconcile the two."
+    "slicing only repeats the value; omit to_many_handling (or set 'associate') "
+    "to reconcile the two."
 )
 
 
+def association_fallback_hint(reason: str) -> str:
+    """The hint of a broadcast the default mode fell back to because association does not support ``reason``."""
+    return (
+        f"association does not support {reason} yet, so the value repeats across the cells; "
+        "filter on the dimension instead, or drop the dimension(s) it cannot be attributed to."
+    )
+
+
 class BroadcastGrainWarningPayload(SlayerWarning):
-    """A cross-model aggregate whose implicit grain lost query dimensions to broadcasting; ``measure`` names the metric, ``dimensions`` lists each broadcast dimension and its reason."""
+    """A cross-model aggregate whose implicit grain lost query dimensions to broadcasting; ``measure`` names the metric, ``dimensions`` lists each broadcast dimension and its reason, ``association_unsupported`` why the default mode could not associate."""
 
     kind: Literal["broadcast"] = "broadcast"
     measure: str
     location: str
     dimensions: list[BroadcastDimension]
+    association_unsupported: Optional[str] = None
     hint: str = DICE_SLICE_HINT
+
+    @model_validator(mode="after")
+    def _fallback_hint(self) -> "BroadcastGrainWarningPayload":
+        if self.association_unsupported is not None and "hint" not in self.model_fields_set:
+            self.hint = association_fallback_hint(self.association_unsupported)
+        return self
 
     def human_message(self) -> str:
         dims = ", ".join(f"{d.dimension} ({d.reason})" for d in self.dimensions)

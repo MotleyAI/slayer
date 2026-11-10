@@ -144,6 +144,7 @@ from slayer.engine.response_meta import (
     projection_result_keys,
 )
 from slayer.sql.column_expansion import expand_derived_refs_sync
+from slayer.ir.prebound import ModePolicy
 from slayer.ir.source_bundle import ResolvedSourceBundle, model_from_stage_schema
 from slayer.engine.stage_ordering import localize_stages, topologically_order_stages
 from slayer.engine.statement_reads import StatementReads, statement_reads
@@ -426,8 +427,8 @@ def _semi_join_filter_texts(planned_list) -> List[str]:
 def _collect_broadcast_warnings(
     *, planned_list, stages=None, displays=None, labels=None,
 ) -> List[BroadcastGrainWarningPayload]:
-    """One broadcast payload per ``(stage location, measure label)``; dimensions unioned."""
-    dims_by_key: "dict[tuple[str, str], list[tuple[str, str]]]" = {}
+    """One broadcast payload per ``(stage location, measure label, fallback reason)``; dimensions unioned."""
+    dims_by_key: "dict[tuple[str, str, Optional[str]], list[tuple[str, str]]]" = {}
     if labels is None:
         labels = _stage_labels(stages=stages, displays=displays)
     for planned, location in zip(planned_list, labels):
@@ -435,7 +436,7 @@ def _collect_broadcast_warnings(
             measure = attach.broadcast_measure
             if not measure:
                 continue
-            dims = dims_by_key.setdefault((location, measure), [])
+            dims = dims_by_key.setdefault((location, measure, attach.association_unsupported), [])
             seen = {d for d, _ in dims}
             for dim, reason in attach.broadcast_dimensions:
                 if dim not in seen:
@@ -443,10 +444,10 @@ def _collect_broadcast_warnings(
                     seen.add(dim)
     return [
         BroadcastGrainWarningPayload(
-            measure=measure, location=location,
+            measure=measure, location=location, association_unsupported=unsupported,
             dimensions=[BroadcastDimension(dimension=d, reason=r) for d, r in dims],
         )
-        for (location, measure), dims in dims_by_key.items()
+        for (location, measure, unsupported), dims in dims_by_key.items()
     ]
 
 
@@ -585,8 +586,8 @@ def _raise_on_error_events(
         raise SlayerError(
             f"error mode: metric {w.measure!r} would broadcast across "
             f"unattributable dimension(s) {dims} ({reason}); declare join "
-            f"cardinality, a covering unique key, switch to "
-            f"to_many_handling='associate', or remove the dimension."
+            f"cardinality, a covering unique key, omit to_many_handling to "
+            f"associate, or remove the dimension."
         )
 
 
@@ -597,7 +598,9 @@ def _emit_python_warnings(response) -> None:
         if isinstance(w, BroadcastGrainWarningPayload):
             reason = w.dimensions[0].reason if w.dimensions else ""
             _warnings_module.warn(
-                BroadcastGrainWarning(measure=w.measure, reason=reason),
+                BroadcastGrainWarning(
+                    measure=w.measure, reason=reason, association_unsupported=w.association_unsupported,
+                ),
                 stacklevel=3,
             )
         elif isinstance(w, AssociatedWarningPayload):
@@ -1348,7 +1351,7 @@ class SlayerQueryEngine:
             for i, p in enumerate(planned_list) if id(p) in emitted_ids
         ]
         broadcast_warnings = _collect_broadcast_warnings(planned_list=plans, labels=labels)
-        if getattr(query, "to_many_handling", "broadcast") == "error":
+        if ModePolicy.resolve(query.to_many_handling).refuses:
             _raise_on_error_events(broadcasts=broadcast_warnings)
         warnings.extend(broadcast_warnings)
         warnings.extend(_collect_associated_warnings(planned_list=plans, labels=labels))

@@ -135,6 +135,7 @@ The planning decisions log, tags preserved.
     fall back to broadcast)" — the user ruled it out (decision 1); the compiler's own
     broadcast arm already refuses such inputs, so there is no broadcast value to fall
     back to.
+25. **Determined grain members are pruned before attribution** — a grain member the rest of the implicit grain determines (e.g. an aggregate grained within it) is not a producer grain key, so it neither associates nor broadcasts; reuses the local regroup's rule. (user)
 
 ## Risks / Trade-offs
 

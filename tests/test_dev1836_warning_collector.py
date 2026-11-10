@@ -163,7 +163,7 @@ class TestBroadcastDedup:
 def _attach(**overrides):
     empty = SimpleNamespace(regroup_attach_plans=[], cross_model_aggregate_plans=[])
     base = dict(
-        broadcast_measure=None, broadcast_dimensions=[], producer_plan=empty,
+        broadcast_measure=None, broadcast_dimensions=[], association_unsupported=None, producer_plan=empty,
     )
     base.update(overrides)
     return SimpleNamespace(**base)

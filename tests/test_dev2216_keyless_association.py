@@ -97,11 +97,11 @@ class TestKeylessHome:
         assert cells(resp, "status", "sp") == {"completed": 100.0, "pending": 100.0}
 
     async def test_error_mode_refuses(self, dialect) -> None:
+        q = query(source_model="orders", dimensions=["status"], measures=[measure("sum(customers.spend)", "sp")],
+                  to_many_handling="error")
         async with ossie_engine(dialect) as engine:
             with pytest.raises(SlayerError):
-                await engine.execute(query(
-                    source_model="orders", dimensions=["status"], measures=[measure("sum(customers.spend)", "sp")],
-                    to_many_handling="error"))
+                await engine.execute(q)
 
 
 class TestRowIdentity:

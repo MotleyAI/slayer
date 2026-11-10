@@ -120,7 +120,7 @@ class TestBroadcast:
         query = q(dimensions=["customers.segments.label"], measures=[M, CM])
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.customers.segments.label")
-        assert set(by) == set(SPEND_BY_LABEL)
+        assert {label for (label,) in by} == set(SPEND_BY_LABEL)
         for (label,), row in by.items():
             _approx(row["orders.cm"], SPEND_BY_LABEL[label], key=label)
             _approx(row["orders.m"], AMOUNT_BY_LABEL[label], key=f"m:{label}")
