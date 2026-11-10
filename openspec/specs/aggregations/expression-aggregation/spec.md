@@ -338,7 +338,7 @@ operand dataset for an attached one.
 #### Scenario: Attached parameter on a row-level source executes under broadcast
 - **WHEN** a measure is written
   `weighted_avg(customers.spend, weight=sum(amount, partition_by=customers.regions.name))`
-  rooted at `orders` under the default `broadcast` `to_many_handling`
+  rooted at `orders` under `to_many_handling: "broadcast"`
 - **THEN** it executes — the parameter's producer rooted at `orders`, attached per
   customer row inside the `customers`-rooted producer — with values identical to
   `associate` and `error` on every dimension the home determines, never the former
@@ -371,7 +371,7 @@ operand dataset for an attached one.
   `sum(customers.spend * sum(amount, partition_by=customers.regions.name))` — a
   row-grain source homed at `customers` whose constituent is homed at `orders`
 - **THEN** the constituent's producer is rooted at `orders` and attached per
-  customer row; by `status` under the default mode the customers-rooted total
+  customer row; by `status` under `to_many_handling: "broadcast"` the customers-rooted total
   (33780 on the reference dataset) is broadcast to both cells with the usual
   warning, and by `customers.tier` every mode returns identical hand-computed
   values (gold 15300, silver 16600, bronze 1880) — never the input-safety error the

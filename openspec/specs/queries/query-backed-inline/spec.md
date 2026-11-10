@@ -107,7 +107,7 @@ typed warning) SHALL reach the consuming query's response, naming the stage by i
 the query-backed model it belongs to; the consumer's own warnings SHALL be unchanged.
 
 #### Scenario: A broadcast inside a query-backed model is visible
-- **WHEN** a stored query-backed model's stage broadcasts across a to-many join and a query consumes the model
+- **WHEN** a stored query-backed model's stage under `to_many_handling: "broadcast"` broadcasts across a to-many join and a query consumes the model
 - **THEN** the response carries that broadcast warning, labelled with the stage and the model
 
 #### Scenario: Consumer warnings unchanged

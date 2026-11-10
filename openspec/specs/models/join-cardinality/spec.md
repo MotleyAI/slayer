@@ -29,7 +29,7 @@ Every stage output that another model or stage reads as a model — a model crea
 
 #### Scenario: A join covering part of a sibling's composite grain stays unproven
 - WHEN a sibling stage has dimensions `["id", "tier"]` and a later stage joins it on `id` alone
-- THEN the join is unproven and a metric across it broadcasts with a warning
+- THEN the join is unproven and a metric across it is unattributable — associated by default, broadcast under `to_many_handling: "broadcast"`, with a warning either way
 
 #### Scenario: An extension over a sibling keeps the sibling's grain
 - WHEN a stage's source is a `ModelExtension` over a sibling stage and adds columns or joins
@@ -37,7 +37,7 @@ Every stage output that another model or stage reads as a model — a model crea
 
 #### Scenario: An aggregate-valued computed dimension is part of the grain
 - WHEN a model is created from a query with dimensions `["status", {"expression": "sum(amount, partition_by=city)", "name": "ct"}]`, and another model joins onto it on `status` alone
-- THEN the join is unproven — a metric across it broadcasts with a warning and is never multiplied
+- THEN the join is unproven — a metric across it is unattributable (associated by default, broadcast under `to_many_handling: "broadcast"`), warned, and never multiplied
 
 #### Scenario: A measure is never part of the grain
 - WHEN a query's dimensions are `["status", "city"]` and its measure is `{"formula": "sum(amount, partition_by=status)", "name": "st"}`
@@ -77,7 +77,9 @@ both edges (surfacing as an ambiguous hop) where they contradict.
 ### Requirement: Validation surfaces unproven and contradicted joins
 Model validation and import reports SHALL flag every join neither declared
 many-to-one/one-to-one nor structurally proven *in its declared orientation*, stating
-that metrics crossing it will broadcast and naming the remedies (declare
+that dimensions across it are evaluated by association (or broadcast under
+`to_many_handling: "broadcast"`) while aggregation inputs crossing it are refused, and
+naming the remedies (declare
 `cardinality`, declare a covering unique key, or run cardinality detection). The
 audit SHALL report each edge once with the provability of both orientations, so
 diagnostics can explain why an inverted hop was classified safe or fanning. Where a
@@ -86,7 +88,7 @@ detected data hard-contradicts.
 
 #### Scenario: Unproven join is flagged with remedies
 - WHEN model validation runs over a model whose join has no declaration and no structural proof
-- THEN the report flags that join with the broadcast consequence and the remedies
+- THEN the report flags that join with the association / input-refusal consequence and the remedies
 
 #### Scenario: Contradicted declaration is flagged
 - WHEN a join declares many-to-one but a detection report records observed duplicates on the target side
@@ -126,8 +128,9 @@ so a reference never leaves the chain ambiguous.
 #### Scenario: One unproven hop breaks determination
 - **WHEN** the first hop of a two-hop chain is provably many-to-one but the second is
   undeclared and structurally unproven
-- **THEN** the chain's terminal columns are not determined and metrics broadcast
-  across them instead of joining through the unproven hop
+- **THEN** the chain's terminal columns are not determined, and metrics resolve
+  across them per `to_many_handling` (associated by default) instead of joining
+  through the unproven hop
 
 #### Scenario: A to-one reverse suffix determines
 - **WHEN** `regions → region_events` fans and its inverse is provably to-one, and a
@@ -169,20 +172,20 @@ other fans out.
 
 #### Scenario: Unknown arity fails closed
 - WHEN a join has no cardinality declaration and its target-side columns cover no declared unique set
-- THEN the engine treats the hop as unsafe for value paths (metrics broadcast rather than join through it)
+- THEN the engine treats the hop as unsafe for value paths (metrics resolve across it per `to_many_handling` rather than join through it)
 
 #### Scenario: Inverted declared one-to-many proves many-to-one
 - WHEN the only stored edge is `customers → orders (one_to_many)` and a hop traverses
   `orders → customers`
 - THEN the oriented cardinality is `many_to_one` and dimensions across that hop keep
-  exact attributed values instead of broadcasting
+  exact attributed values instead of resolving per `to_many_handling`
 
 #### Scenario: Inverting a to-one hop yields fan-out
 - WHEN a hop traverses `customers → orders` over a stored
   `orders → customers (many_to_one)` edge whose source columns cover no unique set of
   `orders`
 - THEN that orientation is one-to-many, is not provably to-one, and metrics crossing
-  it broadcast
+  it resolve per `to_many_handling`
 
 ### Requirement: dbt import declares each edge once
 The dbt/MetricFlow importer SHALL NOT synthesize reverse joins: a foreign→primary

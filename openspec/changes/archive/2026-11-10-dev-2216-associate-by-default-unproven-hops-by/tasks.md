@@ -85,7 +85,7 @@
   Verify: `grep -rn 'default.*broadcast\|broadcast.*default' docs slayer/memories` is clean.
 - [x] 6.3 Full unit suite, `ruff`, `basedpyright` (no new errors vs baseline), the
   enforcement bundle. Verify: all green.
-- [ ] 6.4 At archive time, update the stale Purpose of
+- [x] 6.4 At archive time, update the stale Purpose of
   `openspec/specs/queries/cross-model-aggregates/spec.md` (it still names the broadcast
   default and the retired `strict`). Verify: `openspec validate --specs --strict`.
 
