@@ -214,8 +214,11 @@ def _serve_caller_calls(calls: "queue.SimpleQueue[_CallerCall | None]", *, bound
     deadline = time.monotonic() + _CLEANUP_SECONDS
     while True:
         if bounded:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
             try:
-                call = calls.get(timeout=max(0.0, deadline - time.monotonic()))
+                call = calls.get(timeout=remaining)
             except queue.Empty:
                 return
         else:

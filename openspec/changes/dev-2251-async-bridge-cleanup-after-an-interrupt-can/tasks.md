@@ -18,9 +18,9 @@
 
 ## 2. Implementation (pr-implement stage) — `slayer/async_utils.py`
 
-- [ ] 2.1 In `_serve_caller_calls(bounded=True)`, compute `remaining = deadline - time.monotonic()` before each `get`. Return when `remaining <= 0`, otherwise `get(timeout=remaining)`. Unbounded mode is unchanged. Verify task 1.3's test passes, and that it passes 50/50 pinned to one CPU.
+- [x] 2.1 In `_serve_caller_calls(bounded=True)`, compute `remaining = deadline - time.monotonic()` before each `get`. Return when `remaining <= 0`, otherwise `get(timeout=remaining)`. Unbounded mode is unchanged. Verify task 1.3's test passes, and that it passes 50/50 pinned to one CPU.
 
 ## 3. Verification
 
-- [ ] 3.1 Run `tests/test_async_utils_bridge.py` 30× pinned to one CPU on Python 3.14 (`taskset -c <n>`) with no failure.
-- [ ] 3.2 Run the full unit suite (`poetry run pytest -m "not integration"`), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` and `poetry run la-arch-check`; all green.
+- [x] 3.1 Run `tests/test_async_utils_bridge.py` 30× pinned to one CPU on Python 3.14 (`taskset -c <n>`) with no failure.
+- [x] 3.2 Run the full unit suite (`poetry run pytest -m "not integration"`), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` and `poetry run la-arch-check`; all green.
