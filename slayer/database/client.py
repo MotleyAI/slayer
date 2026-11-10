@@ -885,7 +885,7 @@ class SlayerSQLClient:
     def _get_sync_engine_for_client(self) -> sa.Engine:
         """Return a per-client sync engine.
 
-        In-memory SQLite gets a private StaticPool engine (isolated per client),
+        In-memory SQLite gets a private one-connection engine (isolated per client),
         owned and disposed here with a finalizer backstop; everything else
         delegates to engine_factory, which owns and disposes it.
         """

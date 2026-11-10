@@ -9,22 +9,22 @@
 
 ## 2. SQLite own-catalog reads
 
-- [ ] 2.1 `slayer/sql/dialects/sqlite.py`: `reflect_table_keys` from `pragma_table_xinfo` / `pragma_foreign_key_list` / `pragma_index_list` / `pragma_index_xinfo` as sqlglot AST via `reflection.fetch`, schema-scoped, each read through `best_effort`; whole index discarded on any expression member; NULL FK `to` resolved to the referred table's PK; drop `primary_key_inspector_only`; verify 1.2, 1.3 key parts pass
-- [ ] 2.2 `reflect_columns` from `pragma_table_xinfo` (`hidden = 1` skipped, generated kept), types via the SQLAlchemy dialect's `_resolve_type_affinity` + `column_from_sa_type`; empty → existing not-found; verify 1.2, 1.3 column parts pass
+- [x] 2.1 `slayer/sql/dialects/sqlite.py`: `reflect_table_keys` from `pragma_table_xinfo` / `pragma_foreign_key_list` / `pragma_index_list` / `pragma_index_xinfo` as sqlglot AST via `reflection.fetch`, schema-scoped, each read through `best_effort`; whole index discarded on any expression member; NULL FK `to` resolved to the referred table's PK; drop `primary_key_inspector_only`; verify 1.2, 1.3 key parts pass
+- [x] 2.2 `reflect_columns` from `pragma_table_xinfo` (`hidden = 1` skipped, generated kept), types via the SQLAlchemy dialect's `_resolve_type_affinity` + `column_from_sa_type`; empty → existing not-found; verify 1.2, 1.3 column parts pass
 
 ## 3. One thread per connection
 
-- [ ] 3.1 `slayer/database/engine_factory.py`: in-memory builder uses a one-slot `QueuePool` subclass recording its holder thread, failing a same-thread re-checkout at once; disposal, `release_idle` / `holds_local_file`, per-datasource isolation and cross-thread coherence unchanged; update `slayer/database/client.py:888` docstring; verify 1.4 and existing in-memory tests pass
-- [ ] 3.2 `architecture/python.database.arc42.md`: add principle 6 and reword principle 3 exactly as quoted in design.md decisions 4–5 (user, approved wording); verify `poetry run la-arch-check` passes
+- [x] 3.1 `slayer/database/engine_factory.py`: in-memory builder uses a one-slot `QueuePool` subclass recording its holder thread, failing a same-thread re-checkout at once; disposal, `release_idle` / `holds_local_file`, per-datasource isolation and cross-thread coherence unchanged; update `slayer/database/client.py:888` docstring; verify 1.4 and existing in-memory tests pass
+- [x] 3.2 `architecture/python.database.arc42.md`: add principle 6 and reword principle 3 exactly as quoted in design.md decisions 4–5 (user, approved wording); verify `poetry run la-arch-check` passes
 
 ## 4. Reporting lost key reads
 
-- [ ] 4.1 `slayer/sql/dialects/reflection.py`: `KeyReadFailure(read, error)`; `TableKeys.failed_reads` default empty; `best_effort` returns the failure record alongside the default (all dialects, DuckDB included); verify 1.5 key-read-result part
-- [ ] 4.2 `slayer/live_schema/ingestion.py` / `schema_drift.py`: scan returns its failures explicitly (location + read + error, deduped), incl. tables later skipped; `key_read_failures` on `IngestionScanReport` and `IdempotentIngestResult`; verify 1.5 result parts
-- [ ] 4.3 Surfaces: MCP `create_datasource` + `ingest_datasource_models` list each lost key read with the re-ingest hint; CLI ingest prints them; REST body carries the field; statuses unchanged; verify 1.5 surface parts
-- [ ] 4.4 `docs/concepts/ingestion.md`: one sentence — a key that cannot be read is reported in the ingest output and filled by a re-ingest
+- [x] 4.1 `slayer/sql/dialects/reflection.py`: `KeyReadFailure(read, error)`; `TableKeys.failed_reads` default empty; `best_effort` returns the failure record alongside the default (all dialects, DuckDB included); verify 1.5 key-read-result part
+- [x] 4.2 `slayer/live_schema/ingestion.py` / `schema_drift.py`: scan returns its failures explicitly (location + read + error, deduped), incl. tables later skipped; `key_read_failures` on `IngestionScanReport` and `IdempotentIngestResult`; verify 1.5 result parts
+- [x] 4.3 Surfaces: MCP `create_datasource` + `ingest_datasource_models` list each lost key read with the re-ingest hint; CLI ingest prints them; REST body carries the field; statuses unchanged; verify 1.5 surface parts
+- [x] 4.4 `docs/concepts/ingestion.md`: one sentence — a key that cannot be read is reported in the ingest output and filled by a re-ingest
 
 ## 5. Finish
 
-- [ ] 5.1 Full unit suite `poetry run pytest -m "not integration"`, ruff, basedpyright (no new errors vs baseline), `poetry run la-arch-check`, `npx likec4 validate` (or build) all green
+- [x] 5.1 Full unit suite `poetry run pytest -m "not integration"`, ruff, basedpyright (no new errors vs baseline), `poetry run la-arch-check`, `npx likec4 validate` (or build) all green
 - [ ] 5.2 Run `tests/test_gateway_features.py` and the new tests on Python 3.14 (scratch venv) in a loop of ≥25 runs; no `returned NULL` and no failure

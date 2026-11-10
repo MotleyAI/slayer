@@ -22,6 +22,8 @@ orders ──FK──→ customers ──FK──→ regions
 
 Every foreign key between two ingested tables of the same schema becomes a join, whatever cycles the graph contains (see [Cycle Handling](#cycle-handling) below); self-referencing FKs are skipped.
 
+A key that cannot be read is listed under "Lost key reads" in the ingest output (`key_read_failures` in the REST response), and its table is ingested without it until a re-ingest reads it.
+
 ### Step 2: Build Direct Joins
 
 Each model gets one join entry per foreign key **on its own table** — never multi-hop joins. For example, given `orders → customers → regions`:

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import sqlalchemy as sa
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.pool import AssertionPool, NullPool, Pool, QueuePool
 
 from slayer.core.models import DatasourceConfig
@@ -176,7 +176,7 @@ def test_a_nested_in_memory_checkout_fails_at_once() -> None:
     finally:
         engine.dispose()
     assert refusal is not None, "a nested checkout shared the held connection"
-    assert not isinstance(refusal, sa.exc.TimeoutError)
+    assert not isinstance(refusal, PoolTimeoutError)
     assert "nest" in str(refusal).lower(), refusal
 
 
@@ -203,7 +203,7 @@ def _config(ds_type: str, directory: Path) -> DatasourceConfig:
         )
     return DatasourceConfig(
         name="d", type=ds_type, host="pool.invalid", port=1234, database="d", username="u", password="p",
-        account="acct", warehouse="wh",
+        warehouse="wh",
     )
 
 

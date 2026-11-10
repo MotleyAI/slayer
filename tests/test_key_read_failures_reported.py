@@ -275,7 +275,8 @@ class TestIngestResults:
         assert result.key_read_failures == []
         customers = await storage.get_model("customers", data_source=DS_NAME)
         orders = await storage.get_model("orders", data_source=DS_NAME)
-        assert customers is not None and orders is not None
+        assert customers is not None
+        assert orders is not None
         assert _pk(customers) == ["id"]
         assert _cardinality(orders, "customers") is JoinCardinality.MANY_TO_ONE
 
