@@ -58,9 +58,10 @@ def _flat_mappings(path: Path, data: dict[str, Any]) -> list[dict[str, Any]] | N
     if not has_wrapper:
         logger.warning("OSI file %s has neither root datasets nor a %r wrapper; skipping", path, _WRAPPER)
         return None
-    if str(data.get("version")) in FLAT_ONLY_VERSIONS:
+    flat_only = next((v for v in FLAT_ONLY_VERSIONS if v == str(data.get("version"))), None)
+    if flat_only is not None:
         logger.warning("OSI file %s declares %s, whose documents are flat, but holds a %r wrapper; skipping",
-                       path, data["version"], _WRAPPER)
+                       path, flat_only, _WRAPPER)
         return None
     wrapped = data[_WRAPPER]
     models = [wrapped] if isinstance(wrapped, dict) else wrapped

@@ -181,6 +181,25 @@ def test_field_reading_a_duplicated_label_is_reported(db: Path, sql: str) -> Non
             and "'id'" in e.message and e.severity == "dropped"]
 
 
+@pytest.mark.parametrize("source", [
+    pytest.param("SELECT * FROM o JOIN c ON o.cid = c.id", id="star"),
+    pytest.param("SELECT o.*, c.* FROM o JOIN c ON o.cid = c.id", id="qualified-stars"),
+    pytest.param("SELECT o.*, c.id FROM o JOIN c ON o.cid = c.id", id="star-and-column"),
+    pytest.param("WITH oo AS (SELECT * FROM o) SELECT * FROM oo JOIN c ON oo.cid = c.id", id="cte"),
+])
+def test_star_expanding_to_a_duplicated_label_is_reported(db: Path, source: str) -> None:
+    result = _import(db, m("ids", "COUNT(DISTINCT source.id)"), name="paid", source=source,
+                     fields=[f("order_ref", "id"), f("amount")])
+    assert visible(by_name(result)["paid"]) == {"amount"}
+    assert unconverted(result, "ids")
+
+
+def test_star_over_a_using_join_has_one_label(db: Path) -> None:
+    result = _import(db, name="paid", source="SELECT * FROM o JOIN c USING (id)",
+                     fields=[f("order_ref", "id"), f("amount")])
+    assert visible(by_name(result)["paid"]) == {"order_ref", "amount"}
+
+
 def test_source_column_reading_a_duplicated_label_is_unconverted(db: Path) -> None:
     result = _import(db, m("ids", "COUNT(DISTINCT source.id)"), m("total", "SUM(amount)"),
                      name="paid", source=JOINED, fields=[f("amount")])

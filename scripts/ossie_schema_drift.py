@@ -68,10 +68,12 @@ def _upstream_sha() -> str:
 
 
 def _file_drift(upstream_path: str, local: Path, upstream_text: str) -> list[str]:
-    vendored_text = local.read_text(encoding="utf-8")
+    vendored_text = local.read_bytes().decode("utf-8")
     if upstream_path == SCHEMA_PATH:
         return drift(vendored=json.loads(vendored_text), upstream=json.loads(upstream_text))
-    return _diff(vendored_text.splitlines(), upstream_text.splitlines())
+    if vendored_text == upstream_text:
+        return []
+    return _diff(vendored_text.splitlines(), upstream_text.splitlines()) or ["Line endings differ."]
 
 
 def main() -> int:

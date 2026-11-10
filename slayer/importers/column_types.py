@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 from sqlglot.errors import SqlglotError
+from sqlglot.optimizer.qualify_columns import qualify_columns
+from sqlglot.schema import MappingSchema
 
 from slayer.core.enums import DataType
 from slayer.live_schema.ingestion import introspect_table_columns
@@ -95,6 +98,51 @@ def _output_labels(query: exp.Query) -> list[exp.Identifier]:
         found = select.args.get("alias") if isinstance(select, exp.Alias) else select.this
         if isinstance(select, (exp.Alias, exp.Column)) and isinstance(found, exp.Identifier):
             labels.append(found)
+    return labels
+
+
+def _is_star(select: exp.Expr) -> bool:
+    return isinstance(select, exp.Star) or (isinstance(select, exp.Column) and isinstance(select.this, exp.Star))
+
+
+async def _table_columns(*, client: SqlClient, table: exp.Table,
+                         dialect: SqlDialect) -> list[tuple[str, ResultColumnType]]:
+    """``table``'s live columns in SQLAlchemy's spelling; raises ``ValueError`` when it is not found."""
+    *qualifiers, name = table_live_parts(table)
+    ref = await table_schema_ref(catalog=qualifiers[-2] if len(qualifiers) > 1 else None,
+                                 schema=qualifiers[-1] if qualifiers else None, client=client)
+    columns = await introspect_table_columns(client=client, table_name=name, ref=ref)
+    if not columns:
+        raise ValueError(f"table {table.sql(dialect=dialect.sqlglot_name)} was not found")
+    return [(live_name(c.name, quoted=c.quoted),
+             ResultColumnType(type=c.type, element_type=c.element_type, db_type=c.db_type)) for c in columns]
+
+
+async def _query_labels(*, client: SqlClient, query: exp.Query, dialect: SqlDialect) -> list[exp.Identifier]:
+    """``query``'s output labels, each ``*`` expanded over the tables it reads; an unexpandable ``*`` is skipped."""
+    labels = _output_labels(query)
+    stars = [i for i, select in enumerate(query.selects) if _is_star(select)]
+    if not stars:
+        return labels
+    ctes = {cte.alias_or_name for cte in query.find_all(exp.CTE)}
+    try:
+        mapping: dict[str, Any] = {}
+        for table in query.find_all(exp.Table):
+            if table.db or table.name not in ctes:
+                node = mapping
+                for part in table.parts[:-1]:
+                    node = node.setdefault(part.name, {})
+                node[table.name] = {live_exact_name(name, dialect=dialect): "unknown" for name, _ in
+                                    await _table_columns(client=client, table=table, dialect=dialect)}
+        schema = MappingSchema(mapping, dialect=dialect.sqlglot_name, normalize=False)
+        for i in stars:
+            one = query.copy()
+            one.set("expressions", [one.selects[i]])
+            expanded = qualify_columns(one, schema, expand_stars=True, infer_schema=False,
+                                       allow_partial_qualification=True)
+            labels += _output_labels(expanded)
+    except Exception:  # noqa: BLE001 — an unexpandable * reports no duplicates
+        return labels
     return labels
 
 
@@ -219,23 +267,15 @@ class LiveDatasource:
         try:
             if sql_table:
                 table = parse_table(name=sql_table, dialect=source)
-                *qualifiers, name = table_live_parts(table)
-                ref = await table_schema_ref(catalog=qualifiers[-2] if len(qualifiers) > 1 else None,
-                                             schema=qualifiers[-1] if qualifiers else None, client=client)
-                columns = await introspect_table_columns(client=client, table_name=name, ref=ref)
-                if not columns:
-                    raise ValueError(f"table {table.sql(dialect=source.sqlglot_name)} was not found")
                 relation: Expression = table
-                found = [(live_name(c.name, quoted=c.quoted),
-                          ResultColumnType(type=c.type, element_type=c.element_type, db_type=c.db_type))
-                         for c in columns]
+                found = await _table_columns(client=client, table=table, dialect=source)
             else:
                 query = parse_query(sql=sql or "", target_dialect=target, parse_dialect=source)
                 relation = query.subquery("_slayer_src")
-                labels = _output_labels(query)
                 # The driver's result names are in SQLAlchemy's spelling already.
                 found = list((await client.get_result_column_types(
                     render_type_probe(exp.select("*").from_(relation.copy()), dialect=target))).items())
+                labels = await _query_labels(client=client, query=query, dialect=source)
         except Exception as exc:  # noqa: BLE001 — an unreadable source still imports
             return f"the source could not be read from datasource {self.data_source!r}: {type(exc).__name__}"
         return LiveSource(owner=self, key=key, relation=relation, found=found, target=target, source=source,

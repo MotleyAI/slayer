@@ -157,6 +157,19 @@ def _match_name(ident: exp.Identifier, names: list[str]) -> str:
     return hits[0]
 
 
+def _ref_owner(col: exp.Column, *, qual: list[exp.Identifier], home: str | None, doc_models: list[str]) -> str:
+    """The model whose field ``col`` (qualified by ``qual``) reads; raises ``LookupError`` on a scope violation."""
+    if home is not None:
+        if qual:
+            raise LookupError(f"qualified reference {col.sql()!r}; dataset-scoped metrics "
+                              f"reference their own dataset's fields unqualified")
+        return home
+    if not qual:
+        raise LookupError(f"unqualified reference {col.name!r}; model-scoped metrics "
+                          f"reference fields as dataset.field")
+    return _match_name(qual[0], doc_models)
+
+
 def _list_call(node: exp.Expr, *, dialect: SqlDialect, is_list: Callable[[exp.Expr], bool]) -> exp.Expr:
     """``node`` as SLayer's own list SQL when it is an array function, else ``node``."""
     if isinstance(node, exp.ArrayContains):
@@ -1070,16 +1083,7 @@ class OsiToSlayerConverter:
             *qual, leaf = idents
             if home is not None and qual and _is_source_qualifier(qual[0]):
                 return self._source_column_ref(leaf, home=home, helpers=helpers, metric=metric)
-            if home is None:
-                if not qual:
-                    raise LookupError(f"unqualified reference {leaf.name!r}; model-scoped metrics "
-                                      f"reference fields as dataset.field")
-                owner = _match_name(qual[0], doc_models)
-            elif qual:
-                raise LookupError(f"qualified reference {col.sql()!r}; dataset-scoped metrics "
-                                  f"reference their own dataset's fields unqualified")
-            else:
-                owner = home
+            owner = _ref_owner(col, qual=qual, home=home, doc_models=doc_models)
             declared = [c.name for c in self._models[owner].columns if not c.hidden]
             return exp.column(_match_name(leaf, declared), table=owner if home is None else None)
         return tree.transform(canonical, copy=False)

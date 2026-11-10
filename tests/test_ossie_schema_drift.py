@@ -6,6 +6,7 @@ from __future__ import annotations
 import http.client
 import json
 import urllib.error
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,7 @@ SCHEMA = "core-spec/ossie-schema.json"
 EXAMPLE = "examples/renamed_fields.yaml"
 PROVENANCE_PATH = Path(__file__).parent / "fixtures" / "osi" / "ossie-schema.source.yaml"
 PROVENANCE = yaml.safe_load(PROVENANCE_PATH.read_text(encoding="utf-8"))
-VENDORED = {upstream: (PROVENANCE_PATH.parent / local).read_text(encoding="utf-8")
+VENDORED = {upstream: (PROVENANCE_PATH.parent / local).read_bytes().decode("utf-8")
             for upstream, local in PROVENANCE["files"].items()}
 
 
@@ -83,6 +84,17 @@ def test_drifted_example_reports_its_diff(monkeypatch: pytest.MonkeyPatch, capsy
     out = capsys.readouterr().out
     assert EXAMPLE in out
     assert any(line.startswith("+") and "brand_new_metric" in line for line in out.splitlines())
+
+
+@pytest.mark.parametrize("upstream", [
+    pytest.param(lambda text: text.rstrip("\n"), id="final-newline-removed"),
+    pytest.param(lambda text: text + "\n", id="final-newline-added"),
+    pytest.param(lambda text: text.replace("\n", "\r\n"), id="crlf"),
+])
+def test_line_ending_change_is_drift(monkeypatch: pytest.MonkeyPatch,
+                                    upstream: Callable[[str], str]) -> None:
+    _upstream(monkeypatch, {**VENDORED, EXAMPLE: upstream(VENDORED[EXAMPLE])})
+    assert drift_check.main() == drift_check.EXIT_DRIFT
 
 
 def test_missing_upstream_example_is_a_fetch_failure(monkeypatch: pytest.MonkeyPatch) -> None:
