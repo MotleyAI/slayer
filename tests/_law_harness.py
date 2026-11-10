@@ -1,8 +1,8 @@
-"""DEV-1869 law harness — seeded-deterministic query shapes + shared helpers for
+"""Law harness — seeded-deterministic query shapes + shared helpers for
 the ``tests/test_law_*.py`` files (the generative backend of the laws in
 ``architecture/semantics.arc42.md`` §3).
 
-Builds on the DEV-1739/1824/1837 fixture stack: orders → customers → regions,
+Builds on the partition-by / computed-dimension fixture stack: orders → customers → regions,
 the 7-row dataset, ``DIM_FAMILY_DIMS`` and the attach + transform measure pool.
 Everything is seeded (``LAW_SEED``) — no Hypothesis, no run-to-run drift; shape
 ids are stable across collections.
@@ -11,7 +11,7 @@ Execution-count arithmetic (SQLite runs all shapes, DuckDB the ``[::5]`` slice
 of 8): split-invariance ≤ (1 + 4)×(40 + 8) = 240 engine runs; grain-union
 2×(40 + 8) = 96; broadcast coherence 2 runs × (24 + 6 slice) pairs per grain
 × 3 grains = 180, plus the named chain/refusal cases; lowering soundness ~12.
-≈ 540 total, all on tmpfile-backed engines. DEV-1868 grows the pools with the
+≈ 540 total, all on tmpfile-backed engines. The pools also carry the
 cross-model partitioned operands (``cm_part`` / ``cm_last``, family
 ``cmgrain``, pair grain ``rn``).
 """
@@ -51,7 +51,7 @@ N_DUCKDB = 8
 N_PAIRS = 24
 DUCKDB_PAIR_STRIDE = 4
 
-#: DEV-1868 cross-model partitioned operands. A combined consumer needs its
+#: Cross-model partitioned operands. A combined consumer needs its
 #: partition key among the query dimensions, so these pin to ``cmgrain``.
 CM_PARTITIONED_MEASURES = {
     "cm_part": "customers.spend:sum(partition_by=customers.regions.name)",
@@ -73,7 +73,7 @@ MEASURE_POOL = {
     **ATTACH_MEASURES, **TRANSFORM_FORMULAS, **CM_PARTITIONED_MEASURES, **RATIO_MEASURES,
 }
 
-#: Law-local dimension families: the DEV-1837 set plus the grain carrying the
+#: Law-local dimension families: the ``DIM_FAMILY_DIMS`` set plus the grain carrying the
 #: cross-model partition key.
 LAW_DIM_FAMILY_DIMS = {
     **DIM_FAMILY_DIMS,
@@ -373,11 +373,14 @@ async def execute_shape(
     *,
     drop: Optional[str] = None,
     dims_only: bool = False,
+    to_many_handling: Optional[str] = None,
 ):
     """Run one shape variant; returns the response, or None after asserting a
     registered expected raise."""
     variant = DIMS_ONLY if dims_only else drop
     query = build_query(shape, drop=drop, dims_only=dims_only)
+    if to_many_handling is not None:
+        query = query.model_copy(update={"to_many_handling": to_many_handling})
     expected = EXPECTED_RAISES.get((shape.shape_id, variant))
     if expected is None:
         return await engine.execute(query)

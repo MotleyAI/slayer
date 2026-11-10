@@ -1,4 +1,4 @@
-"""DEV-1840 task 1.3 — first-reverse-hop grouping and the SemiJoinFilter IR
+"""First-reverse-hop grouping and the SemiJoinFilter IR
 (design D3/D5).
 
 One EXISTS per root-adjacent reverse hop; conjuncts of a group are AND-ed in
@@ -69,6 +69,7 @@ class TestGrouping:
         att = _attach(_plan(q(
             dimensions=["status"], measures=[M, RM],
             filters=["channel = 'app'", "customers.tier = 'gold'"],
+            to_many_handling="broadcast",
         )), "stores")
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.target_model for h in sj.hops] == ["orders", "customers"]
@@ -89,6 +90,7 @@ class TestHopDescriptors:
         att = _attach(_plan(q(
             dimensions=["status"], measures=[M, RM],
             filters=["channel = 'app'"],
+            to_many_handling="broadcast",
         )), "stores")
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.target_model for h in sj.hops] == ["orders"]
@@ -100,6 +102,7 @@ class TestHopDescriptors:
         att = _attach(_plan(q(
             dimensions=["status"], measures=[CM],
             filters=["cust_tier = 'gold'"],
+            to_many_handling="broadcast",
         )), "customers")
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.target_model for h in sj.hops] == ["orders", "customers"]

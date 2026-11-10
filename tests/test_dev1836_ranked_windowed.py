@@ -1,4 +1,4 @@
-"""DEV-1836 task 1.10 — cross-model ranked (first/last), windowed, and
+"""Cross-model ranked (first/last), windowed, and
 partitioned aggregates at safe grains (SQLite + DuckDB).
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Explicit grain and
@@ -177,6 +177,7 @@ class TestCrossModelWindowed:
             measures=[ModelMeasure(
                 formula="customers.spend:sum(window='1y')", name="w",
             )],
+            to_many_handling="broadcast",
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)

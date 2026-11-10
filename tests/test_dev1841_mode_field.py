@@ -1,8 +1,6 @@
-"""DEV-1841 task 1.1 / 1.2 — the ``to_many_handling`` field, ``strict``
-retirement, and the SlayerQuery v3→v4 storage migration.
+"""The ``to_many_handling`` field, ``strict`` retirement, and the SlayerQuery v3→v4 storage migration.
 
-Spec: openspec …/specs/queries/attribution-modes — "Query-level mode
-selection", "The strict flag is retired".
+Spec: queries/attribution-modes — "Mode selection and the association default", "The strict flag is retired".
 """
 
 from __future__ import annotations
@@ -19,8 +17,8 @@ def _q(**kw) -> SlayerQuery:
 
 
 class TestModeField:
-    def test_default_is_broadcast(self) -> None:
-        assert _q().to_many_handling == "broadcast"
+    def test_default_is_omitted(self) -> None:
+        assert _q().to_many_handling is None
 
     @pytest.mark.parametrize("mode", ["broadcast", "associate", "error"])
     def test_each_value_accepted(self, mode: str) -> None:

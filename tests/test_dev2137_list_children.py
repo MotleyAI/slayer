@@ -121,8 +121,15 @@ class TestElementDimension:
         resp = await engine.execute(query(dimensions=["skills.value"], measures=[measure("count(skills.*)", "n")]))
         assert _per(resp, "skills.value") == {"go": 3, "sql": 2}
 
-    async def test_default_broadcast_of_a_parent_measure(self, engine) -> None:
+    async def test_default_association_of_a_parent_measure(self, engine) -> None:
         q = query(dimensions=["skills.value"], measures=[measure("count(*)", "n")])
+        with pytest.warns(UserWarning):
+            resp = await engine.execute(q)
+        assert _per(resp, "skills.value") == {"go": 2, "sql": 2}
+        assert associated_warnings(resp)
+
+    async def test_broadcast_of_a_parent_measure(self, engine) -> None:
+        q = query(dimensions=["skills.value"], measures=[measure("count(*)", "n")], to_many_handling="broadcast")
         with pytest.warns(UserWarning):
             resp = await engine.execute(q)
         assert _per(resp, "skills.value") == {"go": 5, "sql": 5}

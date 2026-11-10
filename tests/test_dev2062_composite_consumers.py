@@ -110,9 +110,9 @@ _LOCAL_CONSUMER_VALUES = {
 async def test_selected_ratio_alongside_consumer(exec_engine, ratio, consumer) -> None:
     r, ratio_values = _RATIOS[ratio]
     formula = _CONSUMERS[consumer].format(r=r)
-    both = await _run(exec_engine, monthly_q(m(r, "a"), m(formula, "c")))
-    alone_a = await _run(exec_engine, monthly_q(m(r, "a")))
-    alone_c = await _run(exec_engine, monthly_q(m(formula, "c")))
+    both = await _run(exec_engine, monthly_q(m(r, "a"), m(formula, "c"), to_many_handling="broadcast"))
+    alone_a = await _run(exec_engine, monthly_q(m(r, "a"), to_many_handling="broadcast"))
+    alone_c = await _run(exec_engine, monthly_q(m(formula, "c"), to_many_handling="broadcast"))
     assert by_month(both, "a") == approx_map(ratio_values)
     _assert_cells_equal(by_month(both, "a"), by_month(alone_a, "a"))
     _assert_cells_equal(by_month(both, "c"), by_month(alone_c, "c"))
@@ -124,9 +124,10 @@ async def test_selected_ratio_alongside_consumer(exec_engine, ratio, consumer) -
 async def test_selected_larger_expression_alongside_its_transform(exec_engine, ratio) -> None:
     r, ratio_values = _RATIOS[ratio]
     larger = f"({r}) * 2"
-    both = await _run(exec_engine, monthly_q(m(larger, "a"), m(f"cumsum({larger})", "c")))
-    alone_a = await _run(exec_engine, monthly_q(m(larger, "a")))
-    alone_c = await _run(exec_engine, monthly_q(m(f"cumsum({larger})", "c")))
+    both = await _run(exec_engine, monthly_q(
+        m(larger, "a"), m(f"cumsum({larger})", "c"), to_many_handling="broadcast"))
+    alone_a = await _run(exec_engine, monthly_q(m(larger, "a"), to_many_handling="broadcast"))
+    alone_c = await _run(exec_engine, monthly_q(m(f"cumsum({larger})", "c"), to_many_handling="broadcast"))
     assert by_month(both, "a") == approx_map({k: 2 * v for k, v in ratio_values.items()})
     _assert_cells_equal(by_month(both, "a"), by_month(alone_a, "a"))
     _assert_cells_equal(by_month(both, "c"), by_month(alone_c, "c"))
@@ -153,8 +154,9 @@ async def test_measure_filter_on_transform_of_selected_ratio(exec_engine, ratio)
     r, ratio_values = _RATIOS[ratio]
     threshold, kept = _FILTER_CASES[ratio]
     predicate = f"cumsum(({r})) > {threshold}"
-    with_ratio = await _run(exec_engine, monthly_q(m(r, "a"), filters=[predicate]))
-    without = await _run(exec_engine, monthly_q(m("sum(amount)", "s"), filters=[predicate]))
+    with_ratio = await _run(exec_engine, monthly_q(m(r, "a"), filters=[predicate], to_many_handling="broadcast"))
+    without = await _run(exec_engine, monthly_q(
+        m("sum(amount)", "s"), filters=[predicate], to_many_handling="broadcast"))
     assert set(by_month(without, "s")) == kept
     assert by_month(with_ratio, "a") == approx_map({k: ratio_values[k] for k in kept})
 
@@ -163,8 +165,8 @@ async def test_measure_filter_on_transform_of_selected_ratio(exec_engine, ratio)
 async def test_order_by_transform_of_selected_ratio(exec_engine, ratio) -> None:
     r, ratio_values = _RATIOS[ratio]
     order = [{"column": f"cumsum(({r}))", "direction": "desc"}]
-    with_ratio = await _run(exec_engine, monthly_q(m(r, "a"), order=order))
-    without = await _run(exec_engine, monthly_q(m("sum(amount)", "s"), order=order))
+    with_ratio = await _run(exec_engine, monthly_q(m(r, "a"), order=order, to_many_handling="broadcast"))
+    without = await _run(exec_engine, monthly_q(m("sum(amount)", "s"), order=order, to_many_handling="broadcast"))
     assert month_order(without) == [MAR, FEB, JAN]
     assert month_order(with_ratio) == [MAR, FEB, JAN]
     assert by_month(with_ratio, "a") == approx_map(ratio_values)

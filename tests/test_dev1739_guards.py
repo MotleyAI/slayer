@@ -1,4 +1,4 @@
-"""DEV-1739 guards + key/binder unit tests. Each guarded shape must raise
+"""Partition-by guards + key/binder unit tests. Each guarded shape must raise
 loudly (never degrade); the key layer must carry ``partition_keys`` through
 identity, structural traversal, rerooting, and canonical naming."""
 
@@ -49,13 +49,14 @@ class TestGrainGuards:
             await gen(q)
 
     async def test_cross_model_partition_outside_derived_grain_raises(self) -> None:
-        # DEV-1836: the key is checked for attributability from the aggregate's
+        # The key is checked for attributability from the aggregate's
         # root — `region` is a host column, unreachable from `customers`.
         q = _q(
             dimensions=["region", "customers.tier"],
             measures=[
                 ModelMeasure(formula="customers.spend:sum(partition_by=region)"),
             ],
+            to_many_handling="broadcast",
         )
         with pytest.raises(ValueError, match=r"partition_by") as ei:
             await gen(q)
@@ -66,7 +67,7 @@ class TestGrainGuards:
 
 class TestDeferredShapeGuards:
     async def test_window_plus_partition_lifted(self) -> None:
-        # DEV-1824 (task 3.3) — a LOCAL window=+partition_by measure renders: its
+        # A LOCAL window=+partition_by measure renders: its
         # producer is a windowed aggregate at the (partition ∪ active-TD) grain
         # (D5). (Executed values: test_dev1824_partitioned_execution.py.)
         q = _q(
@@ -80,7 +81,7 @@ class TestDeferredShapeGuards:
 
     @pytest.mark.parametrize("agg", ["first", "last"])
     async def test_first_last_plus_partition_lifted(self, agg: str) -> None:
-        # DEV-1824 (task 3.4) lifts the LOCAL shape — the producer computes the
+        # The LOCAL shape is lifted — the producer computes the
         # ranked pick at the partition grain and attaches (executed values in
         # tests/test_dev1824_partitioned_execution.py); cross-model stays deferred.
         q = _q(
@@ -90,7 +91,7 @@ class TestDeferredShapeGuards:
         assert "__regroup__" not in await gen(q)
 
     async def test_partitioned_aggregate_nested_in_transform_lifted(self) -> None:
-        # DEV-1824 (task 3.5) lifts the LOCAL shape: it desugars into a combined
+        # The LOCAL shape is lifted: it desugars into a combined
         # regroup producer and the transform runs at the query grain over the
         # attached value. Executed-value coverage lives in
         # tests/test_dev1824_partitioned_execution.py::TestTransformOverPartitioned;
@@ -105,7 +106,7 @@ class TestDeferredShapeGuards:
         assert "__regroup__" not in await gen(q)
 
     async def test_partitioned_aggregate_in_filter_lifted(self) -> None:
-        # DEV-1824 (task 3.6) — a LOCAL partitioned aggregate in a query filter
+        # A LOCAL partitioned aggregate in a query filter
         # renders: it routes to a combined producer + outer WHERE. (Executed
         # values: tests/test_dev1824_partitioned_execution.py::TestFilterOnPartitioned.)
         q = _q(

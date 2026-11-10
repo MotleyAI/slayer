@@ -304,6 +304,7 @@ class TestCrossModelCteNameAllocation:
                     # A second cross-model aggregate, so a leaked alias differs.
                     ModelMeasure(formula="customers.Rev:sum", name="rv"),
                 ],
+                to_many_handling="broadcast",
             ),
             dry_run=True,
         )

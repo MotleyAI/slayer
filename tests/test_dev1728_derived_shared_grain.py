@@ -1,21 +1,21 @@
-"""DEV-1728 — render a cross-model aggregate grouped by a joined DERIVED
+"""Render a cross-model aggregate grouped by a joined DERIVED
 dimension (shared-grain rendering).
 
-DEV-1708 gated a plain derived (non-time) dimension used as a cross-model
-shared grain behind ``NotImplementedError`` (``derived_shared_grain_not_
-implemented``): before DEV-1713 fixed the naming half, the host aliased the
+A plain derived (non-time) dimension used as a cross-model
+shared grain was gated behind ``NotImplementedError`` (``derived_shared_grain_not_
+implemented``): before the naming half was fixed, the host aliased the
 grain flat while the CTE join-back expected the dotted form, so silently
 excluding it would CROSS-JOIN-broadcast the global aggregate across groups.
 
-DEV-1713 landed the dotted host key (``orders_x.customers_v2.<derived>``), so
-the gate is now removable. This module pins FULL support (user-approved scope):
+The dotted host key (``orders_x.customers_v2.<derived>``) has
+landed, so the gate is now removable. This module pins FULL support (user-approved scope):
 
 * **Target-local** derived grain (``ltv_x2 = lifetime_value * 2``) — expanded
   inside the ``_cm_*`` CTE rooted at the target, projected under the dotted
   host alias, added to GROUP BY, joined back null-safe.
 * **Further-join-crossing** derived grain (``deep_pop = regions.population``,
   ``deep_gdp = regions__countries.gdp``) — the CTE pulls the further join(s)
-  into its FROM (reusing the DEV-1701 machinery) and groups by the expanded
+  into its FROM (reusing the further-join machinery) and groups by the expanded
   expression.
 * **first / last** aggregates over a derived grain — a target-local grain needs
   no materialisation (its refs are re-exported by ``target.*``); a CROSSING
@@ -27,10 +27,10 @@ the gate is now removable. This module pins FULL support (user-approved scope):
   wrapped identically in ``_base`` and ``_cm_*`` so the join-back compares
   identically-typed values (a mismatch silently drops groups).
 * **Sibling paths** — the re-rooted (target-rooted) and filtered-local
-  (host-rooted, DEV-1503/1709) CTE variants join back correctly on a derived
+  (host-rooted) CTE variants join back correctly on a derived
   grain (newly reachable once the gate is gone).
 * **Intermediate-hop** derived grain is unattributable from the aggregate's
-  root, so DEV-1836 broadcasts it (CROSS JOIN + grain warning) — the pre-existing
+  root, so it broadcasts (CROSS JOIN + grain warning) — the pre-existing
   7b.12 gate is lifted.
 
 Every SQL-shape test asserts ``assert_scope_closed`` on the emitted statement.
@@ -225,7 +225,7 @@ class TestForwardDerivedGrainShape:
     async def test_intermediate_hop_derived_grain_executes_and_broadcasts(
         self,
     ) -> None:
-        """DEV-1836 lifts the intermediate-hop guard: a derived grain on an
+        """The intermediate-hop guard is lifted: a derived grain on an
         intermediate hop of a multi-hop target path is unattributable from the
         aggregate's root, so the metric broadcasts (CROSS JOIN) with a grain
         warning instead of raising."""
@@ -235,6 +235,7 @@ class TestForwardDerivedGrainShape:
             source_model="orders_x",
             dimensions=["customers_v2.ltv_x2"],
             measures=[ModelMeasure(formula="customers_v2.regions.population:sum")],
+            to_many_handling="broadcast",
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -417,7 +418,7 @@ class TestSiblingPathsDerivedGrain:
     async def test_rerooted_with_derived_on_path_dim(self) -> None:
         """A cross-model aggregate grouped by an ON-PATH derived dim AND an
         OFF-PATH dim re-roots the CTE at the target; both grains join back on
-        their dotted aliases (DEV-1713 naming on both sides)."""
+        their dotted aliases (dotted naming on both sides)."""
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.deep_pop", "customers_v2.regions.name"],
@@ -434,10 +435,10 @@ class TestSiblingPathsDerivedGrain:
         assert on_pred.count("IS NOT DISTINCT FROM") >= 2, on_pred
 
     async def test_filtered_local_with_derived_grain(self) -> None:
-        """A DEV-1503 filtered-local (HOST-rooted) isolation grouped by a derived
+        """A filtered-local (HOST-rooted) isolation grouped by a derived
         joined dim: the host-rooted sub-plan carries the derived grain (rooted at
         the host's ``__`` path alias, ``customers_v2__regions``) and the host
-        base joins back on its dotted alias. This path never hit the DEV-1708
+        base joins back on its dotted alias. This path never hit the derived-grain
         gate, so it is a regression guard — must pass before AND after the fix."""
         # amt_hi's filter references a joined table → filtered-local isolation.
         orders_extra = [Column(
@@ -477,6 +478,7 @@ class TestUnchangedBehaviourGuards:
             source_model="orders_x",
             dimensions=["amt_bucket"],
             measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
+            to_many_handling="broadcast",
         )
         sql = await _gen(query, orders_extra=orders_extra)
         assert_scope_closed(sql)
@@ -484,7 +486,7 @@ class TestUnchangedBehaviourGuards:
 
     async def test_derived_source_unaffected(self) -> None:
         """A derived aggregate SOURCE crossing a join (no derived grain) still
-        renders (DEV-1526 territory), unchanged by the gate removal."""
+        renders, unchanged by the gate removal."""
         query = SlayerQuery(
             source_model="orders_x",
             measures=[ModelMeasure(formula="customers_v2.deep_pop:sum")],
@@ -597,7 +599,7 @@ def _sqlite_models() -> "list[SlayerModel]":
                 Column(name="customer_id", type=DataType.INT),
                 Column(name="amount", type=DataType.DOUBLE),
                 Column(name="created_at", type=DataType.TIMESTAMP),
-                # Filter references a JOINED table → DEV-1503 filtered-local
+                # Filter references a JOINED table → filtered-local
                 # isolation (used by the filtered-local + derived-grain test).
                 Column(name="amt_hi", sql="amount", type=DataType.DOUBLE,
                        filter="customers_v2.lifetime_value > 15"),
@@ -717,7 +719,7 @@ class TestDerivedGrainExecution:
     async def test_filtered_local_derived_grain_filter_changes_result(
         self, sqlite_engine
     ) -> None:
-        """Filtered-local (host-rooted, DEV-1503) isolation grouped by a derived
+        """Filtered-local (host-rooted) isolation grouped by a derived
         grain: ``amt_hi`` filters to customers with ltv > 15, so region 1's
         low-ltv customer 1 (ltv 10, order amt 5) is EXCLUDED — region 1's
         amt_hi sum is customer 2's order amount 7 alone, not 5 + 7."""

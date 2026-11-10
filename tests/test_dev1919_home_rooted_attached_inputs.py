@@ -1,7 +1,7 @@
-"""DEV-1919 — an attached input (aggregate-valued parameter or source
+"""An attached input (aggregate-valued parameter or source
 constituent) is compiled at its own home and attached per home row in every
 ``to_many_handling`` mode; the mode governs only the aggregation's own
-unattributable dimensions. Executed on SQLite + DuckDB (DEV-1840 dataset).
+unattributable dimensions. Executed on SQLite + DuckDB (``_dev1840_fixtures`` dataset).
 
 Spec: queries/partitioned-aggregates — "Attached parameters on row-level
 sources"; aggregations/expression-aggregation — "Expression source typing";
@@ -113,8 +113,8 @@ def _assert_no_mode_warnings(resp) -> None:
     assert not associated_warnings(resp)
 
 
-async def _assert_broadcast_to_status(engine, formula: str, expected, mode=None) -> None:
-    resp = await engine.execute(mode_q(mode, dimensions=["status"], measures=[_m(formula)]))
+async def _assert_broadcast_to_status(engine, formula: str, expected) -> None:
+    resp = await engine.execute(mode_q("broadcast", dimensions=["status"], measures=[_m(formula)]))
     got = status_vals(resp)
     assert set(got) == {"ok", "new"}
     for value in got.values():
@@ -145,10 +145,8 @@ class TestHeadline:
     """Scenarios: Default-mode twin of the associate shape; Every mode agrees on
     attributable dimensions."""
 
-    @pytest.mark.parametrize("mode", [None, "broadcast"])
-    async def test_default_mode_broadcasts_the_customers_rooted_value(self, orders_engine, mode):
-        await _assert_broadcast_to_status(
-            orders_engine, HEADLINE, broadcast_wavg_global(), mode=mode)
+    async def test_broadcast_mode_broadcasts_the_customers_rooted_value(self, orders_engine):
+        await _assert_broadcast_to_status(orders_engine, HEADLINE, broadcast_wavg_global())
 
     async def test_error_mode_refuses_the_dimension_never_the_parameter(self, orders_engine):
         await _assert_error_mode_refuses_status(orders_engine, HEADLINE)
@@ -161,7 +159,7 @@ class TestHeadline:
 class TestMixedSourceConstituent:
     """Scenario: Mixed-source constituent homed toward the host executes in every mode."""
 
-    async def test_default_mode_broadcasts_the_customers_rooted_total(self, orders_engine):
+    async def test_broadcast_mode_broadcasts_the_customers_rooted_total(self, orders_engine):
         await _assert_broadcast_to_status(orders_engine, MIXED, mixed_global())
 
     async def test_error_mode_refuses_the_dimension(self, orders_engine):
@@ -176,7 +174,7 @@ class TestRecursiveNesting:
     """Scenario: Recursively nested attached parameters — three homes (customers,
     orders, regions), each producer attached one level up by its grain."""
 
-    async def test_default_mode_broadcasts(self, orders_engine):
+    async def test_broadcast_mode_broadcasts(self, orders_engine):
         await _assert_broadcast_to_status(orders_engine, RECURSIVE, recursive_global())
 
     @pytest.mark.parametrize("mode", MODES)
@@ -224,7 +222,7 @@ class TestPlanShape:
     producer (mirror of the association-arm plan pin)."""
 
     @pytest.mark.parametrize("mode, dims", [
-        (None, ["status"]), (None, ["customers.tier"]),
+        ("broadcast", ["status"]), (None, ["customers.tier"]),
         ("error", ["customers.tier"]), ("associate", ["customers.tier"]),
     ])
     def test_plain_attach_nests_an_orders_rooted_producer(self, mode, dims):
@@ -345,7 +343,7 @@ class TestWindowedOuter:
 class TestRankedTransformParameter:
     """Scenario: Ranked transform as the attached parameter."""
 
-    async def test_default_mode_broadcasts(self, orders_engine):
+    async def test_broadcast_mode_broadcasts(self, orders_engine):
         await _assert_broadcast_to_status(orders_engine, RANKED, ranked_global())
 
     @pytest.mark.parametrize("mode", MODES)
@@ -397,9 +395,10 @@ class TestFailClosedEveryMode:
         assert "status" in msg
         assert "attributable from customers" in msg
 
-    async def test_host_keyed_parameter_associates_under_associate(self, orders_engine):
+    @pytest.mark.parametrize("mode", [None, "associate"])
+    async def test_host_keyed_parameter_associates(self, orders_engine, mode):
         resp = await orders_engine.execute(
-            mode_q("associate", dimensions=["status"], measures=[_m(OWN_FAN_STATUS)]))
+            mode_q(mode, dimensions=["status"], measures=[_m(OWN_FAN_STATUS)]))
         assert_cells(status_vals(resp), local_wavg_status_assoc_by_status())
 
     @pytest.mark.parametrize("mode, dims", [

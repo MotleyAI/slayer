@@ -1,5 +1,5 @@
-"""DEV-1750 — execution ground truth on SQLite AND DuckDB (both required by the
-issue). Every expectation is hand-computed from the fixture dataset in
+"""Execution ground truth on SQLite AND DuckDB (both required). Every
+expectation is hand-computed from the fixture dataset in
 ``tests/_dev1750_fixtures.py``; a missing join or a wrong grain is not a cosmetic
 difference — the SQL either fails to bind or returns the wrong number.
 
@@ -38,10 +38,12 @@ async def exec_engine(request):
         yield engine
 
 
-def _q(*, measures, dimensions=None) -> SlayerQuery:
+def _q(*, measures, dimensions=None, to_many_handling=None) -> SlayerQuery:
     kw = dict(source_model="orders", time_dimensions=month_td(), measures=measures)
     if dimensions is not None:
         kw["dimensions"] = dimensions
+    if to_many_handling is not None:
+        kw["to_many_handling"] = to_many_handling
     return SlayerQuery.model_validate(kw)
 
 
@@ -60,7 +62,7 @@ class TestShapeALocalTimeShift:
             ModelMeasure(formula="customers.spend:sum", name="cm"),
             ModelMeasure(formula="amount:sum", name="s"),
             ModelMeasure(formula="time_shift(amount:sum, -1)", name="prev"),
-        ]))
+        ], to_many_handling="broadcast"))
         by = _by_month(resp)
         # Local sum per month.
         assert float(by["2024-01"]["orders.s"]) == pytest.approx(15.0)
@@ -143,12 +145,12 @@ class TestChangeDesugars:
 
 class TestChangeOverCrossingFragmentInner:
     """``change`` / ``change_pct`` over a crossing-fragment inner used to hit
-    a ``RenderContextMissingFacilityError``; DEV-1838 D5 desugars the inner
+    a ``RenderContextMissingFacilityError``; the inner desugars
     onto a host-rooted producer, so the transform now composes with the
     correct values (the closure axiom, one shape over)."""
 
     async def test_change_of_wscaled_composes(self, exec_engine) -> None:
-        """DEV-1838 D5 lifted the gap: the crossing-fragment inner desugars
+        """The gap is lifted: the crossing-fragment inner desugars
         onto a host-rooted producer, so ``change`` composes with the correct
         month-over-month deltas (48−35, 46−48 from the dataset recap)."""
         resp = await exec_engine.execute(_q(measures=[
@@ -179,7 +181,7 @@ class TestSiblingProtectionUnderFanOut:
     async def test_one_to_many_fragment_fails_closed(
         self, exec_engine
     ) -> None:
-        """DEV-1838 D5 (class-(d) crossed-argument ledger row): the 1:N
+        """Class-(d) crossed-argument ledger row: the 1:N
         ``line_items`` param fanned the SUM silently — now a hard error naming
         the hop and the remedy. Sibling protection under fan-out survives as a
         structural property of producer isolation, pinned by the proven-hop

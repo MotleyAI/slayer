@@ -5815,6 +5815,7 @@ class TestDev1501HiddenFirstLastRender:
                 measures=["*:count"],
                 dimensions=[ColumnRef(name="status")],
                 filters=["customers.active_score:last(customers.signed_up_at) > 50"],
+                to_many_handling="broadcast",
             )
             sql = (await engine.execute(query, dry_run=True)).sql
             _assert_valid_sql(sql, dialect=generator.dialect)
@@ -6467,6 +6468,7 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
                 measures=[ModelMeasure(formula="customers.score:avg")],
                 dimensions=[ColumnRef(name="status")],
                 filters=["warehouse.region = 'US'"],
+                to_many_handling="broadcast",
             )
             sql = (await engine.execute(query, dry_run=True)).sql
             _assert_valid_sql(sql, dialect=generator.dialect)
@@ -7260,6 +7262,7 @@ class TestIsolatedFilteredMeasureCTEs:
             dimensions=[ColumnRef(name="order_id")],
             measures=[ModelMeasure(formula="customers.score:sum")],
             filters=["warehouse.status = 'ACTIVE'"],
+            to_many_handling="broadcast",
         )
         sql = await _generate(generator, query, orders, extra_models=[customers, warehouse])
 
@@ -10163,6 +10166,7 @@ class TestWindowedMeasureGuards:
             source_model="orders",
             time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "customers.revenue:sum(window='30d')", "name": "rev_w"}],
+            to_many_handling="broadcast",
         )
         # Fails closed with a precise attributability ValueError (the active time dimension is a host column, unreachable from customers).
         with pytest.raises(ValueError, match="attributable from"):
@@ -10354,7 +10358,8 @@ class TestWindowedMeasureGuards:
                 joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
             )
             q = SlayerQuery(source_model="orders", time_dimensions=td,
-                            measures=[{"formula": "customers.revenue:sum(window='30d')", "name": "rev_w"}])
+                            measures=[{"formula": "customers.revenue:sum(window='30d')", "name": "rev_w"}],
+                            to_many_handling="broadcast")
             # Windowed cross-model with an unattributable TD → ValueError.
             bundle, exc, match = _bundle(orders, [customers]), ValueError, "attributable from"
         elif case == "g4_transform":

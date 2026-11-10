@@ -1,4 +1,4 @@
-"""DEV-1739 golden SQL baseline. Pins the emitted SQL (and recorded raises) for
+"""Golden SQL baseline. Pins the emitted SQL (and recorded raises) for
 every partition_by shape across five dialects; ``build_baseline`` forces
 ``SLAYER_VALIDATE_SCOPES=1`` so each entry is scope-closed. Regenerate with
 ``SLAYER_UPDATE_GOLDEN=1``."""
@@ -94,11 +94,12 @@ def _cases() -> dict:
             measures=[{"formula": "amount:sum(partition_by=city)", "name": "x"}],
         ),
         # guard/first, guard/last, guard/nested_transform, guard/in_filter,
-        # guard/window_plus_partition removed — DEV-1824 (tasks 3.3/3.4/3.5/3.6)
-        # lifts these LOCAL shapes; their goldens now live in
+        # guard/window_plus_partition removed — these LOCAL shapes are lifted;
+        # their goldens now live in
         # tests/test_dev1824_golden_sql.py (lift/first_last_partition,
         # lift/cumsum_partitioned, lift/filter_partitioned, lift/window_partition).
         "guard/cross_model_outside_grain": _q(
+            to_many_handling="broadcast",
             dimensions=["region", "customers.tier"],
             measures=[
                 {"formula": "customers.spend:sum(partition_by=region)", "name": "x"},

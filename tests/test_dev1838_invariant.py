@@ -1,4 +1,4 @@
-"""DEV-1838 design D8 — no plan without a root survives planning.
+"""Design D8 — no plan without a root survives planning.
 
 The sweep pin proved the target-rooted legacy arms dead before task 2.5
 deleted them (with the plan type gone, it degenerates to "no cross-model
@@ -49,7 +49,8 @@ SHAPES = {
     "cross_model_sum": q(dimensions=["status"], measures=[
         M, ModelMeasure(formula="customers.spend:sum", name="cm")]),
     "cross_model_last": q(dimensions=["status"], measures=[
-        ModelMeasure(formula="customers.spend:last", name="sl")]),
+        ModelMeasure(formula="customers.spend:last", name="sl")],
+        to_many_handling="broadcast"),
     "filtered_local": q(dimensions=["status"], measures=[
         M, ModelMeasure(formula="gold_amount:sum", name="g")]),
     "crossing_arg": q(dimensions=["status"], measures=[

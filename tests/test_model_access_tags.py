@@ -45,7 +45,7 @@ class TestField:
         assert _model().access_tags == []
 
     def test_schema_version_is_18(self) -> None:
-        assert CURRENT_VERSIONS["SlayerModel"] == 18
+        assert CURRENT_VERSIONS["SlayerModel"] == 19
         assert _model().version == 18
 
     def test_json_round_trip(self) -> None:

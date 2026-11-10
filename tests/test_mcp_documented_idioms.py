@@ -199,10 +199,10 @@ async def test_share_of_group_and_of_grand_total(engine: SlayerQueryEngine) -> N
     }
 
 
-async def test_cross_model_aggregate_broadcasts_by_default(engine: SlayerQueryEngine) -> None:
+async def test_cross_model_aggregate_broadcasts_under_broadcast(engine: SlayerQueryEngine) -> None:
     with pytest.warns(BroadcastGrainWarning):
         resp = await _run(engine, {
-            "source_model": "orders", "dimensions": ["status"],
+            "source_model": "orders", "dimensions": ["status"], "to_many_handling": "broadcast",
             "measures": [{"formula": fx.CROSS_MODEL, "name": "credit"}],
         })
     assert {k: fx.value(r, ".credit") for k, r in fx.rows_by(resp, key=".status").items()} == {
@@ -211,10 +211,11 @@ async def test_cross_model_aggregate_broadcasts_by_default(engine: SlayerQueryEn
     assert "broadcast" in _kinds(resp)
 
 
-async def test_cross_model_aggregate_splits_under_associate(engine: SlayerQueryEngine) -> None:
+@pytest.mark.parametrize("mode", [{}, {"to_many_handling": "associate"}], ids=["default", "associate"])
+async def test_cross_model_aggregate_splits_by_association(engine: SlayerQueryEngine, mode: dict) -> None:
     with pytest.warns(AssociatedGrainWarning):
         resp = await _run(engine, {
-            "source_model": "orders", "dimensions": ["status"], "to_many_handling": "associate",
+            "source_model": "orders", "dimensions": ["status"], **mode,
             "measures": [{"formula": fx.CROSS_MODEL, "name": "credit"}],
         })
     assert {k: fx.value(r, ".credit") for k, r in fx.rows_by(resp, key=".status").items()} == {

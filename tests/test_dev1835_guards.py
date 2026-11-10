@@ -137,6 +137,7 @@ class TestRepointedGuards:
             measures=[ModelMeasure(
                 formula="customers.spend:sum(window='90d')", name="w",
             )],
+            to_many_handling="broadcast",
         )
         with pytest.raises(ValueError, match=r"attributable from") as ei:
             await _gen(query)

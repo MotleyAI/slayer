@@ -1,4 +1,4 @@
-"""DEV-1841 task 2.1 / 4.2 — local aggregates over a fanning dimension route
+"""Local aggregates over a fanning dimension route
 through the same attribution classification as cross-model ones, in every
 consumer role. The naive join-multiplied value must be unrepresentable.
 
@@ -39,7 +39,7 @@ def _ok(resp) -> float:
     return float(status_key(resp, root="customers")[("ok",)]["customers.sp"])
 
 
-class TestDefaultBroadcastsNeverMultiplies:
+class TestBroadcastModeNeverMultiplies:
     async def test_dimensionless_total_is_all_customers(self, exec_backend):
         """Sanity oracle: the fan-free local total sums every customer once."""
         _, engine = exec_backend
@@ -47,13 +47,14 @@ class TestDefaultBroadcastsNeverMultiplies:
         assert float(resp.data[0]["customers.sp"]) == pytest.approx(
             LOCAL_SPEND_TOTAL)
 
-    async def test_default_broadcasts_and_warns(self, exec_backend):
+    async def test_broadcast_mode_broadcasts_and_warns(self, exec_backend):
         """Scenario: local aggregate over a fanning dimension never multiplies —
-        under the default it broadcasts (both cells equal) with a warning, never
-        the fanned figure."""
+        under explicit broadcast it broadcasts (both cells equal) with a warning,
+        never the fanned figure."""
         _, engine = exec_backend
         resp = await engine.execute(
-            cust_q(dimensions=["orders.status"], measures=[SP]))
+            cust_q(dimensions=["orders.status"], measures=[SP],
+                   to_many_handling="broadcast"))
         by = status_key(resp, root="customers")
         vals = {k: float(v["customers.sp"]) for k, v in by.items()}
         assert vals[("ok",)] == pytest.approx(vals[("new",)])  # broadcast

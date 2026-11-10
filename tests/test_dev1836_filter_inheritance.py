@@ -1,9 +1,9 @@
-"""DEV-1836 task 1.7 — producer filter inheritance (design D3), reproducing the
+"""Producer filter inheritance (design D3), reproducing the
 ``classify_host_filter`` decision table as behavior.
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Producer filter
 inheritance". Safe ROW conjuncts apply inside the producer (re-rooted);
-DEV-1840 upgrades the unsafe-but-reachable class from drop+warn to semi-join
+the unsafe-but-reachable class is upgraded from drop+warn to semi-join
 pushdown (the two pins below are updated with consent); AGGREGATE-phase
 routing is unchanged.
 """
@@ -45,6 +45,7 @@ class TestAttributableRowFilters:
         query = q(
             dimensions=["status"], measures=[M, CM],
             filters=["customers.tier = 'gold'"],
+            to_many_handling="broadcast",
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.status")
@@ -60,7 +61,7 @@ class TestAttributableRowFilters:
 
 class TestUnsafeRowFilters:
     async def test_host_filter_pushes_down_by_semi_join(self, exec_backend):
-        """DEV-1836 class-(c), upgraded by DEV-1840: the host-level conjunct
+        """Class-(c), upgraded to semi-join: the host-level conjunct
         crosses the declared 1:N edge, so it restricts the producer by
         semi-join — customers with at least one web order, spend counted
         once, silently. Old drop+warn gave gold the whole 160 slice."""
@@ -92,6 +93,7 @@ class TestUnsafeRowFilters:
         resp = await engine.execute(q(
             dimensions=["status"], measures=[M, CM],
             filters=["channel = 'app'"],
+            to_many_handling="broadcast",
         ))
         by = rows_by(resp, "orders.status")
         # App orders: o2 (new), o4/o5 (ok).

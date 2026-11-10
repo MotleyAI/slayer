@@ -1,4 +1,4 @@
-"""DEV-1892 task 1.5 — the generalised determination helper, spec'd in
+"""The generalised determination helper, spec'd in
 queries/semantics › "Outer dimension seeded by a nested-path entity key" and
 "A nested-path non-key grain field seeds nothing beyond itself": a joined
 model's unique key in the inner grain seeds a to-one chain (the deliberate
@@ -41,7 +41,7 @@ class TestNestedPathKeySeed:
         """Scenario: outer dimension seeded by a nested-path entity key — the
         inner grain contains customers.id, so a column of that model and one
         reached from it over a to-one hop are attributable exactly, with NO
-        broadcast warning (the pre-DEV-1892 rule broadcast them)."""
+        broadcast warning (the previous rule broadcast them)."""
         resp = await exec_engine.execute(chain_q(
             dimensions=[dim],
             measures=[ModelMeasure(
@@ -79,5 +79,6 @@ class TestNestedPathNonKeyDoesNotSeed:
             dimensions=["customers.id"],
             measures=[ModelMeasure(
                 formula="avg(sum(amount, partition_by=customers.region_id))",
-                name="a")]))
+                name="a")],
+            to_many_handling="broadcast"))
         assert broadcast_warnings(resp)

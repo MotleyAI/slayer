@@ -1,4 +1,4 @@
-"""DEV-1836 task 1.5 — executed values for target-rooted cross-model producers
+"""Executed values for target-rooted cross-model producers
 (SQLite + DuckDB).
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Target-rooted
@@ -16,6 +16,7 @@ from slayer.core.query import OrderItem
 from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1836_fixtures import (
+    AMOUNT_BY_LABEL,
     AMOUNT_BY_STATUS,
     AMOUNT_BY_TIER,
     AMOUNT_BY_TIER_STATUS,
@@ -39,6 +40,8 @@ async def exec_backend(request):
 
 M = ModelMeasure(formula="amount:sum", name="m")
 CM = ModelMeasure(formula="customers.spend:sum", name="cm")
+#: spend over the distinct customers reaching each segment label.
+SPEND_BY_LABEL = {"Alpha": 160.0, "Beta": 150.0, None: 40.0}
 
 
 async def _dry_scope_closed(engine, query, dialect) -> None:
@@ -101,7 +104,7 @@ class TestBroadcast:
         """orders.status is unreachable from customers over safe hops: every
         status row carries the grand total; the grain is unchanged."""
         dialect, engine = exec_backend
-        query = q(dimensions=["status"], measures=[M, CM])
+        query = q(dimensions=["status"], measures=[M, CM], to_many_handling="broadcast")
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.status")
         assert set(by) == {("ok",), ("new",)}
@@ -110,12 +113,25 @@ class TestBroadcast:
             _approx(row["orders.m"], AMOUNT_BY_STATUS[status], key=f"m:{status}")
         await _dry_scope_closed(engine, query, dialect)
 
-    async def test_unproven_hop_dim_broadcasts(self, exec_backend):
-        """customers → segments has unproven arity: neither metric joins
-        through it, so both broadcast their grand total instead of double-
-        counting — the local ``m`` under DEV-1841's uniform classification too."""
+    async def test_unproven_hop_dim_associates_by_default(self, exec_backend):
+        """customers → segments has unproven arity: each metric aggregates the
+        distinct rows associated with each label, never a join-multiplied value."""
         dialect, engine = exec_backend
         query = q(dimensions=["customers.segments.label"], measures=[M, CM])
+        resp = await engine.execute(query)
+        by = rows_by(resp, "orders.customers.segments.label")
+        assert set(by) == set(SPEND_BY_LABEL)
+        for (label,), row in by.items():
+            _approx(row["orders.cm"], SPEND_BY_LABEL[label], key=label)
+            _approx(row["orders.m"], AMOUNT_BY_LABEL[label], key=f"m:{label}")
+        assert [w for w in resp.warnings or [] if w.kind == "associated"]
+        await _dry_scope_closed(engine, query, dialect)
+
+    async def test_unproven_hop_dim_broadcasts_under_broadcast(self, exec_backend):
+        """Under explicit broadcast neither metric joins through the unproven hop:
+        both broadcast their grand total instead of double-counting."""
+        dialect, engine = exec_backend
+        query = q(dimensions=["customers.segments.label"], measures=[M, CM], to_many_handling="broadcast")
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.customers.segments.label")
         assert set(by) == {("Alpha",), ("Beta",), (None,)}
@@ -127,7 +143,7 @@ class TestBroadcast:
     async def test_mixed_grain_broadcasts_only_the_unsafe_member(self, exec_backend):
         """S(A) = {tier}: exact per tier, broadcast across status."""
         dialect, engine = exec_backend
-        query = q(dimensions=["customers.tier", "status"], measures=[M, CM])
+        query = q(dimensions=["customers.tier", "status"], measures=[M, CM], to_many_handling="broadcast")
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.customers.tier", "orders.status")
         assert set(by) == set(AMOUNT_BY_TIER_STATUS)

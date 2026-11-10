@@ -342,7 +342,8 @@ class TestSplicedWarnings:
         consumer = query(
             name="r", source_model=_join("orders", "cust_rev", [["customer_id", "customer_id"]]),
             dimensions=["status"],
-            measures=[m("amount:sum", "m"), m("customers.spend:sum", "cm"), m("cust_rev.rev:max", "rm")])
+            measures=[m("amount:sum", "m"), m("customers.spend:sum", "cm"), m("cust_rev.rev:max", "rm")],
+            to_many_handling="broadcast")
         with pytest.warns(UserWarning):
             got = await engine.execute(consumer)
         spliced = [*explicit_splice(cust_rev_model()), consumer]

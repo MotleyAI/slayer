@@ -1,4 +1,4 @@
-"""DEV-1750 — golden SQL baseline for the time_shift/cp × cross-model shapes.
+"""Golden SQL baseline for the time_shift/cp × cross-model shapes.
 
 Same harness and four-step blessing loop as ``tests/test_dev1748_golden_sql.py``
 (read ``tests/_golden_harness.py`` for the mechanics); only the matrix differs.
@@ -45,7 +45,7 @@ def _cases() -> dict:
     """The matrix. Keys are stable ids — renaming one is a golden change."""
     return {
         # (a) local time_shift beside a cross-model sibling.
-        "a/local_ts_cm_sibling": _q(measures=[
+        "a/local_ts_cm_sibling": _q(to_many_handling="broadcast", measures=[
             {"formula": "customers.spend:sum", "name": "cm"},
             {"formula": "time_shift(amount:sum, -1)", "name": "prev"},
         ]),
@@ -67,37 +67,37 @@ def _cases() -> dict:
             {"formula": "time_shift(amount:liscaled_sum, -1)", "name": "prev"},
         ]),
         # consecutive_periods — lifted entirely (no target-grain failure mode).
-        "cp/local_with_cm_sibling": _q(measures=[
+        "cp/local_with_cm_sibling": _q(to_many_handling="broadcast", measures=[
             {"formula": "customers.spend:sum", "name": "cm"},
             {"formula": "consecutive_periods(amount:sum > 0)", "name": "streak"},
         ]),
-        "cp/over_target_grain": _q(measures=[
+        "cp/over_target_grain": _q(to_many_handling="broadcast", measures=[
             {"formula": "consecutive_periods(customers.spend:sum > 0)", "name": "streak"},
         ]),
         # change / change_pct desugar to time_shift.
         "change/of_wscaled": _q(measures=[
             {"formula": "change(amount:wscaled_sum)", "name": "delta"},
         ]),
-        "change_pct/of_local_with_cm_sibling": _q(measures=[
+        "change_pct/of_local_with_cm_sibling": _q(to_many_handling="broadcast", measures=[
             {"formula": "customers.spend:sum", "name": "cm"},
             {"formula": "change_pct(amount:sum)", "name": "delta"},
         ]),
         # (c) target-grain inner — stays guarded (records the narrowed raise).
-        "c/target_grain_guarded": _q(measures=[
+        "c/target_grain_guarded": _q(to_many_handling="broadcast", measures=[
             {"formula": "time_shift(customers.spend:sum, -1)", "name": "prev"},
         ]),
         # window op over cross-model — never guarded; a regression anchor.
-        "window/cumsum_cross_model": _q(measures=[
+        "window/cumsum_cross_model": _q(to_many_handling="broadcast", measures=[
             {"formula": "cumsum(customers.spend:sum)", "name": "run"},
         ]),
-        # composite-input transform — DEV-1846 lifted this; it now renders a
+        # composite-input transform — lifted; it now renders a
         # shifted-CTE re-aggregation beside the cross-model sibling.
-        "composite/lifted": _q(measures=[
+        "composite/lifted": _q(to_many_handling="broadcast", measures=[
             {"formula": "customers.spend:sum", "name": "cm"},
             {"formula": "time_shift(amount:sum + amount:sum, -1)", "name": "prev"},
         ]),
         # first/last crossing time arg — records whatever the seam does.
-        "first_last/crossing_time_arg": _q(measures=[
+        "first_last/crossing_time_arg": _q(to_many_handling="broadcast", measures=[
             {"formula": "customers.spend:sum", "name": "cm"},
             {"formula": "time_shift(amount:last(customers.signup_at), -1)", "name": "prev"},
         ]),

@@ -213,6 +213,7 @@ class TestFlavorAOrderByUnprojected:
             dimensions=[ColumnRef(name="status")],
             measures=[{"formula": "clusters.score:sum", "name": "sc"}],
             order=[OrderItem(column=ColumnRef(name="sc"), direction="desc")],
+            to_many_handling="broadcast",
         )
         sql = _norm(await _engine_generate(
             query=query, model=accts, extra_models=[clusters],

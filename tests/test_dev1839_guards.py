@@ -1,4 +1,4 @@
-"""DEV-1839 guard surface — what still fails closed after the union-grain lift
+"""Guard surface — what still fails closed after the union-grain lift
 (design D6/D7/D9), the guards that must NOT change, and the single-grain
 locking shapes the new predicates must not regress (design D6, Context (c))."""
 
@@ -34,7 +34,7 @@ async def exec_backend(request):
 
 class TestMixedWindowedRankedDeferred:
     """D6 — a mixed-grain transform with a windowed or first/last inner
-    aggregate. DEV-1835 lifts the DEV-1839 deferral: the union-grain shape now
+    aggregate. The deferral is lifted: the union-grain shape now
     renders through the regroup producers instead of failing closed."""
 
     async def test_mixed_windowed_grain_deferred(self) -> None:
@@ -47,7 +47,7 @@ class TestMixedWindowedRankedDeferred:
             time_dimensions=month_td(),
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         )
-        sql = await gen(query)  # DEV-1835 lift: renders, no longer raises
+        sql = await gen(query)  # Lifted: renders, no longer raises
         assert_scope_closed(sql, dialect="duckdb")
         assert "__regroup__" not in sql
 
@@ -60,7 +60,7 @@ class TestMixedWindowedRankedDeferred:
             dimensions=["region", "city", {"expression": band, "name": "x"}],
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         )
-        sql = await gen(query)  # DEV-1835 lift: renders, no longer raises
+        sql = await gen(query)  # Lifted: renders, no longer raises
         assert_scope_closed(sql, dialect="duckdb")
         assert "__regroup__" not in sql
 
@@ -92,6 +92,7 @@ class TestUnchangedGuards:
         query = q(
             dimensions=["region", "city", {"expression": band, "name": "x"}],
             measures=[ModelMeasure(formula="amount:sum", name="s")],
+            to_many_handling="broadcast",
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -171,7 +172,7 @@ class TestSameGrainMultiAggregateLocking:
     """Design Context (c) — D6's actual single-grain non-regression surface: a
     transform root over MULTIPLE same-grain plain aggregates stays legal (the
     union degenerates to that grain). CASE-wrapped windowed / first-last
-    dimension shapes stay pinned by the DEV-1824 suites."""
+    dimension shapes stay pinned by the ``test_dev1824_*`` suites."""
 
     async def test_rank_over_two_same_grain_aggregates(self, exec_backend) -> None:
         dialect, engine = exec_backend

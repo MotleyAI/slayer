@@ -1,28 +1,28 @@
 ## 1. Tests first (pr-tests)
 
-- [ ] 1.1 `tests/test_dev2216_associate_default.py`: every scenario of "Mode selection and
+- [x] 1.1 `tests/test_dev2216_associate_default.py`: every scenario of "Mode selection and
   the association default", "Broadcast fallback for association-ineligible aggregates",
   "Ungrained re-aggregation inners resolve per the mode" and the row-supply scenario, plus
   default-mode parity for local ranked aggregates (the `local_broadcasts` early return),
   product/unrelated datasets, list children, explicit cross-model `partition_by=`,
-  aggregation parameters (incl. a parameter legal under broadcast but undetermined by the
-  entity grain) and null-safe re-aggregation; one expression mixing two fallback reasons
+  aggregation parameters (no broadcast-legal shape leaves a row-valued parameter undetermined
+  by the entity grain, so that fallback reason has no executable case) and null-safe re-aggregation; one expression mixing two fallback reasons
   (warning merge). Verify: the file collects and fails against the unchanged code.
-- [ ] 1.2 `tests/test_dev2216_keyless_association.py`: Ossie Appendix B.1 fixture
+- [x] 1.2 `tests/test_dev2216_keyless_association.py`: Ossie Appendix B.1 fixture
   (customers keyless, `orders → customers` undeclared) — region × revenue root-less and
   rooted at `orders`, explicit broadcast; duplicate physical row + two same-status orders;
   fan-out under a joined-dataset filter; keyless `wsum` / `weighted_avg` parameters;
   explicit `associate` on a keyless home; row-number rendering for every dialect
   (emission golden). Verify: collects and fails.
-- [ ] 1.3 Migration tests (YAML and SQLite): v9 `"broadcast"` → omitted, `"associate"` /
+- [x] 1.3 Migration tests (YAML and SQLite): v9 `"broadcast"` → omitted, `"associate"` /
   `"error"` kept, nested stages with and without `version` incl. non-final stages, fresh
   explicit `"broadcast"` kept, a mode-less save stores no mode. Verify: fail.
-- [ ] 1.4 Field / refinement / usage-reporting / warning-payload tests: `None` default,
+- [x] 1.4 Field / refinement / usage-reporting / warning-payload tests: `None` default,
   refinement inheritance, `association_unsupported` round-trip and merge identity, the
   reworded hints. Verify: fail.
-- [ ] 1.5 `tests/test_law_dice_slice.py`: a default-mode instance beside the associate one.
+- [x] 1.5 `tests/test_law_dice_slice.py`: a default-mode instance beside the associate one.
   Verify: fails.
-- [ ] 1.6 Align existing tests that pin the old default — ask the user's approval per file
+- [x] 1.6 Align existing tests that pin the old default — ask the user's approval per file
   first, listing each file and the change: broadcast-mechanics tests get an explicit
   `to_many_handling="broadcast"`; default-defining tests (e.g.
   `test_dev1841_mode_field.py::test_default_is_broadcast`,

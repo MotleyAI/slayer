@@ -1,4 +1,4 @@
-"""DEV-1838 stage 4 — the CTE-body deferrals lift (design D2 hoist; the guard
+"""The CTE-body deferrals lift (design D2 hoist; the guard
 list empties).
 
 Spec: openspec …/specs/queries/computed-dimensions — "Nested attaches render
@@ -142,12 +142,13 @@ class TestNestedAttachInsideProducer:
         self, exec_backend,
     ):
         """Green pin — the target-rooted ranked producer whose grain carries
-        the band row attach already hoists (DEV-1836); the lift must not
+        the band row attach already hoists; the lift must not
         regress it."""
         dialect, engine = exec_backend
         query = q(dimensions=["status", BAND],
                   measures=[ModelMeasure(formula="customers.spend:last",
-                                         name="sl")])
+                                         name="sl")],
+                  to_many_handling="broadcast")
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.status", "orders.band")
         for (s, b), r in by.items():

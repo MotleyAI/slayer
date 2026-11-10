@@ -128,6 +128,7 @@ class TestReverseHopPushdown:
         """Scenario: pushed filter still restricts the result rows."""
         _, engine = exec_backend
         resp = await engine.execute(q(
+            to_many_handling="broadcast",
             dimensions=["status"], measures=[M, CM],
             filters=["channel = 'app'"],
         ))
@@ -172,7 +173,8 @@ class TestSameRowGrouping:
         AND by a gold customer — across the composite hop plus one more."""
         dialect, engine = exec_backend
         query = q(dimensions=["status"], measures=[M, RM],
-                  filters=["channel = 'app'", "customers.tier = 'gold'"])
+                  filters=["channel = 'app'", "customers.tier = 'gold'"],
+                  to_many_handling="broadcast")
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.status")
         assert set(by) == {("ok",), ("new",)}
@@ -190,6 +192,7 @@ class TestCompositeCorrelation:
         full composite correlation excludes it."""
         _, engine = exec_backend
         resp = await engine.execute(q(
+            to_many_handling="broadcast",
             dimensions=["status"], measures=[M, RM],
             filters=["channel = 'app'"],
         ))
@@ -273,6 +276,7 @@ class TestExpandedDependencies:
         rewrite; the broadcast total 515 marks the dropped-filter defect."""
         _, engine = exec_backend
         resp = await engine.execute(q(
+            to_many_handling="broadcast",
             dimensions=["status"], measures=[M, CM],
             filters=["cust_tier = 'gold'"],
         ))

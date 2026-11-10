@@ -1,4 +1,4 @@
-"""DEV-1868 — golden SQL baseline for the closure-sweep shapes across the
+"""Golden SQL baseline for the closure-sweep shapes across the
 standard five-dialect matrix (harness: tests/_golden_harness.py). The class-a
 tripwire for pre-existing legal ``time_shift`` forms is the untouched
 tests/test_dev1846_golden_sql.py baseline."""
@@ -99,7 +99,7 @@ def _cases() -> dict:
             measures=[{"formula": "time_shift(cumsum(revenue:sum), -1)",
                        "name": "t"}],
         ),
-        "ts/series_cm_leaf": _sales(measures=[
+        "ts/series_cm_leaf": _sales(to_many_handling="broadcast", measures=[
             {"formula": "time_shift(revenue:sum + regions.factor:sum, -1)",
              "name": "t"},
         ]),

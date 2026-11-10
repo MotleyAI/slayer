@@ -1,4 +1,4 @@
-"""DEV-1837 — the dimension-family × measure-family compatibility matrix,
+"""The dimension-family × measure-family compatibility matrix,
 executed on SQLite + DuckDB. The matrix is the migration's tracked frontier:
 supported cells assert hand-computed oracles (``tests/_dev1837_fixtures.py``);
 still-guarded cells strict-xfail pointing at their stage issue, so a lift
@@ -11,9 +11,9 @@ Scenario coverage map (spec: openspec …/specs/queries/computed-dimensions):
   Banded dimension with a running total .............. band-cumsum
   Bare partitioned aggregate as dim + transform ...... bare-* transform cells
   Transform-root dimension with a transform measure .. rank-* transform cells
-  Union-grain (mixed) dimension family (DEV-1839) .... mixed-* cells
-  Banded dimension with a bare windowed measure ...... band-wm (DEV-1835)
-  Bare partitioned aggregate as dim + bare last ...... bare-rk (DEV-1835)
+  Union-grain (mixed) dimension family .............. mixed-* cells
+  Banded dimension with a bare windowed measure ...... band-wm
+  Bare partitioned aggregate as dim + bare last ...... bare-rk
   Transform-root dim + bare windowed / ranked ........ rank-wm / rank-rk
   Scalar-expression dim + bare windowed / last ....... expr-wm / expr-rk
   Alongside a partitioned measure .................... TestCoexistenceTriples
@@ -73,8 +73,8 @@ ATTACH_MEASURES = {
 }
 TD_ATTACH = frozenset({"win_part", "wm"})
 
-#: Still-guarded cells → the stage issue their strict-xfail points at. DEV-1835
-#: flipped the wm/rk column; DEV-1836 flips the last column — the four
+#: Still-guarded cells → the stage issue their strict-xfail points at. The
+#: wm/rk column and the last column have flipped — the four
 #: ``(family, cm)`` cells (row attach × cross-model measure) are now supported
 #: (target-rooted producers), so they move to the supported table with the
 #: broadcast oracle (``x = CM_TOTAL``). Nothing remains guarded here.
@@ -172,6 +172,8 @@ class TestMatrix:
     ) -> None:
         dialect, engine = exec_backend
         query = _cell_query(family, meas)
+        if meas == "cm":
+            query = query.model_copy(update={"to_many_handling": "broadcast"})
         with_month = _needs_td(meas)
         m_map, x_map = _expected_maps(family, meas)
 

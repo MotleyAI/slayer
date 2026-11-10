@@ -1,10 +1,10 @@
-"""DEV-1800 execution — change/change_pct (and any transform) over a cross-model
+"""Execution — change/change_pct (and any transform) over a cross-model
 inner, combined into a composite, executes correctly in measure, filter and
 order positions.
 
 Two datasets:
 
-* the **DEV-1750** dataset (``customers.spend`` broadcasts across ``ordered_at``,
+* the ``_dev1750_fixtures`` dataset (``customers.spend`` broadcasts across ``ordered_at``,
   ``amount:wscaled_sum`` crosses a fragment) — for the failing composite class,
   asserted by *invariance*: the composite equals the same expression built from
   its separately-selected operands (which already render today), and selecting an
@@ -81,7 +81,7 @@ def _approx_or_none(cell, expected) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# The failing measure-position class — asserted by invariance on DEV-1750.
+# The failing measure-position class — asserted by invariance on the dev1750 dataset.
 # --------------------------------------------------------------------------- #
 class TestTransformPlusHiddenAggregate:
     """``change(cm) + amount:sum`` and its variants: the composite equals the sum
@@ -282,7 +282,7 @@ class TestNamedShapes:
         for formula in (f"change({CM})", f"change_pct({CM})"):
             got = _by_month(await _orders(dev1750_engine, measures=[
                 ModelMeasure(formula=formula, name="d"),
-            ]))
+            ], to_many_handling="broadcast"))
             _approx_or_none(got["2024-01"]["orders.d"], None)
             _approx_or_none(got["2024-02"]["orders.d"], 0.0)
             _approx_or_none(got["2024-03"]["orders.d"], 0.0)

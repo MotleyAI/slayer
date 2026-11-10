@@ -327,17 +327,19 @@ class TestSavedMeasuresCompose:
         (total,), = ctx.oracle(
             "SELECT SUM(o2.amount) FROM orders o2 WHERE o2.customer_id IN (SELECT customer_id FROM orders)")
         assert _num(total) == 35.0
-        resp = await ctx.engine.execute(_q(dimensions=["id"], measures=["customer.order_total"]))
+        resp = await ctx.engine.execute(_q(
+            dimensions=["id"], measures=["customer.order_total"], to_many_handling="broadcast"))
         assert [_num(v) for (v,) in _rows(resp, "orders.customer.order_total")] == [35.0] * 3
         assert _broadcasts(resp) != []
 
-    async def test_unattributable_host_dimension_associates(self, ctx: _Ctx) -> None:
+    @pytest.mark.parametrize("mode", [None, "associate"])
+    async def test_unattributable_host_dimension_associates(self, ctx: _Ctx, mode: str | None) -> None:
         oracle = [(i, _num(v)) for i, v in ctx.oracle(
             "SELECT o.id, (SELECT SUM(o2.amount) FROM orders o2 WHERE o2.customer_id = o.customer_id) "
             "FROM orders o ORDER BY o.id")]
         assert oracle == [(11, 30.0), (12, 30.0), (21, 5.0)]
         resp = await ctx.engine.execute(_q(
-            dimensions=["id"], measures=["customer.order_total"], to_many_handling="associate",
+            dimensions=["id"], measures=["customer.order_total"], to_many_handling=mode,
             order=[{"column": "id", "direction": "asc"}]))
         assert [(i, _num(v)) for i, v in _rows(resp, "orders.id", "orders.customer.order_total")] == oracle
 

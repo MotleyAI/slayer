@@ -328,6 +328,14 @@ class TestNegativeControls:
         assert "product" in d.reason
         assert "partition_by" in d.reason
 
+    async def test_undetermined_expression_associates_by_default(self, exec_engine):
+        default = await exec_engine.execute(_acr(dimensions=["region", _dim("product == 'P'", "is_p")]))
+        assoc = await exec_engine.execute(self._is_p("associate"))
+        assert sorted(map(str, default.data)) == sorted(map(str, assoc.data))
+        (w,) = [w for w in default.warnings or [] if w.kind == "associated"]
+        assert "is_p" in w.dimensions
+        assert not broadcast_warnings(default)
+
     async def test_undetermined_expression_refuses_in_error_mode(self, exec_engine):
         query = self._is_p("error")
         with pytest.raises(SlayerError) as ei:
@@ -399,7 +407,8 @@ class TestDiagnosticNaming:
 
     async def test_unnamed_expression_never_internal_alias(self, exec_engine):
         resp = await exec_engine.execute(
-            _acr(dimensions=["region", {"expression": "product == 'P'"}]))
+            _acr(dimensions=["region", {"expression": "product == 'P'"}],
+                 to_many_handling="broadcast"))
         (w,) = broadcast_warnings(resp)
         (d,) = w.dimensions
         assert not d.dimension.startswith("grain_")
@@ -432,7 +441,8 @@ class TestBroadcastReasons:
         resp = await exec_engine.execute(chain_q(
             dimensions=["customers.regions.name"],
             measures=[ModelMeasure(formula="avg(sum(amount, partition_by=amount))",
-                                   name="a")]))
+                                   name="a")],
+            to_many_handling="broadcast"))
         (w,) = broadcast_warnings(resp)
         (d,) = w.dimensions
         assert "not determined by the operand grain" in d.reason
@@ -443,7 +453,8 @@ class TestBroadcastReasons:
             "source_model": "customers",
             "dimensions": ["tier", _dim("last_status == 'ok'", "lok")],
             "measures": [{"formula": "avg(sum(spend, partition_by=[tier, region_id]))",
-                          "name": "a"}]}))
+                          "name": "a"}],
+            "to_many_handling": "broadcast"}))
         (w,) = broadcast_warnings(resp)
         (d,) = w.dimensions
         assert d.dimension == "lok"
@@ -452,7 +463,8 @@ class TestBroadcastReasons:
 
     async def test_unsupported_kind_cannot_be_analysed(self, exec_engine):
         resp = await exec_engine.execute(_acr(dimensions=[
-            "region", _dim("rank(sum(amount, partition_by=[city, region]), direction='desc')", "rk")]))
+            "region", _dim("rank(sum(amount, partition_by=[city, region]), direction='desc')", "rk")],
+            to_many_handling="broadcast"))
         (w,) = broadcast_warnings(resp)
         (d,) = w.dimensions
         assert d.dimension == "rk"
@@ -516,7 +528,8 @@ class TestDerivedColumnSpelling:
             {(r,): v for r, v in CITY_LEN_WAVG.items()})
 
     async def test_undetermined_derived_dimension_broadcasts(self, variant_engine):
-        resp = await variant_engine.execute(_acr(dimensions=["region", "prod_flag"]))
+        resp = await variant_engine.execute(
+            _acr(dimensions=["region", "prod_flag"], to_many_handling="broadcast"))
         (w,) = broadcast_warnings(resp)
         assert [d.dimension for d in w.dimensions] == ["prod_flag"]
 

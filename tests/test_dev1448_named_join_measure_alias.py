@@ -1,6 +1,6 @@
-"""DEV-1450 stage 7b.15e — DEV-1448 acceptance via ``engine.execute``.
+"""Named join-traversed measure alias — acceptance via ``engine.execute``.
 
-DEV-1448: a user ``name`` on a join-traversed measure governs the stage's
+A user ``name`` on a join-traversed measure governs the stage's
 emitted column alias, so a downstream stage references it by that name. With
 stage-1 ``{"formula": "customers.revenue:sum", "name": "rev"}``, the stage
 schema exposes a flat column ``rev`` (NOT the canonical
@@ -100,6 +100,7 @@ async def test_dev1448_downstream_resolves_user_name(engine):
         source_model="orders",
         dimensions=["status"],
         measures=[{"formula": "customers.revenue:sum", "name": "rev"}],
+        to_many_handling="broadcast",
     )
     root = SlayerQuery(
         source_model="stage1",

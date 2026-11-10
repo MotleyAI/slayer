@@ -1,13 +1,13 @@
-"""DEV-1824 guard preservation — the error surface that REMAINS after the
+"""Guard preservation — the error surface that REMAINS after the
 stage-1 lifts (design Non-Goals): cross-model partitioned aggregates in the
 lifted shapes (stage 3), the measure-side grain rule, and the
-grain-self-containment boundary inside dimension expressions. The DEV-1504
-G4/G5 pins for plain ``window=`` measures moved to the lifted direction with
-DEV-1835 (tests/test_dev1835_guard_dissolution.py).
+grain-self-containment boundary inside dimension expressions. The G4/G5
+pins for plain ``window=`` measures moved to the lifted direction
+(tests/test_dev1835_guard_dissolution.py).
 
 The lifted-direction tests live in tests/test_dev1824_partitioned_execution.py
 and tests/test_dev1824_computed_dim_execution.py; the reserved-prefix and
-raw-rows guards stay pinned by the DEV-1825/1740 suites.
+raw-rows guards stay pinned by the regroup-planner suites.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ class TestCrossModelPartitionedStillGuarded:
     crosses a join path."""
 
     async def test_cross_model_window_plus_partition(self) -> None:
-        # DEV-1836: fails closed with a precise attributability error (the active
+        # Fails closed with a precise attributability error (the active
         # time dimension is a host column, unreachable from customers).
         query = q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
@@ -44,6 +44,7 @@ class TestCrossModelPartitionedStillGuarded:
             measures=[ModelMeasure(
                 formula="customers.spend:last(partition_by=region)", name="l",
             )],
+            to_many_handling="broadcast",
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -52,7 +53,7 @@ class TestCrossModelPartitionedStillGuarded:
         assert "__regroup__" not in str(ei.value)
 
     async def test_filter_on_cross_model_partitioned_now_compiles(self) -> None:
-        # DEV-1865: the filter-lag guard is retired — the measure-typed mask
+        # The filter-lag guard is retired — the measure-typed mask
         # routes through the combined attach (executed values: dev1865 suite).
         query = q(
             dimensions=["customers.tier"],
@@ -142,7 +143,7 @@ class TestDimensionGrainSelfContainment:
         assert "partition_by" in str(ei.value)
 
     async def test_transform_over_mixed_grain_aggregates_lifted(self) -> None:
-        # Two grains in one transform union and broadcast (DEV-1839) — the
+        # Two grains in one transform union and broadcast — the
         # former fail-closed guard is gone. Executed ground truth lives in
         # tests/test_dev1839_union_dim_execution.py.
         band = "rank(amount:sum(partition_by=region) - amount:sum(partition_by=city), direction='desc')"

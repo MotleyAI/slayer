@@ -542,6 +542,8 @@ class TestB8InnerStagePlanOrder:
     async def test_no_carried_alias_is_dropped(self, factory_name: str) -> None:
         """Fail closed at both ends: every public alias survives to the projection, and no stage omits an alias the next stage reads."""
         query = getattr(self, factory_name)()
+        if factory_name == "_cross_model_transform_query":
+            query = query.model_copy(update={"to_many_handling": "broadcast"})
         sql = await _gen(query, dialect="postgres")
         expected = set(_alias_suffixes(_expected_projection_aliases(query)))
         emitted = set(_alias_suffixes(outer_select_aliases(sql)))
@@ -592,6 +594,7 @@ class TestB8InnerStagePlanOrder:
                 ModelMeasure(formula="cumsum(amount:sum)", name="zz_running"),
                 ModelMeasure(formula="customers.spend:sum", name="aa_cross"),
             ],
+            to_many_handling="broadcast",
         )
         resp = await exec_engine.execute(query)
         assert [r["orders.zz_running"] for r in resp.data] == pytest.approx(

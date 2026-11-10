@@ -1,4 +1,4 @@
-"""DEV-1832 task 1.6 — transforms as aggregation-source constituents (D4).
+"""Transforms as aggregation-source constituents (D4).
 
 A transform nested in an aggregation source is an attached constituent typed at
 its inner aggregates' explicit grains (a windowed inner adds the active bucket);
@@ -81,10 +81,10 @@ CUMSUM_MINUS_LAST = f"sum(cumsum({_X}) - last({_X}))"
 # Two same-op transform constituents: distinct keys (sum vs max inner), same op.
 TWO_CUMSUM = f"sum(cumsum({_X}) - cumsum(amount:max(partition_by=[region, ordered_at])))"
 
-# DEV-1928 — re-aggregation constituents in a mixed row source (row leaf * re-agg).
+# Re-aggregation constituents in a mixed row source (row leaf * re-agg).
 COLLAPSE_MIXED = f"sum(amount * last({_X}))"
 HANDWRITTEN_MIN = f"sum(amount * min({_X}, partition_by=region))"
-# The re-aggregation inside HANDWRITTEN_MIN, on its own (the DEV-1942 collision case).
+# The re-aggregation inside HANDWRITTEN_MIN, on its own (the phase-collision case).
 REAGG_STANDALONE = f"min({_X}, partition_by=region)"
 EMPTY_GRAIN_MIXED = "sum(amount * last(amount:sum(partition_by=ordered_at)))"
 WAVG_MIN_PARAM = f"weighted_avg(amount, weight=min({_X}, partition_by=region))"
@@ -349,7 +349,7 @@ class TestCollapsingConstituent:
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
             measures=[ModelMeasure(formula=LAST_X, name="m")],
-            time_dimensions=month_td()))
+            time_dimensions=month_td(), to_many_handling="broadcast"))
         assert _by_month(resp, "m") == pytest.approx(LAST_SUM_BY_MONTH)
         # The collapsed value drops the month axis, so it broadcasts across months.
         assert broadcast_warnings(resp), "expected a broadcast warning on the month dim"
@@ -358,7 +358,7 @@ class TestCollapsingConstituent:
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
             measures=[ModelMeasure(formula=FIRST_X, name="m")],
-            time_dimensions=month_td()))
+            time_dimensions=month_td(), to_many_handling="broadcast"))
         assert _by_month(resp, "m") == pytest.approx(FIRST_SUM_BY_MONTH)
         assert broadcast_warnings(resp)
 
@@ -375,7 +375,7 @@ class TestCollapsingConstituent:
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
             measures=[ModelMeasure(formula=LAST_X, name="m")],
-            filters=[f"{LAST_X} > 40"], time_dimensions=month_td()))
+            filters=[f"{LAST_X} > 40"], time_dimensions=month_td(), to_many_handling="broadcast"))
         assert _by_month(resp, "m") == pytest.approx(LAST_SUM_BY_MONTH)
 
 
@@ -443,7 +443,7 @@ class TestSameOpTransformConstituents:
 
 
 # --------------------------------------------------------------------------- #
-# DEV-1928 — re-aggregation constituents in a mixed row source execute.
+# Re-aggregation constituents in a mixed row source execute.
 # --------------------------------------------------------------------------- #
 def _reagg_plan(formula: str):
     return plan_query(
@@ -717,7 +717,7 @@ class TestReaggAxiomCompliance:
     async def test_reagg_used_standalone_and_mixed_executes(self, exec_backend):
         # The same re-aggregation both on its own (combined phase) and inside a mixed
         # row aggregation (row phase): one shared producer at two phases whose nested
-        # carrier is emitted before every consumer on strict dialects (DEV-1942). Each
+        # carrier is emitted before every consumer on strict dialects. Each
         # use keeps the value it has alone — the standalone region-min broadcast per
         # month, the mixed per-cell amount × region-min summed.
         _, engine = exec_backend

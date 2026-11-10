@@ -1,4 +1,4 @@
-"""DEV-1836 task 1.8 — unsafe aggregate inputs and unsafe explicit partition
+"""Unsafe aggregate inputs and unsafe explicit partition
 keys fail closed (design D2, F4; class-(d) pins).
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Unsafe aggregate
@@ -99,6 +99,7 @@ class TestUnsafeExplicitPartitionKeys:
             measures=[ModelMeasure(
                 formula="customers.spend:sum(partition_by=status)", name="x",
             )],
+            to_many_handling="broadcast",
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)
