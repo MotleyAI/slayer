@@ -193,11 +193,14 @@ class TestReferenceBinding:
             got = await self._assert_as_written(
                 engine, root="orders", m="addresses", target="regions", pairs=REGION_PAIRS, key="id", dims=["id"])
             assert got is AmbiguousJoinPathError
+            declared = q(source_model="orders", dimensions=["id"], extensions=[
+                ext("addresses", joins=[join("regions", REGION_PAIRS, join_type="inner")])])
             with pytest.raises(AmbiguousJoinPathError) as info:
-                await engine.execute(q(source_model="orders", dimensions=["id"], extensions=[
-                    ext("addresses", joins=[join("regions", REGION_PAIRS, join_type="inner")])]))
+                await engine.execute(declared)
         message = str(info.value).lower()
-        assert "inner" in message and "addresses" in message and "regions" in message, message
+        assert "inner" in message, message
+        assert "addresses" in message, message
+        assert "regions" in message, message
 
     async def test_one_safe_and_one_fanning_parallel_edge(self, dialect) -> None:
         models = with_models(
@@ -211,11 +214,14 @@ class TestReferenceBinding:
                 engine, root="customers", m="addresses", target="regions", pairs=REGION_PAIRS, key="id",
                 dims=["name"])
             assert got is AmbiguousJoinPathError
+            declared = q(source_model="customers", dimensions=["name"], extensions=[
+                ext("addresses", joins=[join("regions", REGION_PAIRS, join_type="inner")])])
             with pytest.raises(AmbiguousJoinPathError) as info:
-                await engine.execute(q(source_model="customers", dimensions=["name"], extensions=[
-                    ext("addresses", joins=[join("regions", REGION_PAIRS, join_type="inner")])]))
+                await engine.execute(declared)
         message = str(info.value).lower()
-        assert "inner" in message and "addresses" in message and "regions" in message, message
+        assert "inner" in message, message
+        assert "addresses" in message, message
+        assert "regions" in message, message
 
     async def test_unreachable_declaration_fails_naming_it(self, dialect) -> None:
         query = q(source_model="orders", dimensions=["id"],
@@ -224,7 +230,9 @@ class TestReferenceBinding:
             with pytest.raises(SlayerError) as info:
                 await engine.execute(query)
         message = str(info.value).lower()
-        assert "inner" in message and "events" in message and "users" in message, message
+        assert "inner" in message, message
+        assert "events" in message, message
+        assert "users" in message, message
 
 
 class TestModes:
@@ -253,4 +261,5 @@ class TestModes:
         assert dry.sql is not None
         joins = [j for j in sqlglot.parse_one(dry.sql).find_all(exp.Join)
                  if isinstance(j.this, exp.Table) and j.this.name == "customers"]
-        assert joins and all(j.side == "LEFT" for j in joins), dry.sql
+        assert joins, dry.sql
+        assert all(j.side == "LEFT" for j in joins), dry.sql

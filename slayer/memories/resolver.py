@@ -41,7 +41,7 @@ from slayer.core.errors import (
 )
 from slayer.core.join_walker import walk_miss, walk_terminal
 from slayer.core.models import SlayerModel
-from slayer.core.query import ComputedDimension, ModelExtension, SlayerQuery
+from slayer.core.query import ComputedDimension, SlayerQuery, extension_model_names
 from slayer.engine.model_reads import FieldKind, query_field_texts
 from slayer.core.syntax import (
     AggCall,
@@ -482,14 +482,12 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
                 seen.add(f)
                 canonical.append(f)
 
-    # 1. source_model — a saved model name, an inline model, or an extension's base.
+    # 1. source_model — a saved model name or an inline model — then the models its extensions name.
     src = query.source_model
     if isinstance(src, str):
         source_model = await storage.get_model(src)
     elif isinstance(src, SlayerModel):
         source_model = src
-    elif isinstance(src, ModelExtension):
-        source_model = await storage.get_model(src.source_name)
     else:
         raise EntityResolutionError(
             "Could not derive a model name from query.source_model."
@@ -499,6 +497,10 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
             f"Source model not found: {src!r}."
         )
     _add([f"{source_model.data_source}.{source_model.name}"])
+    for name in extension_model_names(query):
+        extended = await storage.get_model(name, data_source=source_model.data_source or None)
+        if extended is not None:
+            _add([f"{extended.data_source}.{extended.name}"])
 
     # 2. every field the reads walk enumerates; aggregation arguments and the query's own names are not entities.
     local_names = {m.name for m in query.measures or [] if m.name} | {

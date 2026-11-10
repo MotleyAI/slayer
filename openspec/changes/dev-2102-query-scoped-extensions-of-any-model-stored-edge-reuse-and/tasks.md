@@ -34,7 +34,7 @@
 
 ## 2. IR, migration, deprecation
 
-- [ ] 2.1 `slayer/core/query.py`:
+- [x] 2.1 `slayer/core/query.py`:
   - `SlayerQuery.extensions` with a `Field` description;
   - `SourceSpec` reduced to name | `SlayerModel`;
   - duplicate-extension validator;
@@ -42,14 +42,14 @@
   - `source_model_name` simplified.
 
   Verify with test 1.3.
-- [ ] 2.2 `slayer/storage/migrations.py`: `CURRENT_VERSIONS["SlayerQuery"] = 10` and a v9 migration hoisting the legacy root extension (one shared conversion). Freshness detection plus `warn_deprecated(..., removal="3.0")` at `_migrate_and_rewrite`. Verify with tests 1.4 and 1.5.
-- [ ] 2.3 Every stored-dict walker in `slayer/storage/*` that reads a query's `source_model` extension also walks `extensions` (granularity rename, rank direction, stored repair, sql-string, time-dimension text, distinct column, `base.py`). Verify with test 1.5 and the existing migration suites.
+- [x] 2.2 `slayer/storage/migrations.py`: `CURRENT_VERSIONS["SlayerQuery"] = 10` and a v9 migration hoisting the legacy root extension (one shared conversion). Freshness detection plus `warn_deprecated(..., removal="3.0")` at `_migrate_and_rewrite`. Verify with tests 1.4 and 1.5.
+- [x] 2.3 Every stored-dict walker in `slayer/storage/*` that reads a query's `source_model` extension also walks `extensions` (granularity rename, rank direction, stored repair, sql-string, time-dimension text, distinct column, `base.py`). Verify with test 1.5 and the existing migration suites.
 
 ## 3. Engine
 
-- [ ] 3.1 Replace `same_edge` / `added_joins` (`slayer/core/join_edges.py`, `slayer/ir/source_bundle.py`) with the orientation-aware edge-merge function and its typed errors. Verify with test 1.6.
-- [ ] 3.2 The per-stage alias map: carried by the stage scope / bundle and consulted by path-segment resolution, routing, canonical-token generation, schema drift and dependency analysis. Verify with the alias scenarios in 1.6.
-- [ ] 3.3 One overlay step per stage, plus the walker helper:
+- [x] 3.1 Replace `same_edge` / `added_joins` (`slayer/core/join_edges.py`, `slayer/ir/source_bundle.py`) with the orientation-aware edge-merge function and its typed errors. Verify with test 1.6.
+- [x] 3.2 The per-stage alias map: carried by the stage scope / bundle and consulted by path-segment resolution, routing, canonical-token generation, schema drift and dependency analysis. Verify with the alias scenarios in 1.6.
+- [x] 3.3 One overlay step per stage, plus the walker helper:
   - delete every `ModelExtension` branch on `source_model` in `bundle_builder`, `plan`, `model_reads`, `source_bundle` and `stage_ordering`;
   - load extension sources and targets in the bundle build;
   - apply extensions to stored, inline, sibling-stage and spliced query-backed models;
@@ -57,21 +57,21 @@
 
   Verify with tests 1.8 and 1.6 plus the existing multi-stage and query-backed suites.
 - [ ] 3.4 The INNER restriction: build the parsed filter node per INNER declaration, bind it through the ordinary reference binder, and feed it to the population and filter assembly. Errors name the declaration. Verify with test 1.7.
-- [ ] 3.5 Reject extensions of `time_spine`; refuse at save the stored stages whose extensions are guaranteed to fail. Verify with test 1.8.
+- [x] 3.5 Reject extensions of `time_spine`; refuse at save the stored stages whose extensions are guaranteed to fail. Verify with test 1.8.
 
 ## 4. Consumers and surfaces
 
-- [ ] 4.1 Port `slayer/live_schema/schema_drift.py`, `slayer/memories/resolver.py`, `slayer/inspect/model_render.py`, `slayer/usage_reporting/features`, `slayer/engine/profiling.py` and `slayer/facade/translator.py` to `extensions` through the walker helper. Verify with tests 1.4, 1.8 and the existing suites for each module.
-- [ ] 4.2 MCP / REST `Field` descriptions: `source_model` drops the extension form; `extensions` is described with one per-query join and column example. Verify with test 1.3 and `tests/test_mcp_server.py`.
+- [x] 4.1 Port `slayer/live_schema/schema_drift.py`, `slayer/memories/resolver.py`, `slayer/inspect/model_render.py`, `slayer/usage_reporting/features`, `slayer/engine/profiling.py` and `slayer/facade/translator.py` to `extensions` through the walker helper. Verify with tests 1.4, 1.8 and the existing suites for each module.
+- [x] 4.2 MCP / REST `Field` descriptions: `source_model` drops the extension form; `extensions` is described with one per-query join and column example. Verify with test 1.3 and `tests/test_mcp_server.py`.
 
 ## 5. Architecture, docs, finish
 
-- [ ] 5.1 Apply the approved Axiom 14 wording to `architecture/semantics.arc42.md` (design decision 6, verbatim). Verify with `poetry run la-arch-check`.
-- [ ] 5.2 Docs, one sentence per change, with the old spelling no longer documented:
+- [x] 5.1 Apply the approved Axiom 14 wording to `architecture/semantics.arc42.md` (design decision 6, verbatim). Verify with `poetry run la-arch-check`.
+- [x] 5.2 Docs, one sentence per change, with the old spelling no longer documented:
   - `docs/concepts/queries.md`, `docs/reference/mcp.md`, `docs/getting-started/mcp.md`, `docs/concepts/ingestion.md`;
   - `docs/examples` 02, 06, 08, 13, 14 (`.md` files);
   - `slayer/memories/help_content/06_joins.md`.
 
   Verify with `tests/test_doc_examples.py` and `tests/test_docs_guards.py`.
-- [ ] 5.3 Re-execute every edited notebook with `jupyter nbconvert --to notebook --execute --inplace`, and verify the outputs are fresh.
+- [x] 5.3 Re-execute every edited notebook with `jupyter nbconvert --to notebook --execute --inplace`, and verify the outputs are fresh.
 - [ ] 5.4 Full unit suite `poetry run pytest -m "not integration"`, the integration suite with the CI invocation, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs the baseline), and the enforcement bundle (`la-arch-check`, `npx -y likec4@1.47.0 validate architecture`). All green.

@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from slayer.core.errors import QueryBackedCycleError
 from slayer.core.join_walker import observe_traversals
 from slayer.core.models import SlayerModel
-from slayer.core.query import ModelExtension, SlayerQuery, extract_placeholder_names
+from slayer.core.query import SlayerQuery, extension_model_names, extract_placeholder_names
 from slayer.core.syntax import text_paths
 from slayer.core.time_spine import is_spine_query, query_host
 from slayer.core.scope import (
@@ -27,6 +27,7 @@ from slayer.core.scope import (
 )
 from slayer.engine.compile import compile_query
 from slayer.engine.elaborate import elaborate_query
+from slayer.engine.extensions import apply_query_extensions, with_own_extension
 from slayer.engine.normalization import normalize_query
 from slayer.engine.cardinality.unrelated import stamp_unrelated
 from slayer.engine.stage_ordering import (
@@ -38,7 +39,6 @@ from slayer.ir.planned import PlannedQuery
 from slayer.ir.prebound import PreboundQuery
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
-    apply_extension_overlay,
     follow_sibling_chain,
     model_from_stage_schema,
     source_name_if_sibling,
@@ -47,6 +47,7 @@ from slayer.ir.source_bundle import (
 from slayer.ir.variables import (
     apply_variables_to_query,
     model_placeholder_names,
+    substitute_extension_surfaces,
     substitute_model_sql_surfaces,
 )
 from slayer.sql.dialects import get_dialect
@@ -98,6 +99,7 @@ def _stage_scope_and_bundle(
         query=query, bundle=bundle, stage_schemas=stage_schemas, data_source=data_source,
         stage_model=stage_model,
     )
+    scope, sb = apply_query_extensions(query=query, scope=scope, bundle=sb)
     framed_scope, framed = _framed(query=query, scope=scope, bundle=sb, placeholders=placeholders)
     assert framed_scope is not None
     return framed_scope, framed
@@ -127,24 +129,8 @@ def _stage_scope_and_bundle_unframed(
     stage_model: Optional[SlayerModel],
 ) -> "Tuple[ModelScope | StageSchema, ResolvedSourceBundle]":
     src = query.source_model
-    sibling_names = set(stage_schemas)
-    sib = source_name_if_sibling(spec=src, sibling_names=sibling_names)
 
-    # 1. ModelExtension OVER a sibling: overlay the extra columns onto a synthetic sibling model.
-    if sib is not None and isinstance(src, ModelExtension):
-        base = model_from_stage_schema(
-            name=sib, schema=stage_schemas[sib], data_source=data_source,
-            saved=bundle.query_backed.get(sib),
-        )
-        overlaid = apply_extension_overlay(base, src)
-        others = {n: s for n, s in stage_schemas.items() if n != sib}
-        sb = stage_bundle_with_siblings(
-            bundle=bundle, source_model=overlaid,
-            sibling_schemas=others, data_source=data_source,
-        )
-        return ModelScope(source_model=overlaid), sb
-
-    # 2. Bare-string sibling source (chain): bind against the upstream flat StageSchema.
+    # 1. Sibling source (chain): bind against the upstream flat StageSchema.
     if isinstance(src, str) and src in stage_schemas:
         synth = model_from_stage_schema(
             name=src, schema=stage_schemas[src], data_source=data_source,
@@ -159,7 +145,7 @@ def _stage_scope_and_bundle_unframed(
             return ModelScope(source_model=synth), sb
         return stage_schemas[src], sb
 
-    # 3. Model-scoped: the stage's own resolved source model.
+    # 2. Model-scoped: the stage's own resolved source model.
     assert stage_model is not None
     sb = stage_bundle_with_siblings(
         bundle=bundle, source_model=stage_model,
@@ -305,6 +291,7 @@ class _StagePlanner:
     ) -> "Tuple[ModelScope | StageSchema | None, ResolvedSourceBundle]":
         base = self.bundle.model_copy(update={"stage_displays": dict(self.state.displays)})
         if single:
+            _, base = apply_query_extensions(query=query, scope=None, bundle=base)
             return _framed(query=query, scope=None, bundle=base, placeholders=self._placeholders())
         return _stage_scope_and_bundle(
             query=query, bundle=base, stage_schemas=self.state.schemas,
@@ -367,9 +354,8 @@ class _StagePlanner:
         if isinstance(spec, str):
             names.append(spec)
         elif spec is not None:
-            if isinstance(spec, ModelExtension):
-                names.append(spec.source_name)
-            names.extend(j.target_model for j in spec.joins or [])
+            names.extend(j.target_model for j in spec.joins)
+        names.extend(extension_model_names(query))
         return [n for n in dict.fromkeys(names) if n in chain or n in self.bundle.query_backed]
 
     def _spine_demands(self, query: SlayerQuery) -> List[str]:
@@ -455,7 +441,7 @@ class _StagePlanner:
                 and base_name not in chain:
             source = self._resolve_stage_model(stage.source_model)
             source = query_host(source, query=stage) if source is not None else None
-        norm = normalize_query(stage, model=source)
+        norm = normalize_query(stage, model=with_own_extension(source, stage))
         stage = norm.query if norm.query is not None else stage
         variables = {
             **((source.query_variables if source is not None else None) or {}),
@@ -464,7 +450,10 @@ class _StagePlanner:
             **(stage.variables or {}),
             **self.bundle.runtime_variables,
         }
-        stage = apply_variables_to_query(query=stage, variables=variables)
+        stage = substitute_extension_surfaces(
+            query=apply_variables_to_query(query=stage, variables=variables), variables=variables,
+            backslash_escapes=get_dialect(self.bundle.dialect).backslash_escapes_strings,
+        )
         if source is None:
             return stage, None, set()
         return stage, substitute_model_sql_surfaces(
@@ -478,11 +467,10 @@ class _StagePlanner:
             return None
         if isinstance(spec, SlayerModel):
             return spec
-        name = spec.source_name if isinstance(spec, ModelExtension) else spec
-        base = self.bundle.models_by_name.get(name) if isinstance(name, str) else None
+        base = self.bundle.models_by_name.get(spec) if isinstance(spec, str) else None
         if base is None or base.source_queries:
-            raise ValueError(f"Model {name!r} not found")
-        return apply_extension_overlay(base, spec) if isinstance(spec, ModelExtension) else base
+            raise ValueError(f"Model {spec!r} not found")
+        return base
 
     def _base_time_dimension(self, name: str) -> Optional[str]:
         model = self.bundle.query_backed[name]
@@ -491,10 +479,9 @@ class _StagePlanner:
         if not stages:
             return None
         spec = follow_sibling_chain(spec=stages[-1].source_model, named_queries=private)
-        base_name = spec.source_name if isinstance(spec, ModelExtension) else spec
         if isinstance(spec, SlayerModel):
             return spec.effective_default_time_dimension
-        base = self.bundle.models_by_name.get(base_name) if isinstance(base_name, str) else None
+        base = self.bundle.models_by_name.get(spec) if isinstance(spec, str) else None
         return base.effective_default_time_dimension if base is not None else None
 
     def _chain_variables(self, chain: Tuple[str, ...]) -> Dict[str, Any]:

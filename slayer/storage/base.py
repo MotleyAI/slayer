@@ -1019,7 +1019,7 @@ class StorageBackend(ABC):
         """The raw stored model a stored query reads and its datasource; ``None`` for a stage or an unresolvable source."""
         if isinstance(source, dict) and isinstance(source.get("columns"), list):
             return source, str(source.get("data_source") or data_source)
-        name = source.get("source_name") if isinstance(source, dict) else source
+        name = source
         if not isinstance(name, str) or name in stage_names:
             return None
         if data_source is None:

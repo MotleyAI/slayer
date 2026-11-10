@@ -42,7 +42,8 @@ class TestFreshInputConverts:
         with pytest.warns(FutureWarning) as caught:
             q = SlayerQuery.model_validate({"source_model": LEGACY, "measures": ["sum(double_amount)"]})
         message = " ".join(str(w.message) for w in caught)
-        assert "extensions" in message and "3.0" in message, message
+        assert "extensions" in message, message
+        assert "3.0" in message, message
         assert q.source_model == "orders"
         (extension,) = q.extensions or []
         assert isinstance(extension, ModelExtension)
@@ -53,7 +54,7 @@ class TestFreshInputConverts:
     def test_python_instance_converts_with_a_deprecation_warning(self) -> None:
         instance = ModelExtension.model_validate(LEGACY)
         with pytest.warns(FutureWarning, match="extensions"):
-            q = SlayerQuery(source_model=instance)
+            q = SlayerQuery(source_model=instance)  # pyright: ignore[reportArgumentType] — the deprecated form, on purpose
         assert q.source_model == "orders"
         assert q.extensions == [instance]
         assert q.source_model_name == "orders"

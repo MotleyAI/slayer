@@ -20,7 +20,7 @@ Key terms used throughout SLayer documentation and code.
 
 **Cross-model measure** — An aggregation over a joined model's column, referenced with a dotted path inside the aggregation (`avg(customers.score)`, or multi-hop: `sum(customers.regions.population)`). Computed as a sub-query to avoid row multiplication. Transforms work on cross-model measures: `cumsum(avg(customers.score))`.
 
-**ModelExtension** — Extends a model inline on a query with extra `columns`, `measures` (named formulas), `joins`, or `filters` — without modifying the stored model. Used for ad-hoc expression columns, derived buckets, or one-off joins.
+**Query extension** (an `extensions` entry, a `ModelExtension`) — Adds `columns`, `measures` (named formulas) and `joins` to any model a query object reads, visible only in that query object, without modifying the stored model. Used for ad-hoc expression columns, derived buckets, or one-off joins.
 
 **Model filter** — A WHERE filter defined on a model, applied wherever the model's rows are read, including as a join target (e.g., `"deleted_at IS NULL"`).
 

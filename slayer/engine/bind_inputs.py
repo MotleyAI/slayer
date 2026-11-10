@@ -11,7 +11,9 @@ from typing import Callable, Dict, FrozenSet, List, Optional, Tuple, cast
 from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, TimeGranularity, normalize_aggregation_name, TIME_TRANSFORMS
 from slayer.core.errors import (
     AmbiguousJoinPathError,
+    QueryExtensionError,
     SlayerError,
+    UnresolvableDimensionJoinError,
     AmbiguousReferenceError,
     CircularJoinPathError,
     GranularityCallError,
@@ -118,7 +120,9 @@ from slayer.engine.key_metadata import (
 )
 from slayer.core.syntax import (
     AggCall,
+    Cmp,
     DottedRef,
+    Literal,
     ParsedExpr,
     Ref,
     TransformCall,
@@ -139,7 +143,7 @@ from slayer.ir.bound import (
     OrderSpec,
 )
 from slayer.ir.prebound import PreboundQuery, partition_declared_measures
-from slayer.ir.source_bundle import ResolvedSourceBundle, resolve_scope
+from slayer.ir.source_bundle import InnerRestriction, ResolvedSourceBundle, resolve_scope
 from slayer.sql.naming import canonical_aggregate_alias, flat_name as _flatten_dotted, formula_text_alias
 
 __all__ = [
@@ -318,6 +322,32 @@ def _map_bound_keys(
     return new_measures, new_filters, new_specs
 
 
+def _bind_inner_restriction(
+    restriction: InnerRestriction, *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
+) -> BoundFilter:
+    """``restriction`` bound exactly as its filter written in the query; a product read never reaches it."""
+    node = Cmp(
+        op="is not", left=DottedRef(parts=(restriction.model, restriction.token, restriction.key), quoted=False),
+        right=Literal(value=None), single_eq=False,
+    )
+    host = scope.source_model if isinstance(scope, ModelScope) else None
+    if host is not None and host.unrelated_datasets:
+        host = host.with_unrelated(frozenset())
+        scope, bundle = ModelScope(source_model=host), bundle.model_copy(update={"source_model": host})
+    try:
+        return bind_filter(parsed=node, scope=scope, bundle=bundle)
+    except AmbiguousJoinPathError as exc:
+        raise AmbiguousJoinPathError(
+            source_model=exc.source_model, target_model=exc.target_model, candidates=exc.candidates,
+            token=exc.token, context=f"The {restriction.label}",
+        ) from exc
+    except (UnknownReferenceError, UnresolvableDimensionJoinError) as exc:
+        raise QueryExtensionError(
+            f"The {restriction.label} restricts the population, but no join path reaches "
+            f"{restriction.model!r} from it."
+        ) from exc
+
+
 def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages are strictly sequential and share the growing `declared_measures` / `bound_filters` / `order_specs` triple: parse+bind, time-key attachment, sugar lowering, rank-partition validation. Splitting them would thread the same three lists through four signatures without removing a branch.
     *,
     query: SlayerQuery,
@@ -419,6 +449,13 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                 continue
             bound_filters.append(bf)
             bound_filter_texts.append(f)
+
+    # 4. query-declared INNER joins, each the field filter "its target is matched".
+    for restriction in bundle.inner_restrictions:
+        bf = _bind_inner_restriction(restriction, scope=scope, bundle=bundle)
+        if not any(existing.value_key == bf.value_key for existing in bound_filters):
+            bound_filters.append(bf)
+            bound_filter_texts.append(None)
 
     order_specs = []
     _td_buckets = [(td, dm.bound.value_key) for td, dm in zip(query.time_dimensions or [], _td_alias_dms)]

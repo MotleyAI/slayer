@@ -298,7 +298,7 @@ class TestSourceModelName:
 
     def test_property_over_a_converted_legacy_extension(self) -> None:
         with pytest.warns(FutureWarning):
-            assert SlayerQuery(source_model=EXTENSION).source_model_name == "orders"
+            assert SlayerQuery(source_model=EXTENSION).source_model_name == "orders"  # pyright: ignore[reportArgumentType] — the deprecated form, on purpose
 
     async def test_root_qualifier_uses_the_typed_name(self, chain_engine) -> None:
         qualified = await chain_engine.execute(_query(

@@ -7,7 +7,6 @@ import json
 import pytest
 
 from slayer.core.join_edges import JoinEdgeRef, edge_reference, relationship_signature, resolve_join_ref
-from slayer.core.models import ModelJoin
 from slayer.engine.query_engine import SlayerQueryEngine
 
 from tests._dev2073_fixtures import (

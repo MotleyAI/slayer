@@ -89,12 +89,12 @@ class TestExtendingAnyModel:
 
     async def test_query_backed_measure_extension_in_a_non_root_stage(self, dialect) -> None:
         mm = {"name": "mm", "formula": "sum(spent)"}
-        over_model = [
+        over_model: list[SlayerQuery | dict] = [
             q(name="s", source_model="cust_spend", dimensions=["customer_id"], measures=["mm"],
               extensions=[ext("cust_spend", measures=[mm])]),
             q(source_model="s", measures=[{"formula": "sum(mm)", "name": "t"}]),
         ]
-        explicit = [
+        explicit: list[SlayerQuery | dict] = [
             q(name="inner", source_model="orders", dimensions=["customer_id"],
               measures=[{"formula": "sum(amount)", "name": "spent"}]),
             q(name="s", source_model="inner", dimensions=["customer_id"], measures=["mm"],
@@ -161,8 +161,9 @@ class TestRejectedTargets:
     ], ids=["source_name", "join-target"])
     async def test_unknown_extension_target(self, dialect, extension: dict) -> None:
         async with shop(dialect) as engine:
+            query = q(source_model="orders", dimensions=["status"], extensions=[extension])
             with pytest.raises(ModelNotFoundError, match="nope"):
-                await engine.execute(q(source_model="orders", dimensions=["status"], extensions=[extension]))
+                await engine.execute(query)
 
     async def test_extending_the_time_spine_is_rejected(self, dialect) -> None:
         query = q(source_model="orders", dimensions=["status"],
@@ -191,7 +192,8 @@ class TestSaveTimeRefusal:
                 await engine.create_model_from_query(query=stages, name="bad_qb")
             assert await engine.storage.get_model("bad_qb", data_source=DS) is None
         message = str(info.value)
-        assert "conflicted" in message and named in message, message
+        assert "conflicted" in message, message
+        assert named in message, message
 
 
 class TestStageOrdering:

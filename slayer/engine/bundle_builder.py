@@ -9,18 +9,15 @@ from typing import Any, Dict, List, Optional, Tuple, cast
 from slayer.core.errors import ModelNotFoundError, QueryBackedCycleError
 from slayer.core.join_walker import incident_model_names
 from slayer.core.models import SlayerModel
-from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
+from slayer.core.query import SlayerQuery, SourceSpec, extension_model_names
 from slayer.core.scope import StageDisplay
 from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine, query_host, spine_model
 from slayer.engine.column_dependency import definition_heads
 from slayer.engine.cardinality.unrelated import first_hop_names
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
-    apply_extension_overlay,
-    as_extension_over_nonsibling,
     follow_sibling_chain,
     source_name_if_sibling,
-    spec_adds_measures,
 )
 from slayer.ir.variables import merge_query_variables
 from slayer.sql.dialects import dialect_for_ds_type
@@ -82,8 +79,9 @@ async def build_resolved_source_bundle(
     for q in [*named_queries.values(), query]:
         _reject_chain_source(spec=q.source_model, chain=splice_chain)
 
-    source_model, inline_extensions = await _resolve_root(
-        query=query, named_queries=named_queries, storage=storage, data_source=data_source,
+    source_model = await _resolve_source_spec(
+        follow_sibling_chain(spec=query.source_model, named_queries=named_queries),
+        storage=storage, data_source=data_source,
     )
 
     # Joins never cross datasource boundaries: scope the walk by the source
@@ -99,9 +97,9 @@ async def build_resolved_source_bundle(
     source_model = query_host(source_model, query=query)
 
     stage_source_models = await _stage_source_models(
-        named_queries=named_queries, stage_displays=stage_displays,
-        storage=storage, data_source=walk_ds or data_source,
+        named_queries=named_queries, storage=storage, data_source=walk_ds or data_source,
     )
+    peers = failures.skip(await storage.load_models(data_source=walk_ds)) if walk_ds is not None else []
 
     query_variables = merge_query_variables(
         runtime=runtime_variables,
@@ -117,7 +115,7 @@ async def build_resolved_source_bundle(
         datasource_type=ds.type if ds else None,
         source_model=source_model,
         referenced_models=referenced_models,
-        inline_extensions=inline_extensions,
+        inline_extensions=[e for q in [*named_queries.values(), query] for e in q.extensions or []],
         named_queries=dict(named_queries),
         stage_source_models=stage_source_models,
         query_variables=query_variables,
@@ -129,39 +127,14 @@ async def build_resolved_source_bundle(
         now=datetime.now() if now is None else now,
         granularities=ds.granularity_definitions if ds else {},
         spine_clash=spine_clash,
+        datasource_model_names=frozenset(m.name for m in peers),
+        datasource_edge_names=frozenset(j.name for m in peers for j in m.joins if j.name),
     )
-
-
-async def _resolve_root(
-    *,
-    query: SlayerQuery,
-    named_queries: Dict[str, SlayerQuery],
-    storage: "StorageBackend",
-    data_source: Optional[str],
-) -> "Tuple[SlayerModel, List[ModelExtension]]":
-    """The real base the root chain bottoms out at, and its inline extensions."""
-    sibling_names = set(named_queries)
-    root_spec = follow_sibling_chain(spec=query.source_model, named_queries=named_queries)
-    inline_extensions: List[ModelExtension] = []
-    if source_name_if_sibling(spec=root_spec, sibling_names=sibling_names) is None:
-        ext = as_extension_over_nonsibling(spec=root_spec, sibling_names=sibling_names)
-        if ext is not None:
-            inline_extensions.append(ext)
-    source_model = await _resolve_source_spec(
-        root_spec, storage=storage, data_source=data_source
-    )
-    if source_model.source_queries and isinstance(root_spec, ModelExtension):
-        # The overlay applies once, over the spliced stage (design decision 8).
-        source_model = await _resolve_source_spec(
-            root_spec.source_name, storage=storage, data_source=data_source,
-        )
-    return source_model, inline_extensions
 
 
 async def _stage_source_models(
     *,
     named_queries: Dict[str, SlayerQuery],
-    stage_displays: Dict[str, StageDisplay],
     storage: "StorageBackend",
     data_source: Optional[str],
 ) -> Dict[str, SlayerModel]:
@@ -176,21 +149,15 @@ async def _stage_source_models(
         resolved = await _resolve_source_spec(nq.source_model, storage=storage, data_source=data_source)
         if not resolved.source_queries:
             out[nm] = query_host(resolved, query=nq)
-        elif spec_adds_measures(nq.source_model):
-            label = stage_displays[nm].label if nm in stage_displays else f"stage {nm!r}"
-            raise ValueError(
-                f"{label[0].upper()}{label[1:]}: a ModelExtension over query-backed "
-                f"model {resolved.name!r} may not add measures; define them in "
-                f"a later stage over it instead."
-            )
     return out
 
 
 def _written_targets(query: SlayerQuery) -> List[str]:
-    """The models ``query`` names: its source's join targets, then its references' first hops."""
+    """The models ``query`` names: its inline source's join targets and its extensions' models, then its
+    references' first hops."""
     spec = query.source_model
-    joins = [] if spec is None or isinstance(spec, str) else [j.target_model for j in spec.joins or []]
-    return list(dict.fromkeys([*joins, *sorted(first_hop_names(query))]))
+    joins = [j.target_model for j in spec.joins] if isinstance(spec, SlayerModel) else []
+    return list(dict.fromkeys([*joins, *extension_model_names(query), *sorted(first_hop_names(query))]))
 
 
 async def _query_written_targets(
@@ -239,11 +206,7 @@ async def _named_components(
 
 
 def _spec_base_name(spec: SourceSpec | None) -> Optional[str]:
-    if isinstance(spec, str):
-        return spec
-    if isinstance(spec, ModelExtension):
-        return spec.source_name
-    return None
+    return spec if isinstance(spec, str) else None
 
 
 def _reject_chain_source(*, spec: SourceSpec | None, chain: Tuple[str, ...]) -> None:
@@ -453,11 +416,6 @@ async def _resolve_source_spec(
         return spec
     if spec == TIME_SPINE_MODEL and data_source is not None:
         return spine_model(data_source=data_source)
-    if isinstance(spec, ModelExtension):
-        base = await storage.get_model(spec.source_name, data_source=data_source)
-        if base is None:
-            raise ModelNotFoundError(spec.source_name)
-        return apply_extension_overlay(base, spec)
     if isinstance(spec, str):
         model = await storage.get_model(spec, data_source=data_source)
         if model is None:

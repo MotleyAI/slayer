@@ -870,14 +870,15 @@ You can also join named queries to models:
     "measures": ["avg(score)"]
   },
   {
-    "source_model": {"source_name": "orders", "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]},
+    "source_model": "orders",
+    "extensions": [{"source_name": "orders", "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]}],
     "measures": ["count(*)", "avg(customer_scores.score_avg)"],
     "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
   }
 ]
 ```
 
-The main query uses a `ModelExtension` to add a join to the named sub-query. Queries can also be saved as permanent models — see [Query-backed models](models.md#query-backed-models). An inline `source_model` carrying `source_queries` is rejected — write those queries as named stages of the list instead.
+The main query's `extensions` entry adds a join from `orders` to the named sub-query. Queries can also be saved as permanent models — see [Query-backed models](models.md#query-backed-models). An inline `source_model` carrying `source_queries` is rejected — write those queries as named stages of the list instead.
 
 Sibling stages can also reference each other — any non-final stage may use a *prior* named stage as `source_model` or as `joins.target_model`, so a query list forms a DAG, not just a chain. For example, two parallel rollups feeding a single final stage:
 
@@ -891,7 +892,8 @@ Sibling stages can also reference each other — any non-final stage may use a *
   },
   {
     "name": "tagged_orders",
-    "source_model": {"source_name": "orders", "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]},
+    "source_model": "orders",
+    "extensions": [{"source_name": "orders", "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]}],
     "dimensions": ["customer_scores.score_avg"],
     "measures": ["count(*)"]
   },
@@ -915,23 +917,35 @@ A grouped stage is unique on its dimensions, so a join onto a sibling stage that
 - MCP: the `query` tool with `query=[...]` (a list of stage objects); the same tool also accepts a model name or a single query object.
 - REST: `POST /query` with body `{"queries": [...], "variables": {...}, "dry_run": ..., "explain": ...}` (the single-query body shape is also still accepted).
 
-### ModelExtension
+### Query extensions
 
-Extend a model inline with extra columns, measures, or joins — without modifying the stored model:
+`extensions` adds columns, measures and joins to any model a query object reads — its population, a joined model, or a stage — without modifying the stored model:
 
 ```json
 {
-  "source_model": {
-    "source_name": "orders",
-    "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
-    "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]
-  },
-  "dimensions": ["tier"],
+  "source_model": "orders",
+  "extensions": [
+    {
+      "source_name": "orders",
+      "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
+      "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]
+    },
+    {"source_name": "customers", "columns": [{"name": "tier_label", "sql": "upper(tier)"}]}
+  ],
+  "dimensions": ["tier", "customers.tier_label"],
   "measures": ["count(*)"]
 }
 ```
 
-`ModelExtension` fields: `source_name` (required — model to extend), `columns`, `measures`, `joins` (all optional — merged with the source model's). Any other key is rejected when the query is constructed.
+Each entry's fields are `source_name` (required — the model or stage to extend), `columns`, `measures` and `joins` (all optional — merged with the model's own); any other key, or a second entry for one model, is rejected when the query is constructed.
+
+An extension is visible only in the query object that declares it: other stages see that stage's output, and stored joins, columns, measures and query-backed models never see it.
+
+A join repeating an edge between its two models — declared on either model, with the same `join_pairs` in either direction — is that edge, and its `name` becomes a local alias; a name, pairs or cardinality that conflicts with an existing edge is an error.
+
+`"join_type": "inner"` keeps only the population rows with a match along the extended model's path, without multiplying rows; a `left` join (the default) never restricts, and a new edge is always traversed as LEFT.
+
+An extension object in `source_model` (`{"source_name": ...}`) still works with a deprecation warning, and is removed in SLayer 3.0.
 
 ### Multi-hop dimensions
 

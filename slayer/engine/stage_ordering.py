@@ -3,14 +3,16 @@
 The last stage stays root / sink. Cycles, self-references, duplicate names, and
 a root referenced by another stage raise ``ValueError`` naming the offending
 stage; forward references are reordered, not rejected. Sibling refs are walked
-through inline ``SlayerModel`` / ``ModelExtension`` specs and ``joins[].target_model``.
+through ``source_model``, inline models' and extensions' ``joins[].target_model``,
+and extensions' ``source_name``.
 """
 from __future__ import annotations
 
 from typing import AbstractSet, Any, Dict, List, Optional, Set, Tuple
 
 from slayer.core.models import ModelJoin
-from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
+from slayer.core.models import SlayerModel
+from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec, extension_model_names
 from slayer.core.scope import StageDisplay
 
 #: Minted identity prefixes; model names never carry them (``__slayer_`` is reserved).
@@ -20,24 +22,9 @@ SPLICED_STAGE_PREFIX = "__slayer_qb__"
 
 def stage_sibling_reads(*, query: SlayerQuery, siblings: AbstractSet[str]) -> Set[str]:
     """Sibling names in ``siblings`` that ``query`` references; purely structural, never raises."""
-    out: Set[str] = set()
-    _walk_spec(spec=query.source_model, against=siblings, out=out)
-    return out
-
-
-def _walk_spec(spec: SourceSpec | None, against: AbstractSet[str], out: Set[str]) -> None:
-    """Collect sibling refs from a ``source_model`` spec."""
-    if spec is None:
-        return
-    if isinstance(spec, str):
-        if spec in against:
-            out.add(spec)
-        return
-    if isinstance(spec, ModelExtension) and spec.source_name in against:
-        out.add(spec.source_name)
-    for j in spec.joins or []:
-        if j.target_model in against:
-            out.add(j.target_model)
+    spec = query.source_model
+    names = [spec] if isinstance(spec, str) else [j.target_model for j in spec.joins] if spec is not None else []
+    return {n for n in (*names, *extension_model_names(query)) if n in siblings}
 
 
 def stage_identity(*, name: str, model: Optional[str] = None) -> str:
@@ -59,21 +46,25 @@ def _respell_spec(spec: SourceSpec | None, rename: Dict[str, str]) -> SourceSpec
     """``spec`` with every query-written sibling reference respelled through ``rename``."""
     if isinstance(spec, str):
         return rename.get(spec, spec)
-    if spec is None:
-        return None
+    if isinstance(spec, SlayerModel) and any(j.target_model in rename for j in spec.joins):
+        return spec.model_copy(update={"joins": _respell_joins(list(spec.joins), rename)})
+    return spec
+
+
+def _respell_extension(extension: ModelExtension, rename: Dict[str, str]) -> ModelExtension:
     update: Dict[str, Any] = {}
-    if isinstance(spec, ModelExtension) and spec.source_name in rename:
-        update["source_name"] = rename[spec.source_name]
-    if any(j.target_model in rename for j in spec.joins or []):
-        update["joins"] = _respell_joins(list(spec.joins or []), rename)
-    return spec.model_copy(update=update) if update else spec
+    if extension.source_name in rename:
+        update["source_name"] = rename[extension.source_name]
+    if any(j.target_model in rename for j in extension.joins or []):
+        update["joins"] = _respell_joins(list(extension.joins or []), rename)
+    return extension.model_copy(update=update) if update else extension
 
 
 def localize_stages(
     queries: List[SlayerQuery], *, model: Optional[str] = None,
 ) -> "Tuple[List[SlayerQuery], Dict[str, StageDisplay]]":
     """Give every named non-root stage a minted identity and respell the references the
-    list itself writes (sources, extension bases, inline join targets); stored
+    list itself writes (sources, extended models, inline and extension join targets); stored
     definitions are untouched. Under ``model`` (a spliced stored query-backed model)
     the final stage takes the model's name. Returns the stages and ``{identity: display}``."""
     if not queries:
@@ -84,6 +75,8 @@ def localize_stages(
     out: List[SlayerQuery] = []
     for q in queries:
         update: Dict[str, Any] = {"source_model": _respell_spec(q.source_model, rename)}
+        if q.extensions:
+            update["extensions"] = [_respell_extension(e, rename) for e in q.extensions]
         if q is not root and q.name:
             update["name"] = rename[q.name]
         elif model is not None:

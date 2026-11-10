@@ -1088,6 +1088,12 @@ def _resolve_saved_measure(
         records.measures[(terminal_model.name, measure.name)] = None
     parsed = parse_bound_expr(measure.formula, measure.bound_variables)
     _reject_placeholders(parsed, text=measure.formula)
+    if measure.name not in terminal_model.query_local_names:
+        # A stored definition never sees a query's extensions.
+        bundle = bundle.definition_view()
+        terminal_model = terminal_model.definition_view()
+        if scope.source_model is not None:
+            scope = ModelScope(source_model=scope.source_model.definition_view())
     if not host_path:
         # Bare/local: measure lives on the host; bind inline at this scope.
         return _bind(

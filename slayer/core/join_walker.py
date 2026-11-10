@@ -54,6 +54,7 @@ __all__ = [
     "join_key_columns",
     "matching_edges",
     "neighbors",
+    "orient_join",
     "observe_traversals",
     "provably_to_one",
     "resolve_hop",
@@ -100,6 +101,8 @@ class OrientedJoin(BaseModel):
     product: ProductKind | None = None
     # A list column's hop between its model and its element child (the list column's name); ``None`` otherwise.
     lateral: str | None = None
+    # A query object's local aliases of the edge.
+    aliases: tuple[str, ...] = ()
 
 
 _traversals: ContextVar[Optional[Dict[str, bool]]] = ContextVar(
@@ -150,11 +153,12 @@ def reverse_token(edge: OrientedJoin) -> str:
 def matching_edges(edges: list[OrientedJoin], token: str) -> list[OrientedJoin]:
     """The edges ``token`` names, by precedence: edge name, then a query stage's
     spelling (it shadows a same-named model), then a model name — never a
-    stage's minted identity."""
+    stage's minted identity — then a query-local alias."""
     for match in (
         lambda e: e.name == token,
         lambda e: e.target_spelling == token,
         lambda e: e.target_spelling is None and e.target_model == token,
+        lambda e: token in e.aliases,
     ):
         hits = [e for e in edges if match(e)]
         if hits:
@@ -190,7 +194,16 @@ def _orient(
         declaring_model=declaring,
         source_spelling=spellings.get(from_model),
         target_spelling=spellings.get(to_model),
+        aliases=join.aliases,
     )
+
+
+def orient_join(*, join: ModelJoin, declaring: SlayerModel, other: SlayerModel | None, from_model: str) -> OrientedJoin:
+    """``join`` (declared on ``declaring``, reaching ``other``) oriented so its source is ``from_model``."""
+    spellings = {declaring.name: declaring.explicit_spelling}
+    if other is not None:
+        spellings[other.name] = other.explicit_spelling
+    return _orient(join=join, declaring=declaring.name, from_model=from_model, spellings=spellings)
 
 
 def _product_edge(model: SlayerModel) -> OrientedJoin:

@@ -131,7 +131,8 @@ class TestConflicts:
                   extensions=[ext("shipments", joins=[join("addresses", [["address_id", "id"]])])])
         async with shop(dialect) as engine:
             message = await _error(engine, query)
-        assert "origin" in message and "dest" in message, message
+        assert "origin" in message, message
+        assert "dest" in message, message
 
     async def test_a_named_declaration_with_different_pairs_is_an_error(self, dialect) -> None:
         query = q(source_model="orders", dimensions=["id"], extensions=[ext("orders", joins=[
@@ -145,7 +146,9 @@ class TestConflicts:
             join("orders", REVERSE_CUSTOMER_PAIRS, cardinality="many_to_one")])])
         async with shop(dialect) as engine:
             message = await _error(engine, query)
-        assert "many_to_one" in message and "one_to_many" in message and "orders" in message, message
+        assert "many_to_one" in message, message
+        assert "one_to_many" in message, message
+        assert "orders" in message, message
 
     async def test_an_alias_equal_to_another_edges_name_is_an_error(self, dialect) -> None:
         query = q(source_model="orders", dimensions=["id"], extensions=[ext("orders", joins=[
@@ -177,7 +180,8 @@ class TestConflicts:
         ])
         async with shop(dialect) as engine:
             message = await _error(engine, query)
-        assert "home_region" in message and "residents" in message, message
+        assert "home_region" in message, message
+        assert "residents" in message, message
 
 
 class TestNewEdges:

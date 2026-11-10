@@ -33,7 +33,7 @@ from slayer.core.models import (
     is_base_column_sql,
     physical_column_sql,
 )
-from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
+from slayer.core.query import SlayerQuery, SourceSpec, extension_model_names
 from slayer.core.refs import IDENTIFIER_RE
 from slayer.core.warnings import BrokenDependentWarning
 from slayer.sql.sql_predicate import parse_sql_predicate
@@ -75,7 +75,9 @@ from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.dialects.reflection import ResultColumnType
 from slayer.database.engine_factory import ClientCacheKey, client_cache_key
 from slayer.sql.naming import render_table_name
-from slayer.ir.source_bundle import added_joins
+from slayer.core.errors import QueryExtensionError
+from slayer.core.join_edges import EdgeMerge
+from slayer.ir.source_bundle import overlay_columns_and_measures
 
 logger = logging.getLogger(__name__)
 
@@ -845,9 +847,6 @@ def _resolve_stage_source_to_base(
                 current = prior_stages_by_name[current].source_model
                 continue
             return current
-        if isinstance(current, ModelExtension):
-            current = current.source_name
-            continue
         if isinstance(current, SlayerModel):
             return current.name
         return None
@@ -855,20 +854,33 @@ def _resolve_stage_source_to_base(
 
 class _StageGraph(BaseModel):
     """Resolved join-graph context for a query-backed stage: source name, its extension-augmented
-    model, extension-added joins, and every model reachable via the in-DS graph."""
+    model, the query-local joins its extensions add, and every model reachable via the in-DS graph."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     stage_source_name: str | None = None
-    # The stage source as the runtime binds it: the stored model plus the stage's extension joins.
+    # The stage source as the runtime binds it: the stored model with the stage's extensions.
     source: SlayerModel | None = None
-    extension_joins: list[ModelJoin] = Field(default_factory=list)
+    # ``(declaring model, join)`` for each query-local edge.
+    extension_joins: list[tuple[str, ModelJoin]] = Field(default_factory=list)
     reachable: set[str] = Field(default_factory=set)
     models_by_name: dict[str, SlayerModel] = Field(default_factory=dict)
 
-    @property
-    def extension_targets(self) -> set[str]:
-        return {j.target_model for j in self.extension_joins}
+
+def _with_stage_extensions(stage: SlayerQuery, models_by_name: dict[str, SlayerModel]) -> dict[str, SlayerModel]:
+    """``models_by_name`` as ``stage`` reads them: its extensions overlaid and merged (conflicts skipped)."""
+    models = dict(models_by_name)
+    for extension in stage.extensions or []:
+        if extension.source_name in models:
+            models[extension.source_name] = overlay_columns_and_measures(models[extension.source_name], extension)
+    merge = EdgeMerge(models=models)
+    for extension in stage.extensions or []:
+        for join in extension.joins or [] if extension.source_name in models else []:
+            try:
+                merge.add(declaring=extension.source_name, join=join)
+            except (QueryExtensionError, ValueError):
+                continue
+    return merge.models
 
 
 def _build_stage_graph(
@@ -878,22 +890,18 @@ def _build_stage_graph(
     models_by_name: dict[str, SlayerModel],
 ) -> _StageGraph:
     """Build a ``_StageGraph`` for one stage; ``stage_source_name`` None for inline sources."""
-    extension_joins = _stage_source_joins(stage)
-    extension_targets = {j.target_model for j in extension_joins}
-    base = models_by_name.get(stage_source_name) if stage_source_name else None
-    if base is not None:
-        extension_joins = added_joins(base=base, joins=extension_joins)
-    source = base.model_copy(update={"joins": [*base.joins, *extension_joins]}) if base is not None else None
-    models = {**models_by_name, source.name: source} if source is not None else models_by_name
-    roots = [source] if source is not None else [models[t] for t in sorted(extension_targets) if t in models]
+    targets = _stage_join_targets(stage)
+    models = _with_stage_extensions(stage, models_by_name)
+    source = models.get(stage_source_name) if stage_source_name else None
+    roots = [source] if source is not None else [models[t] for t in sorted(targets) if t in models]
     found: set[str] = {stage_source_name} if stage_source_name else set()
-    found |= extension_targets
+    found |= targets
     for root in roots:
         found |= reachable(root=root, models_by_name=models)
     return _StageGraph(
         stage_source_name=stage_source_name,
         source=source,
-        extension_joins=list(extension_joins),
+        extension_joins=[(m.name, j) for m in models.values() for j in m.joins if j.query_local],
         reachable=found,
         models_by_name=models,
     )
@@ -965,9 +973,9 @@ def _walk_stage_chain(*, path: list[str], graph: _StageGraph) -> tuple[str, list
         return None
     if chain is None:
         return None
-    extension = [JoinEdgeRef.of(j) for j in graph.extension_joins]
-    stored = [e for e in chain if not (e.declaring_model == graph.source.name
-                                       and any(r.matches_hop(e) for r in extension))]
+    extension = [(declaring, JoinEdgeRef.of(j)) for declaring, j in graph.extension_joins]
+    stored = [e for e in chain if not any(e.declaring_model == declaring and r.matches_hop(e)
+                                          for declaring, r in extension)]
     return (chain[-1].target_model if chain else graph.source.name), stored
 
 
@@ -1007,19 +1015,11 @@ def _stage_referenced_columns_for_base(
     return {leaf for leaf in attributed if leaf is not None}
 
 
-def _stage_source_joins(stage: SlayerQuery) -> list[ModelJoin]:
-    """Joins declared on a stage's inline source (extension or inline model); none for a bare name."""
-    source = stage.source_model
-    if isinstance(source, ModelExtension):
-        return source.joins or []
-    if isinstance(source, SlayerModel):
-        return source.joins
-    return []
-
-
 def _stage_join_targets(stage: SlayerQuery) -> set[str]:
-    """Join target_model names referenced by a stage's inline source."""
-    return {j.target_model for j in _stage_source_joins(stage)}
+    """The models a stage's inline source joins and its extensions name."""
+    source = stage.source_model
+    inline = {j.target_model for j in source.joins} if isinstance(source, SlayerModel) else set()
+    return inline | set(extension_model_names(stage))
 
 
 def _check_stage_against_base(

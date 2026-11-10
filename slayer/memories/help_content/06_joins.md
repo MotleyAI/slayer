@@ -43,5 +43,7 @@ a dimension it cannot be attributed to (an order's status for customer credit),
   element, so `tags.value = 'x'` with `tags.value = 'y'` matches nothing: write
   `contains_all(tags, ['x', 'y'])`; `not contains(tags, 'x')` keeps the rows without x.
 - A per-query column: an expression where it is used, e.g. the computed dimension
-  `{"expression": "amount > 100", "name": "is_big"}`. A per-query join: `source_model`
-  as an inline extension `{"source_name": "orders", "joins": [...]}`.
+  `{"expression": "amount > 100", "name": "is_big"}`. A per-query join, on any model the
+  query reads: `extensions: [{"source_name": "orders", "joins": [...]}]`; repeating a stored
+  join's `join_pairs` reuses that edge, and `"join_type": "inner"` keeps only the rows with
+  a match.

@@ -9,11 +9,11 @@ from typing import Literal
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
 from slayer.core.join_walker import OrientedJoin, walk
 from slayer.core.models import SlayerModel
-from slayer.core.query import ComputedDimension, ModelExtension, SlayerQuery, SourceSpec
+from slayer.core.query import ComputedDimension, SlayerQuery, SourceSpec, extension_model_names
 from slayer.engine.param_binding import default_reference_sites
 from slayer.engine.reference_closure import parse_fragment_any_dialect
 from slayer.core.syntax import drop_root_hop, text_paths
-from slayer.ir.source_bundle import apply_extension_overlay, follow_sibling_chain, source_name_if_sibling
+from slayer.ir.source_bundle import follow_sibling_chain, overlay_columns_and_measures, source_name_if_sibling
 from slayer.sql.column_expansion import is_trivial_base, reference_sites, root_scope_column_ids
 
 Identity = tuple[str, str]
@@ -232,13 +232,14 @@ class _Reads:
     def stages(self, queries: list[SlayerQuery], *, data_source: str | None) -> None:
         named = {q.name: q for q in queries[:-1] if q.name}
         for query in queries:
-            if isinstance(query.source_model, ModelExtension):
-                self.written_joins(query.source_model, data_source=data_source)
+            for name in extension_model_names(query):
+                for model in self.holders(name, data_source=data_source):
+                    self.read(model)
             try:
                 spec = follow_sibling_chain(spec=query.source_model, named_queries=named)
             except ValueError:
                 continue
-            hosts = self.source(spec, data_source=data_source)
+            hosts = [self._extended(host, query=query) for host in self.source(spec, data_source=data_source)]
             if source_name_if_sibling(spec=query.source_model, sibling_names=named) is not None:
                 continue  # fields name the sibling's flat columns
             for parts in query_reference_parts(query):
@@ -254,23 +255,23 @@ class _Reads:
             for model in models:
                 self.read(model)
             return models
-        if isinstance(spec, ModelExtension):
-            self.written_joins(spec, data_source=data_source)
-            hosts = []
-            for base in self.holders(spec.source_name, data_source=data_source):
-                self.read(base)
-                host = apply_extension_overlay(base, spec)
-                self.definitions(host)
-                hosts.append(host)
-            return hosts
         if isinstance(spec, SlayerModel):
             self.written_joins(spec, data_source=spec.data_source or data_source)
             self.definitions(spec)
             return [spec]
         return []
 
-    def written_joins(self, spec: ModelExtension | SlayerModel, *, data_source: str | None) -> None:
-        for join in spec.joins or []:
+    def _extended(self, host: SlayerModel, *, query: SlayerQuery) -> SlayerModel:
+        """``host`` with the columns and measures ``query`` extends it with, their definitions read."""
+        extension = next((e for e in query.extensions or [] if e.source_name == host.name), None)
+        if extension is None:
+            return host
+        extended = overlay_columns_and_measures(host, extension)
+        self.definitions(extended)
+        return extended
+
+    def written_joins(self, spec: SlayerModel, *, data_source: str | None) -> None:
+        for join in spec.joins:
             for target in self.holders(join.target_model, data_source=data_source):
                 self.read(target)
 

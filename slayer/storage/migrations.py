@@ -19,7 +19,7 @@ from typing import Any
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
     "SlayerModel": 18,
-    "SlayerQuery": 9,
+    "SlayerQuery": 10,
     "DatasourceConfig": 3,
     "Memory": 7,
     "Embedding": 1,
@@ -36,6 +36,11 @@ def migrating_document(label: str | None) -> Iterator[None]:
         yield
     finally:
         _document.reset(token)
+
+
+def in_stored_document() -> bool:
+    """Whether validation runs inside a stored document (a model's or memory's nested documents)."""
+    return _document.get() is not None
 
 
 def document_label(data: dict) -> str | None:
@@ -173,6 +178,22 @@ def _query_v3_to_v4(data: dict) -> dict:
     if strict:
         data.setdefault("to_many_handling", "error")
     return data
+
+
+def is_legacy_root_extension(source: Any) -> bool:
+    """Whether a raw ``source_model`` is the legacy extension object."""
+    return isinstance(source, dict) and "source_name" in source
+
+
+def hoist_root_extension(data: dict) -> dict:
+    """A query whose ``source_model`` is an extension object, as ``source_model: <base>`` plus that extension."""
+    source = data.get("source_model")
+    if not isinstance(source, dict) or not is_legacy_root_extension(source):
+        return data
+    return {**data, "source_model": source["source_name"], "extensions": [source, *(data.get("extensions") or [])]}
+
+
+register_migration(entity="SlayerQuery", source_version=9, stored_only=True)(hoist_root_extension)
 
 
 def migrate(entity: str, data: Any) -> Any:

@@ -13,6 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from slayer.core.enums import JoinType
 from slayer.core.errors import (
     AmbiguousJoinPathError,
     CircularJoinPathError,
@@ -178,6 +179,14 @@ def _query_dimension_refs(query: SlayerQuery) -> list[str]:
     return refs
 
 
+def _restriction_refs(query: SlayerQuery) -> list[str]:
+    """Each query-declared INNER join, read as a field filter on its declaring model's key."""
+    return [
+        f"{e.source_name}.{j.join_pairs[0][0]}"
+        for e in query.extensions or [] for j in e.joins or [] if j.join_type is JoinType.INNER
+    ]
+
+
 def determination_items(
     query: SlayerQuery,
     *,
@@ -207,6 +216,8 @@ def determination_items(
     for f in query.filters or []:
         for ref in _filter_refs(f, root=query.source_model_name, model_scopes=scopes):
             _add(ref)
+    for ref in _restriction_refs(query):
+        _add(ref)
     return items
 
 
@@ -411,6 +422,7 @@ def _anchor_names(
             if not model_scopes
             or not _saved_measure_in_every_scope(r, model_scopes=model_scopes)
         )
+    refs.extend(_restriction_refs(query))
     root = query.source_model_name
     # A root-relative bare reference is the root's own column.
     return {ref.split(".")[0] if root is None or "." in ref else root for ref in refs if ref}
