@@ -24,5 +24,5 @@ datasource type and for its async engines, SHALL hand each connection to one cal
 
 #### Scenario: Every engine hands a connection to one caller at a time
 - **WHEN** SLayer builds the synchronous engine, and the async engine where the type has one, for each
-  datasource type it supports
+  Tier 1 database it supports
 - **THEN** each engine's pool hands each connection to one caller at a time

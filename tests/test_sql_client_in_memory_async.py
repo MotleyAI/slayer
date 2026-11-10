@@ -10,7 +10,7 @@ Each test reproduces the bug via a deliberate asymmetry: ``_setup`` writes
 on the main thread (through whichever engine the client resolves), then
 ``await client.execute(...)`` reads on a worker thread. Before the fix:
 worker-thread reads see an empty database and the assertions fail. After
-the fix (per-client engine + ``StaticPool`` + ``check_same_thread=False``)
+the fix (per-client engine + one-connection pool + ``check_same_thread=False``)
 all calls share one connection and all reads see the same data.
 
 DDL/DML can't go through ``client.execute()``: ``_execute_sql_sync``
@@ -145,10 +145,10 @@ async def test_sync_and_async_on_same_client_share_in_memory_db() -> None:
     assert sync_rows == [{"n": 42}]
 
 
-async def test_sqlite_udfs_work_under_static_pool() -> None:
-    """SQLite Python UDFs (median) must remain registered under StaticPool.
+async def test_sqlite_udfs_work_on_the_one_connection() -> None:
+    """SQLite Python UDFs (median) must remain registered on the in-memory engine's one connection.
 
-    StaticPool keeps a single connection; the engine's ``connect`` event
+    The pool keeps a single connection; the engine's ``connect`` event
     fires once and registers ``median``/``percentile_cont``/``percentile_disc``
     on that one connection. The UDF must be callable through ``execute``.
     """
@@ -186,7 +186,7 @@ async def test_concurrent_async_calls_share_in_memory_db(no_retry: None) -> None
     """Realistic concurrent path: many awaits in flight at once.
 
     ``asyncio.gather`` forces several worker threads from the executor
-    pool. Without StaticPool + ``check_same_thread=False``, each thread
+    pool. Without one shared connection + ``check_same_thread=False``, each thread
     holds its own SQLite connection / its own in-memory DB, so SELECTs
     land on threads where the table was never seen. Either an
     ``OperationalError("no such table")`` or

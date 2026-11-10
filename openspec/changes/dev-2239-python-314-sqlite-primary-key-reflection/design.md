@@ -44,8 +44,8 @@ See proposal.md — Why. Findings that shape the approach:
    types are identical. Alternative: keys only — leaves generated-column tables on the failing
    statement. The private resolver is pinned by a parity test across the supported SQLAlchemy range.
    (user)
-4. **arc42 principle 6**, with the law test widened to a structural pool check for every datasource
-   type. Alternative: SQLite-only wording. (user, approved wording)
+4. **arc42 principle 6**, with the law test widened to a structural pool check for every Tier 1
+   database. Alternative: SQLite-only wording. (user, approved wording)
    "6. **One thread per connection**: a database connection is used by one thread at a time.
    [enforced: test:tests/test_law_one_thread_per_connection.py]"
 5. **arc42 principle 3 wording** follows the pool change (user, approved wording):
@@ -92,6 +92,6 @@ See proposal.md — Why. Findings that shape the approach:
   divergence is a test failure, not drift.
 - [Concurrent in-memory statements now queue] → in-memory SQLite is a test/demo datasource; correctness
   over overlap. A wait longer than the pool timeout raises SQLAlchemy's timeout error.
-- [The structural pool check needs every datasource type's engine to build without connecting] →
+- [The structural pool check needs every Tier 1 database's engine to build without connecting] →
   engines are built from URLs only; a type whose build connects is a test failure to resolve, never a
   skip.
