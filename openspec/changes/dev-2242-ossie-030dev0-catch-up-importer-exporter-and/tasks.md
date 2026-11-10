@@ -33,7 +33,7 @@
 
 ## 6. Drift check
 
-- [ ] 6.1 Point `scripts/ossie_schema_drift.py` at `apache/ossie`, read the file list from the provenance file, compare the schema canonically and the examples as text, keep exit codes 0/1/2 and stdlib only; update the workflow comment; verify 2.9 passes and a live run against upstream exits 0
+- [ ] 6.1 Point `scripts/ossie_schema_drift.py` at `apache/ossie`, read the file list from the provenance file, compare the schema canonically and the examples as text, keep exit codes 0/1/2; read the provenance with PyYAML and install it (pinned) in the workflow; update the workflow comment; verify 2.9 passes and a live run against upstream exits 0
 
 ## 7. Docs
 

@@ -69,8 +69,9 @@ exports that validate against 0.3; every upstream example vendored, imported and
   more than once; the OSI converter consults it. Other importers' behaviour is unchanged. (default)
 - **Upstream examples vendored byte-identical**, all six, under `tests/fixtures/osi/upstream/`, with one provenance
   file (repository, commit, date, upstream path → vendored path) shared by the schema and the examples; the drift
-  script reads its file list from it, compares the schema canonically and the examples as text, and stays
-  stdlib-only. Exit codes unchanged in meaning: 0 all match, 1 any drift, 2 any fetch failed. (default; all six codex)
+  script reads its file list from it with PyYAML (installed by the workflow), and compares the schema canonically
+  and the examples as text. Exit codes unchanged in meaning: 0 all match, 1 any drift, 2 any fetch failed.
+  (default; all six codex; PyYAML over stdlib-only: user)
 - **No OpenSpec requirement for the drift tooling.** It is CI tooling, not product behaviour. (default)
 - **Docs follow the spec's wording** for `--no-extensions` ("every entity that exists only in an extension"), not
   the broader "everything". (default)
