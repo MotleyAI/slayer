@@ -26,6 +26,7 @@ from slayer.live_schema.ingestion import (
 from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
+from tests._key_read_failure import LOST, fail_key_read
 
 _REGCLASS = "Catalog Error: Type with name REGCLASS does not exist!"
 _TO_ONE = {JoinCardinality.MANY_TO_ONE, JoinCardinality.ONE_TO_ONE}
@@ -275,9 +276,9 @@ def _warnings_naming(caplog: pytest.LogCaptureFixture, table: str) -> list[str]:
     ]
 
 
-def _assert_one_read_warning(messages: list[str], *, word: str) -> None:
+def _assert_one_read_warning(messages: list[str], *, word: str, marker: str = "boom-key-read") -> None:
     # A table re-read as a join target logs each failed read; the warnings stay identical.
-    matching = {m for m in messages if "boom-key-read" in m}
+    matching = {m for m in messages if marker in m}
     assert len(matching) == 1, messages
     assert re.search(word, next(iter(matching)), re.IGNORECASE), matching
 
@@ -314,21 +315,14 @@ class TestKeyReadFailureIsVisible:
                 CREATE TABLE items (id INTEGER PRIMARY KEY, order_id INTEGER REFERENCES orders(id));
                 """
             )
-        real = Inspector.get_foreign_keys
-
-        def _flaky(self: Inspector, table_name: str, *args: Any, **kwargs: Any) -> Any:
-            if table_name == "orders":
-                raise RuntimeError("boom-key-read")
-            return real(self, table_name, *args, **kwargs)
-
-        monkeypatch.setattr(Inspector, "get_foreign_keys", _flaky)
+        fail_key_read(monkeypatch, table="orders", reads=("foreign keys",))
         caplog.set_level(logging.WARNING)
         report = await _report(_ds(db, kind="sqlite"))
         models = _models(report)
         assert report.skipped == []
         assert models["orders"].joins == []
         assert _joins(models["items"])["orders"][0] == [["order_id", "id"]]
-        _assert_one_read_warning(_warnings_naming(caplog, "orders"), word="foreign")
+        _assert_one_read_warning(_warnings_naming(caplog, "orders"), word="foreign", marker=LOST)
 
 
 # ---------------------------------------------------------------------------
@@ -383,7 +377,7 @@ class TestSqliteBaseBehaviour:
             (("a", "a"), ("b", "b")): JoinCardinality.MANY_TO_ONE,
         }
 
-    async def test_pk_is_inspector_authoritative(self, sqlite_db, statement_log) -> None:
+    async def test_pk_never_reads_information_schema(self, sqlite_db, statement_log) -> None:
         await _report(_ds(sqlite_db, kind="sqlite"))
         assert statement_log
         assert not [s for s in statement_log if "information_schema" in s.lower()]

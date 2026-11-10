@@ -11,7 +11,6 @@ from typing import Any, cast
 import pytest
 import sqlalchemy as sa
 import sqlglot
-from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.sql.elements import quoted_name
 from sqlglot import exp
 
@@ -31,7 +30,8 @@ from slayer.importers.column_types import LiveDatasource
 from slayer.importers.physical import UndecidableIdentifierCaseError
 from slayer.osi import converter as osi_converter
 from slayer.database import engine_factory
-from slayer.sql.dialects import get_dialect
+from slayer.sql.dialects import SqliteDialect, get_dialect
+from slayer.sql.dialects.reflection import column_from_sa_type
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2171_fixtures import (
     column, cube_issues, cube_report_messages, models_of, run_cli, source_column, stored_model, typing_notes,
@@ -200,12 +200,18 @@ async def test_folding_dialect_generates_unquoted_folded_names(dialect: str) -> 
     assert all((i.name, i.quoted) == ("orderamount", False) for i in physical)
 
 
+def _reflect_as(monkeypatch: pytest.MonkeyPatch, reflected: list[dict[str, Any]]) -> None:
+    """SQLite's column read yields ``reflected`` (Inspector-shaped dicts)."""
+    monkeypatch.setattr(SqliteDialect, "reflect_columns", lambda _self, **_kw: [
+        column_from_sa_type(name=c["name"], sa_type=c["type"]) for c in reflected])
+
+
 @pytest.fixture
 def snowflake_reflection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[sa.Engine]:
     """An engine whose live table ``t`` reflects as Snowflake would hold ``FOO``, ``"foo"`` and ``"Foo"``."""
     reflected = [{"name": "foo", "type": sa.INTEGER()}, {"name": quoted_name("foo", True), "type": sa.INTEGER()},
                  {"name": "Foo", "type": sa.INTEGER()}]
-    monkeypatch.setattr(Inspector, "get_columns", lambda _self, _table, schema=None, **_kw: list(reflected))
+    _reflect_as(monkeypatch, reflected)
     with disposable_engine(f"sqlite:///{tmp_path / 'live.db'}") as engine:
         with engine.connect() as conn:
             conn.execute(sa.text("CREATE TABLE t (x INTEGER)"))
@@ -395,7 +401,7 @@ def test_osi_field_matches_a_live_column_case_insensitively_on_duckdb(osi_db: Pa
 def test_osi_fields_read_the_exact_and_folded_snowflake_columns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Snowflake columns ``"foo"`` and ``BAR``, as SQLAlchemy reflects them."""
     reflected = [{"name": quoted_name("foo", True), "type": sa.INTEGER()}, {"name": "bar", "type": sa.INTEGER()}]
-    monkeypatch.setattr(Inspector, "get_columns", lambda _self, _table, schema=None, **_kw: list(reflected))
+    _reflect_as(monkeypatch, reflected)
     db = seed_db(directory=tmp_path, dialect="sqlite", statements=["CREATE TABLE t (x INTEGER)"])
     result = convert(db=db, db_dialect="sqlite", target_dialect="snowflake", docs=documents(flat([
         ds("t", source="t", fields=[f("foo", '"foo"'), f("exact", '"foo"'), f("upper", "BAR")])])))
