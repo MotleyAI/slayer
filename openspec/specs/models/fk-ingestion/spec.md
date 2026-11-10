@@ -33,7 +33,8 @@ table, the read that failed and the error. Each failed key read SHALL also be re
 result, naming the table's location (schema, and catalog where the database has one), the read and the
 error, once per location and read in one ingest; every ingest surface (MCP, CLI, REST) SHALL show it.
 A failed key read SHALL NOT change the ingest's exit status or HTTP status, and a later ingest whose
-read succeeds SHALL fill the missing key.
+read succeeds SHALL fill the missing key, unless a stored column with a key column's name reads
+something else.
 
 #### Scenario: One table's FK reflection fails
 - **WHEN** reading the foreign keys of `orders` raises during ingestion
