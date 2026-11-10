@@ -46,5 +46,5 @@
 
 ## 7. Finish
 
-- [ ] 7.1 Full unit suite, the integration suite with the CI invocation, `ruff check slayer/ tests/`, `basedpyright` (no new errors), `la-arch-check`. Verify: all green.
+- [x] 7.1 Full unit suite, the integration suite with the CI invocation, `ruff check slayer/ tests/`, `basedpyright` (no new errors), `la-arch-check`. Verify: all green.
 - [x] 7.2 Comment on DEV-2215: its `<unit>(x)` → `date_trunc` step must run after this change's colon step (custom-granularity spans migrate to `<gran>(x)`); whichever merges second keeps that order. Verify: comment posted.
