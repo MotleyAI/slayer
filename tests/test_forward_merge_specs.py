@@ -130,7 +130,8 @@ def assert_names(guard: Guard, *, capability: str, requirement: Requirement) -> 
     assert requirement.title in guard.output
     assert body_hash(requirement.body) in guard.output
     # The ledger entry that would accept it.
-    assert "one_x_hash" in guard.output and "reason" in guard.output
+    assert "one_x_hash" in guard.output
+    assert "reason" in guard.output
 
 
 @pytest.fixture

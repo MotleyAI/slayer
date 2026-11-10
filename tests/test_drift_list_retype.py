@@ -168,9 +168,11 @@ class TestReingest:
             first = await engine.storage.get_model("events", data_source="ds")
             await ingest_datasource_idempotent(datasource=ds, storage=engine.storage, include_tables=["events"])
             second = await engine.storage.get_model("events", data_source="ds")
-        assert first is not None and second is not None
+        assert first is not None
+        assert second is not None
         first_seen, key = first.get_column("seen"), first.get_column("id")
-        assert first_seen is not None and key is not None
+        assert first_seen is not None
+        assert key is not None
         assert (first_seen.type, first_seen.element_type) == (DataType.ARRAY, DataType.TIMESTAMP)
         assert (first_seen.granularity, first_seen.format) == (None, None)
         assert first_seen.allowed_aggregations == ["count"]

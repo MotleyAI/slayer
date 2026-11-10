@@ -625,7 +625,8 @@ class TestMCPSqlModeElementType:
             out = await _mcp(server, name="create_model", arguments={
                 "name": "raw_skills", "data_source": "test", "sql_table": "contractors",
                 "columns": [{"name": "id", "type": "INT"}, {"name": "skills", "type": "ARRAY"}]})
-            assert "skills" in out and "element_type" in out, out
+            assert "skills" in out, out
+            assert "element_type" in out, out
             assert await storage.get_model("raw_skills") is None
 
     async def test_edit_model_canonicalises_sql_mode(self) -> None:
@@ -640,7 +641,8 @@ class TestMCPSqlModeElementType:
         async with self._server() as (server, storage):
             out = await _mcp(server, name="edit_model", arguments={
                 "model_name": "contractors", "columns": [{"name": "skills", "type": "ARRAY"}]})
-            assert "skills" in out and "element_type" in out, out
+            assert "skills" in out, out
+            assert "element_type" in out, out
             stored = await storage.get_model("contractors")
             assert stored is not None
             assert stored.get_column("skills") is None

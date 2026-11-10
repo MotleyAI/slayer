@@ -50,13 +50,16 @@ async def test_the_store_holds_the_list_column_shapes(backend: str, tmp_path, mo
     assert contractors is not None
     assert {m.formula for m in contractors.measures} >= {"collect(id)", "collect(skills.value)", "count(skills)"}
     dev_skills = await storage.get_model("dev_skills", data_source="shop")
-    assert dev_skills is not None and dev_skills.sql
+    assert dev_skills is not None
+    assert dev_skills.sql
     assert (_column(dev_skills, "skills").type, _column(dev_skills, "skills").element_type) == (
         DataType.ARRAY, DataType.UNKNOWN)
     go_teams = await storage.get_model("go_teams", data_source="shop")
-    assert go_teams is not None and go_teams.source_queries
+    assert go_teams is not None
+    assert go_teams.source_queries
     filters = " ".join(str(f) for q in go_teams.source_queries for f in (q.filters or []))
-    assert "contains(" in filters and "contains_any(" in filters, filters
+    assert "contains(" in filters, filters
+    assert "contains_any(" in filters, filters
     memory = await storage.get_memory("m_assignments")
     assert memory.query is not None
     assert "collect(assignments.id)" in [m.formula for m in memory.query.measures or []]
