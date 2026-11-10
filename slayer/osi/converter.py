@@ -12,15 +12,17 @@ Constructs that cannot be expressed exactly are reported in the
 
 from __future__ import annotations
 
+import itertools
 import logging
 from collections.abc import Callable
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import sqlalchemy as sa
 import sqlglot
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
+from sqlglot.expressions.core import Expression
 
 from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import DataType, JoinCardinality
@@ -42,7 +44,7 @@ from slayer.importers.column_types import LiveDatasource, LiveSource
 from slayer.importers.aggregates import (
     MaterializedColumn, Unconvertible, contains_args, convert_expression, length_arg, outermost_aggregates,
 )
-from slayer.importers.physical import PhysicalIndex, live_exact_name, unreadable_columns
+from slayer.importers.physical import PhysicalIndex, live_exact_name, root_physical_columns, unreadable_columns
 from slayer.ingest_report import ConversionResult, ConversionWarning
 from slayer.database.client import ResultColumnType, SqlClient, adapt_client
 from slayer.osi.dialects import Selection, is_native, read, reader_for, render, select_expression
@@ -76,6 +78,7 @@ def _typed_column(*, name: str, data_type: DataType, sql: str | None = None, ele
                   db_type=db_type)
 
 OwnerOf = Callable[[Optional[str], str], Optional[str]]
+Severity = Literal["unconverted", "dropped", "info"]
 
 
 class OsiConversionError(Exception):
@@ -135,6 +138,11 @@ def _first_time_dimension(model: SlayerModel) -> str | None:
     )
 
 
+def _is_source_qualifier(ident: exp.Identifier) -> bool:
+    """Whether ``ident`` is the Ossie ``source`` qualifier, which matches case-insensitively quoted or not."""
+    return ident.name.casefold() == "source"
+
+
 def _match_name(ident: exp.Identifier, names: list[str]) -> str:
     """The declared name ``ident`` refers to: quoted exactly, unquoted case-insensitively."""
     if ident.quoted:
@@ -147,6 +155,19 @@ def _match_name(ident: exp.Identifier, names: list[str]) -> str:
     if not hits:
         raise LookupError(f"{ident.name!r} is not declared")
     return hits[0]
+
+
+def _ref_owner(col: exp.Column, *, qual: list[exp.Identifier], home: str | None, doc_models: list[str]) -> str:
+    """The model whose field ``col`` (qualified by ``qual``) reads; raises ``LookupError`` on a scope violation."""
+    if home is not None:
+        if qual:
+            raise LookupError(f"qualified reference {col.sql()!r}; dataset-scoped metrics "
+                              f"reference their own dataset's fields unqualified")
+        return home
+    if not qual:
+        raise LookupError(f"unqualified reference {col.name!r}; model-scoped metrics "
+                          f"reference fields as dataset.field")
+    return _match_name(qual[0], doc_models)
 
 
 def _list_call(node: exp.Expr, *, dialect: SqlDialect, is_list: Callable[[exp.Expr], bool]) -> exp.Expr:
@@ -277,7 +298,7 @@ class OsiToSlayerConverter:
 
     def _warn(self, message: str, *, model_name: str | None = None,
               metric_name: str | None = None, category: str = "general",
-              severity: str = "dropped", suggestion: str | None = None) -> None:
+              severity: Severity = "dropped", suggestion: str | None = None) -> None:
         self._warnings.append(ConversionWarning(
             model_name=model_name, metric_name=metric_name, message=message,
             category=category, severity=severity, suggestion=suggestion,
@@ -451,7 +472,7 @@ class OsiToSlayerConverter:
         resolve_datasource(parsed.database, self.data_source)  # stubbed routing
 
         try:
-            if parsed.is_query:
+            if parsed.query is not None:
                 base = self._build_sql_mode_model(ds, parsed.query)
             else:
                 base = self._introspected_table(ds)
@@ -633,6 +654,10 @@ class OsiToSlayerConverter:
         if selected is None:
             return None
         sql, tree = selected
+        if (label := self._duplicated_label(ds.name, tree)) is not None:
+            self._warn(f"Field {field.name!r} on {ds.name!r} reads source column {label!r}, which the source query "
+                       f"outputs more than once; skipping.", model_name=ds.name, category="ambiguous_column")
+            return None
         declared = OSSIE_DATATYPES.get(field.datatype or "")
         bare = _bare_column(tree)
         typed = (self._bare_field_column(field=field, ds=ds, bare=bare, sql=sql) if bare is not None
@@ -657,13 +682,24 @@ class OsiToSlayerConverter:
             self._field_payloads[(ds.name, field.name)] = (payload, matched)
         return col
 
+    def _live_names(self, ds_name: str) -> list[tuple[str, Column]]:
+        """Each source column of ``ds_name`` with its live name in SQLAlchemy's spelling."""
+        columns = [c for c in self._physical[ds_name].values() if c.is_base]
+        return [(live_name(c.physical_name, quoted=c.physical_quoted), c) for c in columns]
+
     def _source_columns(self, ds_name: str, ident: exp.Identifier) -> list[Column]:
         """The source columns of ``ds_name`` that ``ident`` names, matched with the datasource dialect's rules."""
-        columns = [c for c in self._physical[ds_name].values() if c.is_base]
-        live = [live_name(c.physical_name, quoted=c.physical_quoted) for c in columns]
-        exact = {live_exact_name(n, dialect=self._dialect): c for n, c in zip(live, columns)}
-        index = PhysicalIndex([], dialect=self._target, live=live)
+        live = self._live_names(ds_name)
+        exact = {live_exact_name(n, dialect=self._dialect): c for n, c in live}
+        index = PhysicalIndex([], dialect=self._target, live=[n for n, _ in live])
         return [exact[n] for n in index.live_names(ident)]
+
+    def _duplicated_label(self, ds_name: str, tree: exp.Expr) -> str | None:
+        """A root-scope source column in ``tree`` that ``ds_name``'s source query outputs more than once."""
+        live = self._live.get(ds_name)
+        if live is None:
+            return None
+        return next((c.name for c in root_physical_columns(tree) if live.duplicated(c.this)), None)
 
     def _bare_field_column(self, *, field: OSIField, ds: OSIDataset, bare: exp.Identifier,
                            sql: str) -> tuple[Column, DataType | None] | None:
@@ -970,7 +1006,7 @@ class OsiToSlayerConverter:
         """Root-scope cross-model column refs in ``sql`` that don't resolve to a joined
         model + existing column; physical multi-part refs are skipped."""
         tree = self._parse_target(sql)
-        if tree is None:
+        if not isinstance(tree, Expression):
             return []
         root_ids = root_scope_column_ids(parsed=tree)
         bad = []
@@ -1034,8 +1070,10 @@ class OsiToSlayerConverter:
                          metric_name=metric.name)
             return None
 
-    def _canonicalize_refs(self, tree: exp.Expr, *, doc_models: list[str], home: str | None) -> exp.Expr:
-        """``tree`` with current-spec metric refs rewritten to declared names; raises ``LookupError`` on a scope violation."""
+    def _canonicalize_refs(self, tree: exp.Expr, *, doc_models: list[str], home: str | None,
+                           helpers: dict[str, Column], metric: str) -> exp.Expr:
+        """``tree`` with current-spec metric refs rewritten to declared names, and ``source.column`` refs to the
+        column reading it (a new hidden one added to ``helpers``); raises ``LookupError`` on a scope violation."""
         def canonical(col: exp.Expr) -> exp.Expr:
             if not isinstance(col, exp.Column):
                 return col
@@ -1043,19 +1081,55 @@ class OsiToSlayerConverter:
             if len(idents) != len(col.parts) or len(idents) > 2:
                 raise LookupError(f"reference {col.sql()!r} is not a field reference")
             *qual, leaf = idents
-            if home is None:
-                if not qual:
-                    raise LookupError(f"unqualified reference {leaf.name!r}; model-scoped metrics "
-                                      f"reference fields as dataset.field")
-                owner = _match_name(qual[0], doc_models)
-            elif qual:
-                raise LookupError(f"qualified reference {col.sql()!r}; dataset-scoped metrics "
-                                  f"reference their own dataset's fields unqualified")
-            else:
-                owner = home
+            if home is not None and qual and _is_source_qualifier(qual[0]):
+                return self._source_column_ref(leaf, home=home, helpers=helpers, metric=metric)
+            owner = _ref_owner(col, qual=qual, home=home, doc_models=doc_models)
             declared = [c.name for c in self._models[owner].columns if not c.hidden]
             return exp.column(_match_name(leaf, declared), table=owner if home is None else None)
         return tree.transform(canonical, copy=False)
+
+    def _source_column_ref(self, leaf: exp.Identifier, *, home: str, helpers: dict[str, Column],
+                           metric: str) -> exp.Column:
+        """A ref to the column of ``home`` reading the source column ``leaf`` unchanged; raises ``LookupError``."""
+        source = self._source_column(leaf, home=home)
+        if source.name not in helpers:
+            reader = self._source_reader(source, leaf=leaf, home=home)
+            if reader is not None:
+                return exp.column(reader.name)
+            taken = {h.name for h in helpers.values()}
+            name = next(n for n in (f"_{metric}_{i}" for i in itertools.count())
+                        if n not in taken and not self._model_has_name(home, n))
+            sql = source.sql if source.physical_quoted else exp.to_identifier(source.physical_name).sql(self._target)
+            helpers[source.name] = _typed_column(name=name, sql=sql, data_type=source.type,
+                                                 element=source.element_type, hidden=True, db_type=source.db_type)
+        return exp.column(helpers[source.name].name)
+
+    def _source_column(self, leaf: exp.Identifier, *, home: str) -> Column:
+        """The one source column of ``home`` that ``leaf`` names, as written or (unquoted) folded by the database."""
+        if any(c.name.casefold() == "source" for c in self._models[home].columns if not c.hidden):
+            raise LookupError(f"the field 'source' of {home!r} takes precedence over the source qualifier")
+        found = self._source_columns(home, leaf)
+        if not leaf.quoted:
+            folded = exp.to_identifier(self._dialect.unquoted_identifier(leaf.name), quoted=True)
+            found += [c for c in self._source_columns(home, folded) if all(c is not f for f in found)]
+        if len(found) != 1:
+            names = sorted(c.name for c in found)
+            raise LookupError(f"source column {leaf.name!r} is ambiguous between {names}" if found
+                              else f"source column {leaf.name!r} is not a column of {home!r}'s source")
+        live = self._live.get(home)
+        if live is not None and live.duplicated(leaf):
+            raise LookupError(f"source column {leaf.name!r} is output more than once by {home!r}'s source query")
+        return found[0]
+
+    def _source_reader(self, source: Column, *, leaf: exp.Identifier, home: str) -> Column | None:
+        """The model column reading ``source`` unchanged, or ``None``; raises when a field's name masks it."""
+        live_names = self._live_names(home)
+        exact = exp.to_identifier(next(live_exact_name(n, dialect=self._dialect) for n, c in live_names if c is source),
+                                  quoted=True)
+        index = PhysicalIndex(self._models[home].columns, dialect=self._target, live=[n for n, _ in live_names])
+        if (problem := index.problem(exact)) is not None:
+            raise LookupError(f"source column {leaf.name!r} cannot be read: {problem}")
+        return index.reader(exact)
 
     def _build_measure(self, metric: OSIMetric, *, doc: OSIDocument, home: str | None,
                        doc_models: list[str]) -> ModelMeasure | None:
@@ -1069,13 +1143,28 @@ class OsiToSlayerConverter:
         tree = self._metric_tree(metric)
         if tree is None:
             return None
+        helpers: dict[str, Column] = {}
         if not doc.legacy:
             try:
-                tree = self._canonicalize_refs(tree, doc_models=doc_models, home=home)
+                tree = self._canonicalize_refs(tree, doc_models=doc_models, home=home, helpers=helpers,
+                                               metric=metric.name)
             except LookupError as exc:
                 self._unconv(f"Metric {metric.name!r}: {exc}.", metric_name=metric.name)
                 return None
+        if home is None:
+            return self._convert_measure(metric, tree=tree, home=home, doc_models=doc_models)
+        # Helpers stay only when the metric converts.
+        columns = self._models[home].columns
+        columns.extend(helpers.values())
+        measure = self._convert_measure(metric, tree=tree, home=home, doc_models=doc_models)
+        if measure is None:
+            added = {id(h) for h in helpers.values()}
+            columns[:] = [c for c in columns if id(c) not in added]
+        return measure
 
+    def _convert_measure(self, metric: OSIMetric, *, tree: exp.Expr, home: str | None,
+                         doc_models: list[str]) -> ModelMeasure | None:
+        """The measure ``tree`` converts to on its anchor, or ``None`` when reported."""
         scope = [home] if home is not None else doc_models
         owner_of = self._make_owner_of(scope)
         anchor = home or self._select_anchor(metric_name=metric.name, tree=tree,

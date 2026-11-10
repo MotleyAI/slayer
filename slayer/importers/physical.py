@@ -47,15 +47,21 @@ def live_exact_name(name: str, *, dialect: SqlDialect | None) -> str:
     return str(name)
 
 
+def case_insensitive(dialect: str | None) -> bool:
+    """Whether ``dialect`` matches unquoted names case-insensitively without folding them."""
+    found = as_sql_dialect(dialect)
+    if found is not None and found.identifier_folding != "none":
+        return False
+    return Dialect.get_or_raise(dialect).normalization_strategy is NormalizationStrategy.CASE_INSENSITIVE
+
+
 class PhysicalIndex:
     """A model's columns plus the physical columns known to exist, matched in one dialect."""
 
     def __init__(self, columns: Iterable[Column], *, dialect: str | None, live: Iterable[str] = ()) -> None:
         self.dialect = dialect
         self._sql_dialect = as_sql_dialect(dialect)
-        folds = self._sql_dialect is not None and self._sql_dialect.identifier_folding != "none"
-        self._insensitive = not folds and (
-            Dialect.get_or_raise(dialect).normalization_strategy is NormalizationStrategy.CASE_INSENSITIVE)
+        self._insensitive = case_insensitive(dialect)
         self.columns = list(columns)
         # Physical spellings: exact name -> whether written unquoted.
         self._reads: dict[int, tuple[str, bool]] = {

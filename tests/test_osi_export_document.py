@@ -28,7 +28,7 @@ async def env(tmp_path: Path):
 async def test_exported_document_validates(env, extensions: bool) -> None:
     result = await export_models(env, customers(), rich_orders(), visits(), monthly_revenue(), extensions=extensions)
     validate(result.document)
-    assert result.document["version"] == "0.2.0.dev0"
+    assert result.document["version"] == "0.3.0.dev0"
     assert set(dataset_names(result.document)) == {"customers", "monthly_revenue", "orders", "visits"}
 
 
