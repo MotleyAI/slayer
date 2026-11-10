@@ -646,17 +646,18 @@ class TestQueryInlineSourceModel:
         assert resp.status_code in (200, 201), resp.text
 
     def test_inline_model_extension_dict(self, client: TestClient) -> None:
-        """``source_model: {"source_name": "orders", "columns": [...]}``
+        """``extensions: [{"source_name": "orders", "columns": [...]}]``
         extends the stored model with an extra column for this one query.
         """
         self._setup_orders(client)
         resp = client.post("/query", json={
-            "source_model": {
+            "source_model": "orders",
+            "extensions": [{
                 "source_name": "orders",
                 "columns": [
                     {"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"},
                 ],
-            },
+            }],
             "measures": [{"formula": "double_amount:sum"}],
             "dry_run": True,
         })

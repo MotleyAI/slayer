@@ -1097,7 +1097,8 @@ class TestModelExtensionDirectSource:
                 ],
             )
             q = SlayerQuery(
-                source_model=ext,
+                source_model="orders",
+                extensions=[ext],
                 measures=[{"formula": "scaled:sum"}],
                 variables={"mult": 2},
             )

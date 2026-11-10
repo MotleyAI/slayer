@@ -135,6 +135,7 @@ class TestOtherInlineSourcesAccepted:
         ext = {"source_name": "cust_rev",
                "columns": [{"name": "rev2", "sql": "rev * 2", "type": "DOUBLE"}]}
         resp = await engine.execute(query(
-            source_model=ext, dimensions=["customer_id"], measures=[m("rev2:sum", "r2")]))
+            source_model="cust_rev", extensions=[ext], dimensions=["customer_id"],
+            measures=[m("rev2:sum", "r2")]))
         assert rows_by(resp.data, key="cust_rev.customer_id", value="cust_rev.r2") == {
             c: 2 * v for c, v in CUST_REV.items()}

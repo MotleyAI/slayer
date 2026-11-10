@@ -19,7 +19,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.core.query import SlayerQuery
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.profiling import refresh_all_table_backed_sampled
 from slayer.search.service import handle_edit_refresh
@@ -223,7 +223,7 @@ async def test_inspect_model_reads_cached_sampled_without_recompute(
 
     async def counting_execute(self, *args, **kwargs):
         q = kwargs.get("query", args[0] if args else None)
-        if isinstance(q, SlayerQuery) and (q.dimensions or isinstance(q.source_model, ModelExtension)):
+        if isinstance(q, SlayerQuery) and (q.dimensions or bool(q.extensions)):
             profile_call_count["n"] += 1
         return await original(self, *args, **kwargs)
 

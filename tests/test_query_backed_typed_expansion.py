@@ -121,12 +121,13 @@ class TestStoredSourceQueriesTopoSort:
                 # joins.target_model but appears FIRST.
                 SlayerQuery(
                     name="main",
-                    source_model=ModelExtension.model_validate({
+                    source_model="orders",
+                    extensions=[ModelExtension.model_validate({
                         "source_name": "orders",
                         # The reverse hop is traversable, so the pair names kpi's
                         # real exported column ("id"; "kpi_id" is only a label).
                         "joins": [{"target_model": "kpi", "join_pairs": [["id", "id"]]}],
-                    }),
+                    })],
                     dimensions=["status"],
                     measures=[{"formula": "kpi._count:sum"}],
                 ),
@@ -159,12 +160,13 @@ class TestStoredSourceQueriesTopoSort:
                 # main references kpi (forward ref under legacy strict order)
                 SlayerQuery(
                     name="main",
-                    source_model=ModelExtension.model_validate({
+                    source_model="orders",
+                    extensions=[ModelExtension.model_validate({
                         "source_name": "orders",
                         # The reverse hop is traversable, so the pair names kpi's
                         # real exported column ("id"; "kpi_id" is only a label).
                         "joins": [{"target_model": "kpi", "join_pairs": [["id", "id"]]}],
-                    }),
+                    })],
                     dimensions=["status"],
                     measures=[{"formula": "kpi._count:sum"}],
                 ),
@@ -193,17 +195,19 @@ class TestStoredSourceQueriesTopoSort:
                 source_queries=[
                     SlayerQuery(
                         name="a",
-                        source_model=ModelExtension.model_validate({
+                        source_model="orders",
+                        extensions=[ModelExtension.model_validate({
                             "source_name": "orders",
                             "joins": [{"target_model": "b", "join_pairs": [["id", "id"]]}],
-                        }),
+                        })],
                     ),
                     SlayerQuery(
                         name="b",
-                        source_model=ModelExtension.model_validate({
+                        source_model="orders",
+                        extensions=[ModelExtension.model_validate({
                             "source_name": "orders",
                             "joins": [{"target_model": "a", "join_pairs": [["id", "id"]]}],
-                        }),
+                        })],
                     ),
                     SlayerQuery(source_model="a"),
                 ],
@@ -727,13 +731,14 @@ class TestNestedQueryBackedSavePath:
             name="qb_a_orders_with_kpi",
             data_source="ds",
             source_queries=[SlayerQuery(
-                source_model=ModelExtension.model_validate({
+                source_model="orders",
+                extensions=[ModelExtension.model_validate({
                     "source_name": "orders",
                     "joins": [{
                         "target_model": "qb_b_customers_kpi",
                         "join_pairs": [["region", "region"]],
                     }],
-                }),
+                })],
                 dimensions=["status"],
                 measures=[{"formula": "qb_b_customers_kpi._count:sum"}],
             )],
@@ -908,13 +913,14 @@ class TestNestedQueryBackedExpansion:
             # as a join target AND references a column on it so the
             # planner doesn't drop the join as unused.
             outer = SlayerQuery(
-                source_model=ModelExtension.model_validate({
+                source_model="orders",
+                extensions=[ModelExtension.model_validate({
                     "source_name": "orders",
                     "joins": [{
                         "target_model": "customers_kpi",
                         "join_pairs": [["region", "region"]],
                     }],
-                }),
+                })],
                 measures=[{"formula": "customers_kpi._count:sum"}],
                 dimensions=["status"],
             )
@@ -944,10 +950,11 @@ class TestNestedQueryBackedExpansion:
         try:
             # Apply an overlay that adds an extra dimension column.
             q = SlayerQuery(
-                source_model=ModelExtension(
+                source_model="qb_base",
+                extensions=[ModelExtension(
                     source_name="qb_base",
                     columns=[Column(name="extra", sql="'lit'", type=DataType.TEXT)],
-                ),
+                )],
                 dimensions=["extra", "status"],
                 measures=[{"formula": "amount_sum:sum"}],
             )
@@ -1015,13 +1022,14 @@ class TestCrossDatasourceJoin:
             name="xds_qb",
             data_source="ds",
             source_queries=[SlayerQuery(
-                source_model=ModelExtension.model_validate({
+                source_model="orders",
+                extensions=[ModelExtension.model_validate({
                     "source_name": "orders",
                     "joins": [{
                         "target_model": "customers",
                         "join_pairs": [["region", "region"]],
                     }],
-                }),
+                })],
                 dimensions=["status", "customers.name"],
             )],
         )

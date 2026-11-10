@@ -401,14 +401,15 @@ class TestCacheRefreshOnExecute:
             # Outer query uses the saved query-backed model under a
             # ModelExtension that adds an extra computed column.
             outer = SlayerQuery.model_validate({
-                "source_model": {
+                "source_model": "rev_by_region",
+                "extensions": [{
                     "source_name": "rev_by_region",
                     "columns": [{
                         "name": "is_high_rev",
                         "sql": "CASE WHEN amount_sum > 1000 THEN 1 ELSE 0 END",
                         "type": "number",
                     }],
-                },
+                }],
                 "dimensions": ["region", "is_high_rev"],
                 "measures": [{"formula": "amount_sum:max"}],
             })
@@ -439,14 +440,15 @@ class TestCacheRefreshOnExecute:
                     dimensions=["region"],
                 ),
                 SlayerQuery.model_validate({
-                    "source_model": {
+                    "source_model": "staged",
+                    "extensions": [{
                         "source_name": "staged",
                         "columns": [{
                             "name": "doubled",
                             "sql": "amount_sum * 2",
                             "type": "number",
                         }],
-                    },
+                    }],
                     "dimensions": ["region", "doubled"],
                     "measures": [{"formula": "amount_sum:max"}],
                 }),
@@ -1031,10 +1033,11 @@ class TestSiblingStageJoins:
             ),
             SlayerQuery.model_validate({
                 "name": "tagged",
-                "source_model": {
+                "source_model": "customers",
+                "extensions": [{
                     "source_name": "customers",
                     "joins": [{"target_model": "kpis", "join_pairs": [["id", "customer_id"]]}],
-                },
+                }],
                 "dimensions": ["name"],
                 "measures": [{"formula": "kpis.amount_sum:sum"}],
             }),
@@ -1076,13 +1079,14 @@ class TestSiblingStageJoins:
                     dimensions=["customer_id"],
                 ),
                 SlayerQuery.model_validate({
-                    "source_model": {
+                    "source_model": "customers",
+                    "extensions": [{
                         "source_name": "customers",
                         "joins": [
                             {"target_model": "kpis",   "join_pairs": [["id", "customer_id"]]},
                             {"target_model": "counts", "join_pairs": [["id", "customer_id"]]},
                         ],
-                    },
+                    }],
                     "dimensions": ["name"],
                     "measures": [
                         {"formula": "kpis.amount_sum:sum"},
@@ -1113,10 +1117,11 @@ class TestSiblingStageJoins:
             queries = [
                 SlayerQuery.model_validate({
                     "name": "a",
-                    "source_model": {
+                    "source_model": "customers",
+                    "extensions": [{
                         "source_name": "customers",
                         "joins": [{"target_model": "b", "join_pairs": [["id", "customer_id"]]}],
-                    },
+                    }],
                     "dimensions": ["name"],
                     "measures": [{"formula": "b._count:sum"}],
                 }),
@@ -1152,18 +1157,20 @@ class TestSiblingStageJoins:
             queries = [
                 SlayerQuery.model_validate({
                     "name": "a",
-                    "source_model": {
+                    "source_model": "customers",
+                    "extensions": [{
                         "source_name": "customers",
                         "joins": [{"target_model": "b", "join_pairs": [["id", "id"]]}],
-                    },
+                    }],
                     "dimensions": ["name"],
                 }),
                 SlayerQuery.model_validate({
                     "name": "b",
-                    "source_model": {
+                    "source_model": "customers",
+                    "extensions": [{
                         "source_name": "customers",
                         "joins": [{"target_model": "a", "join_pairs": [["id", "id"]]}],
-                    },
+                    }],
                     "dimensions": ["name"],
                 }),
                 SlayerQuery.model_validate({
@@ -1271,10 +1278,11 @@ class TestSiblingStageJoins:
             queries = [
                 SlayerQuery.model_validate({
                     "name": "a",
-                    "source_model": {
+                    "source_model": "customers",
+                    "extensions": [{
                         "source_name": "customers",
                         "joins": [{"target_model": "a", "join_pairs": [["id", "id"]]}],
-                    },
+                    }],
                     "dimensions": ["name"],
                 }),
                 SlayerQuery.model_validate({

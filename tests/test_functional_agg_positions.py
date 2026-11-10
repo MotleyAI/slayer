@@ -426,12 +426,14 @@ class TestExtensionPositions:
 
         await _assert_twins(
             SlayerQuery(
-                source_model=ext("sum(revenue)"),
+                source_model="orders",
+                extensions=[ext("sum(revenue)")],
                 measures=["rev"],
                 dimensions=["status"],
             ),
             SlayerQuery(
-                source_model=ext("revenue:sum"),
+                source_model="orders",
+                extensions=[ext("revenue:sum")],
                 measures=["rev"],
                 dimensions=["status"],
             ),
@@ -446,12 +448,14 @@ class TestExtensionPositions:
 
         await _assert_twins(
             SlayerQuery(
-                source_model=inline("sum(revenue)"),
+                source_model="orders",
+                extensions=[inline("sum(revenue)")],
                 measures=["rev"],
                 dimensions=["status"],
             ),
             SlayerQuery(
-                source_model=inline("revenue:sum"),
+                source_model="orders",
+                extensions=[inline("revenue:sum")],
                 measures=["rev"],
                 dimensions=["status"],
             ),

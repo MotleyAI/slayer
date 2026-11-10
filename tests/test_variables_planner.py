@@ -465,12 +465,12 @@ class TestRebuild:
         assert out.model_fields_set == q.model_fields_set
         assert out.version == q.version
 
-    def test_extension_source_preserved(self) -> None:
+    def test_extensions_preserved(self) -> None:
         ext = ModelExtension(source_name="orders", measures=[ModelMeasure(name="x", formula="amount:sum")])
-        q = SlayerQuery.model_validate({"source_model": ext, "measures": ["amount:sum * {k}"]})
+        q = SlayerQuery.model_validate({"source_model": "orders", "extensions": [ext], "measures": ["amount:sum * {k}"]})
         out = apply_variables_to_query(query=q, variables={"k": 2})
-        assert isinstance(out.source_model, ModelExtension)
-        assert out.source_model == ext
+        assert out.source_model == "orders"
+        assert out.extensions == [ext]
 
     def test_full_inline_source_preserved(self) -> None:
         model = SlayerModel(

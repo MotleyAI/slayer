@@ -190,8 +190,9 @@ def jt_qb_model() -> SlayerModel:
     return _qb(
         "jt_qb",
         query(name="a",
-              source_model={"source_name": "customers",
-                            "joins": [{"target_model": "b", "join_pairs": [["id", "customer_id"]]}]},
+              source_model="customers",
+              extensions=[{"source_name": "customers",
+                           "joins": [{"target_model": "b", "join_pairs": [["id", "customer_id"]]}]}],
               dimensions=["tier"], measures=[m("b.rev:sum", "ab")]),
         query(name="b", source_model="orders", dimensions=["customer_id"],
               measures=[m("amount:sum", "rev")]),
@@ -329,7 +330,9 @@ def explicit_splice(
     out = []
     for i, stage in enumerate(stages):
         name = model.name if i == len(stages) - 1 else rename.get(stage.name, stage.name)
-        out.append(stage.model_copy(update={"name": name, "source_model": respell(stage.source_model)}))
+        extensions = [respell(e) for e in stage.extensions] if stage.extensions else stage.extensions
+        out.append(stage.model_copy(update={"name": name, "source_model": respell(stage.source_model),
+                                            "extensions": extensions}))
     return out
 
 

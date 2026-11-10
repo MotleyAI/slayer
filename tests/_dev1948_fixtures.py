@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import AsyncIterator, List
+from typing import Any, AsyncIterator, Dict, List
 
 import pytest
 
@@ -135,17 +135,17 @@ def stage_c() -> SlayerQuery:
     )
 
 
-def orders_joined(*targets: str) -> ModelExtension:
-    """``orders`` extended with a ``customer_id = <target>.id`` join per target."""
-    return ModelExtension.model_validate({
+def orders_joined(*targets: str) -> Dict[str, Any]:
+    """Query kwargs: ``orders`` extended with a ``customer_id = <target>.id`` join per target."""
+    return {"source_model": "orders", "extensions": [ModelExtension.model_validate({
         "source_name": "orders",
         "joins": [{"target_model": t, "join_pairs": [["customer_id", "id"]]} for t in targets],
-    })
+    })]}
 
 
 def stage_b() -> SlayerQuery:
     return _query(
-        name="b", source_model=orders_joined("c"), dimensions=["c.tr"],
+        name="b", **orders_joined("c"), dimensions=["c.tr"],
         measures=[{"formula": "amount:sum", "name": "amt"}],
     )
 
@@ -199,13 +199,14 @@ def three_reads_list() -> List[SlayerQuery]:
     """``p`` sources sibling ``c`` and joins siblings ``x`` and ``o``."""
     p = _query(
         name="p",
-        source_model=ModelExtension.model_validate({
+        source_model="c",
+        extensions=[ModelExtension.model_validate({
             "source_name": "c",
             "joins": [
                 {"target_model": "x", "join_pairs": [["id", "id"]]},
                 {"target_model": "o", "join_pairs": [["id", "customer_id"]]},
             ],
-        }),
+        })],
         dimensions=["id", "x.tier", "o.amt_c"],
     )
     root = _query(
@@ -218,7 +219,7 @@ def three_reads_list() -> List[SlayerQuery]:
 def semi_join_list() -> List[SlayerQuery]:
     """``b`` filters orders by association with sibling ``c`` (an ``EXISTS`` hop)."""
     b = _query(
-        name="b", source_model=orders_joined("c"), dimensions=["status"],
+        name="b", **orders_joined("c"), dimensions=["status"],
         filters=["c.cspend > 50"],
         measures=[{"formula": "amount:sum", "name": "amt"}],
     )

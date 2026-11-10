@@ -24,10 +24,11 @@ def test_engine_shim_delegates() -> None:
     a = SlayerQuery(name="a", source_model="orders")
     b = SlayerQuery(
         name="b",
-        source_model=ModelExtension.model_validate({
+        source_model="orders",
+        extensions=[ModelExtension.model_validate({
             "source_name": "orders",
             "joins": [{"target_model": "a", "join_pairs": [["id", "id"]]}],
-        }),
+        })],
     )
     root = SlayerQuery(source_model="b")
     queries = [b, a, root]
@@ -49,10 +50,11 @@ def test_reorders_simple_forward_reference() -> None:
     a = SlayerQuery(name="a", source_model="orders")
     b = SlayerQuery(
         name="b",
-        source_model=ModelExtension.model_validate({
+        source_model="orders",
+        extensions=[ModelExtension.model_validate({
             "source_name": "orders",
             "joins": [{"target_model": "a", "join_pairs": [["id", "id"]]}],
-        }),
+        })],
     )
     root = SlayerQuery(source_model="b")
     ordered = topologically_order_stages([b, a, root])
@@ -64,10 +66,11 @@ def test_non_root_input_order_is_invariant() -> None:
     a = SlayerQuery(name="a", source_model="orders")
     b = SlayerQuery(
         name="b",
-        source_model=ModelExtension.model_validate({
+        source_model="orders",
+        extensions=[ModelExtension.model_validate({
             "source_name": "orders",
             "joins": [{"target_model": "a", "join_pairs": [["id", "id"]]}],
-        }),
+        })],
     )
     root = SlayerQuery(source_model="b")
 
@@ -82,17 +85,19 @@ def test_non_root_input_order_is_invariant() -> None:
 def test_cycle_raises() -> None:
     a = SlayerQuery(
         name="a",
-        source_model=ModelExtension.model_validate({
+        source_model="orders",
+        extensions=[ModelExtension.model_validate({
             "source_name": "orders",
             "joins": [{"target_model": "b", "join_pairs": [["id", "id"]]}],
-        }),
+        })],
     )
     b = SlayerQuery(
         name="b",
-        source_model=ModelExtension.model_validate({
+        source_model="orders",
+        extensions=[ModelExtension.model_validate({
             "source_name": "orders",
             "joins": [{"target_model": "a", "join_pairs": [["id", "id"]]}],
-        }),
+        })],
     )
     root = SlayerQuery(source_model="a")
     with pytest.raises(ValueError, match=r"[Cc]ycle"):
@@ -132,13 +137,14 @@ def test_typed_modelextension_nested_join_contributes_to_edges() -> None:
     a = SlayerQuery(name="a", source_model="orders")
     b = SlayerQuery(
         name="b",
-        source_model=ModelExtension(
+        source_model="orders",
+        extensions=[ModelExtension(
             source_name="orders",
             joins=[ModelJoin(
                 target_model="a",
                 join_pairs=[["id", "id"]],
             )],
-        ),
+        )],
     )
     root = SlayerQuery(source_model="b")
     ordered = topologically_order_stages([b, a, root])
@@ -151,13 +157,14 @@ def test_dict_modelextension_nested_join_contributes_to_edges() -> None:
     a = SlayerQuery(name="a", source_model="orders")
     b = SlayerQuery.model_validate({
         "name": "b",
-        "source_model": {
+        "source_model": "orders",
+        "extensions": [{
             "source_name": "orders",
             "joins": [{
                 "target_model": "a",
                 "join_pairs": [["id", "id"]],
             }],
-        },
+        }],
     })
     root = SlayerQuery(source_model="b")
     ordered = topologically_order_stages([b, a, root])

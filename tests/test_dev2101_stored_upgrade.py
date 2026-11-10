@@ -64,7 +64,7 @@ def _query(**fields: Any) -> SlayerQuery:
 class TestVersions:
     def test_versions_bumped(self) -> None:
         assert CURRENT_VERSIONS["SlayerModel"] == 18
-        assert CURRENT_VERSIONS["SlayerQuery"] == 9
+        assert CURRENT_VERSIONS["SlayerQuery"] == 10
         assert CURRENT_VERSIONS["Memory"] == 7
 
 
@@ -101,8 +101,9 @@ class TestEverySurface:
     def test_inline_extension_measures(self) -> None:
         query = _query(source_model={"source_name": "orders", "measures": [
             {"name": "paid", "formula": 'sum(iif(status == "paid", amount, 0))'}]}, measures=["paid"])
-        source = query.source_model
-        assert source.measures[0].formula == "sum(iif(status == 'paid', amount, 0))"  # type: ignore[union-attr]
+        assert query.source_model == "orders"
+        (extension,) = query.extensions or []
+        assert (extension.measures or [])[0].formula == "sum(iif(status == 'paid', amount, 0))"
 
     def test_model_source_queries(self) -> None:
         doc = query_backed_v10(name="paid_rev", version=15, stages=[rev_query(filters=['status == "ok"'])])

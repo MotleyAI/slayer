@@ -200,11 +200,12 @@ class TestDiscoveryGuards:
 
     async def test_reserved_prefix_column_rejected_when_regroup_active(self) -> None:
         q = SlayerQuery(
-            source_model=ModelExtension.model_validate({
+            source_model="orders",
+            extensions=[ModelExtension.model_validate({
                 "source_name": "orders",
                 "columns": [{"name": "__regroup__x", "sql": "amount",
                              "type": "DOUBLE"}],
-            }),
+            })],
             dimensions=["region", {"expression": BAND, "name": "band"}],
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         )
@@ -213,11 +214,12 @@ class TestDiscoveryGuards:
 
     async def test_reserved_prefix_column_fine_without_regroup(self) -> None:
         q = SlayerQuery(
-            source_model=ModelExtension.model_validate({
+            source_model="orders",
+            extensions=[ModelExtension.model_validate({
                 "source_name": "orders",
                 "columns": [{"name": "__regroup__x", "sql": "amount",
                              "type": "DOUBLE"}],
-            }),
+            })],
             dimensions=["region"],
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         )

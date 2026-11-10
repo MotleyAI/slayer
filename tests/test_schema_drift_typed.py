@@ -82,10 +82,10 @@ class TestStageGraphBidirectional:
         ) == "amount"
 
     def test_named_extension_hop_attributes_by_name(self) -> None:
-        stage = SlayerQuery(source_model=ModelExtension(source_name="orders", joins=[
+        stage = SlayerQuery(source_model="orders", extensions=[ModelExtension(source_name="orders", joins=[
             ModelJoin(target_model="customers",
                       join_pairs=[["customer_id", "id"]], name="buyer"),
-        ]))
+        ])])
         graph = _build_stage_graph(
             stage=stage, stage_source_name="orders", models_by_name=_ext_models(),
         )
@@ -94,12 +94,12 @@ class TestStageGraphBidirectional:
         ) == "name"
 
     def test_parallel_extension_targets_unaddressable_by_bare_name(self) -> None:
-        stage = SlayerQuery(source_model=ModelExtension(source_name="orders", joins=[
+        stage = SlayerQuery(source_model="orders", extensions=[ModelExtension(source_name="orders", joins=[
             ModelJoin(target_model="customers",
                       join_pairs=[["b_id", "id"]], name="buyer"),
             ModelJoin(target_model="customers",
                       join_pairs=[["s_id", "id"]], name="seller"),
-        ]))
+        ])])
         graph = _build_stage_graph(
             stage=stage, stage_source_name="orders", models_by_name=_ext_models(),
         )
@@ -116,7 +116,7 @@ class TestStageGraphBidirectional:
         models = _ext_models()
         models["orders"] = models["orders"].model_copy(update={"joins": [join]})
         graph = _build_stage_graph(
-            stage=SlayerQuery(source_model=ModelExtension(source_name="orders", joins=[join])),
+            stage=SlayerQuery(source_model="orders", extensions=[ModelExtension(source_name="orders", joins=[join])]),
             stage_source_name="orders", models_by_name=models,
         )
         assert _attribute_ref_to_base(

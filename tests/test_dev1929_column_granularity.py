@@ -444,12 +444,12 @@ class TestSiblingStandIns:
             s1 = {"name": "s1", "source_model": "orders",
                   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
                   "measures": [{"formula": "amount:sum", "name": "rev"}]}
-            finer = {"source_model": {"source_name": "s1"},
+            finer = {"source_model": "s1", "extensions": [{"source_name": "s1"}],
                      "time_dimensions": [{"dimension": "created_at", "granularity": "day"}],
                      "measures": [{"formula": "rev:sum"}]}
             with pytest.raises(TimeDimensionColumnError):
                 await engine.execute(query=[s1, finer], dry_run=True)
-            coarser = {"source_model": {"source_name": "s1"},
+            coarser = {"source_model": "s1", "extensions": [{"source_name": "s1"}],
                        "time_dimensions": [{"dimension": "created_at", "granularity": "year"}],
                        "measures": [{"formula": "rev:sum"}]}
             resp = await engine.execute(query=[s1, coarser])
@@ -464,8 +464,9 @@ class TestSiblingStandIns:
 
             def outer(gran: str) -> dict:
                 return {
-                    "source_model": {"source_name": "orders",
-                                     "joins": [{"target_model": "s1", "join_pairs": [["id", "id"]]}]},
+                    "source_model": "orders",
+                    "extensions": [{"source_name": "orders",
+                                    "joins": [{"target_model": "s1", "join_pairs": [["id", "id"]]}]}],
                     "dimensions": ["id"],
                     "time_dimensions": [{"dimension": "s1.created_at", "granularity": gran}],
                     "measures": [{"formula": "amount:sum", "name": "x"}],

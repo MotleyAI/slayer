@@ -157,7 +157,7 @@ class TestSourceModelShapes:
             columns=[Column(name="discount", type=DataType.DOUBLE)],
             joins=[],
         )
-        query = SlayerQuery(source_model=ext)
+        query = SlayerQuery(source_model="orders", extensions=[ext])
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
         assert bundle.source_model is not None
         assert bundle.source_model.name == "orders"
@@ -176,10 +176,11 @@ class TestSourceModelShapes:
     async def test_dict_model_extension_source(self, tmp_path):
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
         query = SlayerQuery.model_validate({
-            "source_model": {
+            "source_model": "orders",
+            "extensions": [{
                 "source_name": "orders",
                 "columns": [{"name": "discount", "type": "DOUBLE"}],
-            },
+            }],
         })
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
         assert bundle.source_model is not None
@@ -364,10 +365,11 @@ class TestMultiStage:
         )
         sibling = SlayerQuery(
             name="aux",
-            source_model=ModelExtension(
+            source_model="bare",
+            extensions=[ModelExtension(
                 source_name="bare",
                 joins=[ModelJoin(target_model="audit", join_pairs=[["audit_id", "id"]])],
-            ),
+            )],
             dimensions=["status"],
         )
         root = SlayerQuery(source_model="orders", dimensions=["status"])

@@ -49,8 +49,9 @@ async def storage(tmp_path) -> YAMLStorage:
     try:
         for name, query in (
             ("ext_revenue", {
-                "source_model": {"source_name": "orders",
-                                 "columns": [{"name": "dbl", "sql": "amount * 2", "type": "DOUBLE"}]},
+                "source_model": "orders",
+                "extensions": [{"source_name": "orders",
+                                "columns": [{"name": "dbl", "sql": "amount * 2", "type": "DOUBLE"}]}],
                 "measures": [{"formula": "sum(dbl)", "name": "d"}],
             }),
             ("rollup", [

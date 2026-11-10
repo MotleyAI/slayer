@@ -1,23 +1,23 @@
 ## 1. Tests first (pr-tests)
 
-- [ ] 1.1 Ask for the owner's approval to align these existing tests (name each file and change), then align them:
+- [x] 1.1 Ask for the owner's approval to align these existing tests (name each file and change), then align them:
   - `tests/test_dev2073_join_edge_identity.py::TestSameEdge`: name, join type and cardinality no longer split an edge;
   - `tests/test_dev1842_query_backed.py` (~line 240) and `tests/test_dev1966_query_backed_inline.py` (~line 322): the measure rejection is lifted;
   - `tests/test_dev1922_source_model_union.py`: the typed extension in `source_model` becomes a conversion into `extensions`.
-- [ ] 1.2 Mechanically respell the legacy `source_model=ModelExtension(...)` / `{"source_name": ...}` construction in the existing test files and fixtures (about 45, found with `grep -rlE "ModelExtension" tests`) to `source_model=<name>` plus `extensions=[...]`, with no logic change. Verify that `grep` finds only the dedicated deprecation and migration tests still using the legacy form.
-- [ ] 1.3 `tests/test_dev2102_extensions_ir.py`: the IR, duplicate-extension rejection, unknown keys, `QueryRefinement` without `extensions`, the JSON schema (`source_model` = string | `SlayerModel` | null; `extensions`), REST 422, MCP input schema, and dump round-trip. Must fail before implementation.
-- [ ] 1.4 `tests/test_dev2102_legacy_conversion.py`:
+- [x] 1.2 Mechanically respell the legacy `source_model=ModelExtension(...)` / `{"source_name": ...}` construction in the existing test files and fixtures (about 45, found with `grep -rlE "ModelExtension" tests`) to `source_model=<name>` plus `extensions=[...]`, with no logic change. Verify that `grep` finds only the dedicated deprecation and migration tests still using the legacy form.
+- [x] 1.3 `tests/test_dev2102_extensions_ir.py`: the IR, duplicate-extension rejection, unknown keys, `QueryRefinement` without `extensions`, the JSON schema (`source_model` = string | `SlayerModel` | null; `extensions`), REST 422, MCP input schema, and dump round-trip. Must fail before implementation.
+- [x] 1.4 `tests/test_dev2102_legacy_conversion.py`:
   - fresh legacy input converts and warns (removal 3.0);
   - a Python instance warns;
   - legacy form plus `extensions` for the same model conflicts;
   - current-version legacy form is rejected;
   - profiling and the facade emit no deprecation warning.
-- [ ] 1.5 `tests/test_dev2102_stored_upgrade.py`: the v9 → v10 migration over a model's `source_queries`, a saved query, a current-version `Memory` holding a v9 query, and an unversioned legacy memory. No warning, extension intact, idempotent, recorded rows unchanged.
-- [ ] 1.6 `tests/test_dev2102_edge_merge.py`, executed on SQLite and DuckDB. Every `models/join-traversal` scenario:
+- [x] 1.5 `tests/test_dev2102_stored_upgrade.py`: the v9 → v10 migration over a model's `source_queries`, a saved query, a current-version `Memory` holding a v9 query, and an unversioned legacy memory. No warning, extension intact, idempotent, recorded rows unchanged.
+- [x] 1.6 `tests/test_dev2102_edge_merge.py`, executed on SQLite and DuckDB. Every `models/join-traversal` scenario:
   - reversed declaration, type not splitting, alias canonicalisation, alias over parallel edges, equal-pair ambiguity;
   - named-pair mismatch, cardinality conflict, alias stealing another edge's name, two names for one relationship;
   - multi-hop and cyclic query-local chains, stage shadowing.
-- [ ] 1.7 `tests/test_dev2102_query_inner_joins.py` (the Axiom 14 tag's test), executed on SQLite and DuckDB:
+- [x] 1.7 `tests/test_dev2102_query_inner_joins.py` (the Axiom 14 tag's test), executed on SQLite and DuckDB:
   - INNER on the root;
   - INNER over a stored LEFT edge;
   - fanning path (values plus the semi-join correlation);
@@ -29,7 +29,7 @@
   - adjacent `M` with a second indirect route, adjacent named parallel edges, one safe and one fanning parallel edge;
   - unreachable and ambiguous errors naming the declaration;
   - LEFT never restricting, a reused stored INNER edge, rootless inference, raw-row mode.
-- [ ] 1.8 `tests/test_dev2102_scope_and_targets.py`: extensions of joined models (dimension and measure); scope invisibility to the next stage and to stored definitions; resolution order; unknown target; `time_spine` rejected; query-backed measures in a non-root stage; save-time refusal; usage-reporting features for root and non-root extensions.
+- [x] 1.8 `tests/test_dev2102_scope_and_targets.py`: extensions of joined models (dimension and measure); scope invisibility to the next stage and to stored definitions; resolution order; unknown target; `time_spine` rejected; query-backed measures in a non-root stage; save-time refusal; usage-reporting features for root and non-root extensions.
 - [ ] 1.9 Run `poetry run pytest -m "not integration"` and confirm the new tests fail for the expected reasons, and nothing else regresses from the respelling.
 
 ## 2. IR, migration, deprecation

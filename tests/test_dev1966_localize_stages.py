@@ -29,18 +29,19 @@ class TestUserScope:
         assert [d.name for d in stages[-1].dimensions or []] == ["status"]
 
     def test_extension_base_is_respelled(self) -> None:
-        root = query(source_model={"source_name": "x", "columns": [{"name": "d", "sql": "a * 2"}]},
+        root = query(source_model="x", extensions=[{"source_name": "x", "columns": [{"name": "d", "sql": "a * 2"}]}],
                      measures=[m("d:sum", "t")])
         stages, _ = localize_stages([_x(), root])
-        spec = stages[-1].source_model
+        assert stages[-1].source_model == USER_X
+        (spec,) = stages[-1].extensions or []
         assert isinstance(spec, ModelExtension)
         assert spec.source_name == USER_X
 
     def test_extension_join_target_is_respelled(self) -> None:
-        root = query(source_model={"source_name": "customers", "joins": [
-            {"target_model": "x", "join_pairs": [["id", "customer_id"]]}]}, measures=[m("x.a:sum", "t")])
+        root = query(source_model="customers", extensions=[{"source_name": "customers", "joins": [
+            {"target_model": "x", "join_pairs": [["id", "customer_id"]]}]}], measures=[m("x.a:sum", "t")])
         stages, _ = localize_stages([_x(), root])
-        spec = stages[-1].source_model
+        (spec,) = stages[-1].extensions or []
         assert isinstance(spec, ModelExtension)
         assert [(j.target_model, j.name) for j in spec.joins or []] == [(USER_X, None)]
 
@@ -54,11 +55,11 @@ class TestUserScope:
         assert [j.target_model for j in spec.joins] == [USER_X]
 
     def test_a_model_name_that_is_not_a_stage_is_untouched(self) -> None:
-        root = query(source_model={"source_name": "orders", "joins": [
-            {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}]},
+        root = query(source_model="orders", extensions=[{"source_name": "orders", "joins": [
+            {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}]}],
             measures=[m("amount:sum", "t")])
         stages, displays = localize_stages([_x(), root])
-        spec = stages[-1].source_model
+        (spec,) = stages[-1].extensions or []
         assert isinstance(spec, ModelExtension)
         assert spec.source_name == "orders"
         assert [j.target_model for j in spec.joins or []] == ["customers"]

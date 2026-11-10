@@ -31,7 +31,7 @@ import pytest_asyncio
 
 import slayer.inspect.model_render as mr
 from slayer.core.enums import DataType
-from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.core.query import SlayerQuery
 from slayer.core.models import (
     Aggregation,
     Column,
@@ -113,7 +113,7 @@ def _count_profile_calls(monkeypatch, svc: InspectService) -> list:
 
     async def counting(*args, **kwargs):
         q = kwargs.get("query", args[0] if args else None)
-        if isinstance(q, SlayerQuery) and (q.dimensions or isinstance(q.source_model, ModelExtension)):
+        if isinstance(q, SlayerQuery) and (q.dimensions or bool(q.extensions)):
             calls.append(q)
         return await real(*args, **kwargs)
 
