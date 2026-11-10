@@ -44,6 +44,8 @@ CUSTOMER_MEASURES = [
     measure("wsum(customers.spend)", "ws"),
     measure("weighted_avg(customers.spend, weight=customers.spend)", "wa"),
 ]
+#: Dialects whose ``ROW_NUMBER()`` rejects an empty window.
+ORDERED_ROW_NUMBER = {"tsql", "snowflake", "databricks", "spark", "oracle"}
 ROW_NUMBER = re.compile(r"ROW_NUMBER\s*\(\s*\)\s*OVER\s*\(([^)]*)\)", re.IGNORECASE)
 
 
@@ -153,7 +155,7 @@ class TestRowIdentity:
         assert cells(resp, "status", "n") == DUP_COUNT_BY_STATUS
 
     @pytest.mark.parametrize("target", ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake",
-                                        "clickhouse", "trino"])
+                                        "clickhouse", "trino", "redshift", "databricks", "spark", "oracle"])
     async def test_every_dialect_numbers_the_home_rows(self, target) -> None:
         models = ossie_models()
         sql = await _engine_generate(
@@ -162,7 +164,7 @@ class TestRowIdentity:
         )
         over = ROW_NUMBER.findall(sql)
         assert over, sql
-        if target == "tsql":
+        if target in ORDERED_ROW_NUMBER:
             assert all("ORDER BY" in clause.upper() for clause in over), sql
 
     async def test_keyed_homes_are_not_numbered(self) -> None:

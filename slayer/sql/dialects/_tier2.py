@@ -78,6 +78,7 @@ class DatabricksDialect(SqlDialect):
     log2_native: bool = True
     max_identifier_bytes: int | None = None  # unbounded
     approx_count_distinct_native: bool = True
+    row_number_needs_order: bool = True
 
 
 class SparkDialect(SqlDialect):
@@ -92,6 +93,7 @@ class SparkDialect(SqlDialect):
     log2_native: bool = True
     max_identifier_bytes: int | None = None  # unbounded
     approx_count_distinct_native: bool = True
+    row_number_needs_order: bool = True
 
 
 class OracleDialect(SqlDialect):
@@ -108,6 +110,7 @@ class OracleDialect(SqlDialect):
     # the canonical 2-arg LOG(base, x) form.
     log10_native: bool = False
     log2_native: bool = False
+    row_number_needs_order: bool = True
     max_identifier_bytes: int | None = 128  # 12.2+; pre-12.2 (30) not modelled
     # Anonymous: sqlglot re-emits a parsed APPROX_COUNT_DISTINCT as its
     # Presto-family APPROX_DISTINCT canonical, which is not an Oracle function.

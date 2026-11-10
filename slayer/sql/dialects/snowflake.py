@@ -177,6 +177,7 @@ class SnowflakeDialect(SqlDialect):
     log2_native: bool = False
     max_identifier_bytes: int | None = 255
     approx_count_distinct_native: bool = True
+    row_number_needs_order: bool = True
     url_scheme: str | None = "snowflake"
     install_extra: str | None = "snowflake"
 
