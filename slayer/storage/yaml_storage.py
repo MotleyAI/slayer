@@ -356,6 +356,21 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         _atomic_write_yaml(path=path, data=data)
         self._forget_raw(data_source=data_source, name=name)
 
+    async def _raw_datasource_dicts(self) -> dict[str, dict]:
+        out: dict[str, dict] = {}
+        for filename in sorted(os.listdir(self.datasources_dir)):
+            name = filename.removesuffix(".yaml")
+            if name == filename:
+                continue
+            try:
+                with open(self._datasource_path(name), encoding="utf-8") as f:  # NOSONAR(S7493) — local read
+                    data = yaml.safe_load(f)
+            except (ValueError, OSError, yaml.YAMLError):  # ValueError: a name the store refuses
+                continue
+            if isinstance(data, dict):
+                out[name] = data
+        return out
+
     async def _write_raw_datasource_dict(self, *, name: str, data: dict) -> None:
         path = self._datasource_path(name)
         self._datasource_cache.pop(path, None)
