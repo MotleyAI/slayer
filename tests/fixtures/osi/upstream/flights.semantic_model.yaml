@@ -1,0 +1,197 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+version: 0.3.0.dev0
+name: Flights semantic model
+datasets:
+- name: RUNWAY
+  source: DATABASE.SCHEMA.RUNWAYS
+  fields:
+  - name: airport_code
+    expression:
+      sql: airport_code
+  - name: length
+    expression:
+      sql: length
+  - name: shape
+    expression:
+      sql: shape
+  - name: designator
+    expression:
+      sql: designator
+- name: AIRCRAFT
+  source: DATABASE.SCHEMA.AIRCRAFT
+  description: "An airplane, helicopter, or other machine capable of flight"
+  fields:
+  - name: serial_nr
+    expression:
+      sql: serial_nr
+  - name: name
+    expression:
+      sql: name
+  - name: nr_seats
+    expression:
+      sql: nr_seats
+  - name: tail_nr
+    expression:
+      sql: tail_nr
+  - name: carrier_code
+    expression:
+      sql: carrier_code
+  - name: manufacturer
+    expression:
+      sql: manufacturer
+  - name: model
+    expression:
+      sql: model
+  - name: year
+    expression:
+      sql: year
+  - name: capacity
+    expression:
+      sql: capacity
+- name: AIRPORT
+  source: DATABASE.SCHEMA.AIRPORTS
+  description: "An airport that is identified by an IATA code."
+  fields:
+  - name: state_code
+    expression:
+      sql: state_code
+  - name: market_nm
+    expression:
+      sql: market_nm
+  - name: longitude
+    expression:
+      sql: longitude
+  - name: opened
+    expression:
+      sql: opened
+  - name: state_nm
+    expression:
+      sql: state_nm
+  - name: city_nm
+    expression:
+      sql: city_nm
+  - name: name
+    expression:
+      sql: name
+  - name: code
+    expression:
+      sql: code
+  - name: latitude
+    expression:
+      sql: latitude
+- name: FLIGHT
+  source: DATABASE.SCHEMA.FLIGHTS
+  description: "A commercial passenger flight."
+  fields:
+  - name: dep_delay
+    expression:
+      sql: dep_delay
+  - name: air_time
+    expression:
+      sql: air_time
+  - name: nr
+    expression:
+      sql: nr
+  - name: carrier_code
+    expression:
+      sql: carrier_code
+  - name: duration
+    expression:
+      sql: duration
+  - name: scheduled_departure
+    expression:
+      sql: scheduled_departure
+  - name: arr_delay
+    expression:
+      sql: arr_delay
+  - name: cancelled
+    expression:
+      sql: cancelled
+  - name: cancel_code
+    expression:
+      sql: cancel_code
+  - name: distance
+    expression:
+      sql: distance
+  - name: id
+    expression:
+      sql: id
+  - name: scheduled_arrival
+    expression:
+      sql: scheduled_arrival
+  - name: wheels_on
+    expression:
+      sql: wheels_on
+  - name: date
+    expression:
+      sql: date
+  - name: wheels_off
+    expression:
+      sql: wheels_off
+  - name: scheduled_duration
+    expression:
+      sql: scheduled_duration
+  - name: tail_nr
+    expression:
+      sql: tail_nr
+  - name: departure
+    expression:
+      sql: departure
+  - name: route_id
+    expression:
+      sql: route_id
+  - name: diverted
+    expression:
+      sql: diverted
+  - name: arrival
+    expression:
+      sql: arrival
+- name: CARRIER
+  source: DATABASE.SCHEMA.CARRIERS
+  description: "An airline, such as Delta, United, or American."
+  fields:
+  - name: code
+    expression:
+      sql: code
+  - name: name
+    expression:
+      sql: name
+- name: ROUTE
+  source: DATABASE.SCHEMA.ROUTES
+  description: "Represents the existence of one or more flights between a pair of departure
+    arrival airports."
+  fields:
+  - name: orig_airport_code
+    expression:
+      sql: orig_airport_code
+  - name: dest_airport_code
+    expression:
+      sql: dest_airport_code
+  - name: distance
+    expression:
+      sql: distance
+  - name: dist_grp
+    expression:
+      sql: dist_grp
+  - name: id
+    expression:
+      sql: id
+  - name: name
+    expression:
+      sql: name

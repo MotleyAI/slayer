@@ -46,8 +46,8 @@ flowchart TD
    directive. [enforced: test:tests/test_dev1933_verbatim_execution.py]
 3. **One engine owner**: every SQLAlchemy engine is disposed by exactly one
    owner — `engine_factory` for the engines it caches (eviction and
-   `reset_cache` always dispose; `:memory:` is built by its single StaticPool
-   builder, keyed per datasource), `SlayerSQLClient` for its private in-memory
+   `reset_cache` always dispose; `:memory:` is built by its single builder,
+   keyed per datasource), `SlayerSQLClient` for its private in-memory
    engine (via `close()`, with a finalizer backstop) and its async engines, one
    per event loop, each released only on its own loop. `create_engine` runs only
    in the factory and the dialects' build hooks; `create_async_engine` only in
@@ -62,6 +62,8 @@ flowchart TD
    checked only after idle, and connections persist across calls, synchronous ones included; a
    datasource marked as reached through a transaction-mode pooler keeps its timeout
    transaction-local instead. [enforced: test:tests/test_law_one_request_per_statement.py]
+6. **One thread per connection**: a database connection is used by one thread at a time.
+   [enforced: test:tests/test_law_one_thread_per_connection.py]
 
 ## 4. Rationale
 

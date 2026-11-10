@@ -11,7 +11,7 @@
 #     model-scoped metrics (which reference fields as dataset.field)
 #
 # Sources are bare table names, resolved against the demo DuckDB.
-version: "0.2.0.dev0"
+version: "0.3.0.dev0"
 name: shop
 description: Retail shop semantic model
 ai_context:

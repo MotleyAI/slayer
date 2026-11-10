@@ -59,11 +59,11 @@ from slayer.sql.dialects.reflection import (
     inspector_foreign_keys,
     inspector_unique_constraints,
     inspector_unique_indexes,
+    keys_of_reads,
     recover,
     relation,
     result_column_type_of_name,
     schema_token,
-    without_primary_key,
 )
 from slayer.sql.naming_bijection import decode_alias, encode_alias
 
@@ -2171,28 +2171,29 @@ class SqlDialect(BaseModel):
         self, *, connection: CatalogConnection | None, inspector: Any, table: str, schema: str | None,
         catalog: str | None,
     ) -> TableKeys:
-        """PK, FKs and whole-table unique key sets; each read best-effort, a failure logged at WARNING."""
+        """PK, FKs and whole-table unique key sets; each read best-effort, a failure logged at WARNING and listed."""
         token = schema_token(schema=schema, catalog=catalog)
-        pk = best_effort(
-            lambda: self._primary_key(
-                connection=connection, inspector=inspector, table=table, schema=schema, catalog=catalog,
+        return keys_of_reads(
+            primary_key=best_effort(
+                lambda: self._primary_key(
+                    connection=connection, inspector=inspector, table=table, schema=schema, catalog=catalog,
+                ),
+                connection=connection, default=[], table=table, what="primary key",
             ),
-            connection=connection, default=[], table=table, what="primary key",
-        )
-        fks = best_effort(
-            lambda: inspector_foreign_keys(inspector, table=table, token=token),
-            connection=connection, default=[], table=table, what="foreign keys",
-        )
-        uniques = best_effort(
-            lambda: inspector_unique_constraints(inspector, table=table, token=token),
-            connection=connection, default=[], table=table, what="unique constraints",
-        )
-        indexes = best_effort(
-            lambda: inspector_unique_indexes(inspector, table=table, token=token),
-            connection=connection, default=[], table=table, what="unique indexes",
-        )
-        return TableKeys(
-            primary_key=pk, foreign_keys=fks, unique_key_sets=without_primary_key(pk, uniques + indexes),
+            foreign_keys=best_effort(
+                lambda: inspector_foreign_keys(inspector, table=table, token=token),
+                connection=connection, default=[], table=table, what="foreign keys",
+            ),
+            unique_sets=[
+                best_effort(
+                    lambda: inspector_unique_constraints(inspector, table=table, token=token),
+                    connection=connection, default=[], table=table, what="unique constraints",
+                ),
+                best_effort(
+                    lambda: inspector_unique_indexes(inspector, table=table, token=token),
+                    connection=connection, default=[], table=table, what="unique indexes",
+                ),
+            ],
         )
 
     def _primary_key(
