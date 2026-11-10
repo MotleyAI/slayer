@@ -347,7 +347,7 @@ async def test_time_grain_group_by(pg_demo_server) -> None:
     conn = await _connect(host, port)
     try:
         rows = await conn.fetch(
-            "SELECT month(ordered_at) AS m, row_count FROM orders "
+            "SELECT DATE_TRUNC('month', ordered_at) AS m, row_count FROM orders "
             "GROUP BY m ORDER BY m"
         )
         assert len(rows) > 0

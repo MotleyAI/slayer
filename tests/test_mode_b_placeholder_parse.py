@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 from slayer.core.errors import QueryTypeError, SlayerError, UnresolvedPlaceholderError
 from slayer.core.syntax import (
@@ -39,7 +41,6 @@ AMOUNT_SUM = AggCall(source=AMOUNT, agg="sum")
     ("amount:percentile({k})", AggCall(source=AMOUNT, agg="percentile", args=(K,))),
     ("amount:sum(window={k})", AggCall(source=AMOUNT, agg="sum", kwargs=(("window", K),))),
     ("lag(amount:sum, {k})", TransformCall(op="lag", input=AMOUNT_SUM, args=(K,))),
-    ("lag(amount:sum, offset={k})", TransformCall(op="lag", input=AMOUNT_SUM, kwargs=(("offset", K),))),
     ("round(amount, {k})", ScalarCall(name="round", args=(AMOUNT, K))),
     (
         "CASE WHEN amount > {k} THEN {k} ELSE 0 END",
@@ -55,6 +56,22 @@ AMOUNT_SUM = AggCall(source=AMOUNT, agg="sum")
 ])
 def test_placeholder_position(text: str, expected) -> None:
     assert parse_expr(text) == expected
+
+
+def _contains(node: Any, target: Any) -> bool:
+    if node == target:
+        return True
+    if isinstance(node, BaseModel):
+        return any(_contains(getattr(node, field), target) for field in type(node).model_fields)
+    return isinstance(node, (tuple, list)) and any(_contains(item, target) for item in node)
+
+
+def test_placeholder_on_the_right_of_a_call_argument_equals() -> None:
+    # Keyword or comparison is decided at binding, so only the call and the placeholder are pinned here.
+    parsed = parse_expr("lag(amount:sum, offset={k})")
+    assert isinstance(parsed, TransformCall)
+    assert (parsed.op, parsed.input) == ("lag", AMOUNT_SUM)
+    assert _contains(parsed, K)
 
 
 def test_filter_parser_admits_placeholder() -> None:

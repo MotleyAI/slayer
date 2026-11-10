@@ -14,7 +14,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 duckdb = pytest.importorskip("duckdb")
 
-SELECT = "SELECT month(ordered_at), revenue_sum FROM orders "
+SELECT = "SELECT date_trunc('month', ordered_at), revenue_sum FROM orders "
 
 
 @pytest.fixture(params=[None, "postgres"])
@@ -128,10 +128,9 @@ async def _revenue(tmp_path, where: str, *, column: str | None = "ordered_at") -
     await storage.save_datasource(DatasourceConfig(name="test", type="duckdb", database=db_path))
     await storage.save_model(_orders())
     engine = SlayerQueryEngine(storage=storage)
+    grain = f"date_trunc('month', {column}), " if column else ""
     try:
-        resp = await engine.execute(_translate(
-            f"SELECT {f'month({column}), ' if column else ''}revenue_sum FROM orders WHERE {where}", "postgres",
-        ))
+        resp = await engine.execute(_translate(f"SELECT {grain}revenue_sum FROM orders WHERE {where}", "postgres"))
     finally:
         engine.close()
     return sum(r["orders.revenue_sum"] for r in resp.data)

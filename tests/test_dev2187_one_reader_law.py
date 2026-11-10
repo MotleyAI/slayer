@@ -108,13 +108,13 @@ async def test_a_quoted_identifier_names_its_column(engine: SlayerQueryEngine, q
 
 
 async def test_a_quoted_time_dimension_names_its_column(engine: SlayerQueryEngine) -> None:
-    quoted = await engine.execute(_orders(time_dimensions=['month("created_at")'], measures=["count(*)"]))
-    bare = await engine.execute(_orders(time_dimensions=["month(created_at)"], measures=["count(*)"]))
+    quoted = await engine.execute(_orders(time_dimensions=["date_trunc('month', \"created_at\")"], measures=["count(*)"]))
+    bare = await engine.execute(_orders(time_dimensions=["date_trunc('month', created_at)"], measures=["count(*)"]))
     assert quoted.columns == bare.columns
     assert canonical_rows(quoted) == canonical_rows(bare)
 
 
-MAIN_TIME = {"time_dimensions": ["month(created_at)", "month(shipped_at)"],
+MAIN_TIME = {"time_dimensions": ["date_trunc('month', created_at)", "date_trunc('month', shipped_at)"],
              "measures": [{"formula": "change(count(*))", "name": "c"}]}
 
 
@@ -371,23 +371,22 @@ async def test_an_order_literal_sorts_by_the_whole_expression(
 # Parity pins: functional time dimensions
 # --------------------------------------------------------------------------- #
 TD_PINS: dict[str, tuple[str, str]] = {
-    "month(created_at)": ("created_at", "month"),
-    "MONTH(created_at)": ("created_at", "month"),
-    "month( created_at )": ("created_at", "month"),
-    "month(coalesce(shipped_at, created_at))": ("coalesce(shipped_at, created_at)", "month"),
-    "month(iif(note = 'a)b', created_at, created_at))": ("iif(note = 'a)b', created_at, created_at)", "month"),
-    "month(iif(note = 'a,b', created_at, created_at))": ("iif(note = 'a,b', created_at, created_at)", "month"),
-    "month(iif(note = ')', created_at, created_at))": ("iif(note = ')', created_at, created_at)", "month"),
-    "month(note || '(')": ("note || '('", "month"),
-    "month(date_trunc('day', created_at))": ("date_trunc('day', created_at)", "month"),
     "date_trunc('month', created_at)": ("created_at", "month"),
+    "DATE_TRUNC('MONTH', created_at)": ("created_at", "month"),
+    "date_trunc( 'month' , created_at )": ("created_at", "month"),
     "date_trunc('month', coalesce(shipped_at, created_at))": ("coalesce(shipped_at, created_at)", "month"),
-    "month(created_at - -c)": ("created_at - -c", "month"),
+    "date_trunc('month', iif(note = 'a)b', created_at, created_at))": ("iif(note = 'a)b', created_at, created_at)", "month"),
+    "date_trunc('month', iif(note = 'a,b', created_at, created_at))": ("iif(note = 'a,b', created_at, created_at)", "month"),
+    "date_trunc('month', iif(note = ')', created_at, created_at))": ("iif(note = ')', created_at, created_at)", "month"),
+    "date_trunc('month', note || '(')": ("note || '('", "month"),
+    "date_trunc('month', date_trunc('day', created_at))": ("date_trunc('day', created_at)", "month"),
+    "date_trunc('month', created_at - -c)": ("created_at - -c", "month"),
     "created_at:month": ("created_at", "month"),
     "orders.created_at:month": ("orders.created_at", "month"),
 }
 
-TD_REFUSED = ["month(created_at, x=1)", "month({x})", "{g}(created_at)", "month(created_at)::date"]
+TD_REFUSED = ["date_trunc('month', created_at, x=1)", "date_trunc('month', {x})", "date_trunc('{g}', created_at)",
+              "date_trunc('month', created_at)::date"]
 
 
 @pytest.mark.parametrize("field", ["time_dimensions", "dimensions"])
@@ -399,7 +398,7 @@ def test_functional_time_dimension_pin(entry: str, field: str) -> None:
 
 
 def test_a_datasource_granularity_time_dimension_pin() -> None:
-    query = SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": ["fiscal_year(created_at)"]})
+    query = SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": ["date_trunc('fiscal_year', created_at)"]})
     assert [(td.dimension, str(td.granularity)) for td in query.time_dimensions or []] == [("created_at", "fiscal_year")]
 
 
@@ -416,9 +415,9 @@ def test_a_non_granularity_call_stays_a_dimension() -> None:
 
 
 async def test_a_quoted_parenthesis_buckets_the_whole_expression(engine: SlayerQueryEngine) -> None:
-    quoted = await engine.execute(_orders(time_dimensions=["month(iif(note = 'a)b', created_at, created_at))"],
+    quoted = await engine.execute(_orders(time_dimensions=["date_trunc('month', iif(note = 'a)b', created_at, created_at))"],
                                           measures=["count(*)"]))
-    bare = await engine.execute(_orders(time_dimensions=["month(created_at)"], measures=["count(*)"]))
+    bare = await engine.execute(_orders(time_dimensions=["date_trunc('month', created_at)"], measures=["count(*)"]))
     assert sorted(tuple(map(str, r.values())) for r in quoted.data) == sorted(
         tuple(map(str, r.values())) for r in bare.data)
 

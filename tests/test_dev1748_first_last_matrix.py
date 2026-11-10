@@ -13,7 +13,8 @@ rewrite or a divergence that needs explicit approval — never routine churn.
 column on a joined model, because the ranking ran in the host base and could
 not pull the residual join (the DEV-1476/1526 remnant). The rewrite removes
 that limitation, so the xfail was removed with it. Everything else in this
-module passed on both sides unchanged.
+module passed on both sides unchanged. The NULL-ranking-key cases were later
+changed deliberately: a NULL key is never picked, on any dialect.
 
 Assertions are **execution-based**: SQL-shape assertions belong in
 ``tests/test_dev1748_golden_sql.py``, which pins the emission across five
@@ -151,8 +152,9 @@ class TestGroupedAndUngrouped:
 
         assert by_month["2024-02-01"] == FILT_NEWER_NONMATCHING
         assert by_month["2024-03-01"] == FAN_LAST
-        # The rows whose ranking timestamp is NULL form their own bucket.
-        assert by_month[None] == NULLTIME_NULL_ROW_AMOUNT
+        # The NULL-timestamp bucket survives, but its only key is NULL → NULL.
+        assert None in by_month, f"the NULL-timestamp bucket vanished: {rows}"
+        assert by_month[None] is None
 
     async def test_a_joined_dimension_grain_ranks_within_each_joined_group(
         self, engine: SlayerQueryEngine,
@@ -198,17 +200,12 @@ class TestNulls:
             rows, key="orders.status", value="orders.f",
         )["nullval"] == NULLVAL_OLDER
 
-    async def test_a_null_ranking_timestamp_sorts_per_the_engine(
+    async def test_a_null_ranking_timestamp_is_skipped_in_both_directions(
         self, engine: SlayerQueryEngine,
     ) -> None:
         """``nulltime`` holds one row with a NULL ``created_at`` and one dated.
-
-        SQLite sorts NULLs FIRST ascending, so ``ORDER BY created_at DESC`` puts
-        the NULL row LAST and the dated row wins ``last``; ascending, the NULL
-        row wins ``first``. That is a DIALECT-dependent answer — Postgres sorts
-        NULLs last ascending and would swap them — so this pins SQLite's
-        behaviour rather than claiming a portable guarantee. What must not
-        change is that the ranking is not silently NULL-blind."""
+        A NULL ranking key is never picked, whatever the dialect's native NULL
+        ordering, so the dated row wins both ``first`` and ``last``."""
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[
@@ -221,7 +218,7 @@ class TestNulls:
         )["nulltime"] == NULLTIME_DATED_ROW_AMOUNT
         assert by_group(
             rows, key="orders.status", value="orders.f",
-        )["nulltime"] == NULLTIME_NULL_ROW_AMOUNT
+        )["nulltime"] == NULLTIME_DATED_ROW_AMOUNT
 
     async def test_an_explicit_time_arg_with_its_own_nulls_ranks_by_that_column(
         self, engine: SlayerQueryEngine,
@@ -786,7 +783,8 @@ class TestComposition:
         # can land on the right final value while every step before it is
         # wrong, and the ORDER the chain accumulates in is part of what a
         # transform over an isolated aggregate has to get right.
-        january = NULLTIME_NULL_ROW_AMOUNT + FAN_FIRST
+        # The NULL-timestamp bucket's ``last`` is NULL, so it adds nothing.
+        january = FAN_FIRST
         february = january + FILT_NEWER_NONMATCHING
         assert [
             (row["orders.created_at"], row["orders.c"]) for row in rows
@@ -794,7 +792,7 @@ class TestComposition:
             ("2024-01-01", pytest.approx(january)),
             ("2024-02-01", pytest.approx(february)),
             ("2024-03-01", pytest.approx(february + FAN_LAST)),
-            (None, pytest.approx(NULLTIME_NULL_ROW_AMOUNT)),
+            (None, None),
         ]
 
 

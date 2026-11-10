@@ -20,6 +20,9 @@ SLAYER = REPO / "slayer"
 HELPERS = frozenset({"slayer.core.deprecation.warn_deprecated", "slayer.core.deprecation.raise_moved"})
 HELPER_MODULE = "slayer/core/deprecation.py"
 
+#: The deprecated Mode-B spellings, each warned with a message spelling its token literally.
+MODE_B_SPELLING_TOKENS = ("==", "is None", "is not None", "bare None", "list after IN", "method-call")
+
 #: Every covered workaround: (file, a token its message spells literally) -> removal version.
 PINNED: dict[tuple[str, str], str] = {
     ("slayer/live_schema/ingestion.py", "ingest_datasource()"): "2.0",
@@ -54,8 +57,10 @@ PINNED: dict[tuple[str, str], str] = {
     },
     ("slayer/engine/population/__init__.py", "slayer.engine.population."): "3.0",
     ("slayer/engine/cardinality/__init__.py", "slayer.engine.cardinality."): "3.0",
+    **{("slayer/core/legacy_spellings.py", token): "3.0" for token in MODE_B_SPELLING_TOKENS},
 }
-MOVED_PATH_SITES = frozenset(k for k, removal in PINNED.items() if removal == "3.0")
+MODE_B_SPELLING_SITES = frozenset(("slayer/core/legacy_spellings.py", t) for t in MODE_B_SPELLING_TOKENS)
+MOVED_PATH_SITES = frozenset(k for k, removal in PINNED.items() if removal == "3.0") - MODE_B_SPELLING_SITES
 
 
 class Site(BaseModel):
@@ -171,12 +176,12 @@ def _named_at(version: str, monkeypatch) -> set[tuple[str, str] | None]:
 
 
 def test_at_2_0_0_the_tripwire_names_every_2_0_site(monkeypatch) -> None:
-    assert _named_at("2.0.0", monkeypatch) == set(PINNED) - MOVED_PATH_SITES
+    assert _named_at("2.0.0", monkeypatch) == set(PINNED) - MOVED_PATH_SITES - MODE_B_SPELLING_SITES
 
 
 def test_at_3_0_0_the_moved_module_paths_are_named(monkeypatch) -> None:
     named = _named_at("3.0.0", monkeypatch)
-    assert MOVED_PATH_SITES <= named
+    assert MOVED_PATH_SITES | MODE_B_SPELLING_SITES <= named
     assert named == set(PINNED)
 
 

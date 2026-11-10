@@ -1,10 +1,4 @@
-"""DEV-1883 — ``gran(col)`` entries rewrite to ``TimeDimension`` at construction.
-
-Spec: openspec/changes/dev-1883-support-functional-time-granularity-form-monthcol-in-query/
-specs/queries/time-dimensions (functional form in dimensions / time_dimensions).
-"""
-import re
-
+"""``date_trunc('<unit>', col)`` entries rewrite to ``TimeDimension`` at construction (spec: queries/time-dimensions)."""
 import pydantic
 import pytest
 
@@ -20,7 +14,7 @@ class TestDimensionsRewrite:
     def test_every_granularity_rewrites(self, gran: str) -> None:
         q = fx.q(
             source_model="orders",
-            dimensions=[f"{gran}(created_at)"],
+            dimensions=[f"date_trunc('{gran}', created_at)"],
             measures=[{"formula": "*:count"}],
         )
         assert not q.dimensions, q.dimensions
@@ -31,7 +25,7 @@ class TestDimensionsRewrite:
     def test_case_insensitive_callee(self) -> None:
         q = fx.q(
             source_model="orders",
-            dimensions=["MONTH(created_at)"],
+            dimensions=["DATE_TRUNC('MONTH', created_at)"],
             measures=[{"formula": "*:count"}],
         )
         assert q.time_dimensions is not None
@@ -40,7 +34,7 @@ class TestDimensionsRewrite:
     def test_dotted_join_path(self) -> None:
         q = fx.q(
             source_model="orders",
-            dimensions=["MONTH(customers.created_at)"],
+            dimensions=["DATE_TRUNC('MONTH', customers.created_at)"],
             measures=[{"formula": "*:count"}],
         )
         assert q.time_dimensions == [
@@ -50,7 +44,7 @@ class TestDimensionsRewrite:
     def test_plain_entries_survive_in_place(self) -> None:
         q = fx.q(
             source_model="orders",
-            dimensions=["status", "month(created_at)"],
+            dimensions=["status", "date_trunc('month', created_at)"],
             measures=[{"formula": "*:count"}],
         )
         assert q.dimensions == [ColumnRef(name="status")]
@@ -62,7 +56,7 @@ class TestDimensionsRewrite:
         q = fx.q(
             source_model="orders",
             time_dimensions=[{"dimension": "updated_at", "granularity": "day"}],
-            dimensions=["month(created_at)", "week(shipped_at)"],
+            dimensions=["date_trunc('month', created_at)", "date_trunc('week', shipped_at)"],
             measures=[{"formula": "*:count"}],
         )
         assert q.time_dimensions == [
@@ -74,7 +68,7 @@ class TestDimensionsRewrite:
     def test_canonical_serialization_moves_entry(self) -> None:
         q = fx.q(
             source_model="orders",
-            dimensions=["month(created_at)"],
+            dimensions=["date_trunc('month', created_at)"],
             measures=[{"formula": "*:count"}],
         )
         dump = q.model_dump()
@@ -87,7 +81,7 @@ class TestDimensionsRewrite:
     def test_dump_identical_to_explicit_form(self) -> None:
         functional = fx.q(
             source_model="orders",
-            dimensions=["month(created_at)"],
+            dimensions=["date_trunc('month', created_at)"],
             measures=[{"formula": "*:count"}],
         )
         explicit = fx.q(
@@ -115,7 +109,7 @@ class TestTimeDimensionsStringEntries:
     def test_functional_string_entry_coerces(self) -> None:
         q = fx.q(
             source_model="orders",
-            time_dimensions=["month(created_at)"],
+            time_dimensions=["date_trunc('month', created_at)"],
             measures=[{"formula": "*:count"}],
         )
         assert q.time_dimensions == [
@@ -127,7 +121,7 @@ class TestTimeDimensionsStringEntries:
             source_model="orders",
             time_dimensions=[
                 {"dimension": "updated_at", "granularity": "day"},
-                "month(created_at)",
+                "date_trunc('month', created_at)",
             ],
             measures=[{"formula": "*:count"}],
         )
@@ -143,7 +137,7 @@ class TestTimeDimensionsStringEntries:
         with pytest.raises(pydantic.ValidationError):
             fx.q(
                 source_model="orders",
-                dimensions=["month(created_at)"],
+                dimensions=["date_trunc('month', created_at)"],
                 time_dimensions=bad,
                 measures=[{"formula": "*:count"}],
             )
@@ -159,6 +153,4 @@ class TestTimeDimensionsStringEntries:
         assert "created_at" in msg
         for gran in GRANULARITIES:
             assert gran in msg, f"error must name granularity {gran!r}: {msg}"
-        assert "(col" in msg or re.search(r"\b\w+\(created_at\)", msg), (
-            f"error must show the gran(col) form: {msg}"
-        )
+        assert "date_trunc('<unit>', expr)" in msg, msg

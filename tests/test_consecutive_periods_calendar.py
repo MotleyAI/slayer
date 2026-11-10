@@ -179,10 +179,19 @@ class TestSubDayTimeOffsets:
 
 
 class TestPeriodKeywordRejected:
-    async def test_period_keyword_raises(self) -> None:
+    async def test_period_is_not_a_keyword_but_a_rejected_comparison(self) -> None:
         models = calendar_models()
-        query = orders_query(formula="consecutive_periods(sum(amount) > 100, period='year')")
-        with pytest.raises(ValueError, match=r"consecutive_periods.*'period'"):
+
+        async def generate(formula: str) -> None:
             await _engine_generate(
-                query=query, model=models[0], extra_models=models[1:], dialect="duckdb",
+                query=orders_query(formula=formula), model=models[0], extra_models=models[1:], dialect="duckdb",
             )
+
+        # `period` is not a parameter of consecutive_periods, so it fails like its parenthesised twin.
+        with pytest.raises(ValueError) as twin:
+            await generate("consecutive_periods(sum(amount) > 100, (period='year'))")
+        with pytest.raises(ValueError) as info:
+            await generate("consecutive_periods(sum(amount) > 100, period='year')")
+        assert type(info.value) is type(twin.value), str(info.value)
+        assert "keyword argument 'period'" not in str(info.value)
+        assert "==" not in str(info.value)

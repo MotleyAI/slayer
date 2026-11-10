@@ -17,7 +17,7 @@ SHOP_DS = "shop"
 README_QUERY = json.dumps({
     "source_model": "orders",
     "measures": ["sum(order_total)", "change_pct(sum(order_total))"],
-    "dimensions": ["stores.name", "month(ordered_at)"],
+    "dimensions": ["stores.name", "date_trunc('month', ordered_at)"],
 })
 
 TOTAL_QUERY = json.dumps({"source_model": "orders", "measures": ["sum(order_total)"]})

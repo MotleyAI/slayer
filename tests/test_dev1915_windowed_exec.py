@@ -152,14 +152,14 @@ async def test_windowed_last_explicit_updated_at(exec_backend):
     assert F.by_month(resp, "orders.l") == _approx(F.LAST_UPDATED_90D)
 
 
-async def test_windowed_first_updated_at_february_native_nulls(exec_backend):
-    dialect, engine = exec_backend
+async def test_windowed_first_updated_at_february_skips_null_key(exec_backend):
+    _, engine = exec_backend
     resp = await engine.execute(F.q(time_dimensions=F.month_td(), measures=[
         _m("amount:first(updated_at, window='90d')", "f"),
     ]))
     got = F.by_month(resp, "orders.f")
     assert got["2024-01"] == pytest.approx(F.FIRST_UPDATED_JAN)
-    assert got["2024-02"] == pytest.approx(F.FIRST_UPDATED_FEB[dialect])
+    assert got["2024-02"] == pytest.approx(F.FIRST_UPDATED_FEB)
 
 
 async def test_windowed_last_all_null_key_cell(exec_backend):
@@ -170,8 +170,8 @@ async def test_windowed_last_all_null_key_cell(exec_backend):
     ))
     cell = {(r["orders.region"], F.month_key(r["orders.created_at"])): r["orders.l"]
             for r in resp.data}
-    # EU/February's interval holds only the NULL-updated_at row 3 → still picked.
-    assert cell[("EU", "2024-02")] == pytest.approx(300.0)
+    # EU/February's interval holds only the NULL-updated_at row 3 → NULL.
+    assert cell[("EU", "2024-02")] is None
 
 
 # --------------------------------------------------------------------------- #

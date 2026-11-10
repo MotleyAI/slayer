@@ -176,30 +176,21 @@ class TestBindTransformValidation:
         kw_dict = dict(bound.value_key.kwargs)
         assert kw_dict["periods"] == 2
 
-    def test_unknown_kwarg_on_rank_raises(self) -> None:
-        # rank's allowed kwargs: {partition_by}. Anything else → error.
-        parsed = parse_expr("rank(amount:sum, foo='bar', direction='desc')")
-        scope, bundle = _scope(), _bundle()
-        with pytest.raises(ValueError, match="rank.*not.*accept"):
-            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
-
-    def test_unknown_kwarg_on_percent_rank_raises(self) -> None:
-        parsed = parse_expr("percent_rank(amount:sum, foo='bar')")
-        scope, bundle = _scope(), _bundle()
-        with pytest.raises(ValueError, match="percent_rank.*not.*accept"):
-            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
-
-    def test_unknown_kwarg_on_dense_rank_raises(self) -> None:
-        parsed = parse_expr("dense_rank(amount:sum, foo='bar', direction='desc')")
-        scope, bundle = _scope(), _bundle()
-        with pytest.raises(ValueError, match="dense_rank.*not.*accept"):
-            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
-
-    def test_unknown_kwarg_on_consecutive_periods_raises(self) -> None:
-        parsed = parse_expr("consecutive_periods(amount:sum, foo='bar')")
-        scope, bundle = _scope(), _bundle()
-        with pytest.raises(ValueError, match="consecutive_periods.*not.*accept"):
-            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
+    @pytest.mark.parametrize(("formula", "twin"), [
+        ("rank(amount:sum, foo='bar', direction='desc')", "rank(amount:sum, (foo='bar'), direction='desc')"),
+        ("percent_rank(amount:sum, foo='bar')", "percent_rank(amount:sum, (foo='bar'))"),
+        ("dense_rank(amount:sum, foo='bar', direction='desc')", "dense_rank(amount:sum, (foo='bar'), direction='desc')"),
+        ("consecutive_periods(amount:sum, foo='bar')", "consecutive_periods(amount:sum, (foo='bar'))"),
+    ])
+    def test_non_parameter_name_is_a_positional_comparison(self, formula: str, twin: str) -> None:
+        # Not a declared parameter of the callee → a comparison, failing like its parenthesised twin.
+        with pytest.raises(ValueError) as twin_info:
+            bind_expr(parsed=parse_expr(twin), scope=_scope(), bundle=_bundle())
+        with pytest.raises(ValueError) as info:
+            bind_expr(parsed=parse_expr(formula), scope=_scope(), bundle=_bundle())
+        assert type(info.value) is type(twin_info.value), str(info.value)
+        assert "keyword argument 'foo'" not in str(info.value)
+        assert "==" not in str(info.value)
 
     # -- Backfills from the deleted test_formula.py ---------------------------
     # ``TestFormulaParser`` asserted these rejections against the legacy
@@ -223,11 +214,14 @@ class TestBindTransformValidation:
             bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
     def test_rank_rejects_n_kwarg(self) -> None:
-        # ``n`` is ntile-only; rank must not silently accept it.
-        parsed = parse_expr("rank(amount:sum, n=4, direction='desc')")
-        scope, bundle = _scope(), _bundle()
-        with pytest.raises(ValueError, match="rank.*not.*accept.*'n'"):
-            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
+        # ``n`` is ntile-only: in rank it is a comparison, failing like its parenthesised twin.
+        with pytest.raises(ValueError) as twin_info:
+            bind_expr(parsed=parse_expr("rank(amount:sum, (n=4), direction='desc')"), scope=_scope(), bundle=_bundle())
+        with pytest.raises(ValueError) as info:
+            bind_expr(parsed=parse_expr("rank(amount:sum, n=4, direction='desc')"), scope=_scope(), bundle=_bundle())
+        assert type(info.value) is type(twin_info.value), str(info.value)
+        assert "keyword argument 'n'" not in str(info.value)
+        assert "==" not in str(info.value)
 
     def test_time_shift_positional_periods_binds(self) -> None:
         # ``time_shift(x, -1)`` — the row-based positional form maps onto the

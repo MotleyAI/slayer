@@ -1,8 +1,8 @@
 ## 1. Tests first (pr-tests)
 
-- [ ] 1.1 Write failing tests for every scenario in this change's delta specs. They are unit tests on in-process SQLite and DuckDB, plus Postgres via pytest-postgresql where a scenario names Postgres. Verify each new test fails on `main` for the intended reason.
-- [ ] 1.2 Before writing tests, find every existing test whose assertions pin the old behaviour. That covers bucket `month(x)` and siblings, `gran(x)` time-dimension strings, `==` / `None` in CASE-lowering output, exact-case lookups, `first`/`last` native NULL order, keyword argument versus comparison, and the tripwire and library-growth pins. List them by file with what changes, and get the owner's per-test approval before aligning them.
-- [ ] 1.3 Law and pin tests: one name matcher (no namespace lookup compares names itself), the library-growth `reserved` vocabulary with `agg` and its migration, and the tripwire `PINNED` entries for the deprecated Mode-B spellings at removal 3.0. Verify each fails before implementation.
+- [x] 1.1 Write failing tests for every scenario in this change's delta specs. They are unit tests on in-process SQLite and DuckDB, plus Postgres via pytest-postgresql where a scenario names Postgres. Verify each new test fails on `main` for the intended reason.
+- [x] 1.2 Before writing tests, find every existing test whose assertions pin the old behaviour. That covers bucket `month(x)` and siblings, `gran(x)` time-dimension strings, `==` / `None` in CASE-lowering output, exact-case lookups, `first`/`last` native NULL order, keyword argument versus comparison, and the tripwire and library-growth pins. List them by file with what changes, and get the owner's per-test approval before aligning them.
+- [x] 1.3 Law and pin tests: one name matcher (no namespace lookup compares names itself), the library-growth `reserved` vocabulary with `agg` and its migration, and the tripwire `PINNED` entries for the deprecated Mode-B spellings at removal 3.0. Verify each fails before implementation.
 
 ## 2. Date-part flip
 

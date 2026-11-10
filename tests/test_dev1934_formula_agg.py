@@ -96,6 +96,17 @@ async def _joined_sql(*, agg: Aggregation, formula: str, validate: bool = True) 
     return await _engine_generate(query=_q(formula), model=host, extra_models=[customers], validate=validate)
 
 
+async def _fails_as_its_comparison_twin(*, formula: str, twin: str, aggs: tuple[Aggregation, ...]) -> str:
+    """``formula`` fails like ``twin``, its non-parameter ``name = value`` parenthesised; returns the message."""
+    with pytest.raises(ValueError) as twin_info:
+        await _sql(twin, aggs=aggs)
+    with pytest.raises(ValueError) as info:
+        await _sql(formula, aggs=aggs)
+    assert type(info.value) is type(twin_info.value), str(info.value)
+    assert "==" not in str(info.value)
+    return str(info.value)
+
+
 _SUMSQ = Aggregation(name="sumsq", formula="SUM({value} * {value})")
 _SCALED = Aggregation(
     name="scaled", formula="SUM({value}) / {scale}",
@@ -266,7 +277,6 @@ class TestInvalidTemplates:
     @pytest.mark.parametrize(("formula", "aggs"), [
         ("price:sumsq(value=0)", (_SUMSQ,)),
         ("price:sumsq(value=missing.path)", (_SUMSQ,)),
-        ("price:weighted_avg(weight=quantity, value=0)", ()),
         ("price:sum(value=0)", (Aggregation(name="sum", formula="SUM({value}) * 2"),)),
     ])
     async def test_value_kwarg_on_value_template_explains(
@@ -280,20 +290,19 @@ class TestInvalidTemplates:
         sql = await _sql("price:dk(scale=2)", dialect="duckdb", aggs=(duck,))
         assert "SUM(orders.price) * 2 // 2" in sql
 
-    @pytest.mark.parametrize(("formula", "aggs", "message"), [
-        ("price:SUM(value=0)", (), r"'sum' takes no args or kwargs other than window; got 'value'"),
-        ("price:percentile(p=0.5, value=0)", (), r"'percentile' does not accept argument 'value'; accepted: p, window"),
-        ("price:corr(other=quantity, foo=1)", (), r"'corr' does not accept argument 'foo'; accepted: other, window"),
-        ("price:rows(value=1)", (Aggregation(name="rows", formula="COUNT(*)"),),
-         r"'rows' takes no args or kwargs other than window; got 'value'"),
-        ("price:scaled(scale=2, bogus=1)", (_SCALED,), r"'scaled' does not accept argument 'bogus'; accepted: scale, window"),
+    @pytest.mark.parametrize(("formula", "twin", "aggs"), [
+        ("price:SUM(value=0)", "price:SUM((value=0))", ()),
+        ("price:percentile(p=0.5, value=0)", "price:percentile(p=0.5, (value=0))", ()),
+        ("price:corr(other=quantity, foo=1)", "price:corr(other=quantity, (foo=1))", ()),
+        ("price:rows(value=1)", "price:rows((value=1))", (Aggregation(name="rows", formula="COUNT(*)"),)),
+        ("price:scaled(scale=2, bogus=1)", "price:scaled(scale=2, (bogus=1))", (_SCALED,)),
+        ("price:weighted_avg(weight=quantity, value=0)", "price:weighted_avg(weight=quantity, (value=0))", ()),
     ])
-    async def test_unknown_kwarg_is_rejected(
-        self, formula: str, aggs: tuple[Aggregation, ...], message: str,
+    async def test_non_parameter_name_is_a_comparison(
+        self, formula: str, twin: str, aggs: tuple[Aggregation, ...],
     ) -> None:
-        with pytest.raises(ValueError, match=message) as ei:
-            await _sql(formula, aggs=aggs)
-        assert "aggregated column" not in str(ei.value)
+        message = await _fails_as_its_comparison_twin(formula=formula, twin=twin, aggs=aggs)
+        assert "aggregated column" not in message
 
     @pytest.mark.parametrize("name", ["custom_agg", "weighted_avg"])
     @pytest.mark.parametrize("formula", ["", "  "])
@@ -509,9 +518,10 @@ class TestArgumentNamesCheckedFirst:
         with pytest.raises(AggregationArgumentError, match="'kx' does not accept argument 'unused'"):
             await _sql("kx(price, missing.path)", aggs=(_K_UNUSED,), validate=False)
 
-    async def test_keyword_name_rejected_before_its_value_binds(self) -> None:
-        with pytest.raises(AggregationArgumentError, match="'scaled' does not accept argument 'bogus'"):
-            await _sql("price:scaled(bogus=missing.path)", aggs=(_SCALED,))
+    async def test_non_parameter_name_binds_as_a_comparison(self) -> None:
+        message = await _fails_as_its_comparison_twin(
+            formula="price:scaled(bogus=missing.path)", twin="price:scaled((bogus=missing.path))", aggs=(_SCALED,))
+        assert "does not accept argument 'bogus'" not in message
 
     async def test_accepted_name_still_resolves_its_value(self) -> None:
         with pytest.raises(UnresolvableDimensionJoinError, match="missing.path"):

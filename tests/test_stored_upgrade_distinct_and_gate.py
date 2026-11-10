@@ -44,10 +44,10 @@ def _query(*, version: int, **fields: Any) -> SlayerQuery:
 
 class TestVersions:
     def test_versions_bumped(self) -> None:
-        assert CURRENT_VERSIONS["SlayerModel"] == 18
-        assert CURRENT_VERSIONS["SlayerQuery"] == 9
+        assert CURRENT_VERSIONS["SlayerModel"] == 19
+        assert CURRENT_VERSIONS["SlayerQuery"] == 10
         assert CURRENT_VERSIONS["DatasourceConfig"] == 3
-        assert CURRENT_VERSIONS["Memory"] == 7
+        assert CURRENT_VERSIONS["Memory"] == 8
 
 
 #: (stored v17 text, the text it loads as).
@@ -88,8 +88,8 @@ class TestDistinctRewrite:
         assert [m.formula for m in mem.query.measures or []] == ['sum("distinct")']
 
     def test_a_current_document_is_not_rewritten(self) -> None:
-        assert _formulas(_model_doc(version=18, measures=[{"name": "x", "formula": "sum(distinct)"}])) == [
-            "sum(distinct)"]
+        doc = _model_doc(version=CURRENT_VERSIONS["SlayerModel"], measures=[{"name": "x", "formula": "sum(distinct)"}])
+        assert _formulas(doc) == ["sum(distinct)"]
 
     def test_a_client_query_is_not_rewritten(self) -> None:
         query = SlayerQuery.model_validate({"source_model": "orders", "measures": ["sum(distinct)"]})
@@ -185,8 +185,9 @@ class TestOldGrammarGate:
         ])
         with _messages(caplog) as messages:
             formulas = _formulas(doc)
-        assert formulas == ["sum(CAST(x AS INT))", "sum(iif(status == 'paid', amount, 0))"]
-        assert not _warned(messages, document="gate_probe", field=("m_old", 'status == "paid"')), messages
+        assert formulas == ["sum(CAST(x AS INT))", "sum(iif(status = 'paid', amount, 0))"]
+        gate = [m for m in messages if "grammar" in m]
+        assert not _warned(gate, document="gate_probe", field=("m_old", 'status == "paid"')), messages
 
     def test_the_warning_names_each_field(self, caplog: pytest.LogCaptureFixture) -> None:
         with _messages(caplog) as messages:
@@ -206,13 +207,13 @@ class TestOldGrammarGate:
     @pytest.mark.parametrize("pad", [" ", "\n  "], ids=["space", "newline"])
     def test_old_text_with_leading_whitespace_is_upgraded(self, pad: str) -> None:
         query = _query(version=6, filters=[f'{pad}status == "paid"'])
-        assert query.filters == [f"{pad}status == 'paid'"]
+        assert query.filters == [f"{pad}status = 'paid'"]
 
     def test_saved_query(self, caplog: pytest.LogCaptureFixture) -> None:
         with _messages(caplog) as messages:
             query = _query(version=6, name="gate_q", filters=[BETWEEN, 'status == "paid"'],
                            dimensions=[{"expression": "status | region", "name": "tag"}])
-        assert query.filters == [BETWEEN, "status == 'paid'"]
+        assert query.filters == [BETWEEN, "status = 'paid'"]
         assert [getattr(d, "expression") for d in query.dimensions or []] == ["status || region"]
         assert _warned(messages, document="gate_q", field=(BETWEEN, "filters")), messages
 

@@ -17,6 +17,7 @@ from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.pg_facade.connection import PgConnection
 from slayer.search import graph as search_graph
 from slayer.storage.base import StorageBackend
+from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.access_filtered import AccessFilteredStorage
 from slayer.storage.yaml_storage import YAMLStorage
@@ -200,5 +201,5 @@ async def test_concurrent_first_reads_of_a_pre_v15_store_agree(backend: str) -> 
         models = await asyncio.gather(*(fin.get_model("orders", data_source="shop") for _ in range(8)))
         assert all(sorted(names) == ["customers", "orders"] for names in listings)
         assert all(m is not None and [j.target_model for j in m.joins] == ["customers"] for m in models)
-        assert (await raw_doc(inner, "orders"))["version"] == 18
+        assert (await raw_doc(inner, "orders"))["version"] == CURRENT_VERSIONS["SlayerModel"]
         assert sorted(await fin.list_models("shop")) == ["customers", "orders"]

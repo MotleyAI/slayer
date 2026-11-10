@@ -158,7 +158,7 @@ def _exercise(conn) -> None:
          ))
     _try("time-grain SELECT",
          lambda: run_select(
-             "SELECT month(ordered_at), revenue_sum FROM orders "
+             "SELECT DATE_TRUNC('month', ordered_at), revenue_sum FROM orders "
              "WHERE ordered_at >= '2024-01-01'"
          ))
     _try("cross-model dim SELECT",

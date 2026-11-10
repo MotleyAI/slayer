@@ -230,7 +230,7 @@ def test_time_grain_select(
     try:
         cols, rows = _exec_query_to_rows(
             conn.jconn,
-            "SELECT month(ordered_at) AS m, row_count FROM orders "
+            "SELECT DATE_TRUNC('month', ordered_at) AS m, row_count FROM orders "
             "WHERE ordered_at BETWEEN '2024-01-01' AND '2024-12-31' "
             "ORDER BY m",
         )

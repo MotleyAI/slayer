@@ -13,7 +13,7 @@ from slayer.core.keys import TransformKey
 from slayer.core.models import ModelMeasure
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
-from slayer.core.syntax import Literal, TransformCall, parse_expr
+from slayer.core.syntax import TransformCall, parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1847_fixtures import (
@@ -94,6 +94,17 @@ def _bind(formula: str):
                                   referenced_models=models[1:])
     return bind_expr(parse_expr(formula), scope=ModelScope(source_model=models[0]),
                      bundle=bundle).value_key
+
+
+def _fails_like_its_comparison_twin(*, formula: str, twin: str) -> str:
+    """``formula`` fails like ``twin``, its non-parameter ``name = value`` parenthesised; returns the message."""
+    with pytest.raises(ValueError) as twin_info:
+        _bind(twin)
+    with pytest.raises(ValueError) as info:
+        _bind(formula)
+    assert type(info.value) is type(twin_info.value), str(info.value)
+    assert "==" not in str(info.value)
+    return str(info.value)
 
 
 def _assert_missing_direction(msg: str, op: str = "rank") -> None:
@@ -299,9 +310,6 @@ class TestDirectionErrors:
         assert "direction" in msg, msg
 
     @pytest.mark.parametrize("formula", [
-        "rank(amount:sum, foo=1, direction='desc')",
-        "percent_rank(amount:sum, foo=1)",
-        "consecutive_periods(amount:sum > 0, foo=1)",
         "lag(amount:sum, periods=region)",
         "time_shift(amount:sum, granularity='month')",
         "ntile(amount:sum)",
@@ -312,22 +320,20 @@ class TestDirectionErrors:
         with pytest.raises(core_errors.TransformArgumentError):
             _bind(formula)
 
-    @pytest.mark.parametrize(("op", "advertised"), [
-        ("rank", True), ("dense_rank", True), ("percent_rank", False),
+    @pytest.mark.parametrize(("formula", "twin"), [
+        ("rank(amount:sum, foo=1, direction='desc')", "rank(amount:sum, (foo=1), direction='desc')"),
+        ("percent_rank(amount:sum, foo=1)", "percent_rank(amount:sum, (foo=1))"),
+        ("consecutive_periods(amount:sum > 0, foo=1)", "consecutive_periods(amount:sum > 0, (foo=1))"),
+        ("rank(sum(amount), foo=1)", "rank(sum(amount), (foo=1))"),
+        ("dense_rank(sum(amount), foo=1)", "dense_rank(sum(amount), (foo=1))"),
+        ("percent_rank(sum(amount), foo=1)", "percent_rank(sum(amount), (foo=1))"),
     ])
-    def test_unknown_keyword_lists_direction_where_accepted(self, op, advertised):
-        formula = f"{op}(sum(amount), foo=1)"
-        with pytest.raises(core_errors.TransformArgumentError) as binder:
-            _bind(formula)
-        msg = str(binder.value)
-        assert "foo" in msg, msg
-        assert ("direction" in msg) is advertised, msg
+    def test_non_parameter_name_is_a_positional_comparison(self, formula, twin):
+        msg = _fails_like_its_comparison_twin(formula=formula, twin=twin)
+        assert "keyword argument 'foo'" not in msg, msg
 
-    def test_unknown_keyword_outside_rank_family_lists_no_rank_keywords(self):
-        with pytest.raises(core_errors.TransformArgumentError) as ei:
-            _bind("lag(amount:sum, foo=1)")
-        msg = str(ei.value)
-        assert "foo" in msg, msg
+    def test_non_parameter_name_outside_rank_family_lists_no_rank_keywords(self):
+        msg = _fails_like_its_comparison_twin(formula="lag(amount:sum, foo=1)", twin="lag(amount:sum, (foo=1))")
         assert "partition_by" not in msg, msg
         assert "direction" not in msg, msg
 
@@ -353,10 +359,10 @@ class TestImporterParity:
         assert dict(_bind(formula).kwargs)["direction"] == want  # type: ignore[union-attr]
 
     def test_ntile_keeps_no_direction(self):
-        parsed = parse_expr("ntile(sum(amount), n=4)")
-        assert isinstance(parsed, TransformCall)
-        assert "direction" not in dict(parsed.kwargs)
-        assert dict(parsed.kwargs)["n"] == Literal(value=Decimal(4))
+        key = _bind("ntile(sum(amount), n=4)")
+        assert isinstance(key, TransformKey)
+        assert "direction" not in dict(key.kwargs)
+        assert dict(key.kwargs)["n"] == Decimal(4)
 
 
 # --------------------------------------------------------------------------- #
