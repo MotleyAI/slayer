@@ -27,4 +27,4 @@
 ## 5. Finish
 
 - [x] 5.1 Full unit suite `poetry run pytest -m "not integration"`, ruff, basedpyright (no new errors vs baseline), `poetry run la-arch-check`, `npx likec4 validate` (or build) all green
-- [ ] 5.2 Run `tests/test_gateway_features.py` and the new tests on Python 3.14 (scratch venv) in a loop of ≥25 runs; no `returned NULL` and no failure
+- [x] 5.2 Run `tests/test_gateway_features.py` and the new tests on Python 3.14 (scratch venv) in a loop of ≥25 runs; no `returned NULL` and no failure
