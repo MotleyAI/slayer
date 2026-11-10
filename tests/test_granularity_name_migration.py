@@ -496,6 +496,23 @@ async def test_concurrent_first_loads_all_see_the_rename(tmp_path: Any, backend:
         assert _td_granularity(query) == "left_granularity"
 
 
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_a_rename_converges(tmp_path: Any, caplog: pytest.LogCaptureFixture, backend: str) -> None:
+    store = await _contains_store(tmp_path=tmp_path, backend=backend)
+    await store.storage.get_datasource(DS)
+    await store.storage.get_model("bucketed", data_source=DS)
+    await store.storage.get_memory("m")
+    before = store.raw()
+    storage = reopen(backend=backend, base=store.base)
+    caplog.clear()
+    with _captured(caplog) as texts:
+        assert await _granularity_names(storage) == ["contains_granularity"]
+        assert _td_granularity(await _stage(storage, "bucketed")) == "contains_granularity"
+        assert _td_granularity(await _memory_query(storage, "m")) == "contains_granularity"
+    assert store.raw() == before
+    assert not any("contains_granularity" in t for t in texts), texts
+
+
 def _current(doc: dict, entity: str) -> dict:
     return {**doc, "version": CURRENT_VERSIONS[entity]}
 

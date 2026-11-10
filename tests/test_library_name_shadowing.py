@@ -35,6 +35,12 @@ class TestStoredShadow:
         row = resp.data[0]
         assert [float(row[f"t.{k}"]) for k in ("f", "c", "m")] == [SUM_A] * 3
 
+    async def test_a_list_function_name(self) -> None:
+        async with stored_engine(models=[t_doc(aggregations=[agg("contains")])]) as engine:
+            assert await engine.storage.get_model("t", data_source=DS) is not None
+            resp = await engine.execute(_query(measure("contains(a)")))
+        assert float(value(resp)) == SUM_A
+
     async def test_another_model_keeps_the_library_function(self) -> None:
         async with stored_engine(models=[t_doc(aggregations=[agg("reverse")])]) as engine:
             resp = await engine.execute({
