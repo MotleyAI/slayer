@@ -18,29 +18,29 @@
 
 ## 3. Parser and models
 
-- [ ] 3.1 Add `0.3.0.dev0` to the known versions; skip a wrapped document declaring it with a warning naming the file; verify 2.2 passes
-- [ ] 3.2 Make `OSIDocument.version` optional, recording only the declared version; verify 2.2 and the aligned model tests pass
+- [x] 3.1 Add `0.3.0.dev0` to the known versions; skip a wrapped document declaring it with a warning naming the file; verify 2.2 passes
+- [x] 3.2 Make `OSIDocument.version` optional, recording only the declared version; verify 2.2 and the aligned model tests pass
 
 ## 4. Importer
 
-- [ ] 4.1 Resolve `source.column` in dataset-scoped metrics of flat documents over every root-scope column reference before owner resolution: qualifier casefold, field-named-`source` precedence, live-column matching with the datasource's folding, pass-through reuse, otherwise a hidden helper created only when the metric converts, renamed collision reported; verify 2.3, 2.4 and 2.5 pass
-- [ ] 4.2 Record duplicated output labels of a query source and report every field and `source.column` reading one; verify 2.6 passes and the other importers' tests are unchanged
-- [ ] 4.3 Verify 2.7 passes (fix only what the examples expose within this change's specs)
+- [x] 4.1 Resolve `source.column` in dataset-scoped metrics of flat documents over every root-scope column reference before owner resolution: qualifier casefold, field-named-`source` precedence, live-column matching with the datasource's folding, pass-through reuse, otherwise a hidden helper created only when the metric converts, renamed collision reported; verify 2.3, 2.4 and 2.5 pass
+- [x] 4.2 Record duplicated output labels of a query source and report every field and `source.column` reading one; verify 2.6 passes and the other importers' tests are unchanged
+- [x] 4.3 Verify 2.7 passes (fix only what the examples expose within this change's specs)
 
 ## 5. Exporter
 
-- [ ] 5.1 Write `version: 0.3.0.dev0`; verify 2.8 passes
+- [x] 5.1 Write `version: 0.3.0.dev0`; verify 2.8 passes
 
 ## 6. Drift check
 
-- [ ] 6.1 Point `scripts/ossie_schema_drift.py` at `apache/ossie`, read the file list from the provenance file, compare the schema canonically and the examples as text, keep exit codes 0/1/2; read the provenance with PyYAML and install it (pinned) in the workflow; update the workflow comment; verify 2.9 passes and a live run against upstream exits 0
+- [x] 6.1 Point `scripts/ossie_schema_drift.py` at `apache/ossie`, read the file list from the provenance file, compare the schema canonically and the examples as text, keep exit codes 0/1/2; read the provenance with PyYAML and install it (pinned) in the workflow; update the workflow comment; verify 2.9 passes and a live run against upstream exits 0
 
 ## 7. Docs
 
-- [ ] 7.1 `docs/osi/osi_import.md`: one sentence each for the known versions with `0.3.0.dev0`, the wrapped-0.3 skip, the `source.column` rule, duplicate query-output labels, and `apache/ossie` links; verify links resolve
-- [ ] 7.2 `docs/osi/osi_export.md`: version `0.3.0.dev0`, `apache/ossie` link, and "every entity that exists only in the extension" wording; verify against the spec
-- [ ] 7.3 Move `docs/examples/13_osi_import/shop.osi.yaml` to `0.3.0.dev0`; verify the shipped-example test passes
+- [x] 7.1 `docs/osi/osi_import.md`: one sentence each for the known versions with `0.3.0.dev0`, the wrapped-0.3 skip, the `source.column` rule, duplicate query-output labels, and `apache/ossie` links; verify links resolve
+- [x] 7.2 `docs/osi/osi_export.md`: version `0.3.0.dev0`, `apache/ossie` link, and "every entity that exists only in the extension" wording; verify against the spec
+- [x] 7.3 Move `docs/examples/13_osi_import/shop.osi.yaml` to `0.3.0.dev0`; verify the shipped-example test passes
 
 ## 8. Finish
 
-- [ ] 8.1 Full non-integration suite, `ruff check slayer/ tests/`, `basedpyright` (no new errors), `la-arch-check`, `npx -y likec4@1.47.0 validate architecture`; all green
+- [x] 8.1 Full non-integration suite, `ruff check slayer/ tests/`, `basedpyright` (no new errors), `la-arch-check`, `npx -y likec4@1.47.0 validate architecture`; all green

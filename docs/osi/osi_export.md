@@ -1,6 +1,6 @@
 # Exporting to OSI (Ossie)
 
-SLayer can write one datasource's models as a current-spec [Ossie](https://github.com/open-semantic-interchange/OSI) document (`version: 0.2.0.dev0`, validating against the upstream schema). It's the reverse of [importing OSI configs](osi_import.md), with the same clean-fail contract: everything Ossie can express is exported, and everything else is reported, never silently dropped.
+SLayer can write one datasource's models as a current-spec [Ossie](https://github.com/apache/ossie) document (`version: 0.3.0.dev0`, validating against the upstream schema). It's the reverse of [importing OSI configs](osi_import.md), with the same clean-fail contract: everything Ossie can express is exported, and everything else is reported, never silently dropped.
 
 ## Quick Start
 
@@ -59,7 +59,7 @@ SLayer-only columns read joined models. SLayer-only measures are transforms (`ch
 
 ## Without Extensions
 
-`--no-extensions` writes plain Ossie. Everything that exists only in the extension is reported as not exported. Exported entities that a plain Ossie reader cannot restore exactly, such as a one-to-one, one-to-many or inner join, or a measure exported away from its model, are reported as lossy. A model with access tags is not exported, because re-importing it without its tags would make it public.
+`--no-extensions` writes plain Ossie. Every entity that exists only in the extension is reported as not exported. Exported entities that a plain Ossie reader cannot restore exactly, such as a one-to-one, one-to-many or inner join, or a measure exported away from its model, are reported as lossy. A model with access tags is not exported, because re-importing it without its tags would make it public.
 
 ## Export Report
 
