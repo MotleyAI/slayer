@@ -184,9 +184,9 @@ class TestAsyncEngineDisposal:
         self, workspace: Path,
     ) -> None:
         """``client._sync_engine`` must be the SAME object across calls — the
-        identity that lets ``:memory:`` SQLite's StaticPool keep its data.
+        identity that lets ``:memory:`` SQLite's one-connection pool keep its data.
         File-backed DB stands in for ``:memory:`` since the cache logic is
-        identical and ``:memory:`` can't be probed past DEV-1538's introspect."""
+        identical and ``:memory:`` can't be probed past the introspect."""
         db = workspace / "live.db"
         with transaction(db) as c:
             c.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)")

@@ -1,5 +1,12 @@
-# Provenance of the vendored ossie-schema.json beside this file.
-repository: open-semantic-interchange/OSI
-path: core-spec/ossie-schema.json
-commit: 89e2e17f8249e68f30df7b29ac8852fa9dd24501
-committed: "2026-10-27"
+# Provenance of the vendored upstream Ossie files (byte-identical copies); paths are relative to this directory.
+repository: apache/ossie
+commit: c1a33181c815852f059ce7986729612332240ff8
+committed: "2026-11-09"
+files:
+  core-spec/ossie-schema.json: ossie-schema.json
+  examples/flights.mapping.yaml: upstream/flights.mapping.yaml
+  examples/flights.ontology.yaml: upstream/flights.ontology.yaml
+  examples/flights.semantic_model.yaml: upstream/flights.semantic_model.yaml
+  examples/flights.yaml: upstream/flights.yaml
+  examples/renamed_fields.yaml: upstream/renamed_fields.yaml
+  examples/tpcds_semantic_model.yaml: upstream/tpcds_semantic_model.yaml
