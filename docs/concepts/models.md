@@ -120,7 +120,7 @@ A column with no explicit `allowed_aggregations` whitelist gets a default set ba
 | `TEXT` | count, count_distinct, count_distinct_approx, first, last, min, max, collect |
 | `BOOLEAN` | the `INT` set |
 | `DATE` / `TIMESTAMP` | count, count_distinct, count_distinct_approx, first, last, min, max, collect |
-| `ARRAY` | count (non-NULL lists); aggregate its elements through `skills.value`, see [list columns](queries.md#list-columns) |
+| `ARRAY` | count (non-NULL lists), count_distinct; aggregate its elements through `skills.value`, see [list columns](queries.md#list-columns) |
 | `UNKNOWN` | none |
 
 A boolean is its integer (true 1, false 0, NULL ignored) inside every numeric aggregation, so `sum` counts the true rows, `avg` is their share (formatted as a percentage), and `min` / `max` stay boolean.
