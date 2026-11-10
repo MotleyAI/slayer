@@ -122,12 +122,12 @@ class TestFormatNumber:
     def test_nan(self):
         fmt = NumberFormat(type=NumberFormatType.FLOAT)
         result = format_number(value=float("nan"), format_spec=fmt)
-        assert result == "nan"
+        assert result == "NaN"
 
     def test_infinity(self):
         fmt = NumberFormat(type=NumberFormatType.FLOAT)
-        assert format_number(value=float("inf"), format_spec=fmt) == "inf"
-        assert format_number(value=float("-inf"), format_spec=fmt) == "-inf"
+        assert format_number(value=float("inf"), format_spec=fmt) == "Infinity"
+        assert format_number(value=float("-inf"), format_spec=fmt) == "-Infinity"
 
     def test_zero(self):
         fmt = NumberFormat(type=NumberFormatType.FLOAT)
@@ -174,7 +174,7 @@ class TestFormatNumber:
 
     def test_float_percent_overflow(self):
         fmt = NumberFormat(type=NumberFormatType.PERCENT)
-        assert format_number(value=1.7e308, format_spec=fmt) == "inf%"
+        assert format_number(value=1.7e308, format_spec=fmt) == "Infinity%"
 
     @pytest.mark.parametrize(("value", "expected"), [("9e999999", "Infinity%"), ("-9e999999", "-Infinity%")])
     def test_decimal_percent_overflow(self, value, expected):
@@ -203,11 +203,11 @@ class TestFormatNumber:
         assert format_number(value=np.int64(-(2**63)), format_spec=fmt) == expected
 
     @pytest.mark.parametrize("fmt_type", list(NumberFormatType))
-    @pytest.mark.parametrize("text", ["inf", "-inf", "nan"])
-    def test_numpy_non_finite_float_renders_verbatim(self, fmt_type, text):
+    @pytest.mark.parametrize(("text", "expected"), [("inf", "Infinity"), ("-inf", "-Infinity"), ("nan", "NaN")])
+    def test_numpy_non_finite_float_renders_as_cell_text(self, fmt_type, text, expected):
         np = pytest.importorskip("numpy")
         value = np.float32(text)
-        assert format_number(value=value, format_spec=NumberFormat(type=fmt_type)) == str(value)
+        assert format_number(value=value, format_spec=NumberFormat(type=fmt_type)) == expected
 
     def test_huge_int_is_finite(self):
         fmt = NumberFormat(type=NumberFormatType.INTEGER)
