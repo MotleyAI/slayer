@@ -52,7 +52,7 @@
 
 - [x] 7.1 Comment on DEV-2220 listing every removal (the proposal's What Changes, with each replacement) for the 2.0 migration guide, including the `SLAYER_MODELS_DIR` silent-ignore and the shrunk extras.
 - [x] 7.2 Release notes stay untracked.
-- [ ] 7.3 After archive (pr-review), rewrite the stale Purpose lines in the main specs:
+- [x] 7.3 After archive (pr-review), rewrite the stale Purpose lines in the main specs:
   - `openspec/specs/compatibility/legacy-call-forms/spec.md`: "Defines the client-taking Python entry points that replaced the SLayer 1.5.0 call forms: ingestion, drift validation and importer converters read the database only through a client the caller passes, or one the engine supplies."
-  - `openspec/specs/compatibility/removal-tripwire/spec.md`: "Makes every piece of compatibility code scheduled for removal in a future major version identifiable and warning, and stops that major version's release while any of it remains."
+  - `openspec/specs/compatibility/removal-tripwire/spec.md`: "Makes every piece of compatibility code scheduled for removal in a future major version identifiable and warning, and stops that major version's release while any of it remains." Left unchanged: DEV-2182 had already made it version-neutral, and its moved-module clause still holds.
   - `openspec/specs/storage/custom-backends/spec.md`: "Defines the contract a third-party `StorageBackend` subclass relies on: the hooks it implements and the shapes they return."
