@@ -140,7 +140,7 @@ class OSIDocument(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    version: str = "0.2.0.dev0"
+    version: Optional[str] = None
     name: str
     description: Optional[str] = None
     ai_context: Optional[OSIAIContext] = None

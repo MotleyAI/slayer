@@ -20,7 +20,8 @@ from slayer.osi.models import OSIDocument
 logger = logging.getLogger(__name__)
 
 # Upstream has tagged no release past osi-0.1.1-rc1; review when it does.
-KNOWN_OSI_VERSIONS = frozenset({"1.0", "0.1.0", "0.1.1", "0.2.0.dev0"})
+KNOWN_OSI_VERSIONS = frozenset({"1.0", "0.1.0", "0.1.1", "0.2.0.dev0", "0.3.0.dev0"})
+FLAT_ONLY_VERSIONS = frozenset({"0.3.0.dev0"})
 
 _SUFFIXES = (".yaml", ".yml", ".json")
 _WRAPPER = "semantic_model"
@@ -56,6 +57,11 @@ def _flat_mappings(path: Path, data: dict[str, Any]) -> list[dict[str, Any]] | N
         return [{**data, "legacy": False}]
     if not has_wrapper:
         logger.warning("OSI file %s has neither root datasets nor a %r wrapper; skipping", path, _WRAPPER)
+        return None
+    flat_only = next((v for v in FLAT_ONLY_VERSIONS if v == str(data.get("version"))), None)
+    if flat_only is not None:
+        logger.warning("OSI file %s declares %s, whose documents are flat, but holds a %r wrapper; skipping",
+                       path, flat_only, _WRAPPER)
         return None
     wrapped = data[_WRAPPER]
     models = [wrapped] if isinstance(wrapped, dict) else wrapped

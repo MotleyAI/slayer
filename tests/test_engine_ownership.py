@@ -73,7 +73,7 @@ def _seeded_in_memory_engine(
     workspace: Path, *, rows: int,
 ) -> tuple[SlayerQueryEngine, SlayerSQLClient]:
     """Query engine over an in-memory datasource whose db is seeded through the
-    client's own (StaticPool-shared) engine, registered under its real key."""
+    client's own (one-connection) engine, registered under its real key."""
     ds = _mem_ds("mem")
     storage = YAMLStorage(base_dir=str(workspace / "mem_store"))
     asyncio.run(storage.save_datasource(ds))
@@ -106,7 +106,7 @@ def _dispose_spy():
     an instance-level patch applied afterwards would miss the latter (D4).
 
     Calls through to the real dispose so the connection actually closes — a plain
-    mock would leave the private StaticPool connection open, leaking it on 3.13+.
+    mock would leave the private in-memory connection open, leaking it on 3.13+.
     """
     real = sa.engine.base.Engine.dispose
     with patch.object(sa.engine.base.Engine, "dispose", autospec=True) as spy:

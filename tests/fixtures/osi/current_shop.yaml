@@ -1,5 +1,5 @@
 # Current-spec (flat) Ossie document over tests/_osi_helpers.py SHOP_DDL.
-version: "0.2.0.dev0"
+version: "0.3.0.dev0"
 name: shop
 description: Retail shop semantic model
 ai_context:

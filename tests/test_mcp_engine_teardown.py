@@ -200,7 +200,7 @@ class TestAcloseDisposesCachedClients:
     async def test_aclose_releases_client_sync_pool_survives(
         self, workspace: Path, monkeypatch,
     ) -> None:
-        """``server._slayer_engine.aclose()`` releases the cached client, leaves its StaticPool intact,
+        """``server._slayer_engine.aclose()`` releases the cached client, leaves its sync engine intact,
         and a follow-up query returns the same rows (file-backed sqlite stands in for ``:memory:``)."""
         storage = await _seed_storage(workspace)
         server = create_mcp_server(storage=storage)
@@ -216,7 +216,7 @@ class TestAcloseDisposesCachedClients:
         aclose = AsyncMock(wraps=client.aclose)
         monkeypatch.setattr(client, "aclose", aclose)
 
-        # Guard: aclose must NOT dispose the sync StaticPool engine — that's
+        # Guard: aclose must NOT dispose the sync engine — that's
         # what pins the (potential :memory:) connection holding the data.
         sync_dispose_spy = MagicMock(name="sync_dispose")
         monkeypatch.setattr(sync_engine_before, "dispose", sync_dispose_spy)
@@ -225,7 +225,7 @@ class TestAcloseDisposesCachedClients:
 
         aclose.assert_awaited_once()
         assert client in engine._sql_clients.values()  # client kept
-        assert client._sync_engine is sync_engine_before  # StaticPool untouched
+        assert client._sync_engine is sync_engine_before  # sync engine untouched
         sync_dispose_spy.assert_not_called()
 
         # Reusable after disposal — the sync path still serves the same data.

@@ -89,12 +89,27 @@ class ReflectedForeignKey(BaseModel):
     referred_columns: list[str]
 
 
+class KeyReadFailure(BaseModel):
+    """One key read that failed (``primary key``, ``foreign keys``, …) and its error."""
+
+    read: str
+    error: str
+
+
+class TableKeyReadFailure(KeyReadFailure):
+    """A failed key read of the table at ``location``."""
+
+    location: TableLocation
+
+
 class TableKeys(BaseModel):
-    """A table's declared keys; ``unique_key_sets`` never repeats the primary key."""
+    """A table's declared keys; ``unique_key_sets`` never repeats the primary key; ``failed_reads`` lists the
+    reads that failed (their keys are missing)."""
 
     primary_key: list[str] = Field(default_factory=list)
     foreign_keys: list[ReflectedForeignKey] = Field(default_factory=list)
     unique_key_sets: list[list[str]] = Field(default_factory=list)
+    failed_reads: list[KeyReadFailure] = Field(default_factory=list)
 
 
 # --- Type names → DataType (one table for catalog strings, SQLAlchemy types and probes) ---
@@ -565,17 +580,33 @@ def recover(connection: CatalogConnection | None) -> None:
 
 def best_effort(
     read: Callable[[], _T], *, connection: CatalogConnection | None, default: _T, table: str, what: str,
-) -> _T:
-    """One key read; a failure is logged at WARNING and yields ``default`` (unsupported reads stay quiet)."""
+) -> tuple[_T, KeyReadFailure | None]:
+    """One key read and its failure; a failure is logged at WARNING and yields ``default`` (an unsupported read
+    is quiet and no failure)."""
     try:
-        return read()
+        return read(), None
     except NotImplementedError:
         logger.debug("Reading the %s of table %r is not supported here", what, table)
-        return default
+        return default, None
     except Exception as exc:  # noqa: BLE001 — a key read never sinks the table
         logger.warning("Reading the %s of table %r failed: %s", what, table, exc)
         recover(connection)
-        return default
+        return default, KeyReadFailure(read=what, error=str(exc) or type(exc).__name__)
+
+
+def keys_of_reads(
+    *, primary_key: tuple[list[str], KeyReadFailure | None],
+    foreign_keys: tuple[list[ReflectedForeignKey], KeyReadFailure | None],
+    unique_sets: Iterable[tuple[list[list[str]], KeyReadFailure | None]],
+) -> TableKeys:
+    """``TableKeys`` from :func:`best_effort` reads, listing each failed one."""
+    sets = list(unique_sets)
+    reads = [primary_key, foreign_keys, *sets]
+    return TableKeys(
+        primary_key=primary_key[0], foreign_keys=foreign_keys[0],
+        unique_key_sets=without_primary_key(primary_key[0], [s for found, _ in sets for s in found]),
+        failed_reads=[failure for _, failure in reads if failure is not None],
+    )
 
 
 def without_primary_key(primary_key: list[str], key_sets: list[list[str]]) -> list[list[str]]:
