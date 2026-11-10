@@ -126,7 +126,7 @@ claude mcp list
 | `offset` | int | Skip rows |
 | `whole_periods_only` | bool | Snap time bounds to bucket boundaries and exclude the current incomplete bucket — see [Time](../concepts/time.md#whole_periods_only) |
 | `distinct_dimension_values` | bool | Default `true` — auto-dedup dim-only queries (`GROUP BY <dim/td aliases>`). Set `false` to emit raw rows (no top-level `GROUP BY`); rejects any measure reference in `measures` / `filters` / `order`. |
-| `to_many_handling` | str | Default `"broadcast"` — how an aggregate resolves query dimensions [unattributable from its root](../concepts/queries.md#cross-model-measures): `broadcast` (repeat and warn), `associate` (per-cell value over the distinct associated entities), or `error` (refuse). A query-object field; the retired `strict` flag is rejected with this remedy. |
+| `to_many_handling` | str | Default `"broadcast"` — how an aggregate resolves query dimensions [unattributable from its root](../concepts/queries.md#cross-model-measures): `broadcast` (repeat and warn), `associate` (per-cell value over the distinct associated entities), or `error` (refuse). A query-object field. |
 | `variables` | dict | Per-stage `{var}` values, scoped to this stage; overridden by the top-level `variables` arg (see precedence above). |
 | `name` | string | List form only — names a stage so sibling stages can reference it via `source_model` (every non-final stage must be named). |
 

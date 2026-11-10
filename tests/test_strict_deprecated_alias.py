@@ -239,7 +239,7 @@ class TestMcpSurface:
     async def _call(self, engine: SlayerQueryEngine, query: Any) -> dict[str, Any]:
         server = create_mcp_server(storage=engine.storage)
         blocks, _ = await server.call_tool(name="query", arguments={"query": query, "format": "json"})
-        return mcp_payload(getattr(blocks[0], "text"))
+        return mcp_payload(getattr(next(iter(blocks)), "text"))
 
     async def _error(self, engine: SlayerQueryEngine, query: Any) -> str:
         server = create_mcp_server(storage=engine.storage)

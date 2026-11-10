@@ -59,7 +59,7 @@ class TestAttribution:
     def test_direct_construction(self) -> None:
         with recorded() as caught:
             line = _next_line()
-            SlayerQuery(source_model="orders", strict=True)
+            SlayerQuery(source_model="orders", strict=True)  # pyright: ignore[reportCallIssue]  # the deprecated form under test
         [w] = deprecations(caught)
         assert (w.filename, w.lineno) == (__file__, line)
 
@@ -87,7 +87,7 @@ class TestAttribution:
 
     def test_payload_names_strict_its_replacement_and_removal(self) -> None:
         with recorded() as caught:
-            SlayerQuery(source_model="orders", strict=True)
+            SlayerQuery(source_model="orders", strict=True)  # pyright: ignore[reportCallIssue]  # the deprecated form under test
         [w] = deprecations(caught)
         payload = payload_of(w)
         assert "strict" in payload.old

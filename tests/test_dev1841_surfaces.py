@@ -93,5 +93,5 @@ class TestMcpSurface:
         server = create_mcp_server(storage=storage)
         with recorded():
             blocks, _ = await server.call_tool(name="query", arguments={"query": _STRICT_BODY, "format": "json"})
-        [w] = deprecated_in(mcp_payload(getattr(blocks[0], "text")).get("warnings"))
+        [w] = deprecated_in(mcp_payload(getattr(next(iter(blocks)), "text")).get("warnings"))
         assert "to_many_handling" in w["new"]

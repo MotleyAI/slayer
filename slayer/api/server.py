@@ -24,6 +24,7 @@ from slayer.core.errors import (
 from slayer.core.format import NumberFormat, encode_json
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import QueryRefinement, SlayerQuery, SourceSpec
+from slayer.core.warnings import SlayerWarning
 from slayer.async_utils import run_sync
 from slayer.live_schema import ingestion as engine_ingestion
 from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine
@@ -68,8 +69,8 @@ class QueryRequest(BaseModel):
     # ``False`` to emit raw rows.
     distinct_dimension_values: bool | None = None
     # How aggregates resolve query dimensions unattributable from their root
-    # (broadcast|associate|error); posting the retired `strict` flag is rejected
-    # downstream by SlayerQuery (extra="allow" forwards it into the payload).
+    # (broadcast|associate|error); a deprecated `strict` flag rides extra="allow"
+    # into the payload, where SlayerQuery converts it.
     to_many_handling: str | None = None
     dry_run: bool | None = None
     explain: bool | None = None
@@ -79,6 +80,10 @@ class QueryRequest(BaseModel):
 
 
 _RUN_BY_NAME_FIELDS = frozenset({"name", "variables", "dry_run", "explain", "refine"})
+
+
+def _dumped(warnings: list[SlayerWarning]) -> list[dict[str, Any]]:
+    return [w.model_dump(mode="json") for w in warnings]
 
 
 class QueryListRequest(BaseModel):
@@ -510,30 +515,32 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         "/models",
         responses={400: {"description": "Model failed validation (e.g. user-supplied cache fields on a query-backed model, save-time SQL generation failure)."}},
     )
-    async def create_model(model: SlayerModel) -> dict[str, str]:
+    async def create_model(model: SlayerModel) -> dict[str, Any]:
         # Route through engine.save_model so query-backed models get cache
         # populated (and user-supplied cache fields are rejected).
+        notes: list[SlayerWarning] = []
         try:
-            await engine.save_model(model)
+            await engine.save_model(model, warnings_out=notes)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        return {"status": "created", "name": model.name}
+        return {"status": "created", "name": model.name, "warnings": _dumped(notes)}
 
     @app.put(
         "/models/{name}",
         responses={400: {"description": "Body name does not match path name, or model failed validation."}},
     )
-    async def update_model(name: str, model: SlayerModel) -> dict[str, str]:
+    async def update_model(name: str, model: SlayerModel) -> dict[str, Any]:
         if model.name != name:
             raise HTTPException(
                 status_code=400,
                 detail=f"Path name '{name}' does not match body name '{model.name}'",
             )
+        notes: list[SlayerWarning] = []
         try:
-            await engine.save_model(model)
+            await engine.save_model(model, warnings_out=notes)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        return {"status": "updated", "name": name}
+        return {"status": "updated", "name": name, "warnings": _dumped(notes)}
 
     @app.delete(
         "/models/{name}",

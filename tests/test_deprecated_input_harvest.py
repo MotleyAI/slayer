@@ -141,7 +141,7 @@ class TestRefinement:
 
         with recorded():
             blocks, _ = await call({"strict": True})
-            assert len(deprecated_in(mcp_payload(getattr(blocks[0], "text")).get("warnings"))) == 1
+            assert len(deprecated_in(mcp_payload(getattr(next(iter(blocks)), "text")).get("warnings"))) == 1
             with pytest.raises(ToolError) as failed:
                 await call({"strict": True, "measures": [CM]})
         with pytest.raises(ToolError) as reference:
@@ -165,7 +165,7 @@ class TestSurfaces:
         server = create_mcp_server(storage=engine.storage)
         with recorded():
             blocks, _ = await server.call_tool(name="query", arguments={"query": stages, "format": "json"})
-        assert len(deprecated_in(mcp_payload(getattr(blocks[0], "text")).get("warnings"))) == expected
+        assert len(deprecated_in(mcp_payload(getattr(next(iter(blocks)), "text")).get("warnings"))) == expected
 
 
 def _http_client(engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch) -> SlayerClient:

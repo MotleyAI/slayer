@@ -148,7 +148,7 @@ class TestRestModelSave:
             resp = client.post("/models", json=body) if method == "post" else client.put("/models/pay_report", json=body)
         assert resp.status_code == 200, resp.text
         [w] = [w for w in resp.json()["warnings"] if w.get("kind") == "narrowed_access"]
-        assert "hr" in w["narrowed_by"]
+        assert w["narrowed_by"] == [f"{DS}.hr"]
 
 
 class TestMcpModelSave:
