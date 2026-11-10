@@ -14,6 +14,7 @@ from slayer.core.syntax import (
     Arith,
     Cmp,
     Literal,
+    NamedArg,
     Placeholder,
     Ref,
     ScalarCall,
@@ -39,7 +40,7 @@ AMOUNT_SUM = AggCall(source=AMOUNT, agg="sum")
     ("region not in ({k})", Cmp(op="not in", left=Ref(name="region"), right=K)),
     ("sum({k})", AggCall(source=K, agg="sum")),
     ("amount:percentile({k})", AggCall(source=AMOUNT, agg="percentile", args=(K,))),
-    ("amount:sum(window={k})", AggCall(source=AMOUNT, agg="sum", kwargs=(("window", K),))),
+    ("amount:sum(window={k})", AggCall(source=AMOUNT, agg="sum", args=(NamedArg(name="window", value=K),))),
     ("lag(amount:sum, {k})", TransformCall(op="lag", input=AMOUNT_SUM, args=(K,))),
     ("round(amount, {k})", ScalarCall(name="round", args=(AMOUNT, K))),
     (

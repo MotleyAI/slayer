@@ -322,7 +322,7 @@ class TestReservedStringReparsePaths:
         sql = _norm(await _gen(q, _grant_model(), extra_models=[_merchant_model()]))
         assert 'FROM "Grant" AS "grant"' in sql, sql
         assert '"grant".amount' in sql, sql
-        assert 'ORDER BY "grant".created_at' in sql, sql
+        assert 'ORDER BY CASE WHEN "grant".created_at IS NULL THEN 1 ELSE 0 END, "grant".created_at' in sql, sql
         _assert_parses(sql)
 
     async def test_where_filter_on_reserved_model(self) -> None:

@@ -566,7 +566,7 @@ class TestRejection:
             "revenue:random_func"
         )
         with pytest.raises(UnknownFunctionError):
-            parse_expr("random_func(p=1)")
+            _bound("random_func(p=1)")
 
     def test_raw_over_clause_raises(self):
         # `SUM(x) OVER (...)` is a window expression — DSL rejects.

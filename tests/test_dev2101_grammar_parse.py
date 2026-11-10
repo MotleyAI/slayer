@@ -64,7 +64,7 @@ class TestOneParser:
         assert not hasattr(syntax, "parse_filter_expr")
 
     def test_parse_is_cached(self) -> None:
-        assert hasattr(parse_expr, "cache_info")
+        assert hasattr(syntax._read, "cache_info")
         assert parse_expr("sum(amount) + 1") is parse_expr("sum(amount) + 1")
 
     @pytest.mark.parametrize("helper", [
@@ -224,7 +224,7 @@ class TestKeywordArguments:
         assert parsed.input == parse_expr("sum(amount) == 10")
 
     def test_predicate_inside_aggregation_source(self) -> None:
-        same("sum(amount = 10)", "sum(amount == 10)")
+        assert bound("sum(amount = 10)") == bound("sum(amount == 10)")
 
 
 class TestColonAndCast:

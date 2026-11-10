@@ -107,11 +107,11 @@ class TestGuard:
     def test_a_migrated_reservation_passes(self) -> None:
         live = {**live_vocabularies(), "transforms": ALL_TRANSFORMS | {"new_window"}}
         key = next(iter(migrations._REGISTRY))
-        assert unpinned(live=live, pinned=PINNED, migrated={"new_window": key}) == []
+        assert unpinned(live=live, pinned=PINNED, migrated={**MIGRATED, "new_window": key}) == []
 
     def test_an_unregistered_migration_does_not_count(self) -> None:
         live = {**live_vocabularies(), "transforms": ALL_TRANSFORMS | {"new_window"}}
-        assert unpinned(live=live, pinned=PINNED, migrated={"new_window": ("SlayerModel", 10_000)}) == [
+        assert unpinned(live=live, pinned=PINNED, migrated={**MIGRATED, "new_window": ("SlayerModel", 10_000)}) == [
             "transforms:new_window"]
 
 

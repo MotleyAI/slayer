@@ -1332,6 +1332,9 @@ def _bind_agg_call(
             str(granularity), operand=", ".join(canonical_measure_text(a) for a in (parsed.source, *parsed.args)),
         )
     op = normalize_aggregation_name(parsed.agg)
+    custom = [a.name for m in _bundle_models(bundle) for a in m.aggregations]
+    if op not in BUILTIN_AGGREGATIONS and match_name(name=parsed.agg, declared=custom, quoted=False) is None:
+        raise _unknown_function_error(parsed.agg, aggregations=BUILTIN_AGGREGATIONS | set(custom), bundle=bundle)
     if op in RANKED_AGGREGATIONS:
         operand = _bind_transform_input(
             parsed.source, scope=scope, bundle=bundle, alias_map=alias_map,

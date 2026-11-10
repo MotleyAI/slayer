@@ -26,7 +26,10 @@ from slayer.core.models import (
 )
 from slayer.core.query import SlayerQuery
 from slayer.core.warnings import NormalizationWarning, SlayerNormalizationWarning
+from slayer.core.scope import ModelScope
+from slayer.engine.binding import bind_expr
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.core.syntax import (
     AggCall,
     Arith,
@@ -265,8 +268,12 @@ class TestFunctionalParseErrors:
             parse_expr("sum()")
 
     def test_kwargs_only_unknown_call_raises(self) -> None:
+        orders = _orders()
+        parsed = parse_expr("bogus(p=1)")
+        bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders)
+        scope = ModelScope(source_model=orders)
         with pytest.raises(UnknownFunctionError):
-            parse_expr("bogus(p=1)")
+            bind_expr(parsed, scope=scope, bundle=bundle)
 
     def test_sql_distinct_keyword_outside_count_rejected(self) -> None:
         with pytest.raises(ValueError, match=r"count\(distinct x\)"):

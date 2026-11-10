@@ -303,7 +303,7 @@ async def test_a_current_version_store_colliding_with_a_later_addition(tmp_path:
     def current(doc: dict, entity: str) -> dict:
         return {**doc, "version": CURRENT_VERSIONS[entity]}
 
-    stage = current(stage_doc(dimensions=["left(created_at)"], measures=[SUM]), "SlayerQuery")
+    stage = current(stage_doc(dimensions=["date_trunc('left', created_at)"], measures=[SUM]), "SlayerQuery")
     storage = await write_raw_store(
         backend=backend, base=str(tmp_path),
         datasources=[current(datasource_doc(db_path=live_db(str(tmp_path)), granularities=["left"]),
@@ -313,8 +313,8 @@ async def test_a_current_version_store_colliding_with_a_later_addition(tmp_path:
     )
     assert await _granularity_names(storage) == ["left_granularity"]
     loaded = await _stage(storage, "bucketed")
-    assert loaded.dimensions is not None
-    assert [getattr(d, "expression", d) for d in loaded.dimensions] == ["left_granularity(created_at)"]
+    assert [(str(t.dimension), str(t.granularity)) for t in loaded.time_dimensions or []] == [
+        ("created_at", "left_granularity")]
     resp = await run(storage, {"source_model": "bucketed", "dimensions": ["created_at"], "measures": ["sum(s)"]})
     assert {str(r["bucketed.created_at"])[:10]: float(r["bucketed.s_sum"]) for r in resp.data} == EXPECTED_BUCKETS
 

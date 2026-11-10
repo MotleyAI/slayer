@@ -7517,7 +7517,7 @@ class TestIsolatedFilteredMeasureCTEs:
         cm_body = _norm(_extract_cte_body(sql, r"_cm_\w*earliest_reserve\w*"))
 
         assert _re.search(
-            r"ORDER BY claim_amount\.updated_at\s*\)", cm_body,
+            r"ORDER BY CASE WHEN claim_amount\.updated_at IS NULL THEN 1 ELSE 0 END, claim_amount\.updated_at\s*\)", cm_body,
         ), (
             f"expected ascending ranking on the explicit time column:\n{cm_body}"
         )
