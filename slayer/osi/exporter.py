@@ -55,7 +55,7 @@ from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.render.aggregates import AggregateSpec, render_aggregate
 from slayer.sql.render.value_expr import AliasFacilities, CompositeFacilities, RenderContext, render_value_key
 
-OSSIE_VERSION = "0.2.0.dev0"
+OSSIE_VERSION = "0.3.0.dev0"
 _SELF = "__slayer_self"
 _EXACT_NUMERIC = re.compile(r"^\s*(DECIMAL|NUMERIC|NUMBER|DEC|MONEY|SMALLMONEY|BIGNUMERIC|BIGDECIMAL)\b", re.I)
 _WITH_TZ = re.compile(r"WITH\s+(LOCAL\s+)?TIME\s+ZONE|TIMESTAMPTZ|TIMESTAMP_TZ|TIMESTAMP_LTZ|DATETIMEOFFSET", re.I)
