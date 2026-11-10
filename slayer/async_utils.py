@@ -206,19 +206,23 @@ def _await_interruptibly(workflow: _Workflow, *, serve: "queue.SimpleQueue[_Call
         raise
 
 
+def _next_call(*, calls: "queue.SimpleQueue[_CallerCall | None]", deadline: float | None) -> _CallerCall | None:
+    """The next queued call; ``None`` once the workflow ended or ``deadline`` passed."""
+    if deadline is None:
+        return calls.get()
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return None
+    try:
+        return calls.get(timeout=remaining)
+    except queue.Empty:
+        return None
+
+
 def _serve_caller_calls(calls: "queue.SimpleQueue[_CallerCall | None]", *, bounded: bool = False) -> None:
     """Run queued ``on_caller_thread`` calls here until the workflow ends (for ``_CLEANUP_SECONDS`` when ``bounded``)."""
-    deadline = time.monotonic() + _CLEANUP_SECONDS
-    while True:
-        if bounded:
-            try:
-                call = calls.get(timeout=max(0.0, deadline - time.monotonic()))
-            except queue.Empty:
-                return
-        else:
-            call = calls.get()
-        if call is None:
-            return
+    deadline = time.monotonic() + _CLEANUP_SECONDS if bounded else None
+    while (call := _next_call(calls=calls, deadline=deadline)) is not None:
         func, result = call
         if result.set_running_or_notify_cancel():
             try:

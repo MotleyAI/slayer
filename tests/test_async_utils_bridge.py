@@ -258,6 +258,46 @@ def test_cleanup_after_an_interrupt_is_bounded_overall(monkeypatch: pytest.Monke
     assert time.monotonic() - begun < 5
 
 
+def test_cleanup_stops_at_its_deadline_while_calls_stay_queued(monkeypatch: pytest.MonkeyPatch) -> None:
+    started, stop = threading.Event(), threading.Event()
+    tasks: list[asyncio.Task[Any]] = []
+
+    async def _loop() -> None:
+        while not stop.is_set():
+            with contextlib.suppress(asyncio.CancelledError):
+                await on_caller_thread(lambda: time.sleep(0.01))
+
+    async def _flooding() -> None:
+        helpers = [asyncio.create_task(_loop()) for _ in range(3)]
+        current = asyncio.current_task()
+        assert current is not None
+        tasks.extend([*helpers, current])
+        started.set()
+        await _loop()
+        await asyncio.gather(*helpers)
+
+    async def _release() -> None:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    workflow = _flooding()
+
+    def _call() -> None:
+        run_sync(workflow)
+
+    monkeypatch.setattr(async_utils, "_CLEANUP_SECONDS", 0.5)
+    _interrupt_scheduling(monkeypatch, after=started)
+    begun = time.monotonic()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            _bounded(_call)
+    finally:
+        stop.set()
+        _bounded(lambda: run_sync(_release()))
+    assert time.monotonic() - begun < 5
+
+
 def test_an_interrupt_before_submission_closes_the_workflow_unstarted(monkeypatch: pytest.MonkeyPatch) -> None:
     ran = threading.Event()
 
