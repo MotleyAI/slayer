@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+from functools import partial
 import logging
 import os
 import sys
@@ -14,7 +15,7 @@ from typing import Any
 from collections.abc import Callable, Hashable, Iterable
 
 from slayer.core.deprecation import warn_deprecated
-from slayer.core.enums import DataType, JoinCardinality, TimeGranularity, invert_cardinality
+from slayer.core.enums import RESERVED_NAMES, DataType, JoinCardinality, TimeGranularity, invert_cardinality
 from slayer.core.granularity import resolve_granularity, unknown_granularity_message
 from slayer.core.time_spine import TIME_SPINE_MODEL, spine_model
 from slayer.core.errors import (
@@ -22,12 +23,14 @@ from slayer.core.errors import (
     IdCollisionError,
     MemoryNotFoundError,
     DefaultTimeDimensionTypeError,
+    ReservedFunctionNameError,
     ReservedModelNameError,
     StoredDocumentLoadError,
     UnknownGranularityError,
 )
 from slayer.engine.column_dependency import check_model_filters, validate_derived_columns, warn_broken_dependents
 from slayer.core.join_walker import edges_between
+from slayer.core.legacy_spellings import LegacySpan, emit_deprecations
 from slayer.core.models import (
     DatasourceConfig,
     SlayerModel,
@@ -56,6 +59,7 @@ from slayer.storage.granularity_rename import (
     renamed_datasource,
 )
 from slayer.storage.legacy_backends import adapt_legacy_hooks
+from slayer.storage.mode_b_texts import bucket_calls_as_date_trunc, canonical_spellings, rewrite_memory_doc, rewrite_model_doc
 from slayer.storage.legacy_time_literals import legacy_literal_sites, repaired_filter
 from slayer.storage.legacy_alias_rewrite import (
     apply_dunder_rewrite_to_model_dict,
@@ -371,6 +375,21 @@ def _write_sample_fields(
         col["distinct_count"] = distinct_count
 
 
+#: The versions below which a stored document's custom-granularity calls are bucket calls.
+_CUSTOM_BUCKET_CALLS_BELOW = {"SlayerModel": 19, "Memory": 8}
+
+
+def with_canonical_spellings(model: SlayerModel) -> SlayerModel:
+    """``model`` with each deprecated spelling in its Mode-B texts replaced by its twin, warning once per spelling."""
+    found: dict[str, LegacySpan] = {}
+    dumped = model.model_dump(mode="json", exclude_none=True)
+    rewritten = rewrite_model_doc(dumped, lambda text: canonical_spellings(text, found=found))
+    if not found:
+        return model
+    emit_deprecations(found)
+    return SlayerModel.model_validate(rewritten)
+
+
 def warn_library_shadows(model: SlayerModel) -> None:
     """One warning per aggregation of ``model`` that shadows a library function."""
     for agg in model.aggregations:
@@ -498,8 +517,10 @@ class StorageBackend(ABC):
     async def save_model(
         self, model: SlayerModel, *, _validate: bool = True, failures: DocumentLoadFailures | None = None,
     ) -> None:
-        """Persist a model after ``validate_for_save`` (skipped by ``_validate=False``, migration write-back only). Backends must NOT override this."""
+        """Persist a model after ``validate_for_save`` (skipped by ``_validate=False``, migration write-back only), each
+        deprecated Mode-B spelling stored as its twin. Backends must NOT override this."""
         if _validate:
+            model = with_canonical_spellings(model)
             await self.validate_for_save(model, failures=failures)
             warn_library_shadows(model)
         await self._save_model_impl(model)
@@ -545,6 +566,8 @@ class StorageBackend(ABC):
         ds = await self.get_datasource(model.data_source) if model.data_source else None
         dialect = dialect_for_ds_type(ds.type).sqlglot_name if ds else ""
         for agg in model.aggregations:
+            if agg.name.lower() in RESERVED_NAMES:
+                raise ReservedFunctionNameError(name=agg.name, where=f"Model '{model.name}', aggregation")
             check_aggregation_definition(
                 where=f"Model '{model.name}', aggregation '{agg.name}'", agg=agg, dialect=dialect,
             )
@@ -688,6 +711,22 @@ class StorageBackend(ABC):
 
     async def _write_raw_memory_dict(self, *, memory_id: str, data: dict) -> None:
         raise NotImplementedError
+
+    async def _custom_bucket_calls(self, *, data_sources: list[str]) -> Callable[[str], str]:
+        """The text rewrite spelling a call of one of ``data_sources``' granularities ``date_trunc``."""
+        units: set[str] = set()
+        for name in data_sources:
+            with contextlib.suppress(Exception):
+                ds = await self.get_datasource(name)
+                units |= set(ds.granularity_definitions) if ds is not None else set()
+        return partial(bucket_calls_as_date_trunc, units=frozenset(units))
+
+    async def _memory_data_sources(self, data: dict) -> list[str]:
+        """The datasources a stored memory's query reads: its inline model's, else those holding its root model."""
+        inline_data_source, source = memory_source_model(data)
+        if inline_data_source is not None:
+            return [inline_data_source]
+        return sorted({d for d, n in await self._list_all_model_identities() if n == source})
 
     async def _settle_library_granularities(self) -> None:
         """Once per instance, before any model or memory loads: rename the library-named granularities of every stored
@@ -905,6 +944,8 @@ class StorageBackend(ABC):
         write_back = False
         data = _mig.stamp_stored(data)
         pre_version = int(data["version"])
+        if pre_version < _CUSTOM_BUCKET_CALLS_BELOW["SlayerModel"]:
+            data = rewrite_model_doc(data, await self._custom_bucket_calls(data_sources=[data_source]))
         if pre_version < _mig.CURRENT_VERSIONS["SlayerModel"]:
             data = _mig.migrate("SlayerModel", data)
             # Rewrite legacy ``__`` split-alias qualifiers to dotted on the RAW
@@ -1301,6 +1342,9 @@ class StorageBackend(ABC):
         await self._settle_library_granularities()
         with stored_document_boundary(kind="memory", name=memory_id):
             data = _mig.stamp_stored(self._renamed_since_read(decode(), kind="memory", key=memory_id))
+            if isinstance(data, dict) and int(data["version"]) < _CUSTOM_BUCKET_CALLS_BELOW["Memory"]:
+                data = rewrite_memory_doc(data, await self._custom_bucket_calls(
+                    data_sources=await self._memory_data_sources(data)))
             # Memories are never written back, so the repair repeats on every load of a pre-v4 document.
             if isinstance(data, dict) and int(data["version"]) < _MEMORY_FILTER_REPAIR_BELOW_VERSION:
                 await self._repair_query_filters(query=data.get("query"), data_source=None)

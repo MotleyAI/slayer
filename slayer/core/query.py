@@ -22,8 +22,7 @@ from pydantic import (
 )
 
 from slayer.core.direction import normalize_direction
-from slayer.core.enums import BUILTIN_AGGREGATIONS, GRANULARITY_NAMES, TimeGranularity, normalize_aggregation_name, ALL_TRANSFORMS
-from slayer.core.keys import RESERVED_SCALAR_NAMES
+from slayer.core.enums import TimeGranularity
 from slayer.core.errors import DistinctDimensionValuesError, GranularityCallError, RefinementConflictError
 from slayer.core.granularity import GranularitySpec, granularity_key
 from slayer.core.models import (
@@ -37,6 +36,7 @@ from slayer.core.refs import auto_name_from_expression
 from slayer.core.time_points import TIME_POINT_FORMS, is_time_point_shape
 from slayer.core.syntax import (
     AggCall,
+    DateTrunc,
     DottedRef,
     Placeholder,
     Ref,
@@ -58,18 +58,17 @@ _STRICT_RETIRED_AT = 4
 _NAME_PATTERN = re.compile(r"^[a-zA-Z_]\w*$", re.ASCII)
 _VAR_PATTERN = re.compile(r"\{\{|\}\}|\{([a-zA-Z_]\w*)\}|\{([^}]*)\}", re.ASCII)
 
-# Leading callee of a whole-string single call ``name( ... )``; used only when
-# ``parse_expr`` rejects the shape (e.g. ``month()``) but the callee still names a
-# granularity, so the wrong-shape error can fire.
+# Leading callee of a whole-string single call ``name( ... )``; used only when ``parse_expr`` rejects the shape
+# (e.g. ``date_trunc('month')``) but the callee still names ``date_trunc``, so the wrong-shape error can fire.
 _WHOLE_CALL_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*\(.*\)\s*$", re.S)
 
 
 def _reject_call_placeholders(entry: str) -> None:
-    """A functional time-dimension string whose granularity or column is a ``{var}`` is refused."""
+    """A ``date_trunc`` time-dimension string whose unit or column is a ``{var}`` is refused."""
     call = call_source(entry)
-    if call is not None and len(call.callee) == 1:
-        column = call.arguments[0] if len(call.arguments) == 1 else None
-        _reject_time_dimension_placeholders(entry, granularity=call.callee[0], column=column)
+    if call is not None and len(call.callee) == 1 and call.callee[0].lower() == "date_trunc" and call.arguments:
+        column = call.arguments[1] if len(call.arguments) == 2 else None
+        _reject_time_dimension_placeholders(entry, granularity=call.arguments[0], column=column)
 
 
 def _granularity_names() -> str:
@@ -116,52 +115,51 @@ def functional_call_column(node: Any) -> str | None:
 
 
 def granularity_call_argument(node: Any, entry: str) -> str | None:
-    """The argument text of a single-argument call ``name(expr)``, else ``None``."""
-    if not isinstance(node, AggCall) or node.args or node.kwargs or isinstance(node.source, StarSource):
+    """The bucketed expression's text of a ``date_trunc('<unit>', expr)`` string, else ``None``."""
+    if not isinstance(node, DateTrunc):
         return None
     call = call_source(entry)
-    if call is None or len(call.callee) != 1:
-        return _single_col_of_source(node)  # the legacy ``col:gran`` spelling
-    # ``date_trunc('unit', expr)``: the unit is a plain literal
-    arguments = call.arguments[1:] if call.callee[0].lower() == "date_trunc" else call.arguments
-    return arguments[0] if len(arguments) == 1 else None
+    return call.arguments[1] if call is not None and len(call.arguments) == 2 else None
 
 
-def _callee_granularity(callee: str) -> str:
-    return callee.lower() if callee.lower() in GRANULARITY_NAMES else callee
-
-
-def time_dimension_from_functional(entry: str, *, names: "frozenset[str] | set[str]") -> dict | None:
-    """A ``gran(expr)`` string whose casefolded callee is in ``names`` → its ``TimeDimension``
-    dict; another callee or a non-call → ``None``; a granularity callee of any other shape → raise."""
+def time_dimension_from_functional(entry: str) -> dict | None:
+    """A ``date_trunc('<unit>', expr)`` string → its ``TimeDimension`` dict; another call or a non-call → ``None``;
+    a ``date_trunc`` of any other shape → raise."""
     node, callee = call_callee(entry)
-    if callee is None or callee.casefold() not in names:
+    if callee is None or callee.lower() != "date_trunc":
         return None
     arg = granularity_call_argument(node, entry)
     if arg is None:
         _reject_call_placeholders(entry)
         raise GranularityCallError.wrong_shape(entry)
-    return {"dimension": arg, "granularity": _callee_granularity(callee)}
+    _reject_call_placeholders(entry)
+    return {"dimension": arg, "granularity": node.unit}
 
 
 def granularity_call_parts(entry: str) -> tuple[str, str] | None:
-    """``(expr, callee)`` for a well-formed single-argument call string, else ``None`` (never raises);
-    used to resolve a functional order key against projected time dimensions."""
-    node, callee = call_callee(entry)
+    """``(expr, unit)`` for a well-formed ``date_trunc('<unit>', expr)`` string, else ``None`` (never raises);
+    used to resolve an order key against projected time dimensions."""
+    node, _ = call_callee(entry)
     arg = granularity_call_argument(node, entry)
-    if callee is None or arg is None:
-        return None
-    return arg, _callee_granularity(callee)
+    return None if arg is None else (arg, node.unit)
+
+
+def bucket_call_remedy(entry: str) -> str:
+    """The ``date_trunc`` spelling a time-dimension string needs: ``f(expr)`` → ``date_trunc('f', expr)``."""
+    call = call_source(entry)
+    if call is not None and len(call.callee) == 1 and len(call.arguments) == 1:
+        return f"date_trunc('{call.callee[0].lower()}', {call.arguments[0]})"
+    return "date_trunc('<unit>', expr)"
 
 
 def _split_functional_dimensions(dims: "list | tuple") -> tuple[list, list]:
-    """Partition ``dimensions`` into (kept, extracted-TD-dicts): a built-in ``gran(col)``
-    string becomes a ``TimeDimension`` dict; any other call resolves at binding."""
+    """Partition ``dimensions`` into (kept, extracted-TD-dicts): a ``date_trunc('<unit>', expr)`` string becomes a
+    ``TimeDimension`` dict."""
     kept: list = []
     rewritten: list = []
     for item in dims:
         if isinstance(item, str):
-            td = time_dimension_from_functional(item, names=GRANULARITY_NAMES)
+            td = time_dimension_from_functional(item)
             if td is not None:
                 rewritten.append(td)
                 continue
@@ -170,28 +168,21 @@ def _split_functional_dimensions(dims: "list | tuple") -> tuple[list, list]:
 
 
 def _coerce_time_dimension_entry(entry: Any) -> Any:
-    """A string ``time_dimensions`` entry must be the functional ``gran(col)`` form (a
-    non-built-in callee resolves at binding); dicts/objects pass through untouched."""
+    """A string ``time_dimensions`` entry must be ``date_trunc('<unit>', expr)``; dicts/objects pass through."""
     if not isinstance(entry, str):
         return entry
-    _reject_call_placeholders(entry)
-    td = time_dimension_from_functional(entry, names=GRANULARITY_NAMES)
+    td = time_dimension_from_functional(entry)
     if td is not None:
         return td
-    node, callee = call_callee(entry)
-    arg = granularity_call_argument(node, entry)
-    if callee is None or arg is None:
-        raise GranularityCallError(
-            f"Time dimension {entry!r} must be the functional form "
-            f"``gran(expr)`` (e.g. ``month(created_at)``) for one of: "
-            f"{_granularity_names()} or a datasource granularity; no default granularity is invented."
-        )
-    return {"dimension": arg, "granularity": callee}
+    raise GranularityCallError(
+        f"Time dimension {entry!r} must be a time bucket written {bucket_call_remedy(entry)}; the unit is one of "
+        f"{_granularity_names()} or a datasource granularity, and no default granularity is invented."
+    )
 
 
 def _rewrite_functional_granularity(data: dict) -> dict:
-    """Move ``gran(col)`` dimension strings into ``time_dimensions`` and coerce
-    string ``time_dimensions`` entries; both accept only the functional form."""
+    """Move ``date_trunc`` dimension strings into ``time_dimensions`` and coerce string ``time_dimensions``
+    entries; both accept only ``date_trunc``."""
     rewritten: list = []
     dims = data.get("dimensions")
     if isinstance(dims, (list, tuple)):
@@ -941,18 +932,6 @@ def _coerce_measures(v: Any) -> Any:
     return [{"formula": item} if isinstance(item, str) else item for item in v]
 
 
-def _may_name_datasource_granularity(entry: str) -> bool:
-    """A whole call whose callee is no built-in name — possibly a datasource granularity."""
-    _, callee = call_callee(entry)
-    if callee is None:
-        return False
-    name = callee.lower()
-    return not (
-        name in GRANULARITY_NAMES or name in RESERVED_SCALAR_NAMES or name in ALL_TRANSFORMS
-        or normalize_aggregation_name(callee) in BUILTIN_AGGREGATIONS
-    )
-
-
 def _coerce_dimension_item(item: Any) -> Any:
     """Coerce one ``dimensions`` entry: a bare identifier / dotted path stays a ``ColumnRef``, any other string parses as a Mode-B expression → ``ComputedDimension`` (neither raises)."""
     if isinstance(item, (ColumnRef, ComputedDimension)):
@@ -967,8 +946,6 @@ def _coerce_dimension_item(item: Any) -> Any:
         try:
             parse_expr(item)
         except Exception as exc:
-            if _may_name_datasource_granularity(item):
-                return ComputedDimension(expression=item)  # its datasource resolves it at binding
             raise ValueError(
                 f"Dimension {item!r} is neither a column reference (a bare "
                 f"identifier or dotted join path) nor a parseable Mode-B "

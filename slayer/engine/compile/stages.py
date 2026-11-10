@@ -32,7 +32,7 @@ from slayer.core.enums import DataType, JoinCardinality, JoinType
 from slayer.core.errors import AmbiguousJoinPathError
 from slayer.core.keys import SLOT_COMPOSITE_KINDS, AggregateKey, AggregateSource, Grain, ArithmeticKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_kernel_requiring, is_ranked, restricts_own_rows, input_masked, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, NULL_SAFE_COMPARISON_OPS, NON_IDENTITY_KEY_FIELDS, OPTIONAL_KEY_FIELDS, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, value_type, VALUE_KEY_TYPES
 from slayer.core.models import Column, EmptyValue, SlayerModel, aggregation_definition, empty_value
-from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
+from slayer.core.refs import EXPRESSION_SOURCE_KINDS, first_bucket_remedy, key_display
 from slayer.engine.reference_closure import (
     aggregate_input_closure,
     column_default_key,
@@ -229,7 +229,7 @@ def _guard_windowed_measures(
         for key in _windowed_agg_keys(vk):
             selected_windowed.setdefault(key, True)
 
-    check_windowed_time_dimension(resolved=active_td_key is not None)
+    check_windowed_time_dimension(resolved=active_td_key is not None, remedy=first_bucket_remedy(measure_vks))
     return selected_windowed
 
 

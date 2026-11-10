@@ -6,6 +6,7 @@ algebra type error raises here, each invoked at its family's original checkpoint
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from types import MappingProxyType
@@ -25,7 +26,6 @@ from slayer.core.errors import (
     DimensionTypeError,
     DistinctDimensionValuesError,
     DuplicateMeasureNameError,
-    GranularityShapeError,
     ListTypeError,
     MeasureNameCollidesWithColumnError,
     ModelFilterError,
@@ -101,10 +101,10 @@ from slayer.core.keys import (
     list_set_key,
 )
 from slayer.core.models import SlayerModel
-from slayer.core.refs import dotted_key_display, key_display
+from slayer.core.refs import bucket_remedy, dotted_key_display, key_display
 from slayer.core.scope import ModelScope, StageSchema
 from slayer.core.time_points import (
-    TIME_POINT_FORMS, Instant, add_units, ceil_to, floor_to, is_relative_token, resolve_time_point,
+    TIME_POINT_FORMS, Instant, add_units, ceil_to, floor_to, is_relative_token, is_time_point, resolve_time_point,
 )
 from slayer.sql.sql_expr import has_window_function
 from slayer.ir.planned import MaskTyping
@@ -854,14 +854,23 @@ def check_dimension_temporal_axis(
                 )
 
 
-def check_windowed_time_dimension(*, resolved: bool) -> None:
+_AXIS_REMEDY = "Add a single time_dimensions entry, or set main_time_dimension to select among multiple time dimensions."
+
+
+def with_bucket_remedy(suggestion: str, remedy: Optional[str]) -> str:
+    """``suggestion``, led by grouping on ``remedy``'s time bucket when a dimension is an integer extraction."""
+    if remedy is None:
+        return suggestion
+    return f"Group by the time bucket {remedy}: an extraction is an integer, never a time axis. {suggestion}"
+
+
+def check_windowed_time_dimension(*, resolved: bool, remedy: Optional[str] = None) -> None:
     """A windowed measure needs a resolvable query time dimension (both windowed guard sites)."""
     if resolved:
         return
     raise TimeAxisError(
         summary="Windowed measure could not resolve its time dimension.",
-        suggestion="Add a single time_dimensions entry, or set main_time_dimension "
-        "to select among multiple time dimensions.",
+        suggestion=with_bucket_remedy(_AXIS_REMEDY, remedy),
     )
 
 
@@ -929,25 +938,30 @@ def check_spine_aggregation(*, offender: Optional[str]) -> None:
         )
 
 
-def check_spine_plain_use(*, offender: Optional[str], position: str) -> None:
+def check_spine_plain_use(*, offender: Optional[str], position: str, remedy: Optional[str] = None) -> None:
     """The spine column appears only bucketed by a granularity, or in a bound."""
     if offender is not None:
         raise TimeSpineError(
             summary=f"time_spine.timestamp in {position} `{offender}` is not a bucketed time dimension.",
             location=offender,
-            suggestion=_SPINE_REMEDY,
+            suggestion=with_bucket_remedy(_SPINE_REMEDY, remedy),
         )
 
 
-def check_spine_time_dimension(*, offender: Optional[str]) -> None:
+_SPINE_AXIS_REMEDY = (
+    "Bucket time_spine.timestamp itself (time_dimensions=[{dimension: time_spine.timestamp, granularity: month, "
+    "date_range: [...]}]) and compute other date logic from the fact's own column."
+)
+
+
+def check_spine_time_dimension(*, offender: Optional[str], remedy: Optional[str] = None) -> None:
     """An expression is never an axis: a time dimension reads the spine column only as the bare column."""
     if offender is not None:
         raise TimeSpineError(
             summary=f"Time dimension `{offender}` reads time_spine.timestamp inside an expression; "
             f"an expression is never an axis.",
             location=f"time dimension {offender!r}",
-            suggestion="Bucket time_spine.timestamp itself (time_dimensions=[{dimension: time_spine.timestamp, "
-            "granularity: month, date_range: [...]}]) and compute other date logic from the fact's own column.",
+            suggestion=with_bucket_remedy(_SPINE_AXIS_REMEDY, remedy),
         )
 
 
@@ -983,20 +997,11 @@ def check_granularity_known(
     return granularity
 
 
-def check_granularity_call_shape(*, entry: str, argument: Optional[str]) -> None:
-    """A datasource-granularity call must take exactly one row-level argument."""
-    if argument is None:
-        raise GranularityShapeError(
-            summary=f"Granularity call {entry!r} must take one row-level argument ``gran(expr)``.",
-            suggestion="Pass one column or row-level expression, e.g. ``fiscal_year(created_at)``.",
-        )
-
-
 def check_dimension_call_known(*, entry: str, defined: Mapping[str, CustomGranularity]) -> NoReturn:
     """A single-column dimension call naming no granularity, scalar, transform or built-in aggregation."""
     raise UnknownGranularityError(
         summary=unknown_granularity_message(name=entry, defined=defined.values(), where="dimensions"),
-        suggestion="For a time bucket use ``gran(col)``; a custom aggregation used as a "
+        suggestion="For a time bucket write date_trunc('<unit>', expr); a custom aggregation used as a "
         "dimension must carry ``partition_by=``.",
     )
 
@@ -1312,6 +1317,8 @@ def _raise_sub_day(key: TimePointCmpKey) -> NoReturn:
 
 def _non_temporal_comparison(key: TimePointCmpKey, *, units: Mapping[str, CustomGranularity]) -> ValueKey:
     """A literal time point against a non-temporal operand keeps its plain-string meaning."""
+    op_text = "IN" if key.op == "in" else "NOT IN" if key.op == "not in" else key.op
+    check_extraction_literal(operand=key.operand, text=key.point, op=op_text, units=units)
     if key.op in ("in", "not in") or is_relative_token(key.point, units=units):
         raise DateOperandTypeError(
             summary=f"'{key.point}' is a time point, but `{_operand_display(key.operand)}` "
@@ -1358,7 +1365,24 @@ def _as_number(key: ValueKey, *, beside: ValueKey) -> ValueKey:
     return CastKey(source=key, type_text="DOUBLE", data_type=DataType.DOUBLE, try_=True)
 
 
+_BARE_YEAR = re.compile(r"\s*\d{4}\s*")
+
+
+def check_extraction_literal(
+    *, operand: ValueKey, text: str, op: str, units: Mapping[str, CustomGranularity] = MappingProxyType({}),
+) -> None:
+    """An integer extraction compared with a date-shaped literal (not a bare year or a number) is refused."""
+    remedy = bucket_remedy(operand)
+    if remedy is None or _BARE_YEAR.fullmatch(text) or not is_time_point(text, units=units):
+        return
+    raise DateOperandTypeError(
+        summary=f"'{text}' is a date, but `{key_display(operand)}` is an integer extraction, never equal to a date.",
+        suggestion=f"Compare the time bucket instead: {remedy} {op} '{text}'.",
+    )
+
+
 def _number_literal(text: str, *, beside: ValueKey) -> Decimal:
+    check_extraction_literal(operand=beside, text=text, op="=")
     try:
         value = Decimal(text.strip())
     except InvalidOperation:
@@ -1889,7 +1913,17 @@ def _find_unresolved_time_needing_op(key: ValueKey) -> Optional[str]:
     return None
 
 
-def check_time_transforms_resolved(*, roots) -> None:
+def check_whole_periods_axis(*, has_time_dimension: bool, remedy: Optional[str]) -> None:
+    """``whole_periods_only`` snaps time dimensions; an integer extraction is none."""
+    if not has_time_dimension and remedy is not None:
+        raise TimeAxisError(
+            summary="whole_periods_only completes time-dimension periods, but the query groups by an integer "
+            "extraction and has no time dimension.",
+            suggestion=f"Group by the time bucket {remedy}.",
+        )
+
+
+def check_time_transforms_resolved(*, roots, remedy: Optional[str] = None) -> None:
     """A time-needing transform still at ``time_key=None`` after attachment means no resolvable TD."""
     for vk in roots:
         op = _find_unresolved_time_needing_op(vk)
@@ -1897,8 +1931,7 @@ def check_time_transforms_resolved(*, roots) -> None:
             raise TimeAxisError(
                 summary="The transform requires an unambiguous time dimension.",
                 location=f"transform {op!r}",
-                suggestion="Add a single time_dimensions entry, or set "
-                "main_time_dimension to select among multiple time dimensions.",
+                suggestion=with_bucket_remedy(_AXIS_REMEDY, remedy),
             )
 
 

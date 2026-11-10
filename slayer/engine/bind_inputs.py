@@ -42,7 +42,7 @@ from slayer.core.keys import (
     window_kwarg_of,
 )
 from slayer.core.models import ModelMeasure, SlayerModel
-from slayer.core.granularity import Granularity, granularity_key, nests_into, resolve_granularity
+from slayer.core.granularity import Granularity, nests_into, resolve_granularity
 from slayer.core.query import (
     ComputedDimension,
     ORDER_PLACEHOLDER_NAMES,
@@ -51,10 +51,9 @@ from slayer.core.query import (
     call_callee,
     computed_dimension_name,
     functional_call_column,
-    granularity_call_argument,
     granularity_call_parts,
 )
-from slayer.core.refs import dotted_key_display
+from slayer.core.refs import bucket_remedy, dotted_key_display, first_bucket_remedy
 from slayer.core.time_bounds import is_frame_bound
 from slayer.core.time_points import floor_to
 from slayer.core.scope import (
@@ -80,7 +79,7 @@ from slayer.engine.elaborate_env import (
     coerce_list_arguments,
     ListTyping,
     check_dimension_call_known,
-    check_granularity_call_shape,
+    check_whole_periods_axis,
     check_granularity_known,
     check_measure_dedupe_collision,
     check_spine_clash,
@@ -332,7 +331,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         )
     check_spine_clash(clash=bundle.spine_clash and is_spine_query(query))
     _check_column_granularities(bundle=bundle)
-    query = _resolve_granularity_calls(query, bundle=bundle)
+    _check_dimension_calls(query, bundle=bundle)
     query = _dedupe_equivalent_time_dimensions(query, scope=scope, bundle=bundle)
 
     # Runs BEFORE binding so the targeted error wins over the binder's generic one.
@@ -447,10 +446,8 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                         position="order key",
                     )
                     raise GranularityCallError(
-                        f"Order key {_gran}({_col}) has no matching projected time "
-                        f"dimension. Project a time_dimension on {_col!r} at {_gran} "
-                        f"granularity (e.g. {_gran}({_col}) in dimensions) to order by "
-                        f"its bucket."
+                        f"Order key date_trunc('{_gran}', {_col}) has no matching projected time "
+                        f"dimension. Project date_trunc('{_gran}', {_col}) in dimensions to order by its bucket."
                     )
                 order_specs.append(OrderSpec(
                     bound=bind_time_dimension(
@@ -601,6 +598,10 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     )
     granularity_conflicts: List[GranularityConflict] = []
     if query.whole_periods_only:
+        check_whole_periods_axis(
+            has_time_dimension=bool(n_tds),
+            remedy=first_bucket_remedy(dm.bound.value_key for dm in declared_measures[:n_dims]),
+        )
         bound_filters, bound_filter_texts, n_date_range, granularity_conflicts = _snap_whole_periods(
             bound_filters=bound_filters, bound_filter_texts=bound_filter_texts,
             n_date_range=n_date_range, now=bundle.now,
@@ -638,7 +639,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         *(dm.bound.value_key for dm in declared_measures),
         *(bf.value_key for bf in bound_filters),
         *(spec.bound.value_key for spec in order_specs),
-    ])
+    ], remedy=first_bucket_remedy(dm.bound.value_key for dm in declared_measures[:n_dims]))
 
     # Transform-input typing runs pre-lowering, where change/change_pct are still
     # single nodes (their desugar duplicates the offending input).
@@ -1327,27 +1328,11 @@ def _check_column_granularities(*, bundle: ResolvedSourceBundle) -> None:
                 )
 
 
-def _resolve_granularity_calls(query: SlayerQuery, *, bundle: ResolvedSourceBundle) -> SlayerQuery:
-    """Dimension entries calling a datasource granularity become time dimensions, as a built-in
-    callee does at construction; any other unknown single-column call fails."""
-    kept: list = []
-    moved: List[TimeDimension] = []
+def _check_dimension_calls(query: SlayerQuery, *, bundle: ResolvedSourceBundle) -> None:
+    """An unnamed single-column dimension call naming no aggregation or granularity fails."""
     for item in query.dimensions or []:
-        td = (
-            _datasource_time_dimension(item.expression, template=item.template, bundle=bundle)
-            if isinstance(item, ComputedDimension)
-            and item.name == computed_dimension_name(item.template)
-            else None
-        )
-        if td is None:
-            kept.append(item)
-        else:
-            moved.append(td)
-    if not moved:
-        return query
-    return query.model_copy(update={
-        "dimensions": kept or None, "time_dimensions": [*(query.time_dimensions or []), *moved],
-    })
+        if isinstance(item, ComputedDimension) and item.name == computed_dimension_name(item.template):
+            _check_dimension_call(item.expression, bundle=bundle)
 
 
 def _dedupe_equivalent_time_dimensions(
@@ -1370,22 +1355,15 @@ def _dedupe_equivalent_time_dimensions(
     return query if len(kept) == len(tds) else query.model_copy(update={"time_dimensions": kept})
 
 
-def _datasource_time_dimension(entry: str, *, template: str, bundle: ResolvedSourceBundle) -> Optional[TimeDimension]:
+def _check_dimension_call(entry: str, *, bundle: ResolvedSourceBundle) -> None:
     node, callee = call_callee(entry)
-    if callee is None:
-        return None
-    column = functional_call_column(node)
-    definition = bundle.granularities.get(granularity_key(callee))
-    if definition is not None:
-        argument = granularity_call_argument(node, entry)
-        check_granularity_call_shape(entry=entry, argument=argument)
-        td = TimeDimension.model_validate({"dimension": argument, "granularity": definition.name})
-        if template != entry:
-            td._template = granularity_call_argument(call_callee(template)[0], template)
-        return td
-    if column is not None and normalize_aggregation_name(callee) not in BUILTIN_AGGREGATIONS:
-        check_dimension_call_known(entry=entry, defined=bundle.granularities)
-    return None
+    if callee is None or functional_call_column(node) is None:
+        return
+    if normalize_aggregation_name(callee) in BUILTIN_AGGREGATIONS or resolve_granularity(
+        callee, defined=bundle.granularities,
+    ) is not None:
+        return
+    check_dimension_call_known(entry=entry, defined=bundle.granularities)
 
 
 def _build_date_range_filter(
@@ -1595,7 +1573,9 @@ def _check_time_dimension(
     column_type = btd.column_type
     if btd.is_expression:
         source = _td_source(btd.bound)
-        check_spine_time_dimension(offender=td.dimension if _reads_spine(source, scope=scope) else None)
+        check_spine_time_dimension(
+            offender=td.dimension if _reads_spine(source, scope=scope) else None, remedy=bucket_remedy(source),
+        )
         check_time_dimension_row_level(name=td.dimension, source=source)
         if isinstance(scope, ModelScope) and scope.source_model is not None:
             check_time_dimension_home(
@@ -1688,11 +1668,11 @@ def _resolve_main_time_dimension(
             return full_matches[0]
         if len(full_matches) > 1:
             # Same column, several granularities: a bare column can't pick a bucket.
-            # Per-granularity selection (e.g. year(created_at)) lands in DEV-1925.
+            # Per-granularity selection (e.g. date_trunc('year', created_at)) lands in DEV-1925.
             raise AmbiguousReferenceError(
                 name=target,
                 candidates=[
-                    f"{td.granularity}({td.dimension})"
+                    f"date_trunc('{td.granularity}', {td.dimension})"
                     for td in full_matches
                 ],
             )

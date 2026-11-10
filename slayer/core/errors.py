@@ -449,10 +449,6 @@ class UnknownGranularityError(QueryTypeError):
     """A granularity name that is neither built-in nor defined on the query's datasource."""
 
 
-class GranularityShapeError(QueryTypeError):
-    """A datasource-granularity call that does not take one row-level argument ``gran(expr)``."""
-
-
 class TimeSpineError(QueryTypeError):
     """A query shape the time spine cannot take: no lower bound, spine rows counted, the spine column
     outside a bucketed time dimension or a bound, or a stored model shadowing ``time_spine``."""
@@ -663,13 +659,14 @@ class NotReadOnlyQueryError(SlayerError):
 class AmbiguousReferenceError(SlayerError, ValueError):
     """A reference matches multiple candidates in scope."""
 
-    def __init__(self, name: str, candidates: List[str]) -> None:
+    def __init__(self, name: str, candidates: List[str], suggestion: str | None = None) -> None:
         self.name = name
         self.candidates = sorted(candidates)
         super().__init__(_format_error_message(
             cls_name=type(self).__name__,
             summary=f"Reference {name!r} has multiple candidates.",
             extras=[("candidates", repr(self.candidates))],
+            suggestion=suggestion,
         ))
 
 
@@ -986,12 +983,32 @@ class GranularityCallError(SlayerError, ValueError):
 
     @classmethod
     def wrong_shape(cls, entry: str) -> "GranularityCallError":
-        """A granularity callee with any argument shape other than one row-level argument."""
+        """A time bucket written in any shape other than ``date_trunc('<unit>', expr)``."""
         return cls(
-            f"Granularity call {entry!r} must take one row-level argument "
-            f"``gran(expr)`` (e.g. ``month(created_at)``) for one of: "
-            f"{', '.join(g.value for g in TimeGranularity)}."
+            f"Time bucket {entry!r} must be written date_trunc('<unit>', expr) with one row-level expr, e.g. "
+            f"date_trunc('month', created_at); units: {', '.join(g.value for g in TimeGranularity)} or a "
+            f"datasource granularity."
         )
+
+    @classmethod
+    def no_call_form(cls, unit: str, *, operand: str) -> "GranularityCallError":
+        """A granularity name called like a function."""
+        return cls(f"{unit}(…) is not a function: write the time bucket as date_trunc('{unit}', {operand}).")
+
+
+class ReservedFunctionNameError(SlayerError, ValueError):
+    """A call of, or a new aggregation named, a reserved function name (``agg``)."""
+
+    def __init__(self, *, name: str, where: str) -> None:
+        self.name = name
+        super().__init__(
+            f"{where}: {name!r} is reserved — AGG (`agg` in any case) names measure evaluation, so it is never a "
+            f"function or an aggregation name. A field, metric or column may still be named agg."
+        )
+
+
+class CallArgumentError(SlayerError, ValueError):
+    """A call's arguments in an order or repetition no signature reads."""
 
 
 class UnresolvableOrderColumnError(SlayerError, ValueError):

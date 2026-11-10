@@ -23,6 +23,7 @@ from slayer.core.errors import (
     AggregationNotAllowedError,
     CastTypeError,
     ListTypeError,
+    CallArgumentError,
     CircularJoinPathError,
     GranularityCallError,
     IllegalScopeReferenceError,
@@ -30,17 +31,19 @@ from slayer.core.errors import (
     MeasureCycleError,
     MeasureRecursionLimitError,
     PartitionKeyError,
+    ReservedFunctionNameError,
     TimeLiteralError,
     TransformArgumentError,
     UnknownFunctionError,
+    UnknownGranularityError,
     UnknownReferenceError,
     UnresolvableDimensionJoinError,
     UnresolvedPlaceholderError,
 )
-from slayer.core.enums import AMBIGUOUS_WEEKDAY_NAMES, BUILTIN_AGGREGATION_PARAM_ORDER, BUILTIN_AGGREGATIONS, DATE_PART_ALIASES, DEFAULT_AGGREGATIONS_BY_TYPE, GRANULARITY_NAMES, NUMERIC_ONLY_AGGREGATIONS, PRIMARY_KEY_AGGREGATIONS, RANKED_AGGREGATIONS, DataType, ambiguous_weekday_message, normalize_aggregation_name, ALL_TRANSFORMS
+from slayer.core.enums import RESERVED_NAMES, AMBIGUOUS_WEEKDAY_NAMES, BUILTIN_AGGREGATION_PARAM_ORDER, BUILTIN_AGGREGATIONS, DATE_PART_ALIASES, DEFAULT_AGGREGATIONS_BY_TYPE, GRANULARITY_NAMES, NUMERIC_ONLY_AGGREGATIONS, PRIMARY_KEY_AGGREGATIONS, RANKED_AGGREGATIONS, DataType, ambiguous_weekday_message, normalize_aggregation_name, ALL_TRANSFORMS
 from slayer.core.direction import rank_direction, with_direction_kwarg
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
-from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
+from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity, unknown_granularity_message
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
 from slayer.core.keys import ColumnTypeFn, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, list_valued, numeric_valued
 from slayer.core.join_walker import (
@@ -79,8 +82,10 @@ from slayer.core.syntax import (
     BoundVariable,
     Cast,
     Cmp,
+    DateTrunc,
     DottedRef,
     Literal,
+    NamedArg,
     ParsedExpr,
     Placeholder,
     Ref,
@@ -92,6 +97,7 @@ from slayer.core.syntax import (
     UnaryOp,
     aggregation_reading,
     canonical_measure_text,
+    classify_arguments,
     comparison_hint,
     drop_root_qualifier,
     keyword_spelling,
@@ -231,6 +237,7 @@ def spelled_aggregate_key(
     a bound definition default is never part of the spelling."""
     if not isinstance(parsed, AggCall):
         return key
+    parsed = _classified(parsed, bundle=bundle)
     positional = _declared_agg_param_names(agg=key.agg, source=key.source, bundle=bundle)
     written = {k for k, _ in parsed.kwargs} | set(positional[:len(parsed.args)])
     return key.model_copy(update={
@@ -424,6 +431,10 @@ def _bind(
     )
     if isinstance(parsed, Cast):
         return _bind_cast(parsed, source=sub(parsed.source), scope=scope, bundle=bundle)
+    if isinstance(parsed, DateTrunc):
+        return _bind_date_trunc(parsed, source=sub(parsed.value), bundle=bundle)
+    if isinstance(parsed, NamedArg):
+        raise CallArgumentError(f"`{canonical_measure_text(parsed)}` is only an argument of a call.")
     if isinstance(parsed, AggCall):
         return _bind_agg_call(
             parsed, scope=scope, bundle=bundle, alias_map=alias_map,
@@ -1255,23 +1266,23 @@ def _callee_granularity(name: str, *, bundle: Optional[ResolvedSourceBundle]) ->
     return resolve_granularity(name, defined=bundle.granularities if bundle is not None else {})
 
 
-def _source_is_reaggregation(node, *, bundle: Optional[ResolvedSourceBundle] = None) -> bool:
+def _source_is_reaggregation(node) -> bool:
     """Whether a parsed aggregation source carries an attached value — a nested
     AggCall or a grained transform, alone or composed. Such a source is bound
     structurally (its inner AggCalls / TransformCalls become nested keys) whether
     it is a pure re-aggregation or a row-grain mix."""
-    if isinstance(node, AggCall) and _callee_granularity(node.agg, bundle=bundle) is not None:
-        return False  # a granularity call is row-level
     if isinstance(node, (AggCall, TransformCall)):
         return True
     if isinstance(node, (Arith, Cmp)):
-        return _source_is_reaggregation(node.left, bundle=bundle) or _source_is_reaggregation(node.right, bundle=bundle)
+        return _source_is_reaggregation(node.left) or _source_is_reaggregation(node.right)
     if isinstance(node, ScalarCall):
-        return any(_source_is_reaggregation(a, bundle=bundle) for a in node.args)
-    if isinstance(node, UnaryOp):
-        return _source_is_reaggregation(node.operand, bundle=bundle)
+        return any(_source_is_reaggregation(a) for a in node.args)
+    if isinstance(node, (UnaryOp, Cast)):
+        return _source_is_reaggregation(node.operand if isinstance(node, UnaryOp) else node.source)
+    if isinstance(node, DateTrunc):
+        return _source_is_reaggregation(node.value)
     if isinstance(node, BoolOp):
-        return any(_source_is_reaggregation(o, bundle=bundle) for o in node.operands)
+        return any(_source_is_reaggregation(o) for o in node.operands)
     return False
 
 
@@ -1285,6 +1296,8 @@ def _bind_agg_call(
 ) -> AggregateKey | TransformKey | TimeTruncKey:
     """Bind an ``AggCall`` (a granularity callee is a row-level bucket); ``first`` / ``last`` dispatch by the bound operand's
     type — attached → the series transform, row grain → the ranked aggregation."""
+    if parsed.agg.lower() in RESERVED_NAMES:
+        raise ReservedFunctionNameError(name=parsed.agg, where=f"{canonical_measure_text(parsed)}")
     if parsed.filter is not None:
         return _bind_filtered_agg(
             parsed, scope=scope, bundle=bundle, alias_map=alias_map, measure_ctx=measure_ctx,
@@ -1294,9 +1307,14 @@ def _bind_agg_call(
         parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
     ) is None:
         raise ValueError(parsed.library_error)
+    parsed = _classified(parsed, bundle=bundle)
     granularity = _callee_granularity(parsed.agg, bundle=bundle)
-    if granularity is not None:
-        return _bind_granularity_call(parsed, scope=scope, bundle=bundle, granularity=granularity)
+    if granularity is not None and _owner_definition(
+        parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+    ) is None:
+        raise GranularityCallError.no_call_form(
+            str(granularity), operand=", ".join(canonical_measure_text(a) for a in (parsed.source, *parsed.args)),
+        )
     op = normalize_aggregation_name(parsed.agg)
     if op in RANKED_AGGREGATIONS:
         operand = _bind_transform_input(
@@ -1360,19 +1378,50 @@ def _carrying_filter(key: AggregateKey, *, condition: ValueKey) -> AggregateKey:
     return key.model_copy(update={"filter": condition})
 
 
-def _bind_granularity_call(
-    parsed: AggCall, *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
-    granularity: Granularity,
-) -> TimeTruncKey:
-    """``gran(expr)`` as the row-level bucket of ``expr``."""
-    if parsed.args or parsed.kwargs or isinstance(parsed.source, StarSource):
-        raise GranularityCallError.wrong_shape(f"{parsed.agg}(...)")
-    source = _bind(parsed.source, scope=scope, bundle=bundle, in_filter=False)
+def _bind_date_trunc(parsed: DateTrunc, *, source: ValueKey, bundle: ResolvedSourceBundle) -> TimeTruncKey:
+    """``date_trunc('<unit>', expr)`` as the row-level bucket of ``expr``."""
+    granularity = resolve_granularity(parsed.unit, defined=bundle.granularities)
+    if granularity is None:
+        raise UnknownGranularityError(summary=unknown_granularity_message(
+            name=parsed.unit, defined=bundle.granularities.values(), where=canonical_measure_text(parsed),
+        ))
     if source.phase is not Phase.ROW or isinstance(source, SqlFragmentKey) or any(
         isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(source)
     ):
-        raise GranularityCallError.wrong_shape(f"{parsed.agg}(...)")
+        raise GranularityCallError.wrong_shape(canonical_measure_text(parsed))
     return TimeTruncKey(source=source, granularity=granularity)
+
+
+def _aggregation_parameters(agg: str, *, bundle: ResolvedSourceBundle) -> List[str]:
+    """The keyword names a call of ``agg`` may take: a built-in's, or any model definition's, plus the routing ones."""
+    names = ["partition_by", "window", *BUILTIN_AGGREGATION_PARAM_ORDER.get(normalize_aggregation_name(agg), ())]
+    for model in _bundle_models(bundle):
+        definition = aggregation_definition(owner=model, agg=agg)
+        if definition is None:
+            continue
+        names += [p.name for p in definition.params]
+        try:
+            names += sorted(aggregation_reads(agg=definition.name, definition=definition, dialect=bundle.dialect))
+        except SqlTemplateError:
+            continue
+    return [n for n in dict.fromkeys(names) if n != VALUE_PLACEHOLDER]
+
+
+def _classified(parsed: AggCall, *, bundle: ResolvedSourceBundle) -> AggCall:
+    """``parsed`` with each ``name = value`` argument a keyword (a parameter of the aggregation) or a comparison."""
+    items = (parsed.source, *parsed.args)
+    if not any(isinstance(i, NamedArg) for i in items):
+        return parsed
+    positional, keywords = classify_arguments(
+        items, parameters=_aggregation_parameters(parsed.agg, bundle=bundle), call=parsed.agg,
+    )
+    if not positional:
+        raise AggregationArgumentError(
+            f"Aggregation '{parsed.agg}' requires a value argument, e.g. {parsed.agg}(column)."
+        )
+    return parsed.model_copy(update={
+        "source": positional[0], "args": positional[1:], "kwargs": (*parsed.kwargs, *keywords),
+    })
 
 
 def _bind_agg_source(
@@ -1381,7 +1430,7 @@ def _bind_agg_source(
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]],
 ) -> AggregateSource:
-    if _source_is_reaggregation(parsed.source, bundle=bundle):
+    if _source_is_reaggregation(parsed.source):
         # Re-aggregation: bind the operand subtree — inner AggCalls
         # become AggregateKeys — so the outer key carries a nested-aggregate
         # source (axiom 6). Discovery/planning lift it to a producer-over-producer.
@@ -1491,10 +1540,12 @@ def _owner_definition(
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> Optional[Aggregation]:
     """The aggregation ``parsed.agg`` its column-reading source's owner declares, else ``None``."""
-    if not any(parsed.agg.lower() == a.name.lower() for m in _bundle_models(bundle) for a in m.aggregations):
+    if all(aggregation_definition(owner=m, agg=parsed.agg) is None for m in _bundle_models(bundle)):
         return None
     try:
-        source = _bind_agg_source(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
+        source = _bind_agg_source(
+            _classified(parsed, bundle=bundle), scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+        )
     except (ValueError, LookupError):
         return None
     if not any(isinstance(k, (ColumnKey, ColumnSqlKey)) for k in walk_value_keys(source)):
@@ -1817,11 +1868,10 @@ def _transform_positional_pairs(
         return []
     pos_names = _TRANSFORM_POSITIONAL_KWARGS.get(op)
     if pos_names is None:
+        accepted = sorted(_transform_parameters(op))
+        rest = f"pass {', '.join(accepted)} by keyword" if accepted else "it takes no other arguments"
         raise ValueError(
-            f"Transform {op!r} accepts exactly one positional "
-            f"argument (the value to transform); pass any offset, "
-            f"partition, or other settings as keyword arguments "
-            f"(e.g. ``{op}(value, partition_by=...)``)."
+            f"Transform {op!r} accepts exactly one positional argument (the value to transform); {rest}."
         )
     if len(args) > len(pos_names):
         raise ValueError(
@@ -1847,14 +1897,25 @@ def _bind_transform(
     measure_ctx: Optional[MeasureResolutionCtx] = None,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> TransformKey:
+    positional, keywords = classify_arguments(
+        (parsed.input, *parsed.args), parameters=_transform_parameters(parsed.op), call=parsed.op,
+    )
+    if not positional:
+        raise TransformArgumentError(summary=f"Transform {parsed.op!r} requires the value to transform first.")
     inp = _bind_transform_input(
-        parsed.input, scope=scope, bundle=bundle, alias_map=alias_map,
+        positional[0], scope=scope, bundle=bundle, alias_map=alias_map,
         measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
     )
     return _bind_transform_params(
-        op=parsed.op, inp=inp, args=parsed.args, kwargs=parsed.kwargs,
+        op=parsed.op, inp=inp, args=positional[1:], kwargs=(*parsed.kwargs, *keywords),
         scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
     )
+
+
+def _transform_parameters(op: str) -> frozenset[str]:
+    """The keyword names transform ``op`` takes."""
+    names = _TRANSFORM_KWARG_RULES.get(op, frozenset()) | frozenset(_TRANSFORM_POSITIONAL_KWARGS.get(op, ()))
+    return with_direction_kwarg(op=op, accepted=names | {"partition_by"} if op in RANK_FAMILY_TRANSFORMS else names)
 
 
 def _bind_transform_input(

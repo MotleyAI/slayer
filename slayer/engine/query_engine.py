@@ -62,15 +62,12 @@ from slayer.core.models import (
     _check_join_keys,
     join_key_error,
 )
-from slayer.core.granularity import resolve_granularity
 from slayer.core.query import (
     ComputedDimension,
     OrderItem,
     QueryRefinement,
     SlayerQuery,
-    computed_dimension_name,
     extract_variable_refs,
-    granularity_call_parts,
     refine_query,
     render_probe_text,
 )
@@ -87,6 +84,7 @@ from slayer.engine.population.inference import (
 from slayer.core.time_points import host_clock
 from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine_query
 from slayer.core.scope import StageDisplay, StageSchema, collect_stale_spellings
+from slayer.core.legacy_spellings import collect_legacy_spellings, emit_deprecations
 from slayer.core.warnings import (
     AnySlayerWarning,
     AssociatedWarningPayload,
@@ -333,14 +331,6 @@ def _merge_query_variables(
     return {**(outer or {}), **(stage or {}), **(runtime or {})}
 
 
-def _is_granularity_call(d: ComputedDimension, *, bundle: ResolvedSourceBundle) -> bool:
-    """Whether ``d`` is an unnamed datasource-granularity call (it projects as a time dimension)."""
-    if d.name != computed_dimension_name(d.template):
-        return False
-    call = granularity_call_parts(d.expression)
-    return call is not None and resolve_granularity(call[1], defined=bundle.granularities) is not None
-
-
 def _with_default_order(query: SlayerQuery, *, bundle: ResolvedSourceBundle) -> SlayerQuery:
     """``query`` ordered by its projected dimensions, ascending, in result-column order, when it has no order.
 
@@ -349,21 +339,17 @@ def _with_default_order(query: SlayerQuery, *, bundle: ResolvedSourceBundle) -> 
     if query.order or query.distinct_dimension_values is False:
         return query
     dimensions: List[str] = []
-    # Granularity calls project after the other dimensions, with the time dimensions.
-    granularity_calls: List[str] = []
     for d in query.dimensions or []:
         if not isinstance(d, ComputedDimension):
             dimensions.append(d.full_name)
-        elif _is_granularity_call(d, bundle=bundle):
-            granularity_calls.append(d.expression)
         else:
             dimensions.append(d.name or d.expression)
     time_dimensions = [
-        f"{td.granularity.value if isinstance(td.granularity, TimeGranularity) else td.granularity}"
-        f"({td.dimension})"
+        f"date_trunc('{td.granularity.value if isinstance(td.granularity, TimeGranularity) else td.granularity}', "
+        f"{td.dimension})"
         for td in query.time_dimensions or []
     ]
-    columns = [*dimensions, *time_dimensions, *granularity_calls]
+    columns = [*dimensions, *time_dimensions]
     if not columns:
         return query
     return query.model_copy(update={"order": [OrderItem.model_validate({"column": c, "implied": True}) for c in columns]})
@@ -1010,8 +996,8 @@ class SlayerQueryEngine:
         refine: "QueryRefinement | dict | None" = None,
     ) -> SlayerResponse:
         runtime_kwarg = variables or {}
-        run_input = resolve_run_input(query, refine)
-        with announced_by_caller():
+        with collect_legacy_spellings() as legacy, announced_by_caller():
+            run_input = resolve_run_input(query, refine)
             main_query, named_queries, prefer_data_source, splice_chain = await self._normalize_input(
                 run_input, runtime_kwarg=runtime_kwarg, prefer_data_source=data_source
             )
@@ -1029,6 +1015,7 @@ class SlayerQueryEngine:
             )
         # The one Python-warnings emission: after the response is built (under
         # ``-W error`` this raises) and path-independent (dry_run/explain/execute).
+        response.warnings.extend(emit_deprecations(legacy))
         _emit_python_warnings(response)
         return response
 

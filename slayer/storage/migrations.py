@@ -18,10 +18,10 @@ from typing import Any
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
-    "SlayerModel": 18,
-    "SlayerQuery": 9,
+    "SlayerModel": 19,
+    "SlayerQuery": 10,
     "DatasourceConfig": 3,
-    "Memory": 7,
+    "Memory": 8,
     "Embedding": 1,
 }
 
@@ -225,3 +225,4 @@ from slayer.storage import stored_repair_migration  # noqa: E402, F401  # ALLOW(
 from slayer.storage import sql_string_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import time_dimension_text_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import distinct_column_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import ossie_alignment_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here

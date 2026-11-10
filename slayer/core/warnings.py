@@ -307,6 +307,20 @@ class WholeListWarning(SlayerWarning):
                 f"elements; count_distinct({self.list}.value) counts distinct elements")
 
 
+class DeprecatedSpellingWarning(SlayerWarning):
+    """A deprecated Mode-B ``spelling`` was read (``written``); ``canonical`` is its twin, removed in ``removal``."""
+
+    kind: Literal["deprecated_spelling"] = "deprecated_spelling"
+    spelling: str
+    written: str
+    canonical: str
+    removal: str = "3.0"
+
+    def human_message(self) -> str:
+        return (f"the {self.spelling} spelling `{self.written}` is deprecated and removed in SLayer {self.removal}; "
+                f"write `{self.canonical}`")
+
+
 # Discriminated union, not the bare base: a ``List[SlayerWarning]`` would validate
 # down to the base type and drop subclass fields. Keyed on ``kind``, each round-trips.
 AnySlayerWarning = Annotated[
@@ -325,6 +339,7 @@ AnySlayerWarning = Annotated[
         LibraryNameShadowWarning,
         BrokenDependentWarning,
         WholeListWarning,
+        DeprecatedSpellingWarning,
     ],
     Field(discriminator="kind"),
 ]
