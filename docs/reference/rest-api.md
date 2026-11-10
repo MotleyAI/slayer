@@ -168,7 +168,7 @@ curl -X POST http://localhost:5143/ingest \
   -d '{"datasource": "my_postgres", "schema_name": "public"}'
 ```
 
-The response is the ingest result (`additions`, `to_delete`, `errors`, `skipped`, `objects`, `skipped_schemas`, `broken_dependents`, …); `key_read_failures` lists each key read that failed (table `location`, `read`, `error`), and that key stays missing until a re-ingest reads it. A 200 response:
+The response is the ingest result (`additions`, `to_delete`, `errors`, `skipped`, `objects`, `skipped_schemas`, `broken_dependents`, …); `key_read_failures` lists each key read that failed (table `location`, `read`, `error`); a re-ingest that reads the key fills it, unless a stored column with a key column's name reads something else. A 200 response:
 
 ```json
 {

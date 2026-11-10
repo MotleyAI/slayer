@@ -20,6 +20,9 @@ bypasses the client and writes directly through the engine.
 """
 
 import asyncio
+import concurrent.futures
+import contextlib
+import threading
 from typing import Any
 from collections.abc import Iterable
 
@@ -31,6 +34,7 @@ import sqlglot
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
 from slayer.database import client as sql_client
+from slayer.database import engine_factory
 from slayer.database.client import ResultColumnType, SlayerSQLClient, render_type_probe
 from slayer.sql.dialects import SqliteDialect
 
@@ -205,3 +209,32 @@ async def test_concurrent_async_calls_share_in_memory_db(no_retry: None) -> None
     )
     for i, rows in enumerate(r.rows for r in results):
         assert rows == [{"i": i}], f"call {i} got {rows}"
+
+
+def test_concurrent_first_use_builds_one_in_memory_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two threads resolving a fresh client's engine at once share one database."""
+    client = _in_memory_client()
+    real_build = engine_factory.build_in_memory_sqlite_engine
+    both_calling = threading.Barrier(2, timeout=5)
+    builds: list[str] = []
+    second_build = threading.Event()
+
+    def build_and_wait(connection_string: str) -> sa.Engine:
+        builds.append(connection_string)
+        if len(builds) == 1:
+            second_build.wait(timeout=1)
+        else:
+            second_build.set()
+        return real_build(connection_string)
+
+    def resolve(_: int) -> sa.Engine:
+        both_calling.wait()
+        return client._get_sync_engine_for_client()
+
+    monkeypatch.setattr(engine_factory, "build_in_memory_sqlite_engine", build_and_wait)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            first, second = pool.map(resolve, range(2))
+        assert first is second
+    finally:
+        client.close()

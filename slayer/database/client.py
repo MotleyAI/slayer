@@ -732,6 +732,8 @@ class SlayerSQLClient:
         # Guards the per-loop registry; never held across engine construction or disposal.
         self._async_lock = threading.Lock()
         self._sync_engine: sa.Engine | None = sa_engine
+        # Serializes the lazy first build, so concurrent first calls share one engine (one in-memory database).
+        self._sync_engine_lock = threading.Lock()
         self._sync_engine_owner: EngineOwner | None = "caller" if sa_engine is not None else None
         # Backstop disposing a client-owned engine when the client is collected unclosed.
         self._sync_engine_finalizer: weakref.finalize | None = None
@@ -891,6 +893,13 @@ class SlayerSQLClient:
         """
         if self._sync_engine is not None:
             return self._sync_engine
+        with self._sync_engine_lock:
+            if self._sync_engine is not None:
+                return self._sync_engine
+            return self._build_sync_engine()
+
+    def _build_sync_engine(self) -> sa.Engine:
+        """Build and retain this client's sync engine; the caller holds ``_sync_engine_lock``."""
         ds = self._connection_datasource()
         conn_str = ds.get_connection_string()
         connection_policy.check_transaction_pooler_backend(ds, url=conn_str)
