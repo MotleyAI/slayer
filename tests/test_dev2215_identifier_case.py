@@ -64,8 +64,9 @@ class TestFolding:
         assert sorted_rows(folded) == sorted_rows(plain)
 
     async def test_quoted_names_are_exact(self, engine: SlayerQueryEngine) -> None:
+        query = q(measures=[m('sum("Amount")')])
         with pytest.raises(UnknownReferenceError):
-            await engine.execute(q(measures=[m('sum("Amount")')]))
+            await engine.execute(query)
         assert num(single(await engine.execute(q(measures=[m('sum("amount")')])))) == 160.0
 
     @pytest.mark.parametrize("dimension", ['"customers".REGION', 'CUSTOMERS."region"'])
@@ -74,8 +75,9 @@ class TestFolding:
         assert "orders.customers.region" in resp.columns
 
     async def test_quoted_segment_with_wrong_case_fails(self, engine: SlayerQueryEngine) -> None:
+        query = q(dimensions=['"Customers".region'], measures=[m("count(*)", "n")])
         with pytest.raises(UnknownReferenceError):
-            await engine.execute(q(dimensions=['"Customers".region'], measures=[m("count(*)", "n")]))
+            await engine.execute(query)
 
     async def test_join_names_fold(self, engine: SlayerQueryEngine) -> None:
         folded = await engine.execute(q(dimensions=["CUSTOMERS.region"], measures=[m("count(*)", "n")]))
@@ -122,11 +124,14 @@ class TestExactSpellingWins:
         assert (num(single(resp, "a", model="ledger")), num(single(resp, "b", model="ledger"))) == (3.0, 30.0)
 
     async def test_ambiguous_spelling(self, engine: SlayerQueryEngine) -> None:
+        query = q(source_model="ledger", measures=[m("sum(REVENUE)")])
         with pytest.raises(AmbiguousReferenceError) as err:
-            await engine.execute(q(source_model="ledger", measures=[m("sum(REVENUE)")]))
+            await engine.execute(query)
         text = str(err.value)
-        assert "Revenue" in text and "revenue" in text
-        assert '"Revenue"' in text and '"revenue"' in text
+        assert "Revenue" in text
+        assert "revenue" in text
+        assert '"Revenue"' in text
+        assert '"revenue"' in text
 
     async def test_quoting_resolves_the_ambiguity(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(source_model="ledger", measures=[m('sum("Revenue")')]))
@@ -157,15 +162,18 @@ def _with_measure(model: SlayerModel, name: str) -> SlayerModel:
 class TestSaveCollisions:
     async def test_a_new_column_measure_collision_is_refused(self, storage: StorageBackend) -> None:
         await storage.save_model(orders_model())
+        model = _with_measure(orders_model(), "Amount")
         with pytest.raises(SlayerError) as err:
-            await storage.save_model(_with_measure(orders_model(), "Amount"))
-        assert "amount" in str(err.value) and "Amount" in str(err.value)
+            await storage.save_model(model)
+        assert "amount" in str(err.value)
+        assert "Amount" in str(err.value)
 
     async def test_a_new_aggregation_collision_is_refused(self, storage: StorageBackend) -> None:
         model = orders_model(aggregations=[Aggregation(name="Share", formula="AVG({value})")])
         with pytest.raises(SlayerError) as err:
             await storage.save_model(model)
-        assert "Share" in str(err.value) and "share" in str(err.value)
+        assert "Share" in str(err.value)
+        assert "share" in str(err.value)
 
     async def test_a_new_join_name_collision_is_refused(self, storage: StorageBackend) -> None:
         await storage.save_model(dev2215_models()[1])
@@ -175,7 +183,8 @@ class TestSaveCollisions:
         ]})
         with pytest.raises(SlayerError) as err:
             await storage.save_model(model)
-        assert "buyer" in str(err.value) and "Buyer" in str(err.value)
+        assert "buyer" in str(err.value)
+        assert "Buyer" in str(err.value)
 
     @pytest.mark.parametrize("source_queries", [
         [{"name": "Monthly", "source_model": "orders", "measures": [{"formula": "count(*)", "name": "n"}]},
@@ -193,9 +202,11 @@ class TestSaveCollisions:
 
     async def test_model_names_in_a_datasource(self, storage: StorageBackend) -> None:
         await storage.save_model(orders_model())
+        model = orders_model().model_copy(update={"name": "Orders"})
         with pytest.raises(SlayerError) as err:
-            await storage.save_model(orders_model().model_copy(update={"name": "Orders"}))
-        assert "orders" in str(err.value) and "Orders" in str(err.value)
+            await storage.save_model(model)
+        assert "orders" in str(err.value)
+        assert "Orders" in str(err.value)
 
     async def test_a_grandfathered_collision_keeps_working(self, storage: StorageBackend) -> None:
         await storage.save_model(ledger_model(), _validate=False)
@@ -208,9 +219,11 @@ class TestSaveCollisions:
         await storage.save_model(ledger_model(), _validate=False)
         without = ledger_model().model_copy(update={"columns": [c for c in ledger_model().columns if c.name != "revenue"]})
         await storage.save_model(without)
+        model = ledger_model()
         with pytest.raises(SlayerError) as err:
-            await storage.save_model(ledger_model())
-        assert "Revenue" in str(err.value) and "revenue" in str(err.value)
+            await storage.save_model(model)
+        assert "Revenue" in str(err.value)
+        assert "revenue" in str(err.value)
 
     async def test_a_grandfathered_collision_warns_on_load(self, storage: StorageBackend) -> None:
         await storage.save_model(ledger_model(), _validate=False)
@@ -240,17 +253,19 @@ COLLIDING = [m("sum(amount)", "Total"), m("count(*)", "total")]
 
 
 async def test_result_names_colliding_by_case_are_refused(engine: SlayerQueryEngine) -> None:
+    query = q(measures=COLLIDING)
     with pytest.raises(SlayerError) as err:
-        await engine.execute(q(measures=COLLIDING))
-    assert "Total" in str(err.value) and "total" in str(err.value)
+        await engine.execute(query)
+    assert "Total" in str(err.value)
+    assert "total" in str(err.value)
 
 
 @pytest.mark.parametrize("dialect", TIER1)
 async def test_result_names_colliding_by_case_are_refused_on_every_dialect(dialect: str) -> None:
     first, *rest = dev2215_models()
+    query = q(measures=COLLIDING)
     with pytest.raises(SlayerError):
-        await _engine_generate(query=q(measures=COLLIDING), model=first, extra_models=rest, dialect=dialect,
-                               validate=False)
+        await _engine_generate(query=query, model=first, extra_models=rest, dialect=dialect, validate=False)
 
 
 async def test_a_stored_query_with_colliding_names_keeps_running() -> None:
@@ -267,5 +282,7 @@ def test_model_lookups_fold() -> None:
                         columns=[Column(name="id", type=DataType.INT, primary_key=True)],
                         measures=[ModelMeasure(name="Total", formula="count(*)")])
     column, measure = model.get_column("ID"), model.get_measure("total")
-    assert column is not None and column.name == "id"
-    assert measure is not None and measure.name == "Total"
+    assert column is not None
+    assert column.name == "id"
+    assert measure is not None
+    assert measure.name == "Total"

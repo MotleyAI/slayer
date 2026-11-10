@@ -574,8 +574,9 @@ def _process_reference_site(
         return None
     target_model, canonical_alias = located
     owner = visited[-1] if visited else site
+    # Mode-A SQL names a column exactly.
     target_col = resolve_generated_column(
-        model=target_model, name=leaf, location=".".join(owner) if owner else None,
+        model=target_model, name=leaf, location=".".join(owner) if owner else None, quoted=True,
     )
     if target_col is not None:
         leaf = target_col.name

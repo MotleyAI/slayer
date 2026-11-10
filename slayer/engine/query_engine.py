@@ -56,6 +56,7 @@ from slayer.core.format import encode_text, format_number
 from slayer.core.join_edges import JoinEdgeRef, resolve_join_refs, without_joins
 from slayer.core.models import (
     DatasourceConfig,
+    name_collision_warnings,
     ModelMeasure,
     SlayerModel,
     is_identifier,
@@ -67,10 +68,14 @@ from slayer.core.query import (
     OrderItem,
     QueryRefinement,
     SlayerQuery,
+    call_callee,
+    colon_bucket,
+    computed_dimension_name,
     extract_variable_refs,
     refine_query,
     render_probe_text,
 )
+from slayer.core.granularity import resolve_granularity
 from slayer.core.join_search import blocking_pairs, shortest_routes, unreachable_target
 from slayer.engine.column_dependency import check_definition_ambiguity, check_definition_reach, check_model_filters
 from slayer.engine.population.inference import (
@@ -92,10 +97,12 @@ from slayer.core.warnings import (
     BroadcastDimension,
     BroadcastGrainWarningPayload,
     LibraryNameShadowWarning,
+    NameCollisionWarning,
     NarrowedAccessWarning,
     NormalizationWarning,
     SemiJoinPushedWarningPayload,
     SlayerLibraryNameShadowWarning,
+    SlayerNameCollisionWarning,
     SlayerNarrowedAccessWarning,
     SlayerUnrelatedDatasetWarning,
     SlayerWholeListWarning,
@@ -146,6 +153,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle, model_from_stage_schem
 from slayer.engine.stage_ordering import localize_stages, topologically_order_stages
 from slayer.engine.statement_reads import StatementReads, statement_reads
 from slayer.engine.binding import collect_bind_records
+from slayer.engine.elaborate_env import check_result_names_case
 from slayer.engine.plan import plan_stages
 from slayer.ir.variables import (
     apply_variables_to_query,
@@ -213,6 +221,25 @@ class SavedQueryRun(BaseModel):
 
     name: str
     refinement: QueryRefinement | None = None
+
+
+def _read_model_collisions(*, reads: StatementReads, bundle: ResolvedSourceBundle) -> List[NameCollisionWarning]:
+    """A ``NameCollisionWarning`` per case collision of each model the statement reads."""
+    read = {m for m, _ in (*reads.columns, *reads.measures, *reads.aggregations)}
+    models = {**bundle.models_by_name, **({bundle.source_model.name: bundle.source_model} if bundle.source_model else {})}
+    return [w for name in sorted(read) if name in models for w in name_collision_warnings(models[name])]
+
+
+def _check_fresh_result_names(run_input: Any) -> None:
+    """The result names a caller writes may not differ only in case; a stored query is never refused."""
+    for item in run_input if isinstance(run_input, list) else [run_input]:
+        query = SlayerQuery.model_validate(item) if isinstance(item, dict) else item
+        if isinstance(query, SlayerQuery):
+            check_result_names_case(names=[
+                *(m.name for m in query.measures or [] if m.name),
+                *(d.name for d in query.dimensions or [] if isinstance(d, ComputedDimension) and d.name),
+                *(td.name for td in query.time_dimensions or [] if td.name),
+            ])
 
 
 def resolve_run_input(query: _QueryT, refine: "QueryRefinement | dict | None") -> "_QueryT | SavedQueryRun":
@@ -331,6 +358,14 @@ def _merge_query_variables(
     return {**(outer or {}), **(stage or {}), **(runtime or {})}
 
 
+def _datasource_colon_bucket(d: ComputedDimension, *, bundle: ResolvedSourceBundle) -> Optional[Tuple[str, str]]:
+    """``(column, granularity)`` of an unnamed colon ``col:gran`` dimension of a datasource granularity, else ``None``."""
+    if d.name != computed_dimension_name(d.template):
+        return None
+    colon = colon_bucket(call_callee(d.expression)[0])
+    return colon if colon is not None and resolve_granularity(colon[1], defined=bundle.granularities) else None
+
+
 def _with_default_order(query: SlayerQuery, *, bundle: ResolvedSourceBundle) -> SlayerQuery:
     """``query`` ordered by its projected dimensions, ascending, in result-column order, when it has no order.
 
@@ -339,9 +374,13 @@ def _with_default_order(query: SlayerQuery, *, bundle: ResolvedSourceBundle) -> 
     if query.order or query.distinct_dimension_values is False:
         return query
     dimensions: List[str] = []
+    # A colon bucket of a datasource granularity projects after the other dimensions, with the time dimensions.
+    buckets: List[str] = []
     for d in query.dimensions or []:
         if not isinstance(d, ComputedDimension):
             dimensions.append(d.full_name)
+        elif (colon := _datasource_colon_bucket(d, bundle=bundle)) is not None:
+            buckets.append(f"date_trunc('{colon[1]}', {colon[0]})")
         else:
             dimensions.append(d.name or d.expression)
     time_dimensions = [
@@ -349,7 +388,7 @@ def _with_default_order(query: SlayerQuery, *, bundle: ResolvedSourceBundle) -> 
         f"{td.dimension})"
         for td in query.time_dimensions or []
     ]
-    columns = [*dimensions, *time_dimensions]
+    columns = [*dimensions, *time_dimensions, *buckets]
     if not columns:
         return query
     return query.model_copy(update={"order": [OrderItem.model_validate({"column": c, "implied": True}) for c in columns]})
@@ -601,6 +640,8 @@ def _emit_python_warnings(response) -> None:
             _warnings_module.warn(SlayerUnrelatedDatasetWarning(w), stacklevel=3)
         elif isinstance(w, LibraryNameShadowWarning):
             _warnings_module.warn(SlayerLibraryNameShadowWarning(w), stacklevel=3)
+        elif isinstance(w, NameCollisionWarning):
+            _warnings_module.warn(SlayerNameCollisionWarning(w), stacklevel=3)
 
 
 class SlayerResponse(BaseModel):
@@ -998,6 +1039,7 @@ class SlayerQueryEngine:
         runtime_kwarg = variables or {}
         with collect_legacy_spellings() as legacy, announced_by_caller():
             run_input = resolve_run_input(query, refine)
+            _check_fresh_result_names(run_input)
             main_query, named_queries, prefer_data_source, splice_chain = await self._normalize_input(
                 run_input, runtime_kwarg=runtime_kwarg, prefer_data_source=data_source
             )
@@ -1177,7 +1219,10 @@ class SlayerQueryEngine:
         reads = statement_reads(plans=rendered.emitted_list, bundle=rendered.bundle, measures=records.measures)
         # A pruned stage's shadowing call is not made by the statement.
         shadows = [w for w in records.shadows.values() if (w.model, w.aggregation) in reads.aggregations]
-        return rendered.model_copy(update={"element_reads": reads, "warnings": [*rendered.warnings, *shadows]})
+        collisions = _read_model_collisions(reads=reads, bundle=rendered.bundle)
+        return rendered.model_copy(update={
+            "element_reads": reads, "warnings": [*rendered.warnings, *shadows, *collisions],
+        })
 
     async def _plan_and_render_statement(  # NOSONAR S3776 — linear pipeline (localize→infer→bundle→normalize→variables→plan→render); splitting hides the order of operations
         self,

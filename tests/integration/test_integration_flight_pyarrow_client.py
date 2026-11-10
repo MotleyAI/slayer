@@ -303,8 +303,9 @@ def test_auth_negative_wrong_token(
     host, port, _token = flight_demo_server_with_token
     client = _client(host=host, port=port)
     descriptor = _descriptor_for(fsql_pb.CommandGetCatalogs(), "CommandGetCatalogs")
+    options = _bearer_options("wrong")
     with pytest.raises(fl.FlightUnauthenticatedError):
-        client.get_flight_info(descriptor, options=_bearer_options("wrong"))
+        client.get_flight_info(descriptor, options=options)
 
 
 # ----- concurrency -----------------------------------------------------------

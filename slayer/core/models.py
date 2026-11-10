@@ -18,7 +18,9 @@ from pydantic import (
 from sqlalchemy.engine import URL as _SA_URL
 
 from slayer.core.enums import BUILTIN_AGGREGATION_FORMULAS, BUILTIN_AGGREGATIONS, DEFAULT_AGGREGATIONS_BY_TYPE, GRANULARITY_NAMES, LIST_AGGREGATIONS, DataType, type_display, JoinCardinality, JoinType, ObjectKind, PRIMARY_KEY_AGGREGATIONS, RANKED_AGGREGATIONS, RESERVED_DATE_SYNTAX_NAMES, RESERVED_NAMES, _coerce_legacy_datatype, builtin_empty_value, ALL_TRANSFORMS
-from slayer.core.errors import AmbiguousAggregationError, GranularityDefinitionError, JoinKeyError
+from slayer.core.errors import AmbiguousAggregationError, AmbiguousReferenceError, GranularityDefinitionError, JoinKeyError
+from slayer.core.names import folded_collisions, match_name
+from slayer.core.warnings import NameCollisionWarning
 from slayer.core.format import NumberFormat
 from slayer.core.granularity import CustomGranularity, GranularitySpec, definition_error, granularity_key
 from slayer.core.keys import RESERVED_SCALAR_NAMES
@@ -504,18 +506,17 @@ class Aggregation(BaseModel):
                 f"transform function. Reserved names: "
                 f"{', '.join(sorted(transform_only))}"
             )
-        if self.name.lower() in RESERVED_DATE_SYNTAX_NAMES:
-            raise ValueError(
-                f"Aggregation name '{self.name}' is a reserved date function or "
-                f"date-part alias: {', '.join(sorted(RESERVED_DATE_SYNTAX_NAMES))}"
-            )
-        # A granularity-named aggregation would shadow the functional ``gran(col)``
-        # time-bucket form in a query dimension.
+        # A granularity name reads as a time bucket unit.
         if self.name.lower() in GRANULARITY_NAMES:
             raise ValueError(
                 f"Aggregation name '{self.name}' conflicts with a time "
                 f"granularity. Reserved granularity names: "
                 f"{', '.join(sorted(GRANULARITY_NAMES))}"
+            )
+        if self.name.lower() in RESERVED_DATE_SYNTAX_NAMES:
+            raise ValueError(
+                f"Aggregation name '{self.name}' is a reserved date function or "
+                f"date-part alias: {', '.join(sorted(RESERVED_DATE_SYNTAX_NAMES))}"
             )
         return self
 
@@ -529,13 +530,11 @@ def aggregation_definition(*, owner: "SlayerModel | None", agg: str) -> Aggregat
     declared = owner.aggregations or []
     if agg.lower() in BUILTIN_AGGREGATIONS:
         return next((a for a in declared if a.name == agg.lower()), None)
-    exact = next((a for a in declared if a.name == agg), None)
-    if exact is not None:
-        return exact
-    folded = [a for a in declared if a.name.lower() == agg.lower()]
-    if len(folded) > 1:
-        raise AmbiguousAggregationError(model=owner.name, call=agg, candidates=[a.name for a in folded])
-    return folded[0] if folded else None
+    try:
+        name = match_name(name=agg, declared=[a.name for a in declared], quoted=False)
+    except AmbiguousReferenceError as e:
+        raise AmbiguousAggregationError(model=owner.name, call=agg, candidates=e.candidates) from None
+    return None if name is None else next(a for a in declared if a.name == name)
 
 
 def shadows_library_function(aggregation: Aggregation) -> bool:
@@ -1001,23 +1000,20 @@ class SlayerModel(BaseModel):
         temporal = [c.name for c in self.columns if c.type in (DataType.DATE, DataType.TIMESTAMP)]
         return temporal[0] if len(temporal) == 1 else None
 
-    def get_column(self, name: str) -> Column | None:
-        for c in self.columns:
-            if c.name == name:
-                return c
-        return None
+    def get_column(self, name: str, *, quoted: bool = False) -> Column | None:
+        """The column ``name`` reaches (``slayer.core.names.match_name``)."""
+        found = match_name(name=name, declared=[c.name for c in self.columns], quoted=quoted)
+        return None if found is None else next(c for c in self.columns if c.name == found)
 
-    def get_measure(self, name: str) -> ModelMeasure | None:
-        for m in self.measures:
-            if m.name == name:
-                return m
-        return None
+    def get_measure(self, name: str, *, quoted: bool = False) -> ModelMeasure | None:
+        """The saved measure ``name`` reaches (``slayer.core.names.match_name``)."""
+        found = match_name(name=name, declared=[m.name for m in self.measures if m.name], quoted=quoted)
+        return None if found is None else next(m for m in self.measures if m.name == found)
 
-    def get_aggregation(self, name: str) -> Aggregation | None:
-        for a in self.aggregations:
-            if a.name == name:
-                return a
-        return None
+    def get_aggregation(self, name: str, *, quoted: bool = False) -> Aggregation | None:
+        """The aggregation ``name`` reaches (``slayer.core.names.match_name``)."""
+        found = match_name(name=name, declared=[a.name for a in self.aggregations], quoted=quoted)
+        return None if found is None else next(a for a in self.aggregations if a.name == found)
 
 
 class DatasourceConfig(BaseModel):
@@ -1211,3 +1207,30 @@ def _resolve_env_string(value: str) -> str:
         return os.environ.get(var_name, match.group(0))
 
     return re.sub(r"\$\{(\w+)\}", replacer, value)
+
+
+def case_collisions(model: SlayerModel) -> list[tuple[str, list[str]]]:
+    """Each group of ``model``'s names that differ only in case, per namespace: fields (columns and measures),
+    aggregations, join names, and a saved query's stage names and each stage's result names."""
+    namespaces: list[tuple[str, list[str]]] = [
+        ("fields", [c.name for c in model.columns] + [m.name for m in model.measures if m.name]),
+        ("aggregations", [a.name for a in model.aggregations]),
+        ("joins", [j.name for j in model.joins if j.name]),
+    ]
+    stages = model.source_queries or []
+    namespaces.append(("stages", [n for q in stages if (n := _item_name(q))]))
+    for q in stages:
+        where = f"result names of stage {_item_name(q)!r}" if _item_name(q) else "result names"
+        measures = q.get("measures") if isinstance(q, dict) else q.measures
+        namespaces.append((where, [n for m in measures or [] if (n := _item_name(m))]))
+    return [(where, group) for where, names in namespaces for group in folded_collisions(names)]
+
+
+def _item_name(item: Any) -> str | None:
+    """A stage's or measure's name, validated or a raw dict."""
+    return item.get("name") if isinstance(item, dict) else getattr(item, "name", None)
+
+
+def name_collision_warnings(model: SlayerModel) -> list[NameCollisionWarning]:
+    """The ``NameCollisionWarning`` per case collision ``model`` holds."""
+    return [NameCollisionWarning(model=model.name, namespace=where, names=names) for where, names in case_collisions(model)]

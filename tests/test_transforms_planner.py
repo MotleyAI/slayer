@@ -184,10 +184,12 @@ class TestBindTransformValidation:
     ])
     def test_non_parameter_name_is_a_positional_comparison(self, formula: str, twin: str) -> None:
         # Not a declared parameter of the callee → a comparison, failing like its parenthesised twin.
+        twin_parsed, twin_scope, twin_bundle = parse_expr(twin), _scope(), _bundle()
         with pytest.raises(ValueError) as twin_info:
-            bind_expr(parsed=parse_expr(twin), scope=_scope(), bundle=_bundle())
+            bind_expr(parsed=twin_parsed, scope=twin_scope, bundle=twin_bundle)
+        parsed, scope, bundle = parse_expr(formula), _scope(), _bundle()
         with pytest.raises(ValueError) as info:
-            bind_expr(parsed=parse_expr(formula), scope=_scope(), bundle=_bundle())
+            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
         assert type(info.value) is type(twin_info.value), str(info.value)
         assert "keyword argument 'foo'" not in str(info.value)
         assert "==" not in str(info.value)
@@ -215,10 +217,12 @@ class TestBindTransformValidation:
 
     def test_rank_rejects_n_kwarg(self) -> None:
         # ``n`` is ntile-only: in rank it is a comparison, failing like its parenthesised twin.
+        twin_parsed, twin_scope, twin_bundle = parse_expr("rank(amount:sum, (n=4), direction='desc')"), _scope(), _bundle()
         with pytest.raises(ValueError) as twin_info:
-            bind_expr(parsed=parse_expr("rank(amount:sum, (n=4), direction='desc')"), scope=_scope(), bundle=_bundle())
+            bind_expr(parsed=twin_parsed, scope=twin_scope, bundle=twin_bundle)
+        parsed, scope, bundle = parse_expr("rank(amount:sum, n=4, direction='desc')"), _scope(), _bundle()
         with pytest.raises(ValueError) as info:
-            bind_expr(parsed=parse_expr("rank(amount:sum, n=4, direction='desc')"), scope=_scope(), bundle=_bundle())
+            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
         assert type(info.value) is type(twin_info.value), str(info.value)
         assert "keyword argument 'n'" not in str(info.value)
         assert "==" not in str(info.value)

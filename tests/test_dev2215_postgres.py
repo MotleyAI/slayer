@@ -115,8 +115,10 @@ async def test_two_case_variants(pg) -> None:
     model, notes = await _ingest(engine, ds, "casey")
     named = dict(_columns(model))
     assert set(named) == {"Foo", "foo_2"}
-    assert named["foo_2"] is not None and "foo" in named["foo_2"]
-    assert "foo_2" in notes and "foo" in notes
+    assert named["foo_2"] is not None
+    assert "foo" in named["foo_2"]
+    assert "foo_2" in notes
+    assert "foo" in notes
     await engine.storage.save_model(model)
     resp = await engine.execute(q(source_model="casey", dimensions=["Foo", "foo_2"]))
     assert sorted((r["casey.Foo"], r["casey.foo_2"]) for r in resp.data) == [(1, 10), (2, 20)]
@@ -128,7 +130,8 @@ async def test_suffix_already_taken_and_reingestion(pg) -> None:
     again, _ = await _ingest(engine, ds, "casey3")
     named = dict(_columns(first))
     assert set(named) == {"Foo", "foo_3", "foo_2"}
-    assert named["foo_3"] is not None and named["foo_3"] != named["foo_2"]
+    assert named["foo_3"] is not None
+    assert named["foo_3"] != named["foo_2"]
     assert _columns(first) == _columns(again)
     await engine.storage.save_model(first)
     resp = await engine.execute(q(source_model="casey3", dimensions=["Foo", "foo_3", "foo_2"]))

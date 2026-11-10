@@ -78,7 +78,8 @@ class TestFreshInput:
         assert len(warnings_mentioning(legacy, SLAYER_3, "IS NOT NULL")) == 1
         assert len(python_warned) == 2
         assert len([w for w in python_warned if "IS NOT NULL" in w]) == 1
-        assert deprecations(canonical) == [] and sql_warned == []
+        assert deprecations(canonical) == []
+        assert sql_warned == []
 
     @pytest.mark.parametrize(("legacy", "canonical"), [
         ("sum(iif(region IN ['EU', 'US'], amount, None))", "sum(iif(region IN ('EU', 'US'), amount, NULL))"),
@@ -95,8 +96,10 @@ class TestFreshInput:
         assert old.columns == new.columns
         assert old.sql == new.sql
         assert old.data == new.data
-        assert deprecations(old) and old_warned
-        assert deprecations(new) == [] and new_warned == []
+        assert deprecations(old)
+        assert old_warned
+        assert deprecations(new) == []
+        assert new_warned == []
 
     async def test_method_call_warning_names_the_functional_spelling(self, engine: SlayerQueryEngine) -> None:
         resp, warned = await run(engine, q(measures=["customers.count_distinct(status)"]))
@@ -104,9 +107,10 @@ class TestFreshInput:
         assert any("count_distinct(customers.status)" in w for w in warned)
 
     async def test_a_date_part_method_call_shows_its_functional_spelling(self, engine: SlayerQueryEngine) -> None:
+        query = q(dimensions=[{"expression": "customers.month(updated_at)", "name": "mo"}],
+                  measures=[m("count(*)", "n")])
         with pytest.raises(ValueError, match=re.escape("month(customers.updated_at)")):
-            await engine.execute(q(dimensions=[{"expression": "customers.month(updated_at)", "name": "mo"}],
-                                   measures=[m("count(*)", "n")]))
+            await engine.execute(query)
 
     async def test_bare_none_list_and_method_call_warn_per_spelling(self, engine: SlayerQueryEngine) -> None:
         resp, warned = await run(engine, q(measures=[
@@ -124,7 +128,8 @@ class TestFreshInput:
     async def test_true_false_and_not_equal_are_not_deprecated(self, engine: SlayerQueryEngine) -> None:
         resp, warned = await run(engine, q(measures=[m("count(*)", "n")],
                                            filters=["status != 'void'", "(amount > 15) = True"]))
-        assert deprecations(resp) == [] and warned == []
+        assert deprecations(resp) == []
+        assert warned == []
 
 
 # --------------------------------------------------------------------------- #
@@ -154,7 +159,8 @@ async def test_a_saved_query_stores_the_canonical_twin(storage: StorageBackend) 
          "filters": ["status == 'paid' and region is not None"]}]})
     await storage.save_model(saved)
     loaded = await storage.get_model("paid_orders", data_source="test")
-    assert loaded is not None and loaded.source_queries
+    assert loaded is not None
+    assert loaded.source_queries
     assert loaded.source_queries[0].filters == ["status = 'paid' and region IS NOT NULL"]
 
 
@@ -164,7 +170,8 @@ async def test_a_canonical_save_is_silent_and_verbatim(storage: StorageBackend) 
     with recorded_warnings() as caught:
         await storage.save_model(model)
     loaded = await storage.get_model("orders", data_source="test")
-    assert loaded is not None and [x.formula for x in loaded.measures] == [formula]
+    assert loaded is not None
+    assert [x.formula for x in loaded.measures] == [formula]
     assert future_warnings(caught, SLAYER_3) == []
 
 
@@ -193,7 +200,8 @@ class TestNeverSelfWarns:
         resp, warned = await run(engine, q(measures=[m("sum(CASE status WHEN 'paid' THEN 1 END)")],
                                            filters=["CASE WHEN region IS NULL THEN 0 ELSE 1 END = 1"]))
         assert num(single(resp)) == 4.0
-        assert deprecations(resp) == [] and warned == []
+        assert deprecations(resp) == []
+        assert warned == []
 
     async def test_facade_query(self, engine: SlayerQueryEngine) -> None:
         catalog = build_catalog(models_by_datasource={"test": dev2215_models()})
@@ -201,9 +209,11 @@ class TestNeverSelfWarns:
                            "OR status <> 'x' GROUP BY status", catalog)
         assert isinstance(result, QueryResult)
         resp, warned = await run(engine, result.query)
-        assert deprecations(resp) == [] and warned == []
+        assert deprecations(resp) == []
+        assert warned == []
 
     async def test_engine_remedies_are_canonical(self, engine: SlayerQueryEngine) -> None:
+        query = q(measures=[m("weighted_avg(amount, wieght = qty)")])
         with pytest.raises(ValueError) as err:
-            await engine.execute(q(measures=[m("weighted_avg(amount, wieght = qty)")]))
+            await engine.execute(query)
         assert "==" not in str(err.value)

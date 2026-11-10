@@ -217,7 +217,9 @@ class TestBucketCalls:
         for source in (inline, extension):
             query = SlayerQuery.model_validate({"version": PRE["SlayerQuery"], "source_model": source})
             text = dumped(query)
-            assert not _BUCKET_CALL.search(text) and "==" not in text and "None)" not in text, text
+            assert not _BUCKET_CALL.search(text), text
+            assert "==" not in text, text
+            assert "None)" not in text, text
         assert "count_distinct(date_trunc('month', ordered_at))" in dumped(
             SlayerQuery.model_validate({"version": PRE["SlayerQuery"], "source_model": inline}))
 
@@ -254,7 +256,8 @@ class TestBucketCalls:
     def test_memory_query_is_rewritten(self) -> None:
         query = {"version": PRE["SlayerQuery"], "source_model": "orders", "filters": ["month(ordered_at) = '2024-01'"]}
         mem = Memory.model_validate(memory_v2(memory_id="m", version=PRE["Memory"], query=query))
-        assert mem.query is not None and mem.query.filters == ["date_trunc('month', ordered_at) = '2024-01'"]
+        assert mem.query is not None
+        assert mem.query.filters == ["date_trunc('month', ordered_at) = '2024-01'"]
 
 
 # --------------------------------------------------------------------------- #
@@ -301,7 +304,8 @@ class TestAggRename:
         with logged(caplog) as texts:
             model = await storage.get_model("orders", data_source=DS)
             query_backed = await storage.get_model("doubled", data_source=DS)
-        assert model is not None and query_backed is not None
+        assert model is not None
+        assert query_backed is not None
         assert [a.name for a in model.aggregations] == ["agg_aggregation"]
         assert "agg_aggregation(amount)" in dumped(query_backed)
         assert any("agg_aggregation" in t and "orders" in t for t in texts), texts

@@ -979,7 +979,7 @@ class ForcedFilterError(SlayerError):
 
 
 class GranularityCallError(SlayerError, ValueError):
-    """A functional ``gran(col)`` query entry is malformed or unresolvable: wrong-shape granularity call, an unknown ``name(col)`` dimension, a bare ``time_dimensions`` string, a same-column+granularity metadata conflict, or an order key with no matching projected time dimension."""
+    """A time-bucket query entry is malformed or unresolvable: a ``date_trunc`` of the wrong shape, a granularity called like a function, a ``time_dimensions`` string that is not ``date_trunc('<unit>', expr)``, a same-column+granularity metadata conflict, or an order key with no matching projected time dimension."""
 
     @classmethod
     def wrong_shape(cls, entry: str) -> "GranularityCallError":
@@ -1004,6 +1004,17 @@ class ReservedFunctionNameError(SlayerError, ValueError):
         super().__init__(
             f"{where}: {name!r} is reserved — AGG (`agg` in any case) names measure evaluation, so it is never a "
             f"function or an aggregation name. A field, metric or column may still be named agg."
+        )
+
+
+class CaseCollisionError(SlayerError, ValueError):
+    """A save would introduce names that differ only in case into one namespace."""
+
+    def __init__(self, *, names: List[str], namespace: str) -> None:
+        self.names = list(names)
+        super().__init__(
+            f"{' and '.join(repr(n) for n in names)} in {namespace} differ only in case; names match in any case, "
+            f"so they would collide. Rename one of them."
         )
 
 

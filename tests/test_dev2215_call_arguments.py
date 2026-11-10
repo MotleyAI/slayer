@@ -65,12 +65,14 @@ class TestKeywordOrComparison:
             await _value(engine, "corr(amount, iif(qty = 1, 1, 0))"))
 
     async def test_duplicate_keyword_after_classification(self, engine: SlayerQueryEngine) -> None:
+        query = q(measures=[m("weighted_avg(amount, weight = qty, WEIGHT = qty)")])
         with pytest.raises(SlayerError, match="(?i)weight"):
-            await engine.execute(q(measures=[m("weighted_avg(amount, weight = qty, WEIGHT = qty)")]))
+            await engine.execute(query)
 
     async def test_positional_after_keyword_after_classification(self, engine: SlayerQueryEngine) -> None:
+        query = q(measures=[m("weighted_avg(weight = qty, amount)")])
         with pytest.raises(SlayerError):
-            await engine.execute(q(measures=[m("weighted_avg(weight = qty, amount)")]))
+            await engine.execute(query)
 
     async def test_transform_parameters(self, engine: SlayerQueryEngine) -> None:
         keyword = await engine.execute(q(time_dimensions=TD, measures=[m("time_shift(sum(amount), PERIODS = -1)")]))
@@ -93,14 +95,16 @@ class TestAggIsReserved:
          "measures": [{"formula": "count(*)", "name": "n"}]},
     ], ids=["measure", "arithmetic", "filter", "dimension"])
     async def test_a_call_is_refused(self, engine: SlayerQueryEngine, query: dict) -> None:
+        built = q(**query)
         with pytest.raises(SlayerError, match="(?i)AGG.*reserved"):
-            await engine.execute(q(**query))
+            await engine.execute(built)
 
     async def test_a_new_aggregation_is_refused(self, tmp_path) -> None:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
+        model = orders_model(aggregations=[Aggregation(name="Agg", formula="SUM({value})")])
         with pytest.raises(SlayerError, match="agg"):
-            await storage.save_model(orders_model(aggregations=[Aggregation(name="Agg", formula="SUM({value})")]))
+            await storage.save_model(model)
 
     async def test_a_measure_or_column_named_agg_is_legal(self) -> None:
         with_column = orders_model().model_copy(update={"columns": [

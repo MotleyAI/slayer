@@ -442,6 +442,42 @@ def retyped_sql_columns(model: SlayerModel, *, lists: dict[str, ResultList]) -> 
 # --- Model generation from introspected columns ---
 
 
+def case_distinct_names(names: list[str]) -> list[str]:
+    """``names`` with each later case-only duplicate given the smallest ``_<n>`` (n ≥ 2) no name takes."""
+    taken = {n.casefold() for n in names}
+    assigned: set[str] = set()
+    out: list[str] = []
+    for name in names:
+        candidate, n = name, 2
+        while candidate.casefold() in assigned or (candidate != name and candidate.casefold() in taken):
+            candidate, n = f"{name}_{n}", n + 1
+        assigned.add(candidate.casefold())
+        out.append(candidate)
+    return out
+
+
+class RenamedColumn(BaseModel):
+    """A physical column whose name differs from another's only in case, ingested under ``column``."""
+
+    model: str
+    column: str
+    physical: str
+
+
+def _renamed_columns(models: list[SlayerModel]) -> list[RenamedColumn]:
+    out: list[RenamedColumn] = []
+    for model in models:
+        for column in model.columns:
+            physical = (column.sql or "").strip('"')
+            if column.sql and is_base_column_sql(column.sql) and _logical_column_name(physical) != column.name:
+                out.append(RenamedColumn(model=model.name, column=column.name, physical=physical))
+                logger.warning(
+                    "model %r: physical column %r differs from another only in case; ingested as %r",
+                    model.name, physical, column.name,
+                )
+    return out
+
+
 def _columns_to_model(
     name: str,
     columns: list[IntrospectedColumn],
@@ -461,9 +497,7 @@ def _columns_to_model(
     _INT_FORMAT = NumberFormat(type=NumberFormatType.INTEGER)
     _FLOAT_FORMAT = NumberFormat(type=NumberFormatType.FLOAT)
 
-    for col in columns:
-        column_name = _logical_column_name(col.name)
-
+    for col, column_name in zip(columns, case_distinct_names([_logical_column_name(c.name) for c in columns])):
         if col.is_float:
             fmt = _FLOAT_FORMAT
         elif col.type in _NUMERIC_TYPES:
@@ -657,6 +691,8 @@ class IngestionScanReport(BaseModel):
     other_schemas: list[str] = Field(default_factory=list)
     # Requested schemas dropped from scope, with a reason.
     skipped_schemas: list[SkippedSchema] = Field(default_factory=list)
+    # Physical columns renamed because their names differ only in case.
+    renamed_columns: list[RenamedColumn] = Field(default_factory=list)
 
     @property
     def hidden_internals(self) -> list[InternalTable]:
@@ -983,6 +1019,7 @@ async def ingest_datasource_report_async(
         )
 
     return IngestionScanReport(
+        renamed_columns=_renamed_columns(models),
         models=_plan_scanned_edges(models),
         skipped=skipped,
         objects=all_objects,

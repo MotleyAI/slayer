@@ -6,7 +6,7 @@ import hashlib
 import re
 from decimal import Decimal
 from operator import attrgetter
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from slayer.core.enums import GRANULARITY_NAMES
 from slayer.core.granularity import CustomGranularity
@@ -28,6 +28,7 @@ from slayer.core.keys import (
     TimePointCmpKey,
     TimeTruncKey,
     TransformKey,
+    VALUE_KEY_TYPES,
     ValueKey,
 )
 
@@ -309,9 +310,9 @@ def _listed_display(key: ValueKey) -> str | None:
 def bucket_remedy(key: ValueKey) -> str | None:
     """``date_trunc('<part>', <operand>)`` for a ``date_part`` extraction whose part is a granularity, else ``None``."""
     if isinstance(key, ScalarCallKey) and key.name == "date_part" and len(key.args) == 2:
-        part = key.args[0]
-        if isinstance(part, LiteralKey) and part.value in GRANULARITY_NAMES:
-            return f"date_trunc('{part.value}', {key_display(key.args[1])})"
+        part, operand = key.args
+        if isinstance(part, LiteralKey) and part.value in GRANULARITY_NAMES and isinstance(operand, VALUE_KEY_TYPES):
+            return f"date_trunc('{part.value}', {key_display(cast(ValueKey, operand))})"
     return None
 
 

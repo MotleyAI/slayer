@@ -173,7 +173,8 @@ elaborate→compile and `query_engine.py` orchestrates.
    warning on the response; a slack rule retires by promotion to first-class
    grammar, never by accumulating rewrites. [review]
 8. **Models persist verbatim**: `save_model` stores the author's spelling
-   unchanged; normalization applies to queries at execute time only. The one
+   unchanged, a deprecated spelling excepted, which is stored as its canonical
+   twin; normalization applies to queries at execute time only. The one
    exception: a saved query stores each stage's inferred population as its
    `source_model`. [review]
 9. **The term-interface boundary**: `binding`, `bind_inputs`,

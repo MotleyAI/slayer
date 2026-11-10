@@ -871,7 +871,8 @@ class TestVirtualModelShorts:
         with pytest.raises(SlayerError) as exc:
             await engine._query_as_model(inner_query=query)
         assert not isinstance(exc.value, IdentifierCollisionError), exc.value
-        assert "email" in str(exc.value) and "Email" in str(exc.value)
+        assert "email" in str(exc.value)
+        assert "Email" in str(exc.value)
 
     async def test_two_dimensions_landing_on_one_short_raise(self, tmp_path) -> None:
         """Two dimensions whose shorts are exactly equal must be caught at the emission boundary."""

@@ -29,6 +29,7 @@ from slayer.core.syntax import (
     AggCall,
     DottedRef,
     Ref,
+    call_keywords,
     drop_root_qualifier,
     parse_template,
     root_relative,
@@ -67,7 +68,7 @@ def _parse(text: str, *, root: str | None) -> Any:
 def _partition_refs(agg: AggCall) -> list[Ref | DottedRef]:
     """``partition_by=`` references of an aggregation node (row-valued regroup keys)."""
     out: list[Ref | DottedRef] = []
-    for name, value in agg.kwargs:
+    for name, value in call_keywords(agg):
         if name != "partition_by":
             continue
         values = value if isinstance(value, (list, tuple)) else (value,)

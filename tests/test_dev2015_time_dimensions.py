@@ -65,11 +65,15 @@ class TestUnknownCalleeAtBinding:
         "date_trunc(id, order_date)",
     ])
     async def test_wrong_shape_datasource_unit(self, engine, entry) -> None:
-        with pytest.raises((GranularityCallError, ValidationError, QueryTypeError)) as exc:
+        async def _validate_and_execute() -> None:
             await engine.execute(_q(dimensions=[entry]), dry_run=True)
+
+        with pytest.raises((GranularityCallError, ValidationError, QueryTypeError)) as exc:
+            await _validate_and_execute()
         msg = str(exc.value)
         assert "date_trunc(" in msg, msg
-        assert "(col" not in msg and "gran(" not in msg, msg
+        assert "(col" not in msg, msg
+        assert "gran(" not in msg, msg
 
     async def test_non_temporal_argument_is_a_time_dimension_type_error(self, engine) -> None:
         query = _q(dimensions=["date_trunc('fiscal_year', upper(id))"])

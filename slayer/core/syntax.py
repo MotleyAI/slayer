@@ -78,6 +78,11 @@ class DottedRef(_BaseNode):
     parts: Tuple[str, ...]
     # Some segment was written double-quoted; not part of identity.
     quoted: bool = False
+    # Per segment, whether it was double-quoted (empty: none); not part of identity.
+    quoted_parts: Tuple[bool, ...] = ()
+
+    def quoted_at(self, i: int) -> bool:
+        return 0 <= i < len(self.quoted_parts) and self.quoted_parts[i]
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, DottedRef) and self.parts == other.parts
@@ -145,6 +150,17 @@ class AggCall(_BaseNode):
     filter: Any = None
     # A library-named call ill-formed as the library function: its error, raised unless the owner defines ``agg``.
     library_error: Optional[str] = None
+    # Written in the colon spelling ``source:agg``; not part of identity.
+    colon: bool = False
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, AggCall) and self._identity() == other._identity()
+
+    def __hash__(self) -> int:
+        return hash(("AggCall", self._identity()))
+
+    def _identity(self) -> tuple:
+        return (self.source, self.agg, self.args, self.kwargs, self.filter, self.library_error)
 
 
 class TransformCall(_BaseNode):
@@ -548,7 +564,12 @@ def _path_node(words: List[_Word]) -> Ref | DottedRef:
     quoted = any(w.quoted for w in words)
     if len(words) == 1:
         return Ref(name=words[0].name, quoted=quoted)
-    return DottedRef(parts=tuple(w.name for w in words), quoted=quoted)
+    return DottedRef(parts=tuple(w.name for w in words), quoted=quoted, quoted_parts=tuple(w.quoted for w in words))
+
+
+def _star_path_node(words: List[_Word]) -> DottedRef:
+    return DottedRef(parts=(*(w.name for w in words), "*"), quoted=any(w.quoted for w in words),
+                     quoted_parts=(*(w.quoted for w in words), False))
 
 
 _PATH_STAR = pp.Group(_PATH + DOT + pp.Suppress(STAR))
@@ -563,7 +584,7 @@ class _Distinct:
 
 _ARG_END = pp.FollowedBy(_sym(r"[,)]", "',' or ')'"))
 _STAR_ARG = _on((pp.Suppress(STAR) + _ARG_END), lambda _toks: StarSource())
-_PATH_STAR_ARG = _on((_PATH_STAR + _ARG_END), lambda toks: DottedRef(parts=(*(w.name for w in toks[0][0]), "*"), quoted=any(w.quoted for w in toks[0][0])))
+_PATH_STAR_ARG = _on((_PATH_STAR + _ARG_END), lambda toks: _star_path_node(toks[0][0]))
 _SEQ_ITEMS = pp.Group(pp.Optional(pp.DelimitedList(expr, allow_trailing_delim=True)))
 _LIST_VALUE = _on((LBRACK + _SEQ_ITEMS + RBRACK), lambda toks: tuple(toks[0]))
 _TUPLE_VALUE = _on((LPAR + pp.Group(expr + pp.OneOrMore(COMMA + expr) + pp.Optional(COMMA)) + RPAR), lambda toks: tuple(toks[0]))
@@ -596,7 +617,12 @@ def _split_args(items: List[Any], *, call: str) -> Tuple[Tuple[Any, ...], Tuple[
     """The arguments in written order (``name = value`` ones as ``NamedArg``), no keywords, and a leading DISTINCT."""
     positional: List[Any] = []
     distinct = False
+    named: set = set()
     for i, item in enumerate(items):
+        if isinstance(item, NamedArg):
+            if item.name in named:
+                raise _Problem(f"{call}() got keyword argument {item.name!r} more than once.")
+            named.add(item.name)
         if isinstance(item, _Distinct):
             if i != 0:
                 raise _Problem(f"{_DISTINCT_ONLY}.")
@@ -630,7 +656,8 @@ def _dispatch_pending(call: _PendingCall) -> Any:
     name = words[-1].name
     args, kwargs, distinct = _split_args(call.items, call=name)
     if distinct:
-        if name.lower() != "count" or len(words) > 1 or len(args) != 1 or isinstance(args[0], StarSource):
+        values = [a for a in args if not isinstance(a, NamedArg)]
+        if name.lower() != "count" or len(words) > 1 or len(values) != 1 or isinstance(args[0], (StarSource, NamedArg)):
             raise _Problem(f"{_DISTINCT_ONLY}.")
         name = "count_distinct"
     if len(words) > 1:
@@ -649,8 +676,7 @@ _CALL_ATOM = _on(pp.Located(_CALL), lambda toks: _PendingCall(
 ))
 
 _COLON_SOURCE = (_on(pp.Suppress(STAR), lambda _toks: StarSource())
-                 | _on(_PATH_STAR.copy(), lambda toks: DottedRef(parts=(*(w.name for w in toks[0][0]), "*"),
-                                            quoted=any(w.quoted for w in toks[0][0])))
+                 | _on(_PATH_STAR.copy(), lambda toks: _star_path_node(toks[0][0]))
                  | _on(_PATH.copy(), lambda toks: _path_node(list(toks[0]))))
 _COLON_AGG = _COLON_SOURCE + COLON + _BARE + pp.Optional(LPAR + _arg_list(_ANY_ARG, _ANY_ARG) + RPAR)
 
@@ -661,7 +687,7 @@ def _colon_node(toks: List[Any]) -> AggCall:
     if distinct:
         raise _Problem(f"{_DISTINCT_ONLY}.")
     _reject_bare_star_args(args, kwargs, func_name=agg, original=_STATE.text)
-    return AggCall(source=source, agg=agg, args=args, kwargs=kwargs)
+    return AggCall(source=source, agg=agg, args=args, kwargs=kwargs, colon=True)
 
 
 _on(_COLON_AGG, _colon_node)
@@ -1783,10 +1809,12 @@ def _onto_path(node: Any, *, path: Tuple[str, ...], memo: Optional[Dict[int, Any
 
 
 def _onto_path_node(node: Any, *, path: Tuple[str, ...], memo: Dict[int, Any]) -> Any:
+    unquoted = (False,) * len(path)
     if isinstance(node, Ref):
-        return DottedRef(parts=(*path, node.name), quoted=node.quoted)
+        return DottedRef(parts=(*path, node.name), quoted=node.quoted, quoted_parts=(*unquoted, node.quoted))
     if isinstance(node, DottedRef):
-        return DottedRef(parts=(*path, *node.parts), quoted=node.quoted)
+        own = tuple(node.quoted_at(i) for i in range(len(node.parts)))
+        return DottedRef(parts=(*path, *node.parts), quoted=node.quoted, quoted_parts=(*unquoted, *own))
     if isinstance(node, StarSource):
         return DottedRef(parts=(*path, "*"))
     if isinstance(node, ScalarCall):
@@ -1933,16 +1961,22 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
 
     spelling = _SPELLINGS.get(func_name.lower())
     if spelling is not None:
+        bucket = func_name.lower() == "date_trunc"
         try:
             if kwargs:
                 raise _Problem(f"{func_name}() takes positional arguments only.")
-            _reject_bare_star_args(args, kwargs, func_name=func_name, original=original)
+            if not bucket:
+                _reject_bare_star_args(args, kwargs, func_name=func_name, original=original)
+            elif any(isinstance(a, StarSource) for a in args):
+                raise _Problem(f"date_trunc() takes a unit string literal and one value: {DATE_TRUNC_FORM}.")
             built = spelling(args)
         except _Problem as problem:
             message = f"Invalid Mode-B expression {original!r}: {problem.detail}"
+            if bucket:
+                message += f" Units: {', '.join(g.value for g in TimeGranularity)} or a datasource granularity."
             deferred = _aggregation_candidate(func_name, args=args, kwargs=kwargs, error=message)
             if deferred is None:
-                raise ValueError(message) from None
+                raise (GranularityCallError if bucket else ValueError)(message) from None
             return deferred
         if isinstance(built, ScalarCall):
             return built.model_copy(update={"written": func_name, "written_args": args})
@@ -2071,6 +2105,12 @@ def comparison_hint(name: str) -> str:
     return f"to pass a comparison instead, write `({name} = …)`."
 
 
+def call_keywords(call: AggCall | TransformCall) -> List[Tuple[str, Any]]:
+    """``call``'s ``name = value`` arguments, lower-cased names, before binding classifies them."""
+    named = [(a.name.lower(), a.value) for a in call.args if isinstance(a, NamedArg)]
+    return [*named, *((k.lower(), v) for k, v in call.kwargs)]
+
+
 def classify_arguments(
     items: Sequence[Any], *, parameters: Iterable[str], call: str,
 ) -> Tuple[Tuple[Any, ...], Tuple[Tuple[str, Any], ...]]:
@@ -2194,9 +2234,9 @@ def walk_parsed(node: Any) -> Iterator[Any]:
 
 
 def drop_root_hop(hops: Sequence[str], root: Optional[str]) -> Tuple[str, ...]:
-    """A reference's join ``hops`` without a leading qualifier naming the query root ``root``."""
+    """A reference's join ``hops`` without a leading qualifier naming the query root ``root`` (in any case)."""
     hops = tuple(hops)
-    return hops[1:] if root is not None and hops[:1] == (root,) else hops
+    return hops[1:] if root is not None and hops and match_name(name=hops[0], declared=[root], quoted=False) else hops
 
 
 def drop_root_qualifier(parts: Sequence[str], root: Optional[str]) -> Tuple[str, ...]:
@@ -2218,12 +2258,16 @@ def _root_relative(node: Any, *, root: str, memo: Dict[int, Any]) -> Any:
     if id(node) not in memo:
         if isinstance(node, DottedRef):
             parts = drop_root_qualifier(node.parts, root)
+            dropped = len(node.parts) - len(parts)
+            quoted_parts = tuple(node.quoted_at(i) for i in range(dropped, len(node.parts)))
             if parts == ("*",):
                 memo[id(node)] = StarSource()
             elif len(parts) == 1:
-                memo[id(node)] = Ref(name=parts[0], quoted=node.quoted)
+                memo[id(node)] = Ref(name=parts[0], quoted=quoted_parts[0])
             else:
-                memo[id(node)] = node.model_copy(update={"parts": parts})
+                memo[id(node)] = node.model_copy(update={
+                    "parts": parts, "quoted_parts": quoted_parts, "quoted": any(quoted_parts),
+                })
         else:
             memo[id(node)] = node.model_copy(
                 update={f: _root_relative(getattr(node, f), root=root, memo=memo) for f in type(node).model_fields},
@@ -2299,7 +2343,10 @@ def _argument_text(node: Any) -> str:
 def _canonical_call_params(
     args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...], *, bare_direction: bool = False,
 ) -> str:
-    parts = [_argument_text(a) for a in args]
+    parts = [
+        _canonical_kwarg(a.name, a.value, bare_direction=bare_direction) if isinstance(a, NamedArg) else _argument_text(a)
+        for a in args
+    ]
     parts += [_canonical_kwarg(k, v, bare_direction=bare_direction) for k, v in kwargs]
     return f"({', '.join(parts)})" if parts else ""
 
@@ -2477,7 +2524,8 @@ __all__ = [
     "AggCall", "ArrayLit", "Arith", "BoolOp", "CallSource", "Cast", "Cmp", "DottedRef", "Literal", "ParsedExpr",
     "BoundVariable", "Placeholder", "Ref", "ScalarCall", "StarSource", "TemporalLiteral", "TransformCall", "TupleLit", "UnaryOp",
     "CallSpan", "DateTrunc", "NamedArg", "DATE_TRUNC_FORM", "call_spans", "legacy_spans",
-    "aggregation_reading", "bind_variables", "call_source", "canonical_measure_text", "classify_arguments",
+    "aggregation_reading", "bind_variables", "call_keywords", "call_source", "canonical_measure_text",
+    "classify_arguments",
     "comparison_hint",
     "drop_root_hop", "drop_root_qualifier", "has_bindings", "keyword_spelling", "measure_dependency_problems",
     "parse_bound_expr", "parse_expr", "parse_template", "placeholder_names", "positional_hint", "referenced_paths", "root_relative", "split_entity_agg_ref",

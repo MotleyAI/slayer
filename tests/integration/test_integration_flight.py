@@ -382,13 +382,17 @@ def test_auth_negative_wrong_token(
     Phase 2 handshake gap."""
     host, port, _token = flight_demo_server_with_token
     url = flight_jdbc_url(host=host, port=port, token="wrong")
-    with pytest.raises(Exception) as excinfo:
+
+    def _connect_and_query() -> None:
         # The driver may raise on connect or on the first introspection RPC.
         conn = jaydebeapi_connect(url)
         try:
             _exec_query_to_rows(conn.jconn, "SELECT 1")
         finally:
             conn.close()
+
+    with pytest.raises(Exception) as excinfo:
+        _connect_and_query()
     msg = str(excinfo.value).lower()
     assert (
         "unauthenticated" in msg

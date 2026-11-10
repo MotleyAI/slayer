@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import difflib
 import os
 from collections.abc import Iterator, Sequence
@@ -56,6 +57,7 @@ from slayer.core.join_walker import (
     walk_miss,
     walk_terminal,
 )
+from slayer.core.names import match_name
 from slayer.core.models import (
     VALUE_PLACEHOLDER,
     Aggregation,
@@ -508,11 +510,11 @@ def _bind_leaf(
         if isinstance(parsed, Ref):
             return _resolve_ref(
                 parsed.name, scope=scope, bundle=bundle, alias_map=alias_map,
-                measure_ctx=measure_ctx,
+                measure_ctx=measure_ctx, quoted=parsed.quoted,
             )
         return _resolve_dotted(
             parsed.parts, scope=scope, bundle=bundle, alias_map=alias_map,
-            measure_ctx=measure_ctx,
+            measure_ctx=measure_ctx, quoted=tuple(parsed.quoted_at(i) for i in range(len(parsed.parts))),
         )
     except UnknownReferenceError as e:
         raise _with_hint(e, hint=_QUOTE_HINT.format(name=e.name)) if parsed.quoted else e
@@ -731,17 +733,19 @@ def _resolve_ref(
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
+    quoted: bool = False,
 ) -> ValueKey:
-    """Resolve a bare identifier against the scope.
+    """Resolve a bare identifier against the scope (``slayer.core.names.match_name``).
 
     Resolution order: declared alias → column → saved measure. A saved-measure
     name (no matching column) resolves inline only when ``measure_ctx`` is set
     (eligible position), else errors."""
-    if alias_map and name in alias_map:
-        return alias_map[name]
+    alias = match_name(name=name, declared=alias_map, quoted=quoted) if alias_map else None
+    if alias_map and alias is not None:
+        return alias_map[alias]
 
     if isinstance(scope, StageSchema):
-        col = scope.resolve_flat_name(name)
+        col = scope.resolve_flat_name(name, quoted=quoted)
         if col is None:
             raise UnknownReferenceError(
                 name=name,
@@ -764,15 +768,15 @@ def _resolve_ref(
         )
     model = scope.source_model
 
-    # A ``__``-bearing name is not special: it resolves by ordinary exact-match.
-    col = resolve_generated_column(model=model, name=name)
+    # A ``__``-bearing name is not special: it resolves like any other name.
+    col = resolve_generated_column(model=model, name=name, quoted=quoted)
     if col is not None:
         if col.needs_expansion:
             return ColumnSqlKey(path=(), model=model.name, column_name=col.name)
         return ColumnKey(path=(), leaf=col.name)
 
     # No column: a saved measure resolves inline in an eligible position.
-    mm = model.get_measure(name)
+    mm = model.get_measure(name, quoted=quoted)
     if mm is not None:
         return _resolve_saved_measure(
             measure=mm, terminal_model=model, scope=scope, bundle=bundle,
@@ -797,6 +801,7 @@ def _walk_join_chain(
     parts: Tuple[str, ...],
     leaf: str,
     original_parts: Optional[Tuple[str, ...]] = None,
+    quoted: Tuple[bool, ...] = (),
 ):
     """Walk ``hop_path`` join hops from ``host`` through the shared bidirectional
     walker; returns ``(terminal_model, canonical effective_hop_path)``. Each token
@@ -815,7 +820,7 @@ def _walk_join_chain(
     models_by_name.setdefault(host.name, host)
     spelled = parts if original_parts is None else original_parts
     try:
-        walked = walk_terminal(root=host, path=hop_path, models_by_name=models_by_name)
+        walked = walk_terminal(root=host, path=hop_path, models_by_name=models_by_name, quoted=quoted)
     except CircularJoinPathError as e:
         raise CircularJoinPathError(
             reference=".".join(spelled), root_model=host.name,
@@ -823,7 +828,7 @@ def _walk_join_chain(
         ) from None
     if walked is not None:
         return walked
-    miss = walk_miss(root=host, path=hop_path, models_by_name=models_by_name)
+    miss = walk_miss(root=host, path=hop_path, models_by_name=models_by_name, quoted=quoted)
     assert miss is not None
     if miss.kind == "unloaded":
         assert miss.target is not None
@@ -831,7 +836,7 @@ def _walk_join_chain(
     _reject_opaque_elements(host=host, hop_path=hop_path, index=miss.index, parts=parts, models_by_name=models_by_name)
     return _route_edgeless_hop(
         host=host, hop=miss.token, hop_path=hop_path, leaf=leaf, parts=parts,
-        models_by_name=models_by_name,
+        models_by_name=models_by_name, quoted=bool(quoted) and quoted[0],
     )
 
 
@@ -858,6 +863,7 @@ def _route_edgeless_hop(
     leaf: str,
     parts: Tuple[str, ...],
     models_by_name: Dict[str, SlayerModel],
+    quoted: bool = False,
 ) -> Tuple[SlayerModel, Tuple[str, ...]]:
     """A hop with no incident edge: a bare ``Target`` short form auto-routes to
     its datasource-scoped path; a longer chain is broken."""
@@ -866,6 +872,10 @@ def _route_edgeless_hop(
             host=host, hop_path=hop_path, leaf=leaf, parts=parts,
             models_by_name=models_by_name,
         )
+    found = match_name(name=hop, declared=models_by_name, quoted=quoted)
+    if found is None and quoted:
+        raise _target_not_in_bundle(parts=parts, target=hop)
+    hop = found or hop
     route = dimension_routing.route_dotted_target(
         root=host, target_model=hop, leaf=leaf, models_by_name=models_by_name,
     )
@@ -914,22 +924,25 @@ def _resolve_dotted(
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
+    quoted: Tuple[bool, ...] = (),
 ) -> ValueKey:
-    """Resolve a dotted ref against the scope.
+    """Resolve a dotted ref against the scope; ``quoted`` flags each double-quoted segment, matched exactly.
 
     Resolution order: root qualifier dropped → declared alias (dotted text) → join walk
     → leaf column → saved measure (re-anchored into host coords, eligible position)."""
     original_parts = parts
     parts = drop_root_qualifier(parts, root_spelling(scope))
+    quoted = tuple(quoted[len(original_parts) - len(parts):]) + (False,) * max(0, len(parts) - len(quoted))
     if alias_map:
         for dotted_text in dict.fromkeys((".".join(parts), ".".join(original_parts))):
-            if dotted_text in alias_map:
-                return alias_map[dotted_text]
+            alias = match_name(name=dotted_text, declared=alias_map, quoted=any(quoted))
+            if alias is not None:
+                return alias_map[alias]
 
     if len(parts) == 1:
         return _resolve_ref(
             parts[0], scope=scope, bundle=bundle, alias_map=alias_map,
-            measure_ctx=measure_ctx,
+            measure_ctx=measure_ctx, quoted=quoted[0],
         )
 
     if isinstance(scope, StageSchema):
@@ -951,13 +964,13 @@ def _resolve_dotted(
     leaf = parts[-1]
     current, effective_hop_path = _walk_join_chain(
         hop_path=hop_path, host=host, bundle=bundle, parts=parts, leaf=leaf,
-        original_parts=original_parts,
+        original_parts=original_parts, quoted=quoted[:-1],
     )
 
     return _resolve_terminal_leaf(
         current=current, leaf=leaf, hop_path=effective_hop_path,
         original_parts=original_parts, scope=scope, bundle=bundle,
-        measure_ctx=measure_ctx,
+        measure_ctx=measure_ctx, quoted=quoted[-1],
     )
 
 
@@ -987,10 +1000,11 @@ def _resolve_terminal_leaf(
     scope: ModelScope,
     bundle: ResolvedSourceBundle,
     measure_ctx: Optional[MeasureResolutionCtx],
+    quoted: bool = False,
 ) -> ValueKey:
     """Resolve ``leaf`` on terminal model ``current``: column (plain or derived)
     → saved measure (re-anchored into host coords) → unresolved error."""
-    col = resolve_generated_column(model=current, name=leaf)
+    col = resolve_generated_column(model=current, name=leaf, quoted=quoted)
     if col is not None:
         if col.needs_expansion:
             # Derived / filtered column on a joined model — path is part of the
@@ -999,7 +1013,7 @@ def _resolve_terminal_leaf(
                 path=tuple(hop_path), model=current.name, column_name=col.name,
             )
         return ColumnKey(path=tuple(hop_path), leaf=col.name)
-    mm = current.get_measure(leaf)
+    mm = current.get_measure(leaf, quoted=quoted)
     if mm is not None:
         return _resolve_saved_measure(
             measure=mm, terminal_model=current, scope=scope, bundle=bundle,
@@ -1294,7 +1308,7 @@ def _bind_agg_call(
     measure_ctx: Optional[MeasureResolutionCtx] = None,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> AggregateKey | TransformKey | TimeTruncKey:
-    """Bind an ``AggCall`` (a granularity callee is a row-level bucket); ``first`` / ``last`` dispatch by the bound operand's
+    """Bind an ``AggCall`` (a granularity called like a function is refused); ``first`` / ``last`` dispatch by the bound operand's
     type — attached → the series transform, row grain → the ranked aggregation."""
     if parsed.agg.lower() in RESERVED_NAMES:
         raise ReservedFunctionNameError(name=parsed.agg, where=f"{canonical_measure_text(parsed)}")
@@ -1306,9 +1320,11 @@ def _bind_agg_call(
     if parsed.library_error is not None and _owner_definition(
         parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
     ) is None:
-        raise ValueError(parsed.library_error)
+        raise (GranularityCallError if parsed.agg.lower() == "date_trunc" else ValueError)(parsed.library_error)
     parsed = _classified(parsed, bundle=bundle)
     granularity = _callee_granularity(parsed.agg, bundle=bundle)
+    if granularity is not None and parsed.colon:
+        return _bind_colon_bucket(parsed, scope=scope, bundle=bundle, granularity=granularity)
     if granularity is not None and _owner_definition(
         parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
     ) is None:
@@ -1378,6 +1394,18 @@ def _carrying_filter(key: AggregateKey, *, condition: ValueKey) -> AggregateKey:
     return key.model_copy(update={"filter": condition})
 
 
+def _bind_colon_bucket(
+    parsed: AggCall, *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle, granularity: Granularity,
+) -> TimeTruncKey:
+    """The colon spelling ``col:gran``: the row-level bucket of ``col``."""
+    if parsed.args or parsed.kwargs or isinstance(parsed.source, StarSource):
+        raise GranularityCallError.wrong_shape(f"{canonical_measure_text(parsed.source)}:{parsed.agg}")
+    return _bind_date_trunc(
+        DateTrunc(unit=str(granularity), value=parsed.source),
+        source=_bind(parsed.source, scope=scope, bundle=bundle, in_filter=False), bundle=bundle,
+    )
+
+
 def _bind_date_trunc(parsed: DateTrunc, *, source: ValueKey, bundle: ResolvedSourceBundle) -> TimeTruncKey:
     """``date_trunc('<unit>', expr)`` as the row-level bucket of ``expr``."""
     granularity = resolve_granularity(parsed.unit, defined=bundle.granularities)
@@ -1399,12 +1427,20 @@ def _aggregation_parameters(agg: str, *, bundle: ResolvedSourceBundle) -> List[s
         definition = aggregation_definition(owner=model, agg=agg)
         if definition is None:
             continue
-        names += [p.name for p in definition.params]
-        try:
-            names += sorted(aggregation_reads(agg=definition.name, definition=definition, dialect=bundle.dialect))
-        except SqlTemplateError:
-            continue
-    return [n for n in dict.fromkeys(names) if n != VALUE_PLACEHOLDER]
+        names += _declared_agg_param_names(agg=definition.name, source=None, bundle=bundle, definition=definition)
+        names += _formula_placeholders(definition, dialect=bundle.dialect)
+    return list(dict.fromkeys(names))
+
+
+def _formula_placeholders(definition: Aggregation, *, dialect: str) -> List[str]:
+    """The placeholders ``definition``'s formula reads on ``dialect`` or as generic SQL (a dialect may hide one)."""
+    try:
+        names = sorted(aggregation_reads(agg=definition.name, definition=definition, dialect=dialect))
+    except SqlTemplateError as e:
+        raise SqlTemplateError(f"Aggregation '{definition.name}': {e}") from e
+    with contextlib.suppress(SqlTemplateError):
+        names += sorted(aggregation_reads(agg=definition.name, definition=definition, dialect=""))
+    return names
 
 
 def _classified(parsed: AggCall, *, bundle: ResolvedSourceBundle) -> AggCall:
@@ -1491,6 +1527,7 @@ def _bind_agg(
         names=[*folded, *(k for k, _ in parsed.kwargs if k != "partition_by")],
         keywords=frozenset(k for k, _ in parsed.kwargs),
     )
+    _check_slotless_comparisons(parsed, agg=effective_agg, source=source, bundle=bundle)
     args = tuple(
         _bind_agg_arg(a, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
         for a in parsed.args
@@ -1580,12 +1617,14 @@ def _resolve_agg_owner(
 
 
 def _declared_agg_param_names(
-    *, agg: str, source, bundle: ResolvedSourceBundle,
+    *, agg: str, source, bundle: ResolvedSourceBundle, definition: Optional[Aggregation] = None,
 ) -> List[str]:
-    """Declared parameter order for ``agg`` — the owning model's custom
-    definition wins over the built-in registry; ``[]`` when none declared."""
-    owner, _leaf = _resolve_agg_owner(source, bundle)
-    custom = aggregation_definition(owner=owner, agg=agg)
+    """Declared parameter order for ``agg`` — ``definition``, else the owning model's custom
+    definition, wins over the built-in registry; ``[]`` when none declared."""
+    custom = definition
+    if custom is None:
+        owner, _leaf = _resolve_agg_owner(source, bundle)
+        custom = aggregation_definition(owner=owner, agg=agg)
     if custom is not None:
         return [p.name for p in custom.params]
     return list(BUILTIN_AGGREGATION_PARAM_ORDER.get(agg, ()))
@@ -1620,6 +1659,23 @@ def _check_agg_kwarg_names(
             f"Aggregation '{agg}' does not accept argument '{name}'; "
             f"accepted: {', '.join(sorted(accepted))}.{hint}"
         )
+
+
+def _check_slotless_comparisons(parsed: AggCall, *, agg: str, source, bundle: ResolvedSourceBundle) -> None:
+    """A ``name = value`` comparison past ``agg``'s positional slots fails as the argument it was likely meant as."""
+    owner, _leaf = _resolve_agg_owner(source, bundle)
+    ranked = agg in RANKED_AGGREGATIONS and builtin_semantics(aggregation_definition(owner=owner, agg=agg))
+    slots = len(_declared_agg_param_names(agg=agg, source=source, bundle=bundle)) or int(ranked)
+    name = next((n for n in map(keyword_spelling, parsed.args[slots:]) if n is not None), None)
+    if name is None:
+        return
+    accepted = sorted({*_aggregation_parameters(agg, bundle=bundle)} - {VALUE_PLACEHOLDER, "partition_by"})
+    takes = "takes no args or kwargs other than window" if accepted == ["window"] else (
+        f"takes no further value; its keywords: {', '.join(accepted)}"
+    )
+    raise AggregationArgumentError(
+        f"Aggregation '{agg}' {takes}. `{name} = …` names none of its parameters, so it reads as a comparison."
+    )
 
 
 def _check_ranking_positional(*, agg: str, source, bundle: ResolvedSourceBundle, args: tuple) -> None:
@@ -1860,7 +1916,7 @@ _TRANSFORM_POSITIONAL_KWARGS: dict = {
 
 
 def _transform_positional_pairs(
-    *, op: str, args: Tuple[ParsedExpr, ...], kwargs: Tuple[Tuple[str, ParsedExpr], ...],
+    *, op: str, args: Tuple[ParsedExpr, ...], kwargs: Tuple[Tuple[str, ParsedExpr], ...], hint: str = "",
 ) -> List:
     """Map a transform's extra positional params onto kwarg names; most transforms
     are keyword-only after the value."""
@@ -1871,13 +1927,13 @@ def _transform_positional_pairs(
         accepted = sorted(_transform_parameters(op))
         rest = f"pass {', '.join(accepted)} by keyword" if accepted else "it takes no other arguments"
         raise ValueError(
-            f"Transform {op!r} accepts exactly one positional argument (the value to transform); {rest}."
+            f"Transform {op!r} accepts exactly one positional argument (the value to transform); {rest}.{hint}"
         )
     if len(args) > len(pos_names):
         raise ValueError(
             f"Transform {op!r} accepts at most {len(pos_names)} "
             f"positional argument(s) after the value "
-            f"({', '.join(pos_names)}); got {len(args)}."
+            f"({', '.join(pos_names)}); got {len(args)}.{hint}"
         )
     explicit_kw_names = {k for k, _ in kwargs}
     for k in pos_names[:len(args)]:
@@ -1897,9 +1953,10 @@ def _bind_transform(
     measure_ctx: Optional[MeasureResolutionCtx] = None,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> TransformKey:
-    positional, keywords = classify_arguments(
-        (parsed.input, *parsed.args), parameters=_transform_parameters(parsed.op), call=parsed.op,
-    )
+    parameters = _transform_parameters(parsed.op)
+    stray = next((a.name for a in parsed.args if isinstance(a, NamedArg)
+                  and match_name(name=a.name, declared=parameters, quoted=False) is None), None)
+    positional, keywords = classify_arguments((parsed.input, *parsed.args), parameters=parameters, call=parsed.op)
     if not positional:
         raise TransformArgumentError(summary=f"Transform {parsed.op!r} requires the value to transform first.")
     inp = _bind_transform_input(
@@ -1908,14 +1965,22 @@ def _bind_transform(
     )
     return _bind_transform_params(
         op=parsed.op, inp=inp, args=positional[1:], kwargs=(*parsed.kwargs, *keywords),
-        scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+        scope=scope, bundle=bundle, dim_alias_map=dim_alias_map, stray=stray,
     )
+
+
+def _stray_hint(op: str, stray: Optional[str]) -> str:
+    """Why a comparison reached ``op``'s arguments: ``stray = …`` names none of its parameters."""
+    if stray is None:
+        return ""
+    accepted = ", ".join(sorted(_transform_parameters(op))) or "none"
+    return f" `{stray} = …` is no parameter of {op}, so it reads as a comparison; its keywords: {accepted}."
 
 
 def _transform_parameters(op: str) -> frozenset[str]:
     """The keyword names transform ``op`` takes."""
     names = _TRANSFORM_KWARG_RULES.get(op, frozenset()) | frozenset(_TRANSFORM_POSITIONAL_KWARGS.get(op, ()))
-    return with_direction_kwarg(op=op, accepted=names | {"partition_by"} if op in RANK_FAMILY_TRANSFORMS else names)
+    return names | {"partition_by", "direction"} if op in RANK_FAMILY_TRANSFORMS else names
 
 
 def _bind_transform_input(
@@ -1940,8 +2005,9 @@ def _bind_transform_params(
     scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]],
+    stray: Optional[str] = None,
 ) -> TransformKey:
-    positional_pairs = _transform_positional_pairs(op=op, args=args, kwargs=kwargs)
+    positional_pairs = _transform_positional_pairs(op=op, args=args, kwargs=kwargs, hint=_stray_hint(op, stray))
     bound_kwargs: List = []
     partition_keys: Grain = Grain.EMPTY
     allowed_kwargs = _TRANSFORM_KWARG_RULES.get(op, frozenset())
@@ -1974,7 +2040,7 @@ def _bind_transform_params(
             raise TransformArgumentError(
                 summary=f"Transform {op!r} keyword {k!r} must be a "
                 f"scalar literal; got expression of kind "
-                f"{type(v).__name__}."
+                f"{type(v).__name__}.{_stray_hint(op, stray)}"
             )
         bound_kwargs.append((k, scalar))
     direction = rank_direction(op=op, given="direction" in seen_kwargs, value=direction_value)

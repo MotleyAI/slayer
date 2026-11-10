@@ -49,6 +49,7 @@ from slayer.core.query import (
     SlayerQuery,
     TimeDimension,
     call_callee,
+    colon_bucket,
     computed_dimension_name,
     functional_call_column,
     granularity_call_parts,
@@ -121,6 +122,7 @@ from slayer.core.syntax import (
     ParsedExpr,
     Ref,
     TransformCall,
+    call_keywords,
     canonical_measure_text,
     drop_root_qualifier,
     parse_bound_expr,
@@ -165,7 +167,7 @@ def _attach_time_keys(key: ValueKey, *, td_key: TimeTruncKey) -> ValueKey:
 
 
 def _iter_expr_children(node):
-    for attr in ("input", "left", "right", "this", "operand"):
+    for attr in ("input", "left", "right", "this", "operand", "value"):
         child = getattr(node, attr, None)
         if child is not None and not isinstance(child, (str, bool)):
             yield child
@@ -180,8 +182,6 @@ def _expr_has_measure_ref(
 ) -> bool:
     if node is None:
         return False
-    if isinstance(node, AggCall) and resolve_granularity(node.agg, defined=bundle.granularities) is not None:
-        return _expr_has_measure_ref(node.source, measure_names=measure_names, scope=scope, bundle=bundle)
     if isinstance(node, (AggCall, TransformCall)):
         return True
     if isinstance(node, Ref) and node.name in measure_names:
@@ -331,7 +331,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         )
     check_spine_clash(clash=bundle.spine_clash and is_spine_query(query))
     _check_column_granularities(bundle=bundle)
-    _check_dimension_calls(query, bundle=bundle)
+    query = _resolve_dimension_calls(query, bundle=bundle)
     query = _dedupe_equivalent_time_dimensions(query, scope=scope, bundle=bundle)
 
     # Runs BEFORE binding so the targeted error wins over the binder's generic one.
@@ -428,7 +428,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         with stale_spelling_position(None if o.implied else f"order[{i}]"):
             col_name = o.column.name
             full_name = o.column.full_name
-            # A functional ``gran(col)`` order key sorts by the projected time
+            # A ``date_trunc('<unit>', expr)`` order key sorts by the projected time
             # dimension's bucket — resolved to its column binding.
             gran_parts = granularity_call_parts(o.raw_formula) if o.raw_formula else None
             _order_gran = (
@@ -1328,11 +1328,24 @@ def _check_column_granularities(*, bundle: ResolvedSourceBundle) -> None:
                 )
 
 
-def _check_dimension_calls(query: SlayerQuery, *, bundle: ResolvedSourceBundle) -> None:
-    """An unnamed single-column dimension call naming no aggregation or granularity fails."""
+def _resolve_dimension_calls(query: SlayerQuery, *, bundle: ResolvedSourceBundle) -> SlayerQuery:
+    """An unnamed colon ``col:gran`` dimension of a datasource granularity becomes a time dimension; an unnamed
+    single-column call naming no aggregation or granularity fails."""
+    kept: list = []
+    moved: List[TimeDimension] = []
     for item in query.dimensions or []:
         if isinstance(item, ComputedDimension) and item.name == computed_dimension_name(item.template):
+            colon = colon_bucket(call_callee(item.expression)[0])
+            if colon is not None and resolve_granularity(colon[1], defined=bundle.granularities) is not None:
+                moved.append(TimeDimension.model_validate({"dimension": colon[0], "granularity": colon[1]}))
+                continue
             _check_dimension_call(item.expression, bundle=bundle)
+        kept.append(item)
+    if not moved:
+        return query
+    return query.model_copy(update={
+        "dimensions": kept or None, "time_dimensions": [*(query.time_dimensions or []), *moved],
+    })
 
 
 def _dedupe_equivalent_time_dimensions(
@@ -1599,7 +1612,8 @@ def _passes_grain_kwargs(text: str) -> bool:
     """Whether ``text`` passes ``partition_by=`` or ``window=`` to a call."""
     return any(
         name in ("partition_by", "window")
-        for node in walk_parsed(parse_expr(text)) for name, _ in getattr(node, "kwargs", ())
+        for node in walk_parsed(parse_expr(text)) if isinstance(node, (AggCall, TransformCall))
+        for name, _ in call_keywords(node)
     )
 
 

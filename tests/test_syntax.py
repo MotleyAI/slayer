@@ -108,7 +108,8 @@ def _assert_arguments(call: AggCall | TransformCall, *needles: str, count: int) 
     written = repr((call.args, call.kwargs))
     assert len(call.args) + len(call.kwargs) == count, written
     at = [written.find(needle) for needle in needles]
-    assert -1 not in at and at == sorted(at), written
+    assert -1 not in at, written
+    assert at == sorted(at), written
 
 
 # ---------------------------------------------------------------------------
@@ -1084,7 +1085,8 @@ class TestFilterOperatorNormalization:
         assert result.left.agg == "first"
         assert len(result.left.args) + len(result.left.kwargs) == 1
         written = repr((result.left.args, result.left.kwargs))
-        assert "'order'" in written and "'created_at'" in written
+        assert "'order'" in written
+        assert "'created_at'" in written
         assert result.right == Literal(value=Decimal(0))
 
     def test_transform_bare_ref_equality_predicate_preserved(self):

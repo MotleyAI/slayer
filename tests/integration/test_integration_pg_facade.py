@@ -378,7 +378,8 @@ async def test_select_star_browse_mode_expands(pg_demo_server) -> None:
         assert len(rows) >= 1
         # At least the standard demo columns are projected.
         keys = set(rows[0].keys())
-        assert "id" in keys and "ordered_at" in keys
+        assert "id" in keys
+        assert "ordered_at" in keys
     finally:
         await conn.close()
 

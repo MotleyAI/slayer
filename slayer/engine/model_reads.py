@@ -169,7 +169,7 @@ class _Reads:
                 self.measure(host=model, name=measure.name)
 
     def column(self, *, host: SlayerModel, name: str) -> None:
-        col = host.get_column(name)
+        col = host.get_column(name, quoted=True)
         if col is None or not self._first_visit(host, f"column:{name}"):
             return
         if col.sql is not None and not is_trivial_base(column=col):

@@ -20,6 +20,7 @@ from slayer.core.granularity import resolve_granularity, unknown_granularity_mes
 from slayer.core.time_spine import TIME_SPINE_MODEL, spine_model
 from slayer.core.errors import (
     AmbiguousModelError,
+    CaseCollisionError,
     IdCollisionError,
     MemoryNotFoundError,
     DefaultTimeDimensionTypeError,
@@ -30,17 +31,25 @@ from slayer.core.errors import (
 )
 from slayer.engine.column_dependency import check_model_filters, validate_derived_columns, warn_broken_dependents
 from slayer.core.join_walker import edges_between
+from slayer.core.names import folded_collisions
 from slayer.core.legacy_spellings import LegacySpan, emit_deprecations
 from slayer.core.models import (
     DatasourceConfig,
     SlayerModel,
     _validate_column_name,
+    case_collisions,
+    name_collision_warnings,
     is_base_column_sql,
     physical_column_sql,
     shadows_library_function,
 )
 from slayer.core.query import SlayerQuery
-from slayer.core.warnings import LibraryNameShadowWarning, SlayerLibraryNameShadowWarning, caller_announces
+from slayer.core.warnings import (
+    LibraryNameShadowWarning,
+    SlayerLibraryNameShadowWarning,
+    SlayerNameCollisionWarning,
+    caller_announces,
+)
 from slayer.embeddings.models import Embedding
 from slayer.sql import connection_policy
 from slayer.memories.models import (
@@ -532,6 +541,7 @@ class StorageBackend(ABC):
             raise ReservedModelNameError(name=model.name)
         if self._ids_collide_as_filenames:
             await self._check_model_identity_collision(model)
+        await self._check_case_collisions(model)
         # A skipped (unloadable) peer is invisible to these checks; its edge names go unchecked.
         failures = failures or DocumentLoadFailures()
         loaded, unloaded = await self.load_models(data_source=model.data_source, exclude=model.name)
@@ -546,6 +556,24 @@ class StorageBackend(ABC):
             warn_broken_dependents(
                 model=model, stored=await self.get_model(model.name, data_source=model.data_source), peers=peers,
             )
+
+    async def _check_case_collisions(self, model: SlayerModel) -> None:
+        """Refuse a name that newly collides by case with another in its namespace (the datasource's model names
+        included); a collision the stored document already holds is grandfathered, with a warning."""
+        identities = await self._list_all_model_identities()
+        peers = [n for d, n in identities if d == model.data_source]
+        new = [g for g in folded_collisions([*peers, model.name]) if model.name in g] if model.name not in peers else []
+        if new:
+            raise CaseCollisionError(names=new[0], namespace=f"datasource {model.data_source!r}'s models")
+        stored = None
+        with contextlib.suppress(Exception):
+            stored = await self.get_model(model.name, data_source=model.data_source)
+        held = {(w, tuple(g)) for w, g in case_collisions(stored)} if stored is not None else set()
+        for where, group in case_collisions(model):
+            if (where, tuple(group)) not in held:
+                raise CaseCollisionError(names=group, namespace=f"model {model.name!r}'s {where}")
+        for payload in name_collision_warnings(model):
+            warnings.warn(SlayerNameCollisionWarning(payload), stacklevel=4)
 
     async def _validate_column_granularities(self, model: SlayerModel) -> None:
         named = [(c, c.granularity) for c in model.columns if c.granularity is not None and not isinstance(c.granularity, TimeGranularity)]
@@ -566,11 +594,11 @@ class StorageBackend(ABC):
         ds = await self.get_datasource(model.data_source) if model.data_source else None
         dialect = dialect_for_ds_type(ds.type).sqlglot_name if ds else ""
         for agg in model.aggregations:
-            if agg.name.lower() in RESERVED_NAMES:
-                raise ReservedFunctionNameError(name=agg.name, where=f"Model '{model.name}', aggregation")
             check_aggregation_definition(
                 where=f"Model '{model.name}', aggregation '{agg.name}'", agg=agg, dialect=dialect,
             )
+            if agg.name.lower() in RESERVED_NAMES:
+                raise ReservedFunctionNameError(name=agg.name, where=f"Model '{model.name}', aggregation")
 
     @staticmethod
     def _validate_join_edges(
@@ -968,6 +996,8 @@ class StorageBackend(ABC):
         model = SlayerModel.model_validate(data)
         if not caller_announces():
             warn_library_shadows(model)
+            for payload in name_collision_warnings(model):
+                warnings.warn(SlayerNameCollisionWarning(payload), stacklevel=2)
         if write_back:
             # Write-back must not re-validate: legacy models may hold cycles or
             # fanning refs a user needs to load to repair.

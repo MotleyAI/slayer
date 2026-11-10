@@ -101,6 +101,7 @@ from slayer.core.keys import (
     list_set_key,
 )
 from slayer.core.models import SlayerModel
+from slayer.core.names import folded_collisions
 from slayer.core.refs import bucket_remedy, dotted_key_display, key_display
 from slayer.core.scope import ModelScope, StageSchema
 from slayer.core.time_points import (
@@ -605,6 +606,16 @@ def check_canonical_alias_shadows_column(
 def check_duplicate_measure_name(*, name: str, occurrences: List[str]) -> NoReturn:
     """Two different expressions may not claim one public name (both registry firing points)."""
     raise DuplicateMeasureNameError(name=name, occurrences=occurrences)
+
+
+def check_result_names_case(*, names: Iterable[str]) -> None:
+    """A fresh query's result names may not differ only in case (names match in any case)."""
+    for group in folded_collisions(names):
+        raise NameCollisionError(
+            summary=f"Result names {' and '.join(repr(n) for n in group)} differ only in case; names match in any "
+            f"case, so they collide.",
+            suggestion="Rename one of them.",
+        )
 
 
 def check_reserved_regroup_prefix(columns: List[str]) -> None:
@@ -1175,9 +1186,9 @@ def _check_date_call(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> None:
 
 
 def check_date_operands(*, roots: Sequence[ValueKey], column_type: ColumnTypeFn) -> None:
-    """Every date-function and ``gran(col)`` operand must be DATE/TIMESTAMP and every ``date_add`` count numeric."""
+    """Every date-function and ``date_trunc`` operand must be DATE/TIMESTAMP and every ``date_add`` count numeric."""
     keys = [key for root in roots for key in walk_value_keys(root)]
-    for key in keys:  # innermost first: a ``gran(col)`` inside a date function names its column
+    for key in keys:  # innermost first: a ``date_trunc`` inside a date function names its column
         if isinstance(key, TimeTruncKey):
             _require_temporal(str(key.granularity), key.source, column_type=column_type)
     for key in keys:
@@ -1225,7 +1236,7 @@ def resolve_time_points(
 def _time_operand(
     operand: ValueKey, *, column_type: ColumnTypeFn,
 ) -> Tuple[ValueKey, Optional[DataType], Optional[Granularity]]:
-    """``(bounded operand, its temporal type, bucket granularity)``: a direct ``gran(col)``
+    """``(bounded operand, its temporal type, bucket granularity)``: a direct ``date_trunc``
     bounds ``col``; ISO literals in a conditional count as dates when that makes it temporal."""
     if isinstance(operand, TimeTruncKey):
         t = temporal_type(operand.source, column_type=column_type)

@@ -101,7 +101,9 @@ class TestUnknownUnit:
             parse_expr(f"date_trunc('{unit}', ts)")
 
     async def test_expression_unknown_unit_is_an_unknown_granularity(self, engine: SlayerQueryEngine) -> None:
+        trunc_query = lib_query("date_trunc('fortnight', ts)")
         with pytest.raises(UnknownGranularityError):
-            await engine.execute(lib_query("date_trunc('fortnight', ts)"))
+            await engine.execute(trunc_query)
+        call_query = lib_query("fortnight(ts)")
         with pytest.raises(UnknownFunctionError):
-            await engine.execute(lib_query("fortnight(ts)"))
+            await engine.execute(call_query)

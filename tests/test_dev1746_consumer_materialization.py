@@ -54,7 +54,8 @@ def _assert_cte_shape(body: str, *, fragments: Tuple[str, ...], partition: str) 
     *flags, ordered = window.args["order"].expressions
     assert ordered.this.sql(dialect="postgres") == "customers_v2.signup_at", body
     assert not ordered.args.get("desc"), body
-    assert flags and any(
+    assert flags, f"the ranking does not order NULL keys last via a leading flag:\n{body}"
+    assert any(
         isinstance(node.expression, exp.Null)
         and node.this.sql(dialect="postgres") == "customers_v2.signup_at"
         for node in flags[0].find_all(exp.Is)

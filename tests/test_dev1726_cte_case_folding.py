@@ -410,12 +410,16 @@ class TestE2eCaseFoldingAllDialects:
 
     @pytest.mark.parametrize("dialect", FOLDING_DIALECTS + EXACT_DIALECTS)
     async def test_case_only_result_names_are_refused(self, dialect: str) -> None:
+        query = _case_only_result_names_query()
+        model = _vehicle_model()
+        extra_models = [_customers_model()]
         with pytest.raises(SlayerError) as err:
             await _engine_generate(
-                query=_case_only_result_names_query(), model=_vehicle_model(),
-                extra_models=[_customers_model()], dialect=dialect, validate=False,
+                query=query, model=model,
+                extra_models=extra_models, dialect=dialect, validate=False,
             )
-        assert "Foo" in str(err.value) and "foo" in str(err.value)
+        assert "Foo" in str(err.value)
+        assert "foo" in str(err.value)
 
     async def test_case_only_cp_result_names_are_refused(self) -> None:
         """The ``consecutive_periods`` family: same refusal, before its CTEs are minted."""
@@ -436,12 +440,15 @@ class TestE2eCaseFoldingAllDialects:
                 ),
             ],
         )
+        model = _vehicle_model()
+        extra_models = [_customers_model()]
         with pytest.raises(SlayerError) as err:
             await _engine_generate(
-                query=query, model=_vehicle_model(),
-                extra_models=[_customers_model()], dialect="postgres", validate=False,
+                query=query, model=model,
+                extra_models=extra_models, dialect="postgres", validate=False,
             )
-        assert "Foo" in str(err.value) and "foo" in str(err.value)
+        assert "Foo" in str(err.value)
+        assert "foo" in str(err.value)
 
 
 class TestGeneratorAllocatorRouting:

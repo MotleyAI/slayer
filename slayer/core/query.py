@@ -22,7 +22,7 @@ from pydantic import (
 )
 
 from slayer.core.direction import normalize_direction
-from slayer.core.enums import TimeGranularity
+from slayer.core.enums import GRANULARITY_NAMES, TimeGranularity
 from slayer.core.errors import DistinctDimensionValuesError, GranularityCallError, RefinementConflictError
 from slayer.core.granularity import GranularitySpec, granularity_key
 from slayer.core.models import (
@@ -64,11 +64,17 @@ _WHOLE_CALL_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*\(.*\)\s*$", re.S)
 
 
 def _reject_call_placeholders(entry: str) -> None:
-    """A ``date_trunc`` time-dimension string whose unit or column is a ``{var}`` is refused."""
+    """A time-dimension call string whose unit (a ``date_trunc`` unit or the callee) or column is a ``{var}`` is
+    refused."""
     call = call_source(entry)
-    if call is not None and len(call.callee) == 1 and call.callee[0].lower() == "date_trunc" and call.arguments:
+    if call is None or len(call.callee) != 1 or not call.arguments:
+        return
+    if call.callee[0].lower() == "date_trunc":
         column = call.arguments[1] if len(call.arguments) == 2 else None
         _reject_time_dimension_placeholders(entry, granularity=call.arguments[0], column=column)
+    else:
+        column = call.arguments[0] if len(call.arguments) == 1 else None
+        _reject_time_dimension_placeholders(entry, granularity=call.callee[0], column=column)
 
 
 def _granularity_names() -> str:
@@ -122,10 +128,21 @@ def granularity_call_argument(node: Any, entry: str) -> str | None:
     return call.arguments[1] if call is not None and len(call.arguments) == 2 else None
 
 
+def colon_bucket(node: Any) -> tuple[str, str] | None:
+    """``(column, granularity)`` of the colon spelling ``col:gran`` (any granularity name), else ``None``."""
+    if isinstance(node, AggCall) and node.colon and not node.args and not node.kwargs:
+        column = _single_col_of_source(node)
+        return None if column is None else (column, node.agg)
+    return None
+
+
 def time_dimension_from_functional(entry: str) -> dict | None:
-    """A ``date_trunc('<unit>', expr)`` string → its ``TimeDimension`` dict; another call or a non-call → ``None``;
-    a ``date_trunc`` of any other shape → raise."""
+    """A ``date_trunc('<unit>', expr)`` string (or the colon ``col:gran`` of a built-in unit) → its ``TimeDimension``
+    dict; another call or a non-call → ``None``; a ``date_trunc`` of any other shape → raise."""
     node, callee = call_callee(entry)
+    colon = colon_bucket(node)
+    if colon is not None and colon[1].lower() in GRANULARITY_NAMES:
+        return {"dimension": colon[0], "granularity": colon[1].lower()}
     if callee is None or callee.lower() != "date_trunc":
         return None
     arg = granularity_call_argument(node, entry)
@@ -141,7 +158,7 @@ def granularity_call_parts(entry: str) -> tuple[str, str] | None:
     used to resolve an order key against projected time dimensions."""
     node, _ = call_callee(entry)
     arg = granularity_call_argument(node, entry)
-    return None if arg is None else (arg, node.unit)
+    return colon_bucket(node) if arg is None else (arg, node.unit)
 
 
 def bucket_call_remedy(entry: str) -> str:
@@ -171,9 +188,13 @@ def _coerce_time_dimension_entry(entry: Any) -> Any:
     """A string ``time_dimensions`` entry must be ``date_trunc('<unit>', expr)``; dicts/objects pass through."""
     if not isinstance(entry, str):
         return entry
+    _reject_call_placeholders(entry)
     td = time_dimension_from_functional(entry)
     if td is not None:
         return td
+    colon = colon_bucket(call_callee(entry)[0])
+    if colon is not None:
+        return {"dimension": colon[0], "granularity": colon[1]}  # a datasource granularity, resolved at binding
     raise GranularityCallError(
         f"Time dimension {entry!r} must be a time bucket written {bucket_call_remedy(entry)}; the unit is one of "
         f"{_granularity_names()} or a datasource granularity, and no default granularity is invented."
@@ -851,7 +872,7 @@ class TimeDimension(BaseModel):
 
 
 def _advertise_string_time_dimensions(schema: dict[str, Any]) -> None:
-    """Add the functional ``gran(col)`` string alternative to each ``time_dimensions``
+    """Add the ``date_trunc('<unit>', expr)`` string alternative to each ``time_dimensions``
     item in the derived JSON/MCP input schema, without widening the field's Python
     type (strings are coerced by the model before-validator). A callable
     ``json_schema_extra`` works on the pydantic >=2.0 floor."""
@@ -1198,9 +1219,10 @@ class SlayerQuery(BaseModel):
         description=(
             "Group-by columns, one result row per distinct combination: names, dotted paths to "
             'joined columns (customers.regions.name), or computed {"expression": ..., "name": '
-            "...}. A granularity call buckets a timestamp like a time_dimensions entry: "
-            "month(created_at); granularities are second, minute, hour, day, week, week_sunday, "
-            "month, quarter, year, or the datasource's custom ones. An aggregate inside a "
+            "...}. date_trunc('<unit>', expr) buckets a timestamp like a time_dimensions entry: "
+            "date_trunc('month', created_at); units are second, minute, hour, day, week, week_sunday, "
+            "month, quarter, year, or the datasource's custom ones, while month(created_at) is the "
+            "month of year (an integer). An aggregate inside a "
             "computed dimension needs partition_by= to fix its grain: "
             "{\"expression\": \"iif(sum(amount, partition_by=customers.id) > 150, 'high', "
             "'low')\", \"name\": \"spend_band\"}. Group by naturally readable labels: a name "
@@ -1213,8 +1235,8 @@ class SlayerQuery(BaseModel):
         json_schema_extra=_advertise_string_time_dimensions,
         description=(
             "Time-bucketed group-bys — one result row per bucket. Each entry is a "
-            "TimeDimension dict or the functional string gran(expr), e.g. "
-            "\"month(created_at)\"; the dimension may be any DATE/TIMESTAMP expression, with an "
+            "TimeDimension dict or the string date_trunc('<unit>', expr), e.g. "
+            "\"date_trunc('month', created_at)\"; the dimension may be any DATE/TIMESTAMP expression, with an "
             "optional name. Buckets without rows are absent. To return every bucket, "
             "empty ones included, bucket time_spine.timestamp with a lower date_range bound and "
             "measure models by dotted path: "

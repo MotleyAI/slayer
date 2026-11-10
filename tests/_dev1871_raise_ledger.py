@@ -154,6 +154,10 @@ ROWS: Tuple[LedgerRow, ...] = (
          message="… `…` returns both … and …; its branches must share one type."
          + SUGGEST + "CAST one branch so both are … (or both …).",
          category="checker", family="mixed-type-coercion", user=True, owner="checker"),
+    _row(module=_EE, function="check_result_names_case", exc="NameCollisionError",
+         message="Result names … differ only in case; names match in any case, so they collide."
+         + SUGGEST + "Rename one of them.",
+         category="checker", family="names", user=True, owner="checker"),
     _row(module=_EE, function="check_whole_periods_axis", exc="TimeAxisError",
          message="whole_periods_only completes time-dimension periods, but the query groups by an integer extraction "
          "and has no time dimension." + SUGGEST + "Group by the time bucket ….",

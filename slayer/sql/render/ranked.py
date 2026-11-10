@@ -113,7 +113,7 @@ def _null_flag(key: Expression) -> exp.Ordered:
 
 def build_rank_key(ranking_time: Expression) -> Expression:
     """The ranking key projected out of the ranked scope."""
-    return ranking_time.copy().as_(RANK_KEY_COLUMN)
+    return exp.Alias(this=ranking_time.copy(), alias=exp.to_identifier(RANK_KEY_COLUMN))
 
 
 def build_ranked_pick(
