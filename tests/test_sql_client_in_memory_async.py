@@ -21,7 +21,6 @@ bypasses the client and writes directly through the engine.
 
 import asyncio
 import concurrent.futures
-import contextlib
 import threading
 from typing import Any
 from collections.abc import Iterable
