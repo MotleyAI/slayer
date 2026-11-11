@@ -43,7 +43,23 @@ def statement_reads(
             for key in walk_value_keys(root_key):
                 _add_key(reads, key=key, root=key_root, models=models)
     _close_columns(reads, models=_all_models(plans, bundle=bundle))
-    return reads
+    return _persisted(reads, inline=_inline_sources(plans, bundle=bundle))
+
+
+def _inline_sources(plans: list, *, bundle: ResolvedSourceBundle) -> frozenset[str]:
+    return frozenset().union(bundle.inline_sources, *(p.stage_bundle.inline_sources for p in plans if p.stage_bundle))
+
+
+def _persisted(reads: StatementReads, *, inline: frozenset[str]) -> StatementReads:
+    """``reads`` without the elements of the query's own inline sources."""
+    if not inline:
+        return reads
+    return StatementReads(
+        columns={r for r in reads.columns if r[0] not in inline},
+        joins={r for r in reads.joins if r[0] not in inline},
+        measures={r for r in reads.measures if r[0] not in inline},
+        aggregations={r for r in reads.aggregations if r[0] not in inline},
+    )
 
 
 def _add_key(reads: StatementReads, *, key: ValueKey, root: SlayerModel, models: dict[str, SlayerModel]) -> None:

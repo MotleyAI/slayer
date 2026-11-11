@@ -56,6 +56,8 @@ class ResolvedSourceBundle(BaseModel):
     source_model: Optional[SlayerModel] = None
     referenced_models: List[SlayerModel] = Field(default_factory=list)
     inline_extensions: List[ModelExtension] = Field(default_factory=list)
+    # Names the query's own inline source definitions take, in every stage: never a persisted model's read.
+    inline_sources: FrozenSet[str] = frozenset()
     named_queries: Dict[str, SlayerQuery] = Field(default_factory=dict)
     # Per-named-stage source model (sibling-sourced stages omitted).
     stage_source_models: Dict[str, SlayerModel] = Field(default_factory=dict)

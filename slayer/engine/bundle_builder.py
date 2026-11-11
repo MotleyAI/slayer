@@ -116,6 +116,8 @@ async def build_resolved_source_bundle(
         source_model=source_model,
         referenced_models=referenced_models,
         inline_extensions=[e for q in [*named_queries.values(), query] for e in q.extensions or []],
+        inline_sources=frozenset(
+            q.source_model.name for q in [*named_queries.values(), query] if isinstance(q.source_model, SlayerModel)),
         named_queries=dict(named_queries),
         stage_source_models=stage_source_models,
         query_variables=query_variables,

@@ -5293,7 +5293,7 @@ class SQLGenerator:
                 )
             finally:
                 self._gen_filter_stack = self._gen_filter_stack[:-1]
-        if model.sql_table in self._gen_stage_relations:
+        if model.sql_table in self._gen_stage_relations or model.name in getattr(bundle, "inline_sources", ()):
             return relation
         return _stamp_model(relation, model=model)
 
