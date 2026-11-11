@@ -311,7 +311,7 @@ class TestSurfaces:
     def test_cli_lists_each_broken_dependant(self, workspace: Path, capsys: pytest.CaptureFixture[str]) -> None:
         ds, _ = run_sync(_seed(str(workspace), models=(contractors(),), saved={"by_tag": BY_TAG}))
         args = SimpleNamespace(datasource="ds", schema=None, include=None, exclude=None, include_views=True,
-                               surface_internals=False, storage=str(workspace / "store"), models_dir=None)
+                               surface_internals=False, storage=str(workspace / "store"))
         try:
             with contextlib.suppress(SystemExit):
                 _run_ingest(args)

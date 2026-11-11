@@ -1335,11 +1335,11 @@ def test_a_chain_of_cross_model_refs_to_a_list_is_a_list(staff_engine):
     assert (col.type, col.element_type) == (DataType.ARRAY, DataType.TEXT)
 
 
-def test_a_cycle_of_cross_model_refs_has_no_end(staff_engine, monkeypatch):
+def test_a_cycle_of_cross_model_refs_has_no_end(monkeypatch):
     model = SlayerModel(name="m", sql_table="m", data_source="testds", columns=[
         Column(name=n, sql=f"x.{n}", type=DataType.DOUBLE) for n in ("a", "b", "c")])
     nxt = {"a": "b", "b": "c", "c": "a"}
     monkeypatch.setattr(OsiToSlayerConverter, "_single_cross_model_ref",
                         lambda self, model, sql: (model, model.get_column(nxt[sql.split(".")[1]])))
-    converter = OsiToSlayerConverter(documents=[], data_source="testds", sa_engine=staff_engine)
+    converter = OsiToSlayerConverter(documents=[], data_source="testds")
     assert [converter._ref_chain_end(model=model, col=c) for c in model.columns] == [None, None, None]

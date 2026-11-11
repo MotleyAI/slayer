@@ -309,7 +309,7 @@ parameter SHALL reach the driver unchanged.
 
 ### Requirement: Every live database access goes through an engine-owned client
 
-Every read of or statement against a user datasource — query and explain statements, column-type probes, cache refresh scans, join-cardinality profiling, server-profile probes, schema-drift listing and reflection, row-level-security column checks, ingestion, legacy type refinement, the MCP datasource tools and the dbt/OSI importers' table introspection — SHALL go through a client obtained from a query engine. A query engine SHALL build its clients only through its client factory when one is given, else as the default client, and SHALL reuse one client per datasource name and connection identity. No call order SHALL let a client from any other source serve a later access. Without a client factory, observable behaviour SHALL be unchanged.
+Every read of or statement against a user datasource — query and explain statements, column-type probes, cache refresh scans, join-cardinality profiling, server-profile probes, schema-drift listing and reflection, row-level-security column checks, ingestion, legacy type refinement, the MCP datasource tools and the dbt/OSI importers' table introspection — SHALL go through a client obtained from a query engine. The free ingestion, drift-validation and importer functions SHALL read through the client their caller passes, and every SLayer surface SHALL pass them one obtained from a query engine. A query engine SHALL build its clients only through its client factory when one is given, else as the default client, and SHALL reuse one client per datasource name and connection identity. No call order SHALL let a client from any other source serve a later access. Without a client factory, observable behaviour SHALL be unchanged.
 
 #### Scenario: Query statements reach the factory client
 - **WHEN** an engine built with a client factory executes a query and an explain query
@@ -481,96 +481,6 @@ loop. One client SHALL serve several event loops on several threads at once.
 #### Scenario: MySQL follows the same rule
 - **WHEN** the synchronous-bridge scenario runs on a mysql datasource whose URL names `aiomysql`
 - **THEN** it has the same outcome
-
-### Requirement: A bundled non-default driver warns until 2.0
-A client whose driver is one a SLayer extra installs but not the type's default driver
-(postgres/postgresql: psycopg2 and asyncpg; mysql/mariadb: aiomysql) SHALL emit a deprecation
-warning naming the driver and the extra and stating that from SLayer 2.0 the extra no longer
-installs it. A client on the type's default driver, or on a driver no SLayer extra installs, SHALL
-NOT emit it.
-
-#### Scenario: psycopg2 warns
-- **WHEN** a postgres datasource whose URL names `psycopg2` builds its client's connection
-- **THEN** a deprecation warning names `psycopg2` and `motley-slayer[postgres]`
-
-#### Scenario: asyncpg warns
-- **WHEN** a postgres datasource whose URL names `asyncpg` builds its client's connection
-- **THEN** a deprecation warning names `asyncpg` and `motley-slayer[postgres]`
-
-#### Scenario: aiomysql warns
-- **WHEN** a mysql datasource whose URL names `aiomysql` builds its client's connection
-- **THEN** a deprecation warning names `aiomysql` and `motley-slayer[mysql]`
-
-#### Scenario: Default and unbundled drivers are silent
-- **WHEN** clients connect with a postgres URL naming no driver or naming `psycopg`, a mysql URL
-  naming `pymysql`, and a postgres URL naming `pg8000`
-- **THEN** none emits the deprecation warning
-
-### Requirement: A missing driver raises a typed, actionable error
-When connecting to a datasource needs a Python driver module or SQLAlchemy dialect plugin that is
-not installed — whether the client runs it synchronously or asynchronously, or it is a dialect's own
-lazily imported driver — SLayer SHALL raise a missing-driver error that is both a SLayer error and
-an import error. Its message SHALL name the datasource, its type, and the missing module (or, for a
-missing dialect plugin, the URL scheme whose plugin could not be loaded), and SHALL carry an install
-hint:
-- when the connection URL selects a driver that a SLayer extra installs for the type — its default
-  driver, or a bundled non-default driver (postgres/postgresql: psycopg2 and asyncpg; mysql/mariadb:
-  aiomysql) — the hint SHALL be `pip install 'motley-slayer[<extra>]'` with that type's extra
-  (postgres/postgresql, mysql, mariadb, clickhouse, sqlserver/mssql/tsql, snowflake, bigquery,
-  trino);
-- when the URL selects SLayer's default driver for a type without an extra, the hint SHALL tell the
-  user to install the named module or plugin and point to the datasource documentation;
-- when the URL names a driver no SLayer extra installs, the hint SHALL tell the user to install the
-  driver named in their `connection_string`, and SHALL NOT recommend a SLayer extra.
-
-A missing driver SHALL NOT be replaced by another driver. An import failure that is not attributable
-to the datasource's driver or dialect plugin SHALL propagate unchanged.
-
-#### Scenario: Missing default Postgres driver names the extra
-- **WHEN** a postgres datasource with a structured config is used and `psycopg` is not importable
-- **THEN** a missing-driver error is raised naming the datasource, type `postgres`, module
-  `psycopg`, and `pip install 'motley-slayer[postgres]'`
-
-#### Scenario: Every extra-backed type names its own extra
-- **WHEN** the default driver or dialect plugin of each of mysql, mariadb, clickhouse, sqlserver,
-  snowflake, bigquery and trino is not importable and an engine is built for that type
-- **THEN** each raises a missing-driver error carrying that type's `motley-slayer[<extra>]` hint
-
-#### Scenario: Missing dialect plugin names the scheme
-- **WHEN** a clickhouse datasource is used and the ClickHouse SQLAlchemy plugin is not installed
-- **THEN** the missing-driver error names the `clickhouse+http` scheme and
-  `pip install 'motley-slayer[clickhouse]'`
-
-#### Scenario: Missing bundled driver names the extra and is not replaced
-- **WHEN** a postgres datasource whose URL names `asyncpg` executes a statement and `asyncpg` is not
-  importable
-- **THEN** a missing-driver error naming `asyncpg` and `pip install 'motley-slayer[postgres]'` is
-  raised, and the statement is not run through any other driver
-
-#### Scenario: Custom driver is not misattributed to the extra
-- **WHEN** a postgres datasource's `connection_string` is `postgresql+pg8000://…` and `pg8000` is
-  not importable
-- **THEN** the missing-driver error names `pg8000`, tells the user to install the driver named in
-  their `connection_string`, and does not mention `motley-slayer[postgres]`
-
-#### Scenario: Tier-2 type gets a generic hint
-- **WHEN** a redshift datasource is used and its SQLAlchemy dialect plugin is not installed
-- **THEN** a missing-driver error names the `redshift` scheme, tells the user to install it, and
-  points to the datasource documentation
-
-#### Scenario: Lazily imported vendor driver
-- **WHEN** a Snowflake datasource configured by `connection_name`, or a BigQuery datasource
-  configured with `oauth_credentials_json`, is used and its vendor client library is not importable
-- **THEN** a missing-driver error carrying that type's extra hint is raised
-
-#### Scenario: Unrelated import failure propagates
-- **WHEN** engine construction fails with an import error for a module that is not the
-  datasource's driver or dialect plugin
-- **THEN** that original import error propagates unchanged
-
-#### Scenario: Surfaces carry the hint
-- **WHEN** a missing-driver error reaches a handler that reports SLayer errors
-- **THEN** the reported message contains the install hint
 
 ### Requirement: A connection URL that names no driver uses the type's default driver
 For a datasource type that declares a default driver (postgres/postgresql: psycopg; mysql/mariadb:
@@ -820,3 +730,82 @@ datasource type and for its async engines, SHALL hand each connection to one cal
 - **WHEN** SLayer builds the synchronous engine, and the async engine where the type has one, for each
   Tier 1 database it supports
 - **THEN** each engine's pool hands each connection to one caller at a time
+
+### Requirement: A missing driver raises a typed error with an install hint
+When connecting to a datasource needs a Python driver module or SQLAlchemy dialect plugin that is
+not installed — whether the client runs it synchronously or asynchronously, or it is a dialect's own
+lazily imported driver — SLayer SHALL raise a missing-driver error that is both a SLayer error and
+an import error. Its message SHALL name the datasource, its type, and the missing module (or, for a
+missing dialect plugin, the URL scheme whose plugin could not be loaded), and SHALL carry an install
+hint:
+- when the connection URL selects the type's default driver and the type has a SLayer extra, the hint
+  SHALL be `pip install 'motley-slayer[<extra>]'` with that type's extra (postgres/postgresql, mysql,
+  mariadb, clickhouse, sqlserver/mssql/tsql, snowflake, bigquery, trino);
+- when the URL selects SLayer's default driver for a type without an extra, the hint SHALL tell the
+  user to install the named module or plugin and point to the datasource documentation;
+- when the URL names any other driver — including psycopg2, asyncpg and aiomysql, which no SLayer
+  extra installs — the hint SHALL tell the user to install the driver named in their
+  `connection_string`, and SHALL NOT recommend a SLayer extra.
+
+A SLayer extra SHALL install only its type's default driver. A missing driver SHALL NOT be replaced
+by another driver. An import failure that is not attributable to the datasource's driver or dialect
+plugin SHALL propagate unchanged.
+
+#### Scenario: Missing default Postgres driver names the extra
+- **WHEN** a postgres datasource with a structured config is used and `psycopg` is not importable
+- **THEN** a missing-driver error is raised naming the datasource, type `postgres`, module
+  `psycopg`, and `pip install 'motley-slayer[postgres]'`
+
+#### Scenario: Every extra-backed type names its own extra
+- **WHEN** the default driver or dialect plugin of each of mysql, mariadb, clickhouse, sqlserver,
+  snowflake, bigquery and trino is not importable and an engine is built for that type
+- **THEN** each raises a missing-driver error carrying that type's `motley-slayer[<extra>]` hint
+
+#### Scenario: Missing dialect plugin names the scheme
+- **WHEN** a clickhouse datasource is used and the ClickHouse SQLAlchemy plugin is not installed
+- **THEN** the missing-driver error names the `clickhouse+http` scheme and
+  `pip install 'motley-slayer[clickhouse]'`
+
+#### Scenario: A missing non-default driver is not attributed to the extra
+- **WHEN** a postgres datasource whose URL names `asyncpg` or `psycopg2`, or a mysql datasource whose
+  URL names `aiomysql`, executes a statement and that driver is not importable
+- **THEN** a missing-driver error naming the driver tells the user to install the driver named in
+  their `connection_string`, does not mention a `motley-slayer[...]` extra, and the statement is not
+  run through any other driver
+
+#### Scenario: Custom driver is not misattributed to the extra
+- **WHEN** a postgres datasource's `connection_string` is `postgresql+pg8000://…` and `pg8000` is
+  not importable
+- **THEN** the missing-driver error names `pg8000`, tells the user to install the driver named in
+  their `connection_string`, and does not mention `motley-slayer[postgres]`
+
+#### Scenario: Extras install only the default driver
+- **WHEN** the `postgres`, `mysql` and `all` extras are read from the package metadata
+- **THEN** `postgres` installs psycopg and `mysql` installs pymysql, and no extra installs psycopg2,
+  asyncpg or aiomysql
+
+#### Scenario: Tier-2 type gets a generic hint
+- **WHEN** a redshift datasource is used and its SQLAlchemy dialect plugin is not installed
+- **THEN** a missing-driver error names the `redshift` scheme, tells the user to install it, and
+  points to the datasource documentation
+
+#### Scenario: Lazily imported vendor driver
+- **WHEN** a Snowflake datasource configured by `connection_name`, or a BigQuery datasource
+  configured with `oauth_credentials_json`, is used and its vendor client library is not importable
+- **THEN** a missing-driver error carrying that type's extra hint is raised
+
+#### Scenario: Unrelated import failure propagates
+- **WHEN** engine construction fails with an import error for a module that is not the
+  datasource's driver or dialect plugin
+- **THEN** that original import error propagates unchanged
+
+#### Scenario: Surfaces carry the hint
+- **WHEN** a missing-driver error reaches a handler that reports SLayer errors
+- **THEN** the reported message contains the install hint
+
+### Requirement: A caller's engine serves synchronous calls on the caller's thread
+A client wrapping an engine its caller supplied SHALL run that engine's blocking work, during a synchronous SLayer call, on the thread that made the call.
+
+#### Scenario: A caller's in-memory engine serves a synchronous call
+- **WHEN** a caller creates an in-memory SQLite engine, creates and fills a table on it, and runs a statement through a client wrapping it from a synchronous SLayer call
+- **THEN** the statement reads that table's rows, and the engine's connections are checked out on the caller's thread

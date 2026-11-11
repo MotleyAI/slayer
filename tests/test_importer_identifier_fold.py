@@ -24,7 +24,6 @@ from slayer.cube.report import CubeConversionResult
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject
 from slayer.live_schema.ingestion import IntrospectedColumn
-from slayer.engine.query_engine import run_over_caller_engine
 from slayer.importers import column_types
 from slayer.importers.column_types import LiveDatasource
 from slayer.importers.physical import UndecidableIdentifierCaseError
@@ -34,8 +33,8 @@ from slayer.sql.dialects import SqliteDialect, get_dialect
 from slayer.sql.dialects.reflection import column_from_sa_type
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2171_fixtures import (
-    column, cube_issues, cube_report_messages, models_of, run_cli, source_column, stored_model, typing_notes,
-    write_yaml,
+    collect_over_engine, column, cube_issues, cube_report_messages, models_of, run_cli, source_column, stored_model,
+    typing_notes, write_yaml,
 )
 from tests._engine_helpers import _engine_generate, disposable_engine
 from tests._osi_helpers import by_name, cols, convert, disable_type_probe, documents, ds, f, f_dialects, flat, seed_db
@@ -51,7 +50,7 @@ def _cube(*cubes: dict[str, Any], dialect: str | None = "postgres", engine: sa.E
     project = project or CubeProject.model_validate({"cubes": list(cubes)})
     converter = CubeToSlayerConverter(project=project, data_source=DS, target_dialect=dialect)
     if engine is not None:
-        run_over_caller_engine(engine, data_source=DS, work=lambda client: converter.collect_metadata(client=client))
+        collect_over_engine(collect=lambda client: converter.collect_metadata(client=client), engine=engine)
     return converter.convert()
 
 
@@ -289,7 +288,7 @@ def test_source_resolution_report_survives_metadata_collection(tmp_path: Path) -
                      regular=[{"name": "src", "raw_code": "SELECT qty FROM orders WHERE x = {{ var('limit') }}"}],
                      dialect="duckdb")
     with disposable_engine(f"duckdb:///{tmp_path / 'shop.duckdb'}") as engine:
-        run_over_caller_engine(engine, data_source=DS, work=lambda client: converter.collect_metadata(client=client))
+        collect_over_engine(collect=lambda client: converter.collect_metadata(client=client), engine=engine)
     messages = [w.message for w in converter.convert().warnings if w.category == "sql_inline"]
     assert [m for m in messages if "var('limit')" in m]
 
@@ -442,8 +441,8 @@ def test_live_source_reflects_a_quoted_lowercase_table_exactly(tmp_path: Path, m
     monkeypatch.setattr(column_types, "introspect_table_columns", record)
     datasource = LiveDatasource(offline_reason=None, data_source=DS, db_type="snowflake", dialect="snowflake")
     with disposable_engine(f"sqlite:///{tmp_path / 'live.db'}") as engine:
-        run_over_caller_engine(engine, data_source=DS, work=lambda client: datasource.collect(
-            client=client, convert=lambda: datasource.source(sql_table='"lower_schema"."lower_table"')))
+        collect_over_engine(collect=lambda client: datasource.collect(
+            client=client, convert=lambda: datasource.source(sql_table='"lower_schema"."lower_table"')), engine=engine)
     (call,) = seen
     assert (getattr(call["table_name"], "quote", None), getattr(call["ref"].token, "quote", None)) == (True, True)
     assert call["ref"].qualify(call["table_name"], dialect=get_dialect("snowflake")) == '"lower_schema"."lower_table"'

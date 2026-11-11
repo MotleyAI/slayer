@@ -50,7 +50,7 @@ for model in models:
 
 Storage methods are async: `await` them inside async code, or wrap them with `run_sync` as above.
 
-Code written for SLayer 1.5.0 — `ingest_datasource(ds)` without a `client`, or a dbt / OSI converter given `sa_engine=` — still runs, with a `FutureWarning`, until SLayer 2.0.
+The free functions `ingest_datasource(ds, client=...)` and `ingest_datasource_report(ds, client=...)` take the client explicitly (`engine.client_for(ds)`), and a dbt / OSI converter reads the database only through `await converter.collect_metadata(client=engine.client_for(ds))` before `convert()`.
 
 ## Query
 

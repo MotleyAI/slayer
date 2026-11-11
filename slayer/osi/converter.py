@@ -17,14 +17,12 @@ import logging
 from collections.abc import Callable
 from typing import Any, Literal, Optional
 
-import sqlalchemy as sa
 import sqlglot
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 
-from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.errors import AmbiguousJoinPathError, UnsupportedServerFunctionError
 from slayer.core.syntax import parse_expr
@@ -37,7 +35,6 @@ from slayer.sql.column_expansion import root_scope_column_ids, resolve_ref_targe
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.render.parse import fold_source_identifiers
 from slayer.live_schema.ingestion import introspect_table_to_model
-from slayer.engine.query_engine import run_over_caller_engine
 from slayer.live_schema.schema_scope import live_name, requested_schema_ref
 from slayer.core.join_search import blocking_pairs, shortest_route, shortest_routes
 from slayer.importers.column_types import LiveDatasource, LiveSource
@@ -46,7 +43,7 @@ from slayer.importers.aggregates import (
 )
 from slayer.importers.physical import PhysicalIndex, live_exact_name, root_physical_columns, unreadable_columns
 from slayer.ingest_report import ConversionResult, ConversionWarning
-from slayer.database.client import ResultColumnType, SqlClient, adapt_client
+from slayer.database.client import ResultColumnType, SqlClient
 from slayer.osi.dialects import Selection, is_native, read, reader_for, render, select_expression
 from slayer.osi.models import (
     OSSIE_DATATYPES,
@@ -247,23 +244,12 @@ class OsiToSlayerConverter:
         self,
         documents: list[OSIDocument],
         data_source: str,
-        sa_engine: sa.Engine | None = None,
         *,
         dialect: str | None = None,
         target_dialect: str | None = None,
     ) -> None:
-        """Passing ``sa_engine`` is deprecated: ``convert()`` then collects its own metadata through it."""
-        if sa_engine is not None:
-            warn_deprecated(
-                "OsiToSlayerConverter(sa_engine=...) is deprecated; await "
-                "converter.collect_metadata(client=engine.client_for(datasource)) before convert(). "
-                "sa_engine works until SLayer 2.0.",
-                removal="2.0",
-            )
         self.documents = documents
         self.data_source = data_source
-        self.sa_engine = sa_engine
-        self._collected = False
         self.dialect = dialect
         self.target_dialect = target_dialect
         # sqlglot name of the datasource dialect every stored raw SQL is rendered in.
@@ -321,8 +307,6 @@ class OsiToSlayerConverter:
 
     async def collect_metadata(self, *, client: SqlClient) -> None:
         """Read every dataset's source and every type probe conversion needs through ``client``."""
-        client = adapt_client(client)
-        self._collected = False
         if self.target_dialect is None:
             self._dialect = dialect_for_ds_type(client.datasource.type)
             self._target = self._dialect.sqlglot_name
@@ -331,7 +315,6 @@ class OsiToSlayerConverter:
             for ds in doc.datasets:
                 await self._collect_table(client=client, ds=ds)
         await self._datasource.collect(client=client, convert=self._convert)
-        self._collected = True
 
     def _read_source(self, ds: OSIDataset) -> ParsedSource | None:
         """``ds``'s source read with the datasource's identifier folding; ``None`` when it does not parse."""
@@ -361,11 +344,7 @@ class OsiToSlayerConverter:
             self._tables[ds.name] = str(exc)
 
     def convert(self) -> OsiConversionResult:
-        """Convert from the collected metadata (a deprecated ``sa_engine`` converter collects it first)."""
-        if not self._collected and self.sa_engine is not None:
-            run_over_caller_engine(
-                self.sa_engine, data_source=self.data_source, work=lambda client: self.collect_metadata(client=client),
-            )
+        """Convert from the collected metadata (pure: the database is read by ``collect_metadata``)."""
         return self._convert()
 
     def _convert(self) -> OsiConversionResult:

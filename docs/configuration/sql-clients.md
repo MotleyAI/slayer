@@ -30,9 +30,9 @@ A client implements `slayer.database.client.SqlClient`. Every method is `async` 
 | `aclose()` | `None` | Release resources bound to the current event loop; the client stays usable. |
 | `close()` | `None` | Release everything; idempotent. |
 
-A client written for 1.6.0, whose type probe is `get_column_types(sql)` returning `number` / `string` / `time` / `boolean`, keeps working until SLayer 2.0: each probe reads those categories as DOUBLE, TEXT, TIMESTAMP and BOOLEAN and warns, as does `DelegatingSqlClient.get_column_types`.
+A client's type probe is `get_result_column_types(sql)`; SLayer no longer calls the 1.6.0 `get_column_types(sql)`.
 
-A client without `explain` (one written from scratch without it, or a `DelegatingSqlClient` subclass overriding `execute` but not `explain`) has a single-statement EXPLAIN run through its `execute` with a warning until SLayer 2.0, and SQL Server's EXPLAIN, which needs `session_on` / `session_off`, refused with `ExplainUnsupportedError`.
+A client serves `explain(statements)` itself; a `DelegatingSqlClient` subclass that overrides `execute` but not `explain` has its EXPLAIN served by the wrapped client.
 
 A `TableLocation(name, schema_name=None, catalog=None)` names a table; an unset part is the
 connection's current one.

@@ -1205,20 +1205,10 @@ class TestWindowChainReuse:
 
 # Test 17 (revised), 38, 39, 40, 41 — call-site / contract pins.
 class TestCallSitesAndContractPins:
-    async def test_get_column_types_renders_through_planned_stages(
+    async def test_get_result_column_types_renders_through_planned_stages(
         self, orders_model: SlayerModel, tmp_path, monkeypatch,
     ) -> None:
-        """``get_column_types`` builds its type-probe
-        statement through the typed ``build_planned_statement`` entry point.
-
-        (Was ``test_get_column_types_does_not_call_legacy_generate``, which
-        spied on ``SQLGenerator.generate`` and asserted it was never called
-        with an ``enriched=`` kwarg. That entry point is deleted
-        outright, so the negative form is both unspyable — there is no
-        attribute left to patch — and vacuous. The positive half of the
-        same contract is what is pinned here: the probe goes through the
-        planned-stage renderer, exactly once, and yields probe SQL.)
-        """
+        """``get_result_column_types`` builds its type probe once, through ``build_planned_statement``."""
         storage = YAMLStorage(base_dir=str(tmp_path))
         await _save_test_datasource(storage)
         await storage.save_model(orders_model)
@@ -1236,10 +1226,10 @@ class TestCallSitesAndContractPins:
             query_engine_module, "build_planned_statement", _wrapper,
         )
 
-        await engine.get_column_types(model_name="orders")
+        await engine.get_result_column_types(model_name="orders")
 
         assert len(planned_calls) == 1, (
-            f"get_column_types must build the probe through "
+            f"get_result_column_types must build the probe through "
             f"build_planned_statement exactly once; got {len(planned_calls)} "
             f"call(s)"
         )

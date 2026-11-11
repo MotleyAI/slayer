@@ -10,32 +10,15 @@ import warnings
 from collections.abc import Generator
 from typing import NoReturn
 
-from pydantic import BaseModel
 
-
-class WarningLocation(BaseModel):
-    """An explicit source location for a warning whose caller is not on the stack."""
-
-    filename: str
-    lineno: int
-    module: str
-
-
-def warn_deprecated(
-    message: str, *, removal: str, stacklevel: int = 2, location: WarningLocation | None = None,
-) -> None:
+def warn_deprecated(message: str, *, removal: str, stacklevel: int = 2) -> None:
     """Emit ``message`` as a ``FutureWarning`` (shown outside ``__main__``, unlike ``DeprecationWarning``).
 
     ``removal`` is the version dropping the deprecated form, as a string literal; ``stacklevel``
     counts from the caller, as in ``warnings.warn``.
     """
     del removal  # read statically by the tripwire
-    if location is None:
-        warnings.warn(message, FutureWarning, stacklevel=stacklevel + 1)
-    else:
-        warnings.warn_explicit(
-            message, FutureWarning, filename=location.filename, lineno=location.lineno, module=location.module,
-        )
+    warnings.warn(message, FutureWarning, stacklevel=stacklevel + 1)
 
 
 def raise_moved(old: str, new: str, *, removal: str) -> NoReturn:

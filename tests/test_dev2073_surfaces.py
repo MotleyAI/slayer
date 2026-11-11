@@ -35,7 +35,7 @@ def _orders() -> SlayerModel:
 
 async def _inspect(model: SlayerModel, **kwargs) -> str:
     async with model_store(addresses_model(), _orders()) as storage:
-        return await render_model_inspection(model=model, storage=storage, engine=None, compact=False, **kwargs)
+        return await render_model_inspection(model=model, storage=storage, engine=None, **kwargs)
 
 
 class TestInspectShowsEdgeNames:

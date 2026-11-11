@@ -22,7 +22,7 @@ import sqlalchemy as sa
 import sqlalchemy.event as sa_event
 
 from slayer import async_utils
-from slayer.async_utils import on_caller_thread, run_sync, run_sync_on_caller_thread
+from slayer.async_utils import on_caller_thread, run_sync
 from slayer.core.models import DatasourceConfig
 from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient
@@ -258,6 +258,46 @@ def test_cleanup_after_an_interrupt_is_bounded_overall(monkeypatch: pytest.Monke
     assert time.monotonic() - begun < 5
 
 
+def test_cleanup_stops_at_its_deadline_while_calls_stay_queued(monkeypatch: pytest.MonkeyPatch) -> None:
+    started, stop = threading.Event(), threading.Event()
+    tasks: list[asyncio.Task[Any]] = []
+
+    async def _loop() -> None:
+        while not stop.is_set():
+            with contextlib.suppress(asyncio.CancelledError):
+                await on_caller_thread(lambda: time.sleep(0.01))
+
+    async def _flooding() -> None:
+        helpers = [asyncio.create_task(_loop()) for _ in range(3)]
+        current = asyncio.current_task()
+        assert current is not None
+        tasks.extend([*helpers, current])
+        started.set()
+        await _loop()
+        await asyncio.gather(*helpers)
+
+    async def _release() -> None:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    workflow = _flooding()
+
+    def _call() -> None:
+        run_sync(workflow)
+
+    monkeypatch.setattr(async_utils, "_CLEANUP_SECONDS", 0.5)
+    _interrupt_scheduling(monkeypatch, after=started)
+    begun = time.monotonic()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            _bounded(_call)
+    finally:
+        stop.set()
+        _bounded(lambda: run_sync(_release()))
+    assert time.monotonic() - begun < 5
+
+
 def test_an_interrupt_before_submission_closes_the_workflow_unstarted(monkeypatch: pytest.MonkeyPatch) -> None:
     ran = threading.Event()
 
@@ -351,7 +391,7 @@ def test_caller_thread_calls_stay_on_the_caller_thread(tmp_path: Path) -> None:
             rows = [(await client.execute("SELECT 1 AS x")).rows for _ in range(2)]
             return threading.get_ident(), rows
 
-        workflow_thread, rows = run_sync_on_caller_thread(_workflow())
+        workflow_thread, rows = run_sync(_workflow())
     assert rows == [[{"x": 1}]] * 2
     assert checkouts
     assert set(checkouts) == {threading.get_ident()}
@@ -367,9 +407,23 @@ def test_caller_thread_calls_from_inside_a_running_loop(tmp_path: Path) -> None:
         client = _caller_engine_client(engine, path)
 
         async def _inside() -> list[Any]:
-            return run_sync_on_caller_thread(client.execute("SELECT 1 AS x")).rows
+            return run_sync(client.execute("SELECT 1 AS x")).rows
 
         assert asyncio.run(_inside()) == [{"x": 1}]
+    assert checkouts
+    assert set(checkouts) == {threading.get_ident()}
+
+
+def test_a_callers_in_memory_engine_serves_synchronous_calls() -> None:
+    with disposable_engine("sqlite://") as engine:
+        with engine.begin() as conn:
+            conn.execute(sa.text("CREATE TABLE t (x INTEGER)"))
+            conn.execute(sa.text("INSERT INTO t VALUES (1), (2)"))
+        checkouts: list[int] = []
+        sa_event.listen(engine, "checkout", lambda *_a: checkouts.append(threading.get_ident()))
+        client = SlayerSQLClient(DatasourceConfig(name="c", type="sqlite", database=":memory:"), sa_engine=engine)
+        rows = run_sync(client.execute("SELECT x FROM t ORDER BY x")).rows
+    assert rows == [{"x": 1}, {"x": 2}]
     assert checkouts
     assert set(checkouts) == {threading.get_ident()}
 
@@ -382,11 +436,11 @@ def test_a_raising_caller_thread_call_propagates() -> None:
         await on_caller_thread(_boom)
 
     def _run_workflow() -> None:
-        run_sync_on_caller_thread(_workflow())
+        run_sync(_workflow())
 
     with pytest.raises(ValueError, match="boom"):
         _bounded(_run_workflow)
-    assert _bounded(lambda: run_sync_on_caller_thread(_value(3))) == 3
+    assert _bounded(lambda: run_sync(_value(3))) == 3
 
 
 @_POSIX_MAIN_THREAD
@@ -413,11 +467,11 @@ def test_interrupting_a_caller_thread_workflow_cleans_up() -> None:
     begun = time.monotonic()
     workflow = _workflow()
     with pytest.raises(KeyboardInterrupt):
-        run_sync_on_caller_thread(workflow)
+        run_sync(workflow)
     timer.join(_BOUND)
     assert time.monotonic() - begun < _BOUND
     assert cleaned.is_set()
-    assert run_sync_on_caller_thread(_value(4)) == 4
+    assert run_sync(_value(4)) == 4
 
 
 # ---------------------------------------------------------------------------

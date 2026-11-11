@@ -19,7 +19,7 @@ from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.profiling import ensure_samples_fresh
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.database.client import ExecutionResult, ObjectListing
+from slayer.database.client import ExecutionResult, ObjectListing, ResultColumnType
 from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.dialects.reflection import ReflectedColumn, TableKeys, TableLocation
 from slayer.storage.yaml_storage import YAMLStorage
@@ -237,7 +237,7 @@ class SnowflakeListClient:
         rows = [{"kind": "INTEGER"}, {"kind": "NULL_VALUE"}] if "TYPEOF" in sql.upper() else []
         return ExecutionResult(rows=rows)
 
-    async def get_column_types(self, sql: str) -> dict[str, str]:
+    async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
         return {}
 
     async def server_profile(self) -> ServerProfile:
