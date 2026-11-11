@@ -15,7 +15,7 @@ from slayer.core.errors import SlayerError
 from tests._dev1842_fixtures import broadcast_warnings, make_exec_engine, q
 
 DOTTED = "customers.aov"
-HAND = "customers.spend:sum / customers.*:count"
+HAND = "sum(customers.spend) / count(customers.*)"
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -54,7 +54,7 @@ class TestBroadcastMetadataInherited:
         assert broadcast_warnings(dotted) == []
 
     async def test_explicit_partition_broadcast_never_warns(self, exec_backend):
-        """``customers.spend_grand`` (= ``spend:sum(partition_by=[])``) is an
+        """``customers.spend_grand`` (= ``sum(spend, partition_by=[])``) is an
         explicit broadcast producer — it neither warns nor errors, matching the
         hand-written ``partition_by=[]`` form."""
         _, engine = exec_backend

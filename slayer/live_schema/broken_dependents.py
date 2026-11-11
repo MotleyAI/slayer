@@ -80,7 +80,7 @@ def _probe(dependent: _Dependent) -> Any:
         return {"source_model": dependent.model, "measures": [dependent.name]}
     if dependent.kind == "column":
         return {"source_model": dependent.model, "dimensions": [dependent.name]}
-    return {"source_model": dependent.model, "measures": ["*:count"]}
+    return {"source_model": dependent.model, "measures": ["count(*)"]}
 
 
 async def _plan(engine: query_engine.SlayerQueryEngine, dependent: _Dependent, *, data_source: str) -> None:

@@ -125,14 +125,14 @@ class TestComputedDimensionSource:
     """1.1 — a dotted saved measure used inside a computed-dimension expression
     (the aggregate carries ``partition_by=`` as computed dimensions require)."""
 
-    _HAND = ("CASE WHEN customers.spend:sum(partition_by=customers.tier) > 100 "
+    _HAND = ("CASE WHEN sum(customers.spend, partition_by=customers.tier) > 100 "
              "THEN 'hi' ELSE 'lo' END")
     _DOTTED = "CASE WHEN customers.spend_by_tier > 100 THEN 'hi' ELSE 'lo' END"
 
     def _dim_query(self, expr: str):
         return q(
             dimensions=[{"expression": expr, "name": "band"}],
-            measures=[{"formula": "amount:sum", "name": "a"}],
+            measures=[{"formula": "sum(amount)", "name": "a"}],
         )
 
     async def test_computed_dimension_sql_equals_hand(self) -> None:

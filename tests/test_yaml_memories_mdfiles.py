@@ -72,8 +72,7 @@ class TestPerFileLayout:
     async def test_get_round_trips_all_fields(
         self, storage: YAMLStorage
     ) -> None:
-        q = SlayerQuery(source_model="orders",
-                        measures=[{"formula": "amount:sum"}])
+        q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
         saved = await storage.save_memory(
             id="rt.1", learning="learn me",
             entities=["mydb.orders.amount"], description="d", query=q,
@@ -95,8 +94,7 @@ class TestPerFileLayout:
         # optional-field combinations — this is what guards seed's
         # skip-if-unchanged compare.
 
-        q = SlayerQuery(source_model="orders",
-                        measures=[{"formula": "amount:sum"}])
+        q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
         cases = [
             Memory(id="a", learning="no trailing newline", entities=[]),
             Memory(id="a", learning="one trailing newline\n", entities=[]),
@@ -274,8 +272,10 @@ class TestMigration:
             Memory(id="1", learning="first", entities=["mydb.orders.amount"]
                    ).model_dump(mode="json"),
             Memory(id="q1", learning="with query", entities=[],
-                   query=SlayerQuery(source_model="orders",
-                                     measures=[{"formula": "amount:sum"}]),
+                   query=SlayerQuery.model_validate({
+                       "source_model": "orders",
+                       "measures": [{"formula": "sum(amount)"}],
+                   }),
                    ).model_dump(mode="json"),
         ]
         self._write_legacy(base_dir, rows)
@@ -285,8 +285,7 @@ class TestMigration:
         assert os.path.exists(_md_path(storage, "q1"))
 
     async def test_migration_preserves_content(self, base_dir: str) -> None:
-        q = SlayerQuery(source_model="orders",
-                        measures=[{"formula": "amount:sum"}])
+        q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
         rows = [Memory(id="q1", learning="with query", entities=[], query=q,
                        description="preview").model_dump(mode="json")]
         self._write_legacy(base_dir, rows)

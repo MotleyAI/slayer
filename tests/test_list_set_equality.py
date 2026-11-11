@@ -593,8 +593,8 @@ class TestCounts:
         expected = {t: len({elset(r["skills"]) for r in ROWS if r["team"] == t} - {None}) for t in ("A", "B", "C")}
         assert {cell(r, "team"): num(cell(r, "n")) for r in resp.data} == expected
 
-    async def test_colon_spelling(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(query(measures=["skills:count_distinct"]))
+    async def test_unnamed_measure(self, engine: SlayerQueryEngine) -> None:
+        resp = await engine.execute(query(measures=["count_distinct(skills)"]))
         assert num(next(iter(resp.data[0].values()))) == 4
 
     async def test_distinct_lists_and_distinct_elements(self, engine: SlayerQueryEngine) -> None:

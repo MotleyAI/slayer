@@ -115,7 +115,7 @@ async def test_mixed_grain_formula_constant_within_union_grain_cells(exec_engine
         dimensions=["region", "city"],
         time_dimensions=month_td(),
         measures=[ModelMeasure(
-            formula="amount:sum(partition_by=region) + amount:sum(partition_by=city)",
+            formula="sum(amount, partition_by=region) + sum(amount, partition_by=city)",
             name="x",
         )],
     ))

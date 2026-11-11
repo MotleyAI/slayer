@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
 
@@ -57,8 +58,6 @@ class TestSearchLenientValidation:
     ) -> None:
         """DEV-1513: a resolved entity not rooted at ``datasource`` is
         dropped from the entities bucket with a specific warning shape."""
-        from slayer.core.models import DatasourceConfig, SlayerModel, Column
-
         await storage.save_datasource(
             DatasourceConfig(name="otherdb", type="sqlite", database=":memory:"),
         )

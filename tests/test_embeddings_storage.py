@@ -196,7 +196,7 @@ async def test_delete_model_cascades_subtree_embeddings(
         sql_table="public.orders",
         data_source="dsx",
         columns=[Column(name="id", type=DataType.INT, primary_key=True)],
-        measures=[ModelMeasure(name="rev", formula="id:sum")],
+        measures=[ModelMeasure(name="rev", formula="sum(id)")],
         aggregations=[Aggregation(name="custom_agg", formula="SUM({x})")],
     )
     await storage.save_model(model)

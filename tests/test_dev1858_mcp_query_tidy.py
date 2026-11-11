@@ -83,11 +83,11 @@ async def orders_server(tmp_path):
     ))
     await storage.save_model(SlayerModel(
         name="qb_by_status", data_source="ds",
-        source_queries=[SlayerQuery(
-            source_model="orders",
-            dimensions=["status"],
-            measures=[{"formula": "amount:sum"}],
-        )],
+        source_queries=[SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": ["status"],
+            "measures": [{"formula": "sum(amount)"}],
+        })],
     ))
     return create_mcp_server(storage=storage)
 
@@ -157,7 +157,7 @@ class TestQueryDispatch:
             orders_server,
             query={
                 "source_model": "orders",
-                "measures": [{"formula": "*:count"}],
+                "measures": [{"formula": "count(*)"}],
                 "dimensions": ["status"],
             },
             format="json",
@@ -173,12 +173,12 @@ class TestQueryDispatch:
                 {
                     "name": "monthly",
                     "source_model": "orders",
-                    "measures": [{"formula": "amount:sum"}],
+                    "measures": [{"formula": "sum(amount)"}],
                     "time_dimensions": [
                         {"dimension": "created_at", "granularity": "month"},
                     ],
                 },
-                {"source_model": "monthly", "measures": [{"formula": "*:count"}]},
+                {"source_model": "monthly", "measures": [{"formula": "count(*)"}]},
             ],
             dry_run=True,
         )
@@ -217,8 +217,8 @@ class TestQueryDispatch:
             query={
                 "source_model": "orders",
                 "dimensions": ["status"],
-                "measures": [{"formula": "*:count"}],
-                "order": [{"column": "*:count", "direction": "desc"}],
+                "measures": [{"formula": "count(*)"}],
+                "order": [{"column": "count(*)", "direction": "desc"}],
                 "limit": 1,
             },
             format="json",
@@ -268,8 +268,8 @@ _BROADCAST_QUERY = {
     "source_model": "orders",
     "dimensions": ["status"],
     "measures": [
-        {"formula": "amount:sum", "name": "m"},
-        {"formula": "customers.spend:sum", "name": "cm"},
+        {"formula": "sum(amount)", "name": "m"},
+        {"formula": "sum(customers.spend)", "name": "cm"},
     ],
 }
 
@@ -310,7 +310,7 @@ class TestExecutionWrappers:
             orders_server,
             query={
                 "source_model": "orders",
-                "measures": [{"formula": "*:count"}],
+                "measures": [{"formula": "count(*)"}],
                 "filters": ["status == '{s}'"],
                 "variables": {"s": "pending"},
             },
@@ -327,7 +327,7 @@ class TestExecutionWrappers:
             query={
                 "source_model": "orders",
                 "dimensions": ["status"],
-                "measures": [{"formula": "*:count"}],
+                "measures": [{"formula": "count(*)"}],
             },
             dry_run=True,
         )
@@ -340,7 +340,7 @@ class TestExecutionWrappers:
     async def test_explain_returns_sql_and_plan(self, orders_server) -> None:
         out = await _call(
             orders_server,
-            query={"source_model": "orders", "measures": [{"formula": "*:count"}]},
+            query={"source_model": "orders", "measures": [{"formula": "count(*)"}]},
             explain=True,
         )
         assert "SQL:" in out
@@ -349,7 +349,7 @@ class TestExecutionWrappers:
     async def test_show_sql_prefixes_results(self, orders_server) -> None:
         out = await _call(
             orders_server,
-            query={"source_model": "orders", "measures": [{"formula": "*:count"}]},
+            query={"source_model": "orders", "measures": [{"formula": "count(*)"}]},
             show_sql=True,
         )
         assert out.startswith("SQL:")
@@ -361,7 +361,7 @@ class TestExecutionWrappers:
         with pytest.raises(ToolError) as ei:
             await _call(
                 orders_server,
-                query={"source_model": "orders", "measures": [{"formula": "*:count"}]},
+                query={"source_model": "orders", "measures": [{"formula": "count(*)"}]},
                 format="xml",
             )
         message = str(ei.value)
@@ -375,7 +375,7 @@ class TestExecutionWrappers:
             query={
                 "source_model": "orders",
                 "dimensions": ["status"],
-                "measures": [{"formula": "*:count"}],
+                "measures": [{"formula": "count(*)"}],
             },
             format="JSON",
         )

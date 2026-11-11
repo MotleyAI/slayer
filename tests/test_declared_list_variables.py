@@ -291,10 +291,11 @@ async def test_e2e_scalar_and_list_return_identical_rows():
     engine, tmp = await _engine_with(model)
     try:
         async def _total(regions):
-            q = SlayerQuery(
-                source_model="orders", measures=[{"formula": "amount:sum"}],
-                variables={"regions": regions},
-            )
+            q = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(amount)"}],
+                "variables": {"regions": regions},
+            })
             resp = await engine.execute(q)
             assert resp.row_count == 1, resp.data
             return resp.data[0]["orders.amount_sum"]

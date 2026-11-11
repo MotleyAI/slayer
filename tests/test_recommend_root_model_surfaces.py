@@ -232,8 +232,8 @@ class TestSlayerClient:
         assert rec.root_model == "orders"  # to-one determiner of both
 
 
-UNRELATED_ITEMS = ["customers.name", "tickets.id:count"]
-UNRELATED_FLAGS = {"customers.name": False, "tickets.id:count": True}
+UNRELATED_ITEMS = ["customers.name", "count(tickets.id)"]
+UNRELATED_FLAGS = {"customers.name": False, "count(tickets.id)": True}
 
 
 def _flags(payload: dict) -> dict[str, bool]:
@@ -252,7 +252,7 @@ def _flagged_in_text(text: str) -> bool:
     def lines(item: str) -> list[str]:
         return [ln.lower() for ln in text.splitlines() if item in ln]
 
-    return bool(lines("tickets.id:count")) and all("unrelated" in ln for ln in lines("tickets.id:count")) \
+    return bool(lines("count(tickets.id)")) and all("unrelated" in ln for ln in lines("count(tickets.id)")) \
         and not any("unrelated" in ln for ln in lines("customers.name"))
 
 
@@ -302,7 +302,7 @@ class TestUnrelatedFlagSurfaces:
                 "data_source": "mydb", "root_model": "customers", "reachable": True,
                 "item_paths": [
                     {"input_item": "customers.name", "path": "name", "unrelated": False},
-                    {"input_item": "tickets.id:count", "path": "count(tickets.id)", "unrelated": True},
+                    {"input_item": "count(tickets.id)", "path": "count(tickets.id)", "unrelated": True},
                 ],
                 "coverage": [], "message": "", "warnings": [],
             }

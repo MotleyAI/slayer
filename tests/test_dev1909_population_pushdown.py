@@ -65,13 +65,13 @@ MODES = ["broadcast", "associate", "error"]
 OK = "orders.status = 'ok'"
 OR_MIX = "tier = 'bronze' or orders.status = 'ok'"
 
-SPEND = ModelMeasure(formula="spend:sum", name="sp")
-PARTITIONED = ModelMeasure(formula="spend:sum(partition_by=tier)", name="pt")
-COUNT = ModelMeasure(formula="*:count", name="n")
-WINDOWED = ModelMeasure(formula="spend:sum(window='1y')", name="w")
-LAST = ModelMeasure(formula="spend:last(customers.signup_at)", name="l")
+SPEND = ModelMeasure(formula="sum(spend)", name="sp")
+PARTITIONED = ModelMeasure(formula="sum(spend, partition_by=tier)", name="pt")
+COUNT = ModelMeasure(formula="count(*)", name="n")
+WINDOWED = ModelMeasure(formula="sum(spend, window='1y')", name="w")
+LAST = ModelMeasure(formula="last(spend, customers.signup_at)", name="l")
 NESTED = ModelMeasure(formula="avg(sum(spend, partition_by=tier))", name="ac")
-ORDERS_AMOUNT = ModelMeasure(formula="orders.amount:sum", name="oa")
+ORDERS_AMOUNT = ModelMeasure(formula="sum(orders.amount)", name="oa")
 
 #: Python-warning carriers the semi-join push must never emit.
 _SLAYER_WARNS = (
@@ -207,8 +207,8 @@ class TestMultiMeasureProducerNamesEveryMeasure:
         resp = await engine.execute(cust_q(
             dimensions=["tier"],
             measures=[
-                ModelMeasure(formula="spend:sum(partition_by=tier)", name="ptsum"),
-                ModelMeasure(formula="spend:max(partition_by=tier)", name="ptmax"),
+                ModelMeasure(formula="sum(spend, partition_by=tier)", name="ptsum"),
+                ModelMeasure(formula="max(spend, partition_by=tier)", name="ptmax"),
             ],
             filters=[OK]))
         named = {i.measure for i in pushed_filter_infos(resp)}

@@ -16,7 +16,7 @@ D-mixed ``region, city, MIXED_DIM AS mr``  (union-grain transform root, DEV-1839
         rank(region_total - city_total, direction='desc') → (N,CityA)=1 (N,CityB)=3 (N,NULL)=1
         (S,CityC)=4 (NULL,CityD)=4; monthly series per group = D-expr's)
 
-Group grains (m = ``amount:sum``, from the DEV-1739 rows)
+Group grains (m = ``sum(amount)``, from the DEV-1739 rows)
 ---------------------------------------------------------
 band per row (city total > 35): rows 1,2 (CityA 30)→0; row 3 (CityB 40)→1;
 row 4 (city NULL 30)→0; rows 5,6 (CityC 50)→1; row 7 (CityD 60)→1.
@@ -38,13 +38,13 @@ buckets and combined placeholders; ordering axis = month):
 * ``lag``/``lead`` step over EXISTING buckets: (S,·) Mar sees Jan's 25.
 * ``change`` / ``change_pct`` inherit time_shift's calendar semantics.
 * ``cumsum`` accumulates within the full dimension grain.
-* ``consecutive_periods(amount:sum > 28)`` counts existing buckets, resetting
+* ``consecutive_periods(sum(amount) > 28)`` counts existing buckets, resetting
   on a failed predicate (25 fails, 30/40/60/70 pass).
-* ``rank(amount:sum, direction='desc')`` (measure context) ranks the whole result DESC, RANK()
+* ``rank(sum(amount), direction='desc')`` (measure context) ranks the whole result DESC, RANK()
   ties; no time dimension in those cells.
 
 The fixed M-part × temporal-transform shape (``partitioned-aggregates`` delta):
-dims [region] + month, ``rt = amount:sum(partition_by=region)`` attaches the
+dims [region] + month, ``rt = sum(amount, partition_by=region)`` attaches the
 region totals (N 100 / S 50 / NULL 60) to every month row.
 """
 
@@ -74,10 +74,10 @@ from tests._dev1824_fixtures import (  # noqa: F401 — re-exported fixture surf
 
 dev1837_models = dev1824_models
 
-RANK_DIM = "rank(amount:sum(partition_by=region), direction='desc')"
-BARE_DIM = "amount:sum(partition_by=city)"
-MIXED_DIM = "rank(amount:sum(partition_by=region) - amount:sum(partition_by=city), direction='desc')"
-CP_PRED = "consecutive_periods(amount:sum > 28)"
+RANK_DIM = "rank(sum(amount, partition_by=region), direction='desc')"
+BARE_DIM = "sum(amount, partition_by=city)"
+MIXED_DIM = "rank(sum(amount, partition_by=region) - sum(amount, partition_by=city), direction='desc')"
+CP_PRED = "consecutive_periods(sum(amount) > 28)"
 
 #: Dimension-family query dimensions, in projection order.
 DIM_FAMILY_DIMS = {
@@ -91,19 +91,19 @@ DIM_FAMILY_DIMS = {
 
 #: Transform-measure formulas, keyed by op (the M-transform family).
 TRANSFORM_FORMULAS = {
-    "time_shift": "time_shift(amount:sum, -1)",
-    "lag": "lag(amount:sum)",
-    "lead": "lead(amount:sum)",
-    "change": "change(amount:sum)",
-    "change_pct": "change_pct(amount:sum)",
-    "cumsum": "cumsum(amount:sum)",
+    "time_shift": "time_shift(sum(amount), -1)",
+    "lag": "lag(sum(amount))",
+    "lead": "lead(sum(amount))",
+    "change": "change(sum(amount))",
+    "change_pct": "change_pct(sum(amount))",
+    "cumsum": "cumsum(sum(amount))",
     "consecutive_periods": CP_PRED,
-    "rank": "rank(amount:sum, direction='desc')",
+    "rank": "rank(sum(amount), direction='desc')",
 }
 #: Transform ops that need the month time dimension (rank is timeless).
 TD_TRANSFORM_OPS = frozenset(TRANSFORM_FORMULAS) - {"rank"}
 
-#: ``amount:sum`` per group, WITHOUT the time dimension.
+#: ``sum(amount)`` per group, WITHOUT the time dimension.
 GROUP_M = {
     "col": {("North",): 100.0, ("South",): 50.0, (None,): 60.0},
     "expr": {
@@ -123,7 +123,7 @@ GROUP_M = {
     },
 }
 
-#: ``amount:sum`` per group WITH the month time dimension appended to the key.
+#: ``sum(amount)`` per group WITH the month time dimension appended to the key.
 GROUP_M_MONTH = {
     "col": {
         ("North", "2024-01"): 30.0, ("North", "2024-02"): 70.0,
@@ -282,12 +282,12 @@ TRANSFORM_X = {
     },
 }
 
-#: Bare ``amount:sum(window='1y')`` at the D-col grain — running region totals.
+#: Bare ``sum(amount, window='1y')`` at the D-col grain — running region totals.
 COL_WM = {
     ("North", "2024-01"): 30.0, ("North", "2024-02"): 100.0,
     ("South", "2024-01"): 25.0, ("South", "2024-03"): 50.0, (None, "2024-03"): 60.0,
 }
-#: ``customers.spend:sum`` attaches the grand customer total to every row.
+#: ``sum(customers.spend)`` attaches the grand customer total to every row.
 CM_TOTAL = 350.0
 
 

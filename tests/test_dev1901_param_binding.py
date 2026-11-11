@@ -65,82 +65,82 @@ def _fragment(value) -> SqlFragmentKey:
 
 class TestColumnDefaults:
     def test_bare_default_reads_the_owner_even_when_the_root_shadows_it(self) -> None:
-        assert _kw("customers.spend:wshadow") == {
+        assert _kw("wshadow(customers.spend)") == {
             "weight": ColumnKey(path=("customers",), leaf="factor")}
 
     def test_dotted_default_from_a_root_owner(self) -> None:
-        assert _kw("amount:wcs") == {"weight": SPEND}
+        assert _kw("wcs(amount)") == {"weight": SPEND}
 
     def test_derived_default(self) -> None:
-        assert _kw("amount:wcd") == {
+        assert _kw("wcd(amount)") == {
             "weight": ColumnSqlKey(path=(), model="orders", column_name="cust_spend")}
 
     def test_cancelled_default(self) -> None:
-        assert _kw("customers.regions.countries.gdp:wsum_region_pop") == {"weight": POP}
+        assert _kw("wsum_region_pop(customers.regions.countries.gdp)") == {"weight": POP}
 
     def test_double_cancel(self) -> None:
-        assert _kw("customers.regions.countries.gdp:wsum_cust_spend2") == {"weight": SPEND}
+        assert _kw("wsum_cust_spend2(customers.regions.countries.gdp)") == {"weight": SPEND}
 
     def test_cancel_then_forward(self) -> None:
-        assert _kw("customers.regions.countries.gdp:wsum_plan_fee") == {
+        assert _kw("wsum_plan_fee(customers.regions.countries.gdp)") == {
             "weight": ColumnKey(path=("customers", "plans"), leaf="fee")}
 
     def test_owner_unreachable_qualifier_anchors_at_the_root(self) -> None:
-        assert _kw("customers.spend:wstore") == {
+        assert _kw("wstore(customers.spend)") == {
             "weight": ColumnKey(path=("stores",), leaf="rent")}
 
     def test_owner_at_root_consumes_its_own_name(self) -> None:
-        assert _kw("amount:wself") == {
+        assert _kw("wself(amount)") == {
             "weight": ColumnSqlKey(path=(), model="orders", column_name="cost")}
 
     def test_explicit_argument_replaces_the_default(self) -> None:
-        assert _kw("amount:wcs(weight=store_no)") == {
+        assert _kw("wcs(amount, weight=store_no)") == {
             "weight": ColumnKey(path=(), leaf="store_no")}
 
 
 class TestScalarAndExpressionDefaults:
     def test_literal_default_binds_the_normalized_scalar(self) -> None:
-        assert _kw("amount:wlit") == {"k": Decimal("2")}
+        assert _kw("wlit(amount)") == {"k": Decimal("2")}
 
     def test_literal_default_equals_its_explicit_twin(self) -> None:
-        assert _key("amount:wlit") == _key("amount:wlit(k=2)")
+        assert _key("wlit(amount)") == _key("wlit(amount, k=2)")
 
     def test_expression_default_binds_a_fragment(self) -> None:
-        frag = _fragment(_kw("amount:wcase")["weight"])
+        frag = _fragment(_kw("wcase(amount)")["weight"])
         assert set(frag.refs) == {AMOUNT}
         assert "CASE" in frag.template.upper()
 
     def test_cancelled_expression_default(self) -> None:
-        frag = _fragment(_kw("customers.regions.countries.gdp:wsum_region_pop_expr")["weight"])
+        frag = _fragment(_kw("wsum_region_pop_expr(customers.regions.countries.gdp)")["weight"])
         assert frag.refs == (POP,)
 
     def test_mixed_frame_expression_default_resolves_per_reference(self) -> None:
-        frag = _fragment(_kw("customers.spend:wmix_q")["weight"])
+        frag = _fragment(_kw("wmix_q(customers.spend)")["weight"])
         assert set(frag.refs) == {ColumnKey(path=("customers",), leaf="group"), AMOUNT}
 
     def test_zero_reference_expression(self) -> None:
-        frag = _fragment(_kw("amount:wzero")["weight"])
+        frag = _fragment(_kw("wzero(amount)")["weight"])
         assert frag.refs == ()
 
     def test_formatting_variants_intern(self) -> None:
-        assert _kw("amount:wfmt_a") == _kw("amount:wfmt_b")
+        assert _kw("wfmt_a(amount)") == _kw("wfmt_b(amount)")
 
 
 class TestExplicitStringFragments:
     def test_a_string_column_resolves_in_the_query_frame(self) -> None:
         # The default `factor` reads the owner (customers); the string reads the root.
-        assert _kw("customers.spend:wshadow(weight='factor')") == {
+        assert _kw("wshadow(customers.spend, weight='factor')") == {
             "weight": ColumnKey(path=(), leaf="factor")}
 
     def test_a_string_equals_its_unquoted_twin(self) -> None:
-        assert _key("amount:wsum(weight='customers.region_id')") \
-            == _key("amount:wsum(weight=customers.region_id)")
+        assert _key("wsum(amount, weight='customers.region_id')") \
+            == _key("wsum(amount, weight=customers.region_id)")
 
     def test_a_string_expression_equals_the_identical_default(self) -> None:
-        assert _kw("amount:wsum(weight='customers.spend * 1')") == _kw("amount:wfmt_a")
+        assert _kw("wsum(amount, weight='customers.spend * 1')") == _kw("wfmt_a(amount)")
 
     def test_a_marker_string_stays_a_string(self) -> None:
-        kw = _kw("customers.spend:wshadow(window='90d')")
+        kw = _kw("wshadow(customers.spend, window='90d')")
         assert kw["window"] == "90d"
         assert kw["weight"] == ColumnKey(path=("customers",), leaf="factor")
 
@@ -149,13 +149,13 @@ class TestDefaultEqualsTwin:
     """A default and its identical explicit spelling are one key (one slot)."""
 
     @pytest.mark.parametrize("default,explicit", [
-        ("amount:wsum", "amount:wsum(weight=store_no)"),
-        ("amount:wcs", "amount:wcs(weight=customers.spend)"),
-        ("customers.spend:wshadow", "customers.spend:wshadow(weight=customers.factor)"),
-        ("customers.regions.countries.gdp:wsum_region_pop",
-         "customers.regions.countries.gdp:wsum_region_pop(weight=customers.regions.pop)"),
-        ("customers.regions.countries.gdp:wsum_fan",
-         "customers.regions.countries.gdp:wsum_fan(weight=customers.regions.region_events.value)"),
+        ("wsum(amount)", "wsum(amount, weight=store_no)"),
+        ("wcs(amount)", "wcs(amount, weight=customers.spend)"),
+        ("wshadow(customers.spend)", "wshadow(customers.spend, weight=customers.factor)"),
+        ("wsum_region_pop(customers.regions.countries.gdp)",
+         "wsum_region_pop(customers.regions.countries.gdp, weight=customers.regions.pop)"),
+        ("wsum_fan(customers.regions.countries.gdp)",
+         "wsum_fan(customers.regions.countries.gdp, weight=customers.regions.region_events.value)"),
     ])
     def test_one_key(self, default: str, explicit: str) -> None:
         assert _key(default) == _key(explicit)
@@ -170,12 +170,12 @@ class TestOwners:
         assert set(frag.refs) == {POP}
 
     def test_a_stage_source_binds_no_defaults(self) -> None:
-        key = _stage_key("rev:max")
+        key = _stage_key("max(rev)")
         assert key.kwargs == ()
 
     def test_a_custom_aggregation_without_an_owner_is_unknown(self) -> None:
         with pytest.raises(ValueError, match="wsum"):
-            _stage_key("rev:wsum")
+            _stage_key("wsum(rev)")
 
 
 def _stage_key(formula: str) -> AggregateKey:
@@ -220,20 +220,20 @@ class TestUnanalysableText:
     @pytest.mark.parametrize("agg", sorted(BAD_DEFAULTS))
     def test_default(self, agg: str) -> None:
         with pytest.raises(UnanalyzableAggregationParameterError) as ei:
-            _key(f"amount:{agg}")
+            _key(f"{agg}(amount)")
         self._assert_names(ei.value, agg=agg, text=BAD_DEFAULTS[agg])
 
     @pytest.mark.parametrize("text", sorted(BAD_DEFAULTS.values()))
     def test_string_argument(self, text: str) -> None:
         quoted = text.replace("'", "''")
         with pytest.raises(UnanalyzableAggregationParameterError) as ei:
-            _key(f"amount:wsum(weight='{quoted}')")
+            _key(f"wsum(amount, weight='{quoted}')")
         self._assert_names(ei.value, agg="wsum", text=text)
 
     @pytest.mark.parametrize("text", ROW_TEXTS)
     def test_row_expression_binds(self, text: str) -> None:
         quoted = text.replace("'", "''")
-        assert _kw(f"amount:wsum(weight='{quoted}')")["weight"] is not None
+        assert _kw(f"wsum(amount, weight='{quoted}')")["weight"] is not None
 
     @pytest.mark.parametrize("dialect,text", [
         ("duckdb", "list_transform(amount, x -> x + 1)"),
@@ -243,7 +243,7 @@ class TestUnanalysableText:
         models = dev1901_models()
         quoted = text.replace("'", "''")
         key = bind_expr(
-            parse_expr(f"amount:wsum(weight='{quoted}')"),
+            parse_expr(f"wsum(amount, weight='{quoted}')"),
             scope=ModelScope(source_model=models[0]),
             bundle=bundle_of(models, dialect=dialect), allow_measures=True,
         ).value_key
@@ -255,7 +255,7 @@ class TestUnanalysableText:
 
     async def test_no_sql_reaches_the_database(self, engine, monkeypatch) -> None:
         sent = execution_spy(monkeypatch)
-        query = orders_q(measures=[{"formula": "amount:wbad_agg", "name": "w"}])
+        query = orders_q(measures=[{"formula": "wbad_agg(amount)", "name": "w"}])
         with pytest.raises(UnanalyzableAggregationParameterError):
             await engine.execute(query)
         assert sent == []
@@ -270,15 +270,15 @@ async def engine(request):
 class TestOtherBindErrors:
     def test_missing_column_raises_the_explicit_twins_error(self) -> None:
         with pytest.raises(UnknownReferenceError, match="nosuch"):
-            _key("amount:wsum(weight=nosuch)")
+            _key("wsum(amount, weight=nosuch)")
         with pytest.raises(UnknownReferenceError, match="nosuch"):
-            _key("amount:wmissing")
+            _key("wmissing(amount)")
 
     def test_unbound_placeholder_fails_at_bind(self) -> None:
         with pytest.raises(ValueError, match="(?s)wunbound.*scale|scale.*wunbound"):
-            _key("amount:wunbound")
+            _key("wunbound(amount)")
 
-    @pytest.mark.parametrize("formula", ["customers.spend:wrev", "customers.spend:wrev_expr"])
+    @pytest.mark.parametrize("formula", ["wrev(customers.spend)", "wrev_expr(customers.spend)"])
     def test_edge_name_revisit_is_circular(self, formula: str) -> None:
         models = revisit_models()
         with pytest.raises(CircularJoinPathError):
@@ -288,7 +288,7 @@ class TestOtherBindErrors:
     def test_window_reserved_for_a_stored_model(self, placeholder: bool) -> None:
         models = window_param_models(placeholder=placeholder)
         with pytest.raises(SlayerError, match="(?s)wwin.*trailing|trailing.*wwin"):
-            _key("amount:wwin", models=models)
+            _key("wwin(amount)", models=models)
 
 
 def _first_token_revisit_models() -> List[SlayerModel]:
@@ -317,7 +317,7 @@ def _first_token_revisit_models() -> List[SlayerModel]:
 class TestFragmentTextSurvives:
     def test_a_literal_spelling_the_placeholder_sentinel_is_kept(self) -> None:
         frag = _fragment(_kw(
-            "amount:wsum(weight='CASE WHEN status = ''__slayer_r0__'' THEN amount ELSE 0 END')")["weight"])
+            "wsum(amount, weight='CASE WHEN status = ''__slayer_r0__'' THEN amount ELSE 0 END')")["weight"])
         assert "'__slayer_r0__'" in frag.template, frag.template
         assert set(frag.refs) == {AMOUNT, ColumnKey(path=(), leaf="status")}
 
@@ -326,7 +326,7 @@ class TestFirstTokenRevisit:
     def test_is_circular_not_a_root_fallback(self) -> None:
         models = _first_token_revisit_models()
         with pytest.raises(CircularJoinPathError, match="back"):
-            _key("primary.spend:wback", models=models)
+            _key("wback(primary.spend)", models=models)
 
 
 class TestUnattributableParameterName:

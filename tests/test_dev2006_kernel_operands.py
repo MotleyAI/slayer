@@ -327,7 +327,7 @@ class TestAssociatedRankedPickStaysTyped:
                 dimension="customers.signup_at",
                 granularity=f1841.TimeGranularity.MONTH,
             )],
-            measures=[f1841.ModelMeasure(formula="customers.spend:last", name="l")],
+            measures=[f1841.ModelMeasure(formula="last(customers.spend)", name="l")],
         )
         with pytest.raises(AssociationError):
             await dev1841_engine.execute(query)

@@ -37,8 +37,8 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="amount:sum", name="m")
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
+M = ModelMeasure(formula="sum(amount)", name="m")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
 
 
 async def _dry_scope_closed(engine, query, dialect) -> None:
@@ -145,7 +145,7 @@ class TestProducerShapes:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.regions.name"],
-            measures=[ModelMeasure(formula="customers.gold_spend:sum", name="gs")],
+            measures=[ModelMeasure(formula="sum(customers.gold_spend)", name="gs")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.customers.regions.name")
@@ -158,7 +158,7 @@ class TestProducerShapes:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.tier"], measures=[M],
-            order=[OrderItem(column="customers.spend:sum", direction="desc")],
+            order=[OrderItem.model_validate({"column": "sum(customers.spend)", "direction": "desc"})],
         )
         resp = await engine.execute(query)
         tiers = [r["orders.customers.tier"] for r in resp.data]
@@ -172,7 +172,7 @@ class TestProducerShapes:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.tier"], measures=[M],
-            filters=["customers.spend:sum > 100"],
+            filters=["sum(customers.spend) > 100"],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.customers.tier")
@@ -187,7 +187,7 @@ class TestProducerShapes:
         query = q(
             dimensions=["customers.tier"],
             measures=[ModelMeasure(
-                formula="customers.spend:sum / amount:sum", name="ratio",
+                formula="sum(customers.spend) / sum(amount)", name="ratio",
             )],
         )
         resp = await engine.execute(query)

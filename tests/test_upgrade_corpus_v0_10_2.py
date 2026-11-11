@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -92,6 +93,29 @@ async def _load_all(storage: StorageBackend) -> tuple[list[SlayerModel], list]:
     return models, memories
 
 
+_STRING_LITERAL = re.compile(r"'(?:[^']|'')*'")
+_COLON_SPAN = re.compile(r"[\w*\"]:[A-Za-z_]")
+#: Keys whose string values are Mode-B text.
+_MODE_B_KEYS = frozenset({"formula", "expression", "raw_formula", "filters", "dimensions", "time_dimensions",
+                          "dimension", "column", "order", "main_time_dimension"})
+
+
+def _mode_b_texts(value: Any, *, mode_b: bool = False) -> list[str]:
+    """Every Mode-B string inside a dumped model or query."""
+    if isinstance(value, str):
+        return [value] if mode_b else []
+    if isinstance(value, list):
+        return [t for v in value for t in _mode_b_texts(v, mode_b=mode_b)]
+    if isinstance(value, dict):
+        return [t for k, v in value.items() if k != "columns"
+                for t in _mode_b_texts(v, mode_b=mode_b or k in _MODE_B_KEYS)]
+    return []
+
+
+def _colon_spans(text: str) -> list[str]:
+    return _COLON_SPAN.findall(_STRING_LITERAL.sub("''", text))
+
+
 def _cell(value: Any) -> Any:
     return round(value, 6) if isinstance(value, float) else (None if value is None else str(value))
 
@@ -101,7 +125,7 @@ def _rows(resp, *, ordered: bool) -> list[dict]:
     return rows if ordered else sorted(rows, key=lambda r: json.dumps(r, sort_keys=True))
 
 
-async def _run(storage: StorageBackend, key: str) -> list[dict]:
+async def _execute(storage: StorageBackend, key: str) -> Any:
     spec = EXPECTED[key]
     if key.startswith(MEMORY_PREFIX):
         query = (await storage.get_memory(key.removeprefix(MEMORY_PREFIX))).query
@@ -113,7 +137,11 @@ async def _run(storage: StorageBackend, key: str) -> list[dict]:
         resp = await engine.execute(query, data_source=spec["data_source"])
     finally:
         await engine.aclose()
-    return _rows(resp, ordered=spec["ordered"])
+    return resp
+
+
+async def _run(storage: StorageBackend, key: str) -> list[dict]:
+    return _rows(await _execute(storage, key), ordered=EXPECTED[key]["ordered"])
 
 
 class TestOnline:
@@ -125,6 +153,11 @@ class TestOnline:
     @pytest.mark.parametrize("key", sorted(EXPECTED))
     async def test_recorded_query_returns_0_10_2_rows(self, online_store, key):
         assert await _run(online_store, key) == EXPECTED[key]["rows"]
+
+    @pytest.mark.parametrize("key", sorted(k for k in EXPECTED if EXPECTED[k]["rows"]))
+    async def test_recorded_query_returns_0_10_2_keys(self, online_store, key):
+        resp = await _execute(online_store, key)
+        assert sorted(c.rsplit(".", 1)[-1] for c in resp.columns) == sorted(EXPECTED[key]["rows"][0])
 
     async def test_every_model_resaves(self, online_store):
         models, _ = await _load_all(online_store)
@@ -152,6 +185,14 @@ class TestOnline:
 
 
 class TestOffline:
+    async def test_every_colon_formula_loads_functional(self, offline_store):
+        models, memories = await _load_all(offline_store)
+        dumped = [m.model_dump(mode="json") for m in models] + [
+            m.query.model_dump(mode="json") for m in memories if m.query is not None]
+        texts = [t for d in dumped for t in _mode_b_texts(d)]
+        assert any("sum(amount)" in t for t in texts)
+        assert [t for t in texts if _colon_spans(t)] == []
+
     async def test_every_document_loads_without_a_connection(self, offline_store):
         models, memories = await _load_all(offline_store)
         assert models

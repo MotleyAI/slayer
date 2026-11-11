@@ -50,7 +50,7 @@ async def storage() -> AsyncIterator[YAMLStorage]:
                         type=DataType.DOUBLE,
                     ),
                 ],
-                measures=[ModelMeasure(formula="amount:sum", name="rev")],
+                measures=[ModelMeasure(formula="sum(amount)", name="rev")],
             )
         )
         await s.set_datasource_priority(["mydb"])
@@ -82,7 +82,7 @@ class TestSaveMemory:
             learning="rev",
             linked_entities={
                 "source_model": "orders",
-                "measures": [{"formula": "amount:sum"}],
+                "measures": [{"formula": "sum(amount)"}],
             },
         )
         assert resp.memory_id == "1"

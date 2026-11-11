@@ -39,13 +39,13 @@ class TestMixedWindowedRankedDeferred:
 
     async def test_mixed_windowed_grain_deferred(self) -> None:
         band = (
-            "rank(amount:sum(window='90d', partition_by=region) - "
-            "amount:sum(partition_by=city), direction='desc')"
+            "rank(sum(amount, window='90d', partition_by=region) - "
+            "sum(amount, partition_by=city), direction='desc')"
         )
         query = q(
             dimensions=["region", "city", {"expression": band, "name": "x"}],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         sql = await gen(query)  # DEV-1835 lift: renders, no longer raises
         assert_scope_closed(sql, dialect="duckdb")
@@ -53,12 +53,12 @@ class TestMixedWindowedRankedDeferred:
 
     async def test_mixed_first_last_grain_deferred(self) -> None:
         band = (
-            "rank(amount:last(partition_by=region) - "
-            "amount:sum(partition_by=city), direction='desc')"
+            "rank(last(amount, partition_by=region) - "
+            "sum(amount, partition_by=city), direction='desc')"
         )
         query = q(
             dimensions=["region", "city", {"expression": band, "name": "x"}],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         sql = await gen(query)  # DEV-1835 lift: renders, no longer raises
         assert_scope_closed(sql, dialect="duckdb")
@@ -70,12 +70,12 @@ class TestTransformKwargAgainstUnion:
 
     async def test_kwarg_outside_union_fails_cleanly(self) -> None:
         band = (
-            "rank(amount:sum(partition_by=region) - "
-            "amount:sum(partition_by=city), partition_by=channel, direction='desc')"
+            "rank(sum(amount, partition_by=region) - "
+            "sum(amount, partition_by=city), partition_by=channel, direction='desc')"
         )
         query = q(
             dimensions=["region", "city", {"expression": band, "name": "x"}],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -86,12 +86,12 @@ class TestTransformKwargAgainstUnion:
 class TestUnchangedGuards:
     async def test_cross_model_inner_source_still_rejected(self) -> None:
         band = (
-            "rank(customers.spend:sum(partition_by=region) - "
-            "amount:sum(partition_by=city), direction='desc')"
+            "rank(sum(customers.spend, partition_by=region) - "
+            "sum(amount, partition_by=city), direction='desc')"
         )
         query = q(
             dimensions=["region", "city", {"expression": band, "name": "x"}],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -99,10 +99,10 @@ class TestUnchangedGuards:
         assert "__regroup__" not in str(ei.value)
 
     async def test_bare_inner_aggregate_still_rejected(self) -> None:
-        band = "rank(amount:sum - amount:sum(partition_by=city), direction='desc')"
+        band = "rank(sum(amount) - sum(amount, partition_by=city), direction='desc')"
         query = q(
             dimensions=["region", "city", {"expression": band, "name": "x"}],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -120,11 +120,11 @@ class TestTemporalAxisContainment:
     async def test_single_grain_missing_time_axis_fails_cleanly(
         self, transform: str,
     ) -> None:
-        band = transform.format("amount:sum(partition_by=[region, city])")
+        band = transform.format("sum(amount, partition_by=[region, city])")
         query = q(
             dimensions=["region", "city", {"expression": band, "name": "cs"}],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -132,11 +132,11 @@ class TestTemporalAxisContainment:
         assert "partition_by" in str(ei.value)
 
     async def test_mixed_grain_missing_time_axis_fails_cleanly(self) -> None:
-        band = "cumsum(amount:sum(partition_by=region) - amount:sum(partition_by=city))"
+        band = "cumsum(sum(amount, partition_by=region) - sum(amount, partition_by=city))"
         query = q(
             dimensions=["region", "city", {"expression": band, "name": "cs"}],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -145,11 +145,11 @@ class TestTemporalAxisContainment:
 
     async def test_time_axis_inside_grain_stays_legal(self, exec_backend) -> None:
         dialect, engine = exec_backend
-        band = "cumsum(amount:sum(partition_by=[region, ordered_at]))"
+        band = "cumsum(sum(amount, partition_by=[region, ordered_at]))"
         query = q(
             dimensions=["region", {"expression": band, "name": "cs"}],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         resp = await engine.execute(query)
         got = {
@@ -177,7 +177,7 @@ class TestSameGrainMultiAggregateLocking:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", {"expression": SAMEGRAIN_RANK, "name": "gr"}],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region")

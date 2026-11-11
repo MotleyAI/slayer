@@ -24,7 +24,7 @@ from tests._dev1847_fixtures import (
 BAND = {"expression": SPEND_BAND_EXPR, "name": "spend_band"}
 # A second computed dimension whose expression nests an aggregate partitioned by
 # the attach-carrying spend_band (the doubly-nested attach).
-BAND2 = {"expression": "CASE WHEN amount:sum(partition_by=spend_band) > 100 "
+BAND2 = {"expression": "CASE WHEN sum(amount, partition_by=spend_band) > 100 "
                        "THEN 'big' ELSE 'small' END", "name": "size"}
 
 
@@ -39,8 +39,8 @@ class TestPartitionByBandedDimension:
         """The band total broadcasts across the band's rows."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", BAND],
-            measures=[ModelMeasure(formula="amount:sum", name="tot"),
-                      ModelMeasure(formula="amount:sum(partition_by=spend_band)",
+            measures=[ModelMeasure(formula="sum(amount)", name="tot"),
+                      ModelMeasure(formula="sum(amount, partition_by=spend_band)",
                                    name="bt")]))
         by = rows_by(resp, "sales.region", "sales.spend_band")
         assert float(by[("North", "hi")]["sales.bt"]) == pytest.approx(
@@ -55,14 +55,14 @@ class TestPartitionByBandedDimension:
         NotImplementedError here means the nested-attach guard is back."""
         await exec_engine.execute(sales_q(
             dimensions=["region", BAND],
-            measures=[ModelMeasure(formula="amount:sum(partition_by=spend_band)",
+            measures=[ModelMeasure(formula="sum(amount, partition_by=spend_band)",
                                    name="bt")]))
 
     async def test_nested_inside_another_computed_dimension(self, exec_engine):
         """A second computed dimension partitioned by spend_band executes."""
         resp = await exec_engine.execute(sales_q(
             dimensions=[BAND, BAND2],
-            measures=[ModelMeasure(formula="amount:sum", name="tot")]))
+            measures=[ModelMeasure(formula="sum(amount)", name="tot")]))
         by = rows_by(resp, "sales.spend_band", "sales.size")
         # hi band total 340 > 100 -> 'big'; lo band total 85 <= 100 -> 'small'.
         assert ("hi", "big") in by
@@ -101,8 +101,8 @@ class TestFilterAndOrderSurfaces:
         (Codex review find) — only the hi band (340 > 100) survives."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", BAND],
-            measures=[ModelMeasure(formula="amount:sum", name="tot")],
-            filters=["amount:sum(partition_by=spend_band) > 100"]))
+            measures=[ModelMeasure(formula="sum(amount)", name="tot")],
+            filters=["sum(amount, partition_by=spend_band) > 100"]))
         labels = {row["sales.spend_band"] for row in resp.data}
         assert resp.data
         assert labels == {"hi"}
@@ -112,8 +112,8 @@ class TestFilterAndOrderSurfaces:
         rows (340) sort before lo (90)."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", BAND],
-            measures=[ModelMeasure(formula="amount:sum", name="tot")],
-            order=[{"column": "amount:sum(partition_by=spend_band)",
+            measures=[ModelMeasure(formula="sum(amount)", name="tot")],
+            order=[{"column": "sum(amount, partition_by=spend_band)",
                     "direction": "desc"}]))
         labels = [row["sales.spend_band"] for row in resp.data]
         assert labels == sorted(labels, key=lambda x: x != "hi")

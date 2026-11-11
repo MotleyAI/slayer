@@ -93,7 +93,7 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
                 Column(name="status", sql="status", type=DataType.TEXT),
             ],
             measures=[
-                ModelMeasure(formula="amount:sum / *:count", name="aov"),
+                ModelMeasure(formula="sum(amount) / count(*)", name="aov"),
             ],
         )
     )
@@ -156,7 +156,7 @@ class TestInspectModelLearningsSection:
             entities=["mydb.orders.amount"],
             query=SlayerQuery(
                 source_model="orders",
-                measures=[ModelMeasure(formula="amount:sum")],
+                measures=[ModelMeasure(formula="sum(amount)")],
             ),
         )
         result = await _call(

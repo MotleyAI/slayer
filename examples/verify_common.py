@@ -232,9 +232,9 @@ def check_median_percentile(measure="quantity"):
         {
             "source_model": "orders",
             "measures": [
-                f"{measure}:median",
-                f"{measure}:percentile(p=0.25)",
-                f"{measure}:percentile(p=0.75)",
+                f"median({measure})",
+                f"percentile({measure}, p=0.25)",
+                f"percentile({measure}, p=0.75)",
             ],
         },
     )
@@ -284,10 +284,10 @@ def check_stddev_var(measure="quantity"):
         {
             "source_model": "orders",
             "measures": [
-                f"{measure}:stddev_samp",
-                f"{measure}:stddev_pop",
-                f"{measure}:var_samp",
-                f"{measure}:var_pop",
+                f"stddev_samp({measure})",
+                f"stddev_pop({measure})",
+                f"var_samp({measure})",
+                f"var_pop({measure})",
             ],
         },
     )
@@ -340,9 +340,9 @@ def check_corr_covar(measure="quantity", other="customer_id"):
         {
             "source_model": "orders",
             "measures": [
-                f"{measure}:corr(other={other})",
-                f"{measure}:covar_samp(other={other})",
-                f"{measure}:covar_pop(other={other})",
+                f"corr({measure}, other={other})",
+                f"covar_samp({measure}, other={other})",
+                f"covar_pop({measure}, other={other})",
             ],
         },
     )

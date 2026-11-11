@@ -17,8 +17,8 @@ from tests._dev1840_fixtures import bundle, dev1840_models
 from tests._dev1841_fixtures import ModelMeasure, assoc_q
 from tests._dev1900_fixtures import dev1900_models, orders_q
 
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
-HEADLINE = ("customers.spend:weighted_avg("
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+HEADLINE = ("weighted_avg(customers.spend, "
             "weight=sum(amount, partition_by=customers.regions.name))")
 
 
@@ -77,7 +77,7 @@ class TestTwoHopHome:
         the two-hop reverse path ('customers', 'orders')."""
         att = _assoc(plan_query(
             query=orders_q(dimensions=["status"],
-                           measures=[ModelMeasure(formula="customers.regions.pop:sum",
+                           measures=[ModelMeasure(formula="sum(customers.regions.pop)",
                                                   name="rp")],
                            to_many_handling="associate"),
             bundle=_bundle1900()))

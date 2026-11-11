@@ -56,16 +56,16 @@ class TestOrderOnlyPartitionedAggregate:
         # which silently sorts by the plain per-city total instead).
         sql = await gen(_q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula="amount:sum", name="cell")],
-            order=[{"column": "amount:sum(partition_by=region)", "direction": "asc"}],
+            measures=[ModelMeasure(formula="sum(amount)", name="cell")],
+            order=[{"column": "sum(amount, partition_by=region)", "direction": "asc"}],
         ))
         assert _count_isolated_ctes(sql) == 1
 
     async def test_order_only_sorts_by_region_total(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula="amount:sum", name="cell")],
-            order=[{"column": "amount:sum(partition_by=region)", "direction": "asc"}],
+            measures=[ModelMeasure(formula="sum(amount)", name="cell")],
+            order=[{"column": "sum(amount, partition_by=region)", "direction": "asc"}],
         ))
         totals = [REGION_TOTAL[r["orders.region"]] for r in resp.data]
         assert totals == sorted(totals)
@@ -77,9 +77,9 @@ class TestOrderOnlyPartitionedAggregate:
     async def test_composite_only_in_order_by_isolates(self) -> None:
         sql = await gen(_q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula="amount:sum", name="cell")],
+            measures=[ModelMeasure(formula="sum(amount)", name="cell")],
             order=[{
-                "column": "amount:sum / amount:sum(partition_by=region)",
+                "column": "sum(amount) / sum(amount, partition_by=region)",
                 "direction": "asc",
             }],
         ))
@@ -90,9 +90,9 @@ class TestOrderOnlyPartitionedAggregate:
         # attached partitioned leaf, so rows come back in share order.
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula="amount:sum", name="cell")],
+            measures=[ModelMeasure(formula="sum(amount)", name="cell")],
             order=[{
-                "column": "amount:sum / amount:sum(partition_by=region)",
+                "column": "sum(amount) / sum(amount, partition_by=region)",
                 "direction": "asc",
             }],
         ))
@@ -111,8 +111,8 @@ class TestInFilterOverComposite:
         # WHERE with no placeholder leak.
         q = _q(
             dimensions=["region", "city"],
-            filters=["amount:sum / amount:sum(partition_by=region) > 0.5"],
-            measures=[ModelMeasure(formula="amount:sum", name="cell")],
+            filters=["sum(amount) / sum(amount, partition_by=region) > 0.5"],
+            measures=[ModelMeasure(formula="sum(amount)", name="cell")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -122,8 +122,8 @@ class TestDuplicateAliases:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             measures=[
-                ModelMeasure(formula="amount:sum(partition_by=region)", name="a"),
-                ModelMeasure(formula="amount:sum(partition_by=region)", name="b"),
+                ModelMeasure(formula="sum(amount, partition_by=region)", name="a"),
+                ModelMeasure(formula="sum(amount, partition_by=region)", name="b"),
             ],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
@@ -142,8 +142,8 @@ class TestPaginationWithHiddenOrdering:
         # the plain per-city total) instead pages into two North rows → [100, 100].
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula="amount:sum", name="cell")],
-            order=[{"column": "amount:sum(partition_by=region)", "direction": "asc"}],
+            measures=[ModelMeasure(formula="sum(amount)", name="cell")],
+            order=[{"column": "sum(amount, partition_by=region)", "direction": "asc"}],
             limit=2, offset=1,
         ))
         assert len(resp.data) == 2
@@ -159,7 +159,7 @@ class TestResponseContractNoLeak:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             measures=[ModelMeasure(
-                formula="amount:sum(partition_by=region)", name="region_rev",
+                formula="sum(amount, partition_by=region)", name="region_rev",
             )],
         ))
         data_keys = set(resp.data[0].keys())
@@ -208,8 +208,8 @@ class TestReservedPrefixAcrossStages:
         stage1 = SlayerQuery(
             name="stage1", source_model="orders", dimensions=["region"],
             measures=[
-                ModelMeasure(formula="amount:sum", name="__regroup__0__amount_sum"),
-                ModelMeasure(formula="amount:sum", name="total"),
+                ModelMeasure(formula="sum(amount)", name="__regroup__0__amount_sum"),
+                ModelMeasure(formula="sum(amount)", name="total"),
             ],
         )
         # stage2's computed dimension activates the regroup desugar, whose
@@ -220,12 +220,12 @@ class TestReservedPrefixAcrossStages:
                 "region",
                 {
                     "expression":
-                        "CASE WHEN total:sum(partition_by=region) > 5 "
+                        "CASE WHEN sum(total, partition_by=region) > 5 "
                         "THEN 1 ELSE 0 END",
                     "name": "band",
                 },
             ],
-            measures=[ModelMeasure(formula="total:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(total)", name="s")],
         )
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage, named_queries={"stage1": stage1},

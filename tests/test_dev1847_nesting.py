@@ -87,7 +87,7 @@ class TestSharedProducerRendersOnce:
         band = {"expression": SPEND_BAND_EXPR, "name": "spend_band"}
         both = sales_q(
             dimensions=["region", band],
-            measures=[ModelMeasure(formula="amount:sum", name="tot"),
+            measures=[ModelMeasure(formula="sum(amount)", name="tot"),
                       reagg("avg", INNER_CR, name="acr")])
         resp = await exec_engine.execute(both)
         by = rows_by(resp, "sales.region", "sales.spend_band")
@@ -107,9 +107,9 @@ class TestSharedProducerRendersOnce:
         band = {"expression": SPEND_BAND_EXPR, "name": "spend_band"}
         dialect = "postgres"
         single = sales_q(dimensions=["region", band],
-                         measures=[ModelMeasure(formula="amount:sum", name="tot")])
+                         measures=[ModelMeasure(formula="sum(amount)", name="tot")])
         both = sales_q(dimensions=["region", band],
-                       measures=[ModelMeasure(formula="amount:sum", name="tot"),
+                       measures=[ModelMeasure(formula="sum(amount)", name="tot"),
                                  reagg("avg", INNER_CR, name="acr")])
         s_sql = await gen(single, dialect=dialect)
         b_sql = await gen(both, dialect=dialect)

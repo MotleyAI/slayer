@@ -37,12 +37,12 @@ def _cases() -> dict:
         "assoc/wavg_by_status": {
             "models": "orders", "source": "orders", "mode": "associate",
             "kw": {"dimensions": ["status"], "measures": [
-                {"formula": "customers.spend:weighted_avg(weight=customers.spend)",
+                {"formula": "weighted_avg(customers.spend, weight=customers.spend)",
                  "name": "w"}]}},
         "assoc/wsum_default": {
             "models": "orders_coldef", "source": "orders", "mode": "associate",
             "kw": {"dimensions": ["status"],
-                   "measures": [{"formula": "customers.spend:wsum", "name": "w"}]}},
+                   "measures": [{"formula": "wsum(customers.spend)", "name": "w"}]}},
         "reagg/wavg_by_region": {
             "models": "sales", "source": "sales", "mode": None,
             "kw": {"dimensions": ["region"], "measures": [
@@ -62,7 +62,7 @@ def _cases() -> dict:
         "assoc/wsum6_expr_default": {
             "models": "orders_wsum6", "source": "orders", "mode": "associate",
             "kw": {"dimensions": ["status"],
-                   "measures": [{"formula": "customers.spend:wsum6", "name": "w"}]}},
+                   "measures": [{"formula": "wsum6(customers.spend)", "name": "w"}]}},
         "reagg/corders_expr_default": {
             "models": "sales_cwavg", "source": "corders", "mode": None,
             "kw": {"measures": [

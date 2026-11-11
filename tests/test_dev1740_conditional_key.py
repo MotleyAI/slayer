@@ -26,7 +26,7 @@ def _iif(cond, then, otherwise) -> ScalarCallKey:
 
 
 def _band_over_agg() -> ScalarCallKey:
-    """``CASE WHEN amount:sum > 5000 THEN 1 ELSE 0 END`` as a key."""
+    """``CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END`` as a key."""
     cond = ArithmeticKey(op=">", operands=(_amount(), LiteralKey(value=5000)))
     return _iif(cond=cond, then=LiteralKey(value=1), otherwise=LiteralKey(value=0))
 

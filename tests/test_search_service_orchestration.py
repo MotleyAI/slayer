@@ -1,5 +1,4 @@
-"""Read-side orchestration tests for SearchService (DEV-1514, adapted
-for DEV-1532's unified flat-results interface).
+"""Read-side orchestration tests for SearchService's unified flat-results interface.
 
 Pins the orchestrator's contract under the new Retriever ABC:
 
@@ -16,7 +15,7 @@ Pins the orchestrator's contract under the new Retriever ABC:
   entity ranking contributes nothing).
 * ``text_by_id`` precedence: when two retrievers supply text for the
   same memory id, the FIRST-DECLARED retriever wins (Codex Finding 6).
-* Cap stability (DEV-1414 carried into DEV-1532): increasing
+* Cap stability: increasing
   ``max_results`` cannot reorder or remove items from the head of the
   list — a wider cap just appends.
 * Recency fallback: when neither channel is active, retrievers are
@@ -122,6 +121,34 @@ class _CapturingRetriever(Retriever):
         )
 
 
+class _BarrierRetriever(_CapturingRetriever):
+    """Records whether every sibling retriever reached the barrier while this one waited."""
+
+    def __init__(self, *, name: str, barrier: asyncio.Barrier) -> None:
+        super().__init__(name=name)
+        self._barrier = barrier
+        self.met_all = False
+
+    async def retrieve(
+        self, *,
+        query_entities: list[str],
+        question: str | None,
+        all_memories: list[Memory],
+        valid_canonicals: set,
+        corpus: Corpus | None,
+        datasource: str | None,
+    ) -> RetrievalResult:
+        try:
+            await asyncio.wait_for(self._barrier.wait(), timeout=5)
+            self.met_all = True
+        except TimeoutError:
+            pass
+        return await super().retrieve(
+            query_entities=query_entities, question=question, all_memories=all_memories,
+            valid_canonicals=valid_canonicals, corpus=corpus, datasource=datasource,
+        )
+
+
 async def test_valid_canonicals_built_once_and_shared_by_identity(
     seeded_storage: StorageBackend,
 ) -> None:
@@ -178,24 +205,15 @@ async def test_corpus_built_once_when_question_active_via_patched_builder(
 async def test_retrievers_invoked_in_parallel_via_gather(
     seeded_storage: StorageBackend,
 ) -> None:
-    """If retriever calls were sequential, wall-clock would be ≈3*delay.
-    Parallel via gather: ≈1*delay."""
-    delay = 0.2
-    r1 = _CapturingRetriever(name="r1", delay_s=delay)
-    r2 = _CapturingRetriever(name="r2", delay_s=delay)
-    r3 = _CapturingRetriever(name="r3", delay_s=delay)
-    service = SearchService(storage=seeded_storage, retrievers=[r1, r2, r3])
-    start = asyncio.get_event_loop().time()
+    """Every retriever must be in flight at once: sequential calls never fill the barrier."""
+    barrier = asyncio.Barrier(3)
+    retrievers = [_BarrierRetriever(name=f"r{i}", barrier=barrier) for i in range(3)]
+    service = SearchService(storage=seeded_storage, retrievers=[*retrievers])
     await service.search(
         entities=["mydb.orders.amount"], question="amount",
         max_results=12,
     )
-    elapsed = asyncio.get_event_loop().time() - start
-    # Should be roughly one delay (parallel), not three (sequential).
-    assert elapsed < delay * 2.5, (
-        f"retrievers appear sequential — elapsed={elapsed:.3f}s for "
-        f"3*{delay}s delays."
-    )
+    assert [r.met_all for r in retrievers] == [True] * 3
 
 
 async def test_warning_order_matches_retriever_declaration_not_completion(
@@ -239,7 +257,7 @@ async def test_text_by_id_precedence_first_declared_wins(
         text_by_id={"1": "r2-text"},
     )
     service = SearchService(storage=seeded_storage, retrievers=[r1, r2])
-    # DEV-1549: opt out of compact-by-default — this test is about the
+    # Opt out of compact-by-default: this test is about the
     # text_by_id precedence rule for the verbose ``hit.text`` shape.
     response = await service.search(
         entities=["mydb.orders.amount"], question="amount",
@@ -258,7 +276,7 @@ async def test_text_by_id_precedence_first_declared_wins(
 async def test_cap_stability_under_max_results_changes(
     seeded_storage: StorageBackend,
 ) -> None:
-    """DEV-1414 / DEV-1532: a wider ``max_results`` cap must never
+    """A wider ``max_results`` cap must never
     reorder or remove items from the head of the list. A narrower cap
     is exactly the head prefix of the wider cap's result."""
     r1 = _CapturingRetriever(

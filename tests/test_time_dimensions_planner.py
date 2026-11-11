@@ -588,16 +588,12 @@ class TestStagePlannerTimeDimensions:
         )
 
     def test_td_coexists_with_aggregate_measure(self) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            time_dimensions=[
+        query = SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [
                 TimeDimension(
                     dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
-            ],
-            measures=[{"formula": "amount:sum"}],
-        )
+            ], "measures": [{"formula": "sum(amount)"}]})
         planned = plan_query(query=query, bundle=_bundle_local())
         assert len(planned.projection) == 2
         assert any(isinstance(s.key, TimeTruncKey) for s in planned.row_slots)
@@ -606,17 +602,12 @@ class TestStagePlannerTimeDimensions:
         )
 
     def test_stage_schema_emits_one_td_column(self) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            name="s1",
-            time_dimensions=[
+        query = SlayerQuery.model_validate({"source_model": "orders", "name": "s1", "time_dimensions": [
                 TimeDimension(
                     dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
-            ],
-            measures=[{"formula": "amount:sum"}],
-        )
+            ], "measures": [{"formula": "sum(amount)"}]})
         planned = plan_query(query=query, bundle=_bundle_local())
         assert planned.stage_schema is not None
         cols = planned.stage_schema.columns

@@ -142,9 +142,9 @@ def test_row_count_collision_renames_to_underscore(caplog) -> None:
     assert "_row_count" in metric_names
     # The user's column-derived metrics still exist normally.
     assert "row_count_sum" in metric_names
-    # The synthetic *:count is now named _row_count.
+    # The synthetic count(*) is now named _row_count.
     synthetic = next(m for m in table.metrics if m.name == "_row_count")
-    assert synthetic.measure_formula == "*:count"
+    assert synthetic.measure_formula == "count(*)"
     assert any("renaming the synthetic" in r.message for r in caplog.records)
 
 
@@ -158,7 +158,7 @@ def test_row_count_collision_warning_has_no_colon_spelling(caplog) -> None:
 
 
 def test_saved_model_measure_emitted_with_declared_type() -> None:
-    measure = ModelMeasure(name="aov", formula="revenue:sum / *:count", type=DataType.DOUBLE,
+    measure = ModelMeasure(name="aov", formula="sum(revenue) / count(*)", type=DataType.DOUBLE,
                             label="AOV", description="Avg order value")
     model = _model(
         name="orders",
@@ -175,7 +175,7 @@ def test_saved_model_measure_emitted_with_declared_type() -> None:
 
 
 def test_saved_model_measure_without_type_carries_none() -> None:
-    measure = ModelMeasure(name="aov", formula="revenue:sum / *:count")
+    measure = ModelMeasure(name="aov", formula="sum(revenue) / count(*)")
     model = _model(
         name="orders",
         columns=[Column(name="revenue", type=DataType.DOUBLE)],
@@ -246,9 +246,9 @@ def test_single_hop_join_expansion() -> None:
     assert dim_names["customers.id"] == "customers.id"
     metric_names = {m.name: m.measure_formula for m in table.metrics}
     # Joined model row_count.
-    assert metric_names["customers.row_count"] == "customers.*:count"
+    assert metric_names["customers.row_count"] == "count(customers.*)"
     # Joined column-agg pairing — region is TEXT, count is eligible.
-    assert metric_names["customers.region_count"] == "customers.region:count"
+    assert metric_names["customers.region_count"] == "count(customers.region)"
 
 
 def test_diamond_join_produces_two_distinct_paths() -> None:

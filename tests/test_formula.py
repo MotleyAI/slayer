@@ -56,42 +56,7 @@ class TestFilterInjection:
 
 
 class TestFuncStyleRewrite:
-    """The functional aggregation spelling parses to the same node as the colon spelling."""
-
-    @pytest.mark.parametrize(("functional", "colon"), [
-        ("sum(revenue)", "revenue:sum"),
-        ("avg(amount)", "amount:avg"),
-        ("min(price)", "price:min"),
-        ("max(price)", "price:max"),
-        ("count(*)", "*:count"),
-        ("count(customer_id)", "customer_id:count"),
-        ("count_distinct(id)", "id:count_distinct"),
-        ("median(price)", "price:median"),
-        ("sum(customers.revenue)", "customers.revenue:sum"),
-        ("sum(a.b.c.d)", "a.b.c.d:sum"),
-        ("weighted_avg(price, weight=qty)", "price:weighted_avg(weight=qty)"),
-        ("last(revenue, ordered_at)", "revenue:last(ordered_at)"),
-        ("first(revenue, ordered_at)", "revenue:first(ordered_at)"),
-        ("percentile(revenue, p=0.95)", "revenue:percentile(p=0.95)"),
-        ("sum(revenue) / count(*)", "revenue:sum / *:count"),
-        ("sum(revenue) + avg(amount)", "revenue:sum + amount:avg"),
-        ("cumsum(sum(revenue))", "cumsum(revenue:sum)"),
-        ("change(sum(revenue))", "change(revenue:sum)"),
-        ("last(revenue:sum) + sum(amount)", "last(revenue:sum) + amount:sum"),
-        ("rolling_avg(revenue)", "revenue:rolling_avg"),
-        ("count(customers.*)", "customers.*:count"),
-        ("sum(revenue) > 0 and name = 'count(x)'", "revenue:sum > 0 and name == 'count(x)'"),
-        ("sum(revenue) > 100", "revenue:sum > 100"),
-        ("stddev_samp(latency)", "latency:stddev_samp"),
-        ("stddev_pop(latency)", "latency:stddev_pop"),
-        ("var_samp(latency)", "latency:var_samp"),
-        ("var_pop(latency)", "latency:var_pop"),
-        ("corr(price, other=quantity)", "price:corr(other=quantity)"),
-        ("covar_samp(price, other=quantity)", "price:covar_samp(other=quantity)"),
-        ("covar_pop(price, other=quantity)", "price:covar_pop(other=quantity)"),
-    ])
-    def test_functional_equals_colon(self, functional: str, colon: str) -> None:
-        assert parse_expr(functional) == parse_expr(colon)
+    """The functional aggregation spelling."""
 
     def test_custom_agg_name(self) -> None:
         assert parse_expr("rolling_avg(revenue)") == AggCall(source=Ref(name="revenue"), agg="rolling_avg")
@@ -152,30 +117,20 @@ class TestOrderColumnNormalization:
         assert item.column.name == _FUNCSTYLE_PENDING
         assert item.raw_formula == "count(*)"
 
-    def test_colon_syntax_still_works(self) -> None:
-        item = OrderItem(column="revenue:sum", direction="desc")
-        assert item.column.name == "revenue_sum"
-        assert item.raw_formula == "revenue:sum"
-
-    def test_star_count_colon_still_works(self) -> None:
-        item = OrderItem(column="*:count", direction="asc")
-        assert item.column.name == "_count"
-        assert item.raw_formula == "*:count"
-
     def test_plain_name_unchanged(self) -> None:
         item = OrderItem(column="revenue_sum", direction="desc")
         assert item.column.name == "revenue_sum"
         assert item.raw_formula is None
 
-    def test_parameterized_agg_stripped(self) -> None:
-        item = OrderItem(column="revenue:last(ordered_at)", direction="desc")
-        assert item.column.name == "revenue_last"
-        assert item.raw_formula == "revenue:last(ordered_at)"
+    def test_parameterized_agg_preserved(self) -> None:
+        item = OrderItem.model_validate({"column": "last(revenue, ordered_at)", "direction": "desc"})
+        assert item.column.name == _FUNCSTYLE_PENDING
+        assert item.raw_formula == "last(revenue, ordered_at)"
 
-    def test_weighted_avg_args_stripped(self) -> None:
-        item = OrderItem(column="price:weighted_avg(weight=qty)", direction="asc")
-        assert item.column.name == "price_weighted_avg"
-        assert item.raw_formula == "price:weighted_avg(weight=qty)"
+    def test_weighted_avg_args_preserved(self) -> None:
+        item = OrderItem.model_validate({"column": "weighted_avg(price, weight=qty)", "direction": "asc"})
+        assert item.column.name == _FUNCSTYLE_PENDING
+        assert item.raw_formula == "weighted_avg(price, weight=qty)"
 
 
 class TestStringHygieneFilters:

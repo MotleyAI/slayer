@@ -49,8 +49,8 @@ def _plain_query(
     return SlayerQuery(
         source_model="orders",
         dimensions=[ColumnRef(name="status")],
-        measures=[ModelMeasure(formula="amount:sum", name="revenue")],
-        order=[OrderItem(column="amount:sum", direction="desc")] if ordered else [],
+        measures=[ModelMeasure(formula="sum(amount)", name="revenue")],
+        order=[OrderItem.model_validate({"column": "sum(amount)", "direction": "desc"})] if ordered else [],
         limit=limit,
         offset=offset,
     )
@@ -63,8 +63,8 @@ def _outer_trim_query(
     return SlayerQuery(
         source_model="orders",
         dimensions=[ColumnRef(name="status")],
-        measures=[ModelMeasure(formula="*:count", name="n")],
-        order=[OrderItem(column="amount:sum", direction="desc")] if ordered else [],
+        measures=[ModelMeasure(formula="count(*)", name="n")],
+        order=[OrderItem.model_validate({"column": "sum(amount)", "direction": "desc"})] if ordered else [],
         limit=limit,
         offset=offset,
     )
@@ -77,9 +77,9 @@ def _combined_query(
     return SlayerQuery(
         source_model="orders",
         dimensions=[ColumnRef(name="customers.tier")],
-        measures=[ModelMeasure(formula="customers.spend:sum", name="spend")],
+        measures=[ModelMeasure(formula="sum(customers.spend)", name="spend")],
         order=(
-            [OrderItem(column="customers.spend:sum", direction="desc")]
+            [OrderItem.model_validate({"column": "sum(customers.spend)", "direction": "desc"})]
             if ordered else []
         ),
         limit=limit,
@@ -283,7 +283,7 @@ class TestChainOuterWrapInjectsOrderingForOffset:
 
     async def test_bare_offset_is_ordered_by_a_noop(self) -> None:
         # An inner stage: a final stage with dimensions is default-ordered.
-        stages = [cumsum_chain(name="s1", offset=5), q(source_model="s1", measures=["running:sum"])]
+        stages = [cumsum_chain(name="s1", offset=5), q(source_model="s1", measures=["sum(running)"])]
         sql = await gen(stages, dialect="tsql")
         paged = next(s for s in parse(sql, "tsql").find_all(exp.Select) if s.args.get("offset"))
         order = paged.args.get("order")

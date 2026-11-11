@@ -35,7 +35,7 @@ class TestRowLevelValues:
     async def test_scalar_expression_dimension(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=[{"expression": "lower(city)", "name": "lc"}],
-            measures=[ModelMeasure(formula="amount:sum", name="rev")],
+            measures=[ModelMeasure(formula="sum(amount)", name="rev")],
         ))
         got = {r["orders.lc"]: float(r["orders.rev"]) for r in resp.data}
         assert got == {k: pytest.approx(v) for k, v in LOWER_CITY_TOTAL.items()}
@@ -46,7 +46,7 @@ class TestRowLevelValues:
                 "expression": "CASE WHEN amount > 2000 THEN 'big' ELSE 'small' END",
                 "name": "sz",
             }],
-            measures=[ModelMeasure(formula="amount:sum", name="rev")],
+            measures=[ModelMeasure(formula="sum(amount)", name="rev")],
         ))
         got = {r["orders.sz"]: float(r["orders.rev"]) for r in resp.data}
         assert got == {k: pytest.approx(v) for k, v in BIG_SMALL.items()}
@@ -56,7 +56,7 @@ class TestNoSecondPass:
     async def test_row_level_dim_emits_no_isolated_regroup_cte(self) -> None:
         sql = await gen(_q(
             dimensions=["region", {"expression": "lower(city)", "name": "lc"}],
-            measures=[ModelMeasure(formula="amount:sum", name="rev")],
+            measures=[ModelMeasure(formula="sum(amount)", name="rev")],
         ))
         # ``_cm_`` is the isolated-aggregate (regroup) CTE prefix used by the B2
         # desugar and DEV-1739. A purely row-level expression dimension must not
@@ -72,7 +72,7 @@ class TestJoinedColumnInExpression:
         # JOIN customers (a throwaway-scope render dropped the registration).
         sql = await gen(_q(
             dimensions=[{"expression": "upper(customers.tier)", "name": "T"}],
-            measures=[ModelMeasure(formula="amount:sum", name="rev")],
+            measures=[ModelMeasure(formula="sum(amount)", name="rev")],
         ))
         assert "JOIN" in sql.upper()
         assert "customers" in sql
@@ -82,7 +82,7 @@ class TestJoinedColumnInExpression:
         # 2 & 4 → orders 3,4,7,8,9 = 17000.
         resp = await exec_engine.execute(_q(
             dimensions=[{"expression": "upper(customers.tier)", "name": "T"}],
-            measures=[ModelMeasure(formula="amount:sum", name="rev")],
+            measures=[ModelMeasure(formula="sum(amount)", name="rev")],
         ))
         got = {r["orders.T"]: float(r["orders.rev"]) for r in resp.data}
         assert got == {"GOLD": pytest.approx(8000.0), "SILVER": pytest.approx(17000.0)}
@@ -93,7 +93,7 @@ class TestNameReferences:
         # Order by the COMPUTED dimension's name (not a measure).
         resp = await exec_engine.execute(_q(
             dimensions=[{"expression": "lower(city)", "name": "lc"}],
-            measures=[ModelMeasure(formula="amount:sum", name="rev")],
+            measures=[ModelMeasure(formula="sum(amount)", name="rev")],
             order=[{"column": "lc", "direction": "asc"}],
         ))
         lcs = [r["orders.lc"] for r in resp.data if r["orders.lc"] is not None]
@@ -102,7 +102,7 @@ class TestNameReferences:
     async def test_filter_by_computed_name(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=[{"expression": "lower(city)", "name": "lc"}],
-            measures=[ModelMeasure(formula="amount:sum", name="rev")],
+            measures=[ModelMeasure(formula="sum(amount)", name="rev")],
             filters=["lc == 'paris'"],
         ))
         assert len(resp.data) == 1
@@ -137,7 +137,7 @@ class TestCollisionFailsClosed:
         # must be rejected fail-closed.
         q = _q(
             dimensions=["region", {"expression": "lower(city)", "name": "channel"}],
-            measures=[ModelMeasure(formula="amount:sum", name="rev")],
+            measures=[ModelMeasure(formula="sum(amount)", name="rev")],
         )
         with pytest.raises(ValueError, match=r"(?i)collid|conflict|already|exists|shadow"):
             await gen(q)
@@ -146,7 +146,7 @@ class TestCollisionFailsClosed:
         # A computed dimension named the same as a query measure must fail closed.
         q = _q(
             dimensions=["region", {"expression": "lower(city)", "name": "rev"}],
-            measures=[ModelMeasure(formula="amount:sum", name="rev")],
+            measures=[ModelMeasure(formula="sum(amount)", name="rev")],
         )
         with pytest.raises(ValueError, match=r"(?i)collid|conflict|already|exists|shadow"):
             await gen(q)

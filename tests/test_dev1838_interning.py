@@ -33,7 +33,7 @@ from tests._dev1838_fixtures import (
 from slayer.ir import planned
 from slayer.engine import plan
 
-M = ModelMeasure(formula="amount:sum", name="m")
+M = ModelMeasure(formula="sum(amount)", name="m")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -51,7 +51,7 @@ def _cm_count(sql: str, dialect: str) -> int:
 
 def _band_wm_query(*windows: str, filters=None):
     measures = [M] + [
-        ModelMeasure(formula=f"amount:sum(window='{w}')", name=f"w{w[:-1]}")
+        ModelMeasure(formula=f"sum(amount, window='{w}')", name=f"w{w[:-1]}")
         for w in windows
     ]
     kw = {"filters": filters} if filters else {}
@@ -143,7 +143,7 @@ class TestSharedAcrossScopes:
             dimensions=["customers.tier", {"expression": SPEND_BAND,
                                            "name": "sband"}],
             measures=[M, ModelMeasure(
-                formula="customers.spend:sum(partition_by=customers.tier)",
+                formula="sum(customers.spend, partition_by=customers.tier)",
                 name="rt")],
         )
         resp = await engine.execute(query)
@@ -181,8 +181,8 @@ class TestProducersThatMustStaySeparate:
         producers, distinct values (green pin)."""
         dialect, engine = exec_backend
         query = q(dimensions=["status"], measures=[
-            ModelMeasure(formula="amount:last", name="lb"),
-            ModelMeasure(formula="amount:last(customers.signup_at)", name="ls"),
+            ModelMeasure(formula="last(amount)", name="lb"),
+            ModelMeasure(formula="last(amount, customers.signup_at)", name="ls"),
         ])
         resp = await engine.execute(query)
         by = {r["orders.status"]: r for r in resp.data}
@@ -200,8 +200,8 @@ class TestProducersThatMustStaySeparate:
         query = q(
             dimensions=["region", BAND], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum(window='90d')", name="w"),
-                ModelMeasure(formula="ok_amount:sum(window='90d')", name="wok"),
+                ModelMeasure(formula="sum(amount, window='90d')", name="w"),
+                ModelMeasure(formula="sum(ok_amount, window='90d')", name="wok"),
             ],
         )
         resp = await engine.execute(query)
@@ -265,7 +265,7 @@ class TestWarningsUnchangedBySharing:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
-            measures=[M, ModelMeasure(formula="customers.spend:sum", name="cm")],
+            measures=[M, ModelMeasure(formula="sum(customers.spend)", name="cm")],
             filters=["city = 'CityA' OR customers.tier = '__none__'"],
         ))
         pushed = pushed_filter_infos(resp)
@@ -286,7 +286,7 @@ class TestWarningsUnchangedBySharing:
             dimensions=["customers.tier", {"expression": SPEND_BAND,
                                            "name": "sband"}],
             measures=[M, ModelMeasure(
-                formula="customers.spend:sum(partition_by=customers.tier)",
+                formula="sum(customers.spend, partition_by=customers.tier)",
                 name="rt")],
             filters=["city = 'CityA' OR customers.tier = '__none__'"],
         ))

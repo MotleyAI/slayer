@@ -33,17 +33,23 @@ import slayer.engine.bundle_builder
 
 class TestQueryBackedFailClosed:
     def test_direct_measures_on_query_backed_model_rejected(self) -> None:
-        backing = SlayerQuery(source_model="orders", dimensions=["status"],
-                              measures=[{"formula": "amount:sum"}])
-        dead = ModelMeasure(name="dead", formula="amount:sum")
+        backing = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": ["status"],
+            "measures": [{"formula": "sum(amount)"}],
+        })
+        dead = ModelMeasure(name="dead", formula="sum(amount)")
         with pytest.raises(ValidationError):
             SlayerModel(name="qb_bad", data_source="ds",
                         source_queries=[backing], measures=[dead])
 
     def test_rejection_names_model_and_remedy(self) -> None:
-        backing = SlayerQuery(source_model="orders", dimensions=["status"],
-                              measures=[{"formula": "amount:sum"}])
-        dead = ModelMeasure(name="dead", formula="amount:sum")
+        backing = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": ["status"],
+            "measures": [{"formula": "sum(amount)"}],
+        })
+        dead = ModelMeasure(name="dead", formula="sum(amount)")
         with pytest.raises(ValidationError) as ei:
             SlayerModel(name="qb_named", data_source="ds",
                         source_queries=[backing], measures=[dead])
@@ -61,7 +67,7 @@ class TestQueryBackedFailClosed:
         m = SlayerModel(
             name="ok", data_source="ds", sql_table="ok",
             columns=[Column(name="amount", type=DataType.DOUBLE)],
-            measures=[ModelMeasure(name="live", formula="amount:sum")],
+            measures=[ModelMeasure(name="live", formula="sum(amount)")],
         )
         assert m.measures[0].name == "live"
 
@@ -84,17 +90,18 @@ class TestExtensionMeasuresOverQueryBacked:
             ))
             await storage.save_model(SlayerModel(
                 name="qb_base", data_source="ds",
-                source_queries=[SlayerQuery(
-                    source_model="orders", dimensions=["status"],
-                    measures=[{"formula": "amount:sum"}],
-                )],
+                source_queries=[SlayerQuery.model_validate({
+                    "source_model": "orders",
+                    "dimensions": ["status"],
+                    "measures": [{"formula": "sum(amount)"}],
+                })],
             ))
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery(
                 source_model=ModelExtension(
                     source_name="qb_base",
                     measures=[ModelMeasure(name="doubled",
-                                           formula="amount_sum:sum * 2")],
+                                           formula="sum(amount_sum) * 2")],
                 ),
                 dimensions=["status"],
                 measures=[{"formula": "doubled", "name": "r"}],
@@ -113,7 +120,7 @@ class TestExtensionMeasuresOverQueryBacked:
         query = SlayerQuery(
             source_model=ModelExtension(
                 source_name="t",
-                measures=[ModelMeasure(name="scaled", formula="amount:sum * 100")],
+                measures=[ModelMeasure(name="scaled", formula="sum(amount) * 100")],
             ),
             measures=[{"formula": "scaled", "name": "r"}],
         )
@@ -155,12 +162,12 @@ class TestSameNameExtensionRejected:
         base = SlayerModel(
             name="t", data_source="ds", sql_table="t",
             columns=[Column(name="amount", type=DataType.DOUBLE)],
-            measures=[ModelMeasure(name="sh", formula="amount:sum")],
+            measures=[ModelMeasure(name="sh", formula="sum(amount)")],
         )
         query = SlayerQuery(
             source_model=ModelExtension(
                 source_name="t",
-                measures=[ModelMeasure(name="sh", formula="amount:sum * 100")],
+                measures=[ModelMeasure(name="sh", formula="sum(amount) * 100")],
             ),
             measures=[{"formula": "sh", "name": "r"}],
         )
@@ -194,7 +201,7 @@ class TestOverlayNamespaceDisjoint:
         )
         ext = ModelExtension(
             source_name="t",
-            measures=[ModelMeasure(name="amount", formula="amount:sum")],
+            measures=[ModelMeasure(name="amount", formula="sum(amount)")],
         )
         with pytest.raises(
             ValueError, match=r"name collision between columns and measures"
@@ -222,16 +229,17 @@ class TestStageExtensionMeasuresOverQueryBackedRejected:
             ))
             await storage.save_model(SlayerModel(
                 name="qb_base", data_source="ds",
-                source_queries=[SlayerQuery(
-                    source_model="orders", dimensions=["status"],
-                    measures=[{"formula": "amount:sum"}],
-                )],
+                source_queries=[SlayerQuery.model_validate({
+                    "source_model": "orders",
+                    "dimensions": ["status"],
+                    "measures": [{"formula": "sum(amount)"}],
+                })],
             ))
             stage = SlayerQuery(
                 source_model=ModelExtension(
                     source_name="qb_base",
                     measures=[ModelMeasure(name="doubled",
-                                           formula="amount_sum:sum * 2")],
+                                           formula="sum(amount_sum) * 2")],
                 ),
                 dimensions=["status"],
                 measures=[{"formula": "doubled", "name": "r"}],

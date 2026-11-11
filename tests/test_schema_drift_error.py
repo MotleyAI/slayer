@@ -128,10 +128,10 @@ class TestSchemaDriftErrorWrap:
         with transaction(db_path) as conn:
             conn.execute("DROP TABLE orders")
 
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:sum", "name": "total"}],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)", "name": "total"}],
+        })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
         # Original error preserved as __cause__
@@ -161,10 +161,10 @@ class TestSchemaDriftErrorWrap:
         )
         await engine.storage.save_model(broken_model)
 
-        q = SlayerQuery(
-            source_model="broken",
-            measures=[{"formula": "amount:sum", "name": "total"}],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "broken",
+            "measures": [{"formula": "sum(amount)", "name": "total"}],
+        })
         # Original SQLAlchemy/DBAPI error should bubble up — NOT
         # SchemaDriftError. Assert on the original error class so a
         # regression that re-wraps as something else still fails here.
@@ -235,10 +235,10 @@ class TestSchemaDriftErrorWrap:
         with transaction(db_path) as conn:
             conn.execute("ALTER TABLE orders DROP COLUMN amount")
 
-        q = SlayerQuery(
-            source_model="orders_view",
-            measures=[{"formula": "amount:sum", "name": "total"}],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders_view",
+            "measures": [{"formula": "sum(amount)", "name": "total"}],
+        })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
         assert "orders_view" in exc.value.models
@@ -268,10 +268,10 @@ class TestSchemaDriftErrorWrap:
         with transaction(db_path) as conn:
             conn.execute("ALTER TABLE orders DROP COLUMN batch_tag")
 
-        q = SlayerQuery(
-            source_model="orders_by_batch",
-            measures=[{"formula": "amount:sum", "name": "total"}],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders_by_batch",
+            "measures": [{"formula": "sum(amount)", "name": "total"}],
+        })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
         assert "orders_by_batch" in exc.value.models
@@ -299,10 +299,10 @@ class TestSchemaDriftErrorWrap:
         with transaction(db_path) as conn:
             conn.execute("ALTER TABLE orders DROP COLUMN amount")
 
-        q = SlayerQuery(
-            source_model="orders_cte",
-            measures=[{"formula": "amount:sum", "name": "total"}],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders_cte",
+            "measures": [{"formula": "sum(amount)", "name": "total"}],
+        })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
         assert "orders_cte" in exc.value.models
@@ -325,10 +325,10 @@ class TestSchemaDriftErrorWrap:
         with transaction(db_path) as conn:
             conn.execute("DROP TABLE orders")
 
-        q = SlayerQuery(
-            source_model="orders_view",
-            measures=[{"formula": "amount:sum", "name": "total"}],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders_view",
+            "measures": [{"formula": "sum(amount)", "name": "total"}],
+        })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
         assert "orders_view" in exc.value.models
@@ -346,10 +346,10 @@ class TestSchemaDriftErrorWrap:
             raise RuntimeError("validate_models exploded")
 
         with patch.object(engine, "_validate_read_set", side_effect=_boom):
-            q = SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "amount:sum", "name": "total"}],
-            )
+            q = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(amount)", "name": "total"}],
+            })
             # The original DBAPI error should bubble up — NOT SchemaDriftError
             # and NOT the RuntimeError from the failing attribution.
             with pytest.raises(SQLAlchemyError) as exc:
@@ -369,10 +369,10 @@ class TestHealthyPathNoOverhead:
         ) as mock, patch.object(
             engine, "_validate_read_set", side_effect=AssertionError("called!")
         ) as scoped:
-            q = SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "amount:sum", "name": "total"}],
-            )
+            q = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(amount)", "name": "total"}],
+            })
             resp = await engine.execute(q)
             assert resp.data is not None
             mock.assert_not_called()
@@ -388,11 +388,11 @@ class TestModelsTouchedComputation:
         with transaction(db_path) as conn:
             conn.execute("DROP TABLE customers")
 
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:sum", "name": "total"}],
-            dimensions=["customers.region"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)", "name": "total"}],
+            "dimensions": ["customers.region"],
+        })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
         # Both source_model and the join target must be reported as touched.

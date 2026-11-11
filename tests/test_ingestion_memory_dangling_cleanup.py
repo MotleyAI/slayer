@@ -138,7 +138,7 @@ class TestIngestDanglingRefCleanup:
         # drop the column to make the query stale.
         attached = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
         )
         await storage.save_memory(
             learning="x",
@@ -175,4 +175,4 @@ class TestIngestDanglingRefCleanup:
         assert reloaded.query is not None
         assert reloaded.query.source_model == "orders"
         assert reloaded.query.measures is not None
-        assert reloaded.query.measures[0].formula == "amount:sum"
+        assert reloaded.query.measures[0].formula == "sum(amount)"

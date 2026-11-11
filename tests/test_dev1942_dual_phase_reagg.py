@@ -46,7 +46,7 @@ from tests._engine_helpers import _extract_cte_body, _join_aliases
 
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 
-_X = "amount:sum(partition_by=[region, ordered_at])"
+_X = "sum(amount, partition_by=[region, ordered_at])"
 REAGG_STANDALONE = f"min({_X}, partition_by=region)"      # combined phase
 HANDWRITTEN_MIN = f"sum(amount * min({_X}, partition_by=region))"  # row phase
 
@@ -65,9 +65,9 @@ B_BY_REGION_MONTH = {("North", "2024-01"): 100.0, ("North", "2024-02"): 200.0,
 # 26450 — never the fan-defect 27550 (c1's two ok orders double-counted).
 _OK = "orders.status = 'ok'"
 _OR_MIX = "tier = 'bronze' or orders.status = 'ok'"
-POP_MIXED = "sum(spend * avg(spend:sum(partition_by=[tier, plan_code]), partition_by=tier))"
-POP_AVG = "avg(spend:sum(partition_by=[tier, plan_code]), partition_by=tier)"
-POP_MIN = "min(spend:sum(partition_by=[tier, plan_code]), partition_by=tier)"
+POP_MIXED = "sum(spend * avg(sum(spend, partition_by=[tier, plan_code]), partition_by=tier))"
+POP_AVG = "avg(sum(spend, partition_by=[tier, plan_code]), partition_by=tier)"
+POP_MIN = "min(sum(spend, partition_by=[tier, plan_code]), partition_by=tier)"
 POP_MIXED_BY_TIER = {"gold": 18050.0, "silver": 26450.0}
 POP_AVG_BY_TIER = {"gold": 95.0, "silver": 115.0}
 # Under the OR-mix the population is c1/c2/c3/c5/c6 (an ok order) + c4 (bronze); c7
@@ -157,13 +157,13 @@ class TestDualPhaseExecution:
         _, engine = exec_backend
         alone = await engine.execute(monthly_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="cumsum(amount:sum)", name="c")],
+            measures=[ModelMeasure(formula="cumsum(sum(amount))", name="c")],
             time_dimensions=month_td()))
         resp = await engine.execute(monthly_q(
             dimensions=["region"],
             measures=[ModelMeasure(formula=REAGG_STANDALONE, name="a"),
                       ModelMeasure(formula=HANDWRITTEN_MIN, name="b"),
-                      ModelMeasure(formula="cumsum(amount:sum)", name="c")],
+                      ModelMeasure(formula="cumsum(sum(amount))", name="c")],
             time_dimensions=month_td()))
         assert _region_month(resp, "a") == pytest.approx(A_BY_REGION_MONTH)
         assert _region_month(resp, "b") == pytest.approx(B_BY_REGION_MONTH)

@@ -31,32 +31,32 @@ def _cases() -> dict:
         "measure/simple": _q(
             dimensions=["region"],
             measures=[
-                {"formula": "CASE WHEN amount:sum >= 10000 THEN 1 ELSE 0 END",
+                {"formula": "CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END",
                  "name": "big"},
             ],
         ),
         "measure/nested": _q(
             dimensions=["region"],
             measures=[
-                {"formula": "CASE WHEN amount:sum >= 14000 THEN 2 "
-                            "WHEN amount:sum >= 8000 THEN 1 ELSE 0 END",
+                {"formula": "CASE WHEN sum(amount) >= 14000 THEN 2 "
+                            "WHEN sum(amount) >= 8000 THEN 1 ELSE 0 END",
                  "name": "tier"},
             ],
         ),
         "measure/iif": _q(
             dimensions=["region"],
-            measures=[{"formula": "iif(amount:sum >= 10000, 1, 0)", "name": "big"}],
+            measures=[{"formula": "iif(sum(amount) >= 10000, 1, 0)", "name": "big"}],
         ),
         "measure/missing_else_null": _q(
             dimensions=["region"],
             measures=[
-                {"formula": "CASE WHEN amount:sum >= 10000 THEN 1 END", "name": "big"},
+                {"formula": "CASE WHEN sum(amount) >= 10000 THEN 1 END", "name": "big"},
             ],
         ),
         "filter/case_predicate": _q(
             dimensions=["region"],
-            filters=["CASE WHEN amount:sum >= 10000 THEN 1 ELSE 0 END == 1"],
-            measures=[{"formula": "amount:sum", "name": "rev"}],
+            filters=["CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END == 1"],
+            measures=[{"formula": "sum(amount)", "name": "rev"}],
         ),
     }
 

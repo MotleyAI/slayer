@@ -49,7 +49,7 @@ def _q(**kw) -> SlayerQuery:
 
 def _cases() -> dict:
     """The matrix. Keys are stable ids — renaming one is a golden change."""
-    last = [{"formula": "amount:last", "name": "l"}]
+    last = [{"formula": "last(amount)", "name": "l"}]
     return {
         # --- the base shapes: what the host SELECT looks like at all ---
         "shape/grouped": _q(dimensions=["status"], measures=last),
@@ -64,67 +64,67 @@ def _cases() -> dict:
         "shape/first_and_last_together": _q(
             dimensions=["status"],
             measures=[
-                {"formula": "amount:first", "name": "f"},
-                {"formula": "amount:last", "name": "l"},
+                {"formula": "first(amount)", "name": "f"},
+                {"formula": "last(amount)", "name": "l"},
             ],
         ),
         # --- siblings: what stays in the host base ---
         "sibling/local_sum": _q(
             dimensions=["status"],
             measures=[
-                {"formula": "amount:last", "name": "l"},
-                {"formula": "amount:sum", "name": "s"},
+                {"formula": "last(amount)", "name": "l"},
+                {"formula": "sum(amount)", "name": "s"},
             ],
         ),
         "sibling/star_count": _q(
             dimensions=["status"],
             measures=[
-                {"formula": "amount:last", "name": "l"},
-                {"formula": "*:count", "name": "n"},
+                {"formula": "last(amount)", "name": "l"},
+                {"formula": "count(*)", "name": "n"},
             ],
         ),
         "sibling/cross_model_measure": _q(
             dimensions=["status"],
             measures=[
-                {"formula": "amount:last", "name": "l"},
-                {"formula": "customers.spend:sum", "name": "cs"},
+                {"formula": "last(amount)", "name": "l"},
+                {"formula": "sum(customers.spend)", "name": "cs"},
             ],
         ),
         # --- filtered variants: the sentinel-alias machinery B9 removes ---
         "filtered/local_column": _q(
             dimensions=["status"],
-            measures=[{"formula": "big_amount:last", "name": "l"}],
+            measures=[{"formula": "last(big_amount)", "name": "l"}],
         ),
         "filtered/joined_column": _q(
             dimensions=["status"],
-            measures=[{"formula": "gold_amount:last", "name": "l"}],
+            measures=[{"formula": "last(gold_amount)", "name": "l"}],
         ),
         "filtered/derived_expression": _q(
             dimensions=["status"],
-            measures=[{"formula": "doubled_big:last", "name": "l"}],
+            measures=[{"formula": "last(doubled_big)", "name": "l"}],
         ),
         "filtered/two_filters_one_query": _q(
             dimensions=["status"],
             measures=[
-                {"formula": "big_amount:last", "name": "b"},
-                {"formula": "gold_amount:last", "name": "g"},
+                {"formula": "last(big_amount)", "name": "b"},
+                {"formula": "last(gold_amount)", "name": "g"},
             ],
         ),
         # --- explicit time args: the rn-suffix scheme B9 removes ---
         "time_arg/explicit_column": _q(
             dimensions=["status"],
-            measures=[{"formula": "amount:last(shipped_at)", "name": "l"}],
+            measures=[{"formula": "last(amount, shipped_at)", "name": "l"}],
         ),
         "time_arg/two_distinct_columns": _q(
             dimensions=["status"],
             measures=[
-                {"formula": "amount:last(created_at)", "name": "a"},
-                {"formula": "amount:last(shipped_at)", "name": "b"},
+                {"formula": "last(amount, created_at)", "name": "a"},
+                {"formula": "last(amount, shipped_at)", "name": "b"},
             ],
         ),
         "time_arg/local_derived_column": _q(
             dimensions=["status"],
-            measures=[{"formula": "amount:last(created_alias)", "name": "l"}],
+            measures=[{"formula": "last(amount, created_alias)", "name": "l"}],
         ),
         # The DEV-1476 remnant. Recorded a raise before B9 — the ranking ran
         # in the host base, which could not pull the residual join — and emits
@@ -133,40 +133,40 @@ def _cases() -> dict:
         "time_arg/joined_derived_column": _q(
             dimensions=["status"],
             measures=[
-                {"formula": "amount:last(customers.signup_alias)", "name": "l"},
+                {"formula": "last(amount, customers.signup_alias)", "name": "l"},
             ],
         ),
         # --- crossing inputs: already isolated today, so a parity anchor ---
         "crossing/derived_source": _q(
             dimensions=["status"],
-            measures=[{"formula": "cust_region:last", "name": "l"}],
+            measures=[{"formula": "last(cust_region)", "name": "l"}],
         ),
         "crossing/grouped_by_the_value_it_ranks": _q(
             dimensions=["cust_region"],
-            measures=[{"formula": "cust_region:last", "name": "l"}],
+            measures=[{"formula": "last(cust_region)", "name": "l"}],
         ),
         # --- cross-model: the second ranked-subquery instance ---
         "cross_model/target_default_time": _q(
-            measures=[{"formula": "customers.spend:last", "name": "l"}],
+            measures=[{"formula": "last(customers.spend)", "name": "l"}],
         ),
         "cross_model/explicit_target_time": _q(
             measures=[
-                {"formula": "customers.spend:last(customers.signup_at)", "name": "l"},
+                {"formula": "last(customers.spend, customers.signup_at)", "name": "l"},
             ],
         ),
         "cross_model/derived_target_time": _q(
             measures=[
-                {"formula": "customers.spend:last(customers.signup_alias)", "name": "l"},
+                {"formula": "last(customers.spend, customers.signup_alias)", "name": "l"},
             ],
         ),
         "cross_model/time_arg_past_the_target": _q(
             measures=[
-                {"formula": "customers.spend:last(customers.deep_opened)", "name": "l"},
+                {"formula": "last(customers.spend, customers.deep_opened)", "name": "l"},
             ],
         ),
         "cross_model/rerooted_by_a_target_side_dim": _q(
             dimensions=["customers.regions.name"],
-            measures=[{"formula": "customers.spend:last", "name": "l"}],
+            measures=[{"formula": "last(customers.spend)", "name": "l"}],
         ),
         # A row filter interns a HIDDEN row slot in the re-rooted sub-plan.
         # That used to stop the sub-plan collapsing to its ranked CTE, and the
@@ -174,33 +174,33 @@ def _cases() -> dict:
         # dialect, and invisible to a reader looking for a nested ``WITH``.
         "cross_model/rerooted_with_a_row_filter": _q(
             dimensions=["customers.regions.name"],
-            measures=[{"formula": "customers.spend:last", "name": "l"}],
+            measures=[{"formula": "last(customers.spend)", "name": "l"}],
             filters=["customers.tier == 'gold'"],
         ),
         # --- composition ---
         "composite/arithmetic_of_two_ranked": _q(
             dimensions=["status"],
-            measures=[{"formula": "amount:last - amount:first", "name": "d"}],
+            measures=[{"formula": "last(amount) - first(amount)", "name": "d"}],
         ),
         "composite/ranked_plus_local": _q(
             dimensions=["status"],
-            measures=[{"formula": "amount:last + amount:sum", "name": "m"}],
+            measures=[{"formula": "last(amount) + sum(amount)", "name": "m"}],
         ),
         "composite/c13_two_names_one_key": _q(
             dimensions=["status"],
             measures=[
-                {"formula": "amount:last", "name": "l1"},
-                {"formula": "amount:last", "name": "l2"},
+                {"formula": "last(amount)", "name": "l1"},
+                {"formula": "last(amount)", "name": "l2"},
             ],
         ),
         "composite/transform_chain": _q(
             time_dimensions=_MONTH,
-            measures=[{"formula": "cumsum(amount:last)", "name": "c"}],
+            measures=[{"formula": "cumsum(last(amount))", "name": "c"}],
         ),
         # --- filters and ordering that TARGET the ranked measure ---
         "route/having_on_ranked": _q(
             dimensions=["status"], measures=last,
-            filters=[f"amount:last > {BIG_AMOUNT_THRESHOLD}"],
+            filters=[f"last(amount) > {BIG_AMOUNT_THRESHOLD}"],
         ),
         "route/order_by_projected_ranked": _q(
             dimensions=["status"], measures=last,
@@ -208,8 +208,8 @@ def _cases() -> dict:
         ),
         "route/order_by_hidden_ranked": _q(
             dimensions=["status"],
-            measures=[{"formula": "amount:sum", "name": "s"}],
-            order=[{"column": "amount:last", "direction": "desc"}],
+            measures=[{"formula": "sum(amount)", "name": "s"}],
+            order=[{"column": "last(amount)", "direction": "desc"}],
         ),
         "route/row_filter_and_ranked": _q(
             dimensions=["status"], measures=last,

@@ -51,8 +51,8 @@ def _make_engine(rows: list[tuple[int, float, str]]) -> SlayerQueryEngine:
 def _monthly(engine: SlayerQueryEngine, shift: str) -> dict[str, float | None]:
     resp = engine.execute_sync(query={
         "source_model": "orders",
-        "measures": ["cost:sum",
-                     {"formula": f"time_shift(cost:sum, -1, '{shift}')", "name": "prev"}],
+        "measures": ["sum(cost)",
+                     {"formula": f"time_shift(sum(cost), -1, '{shift}')", "name": "prev"}],
         "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
         "order": [{"column": "created_at", "direction": "asc"}],
     })
@@ -97,7 +97,7 @@ def test_change_uses_full_previous_month():
     ])
     resp = engine.execute_sync(query={
         "source_model": "orders",
-        "measures": ["cost:sum", {"formula": "change(cost:sum)", "name": "chg"}],
+        "measures": ["sum(cost)", {"formula": "change(sum(cost))", "name": "chg"}],
         "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
         "order": [{"column": "created_at", "direction": "asc"}],
     })
@@ -111,8 +111,8 @@ def test_aligned_shift_truncates_once():
     engine = _make_engine([(1, 1.0, "2024-01-10 12:00:00")])
     resp = engine.execute_sync(query={
         "source_model": "orders",
-        "measures": ["cost:sum",
-                     {"formula": "time_shift(cost:sum, -1, 'month')", "name": "prev"}],
+        "measures": ["sum(cost)",
+                     {"formula": "time_shift(sum(cost), -1, 'month')", "name": "prev"}],
         "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
     }, dry_run=True)
     shifted = [ln for ln in resp.sql.splitlines() if "'month')" in ln.lower()]
@@ -128,8 +128,8 @@ def test_unaligned_shift_still_rebuckets():
     ])
     resp = engine.execute_sync(query={
         "source_model": "orders",
-        "measures": ["cost:sum",
-                     {"formula": "time_shift(cost:sum, -1, 'day')", "name": "prev"}],
+        "measures": ["sum(cost)",
+                     {"formula": "time_shift(sum(cost), -1, 'day')", "name": "prev"}],
         "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
     }, dry_run=True)
     shifted = [ln for ln in resp.sql.splitlines() if "'day')" in ln.lower()]

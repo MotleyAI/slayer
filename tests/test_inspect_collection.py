@@ -77,8 +77,8 @@ async def _seed_two_ds(storage: YAMLStorage) -> None:
             Column(name="customer_id", type=DataType.INT, hidden=True),
         ],
         measures=[
-            ModelMeasure(name="revenue", formula="amount:sum"),
-            ModelMeasure(name="orders_count", formula="*:count"),
+            ModelMeasure(name="revenue", formula="sum(amount)"),
+            ModelMeasure(name="orders_count", formula="count(*)"),
         ],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
     ))
@@ -115,7 +115,7 @@ async def _seed_single_ds(storage: YAMLStorage) -> None:
             Column(name="amount", type=DataType.DOUBLE, description="USD amount."),
             Column(name="customer_id", type=DataType.INT, hidden=True),
         ],
-        measures=[ModelMeasure(name="revenue", formula="amount:sum")],
+        measures=[ModelMeasure(name="revenue", formula="sum(amount)")],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
     ))
     await storage.save_model(SlayerModel(
@@ -191,7 +191,7 @@ class TestModelCollectionCompactMarkdown:
         out = await _svc(two_ds).inspect(reference=None, entity_type="model")
         assert "Columns: 3" not in out
         assert "Measures: revenue" not in out
-        assert "amount:sum" not in out
+        assert "sum(amount)" not in out
 
     async def test_hidden_model_excluded(self, two_ds: YAMLStorage) -> None:
         out = await _svc(two_ds).inspect(reference=None, entity_type="model")
@@ -303,7 +303,7 @@ class TestModelCollectionVerbose:
         )
         # Full models_summary verbose markers, both datasources.
         assert "**Columns (3):**" in out          # orders in mydb
-        assert "amount:sum" in out
+        assert "sum(amount)" in out
         assert "# Datasource: `otherdb` — 2 model(s)" in out
 
     async def test_descriptions_max_chars_truncates(

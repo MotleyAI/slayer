@@ -157,9 +157,7 @@ class TestLocalMode:
     ) -> None:
         """Local-mode ``query_sync`` reaches the engine (not HTTP)."""
         await _save_orders(storage)
-        query = SlayerQuery(
-            source_model="orders", measures=[{"formula": "amount:sum"}]
-        )
+        query = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
         resp = client.query_sync(query, dry_run=True)
         assert resp.sql is not None
         assert "amount" in resp.sql.lower()
@@ -171,7 +169,7 @@ class TestLocalMode:
         await _save_orders(storage)
         query_dict = {
             "source_model": "orders",
-            "measures": [{"formula": "amount:sum"}],
+            "measures": [{"formula": "sum(amount)"}],
         }
         resp = client.query_sync(query_dict, dry_run=True)
         assert resp.sql is not None
@@ -184,7 +182,7 @@ class TestLocalMode:
         await _save_orders(storage)
         query_dict = {
             "source_model": "orders",
-            "measures": [{"formula": "amount:sum"}],
+            "measures": [{"formula": "sum(amount)"}],
         }
         sql = client.sql_sync(query_dict)
         assert isinstance(sql, str)
@@ -199,12 +197,12 @@ class TestLocalMode:
             {
                 "name": "by_customer",
                 "source_model": "orders",
-                "measures": [{"formula": "amount:sum"}],
+                "measures": [{"formula": "sum(amount)"}],
                 "dimensions": [{"name": "customer_id"}],
             },
             {
                 "source_model": "by_customer",
-                "measures": [{"formula": "amount_sum:avg"}],
+                "measures": [{"formula": "avg(amount_sum)"}],
             },
         ]
         resp = client.query_sync(queries, dry_run=True)
@@ -220,11 +218,11 @@ class TestLocalMode:
             name="rev_by_region",
             data_source="ds",
             source_queries=[
-                SlayerQuery(
-                    source_model="orders",
-                    measures=[{"formula": "amount:sum"}],
-                    dimensions=["region"],
-                )
+                SlayerQuery.model_validate({
+                    "source_model": "orders",
+                    "measures": [{"formula": "sum(amount)"}],
+                    "dimensions": ["region"],
+                })
             ],
         )
         await storage.save_model(saved)
@@ -244,12 +242,12 @@ class TestLocalMode:
             {
                 "name": "by_customer",
                 "source_model": "orders",
-                "measures": [{"formula": "amount:sum"}],
+                "measures": [{"formula": "sum(amount)"}],
                 "dimensions": [{"name": "customer_id"}],
             },
             {
                 "source_model": "by_customer",
-                "measures": [{"formula": "amount_sum:avg"}],
+                "measures": [{"formula": "avg(amount_sum)"}],
             },
         )
         resp = client.query_sync(queries, dry_run=True)
@@ -265,7 +263,7 @@ class TestLocalMode:
         payload: Mapping[str, Any] = MappingProxyType(
             {
                 "source_model": "orders",
-                "measures": [{"formula": "amount:sum"}],
+                "measures": [{"formula": "sum(amount)"}],
             }
         )
         resp = client.query_sync(payload, dry_run=True)
@@ -294,7 +292,7 @@ class TestHttpBodyShape:
             {
                 "name": "a",
                 "source_model": "orders",
-                "measures": [{"formula": "amount:sum"}],
+                "measures": [{"formula": "sum(amount)"}],
             },
             {"source_model": "a"},
         ]
@@ -319,11 +317,11 @@ class TestHttpBodyShape:
     ) -> None:
         """Mixed list items (``SlayerQuery`` + dict) each serialise to dict."""
         client, cap = http_client_with_capture
-        q = SlayerQuery(
-            name="a",
-            source_model="orders",
-            measures=[{"formula": "amount:sum"}],
-        )
+        q = SlayerQuery.model_validate({
+            "name": "a",
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)"}],
+        })
         items: list[Any] = [q, {"source_model": "a"}]
         client.query_sync(items)
         body = cap.last_body
@@ -365,7 +363,7 @@ class TestHttpBodyShape:
         client, cap = http_client_with_capture
         payload = {
             "source_model": "orders",
-            "measures": [{"formula": "amount:sum"}],
+            "measures": [{"formula": "sum(amount)"}],
         }
         client.query_sync(payload)
         body = cap.last_body
@@ -386,14 +384,14 @@ class TestHttpBodyShape:
         with HTTP 422.
         """
         client, cap = http_client_with_capture
-        payload = {"source_model": "orders", "measures": ["amount:sum"]}
+        payload = {"source_model": "orders", "measures": ["sum(amount)"]}
         client.query_sync(payload)
         body = cap.last_body
         assert body is not None
         # Each measure landed as a dict, not a bare string.
         for m in body["measures"]:
             assert isinstance(m, dict)
-            assert m.get("formula") == "amount:sum"
+            assert m.get("formula") == "sum(amount)"
 
     # --- SlayerQuery --------------------------------------------------- #
 
@@ -402,9 +400,7 @@ class TestHttpBodyShape:
         http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         client, cap = http_client_with_capture
-        q = SlayerQuery(
-            source_model="orders", measures=[{"formula": "amount:sum"}]
-        )
+        q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
         client.query_sync(q)
         # JSON mode — see codex note (4); matches _coerce_linked_entities.
         assert cap.last_body == q.model_dump(mode="json", exclude_none=True)
@@ -420,7 +416,7 @@ class TestHttpBodyShape:
             {
                 "name": "a",
                 "source_model": "orders",
-                "measures": [{"formula": "amount:sum"}],
+                "measures": [{"formula": "sum(amount)"}],
             },
             {"source_model": "a"},
         ]
@@ -478,7 +474,7 @@ class TestHttpBodyShape:
         client, _cap = http_client_with_capture
         payload = {
             "source_model": "orders",
-            "measures": [{"formula": "amount:sum"}],
+            "measures": [{"formula": "sum(amount)"}],
         }
         snapshot = dict(payload)
         client.query_sync(payload, dry_run=True, explain=True)
@@ -540,7 +536,7 @@ class TestHttpBodyShape:
         AND route through the SlayerQuery normalisation pipeline."""
         client, cap = http_client_with_capture
         payload: Mapping[str, Any] = MappingProxyType(
-            {"source_model": "orders", "measures": [{"formula": "amount:sum"}]}
+            {"source_model": "orders", "measures": [{"formula": "sum(amount)"}]}
         )
         client.query_sync(payload)
         assert cap.last_body == SlayerQuery.model_validate(
@@ -578,7 +574,7 @@ class TestHttpBodyShape:
         client, cap = http_client_with_capture
         payload = {
             "source_model": "orders",
-            "measures": [{"formula": "amount:sum"}],
+            "measures": [{"formula": "sum(amount)"}],
             "variables": {"region": "US"},
         }
         client.query_sync(payload)

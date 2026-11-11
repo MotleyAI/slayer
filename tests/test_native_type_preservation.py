@@ -113,7 +113,7 @@ class TestSqliteKeepsInferredCast:
         await storage.save_model(model)
         engine = SlayerQueryEngine(storage=storage)
 
-        query = {"source_model": "orders", "measures": ["amount:sum"]}
+        query = {"source_model": "orders", "measures": ["sum(amount)"]}
         result = await engine.execute(query=query)
         sql = (await engine.execute(query=query, dry_run=True)).sql
 
