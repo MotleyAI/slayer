@@ -1,12 +1,9 @@
-"""StorageBackend subclasses written against the 0.9.x hook contract keep working until 2.0."""
+"""The StorageBackend hook contract: ``_save_datasource_impl`` writes, ``_list_memories_rows`` returns
+``(memories, failed_rows)``; 0.9.x-style subclasses are not adapted. Spec: storage/custom-backends."""
 
 import contextlib
-import inspect
-from abc import abstractmethod
-import re
 import warnings
-from collections.abc import Callable, Generator
-from typing import Any
+from collections.abc import Generator
 
 import pytest
 
@@ -16,12 +13,8 @@ from slayer.core.warnings import SlayerUnloadableDocumentWarning
 from slayer.embeddings.models import Embedding
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
-from slayer.storage.access_filtered import AccessFilteredStorage
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded
-from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
-
-_SHAPE = "(memories, failed_rows)"
 
 
 def _datasource(*, granularities: list[dict] | None = None) -> DatasourceConfig:
@@ -43,13 +36,6 @@ def _recorded() -> Generator[list[warnings.WarningMessage]]:
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         yield caught
-
-
-@contextlib.contextmanager
-def _quiet() -> Generator[None]:
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", FutureWarning)
-        yield
 
 
 def _future(caught: list[warnings.WarningMessage]) -> list[str]:
@@ -149,19 +135,6 @@ def _legacy_cls() -> type[_DictStore]:
     return Legacy09Backend
 
 
-def _list_rows_cls() -> type[_DictStore]:
-    class ListRowsBackend(_DictStore):
-        async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
-            self.datasources[datasource.name] = datasource
-
-        async def _list_memories_rows(  # pyright: ignore[reportIncompatibleMethodOverride]
-            self, *, entities: list[str] | None,
-        ) -> list[Memory]:
-            return [Memory.model_validate(raw) for raw in _matching(entities, self.memories)]
-
-    return ListRowsBackend
-
-
 def _new_style_cls() -> type[_DictStore]:
     class NewStyleBackend(_DictStore):
         async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
@@ -181,17 +154,6 @@ def _new_style_cls() -> type[_DictStore]:
     return NewStyleBackend
 
 
-def _returning_cls(result: Callable[[], Any]) -> type[_DictStore]:
-    class BadShapeBackend(_DictStore):
-        async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
-            self.datasources[datasource.name] = datasource
-
-        async def _list_memories_rows(self, *, entities: list[str] | None) -> Any:
-            return result()
-
-    return BadShapeBackend
-
-
 @pytest.fixture
 def spy_check(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Shared call log; ``DatasourceConfig.check_granularities`` appends ``"check"`` to it."""
@@ -206,117 +168,43 @@ def spy_check(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return log
 
 
-class TestLegacySaveDatasource:
-    def test_definition_warns_once_and_class_instantiates(self) -> None:
-        with _recorded() as caught:
-            cls = _legacy_cls()
-        messages = [w for w in caught if issubclass(w.category, FutureWarning)]
-        assert len(messages) == 1
-        text = str(messages[0].message)
-        for needle in ("Legacy09Backend", "save_datasource", "_save_datasource_impl", "2.0"):
-            assert needle in text
-        assert messages[0].filename == __file__
-        assert messages[0].lineno == _legacy_cls.__code__.co_firstlineno + 1
-        assert cls.__abstractmethods__ == frozenset()
-        with _recorded() as caught:
-            cls()
-        assert _future(caught) == []
+async def test_new_style_backend_untouched(spy_check: list[str]) -> None:
+    with _recorded() as caught:
+        cls = _new_style_cls()
+    assert _future(caught) == []
+    backend = cls()
+    backend.log = spy_check
+    await backend.save_datasource(_valid())
+    assert spy_check == ["check", "impl"]
+    invalid = _invalid()
+    with pytest.raises(GranularityDefinitionError):
+        await backend.save_datasource(invalid)
+    assert spy_check == ["check", "impl", "check"]
 
-    async def test_save_validates_then_runs_old_body(self, spy_check: list[str]) -> None:
-        with _quiet():
-            backend = _legacy_cls()()
-        backend.log = spy_check
-        with _recorded() as caught:
-            await backend.save_datasource(_valid())
-        assert spy_check == ["check", "body"]
-        assert await backend.get_datasource("shop") == _valid()
-        assert _future(caught) == []
+async def test_bundled_backend_subclass_override_untouched(tmp_path) -> None:
+    with _recorded() as caught:
+        class AuditedYAMLStorage(YAMLStorage):
+            log: list[str] = []
 
-    async def test_invalid_granularity_rejected_before_old_body(self) -> None:
-        with _quiet():
-            backend = _legacy_cls()()
-        invalid = _invalid()
-        with pytest.raises(GranularityDefinitionError):
-            await backend.save_datasource(invalid)
-        assert backend.log == []
-        assert backend.datasources == {}
+            async def save_datasource(self, datasource: DatasourceConfig) -> None:
+                self.log.append("override")
+                await super().save_datasource(datasource)
+    assert _future(caught) == []
+    backend = AuditedYAMLStorage(base_dir=str(tmp_path))
+    backend.log = []
+    await backend.save_datasource(_valid())
+    assert backend.log == ["override"]
+    assert await backend.get_datasource("shop") == _valid()
+    invalid = _invalid()
+    with pytest.raises(GranularityDefinitionError):
+        await backend.save_datasource(invalid)
 
-    @pytest.mark.parametrize("calls_super", [True, False])
-    async def test_legacy_child_of_legacy_backend_validates(self, calls_super: bool) -> None:
-        with _quiet():
-            root = _legacy_cls()
-        with _recorded() as caught:
-            class Legacy09Child(root):
-                async def save_datasource(self, datasource: DatasourceConfig) -> None:
-                    self.log.append("child")
-                    if calls_super:
-                        await super().save_datasource(datasource)
-                    else:
-                        self.datasources[datasource.name] = datasource
-        child_warnings = _future(caught)
-        assert len(child_warnings) == 1
-        for needle in ("Legacy09Child", "save_datasource", "_save_datasource_impl", "2.0"):
-            assert needle in child_warnings[0]
-        backend = Legacy09Child()  # pyright: ignore[reportAbstractUsage]
-        invalid = _invalid()
-        with pytest.raises(GranularityDefinitionError):
-            await backend.save_datasource(invalid)
-        assert backend.log == []
-        assert backend.datasources == {}
-        await backend.save_datasource(_valid())
-        assert backend.log == (["child", "body"] if calls_super else ["child"])
-        assert await backend.get_datasource("shop") == _valid()
 
-    async def test_legacy_backend_below_abstract_redeclaration_is_adapted(self, spy_check: list[str]) -> None:
-        class ReDeclaringBase(_DictStore):
-            @abstractmethod
-            async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None: ...
-
-        with _recorded() as caught:
-            class Legacy09OnAbstractBase(ReDeclaringBase):
-                async def save_datasource(self, datasource: DatasourceConfig) -> None:
-                    self.log.append("body")
-                    self.datasources[datasource.name] = datasource
-
-                async def _list_memories_rows(self, *, entities: list[str] | None) -> Loaded[Memory]:
-                    return [], []
-        assert len(_future(caught)) == 1
-        assert Legacy09OnAbstractBase.__abstractmethods__ == frozenset()
-        backend = Legacy09OnAbstractBase()  # pyright: ignore[reportAbstractUsage]
-        backend.log = spy_check
-        await backend.save_datasource(_valid())
-        assert spy_check == ["check", "body"]
-
-    async def test_new_style_backend_untouched(self, spy_check: list[str]) -> None:
-        with _recorded() as caught:
-            cls = _new_style_cls()
-        assert _future(caught) == []
-        backend = cls()
-        backend.log = spy_check
-        await backend.save_datasource(_valid())
-        assert spy_check == ["check", "impl"]
-        invalid = _invalid()
-        with pytest.raises(GranularityDefinitionError):
-            await backend.save_datasource(invalid)
-        assert spy_check == ["check", "impl", "check"]
-
-    async def test_bundled_backend_subclass_override_untouched(self, tmp_path) -> None:
-        with _recorded() as caught:
-            class AuditedYAMLStorage(YAMLStorage):
-                log: list[str] = []
-
-                async def save_datasource(self, datasource: DatasourceConfig) -> None:
-                    self.log.append("override")
-                    await super().save_datasource(datasource)
-        assert _future(caught) == []
-        backend = AuditedYAMLStorage(base_dir=str(tmp_path))
-        backend.log = []
-        await backend.save_datasource(_valid())
-        assert backend.log == ["override"]
-        assert await backend.get_datasource("shop") == _valid()
-        invalid = _invalid()
-        with pytest.raises(GranularityDefinitionError):
-            await backend.save_datasource(invalid)
+def test_a_09x_style_backend_does_not_instantiate() -> None:
+    with _recorded():
+        cls = _legacy_cls()
+    with pytest.raises(TypeError, match="_save_datasource_impl"):
+        cls()
 
 
 async def _store_memories(*, backend: StorageBackend, count: int) -> list[Memory]:
@@ -327,110 +215,20 @@ def _ids(memories: list[Memory]) -> list[str]:
     return sorted(m.id for m in memories)
 
 
-class TestListMemoriesRowsShape:
-    @pytest.mark.parametrize("count", [0, 1, 2, 3])
-    async def test_list_returning_backend_reads_every_count(self, count: int) -> None:
-        backend = _list_rows_cls()()
-        stored = await _store_memories(backend=backend, count=count)
-        with _quiet():
-            listed = await backend.list_memories()
-            loaded, failed = await backend.load_memories()
-        assert isinstance(listed, list)
-        assert _ids(listed) == _ids(stored)
-        assert isinstance(loaded, list)
-        assert _ids(loaded) == _ids(stored)
-        assert failed == []
-
-    async def test_list_returning_backend_filters_by_entities(self) -> None:
-        backend = _list_rows_cls()()
-        kept = await backend.save_memory(learning="kept", entities=["shop.orders"])
-        await backend.save_memory(learning="other", entities=["shop.customers"])
-        with _quiet():
-            listed = await backend.list_memories(entities=["shop.orders"])
-        assert _ids(listed) == [kept.id]
-
-    async def test_old_shape_warns_once_per_class(self) -> None:
-        cls = _list_rows_cls()
-        backend = cls()
-        await _store_memories(backend=backend, count=2)
-        with _recorded() as caught:
-            for _ in range(3):
-                await backend.list_memories()
-            await backend.load_memories()
-            await cls().list_memories()
-        messages = _future(caught)
-        assert len(messages) == 1
-        for needle in ("ListRowsBackend", "_list_memories_rows", _SHAPE, "2.0"):
-            assert needle in messages[0]
-
-    async def test_old_shape_warning_survives_an_error_filter(self) -> None:
-        backend = _list_rows_cls()()
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", FutureWarning)
-            with pytest.raises(FutureWarning):
-                await backend.list_memories()
-        with _recorded() as caught:
-            await backend.list_memories()
-            await backend.list_memories()
-        assert len(_future(caught)) == 1
-
-    async def test_inheriting_subclass_shares_defining_class_warning(self) -> None:
-        parent = _list_rows_cls()
-
-        class InheritingBackend(parent):
-            pass
-
-        with _recorded() as caught:
-            await InheritingBackend().list_memories()  # pyright: ignore[reportAbstractUsage]
-            await parent().list_memories()
-        messages = _future(caught)
-        assert len(messages) == 1
-        assert "ListRowsBackend" in messages[0]
-
-    @pytest.mark.parametrize("method", ["list_memories", "load_memories"])
-    async def test_old_shape_load_failure_raises(self, method: str) -> None:
-        backend = _list_rows_cls()()
-        await _store_memories(backend=backend, count=1)
-        backend.memories["9"] = {"id": "9", "learning": None}
-        call = getattr(backend, method)
-        with _quiet(), pytest.raises(ValueError):
-            await call()
-
-    @pytest.mark.parametrize("cls", [YAMLStorage, SQLiteStorage, AccessFilteredStorage])
-    def test_bundled_overrides_are_shape_checked(self, cls: type[StorageBackend]) -> None:
-        assert inspect.unwrap(cls._list_memories_rows) is not cls._list_memories_rows
-
-    @pytest.mark.parametrize("result", [
-        pytest.param(lambda: {}, id="dict"),
-        pytest.param(lambda: (m for m in ()), id="generator"),
-        pytest.param(lambda: ([], [], []), id="3-tuple"),
-        pytest.param(lambda: ([], ()), id="2-tuple-second-not-list"),
-        pytest.param(lambda: ((), []), id="2-tuple-first-not-list"),
-        pytest.param(lambda: ("a", "b"), id="2-tuple-of-strings"),
-        pytest.param(lambda: None, id="none"),
-    ])
-    async def test_wrong_shape_raises_naming_class(self, result: Callable[[], Any]) -> None:
-        backend = _returning_cls(result)()
-        pattern = rf"(?s)(?=.*{re.escape('BadShapeBackend')})(?=.*{re.escape(_SHAPE)})"
-        with pytest.raises(TypeError, match=pattern):
-            await backend.list_memories()
-        with pytest.raises(TypeError, match=pattern):
-            await backend.load_memories()
-
-    async def test_new_style_backend_keeps_failure_reporting(self) -> None:
-        backend = _new_style_cls()()
-        good = await backend.save_memory(learning="fine", entities=["shop.orders"])
-        backend.memories["9"] = {"id": "9", "learning": None}
-        with _recorded() as caught:
-            loaded, failed = await backend.load_memories()
-            failures = DocumentLoadFailures()
-            listed = await backend.list_memories(failures=failures)
-        assert _future(caught) == []
-        assert _ids(loaded) == [good.id]
-        assert [e.name for e in failed] == ["9"]
-        assert _ids(listed) == [good.id]
-        assert [e.name for e in failures.errors] == ["9"]
-        assert any(issubclass(w.category, SlayerUnloadableDocumentWarning) for w in caught)
+async def test_new_style_backend_keeps_failure_reporting() -> None:
+    backend = _new_style_cls()()
+    good = await backend.save_memory(learning="fine", entities=["shop.orders"])
+    backend.memories["9"] = {"id": "9", "learning": None}
+    with _recorded() as caught:
+        loaded, failed = await backend.load_memories()
+        failures = DocumentLoadFailures()
+        listed = await backend.list_memories(failures=failures)
+    assert _future(caught) == []
+    assert _ids(loaded) == [good.id]
+    assert [e.name for e in failed] == ["9"]
+    assert _ids(listed) == [good.id]
+    assert [e.name for e in failures.errors] == ["9"]
+    assert any(issubclass(w.category, SlayerUnloadableDocumentWarning) for w in caught)
 
 
 class SelfBuildingBackend(_DictStore):
@@ -509,13 +307,3 @@ class TestLibraryGranularitySettle:
         for load in loads:
             await load()
         assert backend.calls == ["_raw_datasource_dicts"]
-
-
-async def test_full_09x_backend_round_trip() -> None:
-    with _quiet():
-        backend = _legacy_cls()()
-        await backend.save_datasource(_valid())
-        stored = await _store_memories(backend=backend, count=2)
-        listed = await backend.list_memories()
-    assert await backend.list_datasources() == ["shop"]
-    assert _ids(listed) == _ids(stored)

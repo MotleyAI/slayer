@@ -21,13 +21,13 @@ from slayer.core.query import SlayerQuery
 from slayer.core.scope import ModelScope
 from slayer.core.syntax import parse_expr
 from slayer.engine.binding import bind_expr
-from slayer.live_schema.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.database import engine_factory
 from slayer.sql.dialects import clickhouse as clickhouse_dialect
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.reflection import column_from_sa_type
+from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2120_fixtures import (
     DOCS_ROWS,
     EXEC_BACKENDS,
@@ -309,7 +309,12 @@ class TestIngestionKeepsJsonDbType:
                 con.executemany("INSERT INTO docs VALUES (?, ?)", DOCS_ROWS)
             ds = DatasourceConfig(name="test", type="duckdb", database=db_path)
             try:
-                models = ingest_datasource(datasource=ds, include_tables=["docs"])
+                ingester = SlayerQueryEngine(storage=YAMLStorage(base_dir=os.path.join(tmp, "ingest")))
+                try:
+                    models = await ingester.ingest(ds, include_tables=["docs"])
+                finally:
+                    await ingester.aclose()
+                    ingester.close()
                 payload = next(c for c in models[0].columns if c.name == "payload")
                 assert (payload.db_type or "").upper() == "JSON"
                 engine = await build_exec_engine(db_path, dialect="duckdb", models=models)

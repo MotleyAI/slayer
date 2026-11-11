@@ -6,7 +6,6 @@ from __future__ import annotations
 from enum import Enum
 from typing import TYPE_CHECKING, Any, List, Sequence, Tuple
 
-from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import TimeGranularity
 
 if TYPE_CHECKING:
@@ -95,21 +94,7 @@ class MemoryNotFoundError(SlayerError):
 
     def __init__(self, memory_id: str) -> None:
         self.memory_id = str(memory_id)
-        self._identifier = self.memory_id
         super().__init__(f"No memory with id '{self.memory_id}'.")
-
-    @property
-    def identifier(self) -> str:
-        warn_deprecated(
-            "MemoryNotFoundError.identifier is deprecated; read .memory_id instead. "
-            "The alias works until SLayer 2.0.",
-            removal="2.0",
-        )
-        return self._identifier
-
-    @identifier.setter
-    def identifier(self, value: str) -> None:
-        self._identifier = value
 
 
 class SchemaDriftError(SlayerError):

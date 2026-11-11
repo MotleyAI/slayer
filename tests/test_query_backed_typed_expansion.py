@@ -1,12 +1,12 @@
 """Query-backed expansion on the typed pipeline: ``_expand_query_backed_model``,
-``_validate_and_populate_cache`` and ``get_column_types``.
+``_validate_and_populate_cache`` and ``get_result_column_types``.
 
 * Stored ``source_queries`` are topo-sorted (Kahn), not required top-to-bottom.
 * Virtual-model columns are the PUBLIC slots only, typed from typed-plan slot types.
 * Per-stage normalize + variable substitution mirror ``_execute_pipeline``.
 * ``expand_query_backed_models_in_bundle`` handles nested query-backed join
   targets, query-backed stage sources, and the root ``ModelExtension`` overlay.
-* ``get_column_types`` renders its probe through ``generate_planned_stages``.
+* ``get_result_column_types`` renders its probe through ``generate_planned_stages``.
 """
 from __future__ import annotations
 
@@ -585,12 +585,12 @@ class TestSourceModelOriginDropped:
 
 
 # ---------------------------------------------------------------------------
-# get_column_types: renders through the typed generate_planned_stages
+# get_result_column_types: renders through the typed generate_planned_stages
 # ---------------------------------------------------------------------------
 
 
-class TestGetColumnTypesTypedPipeline:
-    async def test_get_column_types_on_query_backed_model_returns_typed_results(
+class TestGetResultColumnTypesTypedPipeline:
+    async def test_get_result_column_types_on_query_backed_model_returns_typed_results(
         self,
     ) -> None:
         """Functional probe against a real SQLite-backed query-backed model.
@@ -635,16 +635,14 @@ class TestGetColumnTypesTypedPipeline:
         ))
 
         engine = SlayerQueryEngine(storage=storage)
-        types = await engine.get_column_types("qb_for_types_live")
+        types = await engine.get_result_column_types("qb_for_types_live")
         # Returned bare-name keys: ``amount_sum`` (probeable; status is
         # a TEXT column whose default agg may or may not be probed
         # depending on type allowlist).
         assert "amount_sum" in types, types
-        # The returned type token is whatever ``client.get_column_types``
-        # produces — typically "number" for SQLite.
-        assert types["amount_sum"], types["amount_sum"]
+        assert types["amount_sum"].type in (DataType.INT, DataType.DOUBLE), types["amount_sum"]
 
-    async def test_get_column_types_renders_via_build_planned_statement(self) -> None:
+    async def test_get_result_column_types_renders_via_build_planned_statement(self) -> None:
         """The query-backed probe path builds through ``build_planned_statement``."""
         # Save a real query-backed model so the prelude branch runs too.
         m = SlayerModel(
@@ -674,12 +672,12 @@ class TestGetColumnTypesTypedPipeline:
                 # a real backing table); the assertion is about the
                 # render path, which runs before the probe executes.
                 try:
-                    await engine.get_column_types("qb_for_types")
+                    await engine.get_result_column_types("qb_for_types")
                 except Exception:  # noqa: BLE001 — probe-execute failure is expected
                     pass
             probes = [sql for is_probe, sql in planned_calls if is_probe]
             assert len(probes) == 1, (
-                "get_column_types must build the query-backed probe through "
+                "get_result_column_types must build the query-backed probe through "
                 f"build_planned_statement exactly once; got {len(probes)}"
             )
             assert "SELECT" in probes[0].upper(), probes[0]

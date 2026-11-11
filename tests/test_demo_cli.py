@@ -23,7 +23,6 @@ from tests._fake_uvicorn import fake_uvicorn
 def _make_args(**overrides):
     defaults = dict(
         storage=None,
-        models_dir=None,
         connection_string="demo",
         name=None,
         description=None,
@@ -105,7 +104,7 @@ class TestServeMcpDemoHook:
             sys.modules, "uvicorn", fake_uvicorn(lambda app, host, port: calls.append(f"uvicorn:{app}:{host}:{port}"))
         )
 
-        args = argparse.Namespace(host="h", port=1, storage=None, models_dir=None, demo=True)
+        args = argparse.Namespace(host="h", port=1, storage=None, demo=True)
         cli._run_serve(args=args)
 
         assert calls == ["prepare", "uvicorn:APP:h:1"]
@@ -125,7 +124,7 @@ class TestServeMcpDemoHook:
         fake_mcp.create_mcp_server = lambda *args, **kwargs: _FakeMCP()
         monkeypatch.setitem(sys.modules, "slayer.mcp.server", fake_mcp)
 
-        args = argparse.Namespace(storage=None, models_dir=None, demo=True)
+        args = argparse.Namespace(storage=None, demo=True)
         cli._run_mcp(args=args)
 
         assert calls == ["prepare", "mcp.run"]

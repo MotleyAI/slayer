@@ -3,7 +3,6 @@
 import pytest
 
 from slayer.core.models import DatasourceConfig
-from slayer.live_schema.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
@@ -43,11 +42,14 @@ async def pg(postgresql, tmp_path):
     storage = YAMLStorage(base_dir=str(tmp_path))
     await storage.save_datasource(ds)
     await storage.save_model(lib_model(data_source="pg"))
+    engine = SlayerQueryEngine(storage=storage)
     try:
-        for model in ingest_datasource(datasource=ds, include_tables=["docs", "docs_json"]):
+        for model in await engine.ingest(ds, include_tables=["docs", "docs_json"]):
             await storage.save_model(model)
-        yield SlayerQueryEngine(storage=storage), version_num
+        yield engine, version_num
     finally:
+        await engine.aclose()
+        engine.close()
         engine_factory.invalidate_engine(ds)
 
 

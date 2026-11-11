@@ -289,7 +289,7 @@ class TestIngestResults:
 def _cli_ingest(store: Path, capsys: pytest.CaptureFixture[str]) -> tuple[int | str | None, str]:
     args = SimpleNamespace(
         datasource=DS_NAME, schema=None, include=None, exclude=None, include_views=True, surface_internals=False,
-        storage=str(store), models_dir=None,
+        storage=str(store),
     )
     code: int | str | None = None
     try:

@@ -133,7 +133,7 @@ class UsageReportingEnv(BaseModel):
 def usage_reporting_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[UsageReportingEnv]:
     """Usage reporting on, config under ``tmp_path``, reports posted to a local capture server."""
     capture = CaptureServer().start()
-    for var in ("DO_NOT_TRACK", "CI", "SLAYER_STORAGE", "SLAYER_MODELS_DIR"):
+    for var in ("DO_NOT_TRACK", "CI", "SLAYER_STORAGE"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("SLAYER_USAGE_REPORTING", "on")
     monkeypatch.setenv("SLAYER_USAGE_REPORTING_ENDPOINT", capture.url)

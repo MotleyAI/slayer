@@ -22,26 +22,6 @@ HELPER_MODULE = "slayer/core/deprecation.py"
 
 #: Every covered workaround: (file, a token its message spells literally) -> removal version.
 PINNED: dict[tuple[str, str], str] = {
-    ("slayer/live_schema/ingestion.py", "ingest_datasource()"): "2.0",
-    ("slayer/live_schema/ingestion.py", "ingest_datasource_report()"): "2.0",
-    ("slayer/live_schema/ingestion.py", "ingest_datasource_idempotent()"): "2.0",
-    ("slayer/live_schema/schema_drift.py", "validate_datasource()"): "2.0",
-    ("slayer/dbt/converter.py", "DbtToSlayerConverter"): "2.0",
-    ("slayer/osi/converter.py", "OsiToSlayerConverter"): "2.0",
-    ("slayer/storage/legacy_backends.py", "save_datasource"): "2.0",
-    ("slayer/storage/legacy_backends.py", "_list_memories_rows"): "2.0",
-    ("slayer/cli.py", "--models-dir"): "2.0",
-    ("slayer/storage/base.py", "SLAYER_MODELS_DIR"): "2.0",
-    ("slayer/mcp/server.py", "inspect_model"): "2.0",
-    ("slayer/core/errors.py", ".identifier"): "2.0",
-    ("slayer/database/client.py", "get_column_types_sync()"): "2.0",
-    ("slayer/database/client.py", "SlayerSQLClient.get_column_types()"): "2.0",
-    ("slayer/engine/query_engine.py", "SlayerQueryEngine.get_column_types()"): "2.0",
-    ("slayer/database/client.py", "stops installing"): "2.0",
-    ("slayer/database/client.py", "A SQL client's get_column_types()"): "2.0",
-    ("slayer/database/client.py", "DelegatingSqlClient.get_column_types()"): "2.0",
-    ("slayer/sql/dialects/base.py", "build_explain_sql()"): "2.0",
-    ("slayer/database/client.py", "A SQL client without explain()"): "2.0",
     **{
         (f"slayer/{old.replace('.', '/')}.py", f"slayer.{old}"): "3.0"
         for old in (
@@ -56,7 +36,6 @@ PINNED: dict[tuple[str, str], str] = {
     ("slayer/engine/cardinality/__init__.py", "slayer.engine.cardinality."): "3.0",
     ("slayer/core/query.py", "An extension object in `source_model`"): "3.0",
 }
-MOVED_PATH_SITES = frozenset(k for k, removal in PINNED.items() if removal == "3.0")
 
 
 class Site(BaseModel):
@@ -171,14 +150,8 @@ def _named_at(version: str, monkeypatch) -> set[tuple[str, str] | None]:
     return {_feature(s) for s in sites if any(p.startswith(f"{s.where}: ") for p in problems)}
 
 
-def test_at_2_0_0_the_tripwire_names_every_2_0_site(monkeypatch) -> None:
-    assert _named_at("2.0.0", monkeypatch) == set(PINNED) - MOVED_PATH_SITES
-
-
-def test_at_3_0_0_the_moved_module_paths_are_named(monkeypatch) -> None:
-    named = _named_at("3.0.0", monkeypatch)
-    assert MOVED_PATH_SITES <= named
-    assert named == set(PINNED)
+def test_at_the_next_major_the_tripwire_names_every_pinned_site(monkeypatch) -> None:
+    assert _named_at(f"{_major(_package_version()) + 1}.0.0", monkeypatch) == set(PINNED)
 
 
 def test_only_the_helper_emits_future_warnings() -> None:
@@ -254,91 +227,3 @@ def test_unrelated_warn_calls_are_not_tags() -> None:
             warn_deprecated("y", removal="2.0")
     """)
     assert _sites_in(source, rel="slayer/x.py") == []
-
-
-#: Each dialect's 1.6.0 classification: the class attribute every one of these dialect files declares.
-LEGACY_TABLE = "legacy_type_categories"
-LEGACY_DIALECT_FILES = frozenset({
-    "slayer/sql/dialects/postgres.py", "slayer/sql/dialects/mysql.py", "slayer/sql/dialects/tsql.py",
-    "slayer/sql/dialects/snowflake.py", "slayer/sql/dialects/duckdb.py", "slayer/sql/dialects/sqlite.py",
-})
-CATEGORY_READER = ("slayer/database/client.py", "type_categories")
-#: The tagged deprecated probes: the only readers of ``type_categories``.
-CATEGORY_PROBES = frozenset({
-    ("slayer/database/client.py", "get_column_types_sync"),
-    ("slayer/database/client.py", "SlayerSQLClient.get_column_types"),
-    ("slayer/database/client.py", "DelegatingSqlClient.get_column_types"),
-    ("slayer/engine/query_engine.py", "SlayerQueryEngine.get_column_types"),
-})
-
-
-class Use(BaseModel):
-    file: str
-    line: int
-    scope: str  # dotted enclosing class/function; "" at module level
-    in_function: bool
-    declares: bool
-
-
-def _uses_in(source: str, *, rel: str, name: str) -> list[Use]:
-    """Every mention of ``name`` (a name, attribute or assignment target), with its enclosing scope."""
-    out: list[Use] = []
-
-    def visit(node: ast.AST, scope: list[str], in_function: bool) -> None:
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                visit(child, [*scope, child.name], in_function or not isinstance(child, ast.ClassDef))
-                continue
-            if (isinstance(child, ast.Name) and child.id == name) or (
-                    isinstance(child, ast.Attribute) and child.attr == name):
-                out.append(Use(file=rel, line=child.lineno, scope=".".join(scope), in_function=in_function,
-                               declares=isinstance(child.ctx, ast.Store)))
-            visit(child, scope, in_function)
-
-    visit(ast.parse(source), [], False)
-    return out
-
-
-def _uses(name: str) -> list[Use]:
-    return [
-        use
-        for path in sorted(SLAYER.rglob("*.py"))
-        for use in _uses_in(path.read_text(), rel=path.relative_to(REPO).as_posix(), name=name)
-    ]
-
-
-def test_every_1_6_0_dialect_declares_its_classification() -> None:
-    declaring = {u.file for u in _uses(LEGACY_TABLE) if u.declares and not u.in_function}
-    assert LEGACY_DIALECT_FILES <= declaring, sorted(LEGACY_DIALECT_FILES - declaring)
-
-
-def test_the_1_6_0_classifications_are_read_only_by_type_categories() -> None:
-    reads = [u for u in _uses(LEGACY_TABLE) if not u.declares]
-    stray = [f"{u.file}:{u.line} in {u.scope or '<module>'}" for u in reads
-             if (u.file, u.scope) != CATEGORY_READER
-             and not (u.file.startswith("slayer/sql/dialects/") and not u.in_function)]
-    assert reads
-    assert not stray, "only type_categories reads the 1.6.0 classifications:\n" + "\n".join(stray)
-
-
-def test_type_categories_is_called_only_by_the_tagged_probes() -> None:
-    calls = [u for u in _uses("type_categories") if u.in_function and not u.declares]
-    callers = {(u.file, u.scope) for u in calls}
-    assert callers == CATEGORY_PROBES, sorted(callers ^ CATEGORY_PROBES)
-    tagged = {(u.file, u.scope) for u in _uses("warn_deprecated") if u.in_function}
-    assert CATEGORY_PROBES <= tagged, sorted(CATEGORY_PROBES - tagged)
-
-
-def test_a_classification_read_outside_type_categories_is_found() -> None:
-    source = textwrap.dedent("""
-        class D:
-            legacy_type_categories = {"interval": "time"}
-
-        def type_categories(types, *, dialect):
-            return dialect.legacy_type_categories
-
-        def elsewhere(dialect):
-            return dialect.legacy_type_categories
-    """)
-    uses = _uses_in(source, rel="slayer/database/client.py", name=LEGACY_TABLE)
-    assert [(u.scope, u.declares) for u in uses] == [("D", True), ("type_categories", False), ("elsewhere", False)]

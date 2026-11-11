@@ -12,10 +12,17 @@ import pytest
 import sqlalchemy.exc
 import sqlglot
 
+from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
 from slayer.database import client as sql_client
-from slayer.database.client import ExecutionResult, SlayerSQLClient, get_column_types_sync, render_type_probe
+from slayer.database.client import (
+    ExecutionResult,
+    ResultColumnType,
+    SlayerSQLClient,
+    get_result_column_types_sync,
+    render_type_probe,
+)
 from slayer.sql.dialects import PostgresDialect
 from tests._ch_fake_http import route_engine
 
@@ -207,11 +214,15 @@ def test_fail_closed_rejected_timeout_raises(monkeypatch, run: Runner, ds_type: 
 # ---------------------------------------------------------------------------
 
 
-def _probe(client: SlayerSQLClient) -> tuple[dict[str, str], list[warnings.WarningMessage]]:
+def _probe(client: SlayerSQLClient) -> tuple[dict[str, ResultColumnType], list[warnings.WarningMessage]]:
     with warnings.catch_warnings(record=True) as record:
         warnings.simplefilter("always")
-        types = asyncio.run(client.get_column_types(PROBE))
+        types = asyncio.run(client.get_result_column_types(PROBE))
     return types, record
+
+
+def _numeric_x(types: dict[str, ResultColumnType]) -> bool:
+    return list(types) == ["x"] and types["x"].type in (DataType.INT, DataType.DOUBLE)
 
 
 @pytest.mark.parametrize(
@@ -233,7 +244,7 @@ def test_probe_timeout_before_read_only_guard(monkeypatch, ds_type: str | None, 
     statements = rec.statements()
     assert statements[:-1] == prelude
     assert SQL in statements[-1]
-    assert types == {"x": "number"}
+    assert _numeric_x(types), types
     assert _skipped(record) == []
 
 
@@ -247,7 +258,7 @@ def test_probe_rejected_timeout_keeps_guard_and_warns(monkeypatch, ds_type: str 
     types, record = _probe(_client(ds_type, name="pg_ds"))
     assert rec.log[:2] == ["SET statement_timeout = 60000", "SET TRANSACTION READ ONLY"]
     assert SQL in rec.log[2]
-    assert types == {"x": "number"}
+    assert _numeric_x(types), types
     assert _skipped(record) == [
         StatementTimeoutSkippedWarning(datasource="pg_ds", timeout_seconds=60, reason="timeout_rejected"),
     ]
@@ -259,7 +270,7 @@ def test_probe_fail_closed_rejected_timeout_raises(monkeypatch) -> None:
         reject_exc=sqlalchemy.exc.OperationalError("SET", {}, Exception("(1193, \"Unknown system variable\")")),
     )
     rec.install(monkeypatch)
-    probe = _client("mysql").get_column_types(PROBE)
+    probe = _client("mysql").get_result_column_types(PROBE)
     with pytest.raises(sqlalchemy.exc.OperationalError):
         asyncio.run(probe)
     assert not any(SQL in s for s in rec.log)
@@ -276,11 +287,11 @@ def test_probe_fail_closed_rejected_timeout_raises(monkeypatch) -> None:
 )
 def test_sync_probe_timeout_before_read_only_guard(ds_type: str, prelude: list[str]) -> None:
     rec = Recorder()
-    types = get_column_types_sync(PROBE, engine=rec.sync_engine(), db_type=ds_type)  # pyright: ignore[reportArgumentType]
+    types = get_result_column_types_sync(PROBE, engine=rec.sync_engine(), db_type=ds_type)  # pyright: ignore[reportArgumentType]
     statements = rec.statements()
     assert statements[:-1] == prelude
     assert SQL in statements[-1]
-    assert types == {"x": "number"}
+    assert _numeric_x(types), types
 
 
 def test_sync_probe_fail_closed_rejected_timeout_raises() -> None:
@@ -290,5 +301,5 @@ def test_sync_probe_fail_closed_rejected_timeout_raises() -> None:
     )
     engine = rec.sync_engine()
     with pytest.raises(sqlalchemy.exc.OperationalError):
-        get_column_types_sync(PROBE, engine=engine, db_type="mysql")  # pyright: ignore[reportArgumentType]
+        get_result_column_types_sync(PROBE, engine=engine, db_type="mysql")  # pyright: ignore[reportArgumentType]
     assert not any(SQL in s for s in rec.log)

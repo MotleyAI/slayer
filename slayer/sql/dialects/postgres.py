@@ -16,7 +16,6 @@ from slayer.core.keys import CastKey, ScalarCallKey
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
     LIST_ELEMENT,
-    LegacyTypeCategories,
     CONSTANT_INPUT,
     PORTABLE_LIBRARY,
     IdentifierFolding,
@@ -164,20 +163,9 @@ class PostgresDialect(SqlDialect):
     json_db_types: ClassVar[frozenset[str]] = frozenset({"JSON", "JSONB"})
     url_scheme: str | None = "postgresql+psycopg"
     install_extra: str | None = "postgres"
-    extra_drivers: dict[str, str] = Field(
-        default_factory=lambda: {"psycopg": "psycopg", "psycopg2": "psycopg2-binary", "asyncpg": "asyncpg"},
-    )
+    extra_drivers: dict[str, str] = Field(default_factory=lambda: {"psycopg": "psycopg"})
     refused_loops: dict[str, frozenset[str]] = Field(
         default_factory=lambda: {"psycopg": frozenset({"ProactorEventLoop"})},
-    )
-    legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories(
-        names={
-            "boolean": "boolean", "bigint": "number", "smallint": "number", "integer": "number", "oid": "number",
-            "real": "number", "double precision": "number", "numeric": "number", "money": "number",
-            "date": "time", "time": "time", "timestamp without time zone": "time",
-            "timestamp with time zone": "time", "interval": "time",
-        },
-        other="string",
     )
 
     database_name: ClassVar[str] = "Postgres"

@@ -8,7 +8,7 @@ from decimal import Decimal
 import pytest
 
 from slayer.core.models import DatasourceConfig, ModelMeasure
-from slayer.live_schema.ingestion import ingest_datasource
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
@@ -43,7 +43,12 @@ async def store(postgresql, tmp_path) -> AsyncIterator[FacadeStore]:
                           username=info.user, password="")
     storage = YAMLStorage(base_dir=str(tmp_path))
     await storage.save_datasource(ds)
-    (model,) = ingest_datasource(datasource=ds, include_tables=["things"])
+    ingester = SlayerQueryEngine(storage=storage)
+    try:
+        (model,) = await ingester.ingest(ds, include_tables=["things"])
+    finally:
+        await ingester.aclose()
+        ingester.close()
     await storage.save_model(model.model_copy(update={"measures": [
         ModelMeasure(name="uids", formula="collect(uid)"), ModelMeasure(name="prices", formula="collect(price)")]}))
     try:

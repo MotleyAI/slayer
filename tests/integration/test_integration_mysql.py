@@ -1681,7 +1681,7 @@ def _mysql_dev2120_storage(mysql_container, tmp_path_factory):
         storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("mysql_dev2120")))
         run_sync(storage.save_datasource(ds))
         run_sync(storage.save_model(lib_model(data_source="testmysql")))
-        for model in ingestion.ingest_datasource(datasource=ds, include_tables=["docs"]):
+        for model in run_sync(_ingest(ds, include_tables=["docs"])):
             run_sync(storage.save_model(model))
         yield storage
     finally:
@@ -1780,7 +1780,6 @@ async def test_default_pymysql_builds_no_async_engine(
 
 
 @pytest.mark.integration
-@pytest.mark.filterwarnings("ignore::FutureWarning")
 async def test_aiomysql_url_serves_every_operation(
     mysql_probe_ds: DatasourceConfig, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1797,9 +1796,7 @@ async def test_aiomysql_url_serves_every_operation(
 
 
 @pytest.mark.integration
-@pytest.mark.filterwarnings(
-    "ignore::FutureWarning", "error::ResourceWarning", "error::pytest.PytestUnraisableExceptionWarning",
-)
+@pytest.mark.filterwarnings("error::ResourceWarning", "error::pytest.PytestUnraisableExceptionWarning")
 async def test_aiomysql_sync_bridge_after_async_use(mysql_probe_ds: DatasourceConfig, tmp_path) -> None:
     engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=str(tmp_path / "store")))
     client = engine.client_for(_aiomysql(mysql_probe_ds))
@@ -1863,7 +1860,6 @@ def mysql_pings(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 
 @pytest.mark.integration
-@pytest.mark.filterwarnings("ignore::FutureWarning")
 @pytest.mark.parametrize("path", PATHS)
 @pytest.mark.parametrize("driver", ["pymysql", "aiomysql"])
 def test_warm_statement_costs_one_request(
