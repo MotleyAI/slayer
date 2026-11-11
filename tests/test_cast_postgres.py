@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 import pytest
 
-from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.storage.yaml_storage import YAMLStorage
 from tests._cast_fixtures import check_array_cast, check_try_cast_targets, tags_model, tags_statements
 from tests._dev2101_fixtures import by_key, dev2101_models, q, seed_server
+from tests._pg_helpers import client_datasource, pg_query_engine
 
 pytest.importorskip("pytest_postgresql")
 
@@ -19,7 +20,7 @@ postgresql = factories.postgresql("postgresql_proc")
 
 
 @pytest.fixture
-async def pg(postgresql, tmp_path) -> tuple[SlayerQueryEngine, int]:
+async def pg(postgresql, tmp_path) -> AsyncIterator[tuple[SlayerQueryEngine, int]]:
     cur = postgresql.cursor()
     seed_server(cur, dialect="postgres")
     for stmt in tags_statements("postgres"):
@@ -27,15 +28,9 @@ async def pg(postgresql, tmp_path) -> tuple[SlayerQueryEngine, int]:
     cur.execute("SELECT current_setting('server_version_num')")
     version_num = int(cur.fetchone()[0])
     postgresql.commit()
-    storage = YAMLStorage(base_dir=str(tmp_path))
-    info = postgresql.info
-    await storage.save_datasource(DatasourceConfig(
-        name="pg", type="postgres", host=info.host, port=info.port,
-        database=info.dbname, username=info.user, password="",
-    ))
-    for model in [*dev2101_models(data_source="pg"), tags_model(data_source="pg")]:
-        await storage.save_model(model)
-    return SlayerQueryEngine(storage=storage), version_num
+    models = [*dev2101_models(data_source="pg"), tags_model(data_source="pg")]
+    async with pg_query_engine(client_datasource(postgresql.info), base_dir=str(tmp_path), models=models) as engine:
+        yield engine, version_num
 
 
 async def test_try_cast_integer_rule(pg) -> None:

@@ -163,6 +163,7 @@ async def test_releasing_one_loop_keeps_the_other(pg_ds: DatasourceConfig, build
     gc.collect()
 
 
+@pytest.mark.abandons_async_engines
 def test_a_closed_loops_engine_is_dropped(
     pg_ds: DatasourceConfig, builds: list[Any], monkeypatch: pytest.MonkeyPatch,
 ) -> None:

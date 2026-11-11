@@ -1,6 +1,7 @@
 """Postgres statement timeout on real asyncpg + psycopg: in force, and the probe keeps its read-only guard."""
 
 import uuid
+from collections.abc import AsyncIterator
 
 import pytest
 import sqlglot
@@ -60,8 +61,13 @@ def _pg_datasource(postgresql_proc):
 
 
 @pytest.fixture
-def pg_client(_pg_datasource) -> SlayerSQLClient:
-    return SlayerSQLClient(datasource=_pg_datasource)
+async def pg_client(_pg_datasource) -> AsyncIterator[SlayerSQLClient]:
+    client = SlayerSQLClient(datasource=_pg_datasource)
+    try:
+        yield client
+    finally:
+        await client.aclose()
+        client.close()
 
 
 @pytest.mark.integration

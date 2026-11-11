@@ -30,6 +30,7 @@ from slayer.pg_facade.connection import PgConnection
 from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2120_fixtures import seed_contractors
+from tests._engine_helpers import owned_query_engine
 
 DS = "dev2172"
 UID_1 = uuid.UUID("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11")
@@ -126,12 +127,8 @@ async def build_store(base: Path, *, extra: Iterable[str] = ()) -> FacadeStore:
     ds = DatasourceConfig(name=DS, type="duckdb", database=db)
     storage = YAMLStorage(base_dir=str(base / "store"))
     await storage.save_datasource(ds)
-    ingester = SlayerQueryEngine(storage=storage)
-    try:
+    async with owned_query_engine(storage=storage) as ingester:
         models = await ingester.ingest(ds)
-    finally:
-        await ingester.aclose()
-        ingester.close()
     for model in models:
         if model.name in SAVED_MEASURES:
             model = model.model_copy(update={"measures": SAVED_MEASURES[model.name]})
@@ -197,6 +194,7 @@ def _start_pg(*, engine: SlayerQueryEngine, storage: YAMLStorage) -> tuple[async
         finally:
             server.close()
             loop.run_until_complete(server.wait_closed())
+            loop.run_until_complete(engine.aclose())
             loop.close()
 
     thread = threading.Thread(target=main, daemon=True)

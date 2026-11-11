@@ -4,12 +4,10 @@ queries/list-functions › Physical array types differ on Postgres; aggregations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import Column, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.database import engine_factory
-from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2137_fixtures import by, measure
+from tests._pg_helpers import client_datasource, pg_query_engine
 
 pytest.importorskip("pytest_postgresql")
 
@@ -50,19 +48,9 @@ async def pg(postgresql, tmp_path):
     for stmt in TYPED:
         cur.execute(stmt)
     postgresql.commit()
-    info = postgresql.info
-    ds = DatasourceConfig(name="pg", type="postgres", host=info.host, port=info.port, database=info.dbname,
-                          username=info.user, password="")
-    storage = YAMLStorage(base_dir=str(tmp_path))
-    await storage.save_datasource(ds)
-    await storage.save_model(typed_model())
-    engine = SlayerQueryEngine(storage=storage)
-    try:
+    async with pg_query_engine(client_datasource(postgresql.info), base_dir=str(tmp_path),
+                               models=[typed_model()]) as engine:
         yield engine
-    finally:
-        await engine.aclose()
-        engine.close()
-        engine_factory.invalidate_engine(ds)
 
 
 @pytest.mark.parametrize(("expr", "kept"), [
