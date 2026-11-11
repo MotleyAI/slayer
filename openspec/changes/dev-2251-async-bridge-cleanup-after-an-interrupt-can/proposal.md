@@ -8,8 +8,8 @@ cleanup has run or a bounded wait has passed".
 
 ## What Changes
 
-- `slayer/async_utils.py`: the bounded cleanup after an interrupt checks its deadline before taking each queued
-  caller-thread call. It takes no new call after the deadline. A call already running finishes.
+- The production bound in `_serve_caller_calls` comes from DEV-2231's `_next_call`, merged in; this change adds no
+  production code.
 - `tests/test_async_utils_bridge.py`: the interrupt-injection helpers never block while `_Workflow.start()` holds
   `bridge.lock`. The test that interrupts after the workflow starts raises the interrupt once `start()` has
   returned, and deterministically exercises bridge-loop contention for the lock.
@@ -27,5 +27,5 @@ connections". The change sets `skip_specs: true`.
 
 ## Impact
 
-- Code: `slayer/async_utils.py` (`_serve_caller_calls`), `tests/test_async_utils_bridge.py`.
+- Code: `tests/test_async_utils_bridge.py`.
 - No API, dependency, architecture-model or arc42 change.

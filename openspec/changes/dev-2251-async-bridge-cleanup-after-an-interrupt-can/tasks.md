@@ -18,7 +18,7 @@
 
 ## 2. Implementation (pr-implement stage) — `slayer/async_utils.py`
 
-- [x] 2.1 In `_serve_caller_calls(bounded=True)`, compute `remaining = deadline - time.monotonic()` before each `get`. Return when `remaining <= 0`, otherwise `get(timeout=remaining)`. Unbounded mode is unchanged. Verify task 1.3's test passes, and that it passes 50/50 pinned to one CPU.
+- [x] 2.1 In `_serve_caller_calls(bounded=True)`, compute `remaining = deadline - time.monotonic()` before each `get`. Return when `remaining <= 0`, otherwise `get(timeout=remaining)`. Unbounded mode is unchanged. Verify task 1.3's test passes, and that it passes 50/50 pinned to one CPU. Delivered by the merged DEV-2231 `_next_call`.
 
 ## 3. Verification
 
