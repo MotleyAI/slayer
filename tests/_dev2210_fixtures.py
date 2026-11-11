@@ -24,9 +24,8 @@ from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.generator import SQLGenerator
 from slayer.storage.sqlite_conn import transaction
-from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import seeded_exec_engine
-from tests._pg_helpers import pg_database
+from tests._pg_helpers import pg_database, pg_query_engine
 
 DDL = (
     "CREATE TABLE orders (id INTEGER PRIMARY KEY, status VARCHAR(10), amount INTEGER, ordered_at DATE)",
@@ -123,18 +122,11 @@ async def filtered_engine(backend: str, request: pytest.FixtureRequest) -> Async
     """An engine over the fixture tables on ``backend`` holding every fixture model."""
     if backend == "postgres":
         info = request.getfixturevalue("postgresql_proc")
+        base_dir = str(request.getfixturevalue("tmp_path") / "store")
         with pg_database(info, statements=DDL, name="test") as ds:
-            storage = YAMLStorage(base_dir=str(request.getfixturevalue("tmp_path") / "store"))
-            await storage.save_datasource(ds)
-            for model in table_models():
-                await storage.save_model(model, _validate=False)
-            engine = SlayerQueryEngine(storage=storage)
-            try:
+            async with pg_query_engine(ds, base_dir=base_dir, models=table_models(), validate=False) as engine:
                 await engine.save_model(query_backed_model())
                 yield engine
-            finally:
-                await engine.aclose()
-                engine.close()
         return
     if backend == "duckdb":
         pytest.importorskip("duckdb")

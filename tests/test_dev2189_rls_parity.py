@@ -19,7 +19,6 @@ from slayer.core.models import DatasourceConfig
 from slayer.core.policy import SessionPolicy
 from slayer.engine.cache import CacheConfig
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2189_fixtures import (
@@ -44,6 +43,8 @@ from tests._dev2189_fixtures import (
     stub_column_present,
     stub_has_column,
 )
+from tests._engine_helpers import owned_query_engine
+from tests._pg_helpers import client_datasource
 
 postgresql_proc = factories.postgresql_proc(port=None)
 postgresql = factories.postgresql("postgresql_proc")
@@ -65,15 +66,14 @@ async def _assert_parity(
     query = SHAPES[shape]
     unscoped = (await engine.execute(query, dry_run=True)).sql
     assert unscoped is not None
-    scoped = SlayerQueryEngine(storage=engine.storage, policy=POLICIES[policy])
-    if executed:
-        has_column = await scoped._has_column(
-            statement=sqlglot.parse_one(unscoped, read=dialect), datasource=ds, policy=POLICIES[policy],
-        )
-    else:
-        monkeypatch.setattr(scoped, "_column_present", stub_column_present)
-        has_column = stub_has_column
-    try:
+    async with owned_query_engine(storage=engine.storage, policy=POLICIES[policy]) as scoped:
+        if executed:
+            has_column = await scoped._has_column(
+                statement=sqlglot.parse_one(unscoped, read=dialect), datasource=ds, policy=POLICIES[policy],
+            )
+        else:
+            monkeypatch.setattr(scoped, "_column_present", stub_column_present)
+            has_column = stub_has_column
         try:
             expected = reference_scoped_sql(sql=unscoped, dialect=dialect, policy=POLICIES[policy],
                                             has_column=has_column)
@@ -93,8 +93,6 @@ async def _assert_parity(
             finally:
                 await client.aclose()
             assert row_values(rows) == row_values(reference_rows)
-    finally:
-        scoped.close()
 
 
 @pytest.mark.parametrize(("policy", "shape"), CASES)
@@ -113,19 +111,12 @@ async def pg_engine(postgresql, tmp_path) -> AsyncGenerator[tuple[SlayerQueryEng
     for stmt in seed_statements("postgres"):
         cur.execute(stmt)
     postgresql.commit()
-    info = postgresql.info
-    ds = DatasourceConfig(name="test", type="postgres", host=info.host, port=info.port,
-                          database=info.dbname, username=info.user, password="")
+    ds = client_datasource(postgresql.info, name="test")
     storage = YAMLStorage(base_dir=str(tmp_path))
-    await storage.save_datasource(ds)
-    await save_models(storage)
-    engine = SlayerQueryEngine(storage=storage)
-    try:
+    async with owned_query_engine(storage=storage, datasources=[ds]) as engine:
+        await save_models(storage)
         await save_query_backed(engine)
         yield engine, ds
-    finally:
-        engine.close()
-        engine_factory.invalidate_engine(ds)
 
 
 @pytest.mark.parametrize(("policy", "shape"), CASES)

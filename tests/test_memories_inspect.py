@@ -10,7 +10,7 @@ import shutil
 from slayer.storage.sqlite_conn import transaction
 import tempfile
 from typing import Any
-from collections.abc import Generator
+from collections.abc import AsyncIterator, Generator
 
 import pytest
 
@@ -71,8 +71,9 @@ def storage(_shared_storage: YAMLStorage) -> YAMLStorage:
 
 
 @pytest.fixture
-def mcp_server(_shared_mcp_server, storage: YAMLStorage):
-    return _shared_mcp_server
+async def mcp_server(_shared_mcp_server, storage: YAMLStorage) -> AsyncIterator[Any]:
+    yield _shared_mcp_server
+    await _shared_mcp_server._slayer_engine.aclose()
 
 
 @pytest.fixture

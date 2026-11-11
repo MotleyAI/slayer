@@ -20,16 +20,16 @@ planning: `PYTHONTRACEMALLOC=25 poetry run pytest <module> tests/test_dev2210_jo
 
 ## 2. Owner helper (pr-implement)
 
-- [ ] 2.1 In `tests/_engine_helpers.py`, add the owner helper (Decision 8): async context manager building a
+- [x] 2.1 In `tests/_engine_helpers.py`, add the owner helper (Decision 8): async context manager building a
       `SlayerQueryEngine` over a storage with pass-through engine kwargs; exit = `await asyncio.shield(engine.aclose())`,
       `engine.close()` in a nested `finally`, invalidate the exact saved `DatasourceConfig`s. Rebuild
       `seeded_exec_engine` on it. Verify: modules using `seeded_exec_engine` pass.
-- [ ] 2.2 In `tests/_pg_helpers.py`, add the Postgres convenience composing the helper with a datasource from a
+- [x] 2.2 In `tests/_pg_helpers.py`, add the Postgres convenience composing the helper with a datasource from a
       pytest-postgresql client fixture's `info` or from `pg_database`. Verify: used by 3.1 and passes.
 
 ## 3. The law (pr-implement)
 
-- [ ] 3.1 Add `tests/_async_engine_release_law.py` (Decisions 3–5, 7): record handed-out async engines (strong ref,
+- [x] 3.1 Add `tests/_async_engine_release_law.py` (Decisions 3–5, 7): record handed-out async engines (strong ref,
       creating loop, datasource, building node id), completed `dispose()` on the creating loop, and abandonment;
       judge in a `pytest_runtest_teardown` hookwrapper after `yield`; honour `abandons_async_engines`. Install it
       from `tests/conftest.py` for unit and integration suites; register the marker in `pyproject.toml`.
@@ -37,13 +37,13 @@ planning: `PYTHONTRACEMALLOC=25 poetry run pytest <module> tests/test_dev2210_jo
 
 ## 4. Route engine lifecycles through the helper (pr-implement)
 
-- [ ] 4.1 Unit leakers: `test_cast_postgres`, `test_dev2177_postgres`, `test_dev2186_postgres`,
+- [x] 4.1 Unit leakers: `test_cast_postgres`, `test_dev2177_postgres`, `test_dev2186_postgres`,
       `test_sql_mode_retype_postgres`. Verify: each module passes under the law, and the pairwise repro
       (module then the flaky test) passes.
-- [ ] 4.2 Other pytest-postgresql unit modules that hand-roll `aclose()`/`close()`/`invalidate_engine`, incl.
+- [x] 4.2 Other pytest-postgresql unit modules that hand-roll `aclose()`/`close()`/`invalidate_engine`, incl.
       `tests/_dev2210_fixtures.filtered_engine`'s postgres branch. Verify: the 29 pytest-postgresql unit modules
       pass with `-n 6 --dist loadscope -p no:randomly` (the planning repro had exactly one failure: the flaky test).
-- [ ] 4.3 Postgres integration modules (Decision 9 scopes): `test_dev1737_date_functions_postgres`,
+- [x] 4.3 Postgres integration modules (Decision 9 scopes): `test_dev1737_date_functions_postgres`,
       `test_integration_postgres`, `test_dev2046_postgres`, `test_dev1756_identifier_length_pg`,
       `test_dev2101_postgres`, `test_postgres_statement_timeout`, `test_dev2172_postgres`,
       `test_dev1933_postgres_verbatim`, `test_dev2015_postgres`, and any other the law flags locally. Verify: the
@@ -53,7 +53,7 @@ planning: `PYTHONTRACEMALLOC=25 poetry run pytest <module> tests/test_dev2210_jo
 
 ## 5. Verification
 
-- [ ] 5.1 Full unit suite under xdist on Python 3.14 (`poetry run pytest -m "not integration" -n 8`) passes —
+- [x] 5.1 Full unit suite under xdist on Python 3.14 (`poetry run pytest -m "not integration" -n 8`) passes —
       checks the law has no false positives (the census prototype errored in `test_list_set_equality.py::TestStages`
       under xdist). Then `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs the
       baseline), `poetry run la-arch-check`.
