@@ -32,7 +32,7 @@ def _parsed_heads(text: str, *, root: Optional[str]) -> Iterator[str]:
 
 
 def _path_head(ref: ColumnRef, *, root: Optional[str]) -> Iterator[str]:
-    parts = drop_root_qualifier(ref.parts, root)
+    parts = drop_root_qualifier(ref.parts, root, quoted=ref.quoted_parts)
     if len(parts) > 1:
         yield parts[0]
 

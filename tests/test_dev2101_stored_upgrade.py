@@ -29,21 +29,21 @@ from tests._stored_upgrade_fixtures import (
 
 #: (stored legacy text, the text it loads as).
 TOKEN_CASES = [
-    pytest.param('status == "paid"', "status == 'paid'", id="double-quoted"),
-    pytest.param('name == "O\'Brien"', "name == 'O''Brien'", id="embedded-apostrophe"),
-    pytest.param(r"name == 'O\'Brien'", "name == 'O''Brien'", id="escaped-apostrophe"),
-    pytest.param('note == "tab\\there"', "note == 'tab\there'", id="control-escape"),
-    pytest.param(r"path == 'C:\\temp'", r"path == 'C:\temp'", id="escaped-backslash"),
-    pytest.param(r'path == r"C:\temp"', r"path == 'C:\temp'", id="raw-string"),
-    pytest.param("note == 'say \"hi\"'", "note == 'say \"hi\"'", id="embedded-double-quote"),
-    pytest.param('city == "café"', "city == 'café'", id="unicode"),
-    pytest.param(r'city == "caf\u00e9"', "city == 'café'", id="unicode-escape"),
-    pytest.param('note == "a | b"', "note == 'a | b'", id="pipe-inside-string"),
-    pytest.param("note == \"a\" 'b'", "note == 'ab'", id="adjacent-literals"),
-    pytest.param('note == """x"""', "note == 'x'", id="triple-quoted"),
+    pytest.param('status == "paid"', "status = 'paid'", id="double-quoted"),
+    pytest.param('name == "O\'Brien"', "name = 'O''Brien'", id="embedded-apostrophe"),
+    pytest.param(r"name == 'O\'Brien'", "name = 'O''Brien'", id="escaped-apostrophe"),
+    pytest.param('note == "tab\\there"', "note = 'tab\there'", id="control-escape"),
+    pytest.param(r"path == 'C:\\temp'", r"path = 'C:\temp'", id="escaped-backslash"),
+    pytest.param(r'path == r"C:\temp"', r"path = 'C:\temp'", id="raw-string"),
+    pytest.param("note == 'say \"hi\"'", "note = 'say \"hi\"'", id="embedded-double-quote"),
+    pytest.param('city == "café"', "city = 'café'", id="unicode"),
+    pytest.param(r'city == "caf\u00e9"', "city = 'café'", id="unicode-escape"),
+    pytest.param('note == "a | b"', "note = 'a | b'", id="pipe-inside-string"),
+    pytest.param("note == \"a\" 'b'", "note = 'ab'", id="adjacent-literals"),
+    pytest.param('note == """x"""', "note = 'x'", id="triple-quoted"),
     pytest.param("status | region", "status || region", id="pipe"),
     pytest.param("concat(status | region, \"-\")", "concat(status || region, '-')", id="pipe-and-string"),
-    pytest.param("status == 'paid'", "status == 'paid'", id="already-sql"),
+    pytest.param("status == 'paid'", "status = 'paid'", id="already-sql"),
     pytest.param("sum(amount", "sum(amount", id="untokenisable"),
     pytest.param('status == "paid', 'status == "paid', id="unterminated"),
 ]
@@ -63,9 +63,9 @@ def _query(**fields: Any) -> SlayerQuery:
 
 class TestVersions:
     def test_versions_bumped(self) -> None:
-        assert CURRENT_VERSIONS["SlayerModel"] == 19
-        assert CURRENT_VERSIONS["SlayerQuery"] == 10
-        assert CURRENT_VERSIONS["Memory"] == 8
+        assert CURRENT_VERSIONS["SlayerModel"] == 20
+        assert CURRENT_VERSIONS["SlayerQuery"] == 11
+        assert CURRENT_VERSIONS["Memory"] == 9
 
 
 class TestTokenRewrite:
@@ -77,9 +77,17 @@ class TestTokenRewrite:
     def test_query_filter(self, stored: str, loaded: str) -> None:
         assert _query(filters=[stored]).filters == [loaded]
 
-    def test_current_version_text_is_never_rewritten(self) -> None:
+    def test_current_version_document_is_never_rewritten(self) -> None:
+        text = 'sum(iif(status == "paid", amount, 0))'
+        doc = _model_doc(formula=text, version=CURRENT_VERSIONS["SlayerModel"])
+        assert SlayerModel.model_validate(doc).measures[0].formula == text
+        query = SlayerQuery.model_validate(
+            {"version": CURRENT_VERSIONS["SlayerQuery"], "source_model": "orders", "filters": ['status == "paid"']})
+        assert query.filters == ['status == "paid"']
+
+    def test_post_string_rule_document_keeps_identifiers_and_drops_legacy_spellings(self) -> None:
         doc = _model_doc(formula='sum(iif(status == "paid", amount, 0))', version=16)
-        assert SlayerModel.model_validate(doc).measures[0].formula == 'sum(iif(status == "paid", amount, 0))'
+        assert SlayerModel.model_validate(doc).measures[0].formula == 'sum(iif(status = "paid", amount, 0))'
 
 
 class TestEverySurface:
@@ -91,28 +99,28 @@ class TestEverySurface:
             order=[{"column": 'sum(iif(status == "paid", amount, 0))', "direction": "desc"}],
         )
         assert [m.formula for m in query.measures or []] == [
-            "sum(iif(region == 'EU', amount, 0))", "count_distinct(status || 'x')",
+            "sum(iif(region = 'EU', amount, 0))", "count_distinct(status || 'x')",
         ]
         assert [getattr(d, "expression") for d in query.dimensions or []] == ["concat(status, '!')", "status || '-'"]
-        assert query.filters == ["status == 'paid'"]
+        assert query.filters == ["status = 'paid'"]
         assert query.order is not None
-        assert query.order[0].raw_formula == "sum(iif(status == 'paid', amount, 0))"
+        assert query.order[0].raw_formula == "sum(iif(status = 'paid', amount, 0))"
 
     def test_inline_extension_measures(self) -> None:
         query = _query(source_model={"source_name": "orders", "measures": [
             {"name": "paid", "formula": 'sum(iif(status == "paid", amount, 0))'}]}, measures=["paid"])
         source = query.source_model
-        assert source.measures[0].formula == "sum(iif(status == 'paid', amount, 0))"  # type: ignore[union-attr]
+        assert source.measures[0].formula == "sum(iif(status = 'paid', amount, 0))"  # type: ignore[union-attr]
 
     def test_model_source_queries(self) -> None:
         doc = query_backed_v10(name="paid_rev", version=15, stages=[rev_query(filters=['status == "ok"'])])
         model = SlayerModel.model_validate(doc)
-        assert (model.source_queries or [])[0].filters == ["status == 'ok'"]
+        assert (model.source_queries or [])[0].filters == ["status = 'ok'"]
 
     def test_memory_query(self) -> None:
         mem = Memory.model_validate(memory_v2(memory_id="m", version=4, query=rev_query(filters=['status == "ok"'])))
         assert mem.query is not None
-        assert mem.query.filters == ["status == 'ok'"]
+        assert mem.query.filters == ["status = 'ok'"]
 
     def test_mode_a_text_is_untouched(self) -> None:
         doc = _model_doc(formula="sum(amount)")
@@ -153,9 +161,9 @@ class TestStoredResultsUnchanged:
         model = await storage.get_model("rev_q", data_source=DS)
         assert model is not None
         [loaded] = model.source_queries or []
-        assert loaded.filters == ["status == 'ok'"]
+        assert loaded.filters == ["status = 'ok'"]
         assert loaded.measures is not None
-        assert loaded.measures[0].formula == "sum(iif(status == 'ok', amount, 0))"
+        assert loaded.measures[0].formula == "sum(iif(status = 'ok', amount, 0))"
         resp = await run(storage, {"source_model": "rev_q", "measures": ["sum(rev)"]})
         assert measure_total(resp, measure="rev_sum") == 80.0
 
@@ -185,7 +193,7 @@ class TestStoredResultsUnchanged:
                                   memories=[memory_v2(memory_id="m_q", query=query)])
         mem = await storage.get_memory("m_q")
         assert mem.query is not None
-        assert mem.query.filters == ["status == 'ok'"]
+        assert mem.query.filters == ["status = 'ok'"]
         assert measure_total(await run(storage, mem.query), measure="rev") == 80.0
 
     async def test_resave_writes_the_new_spelling(self, tmp_path, shop_ds) -> None:

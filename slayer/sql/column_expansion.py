@@ -250,7 +250,7 @@ def resolve_ref_target(
     so here it simply fails to resolve (best-effort skip). Returns ``None``
     when a hop is not a join / not reachable / ambiguous / revisiting.
     """
-    quals = drop_root_hop(qualifiers, source_model.spelling)
+    quals = drop_root_hop(qualifiers, source_model.spelling, head_quoted=True)
     if not quals:
         return source_model
     try:
@@ -285,7 +285,7 @@ def _resolve_qualifiers(
     fail closed.
     """
     root = owner_alias if tuple(qualifiers[:1]) == (owner_alias,) else source_model.spelling
-    path = drop_root_hop(qualifiers, root)
+    path = drop_root_hop(qualifiers, root, head_quoted=True)
     if not path:
         return ()
     # A definition is judged from its model as stored: it never sees a query frame's product hops.
@@ -574,8 +574,9 @@ def _process_reference_site(
         return None
     target_model, canonical_alias = located
     owner = visited[-1] if visited else site
+    # Mode-A SQL names a column exactly.
     target_col = resolve_generated_column(
-        model=target_model, name=leaf, location=".".join(owner) if owner else None,
+        model=target_model, name=leaf, location=".".join(owner) if owner else None, quoted=True,
     )
     if target_col is not None:
         leaf = target_col.name

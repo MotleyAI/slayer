@@ -79,7 +79,7 @@ class TestSpecScenarios:
         assert await _count(orders_engine, "order_date <= current_date()") == 5
 
     async def test_bucket_form_unchanged(self, orders_engine) -> None:
-        resp = await orders_engine.execute(_q(dimensions=["month(created_at)"], measures=[{"formula": "count(*)", "name": "n"}]))
+        resp = await orders_engine.execute(_q(dimensions=["date_trunc('month', created_at)"], measures=[{"formula": "count(*)", "name": "n"}]))
         key = next(k for k in resp.data[0] if k != "orders.n")
         assert {str(r[key])[:10] for r in resp.data} == {"2024-01-01", "2024-03-01", "2024-06-01", "2024-12-01"}
 

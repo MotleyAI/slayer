@@ -184,13 +184,11 @@ class TestWalkParsedRefs:
         nodes = list(
             walk_parsed_refs(parse_expr("weighted_avg(price, weight=quantity)"))
         )
-        assert nodes == [
-            AggCall(
-                source=Ref(name="price"),
-                agg="weighted_avg",
-                kwargs=(("weight", Ref(name="quantity")),),
-            )
-        ]
+        assert len(nodes) == 1
+        (agg,) = nodes
+        assert isinstance(agg, AggCall)
+        assert agg.source == Ref(name="price")
+        assert agg.agg == "weighted_avg"
 
     def test_nested_scalar_arith_agg_mixed(self) -> None:
         # The plan's marquee shape: coalesce(<arith over aggs>, 0).

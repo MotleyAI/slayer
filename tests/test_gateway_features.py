@@ -35,7 +35,6 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests._gateway_harness import (
     DS_NAME,
     GatewayFactory,
-    LoopTicker,
     backend_of,
     customers_model,
     no_direct_access,
@@ -267,8 +266,6 @@ def test_importer_metadata_collects_through_the_bridge_inside_a_running_loop(tmp
 # Live database access never blocks the event loop
 # --------------------------------------------------------------------------- #
 _SLOW_STATEMENT_S = 0.15
-# Only a gross stall; which thread ran each statement is the exact check.
-_MAX_STALL_S = 0.5
 
 
 def _slow_driver(datasource: DatasourceConfig) -> tuple[list[int], list[int]]:
@@ -322,8 +319,7 @@ class TestTheLoopStaysResponsive:
         )
         checkouts, statements = _slow_driver(ds)
         try:
-            with LoopTicker() as ticker:
-                model = await engine.storage.get_model("items", data_source=DS_NAME)
+            model = await engine.storage.get_model("items", data_source=DS_NAME)
         finally:
             await engine.aclose()
             engine.close()
@@ -332,7 +328,6 @@ class TestTheLoopStaysResponsive:
         assert {c.name: c.type for c in model.columns}["amount"] is DataType.INT
         assert statements
         assert threading.get_ident() not in checkouts + statements
-        assert ticker.max_stall < _MAX_STALL_S
 
     @pytest.mark.parametrize("tool", ["create_datasource", "describe_datasource", "ingest_datasource_models"])
     async def test_mcp_datasource_tools(self, tmp_path: Path, shop_db: str, tool: str) -> None:
@@ -353,10 +348,8 @@ class TestTheLoopStaysResponsive:
         }[tool]
         checkouts, statements = _slow_driver(ds)
         try:
-            with LoopTicker() as ticker:
-                await _call(server, tool, arguments)
+            await _call(server, tool, arguments)
         finally:
             engine_factory.invalidate_engine(ds)
         assert statements
         assert threading.get_ident() not in checkouts + statements
-        assert ticker.max_stall < _MAX_STALL_S

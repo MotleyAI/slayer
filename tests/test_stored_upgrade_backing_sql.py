@@ -14,6 +14,7 @@ from slayer.async_utils import run_sync
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.inspect.service import InspectService
 from slayer.storage.base import StorageBackend
+from slayer.storage.migrations import CURRENT_VERSIONS
 from tests._stored_upgrade_fixtures import (
     BACKENDS,
     DS,
@@ -55,7 +56,7 @@ async def test_v14_model_loads_without_backing_sql(storage: StorageBackend) -> N
     assert model is not None
     assert "backing_query_sql" not in model.model_dump()
     doc = await raw_doc(storage, "rev")
-    assert doc["version"] == 19
+    assert doc["version"] == CURRENT_VERSIONS["SlayerModel"]
     assert "backing_query_sql" not in doc
 
 

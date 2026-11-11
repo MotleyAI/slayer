@@ -434,10 +434,6 @@ class UnknownGranularityError(QueryTypeError):
     """A granularity name that is neither built-in nor defined on the query's datasource."""
 
 
-class GranularityShapeError(QueryTypeError):
-    """A datasource-granularity call that does not take one row-level argument ``gran(expr)``."""
-
-
 class TimeSpineError(QueryTypeError):
     """A query shape the time spine cannot take: no lower bound, spine rows counted, the spine column
     outside a bucketed time dimension or a bound, or a stored model shadowing ``time_spine``."""
@@ -648,13 +644,14 @@ class NotReadOnlyQueryError(SlayerError):
 class AmbiguousReferenceError(SlayerError, ValueError):
     """A reference matches multiple candidates in scope."""
 
-    def __init__(self, name: str, candidates: List[str]) -> None:
+    def __init__(self, name: str, candidates: List[str], suggestion: str | None = None) -> None:
         self.name = name
         self.candidates = sorted(candidates)
         super().__init__(_format_error_message(
             cls_name=type(self).__name__,
             summary=f"Reference {name!r} has multiple candidates.",
             extras=[("candidates", repr(self.candidates))],
+            suggestion=suggestion,
         ))
 
 
@@ -967,16 +964,47 @@ class ForcedFilterError(SlayerError):
 
 
 class GranularityCallError(SlayerError, ValueError):
-    """A functional ``gran(col)`` query entry is malformed or unresolvable: wrong-shape granularity call, an unknown ``name(col)`` dimension, a bare ``time_dimensions`` string, a same-column+granularity metadata conflict, or an order key with no matching projected time dimension."""
+    """A time-bucket query entry is malformed or unresolvable: a ``date_trunc`` of the wrong shape, a granularity called like a function, a ``time_dimensions`` string that is not ``date_trunc('<unit>', expr)``, a same-column+granularity metadata conflict, or an order key with no matching projected time dimension."""
 
     @classmethod
     def wrong_shape(cls, entry: str) -> "GranularityCallError":
-        """A granularity callee with any argument shape other than one row-level argument."""
+        """A time bucket written in any shape other than ``date_trunc('<unit>', expr)``."""
         return cls(
-            f"Granularity call {entry!r} must take one row-level argument "
-            f"``gran(expr)`` (e.g. ``month(created_at)``) for one of: "
-            f"{', '.join(g.value for g in TimeGranularity)}."
+            f"Time bucket {entry!r} must be written date_trunc('<unit>', expr) with one row-level expr, e.g. "
+            f"date_trunc('month', created_at); units: {', '.join(g.value for g in TimeGranularity)} or a "
+            f"datasource granularity."
         )
+
+    @classmethod
+    def no_call_form(cls, unit: str, *, operand: str) -> "GranularityCallError":
+        """A granularity name called like a function."""
+        return cls(f"{unit}(…) is not a function: write the time bucket as date_trunc('{unit}', {operand}).")
+
+
+class ReservedFunctionNameError(SlayerError, ValueError):
+    """A call of, or a new aggregation named, a reserved function name (``agg``)."""
+
+    def __init__(self, *, name: str, where: str) -> None:
+        self.name = name
+        super().__init__(
+            f"{where}: {name!r} is reserved — AGG (`agg` in any case) names measure evaluation, so it is never a "
+            f"function or an aggregation name. A field, metric or column may still be named agg."
+        )
+
+
+class CaseCollisionError(SlayerError, ValueError):
+    """A save would introduce names that differ only in case into one namespace."""
+
+    def __init__(self, *, names: List[str], namespace: str) -> None:
+        self.names = list(names)
+        super().__init__(
+            f"{' and '.join(repr(n) for n in names)} in {namespace} differ only in case; names match in any case, "
+            f"so they would collide. Rename one of them."
+        )
+
+
+class CallArgumentError(SlayerError, ValueError):
+    """A call's arguments in an order or repetition no signature reads."""
 
 
 class ColonSpellingError(SlayerError, ValueError):

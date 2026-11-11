@@ -175,7 +175,7 @@ qualifier SHALL be read before any join hop or query-level alias, so it wins ove
 
 #### Scenario: A root-qualified reference equals the bare one in every position
 - **WHEN** a query rooted at `orders` selects dimension `orders.status`, time dimension
-  `month(orders.created_at)`, measure `sum(orders.amount)`, filter `orders.amount > 5` and order
+  `date_trunc('month', orders.created_at)`, measure `sum(orders.amount)`, filter `orders.amount > 5` and order
   `orders.status`, and a second query spells all of them without the `orders.` qualifier
 - **THEN** both produce the same SQL, the same rows and the same result keys
   (`orders.status`, `orders.created_at`, `orders.amount_sum`)

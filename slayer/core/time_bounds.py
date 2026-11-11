@@ -9,7 +9,7 @@ Some CTEs must read rows from OUTSIDE the query's visible time frame:
   bucket comes from a bucket outside the frame.
 
 This module identifies that *semantic class*, so every spelling of one intent
-(``date_range``, a time-point comparison, ``gran(col)`` against a point) agrees:
+(``date_range``, a time-point comparison, ``date_trunc`` against a point) agrees:
 
     A ROW-phase filter conjunct that is a relational bound, with a temporal
     literal, on the raw column of one of the query's time dimensions is a FRAME

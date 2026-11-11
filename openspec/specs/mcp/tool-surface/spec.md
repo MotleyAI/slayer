@@ -116,7 +116,7 @@ Every query idiom given as an example in the tool or schema descriptions SHALL e
 - `x / x(partition_by=customers.regions.name)` and `x / x(partition_by=[])` give the share of region and of grand total;
 - a joined model's aggregate sliced by a non-attributable dimension broadcasts its total by default and splits per group under `associate`;
 - a nested aggregation averages the inner per-group values within the outer group;
-- a granularity call as a dimension (`month(created_at)`) and the time-dimension string `"month(created_at)"` bucket like the equivalent `{"dimension": ..., "granularity": "month"}` time dimension;
+- a granularity call as a dimension (`date_trunc('month', created_at)`) and the time-dimension string `"date_trunc('month', created_at)"` bucket like the equivalent `{"dimension": ..., "granularity": "month"}` time dimension;
 - a computed dimension `iif(sum(amount, partition_by=customers.id) > 150, 'high', 'low')` labels each row by its customer's total;
 - an outer stage reads an inner dotted dimension by its flattened `__` name (`customers.regions.name` as `customers__regions__name`);
 - a monthly time dimension on `time_spine.timestamp` with a `date_range` returns every month of the range, months without rows included (count 0, other aggregates NULL);
@@ -163,7 +163,7 @@ Every query idiom given as an example in the tool or schema descriptions SHALL e
 - **THEN** by default each row carries the total credit of all customers with a broadcast warning, and with `to_many_handling` `associate` each row carries the credit of the distinct customers with orders in that status
 
 #### Scenario: Granularity calls bucket like a time dimension
-- **WHEN** one query groups by the dimension `month(created_at)`, another by the time dimension `"month(created_at)"`, and a third by `{"dimension": "created_at", "granularity": "month"}`, each measuring `count(*)`
+- **WHEN** one query groups by the dimension `date_trunc('month', created_at)`, another by the time dimension `"date_trunc('month', created_at)"`, and a third by `{"dimension": "created_at", "granularity": "month"}`, each measuring `count(*)`
 - **THEN** all three return the same monthly buckets and counts
 
 #### Scenario: A computed dimension over a fixed-grain aggregate

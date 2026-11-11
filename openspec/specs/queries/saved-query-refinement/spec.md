@@ -46,11 +46,11 @@ status, amount, ordered_at)` with rows (1, c1, US, paid, 100, 2025-01-05), (2, c
 - **THEN** the single row is 2025-02 → 105
 
 #### Scenario: Second granularity renames the saved key
-- **WHEN** `monthly_revenue` runs with refinement `{"time_dimensions": ["year(ordered_at)"]}`
+- **WHEN** `monthly_revenue` runs with refinement `{"time_dimensions": ["date_trunc('year', ordered_at)"]}`
 - **THEN** the result keys are `orders.ordered_at.month`, `orders.ordered_at.year` and `orders.revenue`, as in the hand-written query with both granularities
 
 #### Scenario: Functional granularity in dimensions
-- **WHEN** a refinement's `dimensions` contains `year(ordered_at)`
+- **WHEN** a refinement's `dimensions` contains `date_trunc('year', ordered_at)`
 - **THEN** it merges as that time dimension, exactly as a query's `dimensions` entry does
 
 #### Scenario: Empty refinement
@@ -87,7 +87,7 @@ unchanged otherwise.
 - **THEN** the result equals the extra-dimension scenario's, with no name-collision error
 
 #### Scenario: A root-qualified formula is the saved formula
-- **WHEN** `monthly_revenue` runs with refinement measures `[{"formula": "sum(orders.amount)", "name": "revenue"}]`, or with a refinement time dimension `month(orders.ordered_at)`
+- **WHEN** `monthly_revenue` runs with refinement measures `[{"formula": "sum(orders.amount)", "name": "revenue"}]`, or with a refinement time dimension `date_trunc('month', orders.ordered_at)`
 - **THEN** each collapses into the saved entry, and the result equals the plain run by name
 
 #### Scenario: Literals are never conflated

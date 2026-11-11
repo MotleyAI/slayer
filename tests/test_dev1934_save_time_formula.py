@@ -25,6 +25,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from slayer.database.client import SlayerSQLClient, TypeProbe
 from slayer.sql.sql_template import SqlTemplateError
+from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -277,14 +278,20 @@ class TestRest:
         assert "parameter 'unused'" in resp.json()["detail"]
         assert await store.get_model("orders", data_source=_DS) is None
 
-    async def test_unknown_query_argument_is_400(self, rest) -> None:
+    async def test_non_parameter_query_argument_is_a_comparison_and_400(self, rest) -> None:
         client, _store = rest
         assert client.post("/models", json=_model("SUM({value})").model_dump(mode="json")).status_code == 200
-        resp = client.post("/query", json={
-            "source_model": "orders", "measures": [{"formula": "custom_agg(amount, bogus=1)", "name": "m"}],
-        })
-        assert resp.status_code == 400, resp.text
-        assert "'custom_agg' takes no args or kwargs other than window; got 'bogus'" in resp.json()["detail"]
+
+        def detail(formula: str) -> str:
+            resp = client.post("/query", json={"source_model": "orders", "measures": [{"formula": formula, "name": "m"}]})
+            assert resp.status_code == 400, resp.text
+            return resp.json()["detail"]
+
+        twin = detail("custom_agg(amount, (bogus=1))")
+        message = detail("custom_agg(amount, bogus=1)")
+        assert "got 'bogus'" not in message
+        assert "==" not in message
+        assert ("bogus" in message) == ("bogus" in twin)
 
 
 class TestCli:
@@ -389,7 +396,7 @@ class TestBlankAggregationFieldsMigration:
         (agg,) = model.aggregations
         assert agg.formula is None
         assert [p.name for p in agg.params] == ["w2"]
-        assert model.version == 19
+        assert model.version == CURRENT_VERSIONS["SlayerModel"]
         assert raw["aggregations"][0]["formula"] == "  "
         assert len(raw["aggregations"][0]["params"]) == 2
 

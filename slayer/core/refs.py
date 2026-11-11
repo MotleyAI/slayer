@@ -6,8 +6,9 @@ import hashlib
 import re
 from decimal import Decimal
 from operator import attrgetter
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
+from slayer.core.enums import GRANULARITY_NAMES
 from slayer.core.granularity import CustomGranularity
 from slayer.core.keys import (
     MIRRORED_TIME_POINT_OP,
@@ -27,6 +28,7 @@ from slayer.core.keys import (
     TimePointCmpKey,
     TimeTruncKey,
     TransformKey,
+    VALUE_KEY_TYPES,
     ValueKey,
 )
 
@@ -296,13 +298,27 @@ def _listed_display(key: ValueKey) -> str | None:
     return None
 
 
+def bucket_remedy(key: ValueKey) -> str | None:
+    """``date_trunc('<part>', <operand>)`` for a ``date_part`` extraction whose part is a granularity, else ``None``."""
+    if isinstance(key, ScalarCallKey) and key.name == "date_part" and len(key.args) == 2:
+        part, operand = key.args
+        if isinstance(part, LiteralKey) and part.value in GRANULARITY_NAMES and isinstance(operand, VALUE_KEY_TYPES):
+            return f"date_trunc('{part.value}', {key_display(cast(ValueKey, operand))})"
+    return None
+
+
+def first_bucket_remedy(keys: Any) -> str | None:
+    """``bucket_remedy`` of the first extraction among ``keys``."""
+    return next((r for k in keys if (r := bucket_remedy(k)) is not None), None)
+
+
 def key_display(key: ValueKey) -> str:
     """User-facing formula text of any key kind."""
     shown = _leaf_display(key) or _listed_display(key)
     if shown is not None:
         return shown
     if isinstance(key, TimeTruncKey):
-        return f"{key.granularity}({key_display(key.source)})"
+        return f"date_trunc('{key.granularity}', {key_display(key.source)})"
     if isinstance(key, AggregateKey):
         return _aggregate_display(key)
     if isinstance(key, TransformKey):

@@ -1,4 +1,4 @@
-"""``date_trunc(unit, x)`` is the granularity call ``<unit>(x)`` (spec: queries/date-functions)."""
+"""``date_trunc(unit, x)`` is the time bucket; ``<part>(x)`` is ``date_part`` (spec: queries/date-functions)."""
 
 from __future__ import annotations
 
@@ -24,13 +24,23 @@ def _q(**kw: Any) -> SlayerQuery:
     return SlayerQuery.model_validate({"source_model": "lib", **kw})
 
 
+def _explicit(unit: str, **kw: Any) -> SlayerQuery:
+    return _q(time_dimensions=[{"dimension": "ts", "granularity": unit}], **kw)
+
+
 class TestParse:
     @pytest.mark.parametrize("unit", ["second", "minute", "hour", "day", "week", "week_sunday", "month", "quarter", "year"])
-    def test_is_the_granularity_call(self, unit: str) -> None:
-        assert parse_expr(f"date_trunc('{unit}', ts)") == parse_expr(f"{unit}(ts)")
+    def test_is_the_explicit_time_dimension(self, unit: str) -> None:
+        trunc = _q(dimensions=[f"date_trunc('{unit}', ts)"])
+        assert not trunc.dimensions
+        assert trunc.time_dimensions == _explicit(unit).time_dimensions
+
+    @pytest.mark.parametrize("part", ["second", "minute", "hour", "day", "week", "month", "quarter", "year"])
+    def test_part_call_is_date_part(self, part: str) -> None:
+        assert parse_expr(f"{part}(ts)") == parse_expr(f"date_part('{part}', ts)")
 
     def test_unit_case_insensitive(self) -> None:
-        assert parse_expr("DATE_TRUNC('MONTH', ts)") == parse_expr("month(ts)")
+        assert parse_expr("DATE_TRUNC('MONTH', ts)") == parse_expr("date_trunc('month', ts)")
 
     @pytest.mark.parametrize("text", ["date_trunc('month')", "date_trunc('month', ts, 1)", "date_trunc(1, ts)"])
     def test_malformed_rejected(self, text: str) -> None:
@@ -49,21 +59,20 @@ class TestParse:
 class TestPositions:
     async def test_row_value_filter(self, engine: SlayerQueryEngine) -> None:
         trunc = lib_ids(await engine.execute(lib_query(filters=["date_trunc('month', ts) = '2025-03'"])))
-        gran = lib_ids(await engine.execute(lib_query(filters=["month(ts) = '2025-03'"])))
-        assert trunc == gran == {1, 2, 7, 10}
+        assert trunc == {1, 2, 7, 10}
 
     async def test_time_dimension(self, engine: SlayerQueryEngine) -> None:
         trunc = await engine.execute(_q(dimensions=["date_trunc('month', ts)"]))
-        gran = await engine.execute(_q(dimensions=["month(ts)"]))
-        assert trunc.columns == gran.columns
-        assert trunc.sql == gran.sql
-        assert sorted(map(repr, trunc.data)) == sorted(map(repr, gran.data))  # DuckDB GROUP BY order is arbitrary
+        explicit = await engine.execute(_explicit("month"))
+        assert trunc.columns == explicit.columns
+        assert trunc.sql == explicit.sql
+        assert sorted(map(repr, trunc.data)) == sorted(map(repr, explicit.data))  # DuckDB GROUP BY order is arbitrary
 
     async def test_order_key(self, engine: SlayerQueryEngine) -> None:
-        order = [{"column": "date_trunc('month', ts)", "direction": "desc"}]
-        trunc = await engine.execute(_q(dimensions=["month(ts)"], order=order))
-        gran = await engine.execute(_q(dimensions=["month(ts)"], order=[{"column": "month(ts)", "direction": "desc"}]))
-        assert trunc.sql == gran.sql
+        trunc = await engine.execute(_q(dimensions=["date_trunc('month', ts)"],
+                                        order=[{"column": "date_trunc('month', ts)", "direction": "desc"}]))
+        explicit = await engine.execute(_explicit("month", order=[{"column": "ts", "direction": "desc"}]))
+        assert trunc.sql == explicit.sql
 
     async def test_aggregation_source(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(_q(measures=[{"formula": "max(date_trunc('month', ts))", "name": "v"}]))
@@ -74,10 +83,10 @@ class TestPositions:
                                                            filters=["id IN (1, 2)"])))
         assert {k: int(v) for k, v in values.items()} == {1: 4, 2: 30}
 
-    async def test_same_sql_as_the_granularity_call(self) -> None:
-        trunc = await emit_lib(lib_query("date_trunc('quarter', ts)"), dialect="postgres")
-        gran = await emit_lib(lib_query("quarter(ts)"), dialect="postgres")
-        assert trunc == gran
+    async def test_same_sql_as_the_explicit_time_dimension(self) -> None:
+        trunc = await emit_lib(_q(dimensions=["date_trunc('quarter', ts)"]), dialect="postgres")
+        explicit = await emit_lib(_explicit("quarter"), dialect="postgres")
+        assert trunc == explicit
 
 
 class TestUnknownUnit:
@@ -91,11 +100,10 @@ class TestUnknownUnit:
         with pytest.raises(ValueError, match="unknown date_trunc"):
             parse_expr(f"date_trunc('{unit}', ts)")
 
-    async def test_expression_raises_the_granularity_calls_error(self, engine: SlayerQueryEngine) -> None:
-        query = lib_query("date_trunc('fortnight', ts)")
-        with pytest.raises(UnknownFunctionError) as trunc:
-            await engine.execute(query)
-        query = lib_query("fortnight(ts)")
-        with pytest.raises(UnknownFunctionError) as gran:
-            await engine.execute(query)
-        assert isinstance(trunc.value, (UnknownGranularityError, type(gran.value))), trunc.value
+    async def test_expression_unknown_unit_is_an_unknown_granularity(self, engine: SlayerQueryEngine) -> None:
+        trunc_query = lib_query("date_trunc('fortnight', ts)")
+        with pytest.raises(UnknownGranularityError):
+            await engine.execute(trunc_query)
+        call_query = lib_query("fortnight(ts)")
+        with pytest.raises(UnknownFunctionError):
+            await engine.execute(call_query)

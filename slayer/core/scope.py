@@ -32,6 +32,7 @@ from slayer.core.errors import UnknownReferenceError
 from slayer.core.format import NumberFormat
 from slayer.core.granularity import CustomGranularity, GranularitySpec
 from slayer.core.models import Column, SlayerModel
+from slayer.core.names import match_name
 
 _T = TypeVar("_T")
 
@@ -143,19 +144,17 @@ class StageSchema(BaseModel):
             f"No column named {name!r} in stage {self.display_name!r}."
         )
 
-    def get(self, name: str) -> Optional[StageColumn]:
-        for c in self.columns:
-            if c.name == name:
-                return c
-        return None
+    def get(self, name: str, *, quoted: bool = False) -> Optional[StageColumn]:
+        found = match_name(name=name, declared=[c.name for c in self.columns], quoted=quoted)
+        return None if found is None else next(c for c in self.columns if c.name == found)
 
     def __contains__(self, name: object) -> bool:
         return isinstance(name, str) and self.get(name) is not None
 
-    def resolve_flat_name(self, name: str) -> Optional[StageColumn]:
-        """Stage-boundary lookup: exact name, else a unique stale respelling (recorded)."""
+    def resolve_flat_name(self, name: str, *, quoted: bool = False) -> Optional[StageColumn]:
+        """Stage-boundary lookup: the name ``match_name`` reaches, else a unique stale respelling (recorded)."""
         return resolve_flat_name(
-            name=name, entries=[(c.name, c.respellings, c) for c in self.columns],
+            name=name, entries=[(c.name, c.respellings, c) for c in self.columns], quoted=quoted,
         )
 
 
@@ -191,14 +190,14 @@ def host_model_name(scope) -> str:
 
 
 def resolve_generated_column(
-    *, model: SlayerModel, name: str, location: Optional[str] = None,
+    *, model: SlayerModel, name: str, location: Optional[str] = None, quoted: bool = False,
 ) -> Optional[Column]:
     """``resolve_flat_name`` over ``model``'s columns; only generated query-backed
     columns carry respellings, so authored columns stay exact. A stale name
     matching several columns fails closed (never read as a physical column)."""
     col = resolve_flat_name(
         name=name, entries=[(c.name, c.respellings, c) for c in model.columns],
-        location=location,
+        location=location, quoted=quoted,
     )
     if col is None:
         matches = [c.name for c in model.columns if name in c.respellings]
@@ -212,12 +211,13 @@ def resolve_generated_column(
 
 def resolve_flat_name(
     *, name: str, entries: Sequence[Tuple[str, Tuple[str, ...], _T]],
-    location: Optional[str] = None,
+    location: Optional[str] = None, quoted: bool = False,
 ) -> Optional[_T]:
-    """The entry named ``name``, else the one entry whose respellings contain it
+    """The entry ``match_name`` reaches, else the one entry whose respellings contain it
     (recorded as a stale spelling); several or none → ``None``."""
+    found = match_name(name=name, declared=[n for n, _, _ in entries], quoted=quoted)
     for entry_name, _, entry in entries:
-        if entry_name == name:
+        if entry_name == found:
             return entry
     matches = [(n, e) for n, respellings, e in entries if name in respellings]
     if len(matches) != 1:

@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from slayer.core.enums import DataType, JoinType, TimeGranularity
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ModelExtension
+from slayer.core.query import ComputedDimension, ModelExtension
 from slayer.core.syntax import Cmp, Ref, parse_expr
 from slayer.facade.catalog import FacadeCatalog, build_catalog
 from slayer.facade.rows import FacadeColumn, RowBatch
@@ -989,17 +989,15 @@ def test_where_on_dimension_alias_does_not_route_to_aggregate_path(dialect) -> N
 # --- time-grain wrapping -----------------------------------------------------
 
 
-def test_month_wrapper_creates_time_dimension(dialect) -> None:
+def test_month_wrapper_creates_extraction_dimension(dialect) -> None:
     result = translate(
         sql="SELECT revenue_sum, month(ordered_at) FROM orders",
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.time_dimensions is not None
-    assert len(result.query.time_dimensions) == 1
-    td = result.query.time_dimensions[0]
-    assert td.granularity == TimeGranularity.MONTH
-    assert td.dimension == "ordered_at"
+    assert not result.query.time_dimensions
+    dims = result.query.dimensions or []
+    assert [d.expression for d in dims if isinstance(d, ComputedDimension)] == ["date_part('month', ordered_at)"]
 
 
 def test_date_trunc_creates_time_dimension(dialect) -> None:
@@ -1051,7 +1049,7 @@ def test_metabase_aliased_cast_time_trunc_group_by_validates(dialect) -> None:
 def test_time_grain_on_non_time_column_errors(dialect) -> None:
     catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql="SELECT month(status) FROM orders", catalog=catalog, dialect=dialect)
+        translate(sql="SELECT date_trunc('month', status) FROM orders", catalog=catalog, dialect=dialect)
     assert "not a time column" in str(exc_info.value)
 
 
@@ -1205,7 +1203,7 @@ def test_postgres_ilike_parses_and_emits_verbatim() -> None:
 
 def test_between_lifts_to_date_range(dialect) -> None:
     result = translate(
-        sql="SELECT month(ordered_at), revenue_sum FROM orders "
+        sql="SELECT date_trunc('month', ordered_at), revenue_sum FROM orders "
         "WHERE ordered_at BETWEEN '2024-01-01' AND '2024-12-31'",
         catalog=_catalog(), dialect=dialect,
     )
@@ -1219,7 +1217,7 @@ def test_between_lifts_to_date_range(dialect) -> None:
 def test_one_sided_gte_is_verbatim_filter(dialect) -> None:
     # One-sided comparator must NOT lift to date_range (would render BETWEEN x AND NULL).
     result = translate(
-        sql="SELECT month(ordered_at), revenue_sum FROM orders "
+        sql="SELECT date_trunc('month', ordered_at), revenue_sum FROM orders "
         "WHERE ordered_at >= '2024-01-01'",
         catalog=_catalog(), dialect=dialect,
     )
@@ -1231,7 +1229,7 @@ def test_one_sided_gte_is_verbatim_filter(dialect) -> None:
 
 def test_one_sided_lte_is_verbatim_filter(dialect) -> None:
     result = translate(
-        sql="SELECT month(ordered_at), revenue_sum FROM orders "
+        sql="SELECT date_trunc('month', ordered_at), revenue_sum FROM orders "
         "WHERE ordered_at <= '2024-12-31'",
         catalog=_catalog(), dialect=dialect,
     )
@@ -1243,7 +1241,7 @@ def test_one_sided_lte_is_verbatim_filter(dialect) -> None:
 
 def test_strict_gt_is_verbatim_filter(dialect) -> None:
     result = translate(
-        sql="SELECT month(ordered_at), revenue_sum FROM orders "
+        sql="SELECT date_trunc('month', ordered_at), revenue_sum FROM orders "
         "WHERE ordered_at > '2024-01-01'",
         catalog=_catalog(), dialect=dialect,
     )
@@ -1255,7 +1253,7 @@ def test_strict_gt_is_verbatim_filter(dialect) -> None:
 
 def test_strict_lt_is_verbatim_filter(dialect) -> None:
     result = translate(
-        sql="SELECT month(ordered_at), revenue_sum FROM orders "
+        sql="SELECT date_trunc('month', ordered_at), revenue_sum FROM orders "
         "WHERE ordered_at < '2025-01-01'",
         catalog=_catalog(), dialect=dialect,
     )
@@ -1267,7 +1265,7 @@ def test_strict_lt_is_verbatim_filter(dialect) -> None:
 
 def test_paired_inclusive_comparators_do_not_lift(dialect) -> None:
     result = translate(
-        sql="SELECT month(ordered_at), revenue_sum FROM orders "
+        sql="SELECT date_trunc('month', ordered_at), revenue_sum FROM orders "
         "WHERE ordered_at >= '2024-01-01' AND ordered_at <= '2024-12-31'",
         catalog=_catalog(), dialect=dialect,
     )
@@ -1283,7 +1281,7 @@ def test_paired_inclusive_comparators_do_not_lift(dialect) -> None:
 def test_paired_mixed_strictness_stays_verbatim(dialect) -> None:
     # `>= a AND < b` must stay verbatim; lifting to inclusive BETWEEN loses strictness.
     result = translate(
-        sql="SELECT month(ordered_at), revenue_sum FROM orders "
+        sql="SELECT date_trunc('month', ordered_at), revenue_sum FROM orders "
         "WHERE ordered_at >= '2024-01-01' AND ordered_at < '2025-01-01'",
         catalog=_catalog(), dialect=dialect,
     )
@@ -1298,7 +1296,7 @@ def test_paired_mixed_strictness_stays_verbatim(dialect) -> None:
 
 def test_reversed_operand_comparator_stays_verbatim(dialect) -> None:
     result = translate(
-        sql="SELECT month(ordered_at), revenue_sum FROM orders "
+        sql="SELECT date_trunc('month', ordered_at), revenue_sum FROM orders "
         "WHERE '2024-01-01' <= ordered_at",
         catalog=_catalog(), dialect=dialect,
     )
@@ -1310,7 +1308,7 @@ def test_reversed_operand_comparator_stays_verbatim(dialect) -> None:
 
 def test_between_plus_comparator_lifts_only_the_between(dialect) -> None:
     result = translate(
-        sql="SELECT month(ordered_at), revenue_sum FROM orders "
+        sql="SELECT date_trunc('month', ordered_at), revenue_sum FROM orders "
         "WHERE ordered_at BETWEEN '2024-01-01' AND '2024-12-31' "
         "AND ordered_at >= '2024-06-01'",
         catalog=_catalog(), dialect=dialect,

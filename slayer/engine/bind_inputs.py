@@ -42,7 +42,7 @@ from slayer.core.keys import (
     window_kwarg_of,
 )
 from slayer.core.models import ModelMeasure, SlayerModel
-from slayer.core.granularity import Granularity, granularity_key, nests_into, resolve_granularity
+from slayer.core.granularity import Granularity, nests_into, resolve_granularity
 from slayer.core.query import (
     ComputedDimension,
     ORDER_PLACEHOLDER_NAMES,
@@ -51,10 +51,9 @@ from slayer.core.query import (
     call_callee,
     computed_dimension_name,
     functional_call_column,
-    granularity_call_argument,
     granularity_call_parts,
 )
-from slayer.core.refs import auto_name_from_expression, dotted_key_display
+from slayer.core.refs import auto_name_from_expression, bucket_remedy, dotted_key_display, first_bucket_remedy
 from slayer.core.time_bounds import is_frame_bound
 from slayer.core.time_points import floor_to
 from slayer.core.scope import (
@@ -80,7 +79,7 @@ from slayer.engine.elaborate_env import (
     coerce_list_arguments,
     ListTyping,
     check_dimension_call_known,
-    check_granularity_call_shape,
+    check_whole_periods_axis,
     check_granularity_known,
     check_measure_dedupe_collision,
     check_spine_clash,
@@ -122,6 +121,8 @@ from slayer.core.syntax import (
     ParsedExpr,
     Ref,
     TransformCall,
+    call_keywords,
+    dotted_quoting,
     drop_root_qualifier,
     parse_bound_expr,
     parse_expr,
@@ -165,7 +166,7 @@ def _attach_time_keys(key: ValueKey, *, td_key: TimeTruncKey) -> ValueKey:
 
 
 def _iter_expr_children(node):
-    for attr in ("input", "left", "right", "this", "operand"):
+    for attr in ("input", "left", "right", "this", "operand", "value"):
         child = getattr(node, attr, None)
         if child is not None and not isinstance(child, (str, bool)):
             yield child
@@ -180,8 +181,6 @@ def _expr_has_measure_ref(
 ) -> bool:
     if node is None:
         return False
-    if isinstance(node, AggCall) and resolve_granularity(node.agg, defined=bundle.granularities) is not None:
-        return _expr_has_measure_ref(node.source, measure_names=measure_names, scope=scope, bundle=bundle)
     if isinstance(node, (AggCall, TransformCall)):
         return True
     if isinstance(node, Ref) and node.name in measure_names:
@@ -331,7 +330,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         )
     check_spine_clash(clash=bundle.spine_clash and is_spine_query(query))
     _check_column_granularities(bundle=bundle)
-    query = _resolve_granularity_calls(query, bundle=bundle)
+    _check_dimension_calls(query, bundle=bundle)
     query = _dedupe_equivalent_time_dimensions(query, scope=scope, bundle=bundle)
 
     # Runs BEFORE binding so the targeted error wins over the binder's generic one.
@@ -428,7 +427,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         with stale_spelling_position(None if o.implied else f"order[{i}]"):
             col_name = o.column.name
             full_name = o.column.full_name
-            # A functional ``gran(col)`` order key sorts by the projected time
+            # A ``date_trunc('<unit>', expr)`` order key sorts by the projected time
             # dimension's bucket — resolved to its column binding.
             gran_parts = granularity_call_parts(o.raw_formula) if o.raw_formula else None
             _order_gran = (
@@ -446,10 +445,8 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                         position="order key",
                     )
                     raise GranularityCallError(
-                        f"Order key {_gran}({_col}) has no matching projected time "
-                        f"dimension. Project a time_dimension on {_col!r} at {_gran} "
-                        f"granularity (e.g. {_gran}({_col}) in dimensions) to order by "
-                        f"its bucket."
+                        f"Order key date_trunc('{_gran}', {_col}) has no matching projected time "
+                        f"dimension. Project date_trunc('{_gran}', {_col}) in dimensions to order by its bucket."
                     )
                 order_specs.append(OrderSpec(
                     bound=bind_time_dimension(
@@ -519,7 +516,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             else:
                 # Bind the FULL reference — a dotted ORDER ColumnRef would otherwise rebind as the wrong host column.
                 bo = bind_expr(
-                    parsed=parse_expr(full_name),
+                    parsed=parse_expr(o.column.spelling),
                     scope=scope,
                     bundle=bundle,
                 )
@@ -600,6 +597,10 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     )
     granularity_conflicts: List[GranularityConflict] = []
     if query.whole_periods_only:
+        check_whole_periods_axis(
+            has_time_dimension=bool(n_tds),
+            remedy=first_bucket_remedy(dm.bound.value_key for dm in declared_measures[:n_dims]),
+        )
         bound_filters, bound_filter_texts, n_date_range, granularity_conflicts = _snap_whole_periods(
             bound_filters=bound_filters, bound_filter_texts=bound_filter_texts,
             n_date_range=n_date_range, now=bundle.now,
@@ -637,7 +638,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         *(dm.bound.value_key for dm in declared_measures),
         *(bf.value_key for bf in bound_filters),
         *(spec.bound.value_key for spec in order_specs),
-    ])
+    ], remedy=first_bucket_remedy(dm.bound.value_key for dm in declared_measures[:n_dims]))
 
     # Transform-input typing runs pre-lowering, where change/change_pct are still
     # single nodes (their desugar duplicates the offending input).
@@ -868,7 +869,7 @@ def _retyped_after_coercion(
 def _joined_column_type(
     *, source_model: SlayerModel, full_name: str, bundle: ResolvedSourceBundle,
 ) -> Optional[DataType]:
-    *hops, leaf = drop_root_qualifier(full_name.split("."), source_model.spelling)
+    *hops, leaf = drop_root_qualifier(full_name.split("."), source_model.spelling, quoted=())
     current = resolved_terminal(
         root=source_model, path=tuple(hops),
         models_by_name=bundle.models_by_name,
@@ -972,7 +973,9 @@ def _resolve_saved_measure_ref(
         return None
     if not isinstance(node, (Ref, DottedRef)):
         return None
-    parts = drop_root_qualifier((node.name,) if isinstance(node, Ref) else node.parts, host.spelling)
+    parts = drop_root_qualifier(
+        (node.name,) if isinstance(node, Ref) else node.parts, host.spelling, quoted=dotted_quoting(node),
+    )
     text = ".".join(parts)
     *hops, leaf = parts
     located = (
@@ -1126,7 +1129,7 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
             # path (``bound.routed_dotted``) — not the short form typed — drives the
             # result key, type, opaque guard, and description.
             bound = bind_expr(
-                parsed=parse_expr(full),
+                parsed=parse_expr(d.spelling),
                 scope=scope,
                 bundle=bundle,
             )
@@ -1168,7 +1171,9 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
             granularity = _td_granularity(td, bundle=bundle)
             btd = bind_time_dimension(td=td, scope=scope, bundle=bundle, granularity=granularity)
             td_types.append(_check_time_dimension(td=td, btd=btd, scope=scope, bundle=bundle, granularity=granularity))
-            bound_tds.append((td, btd.bound, td.effective_name or btd.bound.routed_dotted or td.dimension))
+            column = td.column_ref
+            canonical = td.effective_name or btd.bound.routed_dotted or (column.full_name if column else td.dimension)
+            bound_tds.append((td, btd.bound, canonical))
     _assert_equivalent_tds_agree(bound_tds)
     dim_alias_map.update(_time_dimension_aliases(bound_tds))
     _td_source_counts = Counter(_td_source(bound) for _, bound, _ in bound_tds)
@@ -1328,27 +1333,11 @@ def _check_column_granularities(*, bundle: ResolvedSourceBundle) -> None:
                 )
 
 
-def _resolve_granularity_calls(query: SlayerQuery, *, bundle: ResolvedSourceBundle) -> SlayerQuery:
-    """Dimension entries calling a datasource granularity become time dimensions, as a built-in
-    callee does at construction; any other unknown single-column call fails."""
-    kept: list = []
-    moved: List[TimeDimension] = []
+def _check_dimension_calls(query: SlayerQuery, *, bundle: ResolvedSourceBundle) -> None:
+    """An unnamed single-column call naming no aggregation or granularity fails."""
     for item in query.dimensions or []:
-        td = (
-            _datasource_time_dimension(item.expression, template=item.template, bundle=bundle)
-            if isinstance(item, ComputedDimension)
-            and item.name == computed_dimension_name(item.template)
-            else None
-        )
-        if td is None:
-            kept.append(item)
-        else:
-            moved.append(td)
-    if not moved:
-        return query
-    return query.model_copy(update={
-        "dimensions": kept or None, "time_dimensions": [*(query.time_dimensions or []), *moved],
-    })
+        if isinstance(item, ComputedDimension) and item.name == computed_dimension_name(item.template):
+            _check_dimension_call(item.expression, bundle=bundle)
 
 
 def _dedupe_equivalent_time_dimensions(
@@ -1371,22 +1360,15 @@ def _dedupe_equivalent_time_dimensions(
     return query if len(kept) == len(tds) else query.model_copy(update={"time_dimensions": kept})
 
 
-def _datasource_time_dimension(entry: str, *, template: str, bundle: ResolvedSourceBundle) -> Optional[TimeDimension]:
+def _check_dimension_call(entry: str, *, bundle: ResolvedSourceBundle) -> None:
     node, callee = call_callee(entry)
-    if callee is None:
-        return None
-    column = functional_call_column(node)
-    definition = bundle.granularities.get(granularity_key(callee))
-    if definition is not None:
-        argument = granularity_call_argument(node, entry)
-        check_granularity_call_shape(entry=entry, argument=argument)
-        td = TimeDimension.model_validate({"dimension": argument, "granularity": definition.name})
-        if template != entry:
-            td._template = granularity_call_argument(call_callee(template)[0], template)
-        return td
-    if column is not None and normalize_aggregation_name(callee) not in BUILTIN_AGGREGATIONS:
-        check_dimension_call_known(entry=entry, defined=bundle.granularities)
-    return None
+    if callee is None or functional_call_column(node) is None:
+        return
+    if normalize_aggregation_name(callee) in BUILTIN_AGGREGATIONS or resolve_granularity(
+        callee, defined=bundle.granularities,
+    ) is not None:
+        return
+    check_dimension_call_known(entry=entry, defined=bundle.granularities)
 
 
 def _build_date_range_filter(
@@ -1596,7 +1578,9 @@ def _check_time_dimension(
     column_type = btd.column_type
     if btd.is_expression:
         source = _td_source(btd.bound)
-        check_spine_time_dimension(offender=td.dimension if _reads_spine(source, scope=scope) else None)
+        check_spine_time_dimension(
+            offender=td.dimension if _reads_spine(source, scope=scope) else None, remedy=bucket_remedy(source),
+        )
         check_time_dimension_row_level(name=td.dimension, source=source)
         if isinstance(scope, ModelScope) and scope.source_model is not None:
             check_time_dimension_home(
@@ -1620,22 +1604,24 @@ def _passes_grain_kwargs(text: str) -> bool:
     """Whether ``text`` passes ``partition_by=`` or ``window=`` to a call."""
     return any(
         name in ("partition_by", "window")
-        for node in walk_parsed(parse_expr(text)) for name, _ in getattr(node, "kwargs", ())
+        for node in walk_parsed(parse_expr(text)) if isinstance(node, (AggCall, TransformCall))
+        for name, _ in call_keywords(node)
     )
 
 
 def _td_column_parts(td: TimeDimension, *, root: Optional[str]) -> Optional[Tuple[str, ...]]:
-    return drop_root_qualifier(td.column_ref.parts, root) if td.column_ref is not None else None
+    ref = td.column_ref
+    return drop_root_qualifier(ref.parts, root, quoted=ref.quoted_parts) if ref is not None else None
 
 
-def _reference_parts(text: str) -> Tuple[str, ...]:
-    """A reference's path as parsed; unparseable text is one name."""
+def _reference_parts(text: str, *, root: Optional[str]) -> Tuple[str, ...]:
+    """A reference's root-relative path as parsed; unparseable text is one name."""
     try:
         node = parse_expr(text)
     except ValueError:
         return (text,)
     if isinstance(node, DottedRef):
-        return node.parts
+        return drop_root_qualifier(node.parts, root, quoted=dotted_quoting(node))
     if isinstance(node, Ref):
         return (node.name,)
     return (text,)
@@ -1647,7 +1633,7 @@ def _named_td_matches(
     """(name or full-name matches, leaf matches) for ``target`` among ``tds``: a time
     dimension's name, else a column's full or leaf name. Two same-column buckets share
     a full name, so full matches is a list, not a single TD."""
-    parts = drop_root_qualifier(_reference_parts(target), root)
+    parts = _reference_parts(target, root=root)
     named = [td for td in tds if len(parts) == 1 and td.effective_name == parts[0]]
     if named:
         return named, []
@@ -1689,11 +1675,11 @@ def _resolve_main_time_dimension(
             return full_matches[0]
         if len(full_matches) > 1:
             # Same column, several granularities: a bare column can't pick a bucket.
-            # Per-granularity selection (e.g. year(created_at)) lands in DEV-1925.
+            # Per-granularity selection (e.g. date_trunc('year', created_at)) lands in DEV-1925.
             raise AmbiguousReferenceError(
                 name=target,
                 candidates=[
-                    f"{td.granularity}({td.dimension})"
+                    f"date_trunc('{td.granularity}', {td.dimension})"
                     for td in full_matches
                 ],
             )

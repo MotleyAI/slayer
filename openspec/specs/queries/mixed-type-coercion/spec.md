@@ -97,7 +97,7 @@ SLayer's TIMESTAMP SHALL be a naive wall-clock value on every dialect (BigQuery 
 
 #### Scenario: Monthly bucket of a BigQuery TIMESTAMP column
 
-- **WHEN** a query has the time dimension `month(created_at)` over a BigQuery `TIMESTAMP` column ingested with `db_type` `TIMESTAMP`, on the time spine
+- **WHEN** a query has the time dimension `date_trunc('month', created_at)` over a BigQuery `TIMESTAMP` column ingested with `db_type` `TIMESTAMP`, on the time spine
 - **THEN** each bucket is the naive month start of the UTC wall clock and joins the spine
 
 ### Requirement: Value-returning conditionals share one type

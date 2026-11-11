@@ -17,13 +17,13 @@ order). The order SHALL apply before `limit` and `offset`. A
 query that declares a non-empty `order` SHALL be ordered by it alone, with no columns appended.
 
 #### Scenario: Monthly revenue by store comes back sorted
-- **WHEN** `{"source_model": "orders", "measures": ["sum(order_total)"], "dimensions": ["stores.name", "month(ordered_at)"]}`
+- **WHEN** `{"source_model": "orders", "measures": ["sum(order_total)"], "dimensions": ["stores.name", "date_trunc('month', ordered_at)"]}`
   runs
 - **THEN** rows are sorted by store name, then by month, both ascending
 
 #### Scenario: Identical to the explicit spelling
-- **WHEN** a query with dimensions `status` and `month(created_at)` and no `order` runs, and the same
-  query with `order: [{"column": "status", "direction": "asc"}, {"column": "month(created_at)", "direction": "asc"}]`
+- **WHEN** a query with dimensions `status` and `date_trunc('month', created_at)` and no `order` runs, and the same
+  query with `order: [{"column": "status", "direction": "asc"}, {"column": "date_trunc('month', created_at)", "direction": "asc"}]`
   runs
 - **THEN** both return the same rows in the same order, and a row whose `status` is NULL comes after
   every non-NULL status

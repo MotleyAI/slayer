@@ -121,7 +121,7 @@ A sub-expression of a measure, an order target or a filter that is equal to an e
 - **THEN** the measure is 4, 12, 9, 4, 5 for quantities 1 through 5; ordering by `quantity * count(*)` descending puts quantity 2 first and 3 second; and the filter `quantity * count(*) > 5` keeps exactly quantities 2 and 3
 
 #### Scenario: A conditional over a dimension
-- **WHEN** a `sales` query over dimensions `[region]` declares the measure `iif(region == 'North', sum(amount), 0)`
+- **WHEN** a `sales` query over dimensions `[region]` declares the measure `iif(region = 'North', sum(amount), 0)`
 - **THEN** the measure is 90 for North and 0 for every other region
 
 #### Scenario: A computed plain dimension combined with an aggregate
@@ -129,11 +129,11 @@ A sub-expression of a measure, an order target or a filter that is equal to an e
 - **THEN** each row's measure equals its `q2` plus the row count of its cell
 
 #### Scenario: A joined dimension combined with an aggregate
-- **WHEN** a `corders` query over dimensions `[customers.regions.name]` declares `iif(customers.regions.name == 'North', sum(amount), 0)`, and another over `[customers.region_id]` declares `customers.region_id * sum(amount)`
+- **WHEN** a `corders` query over dimensions `[customers.regions.name]` declares `iif(customers.regions.name = 'North', sum(amount), 0)`, and another over `[customers.region_id]` declares `customers.region_id * sum(amount)`
 - **THEN** the first is North 70 and South 0, the second is 70 for region 1 and 200 for region 2, and each expression orders and filters by the same values
 
 #### Scenario: A stage-backed dimension combined with an aggregate
-- **WHEN** a stage sums `amount` by `[region, city]` as `tot` and the next stage, over dimensions `[region]`, declares `iif(region == 'North', sum(tot), 0)`
+- **WHEN** a stage sums `amount` by `[region, city]` as `tot` and the next stage, over dimensions `[region]`, declares `iif(region = 'North', sum(tot), 0)`
 - **THEN** the measure is 90 for North and 0 for every other region
 
 #### Scenario: A dimension value inside an aggregation stays that aggregation's input

@@ -86,11 +86,12 @@ def _always_callable(name: str) -> bool:
 
 
 def _renamed_literal(token: str, *, renames: Renames, callee: str | None) -> str | None:
-    """A quoted token naming a transform's unit or holding a relative token, renamed (either quote style: stored
+    """A quoted token naming a transform's or ``date_trunc``'s unit or holding a relative token, renamed (either quote
+    style: stored
     text of the pre-SQL grammar double-quotes its strings)."""
     quote = token[0]
     value = token[1:-1].replace(quote * 2, quote)
-    if value.casefold() in renames and callee in ALL_TRANSFORMS:
+    if value.casefold() in renames and (callee in ALL_TRANSFORMS or callee == "date_trunc"):
         renamed = renames[value.casefold()]
     else:
         renamed = rename_relative(value, renames=renames)

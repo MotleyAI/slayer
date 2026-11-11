@@ -1,4 +1,4 @@
-"""DEV-1751 e2e — facade-translated time filters executed on DuckDB.
+"""Facade-translated time filters executed on DuckDB.
 
 A one-sided filter used to lift into a half-open ``date_range`` and render as
 ``BETWEEN x AND NULL``, silently returning zero rows.
@@ -80,7 +80,7 @@ ONE_SIDED = [
 async def test_one_sided_filter_returns_matching_rows(tmp_path, where) -> None:
     resp = await _execute_facade_sql(
         tmp_path,
-        f"SELECT month(ordered_at), revenue_sum FROM orders {where}",
+        f"SELECT date_trunc('month', ordered_at), revenue_sum FROM orders {where}",
     )
     assert _by_month(resp) == {"2024-01": 10.0, "2024-02": 20.0}
 
@@ -90,7 +90,7 @@ async def test_between_filters_inclusively(tmp_path) -> None:
     # semantics — rows exactly AT each bound are included.
     resp = await _execute_facade_sql(
         tmp_path,
-        "SELECT month(ordered_at), revenue_sum FROM orders "
+        "SELECT date_trunc('month', ordered_at), revenue_sum FROM orders "
         "WHERE ordered_at BETWEEN '2023-12-15 00:00:00' AND '2024-01-10 00:00:00'",
     )
     assert _by_month(resp) == {"2023-12": 5.0, "2024-01": 10.0}
@@ -101,7 +101,7 @@ async def test_strict_upper_bound_excludes_the_boundary_row(tmp_path) -> None:
     # returning the row exactly at b.
     resp = await _execute_facade_sql(
         tmp_path,
-        "SELECT month(ordered_at), revenue_sum FROM orders "
+        "SELECT date_trunc('month', ordered_at), revenue_sum FROM orders "
         "WHERE ordered_at >= '2024-01-01' AND ordered_at < '2024-02-20 00:00:00'",
     )
     assert _by_month(resp) == {"2024-01": 10.0}

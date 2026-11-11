@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import sqlglot
 import sqlglot.errors
+from pydantic import BaseModel
+from sqlglot import exp
 
 from slayer.core.enums import DataType, JoinType, TimeGranularity
 from slayer.core.models import Aggregation, AggregationParam, Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
@@ -51,6 +53,44 @@ def _outer_order_terms(sql: str, dialect: str = "postgres") -> list[tuple[str, s
         direction = "desc" if ordered.args.get("desc") else "asc"
         out.append((ordered.this.sql(dialect=dialect), direction))
     return out
+
+
+class _RankingOrder(BaseModel):
+    """The ORDER BY of one ``ROW_NUMBER`` ranking window."""
+
+    key: str
+    descending: bool
+    null_flag_first: bool
+    columns: set[str]
+
+
+def _ranking_orders(sql: str, dialect: str = "postgres") -> list[_RankingOrder]:
+    """Every ``ROW_NUMBER`` window's ORDER BY: the key is its last term; the flag holds when a separate first term tests that key ``IS NULL``."""
+    out: list[_RankingOrder] = []
+    for window in sqlglot.parse_one(sql, dialect=dialect).find_all(exp.Window):
+        order = window.args.get("order")
+        if not isinstance(window.this, exp.RowNumber) or order is None or not order.expressions:
+            continue
+        terms = order.expressions
+        key = terms[-1].this.sql(dialect=dialect)
+        flagged = len(terms) > 1 and any(
+            isinstance(node.expression, exp.Null) and node.this.sql(dialect=dialect) == key
+            for node in terms[0].find_all(exp.Is)
+        )
+        out.append(_RankingOrder(
+            key=key, descending=bool(terms[-1].args.get("desc")), null_flag_first=flagged,
+            columns={col.name for term in terms for col in term.find_all(exp.Column)},
+        ))
+    return out
+
+
+def _assert_ranks_by(sql: str | None, *, key: str, descending: bool, dialect: str = "postgres") -> None:
+    """Some ranking window orders by ``key`` in that direction, behind a NULL flag on ``key``."""
+    assert sql is not None
+    orders = _ranking_orders(sql, dialect=dialect)
+    assert any(
+        o.key == key and o.descending == descending and o.null_flag_first for o in orders
+    ), f"no NULL-flagged ranking by {key} (descending={descending}): {orders}\n{sql}"
 
 
 def _projection_rn_by_alias(sql: str, dialect: str = "postgres") -> dict[str, str]:  # NOSONAR(S3776) — sequential isinstance dispatch over outermost-SELECT projection layers (Alias / Cast / Max / Case / EQ / Column unwrap). Each layer is a structural-shape predicate whose failure short-circuits to the next projection; extracting per-layer helpers would scatter the predicate.
@@ -1379,7 +1419,7 @@ class TestFields:
         )
         sql = await _generate(generator, query, orders_model)
         assert "ROW_NUMBER()" in sql
-        assert "ORDER BY orders.ordered_at)" in _norm(sql), sql
+        _assert_ranks_by(sql, key="orders.ordered_at", descending=False)
 
     async def test_multiple_last_different_time_columns(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """Two last measures with different explicit time cols get separate ROW_NUMBER columns."""
@@ -1399,8 +1439,8 @@ class TestFields:
         norm = _norm(sql)
         # Two rankings, one per measure, each in its own CTE by its own time column; the old _last_rn_2 suffix only mattered under one shared scope.
         assert sql.count("ROW_NUMBER()") == 2
-        assert "ORDER BY orders.ordered_at DESC" in norm, sql
-        assert "ORDER BY orders.updated_at DESC" in norm, sql
+        _assert_ranks_by(sql, key="orders.ordered_at", descending=True)
+        _assert_ranks_by(sql, key="orders.updated_at", descending=True)
         assert "_last_rn_2" not in sql, sql
         assert norm.count("CASE WHEN _ranked_rn = 1") == 2, sql
 
@@ -1436,11 +1476,10 @@ class TestFields:
             ],
         )
         sql = await _generate(generator, query, orders_model)
-        norm = _norm(sql)
         # Two aggregates over the same time column are still two CTEs; they share the ORDER BY column but differ in direction.
         assert sql.count("ROW_NUMBER()") == 2
-        assert "ORDER BY orders.ordered_at DESC" in norm, sql
-        assert "ORDER BY orders.ordered_at)" in norm, sql
+        _assert_ranks_by(sql, key="orders.ordered_at", descending=True)
+        _assert_ranks_by(sql, key="orders.ordered_at", descending=False)
         assert "_last_rn" not in sql, sql
         assert "_first_rn" not in sql, sql
 
@@ -4035,7 +4074,9 @@ class TestFilteredMeasures:
         assert "WHERE orders.status = 'completed'" not in norm, sql
         assert "CASE WHEN orders.status = 'completed' THEN orders.amount END" in norm, sql
         assert "ROW_NUMBER(" in norm, sql
-        assert "THEN 0 ELSE 1" not in norm, sql
+        # The filter predicate never reaches the ranking ORDER BY (no match-first ranking).
+        assert all("status" not in o.columns for o in _ranking_orders(sql)), sql
+        _assert_ranks_by(sql, key="orders.created_at", descending=True)
         assert "_match_f0" not in norm, sql
         assert _re.search(r"_(?:first|last)_rn", sql) is None, sql
 
@@ -4059,8 +4100,9 @@ class TestFilteredMeasures:
         norm = _norm(sql)
         assert "WHERE orders.status = 'completed'" not in norm, sql
         assert "CASE WHEN orders.status = 'completed' THEN orders.amount END" in norm, sql
-        assert "ORDER BY orders.created_at)" in norm, sql
-        assert "THEN 0 ELSE 1" not in norm, sql
+        _assert_ranks_by(sql, key="orders.created_at", descending=False)
+        # The filter predicate never reaches the ranking ORDER BY (no match-first ranking).
+        assert all("status" not in o.columns for o in _ranking_orders(sql)), sql
         assert _re.search(r"_(?:first|last)_rn", sql) is None, sql
 
     async def test_unfiltered_last_unchanged(
@@ -5089,14 +5131,8 @@ Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             assert (
                 _re.search(r"_(?:first|last)_rn", sql) is None
             ), sql
-            assert (
-                _re.search(r"ORDER BY\s+orders\.created_at\s+DESC", sql)
-                is not None
-            ), f"created_at rank ORDER BY missing:\n{sql}"
-            assert (
-                _re.search(r"ORDER BY\s+orders\.updated_at\s+DESC", sql)
-                is not None
-            ), f"updated_at rank ORDER BY missing:\n{sql}"
+            _assert_ranks_by(sql, key="orders.created_at", descending=True)
+            _assert_ranks_by(sql, key="orders.updated_at", descending=True)
             # The two outer ORDER BY EXPRESSIONS must NOT be byte-identical (the bug renders them identically; the fix gives each its own distinct ``_last_rn{suffix}``). Directions are independently asserted to remain DESC then ASC.
             order_terms = _outer_order_terms(sql)
             assert len(order_terms) == 2, f"Expected 2 ORDER BY terms in outer:\n{sql}"
@@ -5273,10 +5309,9 @@ class TestDev1501HiddenFirstLastRender:
             assert dirs == ["asc", "desc"], (
                 f"first→ASC / last→DESC directions lost: {dirs}\n{sql}"
             )
-            # The first(created_at) rank window orders created_at ascending (the bare column); the last(updated_at) one orders descending.
-            norm = _norm(sql)
-            assert "ORDER BY orders.created_at)" in norm, sql
-            assert "ORDER BY orders.updated_at DESC)" in norm, sql
+            # The first(created_at) rank window orders created_at ascending; the last(updated_at) one orders descending.
+            _assert_ranks_by(sql, key="orders.created_at", descending=False)
+            _assert_ranks_by(sql, key="orders.updated_at", descending=True)
 
     async def test_order_by_first_and_last_same_time_col(
         self, generator: SQLGenerator
@@ -5297,9 +5332,8 @@ class TestDev1501HiddenFirstLastRender:
             _assert_valid_sql(sql, dialect=generator.dialect)
             assert len(self._ranked_ctes(sql)) == 2, sql
             assert _re.search(r"_(?:first|last)_rn", sql) is None, sql
-            norm = _norm(sql)
-            assert "ORDER BY orders.created_at)" in norm, sql
-            assert "ORDER BY orders.created_at DESC)" in norm, sql
+            _assert_ranks_by(sql, key="orders.created_at", descending=False)
+            _assert_ranks_by(sql, key="orders.created_at", descending=True)
             terms = _outer_order_terms(sql)
             exprs = [t[0] for t in terms]
             assert len(terms) == 2, (
@@ -5326,10 +5360,7 @@ class TestDev1501HiddenFirstLastRender:
             sql = (await engine.execute(query, dry_run=True)).sql
             _assert_valid_sql(sql, dialect=generator.dialect)
             assert len(self._ranked_ctes(sql)) == 1, sql
-            assert (
-                _re.search(r"ORDER BY\s+orders\.created_at\s+DESC", sql)
-                is not None
-            ), f"created_at rank ORDER BY missing:\n{sql}"
+            _assert_ranks_by(sql, key="orders.created_at", descending=True)
 
     async def test_order_by_last_inherits_default_time_dim(
         self, generator: SQLGenerator
@@ -5346,10 +5377,7 @@ class TestDev1501HiddenFirstLastRender:
             sql = (await engine.execute(query, dry_run=True)).sql
             _assert_valid_sql(sql, dialect=generator.dialect)
             assert len(self._ranked_ctes(sql)) == 1, sql
-            assert (
-                _re.search(r"ORDER BY\s+orders\.created_at\s+DESC", sql)
-                is not None
-            ), f"default created_at rank ORDER BY missing:\n{sql}"
+            _assert_ranks_by(sql, key="orders.created_at", descending=True)
 
     async def test_projected_and_order_only_first_last_mixed(
         self, generator: SQLGenerator
@@ -5375,9 +5403,8 @@ class TestDev1501HiddenFirstLastRender:
                 f"Result columns mismatch: {res.columns!r}\nSQL:\n{sql}"
             )
             # The two aggregates must not collapse: each ranks by its own time column in its own CTE. Read off the windows — no shared alias space remains to hide a collapse.
-            norm = _norm(sql)
-            assert "ORDER BY orders.created_at DESC" in norm, sql
-            assert "ORDER BY orders.updated_at DESC" in norm, sql
+            _assert_ranks_by(sql, key="orders.created_at", descending=True)
+            _assert_ranks_by(sql, key="orders.updated_at", descending=True)
             # The PROJECTED one surfaces under the user's alias; the order-only one is named only by the ORDER BY.
             assert '"orders.latest_cr"' in sql, sql
             order_terms = _outer_order_terms(sql)
@@ -5401,9 +5428,7 @@ class TestDev1501HiddenFirstLastRender:
             _assert_valid_sql(sql, dialect=generator.dialect)
             names = self._ranked_ctes(sql)
             assert len(names) == 1, sql
-            assert _re.search(
-                r"ROW_NUMBER\(\)\s+OVER\s*\([^)]*ORDER BY\s+orders\.created_at\s+DESC", sql
-            ), f"created_at rank window missing:\n{sql}"
+            _assert_ranks_by(sql, key="orders.created_at", descending=True)
             assert "HAVING" not in sql.upper(), sql
             tail = sql[sql.rfind("WHERE"):]
             assert tail.startswith("WHERE"), sql
@@ -5490,8 +5515,8 @@ class TestDev1501HiddenFirstLastRender:
             assert len(names) == 2, sql
             norm = _norm(sql)
             # Each ranks by its OWN time column…
-            assert "ORDER BY orders.created_at DESC" in norm, sql
-            assert "ORDER BY orders.updated_at DESC" in norm, sql
+            _assert_ranks_by(sql, key="orders.created_at", descending=True)
+            _assert_ranks_by(sql, key="orders.updated_at", descending=True)
             # …and each user alias is projected from a DIFFERENT CTE, which is the collapse this test exists to catch.
             lc = _re.search(r'(_cm_\w+)\."orders\.lc"', norm)
             lu = _re.search(r'(_cm_\w+)\."orders\.lu"', norm)
@@ -6008,7 +6033,7 @@ class TestDev1501BroadTriggerAndGuards:
     async def test_hidden_simple_aggregate_in_having(
         self, generator: SQLGenerator
     ) -> None:
-        """``filters=["revenue:sum > 100"]`` with no projected ``sum(revenue)`` (plain non-first/last). Broad materialise+trim applies to filter-side too: hidden ``sum(revenue)`` materialised in base, HAVING references it (inline or by alias), absent from result keys and response metadata."""
+        """``filters=["sum(revenue) > 100"]`` with no projected ``sum(revenue)`` (plain non-first/last). Broad materialise+trim applies to filter-side too: hidden ``sum(revenue)`` materialised in base, HAVING references it (inline or by alias), absent from result keys and response metadata."""
         m = _orders_two_ts_model(default_td="created_at")
         async with _persist_and_engine(m) as engine:
             query = SlayerQuery.model_validate({
@@ -7478,7 +7503,7 @@ class TestIsolatedFilteredMeasureCTEs:
         cm_body = _norm(_extract_cte_body(sql, r"_cm_\w*earliest_reserve\w*"))
 
         assert _re.search(
-            r"ORDER BY claim_amount\.updated_at\s*\)", cm_body,
+            r"ORDER BY CASE WHEN claim_amount\.updated_at IS NULL THEN 1 ELSE 0 END, claim_amount\.updated_at\s*\)", cm_body,
         ), (
             f"expected ascending ranking on the explicit time column:\n{cm_body}"
         )
@@ -7829,9 +7854,7 @@ class TestIsolatedFilteredMeasureCTEs:
             f"the ranked CTE must carry its own rank column:\n{cm_body}"
         )
         # The window's ORDER BY must use updated_at (the explicit time arg), not the default TD (created_at).
-        assert "ORDER BY claim_amount.updated_at DESC" in _norm(cm_body), (
-            f"the ranked CTE must rank by the explicit time arg:\n{cm_body}"
-        )
+        _assert_ranks_by(cm_body, key="claim_amount.updated_at", descending=True)
         # The outer ORDER BY references the joined-back aggregate column — NOT the rank column, which is scoped to the CTE.
         assert "_ranked_rn" not in sql[sql.rfind("ORDER BY"):], sql
         terms = _outer_order_terms(sql)
@@ -7862,9 +7885,7 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "_ranked_rn" in cm_body, (
             f"the ranked CTE must contain its rank column:\n{cm_body}"
         )
-        assert "ORDER BY claim_amount.updated_at DESC" in _norm(cm_body), (
-            f"the ranked CTE must rank by the explicit time arg:\n{cm_body}"
-        )
+        _assert_ranks_by(cm_body, key="claim_amount.updated_at", descending=True)
         # The aggregate-phase filter routes to the OUTER combined SELECT wrapper (WHERE on the joined-back column), not inside the CTE and not as HAVING.
         last_cte_close = sql.rfind("\n)")
         outer = sql[last_cte_close + 2:]

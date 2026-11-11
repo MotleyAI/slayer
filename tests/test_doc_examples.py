@@ -427,7 +427,7 @@ def test_readme_yields_its_headline_alt_text_query() -> None:
     headline = {
         "source_model": "orders",
         "measures": ["sum(order_total)", "change_pct(sum(order_total))"],
-        "dimensions": ["stores.name", "month(ordered_at)"],
+        "dimensions": ["stores.name", "date_trunc('month', ordered_at)"],
     }
     assert headline in [q.query for q in load_page("README.md").checked_queries()]
 

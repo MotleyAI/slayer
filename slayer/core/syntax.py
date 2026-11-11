@@ -19,7 +19,7 @@ import unicodedata
 from decimal import Decimal
 from functools import lru_cache, partial
 from itertools import count
-from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, Union, cast
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple, Union, cast
 
 import pyparsing as pp
 from pydantic import BaseModel, ConfigDict
@@ -31,19 +31,24 @@ from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
     DATE_PART_ALIASES,
     GRANULARITY_NAMES,
+    RESERVED_NAMES,
     TimeGranularity,
     ambiguous_weekday_message,
     normalize_aggregation_name,
 )
 from slayer.core.errors import (
+    CallArgumentError,
     ColonSpellingError,
     GranularityCallError,
     IllegalWindowInFilterError,
+    ReservedFunctionNameError,
     UnknownFunctionError,
     VariableError,
 )
 from slayer.core.json_path import JsonPathError, check_key, json_path_text, parse_json_path
+from slayer.core.legacy_spellings import LegacySpan, note_legacy_spellings
 from slayer.core.keys import DATE_UNIT_ARGS, RESERVED_SCALAR_NAMES, SCALAR_FUNCTIONS, check_scalar_arity
+from slayer.core.names import match_name
 from slayer.core.regex_pattern import RegexPattern
 from slayer.core.scalar_args import STRING_SLOTS, check_path, check_pattern, check_replacement, slot_name
 
@@ -73,6 +78,11 @@ class DottedRef(_BaseNode):
     parts: Tuple[str, ...]
     # Some segment was written double-quoted; not part of identity.
     quoted: bool = False
+    # Per segment, whether it was double-quoted (empty: none); not part of identity.
+    quoted_parts: Tuple[bool, ...] = ()
+
+    def quoted_at(self, i: int) -> bool:
+        return 0 <= i < len(self.quoted_parts) and self.quoted_parts[i]
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, DottedRef) and self.parts == other.parts
@@ -164,6 +174,21 @@ class ScalarCall(_BaseNode):
         return hash(("ScalarCall", self.name, self.args))
 
 
+class DateTrunc(_BaseNode):
+    """``date_trunc('<unit>', value)``, the time bucket; the lower-cased unit is resolved at binding."""
+
+    unit: str
+    value: Any
+
+
+class NamedArg(_BaseNode):
+    """An unparenthesised ``name = value`` argument of a non-scalar call: a keyword argument when ``name`` is a
+    parameter of the callee, else the comparison (classified at binding)."""
+
+    name: str
+    value: Any
+
+
 class Cast(_BaseNode):
     """``CAST(x AS t)`` / ``x::t`` / ``TRY_CAST(x AS t)``; ``type_text`` is the normalised author type."""
 
@@ -204,7 +229,7 @@ class BoolOp(_BaseNode):
 
 ParsedExpr = Union[
     Ref, DottedRef, StarSource, Literal, TemporalLiteral, Placeholder, TupleLit, ArrayLit, BoundVariable,
-    AggCall, TransformCall, ScalarCall, Cast,
+    AggCall, TransformCall, ScalarCall, DateTrunc, NamedArg, Cast,
     Arith, UnaryOp, Cmp, BoolOp,
 ]
 
@@ -331,13 +356,30 @@ def _mask_placeholders(text: str) -> str:
     return "".join(parts)
 
 
+class CallSpan(BaseModel):
+    """A single-name call ``callee(…)`` at ``text[start:end]``: its callee as written and argument count."""
+
+    model_config = ConfigDict(frozen=True)
+
+    callee: str
+    start: int
+    end: int
+    arguments: int
+
+
 class _State:
-    """Per-parse scratch: the expression text, the farthest failure offset and, while rewriting, the colon spans."""
+    """Per-parse scratch: the expression text, the farthest failure offset, the calls and method calls read and,
+    while rewriting, the colon spans."""
 
     def __init__(self) -> None:
         self.text = ""
         self.farthest = 0
+        self.calls: Dict[Tuple[int, int], CallSpan] = {}
+        self.methods: Dict[Tuple[int, int], LegacySpan] = {}
         self.spans: Optional[List["_ColonSpan"]] = None
+
+    def reset(self, text: str) -> None:
+        self.text, self.farthest, self.calls, self.methods = text, 0, {}, {}
 
 
 _STATE = _State()
@@ -513,18 +555,15 @@ def _path_node(words: List[_Word]) -> Ref | DottedRef:
     quoted = any(w.quoted for w in words)
     if len(words) == 1:
         return Ref(name=words[0].name, quoted=quoted)
-    return DottedRef(parts=tuple(w.name for w in words), quoted=quoted)
+    return DottedRef(parts=tuple(w.name for w in words), quoted=quoted, quoted_parts=tuple(w.quoted for w in words))
+
+
+def _star_path_node(words: List[_Word]) -> DottedRef:
+    return DottedRef(parts=(*(w.name for w in words), "*"), quoted=any(w.quoted for w in words),
+                     quoted_parts=(*(w.quoted for w in words), False))
 
 
 _PATH_STAR = pp.Group(_PATH + DOT + pp.Suppress(STAR))
-
-
-class _Kw:
-    __slots__ = ("name", "value")
-
-    def __init__(self, name: str, value: Any) -> None:
-        self.name = name
-        self.value = value
 
 
 class _Distinct:
@@ -536,13 +575,13 @@ class _Distinct:
 
 _ARG_END = pp.FollowedBy(_sym(r"[,)]", "',' or ')'"))
 _STAR_ARG = _on((pp.Suppress(STAR) + _ARG_END), lambda _toks: StarSource())
-_PATH_STAR_ARG = _on((_PATH_STAR + _ARG_END), lambda toks: DottedRef(parts=(*(w.name for w in toks[0][0]), "*"), quoted=any(w.quoted for w in toks[0][0])))
+_PATH_STAR_ARG = _on((_PATH_STAR + _ARG_END), lambda toks: _star_path_node(toks[0][0]))
 _SEQ_ITEMS = pp.Group(pp.Optional(pp.DelimitedList(expr, allow_trailing_delim=True)))
 _LIST_VALUE = _on((LBRACK + _SEQ_ITEMS + RBRACK), lambda toks: tuple(toks[0]))
 _TUPLE_VALUE = _on((LPAR + pp.Group(expr + pp.OneOrMore(COMMA + expr) + pp.Optional(COMMA)) + RPAR), lambda toks: tuple(toks[0]))
 _DISTINCT_VALUE = _kw("distinct") + _fail(f"{_DISTINCT_ONLY}.")
 _KW_VALUE = _DISTINCT_VALUE | _LIST_VALUE | _TUPLE_VALUE | _STAR_ARG | _PATH_STAR_ARG | expr
-_KWARG = _on((_BARE + EQ + _KW_VALUE), lambda toks: _Kw(name=toks[0].name, value=toks[1]))
+_KWARG = _on((_BARE + EQ + _KW_VALUE), lambda toks: NamedArg(name=toks[0].name, value=toks[1]))
 _PH_KWARG = (_PLACEHOLDER + EQ).set_parse_action(_reject_placeholder_kwarg)
 _VALUE_ARG = _STAR_ARG | _PATH_STAR_ARG | expr
 _DISTINCT_ARG = _on((pp.Suppress(_kw("distinct")) + _need(_VALUE_ARG, f"{_DISTINCT_ONLY}.")), lambda toks: _Distinct(value=toks[0]))
@@ -555,33 +594,26 @@ def _arg_list(first: pp.ParserElement, rest: pp.ParserElement) -> pp.ParserEleme
     return pp.Group(pp.Optional(first + pp.ZeroOrMore(COMMA + rest) + pp.Optional(COMMA)))
 
 
-def _callee_is(kind: str):
-    def _check(toks: pp.ParseResults) -> bool:
-        name = toks.as_list()[0][-1].name
-        if kind == "scalar":
-            return name.lower() in SCALAR_FUNCTIONS or name.lower() in DATE_PART_ALIASES
-        return normalize_aggregation_name(name) in BUILTIN_AGGREGATIONS or name in ALL_TRANSFORMS
-    return _check
+def _callee_is_scalar(toks: pp.ParseResults) -> bool:
+    name = toks.as_list()[0][-1].name.lower()
+    return name in SCALAR_FUNCTIONS or name in DATE_PART_ALIASES
 
 
-_SCALAR_CALL = _PATH.copy().add_condition(_callee_is("scalar")) + LPAR + _arg_list(_POSITIONAL_ARG, _POSITIONAL_ARG) + RPAR
-_VALUE_FIRST_CALL = _PATH.copy().add_condition(_callee_is("value")) + LPAR + _arg_list(_POSITIONAL_ARG, _ANY_ARG) + RPAR
+_SCALAR_CALL = _PATH.copy().add_condition(_callee_is_scalar) + LPAR + _arg_list(_POSITIONAL_ARG, _POSITIONAL_ARG) + RPAR
 _OTHER_CALL = _PATH + LPAR + _arg_list(_ANY_ARG, _ANY_ARG) + RPAR
-_CALL = _SCALAR_CALL | _VALUE_FIRST_CALL | _OTHER_CALL
+_CALL = _SCALAR_CALL | _OTHER_CALL
 
 
 def _split_args(items: List[Any], *, call: str) -> Tuple[Tuple[Any, ...], Tuple[Tuple[str, Any], ...], bool]:
+    """The arguments in written order (``name = value`` ones as ``NamedArg``), no keywords, and a leading DISTINCT."""
     positional: List[Any] = []
-    kwargs: List[Tuple[str, Any]] = []
     distinct = False
+    named: set = set()
     for i, item in enumerate(items):
-        if isinstance(item, _Kw):
-            if any(k == item.name for k, _ in kwargs):
+        if isinstance(item, NamedArg):
+            if item.name in named:
                 raise _Problem(f"{call}() got keyword argument {item.name!r} more than once.")
-            kwargs.append((item.name, item.value))
-            continue
-        if kwargs:
-            raise _Problem(f"{call}(): a positional argument follows a keyword argument.")
+            named.add(item.name)
         if isinstance(item, _Distinct):
             if i != 0:
                 raise _Problem(f"{_DISTINCT_ONLY}.")
@@ -590,17 +622,20 @@ def _split_args(items: List[Any], *, call: str) -> Tuple[Tuple[Any, ...], Tuple[
         if isinstance(item, tuple):
             raise _Problem(f"{call}(): a list is only valid as a keyword-argument value.")
         positional.append(item)
-    return tuple(positional), tuple(kwargs), distinct
+    return tuple(positional), (), distinct
 
 
 class _PendingCall:
-    """A parsed call, dispatched once its postfix is known (a trailing ``OVER (`` rejects first)."""
+    """A parsed call at ``text[start:end]``, dispatched once its postfix is known (a trailing ``OVER (`` rejects
+    first)."""
 
-    __slots__ = ("words", "items")
+    __slots__ = ("words", "items", "start", "end")
 
-    def __init__(self, words: List[_Word], items: List[Any]) -> None:
+    def __init__(self, words: List[_Word], items: List[Any], start: int, end: int) -> None:
         self.words = words
         self.items = items
+        self.start = start
+        self.end = end
 
 
 def _resolve(node: Any) -> Any:
@@ -612,19 +647,27 @@ def _dispatch_pending(call: _PendingCall) -> Any:
     name = words[-1].name
     args, kwargs, distinct = _split_args(call.items, call=name)
     if distinct:
-        if name.lower() != "count" or len(words) > 1 or len(args) != 1 or isinstance(args[0], StarSource):
+        values = [a for a in args if not isinstance(a, NamedArg)]
+        if name.lower() != "count" or len(words) > 1 or len(values) != 1 or isinstance(args[0], (StarSource, NamedArg)):
             raise _Problem(f"{_DISTINCT_ONLY}.")
         name = "count_distinct"
     if len(words) > 1:
-        return _method_call(path=tuple(w.name for w in words[:-1]), name=name, args=args, kwargs=kwargs)
+        return _method_call(
+            path=tuple(w.name for w in words[:-1]), name=name, args=args, kwargs=kwargs, span=(call.start, call.end),
+        )
+    if not words[0].quoted:
+        _STATE.calls[(call.start, call.end)] = CallSpan(
+            callee=words[0].raw, start=call.start, end=call.end, arguments=len(call.items),
+        )
     return _dispatch_call(name, args=args, kwargs=kwargs, original=_STATE.text)
 
 
-_on(_CALL, lambda toks: _PendingCall(words=list(toks[0]), items=list(toks[1])))
+_CALL_ATOM = _on(pp.Located(_CALL), lambda toks: _PendingCall(
+    words=list(toks[1][0]), items=list(toks[1][1]), start=toks[0], end=toks[2],
+))
 
 _COLON_SOURCE = (_on(pp.Suppress(STAR), lambda _toks: StarSource())
-                 | _on(_PATH_STAR.copy(), lambda toks: DottedRef(parts=(*(w.name for w in toks[0][0]), "*"),
-                                            quoted=any(w.quoted for w in toks[0][0])))
+                 | _on(_PATH_STAR.copy(), lambda toks: _star_path_node(toks[0][0]))
                  | _on(_PATH.copy(), lambda toks: _path_node(list(toks[0]))))
 # The removed colon spelling ``<source>:<name>[(<args>)]``: refused, or recorded by ``rewrite_colon_spans``.
 _COLON_AGG = (pp.Located(_COLON_SOURCE) + COLON + pp.Located(_BARE)
@@ -641,9 +684,9 @@ class _ColonSpan(BaseModel):
     args: Optional[Tuple[int, int]] = None
 
 
-def colon_twin(*, source: str, name: str, args: str = "") -> str:
-    """The functional twin of the colon span ``<source>:<name>[(<args>)]``."""
-    if name.lower() in GRANULARITY_NAMES and not args:
+def colon_twin(*, source: str, name: str, args: str = "", units: frozenset[str] = frozenset()) -> str:
+    """The functional twin of the colon span ``<source>:<name>[(<args>)]``; ``units`` are further granularities."""
+    if (name.lower() in GRANULARITY_NAMES or name.casefold() in units) and not args:
         return f"date_trunc('{name}', {source})"
     return f"{name}({source}, {args})" if args else f"{name}({source})"
 
@@ -844,7 +887,7 @@ _KEYWORD_LED = pp.FollowedBy(pp.Regex(
       | _JSON_VALUE_RETURNING)
 _ARRAY = _on((LBRACK + _SEQ_ITEMS + RBRACK), lambda toks: ArrayLit(elements=tuple(toks[0])))
 _ATOM = (_KEYWORD_LED | _CONSTANT | _PLACEHOLDER_ATOM | _NUMBER | _STRING | _PAREN | _ARRAY
-         | _CALL | _COLON_AGG | _REF)
+         | _CALL_ATOM | _COLON_AGG | _REF)
 
 _FILTER_CLAUSE = (pp.Suppress(_kw("filter")) + LPAR
                   + _need(pp.Suppress(_kw("where")), "FILTER needs (WHERE <condition>).")
@@ -1128,17 +1171,48 @@ _LOCATED_CALL = (
 # ---------------------------------------------------------------------------
 
 
-@lru_cache(maxsize=8192)
+class _Reading(BaseModel):
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    parsed: Any
+    legacy: Tuple[LegacySpan, ...]
+    calls: Tuple[CallSpan, ...]
+
+
 def parse_expr(text: str) -> ParsedExpr:
-    """Parse a Mode-B expression string into a ``ParsedExpr``.
+    """Parse a Mode-B expression string into a ``ParsedExpr``; a deprecated spelling read is noted for its warning.
 
     Raises ``ValueError`` (empty / syntax / unsupported form / reserved prefix),
     ``UnknownFunctionError``, or ``IllegalWindowInFilterError`` (raw ``OVER(...)``).
     """
+    reading = _read(text)
+    if reading.legacy:
+        note_legacy_spellings(reading.legacy)
+    return reading.parsed
+
+
+def legacy_spans(text: str) -> Tuple[LegacySpan, ...]:
+    """The deprecated spellings in template ``text``, each with its canonical twin; none when it does not parse."""
+    try:
+        return _read(_bound_strings(text)).legacy
+    except Exception:  # noqa: BLE001 — unparseable text has no spans
+        return ()
+
+
+def call_spans(text: str) -> Tuple[CallSpan, ...]:
+    """The single-name calls in template ``text``; none when it does not parse."""
+    try:
+        return _read(_bound_strings(text)).calls
+    except Exception:  # noqa: BLE001 — unparseable text has no spans
+        return ()
+
+
+@lru_cache(maxsize=8192)
+def _read(text: str) -> _Reading:
     if not text or not text.strip():
         raise ValueError("Empty Mode-B expression.")
     with _PARSE_LOCK:
-        _STATE.text, _STATE.farthest = text, 0
+        _STATE.reset(text)
         try:
             masked = _mask_placeholders(text)
             if not masked.strip():
@@ -1148,13 +1222,60 @@ def parse_expr(text: str) -> ParsedExpr:
             raise ValueError(f"Invalid Mode-B expression {text!r}: {problem.detail}") from None
         except pp.ParseBaseException as e:
             raise ValueError(f"Invalid Mode-B expression {text!r}: {_syntax_message(text, e)}") from None
+        methods, calls = list(_STATE.methods.values()), sorted(_STATE.calls.values(), key=lambda c: c.start)
+    legacy = tuple(sorted([*_text_legacy_spans(text), *methods], key=lambda s: (s.start, s.end)))
     if any(_is_interval(n) for n in walk_parsed(parsed)):
-        return _deferred_intervals(parsed, message=(
+        parsed = _deferred_intervals(parsed, message=(
             f"Invalid Mode-B expression {text!r}: interval(n, unit) is only valid as "
             f"`x + interval(n, unit)`, `interval(n, unit) + x` or `x - interval(n, unit)`; "
             f"otherwise use date_add(x, n, unit)."
         ))
-    return parsed
+    return _Reading(parsed=parsed, legacy=legacy, calls=tuple(calls))
+
+
+_IS_NONE_RE = re.compile(r"\b[Ii][Ss]\s+(?:([Nn][Oo][Tt])\s+)?None\b")
+_NONE_RE = re.compile(r"(?<![\w.])None\b(?![.(])")
+_IN_LIST_RE = re.compile(r"\b[Ii][Nn]\s*\[")
+
+
+def _text_legacy_spans(text: str) -> List[LegacySpan]:
+    """``==``, ``is [not] None``, bare ``None`` and ``[…]`` after ``IN`` in the code of ``text``."""
+    regions = _regions(text)
+    out: List[LegacySpan] = []
+    for region in (r for r in regions if r.kind == "code"):
+        chunk = text[region.start:region.end]
+        out += _none_spans(chunk, offset=region.start)
+        out += [LegacySpan(kind="==", start=region.start + m.start(), end=region.start + m.end(), written="==", twin="=")
+                for m in re.finditer("==", chunk)]
+        for m in _IN_LIST_RE.finditer(chunk):
+            out += _bracket_list_spans(text, regions=regions, open_at=region.start + m.end() - 1)
+    return out
+
+
+def _none_spans(chunk: str, *, offset: int) -> List[LegacySpan]:
+    """``is [not] None`` and bare ``None`` in code ``chunk`` starting at ``offset``."""
+    is_none = list(_IS_NONE_RE.finditer(chunk))
+    out = [
+        LegacySpan(kind="is not None" if m.group(1) else "is None", start=offset + m.start(), end=offset + m.end(),
+                   written=m.group(0), twin="IS NOT NULL" if m.group(1) else "IS NULL")
+        for m in is_none
+    ]
+    covered = [(m.start(), m.end()) for m in is_none]
+    out += [LegacySpan(kind="bare None", start=offset + m.start(), end=offset + m.end(), written="None", twin="NULL")
+            for m in _NONE_RE.finditer(chunk) if not any(a <= m.start() < b for a, b in covered)]
+    return out
+
+
+def _bracket_list_spans(text: str, *, regions: List[_Region], open_at: int) -> List[LegacySpan]:
+    """The ``[`` at ``open_at`` and its matching ``]``, each respelled as a parenthesis."""
+    depth = 0
+    for region in (r for r in regions if r.kind == "code" and r.end > open_at):
+        for i in range(max(region.start, open_at), region.end):
+            depth += {"[": 1, "]": -1}.get(text[i], 0)
+            if depth == 0:
+                return [LegacySpan(kind="list after IN", start=open_at, end=open_at + 1, written="[", twin="("),
+                        LegacySpan(kind="list after IN", start=i, end=i + 1, written="]", twin=")")]
+    return []
 
 
 def _deferred_intervals(node: Any, *, message: str, memo: Optional[Dict[int, Any]] = None) -> Any:
@@ -1602,6 +1723,9 @@ def walk_parsed_refs(
     if isinstance(parsed, Cast):
         yield from walk_parsed_refs(parsed.source)
         return
+    if isinstance(parsed, (DateTrunc, NamedArg)):
+        yield from walk_parsed_refs(parsed.value)
+        return
     if isinstance(parsed, (Arith, Cmp)):
         yield from walk_parsed_refs(parsed.left)
         yield from walk_parsed_refs(parsed.right)
@@ -1622,7 +1746,8 @@ def walk_parsed_refs(
 # The node kinds an ``AggCall.source`` may take: a column, star, or an aggregation-free
 # scalar expression, predicates included (a bare TupleLit is not a value).
 _AGG_SOURCE_KINDS = (
-    Ref, DottedRef, StarSource, Literal, TemporalLiteral, Placeholder, ScalarCall, Cast, Arith, UnaryOp, Cmp, BoolOp,
+    Ref, DottedRef, StarSource, Literal, TemporalLiteral, Placeholder, ScalarCall, DateTrunc, NamedArg, Cast, Arith,
+    UnaryOp, Cmp, BoolOp,
 )
 
 
@@ -1637,6 +1762,8 @@ def _operands(node: Any) -> List[Any]:
     """The value operands of a row-level composite (empty for leaves and calls with their own scope)."""
     if isinstance(node, ScalarCall):
         return list(node.args)
+    if isinstance(node, (DateTrunc, NamedArg)):
+        return [node.value]
     if isinstance(node, Cast):
         return [node.source]
     if isinstance(node, (Arith, Cmp)):
@@ -1703,10 +1830,12 @@ def _onto_path(node: Any, *, path: Tuple[str, ...], memo: Optional[Dict[int, Any
 
 
 def _onto_path_node(node: Any, *, path: Tuple[str, ...], memo: Dict[int, Any]) -> Any:
+    unquoted = (False,) * len(path)
     if isinstance(node, Ref):
-        return DottedRef(parts=(*path, node.name), quoted=node.quoted)
+        return DottedRef(parts=(*path, node.name), quoted=node.quoted, quoted_parts=(*unquoted, node.quoted))
     if isinstance(node, DottedRef):
-        return DottedRef(parts=(*path, *node.parts), quoted=node.quoted)
+        own = tuple(node.quoted_at(i) for i in range(len(node.parts)))
+        return DottedRef(parts=(*path, *node.parts), quoted=node.quoted, quoted_parts=(*unquoted, *own))
     if isinstance(node, StarSource):
         return DottedRef(parts=(*path, "*"))
     if isinstance(node, ScalarCall):
@@ -1715,6 +1844,8 @@ def _onto_path_node(node: Any, *, path: Tuple[str, ...], memo: Dict[int, Any]) -
         return node.model_copy(update={"args": args, "written_args": written})
     if isinstance(node, Cast):
         return node.model_copy(update={"source": _onto_path(node.source, path=path, memo=memo)})
+    if isinstance(node, (DateTrunc, NamedArg)):
+        return node.model_copy(update={"value": _onto_path(node.value, path=path, memo=memo)})
     if isinstance(node, (Arith, Cmp)):
         return node.model_copy(update={"left": _onto_path(node.left, path=path, memo=memo), "right": _onto_path(node.right, path=path, memo=memo)})
     if isinstance(node, UnaryOp):
@@ -1733,23 +1864,28 @@ def _is_literal_arg(node: Any) -> bool:
 def _method_call_refusal(name: str, *, args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...]) -> Optional[str]:
     """Why ``<path>.<name>(args)`` has no single functional reading, else ``None``."""
     lowered = name.lower()
-    transform_only = name in ALL_TRANSFORMS and normalize_aggregation_name(name) not in BUILTIN_AGGREGATIONS
+    transform_only = lowered in ALL_TRANSFORMS and normalize_aggregation_name(name) not in BUILTIN_AGGREGATIONS
     if lowered in SCALAR_FUNCTIONS or lowered in DATE_PART_ALIASES or transform_only:
         return f"calls {name!r}, which is not an aggregation"
     if not args:
         return "needs the aggregated value as its first argument"
     if any(isinstance(leaf, (DottedRef, AggCall, TransformCall)) for leaf in _source_leaves(args[0])):
         return "may read only bare column names of that path"
-    if any(k == "partition_by" for k, _ in kwargs):
+    named = [(a.name, a.value) for a in args[1:] if isinstance(a, NamedArg)] + list(kwargs)
+    if any(k.lower() == "partition_by" for k, _ in named):
         return "cannot take partition_by="
-    if not all(_is_literal_arg(v) for v in (*args[1:], *(v for _, v in kwargs))):
+    further = [a.value if isinstance(a, NamedArg) else a for a in args[1:]]
+    if not all(_is_literal_arg(v) for v in (*further, *(v for _, v in kwargs))):
         return "takes only literal further arguments"
     return None
 
 
-def _method_call(*, path: Tuple[str, ...], name: str, args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...]) -> ParsedExpr:
-    """``<path>.<agg>(<source>, <literals>)`` as its functional twin ``<agg>(<path>.<source>, …)``; a library name is
-    a deferred aggregation candidate."""
+def _method_call(
+    *, path: Tuple[str, ...], name: str, args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...],
+    span: Tuple[int, int],
+) -> ParsedExpr:
+    """``<path>.<agg>(<source>, <literals>)`` as its functional twin ``<agg>(<path>.<source>, …)``, a deprecated
+    spelling; a library name is a deferred aggregation candidate."""
     original = _STATE.text
     if name.lower() in RESERVED_SCALAR_NAMES:
         args, kwargs = _keyword_args(args, kwargs)
@@ -1759,29 +1895,31 @@ def _method_call(*, path: Tuple[str, ...], name: str, args: Tuple[Any, ...], kwa
         f"Invalid Mode-B expression {original!r}: the method call {'.'.join(path)}.{name}(...) "
         f"{reason}; write the functional form, e.g. {name}{_canonical_call_params(twin_args, kwargs)}."
     )
-    if reason is not None and twin_args and name.lower() in RESERVED_SCALAR_NAMES and (
+    deferred = reason is not None and twin_args and name.lower() in RESERVED_SCALAR_NAMES and (
         _method_call_refusal("_", args=args, kwargs=kwargs) is None
-    ):
+    )
+    if reason is not None and not deferred:
+        raise ValueError(message)
+    start, end = span
+    _STATE.methods[span] = LegacySpan(
+        kind="method-call", start=start, end=end, written=original[start:end],
+        twin=f"{name}{_canonical_call_params(twin_args, kwargs) or '()'}",
+    )
+    if deferred:
         source, *rest = twin_args
         return AggCall(source=source, agg=name, args=tuple(rest), kwargs=kwargs, library_error=message)
-    if reason is not None:
-        raise ValueError(message)
     return _dispatch_call(name, args=twin_args, kwargs=kwargs, original=original)
 
 
 def _keyword_args(
     args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...],
 ) -> Tuple[Tuple[Any, ...], Tuple[Tuple[str, Any], ...]]:
-    """A scalar-parsed call's ``name = value`` arguments after the first as keyword arguments."""
-    positional = [args[0]] if args else []
-    keywords = list(kwargs)
+    """A scalar-parsed call's ``name = value`` arguments after the first as ``NamedArg``s, classified at binding."""
+    out = [args[0]] if args else []
     for arg in args[1:]:
         name = keyword_spelling(arg)
-        if name is None:
-            positional.append(arg)
-        else:
-            keywords.append((name, arg.right))
-    return tuple(positional), tuple(keywords)
+        out.append(arg if name is None else NamedArg(name=name, value=arg.right))
+    return tuple(out), kwargs
 
 
 def aggregation_reading(call: ScalarCall) -> Optional[AggCall]:
@@ -1796,8 +1934,7 @@ def aggregation_reading(call: ScalarCall) -> Optional[AggCall]:
 def _aggregation_candidate(
     func_name: str, *, args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...], error: Optional[str],
 ) -> Optional[AggCall]:
-    """``func_name(args)`` as an aggregation call over a column-bearing value (``name = value`` arguments as
-    keywords), else ``None``."""
+    """``func_name(args)`` as an aggregation call over a column-bearing value, else ``None``."""
     args, kwargs = _keyword_args(args, kwargs)
     if not args or not isinstance(args[0], _AGG_SOURCE_KINDS) or _contains_agg_or_transform(args[0]):
         return None
@@ -1821,7 +1958,7 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
                 f"{func_name!r} requires a value argument, e.g. "
                 f"{func_name}(column)."
             )
-        if canonical_agg in _SCALAR_MIN_MAX and len(args) == 2 and not kwargs:
+        if canonical_agg in _SCALAR_MIN_MAX and len(args) == 2 and not any(isinstance(a, NamedArg) for a in args):
             scalar = _SCALAR_MIN_MAX[canonical_agg]
             raise ValueError(
                 f"Invalid Mode-B expression {original!r}: {func_name}() with two values is the "
@@ -1832,7 +1969,7 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
         )
         return AggCall(source=source, agg=func_name, args=args[1:], kwargs=kwargs)
 
-    if func_name in ALL_TRANSFORMS:
+    if func_name.lower() in ALL_TRANSFORMS:
         if not args:
             raise ValueError(
                 f"Invalid Mode-B expression {original!r}: transform "
@@ -1840,20 +1977,26 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
                 f"(the value to transform)."
             )
         _reject_bare_star_args(args, kwargs, func_name=func_name, original=original)
-        return TransformCall(op=func_name, input=args[0], args=args[1:], kwargs=kwargs)
+        return TransformCall(op=func_name.lower(), input=args[0], args=args[1:], kwargs=kwargs)
 
     spelling = _SPELLINGS.get(func_name.lower())
     if spelling is not None:
+        bucket = func_name.lower() == "date_trunc"
         try:
             if kwargs:
                 raise _Problem(f"{func_name}() takes positional arguments only.")
-            _reject_bare_star_args(args, kwargs, func_name=func_name, original=original)
+            if not bucket:
+                _reject_bare_star_args(args, kwargs, func_name=func_name, original=original)
+            elif any(isinstance(a, StarSource) for a in args):
+                raise _Problem(f"date_trunc() takes a unit string literal and one value: {DATE_TRUNC_FORM}.")
             built = spelling(args)
         except _Problem as problem:
             message = f"Invalid Mode-B expression {original!r}: {problem.detail}"
+            if bucket:
+                message += f" Units: {', '.join(g.value for g in TimeGranularity)} or a datasource granularity."
             deferred = _aggregation_candidate(func_name, args=args, kwargs=kwargs, error=message)
             if deferred is None:
-                raise ValueError(message) from None
+                raise (GranularityCallError if bucket else ValueError)(message) from None
             return deferred
         if isinstance(built, ScalarCall):
             return built.model_copy(update={"written": func_name, "written_args": args})
@@ -1885,7 +2028,7 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
     part = DATE_PART_ALIASES.get(func_name.lower())
     if part is not None:
         if kwargs or len(args) != 1:
-            raise ValueError(
+            raise CallArgumentError(
                 f"Invalid Mode-B expression {original!r}: date-part function {func_name!r} "
                 f"takes 1 argument; got {len(args) + len(kwargs)}."
             )
@@ -1899,8 +2042,10 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
         source = _validated_agg_source(args[0], func_name=func_name, original=original)
         return AggCall(source=source, agg=func_name, args=args[1:], kwargs=kwargs)
 
+    if func_name.lower() in RESERVED_NAMES:
+        raise ReservedFunctionNameError(name=func_name, where=f"Invalid Mode-B expression {original!r}")
     if func_name.lower() in GRANULARITY_NAMES:
-        raise GranularityCallError.wrong_shape(original)
+        raise GranularityCallError.no_call_form(func_name.lower(), operand=", ".join(map(canonical_measure_text, args)))
     raise UnknownFunctionError(
         name=func_name,
         location=original,
@@ -1914,16 +2059,22 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
     )
 
 
+DATE_TRUNC_FORM = "date_trunc('<unit>', expr)"
+
+
 def _date_trunc(args: Tuple[Any, ...]) -> ParsedExpr:
-    """``date_trunc(unit, x)`` → the granularity call ``unit(x)``."""
-    if len(args) != 2 or not (isinstance(args[0], Literal) and isinstance(args[0].value, str)):
-        raise _Problem("date_trunc() takes a unit string literal and a value: date_trunc('month', x).")
+    """``date_trunc(unit, x)``: the time bucket of ``x``."""
+    if len(args) != 2 or not (isinstance(args[0], Literal) and isinstance(args[0].value, str)) or isinstance(
+        args[1], NamedArg,
+    ):
+        raise _Problem(f"date_trunc() takes a unit string literal and one value: {DATE_TRUNC_FORM}.")
     unit = args[0].value.lower()
-    if not unit.isidentifier() or unit in RESERVED_SCALAR_NAMES or unit in ALL_TRANSFORMS or (
-        normalize_aggregation_name(unit) in BUILTIN_AGGREGATIONS
-    ) or unit in DATE_PART_ALIASES or unit in AMBIGUOUS_WEEKDAY_NAMES:
+    if not unit.isidentifier() or (unit not in GRANULARITY_NAMES and (
+        unit in RESERVED_SCALAR_NAMES or unit in ALL_TRANSFORMS or normalize_aggregation_name(unit) in BUILTIN_AGGREGATIONS
+        or unit in DATE_PART_ALIASES or unit in AMBIGUOUS_WEEKDAY_NAMES
+    )):
         raise _Problem(f"unknown date_trunc() unit {args[0].value!r}; use a granularity such as 'month'.")
-    return _dispatch_call(unit, args=(args[1],), kwargs=(), original=_STATE.text)
+    return DateTrunc(unit=unit, value=args[1])
 
 
 def _json_alias(name: str):
@@ -1971,7 +2122,45 @@ def positional_hint(name: str) -> str:
 
 
 def comparison_hint(name: str) -> str:
-    return f"to pass a comparison instead, write `{name} == …` or `({name} = …)`."
+    return f"to pass a comparison instead, write `({name} = …)`."
+
+
+def call_keywords(call: AggCall | TransformCall) -> List[Tuple[str, Any]]:
+    """``call``'s ``name = value`` arguments, lower-cased names, before binding classifies them."""
+    named = [(a.name.lower(), a.value) for a in call.args if isinstance(a, NamedArg)]
+    return [*named, *((k.lower(), v) for k, v in call.kwargs)]
+
+
+def classify_arguments(
+    items: Sequence[Any], *, parameters: Iterable[str], call: str,
+) -> Tuple[Tuple[Any, ...], Tuple[Tuple[str, Any], ...]]:
+    """``items`` as ``(positional, keywords)``: a ``NamedArg`` naming one of ``parameters`` (any case) is that
+    keyword, any other the comparison ``name = value``."""
+    declared = list(parameters)
+    positional: List[Any] = []
+    keywords: List[Tuple[str, Any]] = []
+    for item in items:
+        param = match_name(name=item.name, declared=declared, quoted=False) if isinstance(item, NamedArg) else None
+        if param is not None:
+            if any(k == param for k, _ in keywords):
+                raise CallArgumentError(f"{call}() got keyword argument {param!r} more than once.")
+            keywords.append((param, item.value))
+            continue
+        if keywords:
+            raise CallArgumentError(f"{call}(): a positional argument follows a keyword argument.")
+        positional.append(_named_comparison(item, call=call) if isinstance(item, NamedArg) else item)
+    return tuple(positional), tuple(keywords)
+
+
+def _named_comparison(item: NamedArg, *, call: str) -> Cmp:
+    if isinstance(item.value, (tuple, StarSource)) or (
+        isinstance(item.value, DottedRef) and item.value.parts[-1:] == ("*",)
+    ):
+        raise CallArgumentError(
+            f"{call}(): {item.name!r} is not a parameter of {call}(), so `{item.name} = …` is a comparison, "
+            f"which cannot take a list or '*'."
+        )
+    return Cmp(op="==", left=Ref(name=item.name), right=item.value, single_eq=True)
 
 
 # Position of the count argument of the date-offset calls.
@@ -2064,16 +2253,30 @@ def walk_parsed(node: Any) -> Iterator[Any]:
 # ---------------------------------------------------------------------------
 
 
-def drop_root_hop(hops: Sequence[str], root: Optional[str]) -> Tuple[str, ...]:
-    """A reference's join ``hops`` without a leading qualifier naming the query root ``root``."""
+def drop_root_hop(hops: Sequence[str], root: Optional[str], *, head_quoted: bool) -> Tuple[str, ...]:
+    """A reference's join ``hops`` without a leading qualifier naming the query root ``root`` (exactly when
+    ``head_quoted``, else in any case)."""
     hops = tuple(hops)
-    return hops[1:] if root is not None and hops[:1] == (root,) else hops
+    return (
+        hops[1:] if root is not None and hops and match_name(name=hops[0], declared=[root], quoted=head_quoted)
+        else hops
+    )
 
 
-def drop_root_qualifier(parts: Sequence[str], root: Optional[str]) -> Tuple[str, ...]:
-    """``parts`` without a leading qualifier naming the query root ``root`` (``r.x`` ≡ ``x``)."""
+def drop_root_qualifier(parts: Sequence[str], root: Optional[str], *, quoted: Sequence[bool]) -> Tuple[str, ...]:
+    """``parts`` without a leading qualifier naming the query root ``root`` (``r.x`` ≡ ``x``); ``quoted`` flags
+    each quoted segment."""
     parts = tuple(parts)
-    return parts if len(parts) < 2 else (*drop_root_hop(parts[:-1], root), parts[-1])
+    if len(parts) < 2:
+        return parts
+    return (*drop_root_hop(parts[:-1], root, head_quoted=bool(quoted[:1]) and quoted[0]), parts[-1])
+
+
+def dotted_quoting(node: Any) -> Tuple[bool, ...]:
+    """Each segment's quoted flag of a parsed ``Ref`` / ``DottedRef``."""
+    if isinstance(node, Ref):
+        return (node.quoted,)
+    return tuple(node.quoted_at(i) for i in range(len(node.parts)))
 
 
 def root_relative(parsed: Any, root: Optional[str]) -> Any:
@@ -2088,13 +2291,17 @@ def _root_relative(node: Any, *, root: str, memo: Dict[int, Any]) -> Any:
         return node
     if id(node) not in memo:
         if isinstance(node, DottedRef):
-            parts = drop_root_qualifier(node.parts, root)
+            all_quoted = dotted_quoting(node)
+            parts = drop_root_qualifier(node.parts, root, quoted=all_quoted)
+            quoted_parts = all_quoted[len(node.parts) - len(parts):]
             if parts == ("*",):
                 memo[id(node)] = StarSource()
             elif len(parts) == 1:
-                memo[id(node)] = Ref(name=parts[0], quoted=node.quoted)
+                memo[id(node)] = Ref(name=parts[0], quoted=quoted_parts[0])
             else:
-                memo[id(node)] = node.model_copy(update={"parts": parts})
+                memo[id(node)] = node.model_copy(update={
+                    "parts": parts, "quoted_parts": quoted_parts, "quoted": any(quoted_parts),
+                })
         else:
             memo[id(node)] = node.model_copy(
                 update={f: _root_relative(getattr(node, f), root=root, memo=memo) for f in type(node).model_fields},
@@ -2118,7 +2325,10 @@ def text_paths(text: str, *, root: Optional[str]) -> List[Tuple[str, ...]]:
         parsed = parse_template(text)
     except Exception:  # noqa: BLE001 — unparseable text reads nothing
         return []
-    return [drop_root_qualifier(path, root) for path in referenced_paths(parsed)]
+    return [
+        drop_root_qualifier((node.name,) if isinstance(node, Ref) else node.parts, root, quoted=dotted_quoting(node))
+        for node in walk_parsed(parsed) if isinstance(node, (Ref, DottedRef))
+    ]
 
 
 class CallSource(BaseModel):
@@ -2135,7 +2345,7 @@ class CallSource(BaseModel):
 def call_source(text: str) -> Optional[CallSource]:
     """``text`` (a template) as one call with its callee's and arguments' source text, else ``None``."""
     with _PARSE_LOCK:
-        _STATE.text, _STATE.farthest = text, 0
+        _STATE.reset(text)
         try:
             callee, located = _LOCATED_CALL.parse_string(_mask_placeholders(_bound_strings(text)), parse_all=True)
         except Exception:  # noqa: BLE001 — not a well-formed call
@@ -2152,10 +2362,29 @@ def call_source(text: str) -> Optional[CallSource]:
 # ---------------------------------------------------------------------------
 
 
+_CANONICAL_OPS = {"==": "="}
+
+
+def _is_null(node: Any) -> bool:
+    return isinstance(node, Literal) and node.value is None
+
+
+def _argument_text(node: Any, *, legacy: bool) -> str:
+    """A non-scalar call's argument: a ``name = value`` comparison parenthesised, so it never reads as a keyword."""
+    text = _render(node, legacy=legacy)
+    if not legacy and isinstance(node, Cmp) and node.op == "==" and isinstance(node.left, Ref) and not node.left.quoted:
+        return f"({text})"
+    return text
+
+
 def _canonical_call_params(
     args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...], *, bare_direction: bool = False, legacy: bool = False,
 ) -> str:
-    parts = [_render(a, legacy=legacy) for a in args]
+    parts = [
+        _canonical_kwarg(a.name, a.value, bare_direction=bare_direction, legacy=legacy) if isinstance(a, NamedArg)
+        else _argument_text(a, legacy=legacy)
+        for a in args
+    ]
     parts += [_canonical_kwarg(k, v, bare_direction=bare_direction, legacy=legacy) for k, v in kwargs]
     return f"({', '.join(parts)})" if parts else ""
 
@@ -2224,7 +2453,7 @@ def _render(parsed: Any, *, legacy: bool) -> str:  # NOSONAR(S3776) — flat per
     if isinstance(parsed, Literal):
         if isinstance(parsed.value, str):
             return "'" + parsed.value.replace("'", "''") + "'"
-        return str(parsed.value)
+        return "NULL" if parsed.value is None else str(parsed.value)
     if isinstance(parsed, TemporalLiteral):
         return f"{parsed.kind.upper()} '{parsed.text}'"
     if isinstance(parsed, (Placeholder, BoundVariable)):
@@ -2236,19 +2465,25 @@ def _render(parsed: Any, *, legacy: bool) -> str:  # NOSONAR(S3776) — flat per
     if isinstance(parsed, AggCall):
         return _canonical_agg_text(parsed, legacy=legacy)
     if isinstance(parsed, TransformCall):
-        inner = _render(parsed.input, legacy=legacy)
+        inner = _argument_text(parsed.input, legacy=legacy)
         params = _canonical_call_params(parsed.args, parsed.kwargs, bare_direction=True, legacy=legacy)
         return f"{parsed.op}({inner}{', ' + params[1:-1] if params else ''})"
     if isinstance(parsed, ScalarCall):
         return f"{parsed.name}({', '.join(_render(a, legacy=legacy) for a in parsed.args)})"
+    if isinstance(parsed, DateTrunc):
+        return f"date_trunc('{parsed.unit}', {_render(parsed.value, legacy=legacy)})"
+    if isinstance(parsed, NamedArg):
+        return f"{parsed.name}={_canonical_kwarg_text(parsed.value, legacy=legacy)}"
     if isinstance(parsed, Cast):
         fn = "TRY_CAST" if parsed.try_ else "CAST"
         return f"{fn}({_render(parsed.source, legacy=legacy)} AS {parsed.type_text})"
     if isinstance(parsed, (Arith, Cmp)):
         prec = _precedence(parsed)
         left = _operand_text(parsed.left, minimum=prec + 1 if isinstance(parsed, Cmp) else prec, legacy=legacy)
+        if not legacy and isinstance(parsed, Cmp) and parsed.op in ("is", "is not") and _is_null(parsed.right):
+            return f"{left} {parsed.op.upper()} NULL"
         right = _operand_text(parsed.right, minimum=prec + 1, legacy=legacy)
-        return f"{left} {parsed.op} {right}"
+        return f"{left} {parsed.op if legacy else _CANONICAL_OPS.get(parsed.op, parsed.op)} {right}"
     if isinstance(parsed, UnaryOp):
         operand = _operand_text(parsed.operand, minimum=_precedence(parsed) + 1, legacy=legacy)
         return f"not {operand}" if parsed.op == "not" else f"{parsed.op}{operand}"
@@ -2263,8 +2498,8 @@ def _canonical_agg_text(parsed: AggCall, *, legacy: bool) -> str:
     if legacy and isinstance(parsed.source, (Ref, DottedRef, StarSource)):
         text = f"{source}:{parsed.agg}{_canonical_call_params(parsed.args, parsed.kwargs, legacy=legacy)}"
     else:
-        parts = [source]
-        parts += [_render(a, legacy=legacy) for a in parsed.args]
+        parts = [_argument_text(parsed.source, legacy=legacy)]
+        parts += [_argument_text(a, legacy=legacy) for a in parsed.args]
         parts += [f"{k}={_canonical_kwarg_text(v, legacy=legacy)}" for k, v in parsed.kwargs]
         text = f"{parsed.agg}({', '.join(parts)})"
     if parsed.filter is not None:
@@ -2339,15 +2574,17 @@ def measure_text_at_path(formula: str, *, path: Sequence[str]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def rewrite_colon_spans(text: str) -> str:
-    """``text`` with every colon span written as its functional twin (innermost first), every other byte kept.
+def rewrite_colon_spans(text: str, *, units: Optional[frozenset[str]] = None) -> str:
+    """``text`` with every colon span written as its functional twin (innermost first), every other byte kept;
+    with ``units``, only the spans naming one of those granularities, each a ``date_trunc``.
 
     Raises ``ValueError`` when ``text`` does not parse.
     """
     if ":" not in text:
         return text
     with _PARSE_LOCK:
-        _STATE.text, _STATE.farthest, _STATE.spans = text, 0, []
+        _STATE.reset(text)
+        _STATE.spans = []
         try:
             _EXPRESSION.parse_string(_mask_placeholders(text), parse_all=True)
             spans = _STATE.spans
@@ -2357,20 +2594,23 @@ def rewrite_colon_spans(text: str) -> str:
             raise ValueError(f"Invalid Mode-B expression {text!r}: {_syntax_message(text, e)}") from None
         finally:
             _STATE.spans = None
-    unique = sorted({(s.start, s.end): s for s in spans}.values(), key=lambda s: (s.start, -s.end))
-    return _rewritten(text, spans=unique, start=0, end=len(text))
+    picked = [s for s in spans if units is None or (s.args is None and s.name.casefold() in units)]
+    unique = sorted({(s.start, s.end): s for s in picked}.values(), key=lambda s: (s.start, -s.end))
+    return _rewritten(text, spans=unique, start=0, end=len(text), units=units or frozenset())
 
 
-def _rewritten(text: str, *, spans: List[_ColonSpan], start: int, end: int) -> str:
+def _rewritten(text: str, *, spans: List[_ColonSpan], start: int, end: int, units: frozenset[str]) -> str:
     """``text[start:end]`` with its outermost colon spans replaced by their twins."""
     out: List[str] = []
     cursor = start
     for span in spans:
         if span.start < cursor or span.end > end:
             continue
-        args = "" if span.args is None else _rewritten(text, spans=spans, start=span.args[0], end=span.args[1])
+        args = "" if span.args is None else _rewritten(
+            text, spans=spans, start=span.args[0], end=span.args[1], units=units,
+        )
         source = text[span.source[0]:span.source[1]]
-        out += [text[cursor:span.start], colon_twin(source=source, name=span.name, args=args)]
+        out += [text[cursor:span.start], colon_twin(source=source, name=span.name, args=args, units=units)]
         cursor = span.end
     out.append(text[cursor:end])
     return "".join(out)
@@ -2379,8 +2619,12 @@ def _rewritten(text: str, *, spans: List[_ColonSpan], start: int, end: int) -> s
 __all__ = [
     "AggCall", "ArrayLit", "Arith", "BoolOp", "CallSource", "Cast", "Cmp", "DottedRef", "Literal", "ParsedExpr",
     "BoundVariable", "Placeholder", "Ref", "ScalarCall", "StarSource", "TemporalLiteral", "TransformCall", "TupleLit", "UnaryOp",
-    "aggregation_reading", "bind_variables", "call_source", "canonical_measure_text", "colon_twin", "comparison_hint",
-    "drop_root_hop", "drop_root_qualifier", "has_bindings", "keyword_spelling", "legacy_result_name_seed", "measure_dependency_problems", "measure_text_at_path",
-    "parse_bound_expr", "parse_expr", "parse_template", "placeholder_names", "positional_hint", "referenced_paths", "rewrite_colon_spans", "root_relative", "split_entity_agg_ref",
+    "CallSpan", "DateTrunc", "NamedArg", "DATE_TRUNC_FORM", "call_spans", "legacy_spans",
+    "aggregation_reading", "bind_variables", "call_keywords", "call_source", "canonical_measure_text",
+    "classify_arguments", "colon_twin", "comparison_hint",
+    "dotted_quoting", "drop_root_hop", "drop_root_qualifier", "has_bindings", "keyword_spelling",
+    "legacy_result_name_seed", "measure_dependency_problems", "measure_text_at_path",
+    "parse_bound_expr", "parse_expr", "parse_template", "placeholder_names", "positional_hint", "referenced_paths",
+    "rewrite_colon_spans", "root_relative", "split_entity_agg_ref",
     "text_paths", "variable_names", "walk_parsed", "walk_parsed_refs",
 ]

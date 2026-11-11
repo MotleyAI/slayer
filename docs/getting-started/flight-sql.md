@@ -117,7 +117,7 @@ SELECT row_count FROM orders;
 For a time-bucketed query:
 
 ```sql
-SELECT month(ordered_at) AS m, row_count
+SELECT DATE_TRUNC('month', ordered_at) AS m, row_count
 FROM orders
 WHERE ordered_at BETWEEN '2024-01-01' AND '2024-12-31'
 ORDER BY m;
