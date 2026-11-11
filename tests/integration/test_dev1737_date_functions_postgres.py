@@ -1,12 +1,11 @@
 """Mode-B date functions executed on a real Postgres: the oracle matrix plus spec scenarios."""
 
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 
 import pytest
 
-from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1737_fixtures import (
     DateCase,
     all_models,
@@ -16,6 +15,7 @@ from tests._dev1737_fixtures import (
     matrix_query,
     server_seed_statements,
 )
+from tests._pg_helpers import client_datasource, pg_query_engine
 
 pytest.importorskip("pytest_postgresql")
 
@@ -28,20 +28,14 @@ CASES = matrix_cases()
 
 
 @pytest.fixture
-async def pg_dates(postgresql, tmp_path) -> SlayerQueryEngine:
+async def pg_dates(postgresql, tmp_path) -> AsyncIterator[SlayerQueryEngine]:
     cur = postgresql.cursor()
     for stmt in server_seed_statements("postgres", today=datetime.now(timezone.utc).date()):
         cur.execute(stmt)
     postgresql.commit()
-    storage = YAMLStorage(base_dir=str(tmp_path))
-    info = postgresql.info
-    await storage.save_datasource(DatasourceConfig(
-        name="testpg", type="postgres", host=info.host, port=info.port,
-        database=info.dbname, username=info.user, password="",
-    ))
-    for model in all_models(data_source="testpg"):
-        await storage.save_model(model)
-    return SlayerQueryEngine(storage=storage)
+    async with pg_query_engine(client_datasource(postgresql.info, name="testpg"), base_dir=str(tmp_path),
+                               models=all_models(data_source="testpg")) as engine:
+        yield engine
 
 
 @pytest.mark.integration

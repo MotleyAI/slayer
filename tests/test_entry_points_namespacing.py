@@ -20,6 +20,7 @@ storage-namespacing tests + the new API endpoints.
 """
 
 import tempfile
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
@@ -46,8 +47,10 @@ def storage():
 
 
 @pytest.fixture
-def mcp_server(storage):
-    return create_mcp_server(storage=storage)
+async def mcp_server(storage) -> AsyncIterator[Any]:
+    server: Any = create_mcp_server(storage=storage)
+    yield server
+    await server._slayer_engine.aclose()
 
 
 @pytest.fixture

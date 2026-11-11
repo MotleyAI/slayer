@@ -15,13 +15,12 @@ from slayer.sql.dialects.reflection import (
     unwrap_clickhouse_wrapper_str,
 )
 from slayer.engine.key_metadata import measure_key_preserves_native_type
-from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects import get_dialect
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._engine_helpers import _engine_generate
-from tests._pg_helpers import pg_database
+from tests._engine_helpers import _engine_generate, owned_query_engine
+from tests._pg_helpers import pg_database, pg_query_engine
 
 postgresql_proc = factories.postgresql_proc(port=None)
 
@@ -108,14 +107,12 @@ class TestSqliteKeepsInferredCast:
         assert amount.db_type is not None
         assert "DECIMAL" in amount.db_type
 
-        storage = YAMLStorage(base_dir=str(tmp_path / "models"))
-        await storage.save_datasource(datasource)
-        await storage.save_model(model)
-        engine = SlayerQueryEngine(storage=storage)
-
         query = {"source_model": "orders", "measures": ["sum(amount)"]}
-        result = await engine.execute(query=query)
-        sql = (await engine.execute(query=query, dry_run=True)).sql
+        storage = YAMLStorage(base_dir=str(tmp_path / "models"))
+        async with owned_query_engine(storage=storage, datasources=[datasource]) as engine:
+            await storage.save_model(model)
+            result = await engine.execute(query=query)
+            sql = (await engine.execute(query=query, dry_run=True)).sql
 
         assert sql is not None
         assert "CAST(SUM(orders.amount) AS REAL)" in sql, sql
@@ -170,15 +167,10 @@ class TestDerivedColumnPreservesNativeType:
             "CREATE TABLE t (id INTEGER PRIMARY KEY, amount NUMERIC(38,0))",
             "INSERT INTO t VALUES (1, 10000000000000000000)",
         ], name="wide_pg") as datasource:
-            storage = YAMLStorage(base_dir=str(tmp_path / "models"))
-            await storage.save_datasource(datasource)
-            await storage.save_model(_wide_model(data_source=datasource.name))
-            engine = SlayerQueryEngine(storage=storage)
-            try:
+            async with pg_query_engine(datasource, base_dir=str(tmp_path / "models"),
+                                       models=[_wide_model(data_source=datasource.name)]) as engine:
                 sql = (await engine.execute(query=_WIDE_QUERY, dry_run=True)).sql
                 result = await engine.execute(query=_WIDE_QUERY)
-            finally:
-                engine.close()
         assert sql is not None
         assert "CAST(" not in sql, sql
         assert result.data == [{"t.wide": Decimal("100000000000000000000")}]
@@ -193,14 +185,9 @@ class TestDerivedColumnPreservesNativeType:
             "CREATE TABLE t (id INTEGER PRIMARY KEY, amount NUMERIC(38,0))",
             "INSERT INTO t VALUES (1, 10000000000000000000)",
         ], name="wide_filter_pg") as datasource:
-            storage = YAMLStorage(base_dir=str(tmp_path / "models"))
-            await storage.save_datasource(datasource)
-            await storage.save_model(_wide_model(data_source=datasource.name))
-            engine = SlayerQueryEngine(storage=storage)
-            try:
+            async with pg_query_engine(datasource, base_dir=str(tmp_path / "models"),
+                                       models=[_wide_model(data_source=datasource.name)]) as engine:
                 result = await engine.execute(query=query)
-            finally:
-                engine.close()
         assert result.data == [{"t.wide": Decimal("100000000000000000000")}]
 
     async def test_a_declared_type_other_than_the_physical_one_still_casts(self):

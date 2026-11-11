@@ -16,22 +16,21 @@ from sqlglot.errors import ParseError
 from slayer.core.enums import DataType
 from slayer.core.errors import NotReadOnlyQueryError
 from slayer.core.models import DatasourceConfig, SlayerModel
-from slayer.cube.converter import CubeToSlayerConverter
 from slayer.core.query import SlayerQuery
+from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.models import CubeProject
+from slayer.database.client import DelegatingSqlClient, ResultColumnType, SqlClient, TypeProbe
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject
 from slayer.dbt.parser import parse_dbt_project
-from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.importers.column_types import LiveDatasource, LiveSource
 from slayer.ingest_report import ConversionResult
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.models import OSIDocument
-from slayer.database.client import DelegatingSqlClient, ResultColumnType, SqlClient, TypeProbe
 from slayer.sql.dialects import SqliteDialect
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2171_fixtures import collect_over_engine, column, typing_notes, write_yaml
-from tests._engine_helpers import disposable_engine
+from tests._engine_helpers import disposable_engine, owned_query_engine
 from tests._osi_helpers import ds, f, flat, rel
 
 pytest.importorskip("pytest_postgresql")
@@ -238,15 +237,11 @@ def test_mixed_case_schema_qualified_table(live: Live) -> None:
 async def _rows(live: Live, tmp_path: Path, models: Iterable[SlayerModel],
                 payload: dict[str, Any]) -> list[dict[str, Any]]:
     storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
-    await storage.save_datasource(live.datasource)
-    for model in models:
-        await storage.save_model(model)
     live.engine.dispose()  # SLayer opens a DuckDB file read-only, which a held read-write connection refuses
-    engine = SlayerQueryEngine(storage=storage)
-    try:
+    async with owned_query_engine(storage=storage, datasources=[live.datasource]) as engine:
+        for model in models:
+            await storage.save_model(model)
         return (await engine.execute(SlayerQuery.model_validate(payload))).data
-    finally:
-        await engine.aclose()
 
 
 async def _grouped(live: Live, tmp_path: Path, models: dict[str, SlayerModel], model: str, dimension: str) -> list[Any]:

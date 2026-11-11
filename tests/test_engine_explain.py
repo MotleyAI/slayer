@@ -22,6 +22,7 @@ from slayer.database.client import DelegatingSqlClient, ExecutionResult, SlayerS
 from slayer.sql.dialects.base import ExplainStatements
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._engine_helpers import owned_query_engine
 from tests._pg_helpers import pg_database
 
 postgresql_proc = factories.postgresql_proc(port=None)
@@ -149,12 +150,8 @@ class TestSingleStatementDialectsKeepTheirExplain:
         self, request: pytest.FixtureRequest, tmp_path: Path, door_spy: list[str], fixture: str, prefix: str,
     ) -> None:
         ds: DatasourceConfig = request.getfixturevalue(fixture)
-        engine = SlayerQueryEngine(storage=await _storage(str(tmp_path / "store"), ds))
-        try:
+        async with owned_query_engine(storage=await _storage(str(tmp_path / "store"), ds)) as engine:
             response = await engine.execute(_QUERY, explain=True)
-        finally:
-            await engine.aclose()
-            engine.close()
         assert response.sql
         assert [sql for sql in door_spy if response.sql in sql] == [f"{prefix} {response.sql}"]
         assert response.data
@@ -170,13 +167,10 @@ class TestTheEngineCallsExplain:
             recorders.append(Recorder(SlayerSQLClient(datasource=ds)))
             return recorders[-1]
 
-        engine = SlayerQueryEngine(storage=await _storage(str(tmp_path / "store"), sqlite_ds), client_factory=factory)
-        try:
+        storage = await _storage(str(tmp_path / "store"), sqlite_ds)
+        async with owned_query_engine(storage=storage, client_factory=factory) as engine:
             dry = await engine.execute(_QUERY, dry_run=True)
             response = await engine.execute(_QUERY, explain=True)
-        finally:
-            await engine.aclose()
-            engine.close()
         assert response.sql == dry.sql
         assert recorders[0].explained == [ExplainStatements(statement=f"EXPLAIN QUERY PLAN {dry.sql}")]
         assert recorders[0].executed == []
@@ -227,15 +221,12 @@ class TestTheEngineCallsExplain:
             recorders.append(Recorder(SlayerSQLClient(datasource=ds)))
             return recorders[-1]
 
-        engine = SlayerQueryEngine(storage=await _storage(str(tmp_path / "store"), sqlite_ds), client_factory=factory)
-        with transaction(sqlite_ds.database or "") as cur:
-            cur.execute("DROP TABLE orders")
-        try:
+        storage = await _storage(str(tmp_path / "store"), sqlite_ds)
+        async with owned_query_engine(storage=storage, client_factory=factory) as engine:
+            with transaction(sqlite_ds.database or "") as cur:
+                cur.execute("DROP TABLE orders")
             with pytest.raises(SchemaDriftError) as excinfo:
                 await engine.execute(_QUERY, explain=True)
-        finally:
-            await engine.aclose()
-            engine.close()
         assert "orders" in excinfo.value.models
         assert isinstance(excinfo.value.__cause__, SQLAlchemyError)
         assert len(recorders[0].explained) == 1

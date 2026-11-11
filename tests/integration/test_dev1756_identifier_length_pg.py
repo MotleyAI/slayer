@@ -6,6 +6,7 @@ vanishing with no error (the more dangerous case).
 
 import re
 import uuid
+from collections.abc import AsyncIterator
 from typing import cast
 
 import pytest
@@ -16,6 +17,7 @@ from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._engine_helpers import owned_query_engine
 
 factories = pytest.importorskip("pytest_postgresql.factories")
 psycopg = pytest.importorskip("psycopg")
@@ -128,9 +130,10 @@ def _chain_storage(postgresql_proc, tmp_path_factory):
 
 
 @pytest.fixture
-def chain_env(_chain_storage: YAMLStorage) -> SlayerQueryEngine:
+async def chain_env(_chain_storage: YAMLStorage) -> AsyncIterator[SlayerQueryEngine]:
     """Per-test engine — the async SQLAlchemy engine binds to the event loop."""
-    return SlayerQueryEngine(storage=_chain_storage)
+    async with owned_query_engine(storage=_chain_storage) as engine:
+        yield engine
 
 
 DEEP = "SandboxSubscription.SandboxCustomer.SandboxConsumer"
