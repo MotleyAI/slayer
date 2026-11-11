@@ -160,14 +160,14 @@ def test_missing_transitive_module_of_default_driver_still_names_extra(monkeypat
         (_structured("postgres"), "psycopg", "postgres"),
         (
             DatasourceConfig(name="pg_ds", type="postgres", connection_string=f"postgresql+asyncpg://u:p@{_HOST}:5432/d"),
-            "asyncpg", "postgres",
+            "asyncpg", None,
         ),
         (
             DatasourceConfig(name="my_ds", type="mysql", connection_string=f"mysql+aiomysql://u:p@{_HOST}:3306/d"),
-            "aiomysql", "mysql",
+            "aiomysql", None,
         ),
     ],
-    ids=["default-psycopg", "bundled-asyncpg", "bundled-aiomysql"],
+    ids=["default-psycopg", "named-asyncpg", "named-aiomysql"],
 )
 async def test_async_missing_driver_raises_without_sync_fallback(
     monkeypatch, ds, blocked_module, extra,
@@ -179,7 +179,11 @@ async def test_async_missing_driver_raises_without_sync_fallback(
     with pytest.raises(MissingDriverError) as info:
         await client.execute("SELECT 1")
     _assert_names(info.value, ds=ds, missing=blocked_module)
-    assert f"pip install 'motley-slayer[{extra}]'" in str(info.value)
+    if extra is None:
+        assert "connection_string" in str(info.value)
+        assert "motley-slayer[" not in str(info.value)
+    else:
+        assert f"pip install 'motley-slayer[{extra}]'" in str(info.value)
     sync_engine.assert_not_called()
 
 
@@ -210,8 +214,7 @@ async def test_async_missing_named_default_driver_names_extra(monkeypatch) -> No
     assert "pip install 'motley-slayer[postgres]'" in str(info.value)
 
 
-@pytest.mark.filterwarnings("ignore::FutureWarning")
-def test_missing_bundled_sync_driver_names_extra(monkeypatch) -> None:
+def test_missing_psycopg2_is_not_attributed_to_the_extra(monkeypatch) -> None:
     ds = DatasourceConfig(
         name="pg2", type="postgres", connection_string=f"postgresql+psycopg2://u:p@{_HOST}:5432/d",
     )
@@ -220,7 +223,8 @@ def test_missing_bundled_sync_driver_names_extra(monkeypatch) -> None:
     with pytest.raises(MissingDriverError) as info:
         client.execute_sync("SELECT 1")
     _assert_names(info.value, ds=ds, missing="psycopg2")
-    assert "pip install 'motley-slayer[postgres]'" in str(info.value)
+    assert "connection_string" in str(info.value)
+    assert "motley-slayer[" not in str(info.value)
 
 
 @pytest.mark.parametrize(

@@ -8,7 +8,7 @@ Pins the four refresh trigger paths from §7 of the spec:
 3. ``edit_model`` invalidates and immediately recomputes:
    - column sql/filter/type/name change → just that column;
    - SlayerModel.filters / sql / source_queries change → every column.
-4. ``inspect_model`` lazily fills the cache on a miss (read cached when
+4. The model ``inspect`` lazily fills the cache on a miss (read cached when
    present; if None, profile live and persist via
    ``update_column_sampled`` before returning).
 """
@@ -170,7 +170,7 @@ async def test_edit_model_model_level_change_recomputes_all_columns(
 
 
 # ---------------------------------------------------------------------------
-# (4) inspect_model lazy fill on miss
+# (4) model inspect lazy fill on miss
 # ---------------------------------------------------------------------------
 
 
@@ -192,9 +192,8 @@ async def test_inspect_model_writes_back_on_sampled_miss(
     ))
     mcp = create_mcp_server(storage=storage)
     # First call: sampled is None → live profile + writeback
-    result = await mcp.call_tool("inspect_model", {
-        "model_name": "orders", "data_source": "ds",
-        "sections": ["columns"],
+    result = await mcp.call_tool("inspect", {
+        "entity_type": "model", "reference": "ds.orders", "compact": False, "sections": ["columns"],
     })
     assert result is not None
     loaded = await storage.get_model("orders", data_source="ds")
@@ -207,7 +206,7 @@ async def test_inspect_model_writes_back_on_sampled_miss(
 async def test_inspect_model_reads_cached_sampled_without_recompute(
     sqlite_table_setup, monkeypatch,
 ) -> None:
-    """When Column.sampled is set, inspect_model uses it and runs no profiling query."""
+    """When Column.sampled is set, the model inspect uses it and runs no profiling query."""
     storage, db_file = sqlite_table_setup
     await storage.save_datasource(DatasourceConfig(
         name="ds", type="sqlite", database=db_file,
@@ -230,8 +229,7 @@ async def test_inspect_model_reads_cached_sampled_without_recompute(
     monkeypatch.setattr(SlayerQueryEngine, "execute", counting_execute)
 
     mcp = create_mcp_server(storage=storage)
-    await mcp.call_tool("inspect_model", {
-        "model_name": "orders", "data_source": "ds",
-        "sections": ["columns"],
+    await mcp.call_tool("inspect", {
+        "entity_type": "model", "reference": "ds.orders", "compact": False, "sections": ["columns"],
     })
     assert profile_call_count["n"] == 0

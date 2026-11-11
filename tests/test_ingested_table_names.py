@@ -11,6 +11,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
+from slayer.live_schema.schema_drift import IdempotentIngestResult
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
@@ -69,6 +70,16 @@ async def _drift(storage: YAMLStorage) -> list[Any]:
         engine.close()
 
 
+async def _ingest(*, datasource: DatasourceConfig, storage: YAMLStorage, **scope: Any) -> IdempotentIngestResult:
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        return await ingest_datasource_idempotent(datasource=datasource, storage=storage,
+                                                  client=engine.client_for(datasource), **scope)
+    finally:
+        await engine.aclose()
+        engine.close()
+
+
 async def _ingested(storage: YAMLStorage) -> SlayerModel:
     (name,) = await storage.list_models()
     model = await storage.get_model(name)
@@ -78,7 +89,7 @@ async def _ingested(storage: YAMLStorage) -> SlayerModel:
 
 async def test_table_name_with_a_space(shop: tuple[DatasourceConfig, YAMLStorage]) -> None:
     datasource, storage = shop
-    await ingest_datasource_idempotent(datasource=datasource, storage=storage, schema="sales")
+    await _ingest(datasource=datasource, storage=storage, schema="sales")
     model = await _ingested(storage)
     assert model.sql_table == 'sales."order items"'
     assert await _qty(storage, model.name) == [6]
@@ -86,11 +97,11 @@ async def test_table_name_with_a_space(shop: tuple[DatasourceConfig, YAMLStorage
 
 async def test_schema_name_with_a_dot(shop: tuple[DatasourceConfig, YAMLStorage]) -> None:
     datasource, storage = shop
-    await ingest_datasource_idempotent(datasource=datasource, storage=storage, schema="sales.v2")
+    await _ingest(datasource=datasource, storage=storage, schema="sales.v2")
     model = await _ingested(storage)
     assert model.sql_table == '"sales.v2".orders'
     assert await _qty(storage, model.name) == [5]
-    again = await ingest_datasource_idempotent(datasource=datasource, storage=storage, schema="sales.v2")
+    again = await _ingest(datasource=datasource, storage=storage, schema="sales.v2")
     assert [(a.created, a.new_columns) for a in again.additions] == [(False, [])]
     assert again.to_delete == []
     assert again.errors == []
@@ -99,7 +110,7 @@ async def test_schema_name_with_a_dot(shop: tuple[DatasourceConfig, YAMLStorage]
 
 async def test_mixed_case_live_name(shop: tuple[DatasourceConfig, YAMLStorage]) -> None:
     datasource, storage = shop
-    await ingest_datasource_idempotent(datasource=datasource, storage=storage, include_tables=["OrderItems"])
+    await _ingest(datasource=datasource, storage=storage, include_tables=["OrderItems"])
     model = await _ingested(storage)
     assert model.sql_table == "OrderItems"
     assert await _qty(storage, model.name) == [4]

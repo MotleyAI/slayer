@@ -78,7 +78,6 @@ def _args(
 ) -> SimpleNamespace:
     return SimpleNamespace(
         storage=storage_path,
-        models_dir=None,
         memory_command=memory_command,
         learning=learning,
         entities=entities,

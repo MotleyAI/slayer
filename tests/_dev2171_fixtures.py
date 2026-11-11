@@ -25,12 +25,13 @@ from slayer.cube.models import CubeProject
 from slayer.cube.report import CubeConversionIssue, CubeConversionResult
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject
-from slayer.engine.query_engine import SlayerQueryEngine, run_over_caller_engine
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ingest_report import ConversionResult, ConversionWarning
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.models import OSIDocument
-from slayer.database.client import SqlClient
+from slayer.database.client import SlayerSQLClient, SqlClient
 from slayer.database import engine_factory
+from slayer.sql.dialects import dialect_for_sa_backend
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import build_exec_engine, disposable_engine
 
@@ -63,12 +64,6 @@ def seed(directory: Path, statements: Sequence[str] = ORDERS_DDL) -> Path:
 
 
 @contextlib.contextmanager
-def sa_engine(db: Path) -> Generator[sa.Engine]:
-    with disposable_engine(f"duckdb:///{db}") as engine:
-        yield engine
-
-
-@contextlib.contextmanager
 def unreachable_engine(directory: Path) -> Generator[tuple[sa.Engine, list[object]]]:
     """An engine whose every connection fails, and the list of its connection attempts."""
     attempts: list[object] = []
@@ -98,9 +93,17 @@ def collect_over_db(collect: Collect, *, db: Path) -> None:
             engine_factory.invalidate_engine(datasource)
 
 
-def collect_over_engine(collect: Collect, engine: sa.Engine) -> None:
-    """Run an importer's ``collect_metadata`` over the caller's ``engine``."""
-    run_over_caller_engine(engine, data_source=DS, work=collect)
+def collect_over_engine(*, collect: Collect, engine: sa.Engine) -> None:
+    """Run an importer's ``collect_metadata`` through a client over the caller's ``engine``."""
+    datasource = DatasourceConfig(name=DS, type=dialect_for_sa_backend(engine.url.get_backend_name()).sqlglot_name,
+                                  connection_string=str(engine.url))
+    with tempfile.TemporaryDirectory() as tmp:
+        owner = SlayerQueryEngine(storage=YAMLStorage(base_dir=tmp),
+                                  client_factory=lambda ds: SlayerSQLClient(datasource=ds, sa_engine=engine))
+        try:
+            owner.run_sync(collect(owner.client_for(datasource)))
+        finally:
+            owner.close()
 
 
 def import_cube(cubes: Iterable[dict[str, Any]], *, views: Iterable[dict[str, Any]] = (),

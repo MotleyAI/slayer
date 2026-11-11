@@ -110,7 +110,6 @@ def _args(store: str, **kw) -> SimpleNamespace:
         force_clean=False,
         yes=False,
         storage=store,
-        models_dir=None,
     )
     base.update(kw)
     return SimpleNamespace(**base)

@@ -26,7 +26,6 @@ from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.keys import CastKey, ScalarCallKey
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement, parse_regex
 from slayer.sql.dialects.base import (
-    LegacyTypeCategories,
     NativeFn,
     TransactionMode,
     set_statement,
@@ -123,14 +122,6 @@ class MysqlDialect(SqlDialect):
         exp.DataType.Type.UBIGINT, exp.DataType.Type.UDECIMAL,
     })
     database_name: ClassVar[str] = "MySQL"
-    legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories(
-        names={
-            "decimal": "number", "tinyint": "boolean", "smallint": "number", "int": "number", "float": "number",
-            "double": "number", "bigint": "number", "mediumint": "number", "bit": "number", "timestamp": "time",
-            "date": "time", "time": "time", "datetime": "time", "year": "time",
-        },
-        other="string",
-    )
     ds_type_aliases: frozenset[str] = frozenset({"mysql"})
     transaction_mode: ClassVar[TransactionMode] = "driver_autocommit"
     sa_backend_names: frozenset[str] = frozenset({"mysql"})
@@ -266,7 +257,7 @@ class MysqlDialect(SqlDialect):
     url_scheme: str | None = "mysql+pymysql"
     url_backend_aliases: frozenset[str] = frozenset({"mariadb"})
     install_extra: str | None = "mysql"
-    extra_drivers: dict[str, str] = Field(default_factory=lambda: {"pymysql": "pymysql", "aiomysql": "aiomysql"})
+    extra_drivers: dict[str, str] = Field(default_factory=lambda: {"pymysql": "pymysql"})
 
     def statement_timeout(self, timeout_seconds: int) -> Expression | None:
         return set_statement(name="max_execution_time", value=timeout_seconds * 1000)

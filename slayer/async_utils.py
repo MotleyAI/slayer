@@ -12,12 +12,10 @@ import concurrent.futures
 import contextlib
 import contextvars
 import functools
-import inspect
 import itertools
 import logging
 import os
 import queue
-import sys
 import threading
 import time
 from typing import Any, TypeVar
@@ -26,7 +24,6 @@ from collections.abc import Awaitable, Callable, Coroutine
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
-F = TypeVar("F", bound=Callable[..., Any])
 
 _CallerCall = tuple[Callable[[], Any], "concurrent.futures.Future[Any]"]
 _caller_calls: contextvars.ContextVar["queue.SimpleQueue[_CallerCall | None] | None"] = contextvars.ContextVar(
@@ -209,22 +206,23 @@ def _await_interruptibly(workflow: _Workflow, *, serve: "queue.SimpleQueue[_Call
         raise
 
 
+def _next_call(*, calls: "queue.SimpleQueue[_CallerCall | None]", deadline: float | None) -> _CallerCall | None:
+    """The next queued call; ``None`` once the workflow ended or ``deadline`` passed."""
+    if deadline is None:
+        return calls.get()
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return None
+    try:
+        return calls.get(timeout=remaining)
+    except queue.Empty:
+        return None
+
+
 def _serve_caller_calls(calls: "queue.SimpleQueue[_CallerCall | None]", *, bounded: bool = False) -> None:
     """Run queued ``on_caller_thread`` calls here until the workflow ends (for ``_CLEANUP_SECONDS`` when ``bounded``)."""
-    deadline = time.monotonic() + _CLEANUP_SECONDS
-    while True:
-        if bounded:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return
-            try:
-                call = calls.get(timeout=remaining)
-            except queue.Empty:
-                return
-        else:
-            call = calls.get()
-        if call is None:
-            return
+    deadline = time.monotonic() + _CLEANUP_SECONDS if bounded else None
+    while (call := _next_call(calls=calls, deadline=deadline)) is not None:
         func, result = call
         if result.set_running_or_notify_cancel():
             try:
@@ -255,26 +253,14 @@ def run_sync(coro: Coroutine[Any, Any, T]) -> T:
     return _await_interruptibly(_Workflow(coro, context), serve=calls)
 
 
-def marked_coroutine_function(func: F) -> F:
-    """Mark a plain function returning a coroutine as a coroutine function (Python 3.12+)."""
-    if sys.version_info >= (3, 12):
-        return inspect.markcoroutinefunction(func)
-    return func
-
-
 async def on_caller_thread(func: Callable[[], T]) -> T:
-    """Run blocking ``func`` on the thread that called ``run_sync_on_caller_thread``; inline outside one."""
+    """Run blocking ``func`` on the thread that called ``run_sync``; inline outside one."""
     calls = _caller_calls.get()
     if calls is None:
         return func()
     done: concurrent.futures.Future[T] = concurrent.futures.Future()
     calls.put((func, done))
     return await asyncio.wrap_future(done)
-
-
-def run_sync_on_caller_thread(coro: Coroutine[Any, Any, T]) -> T:
-    """``run_sync``, named for callers whose engines are bound to this thread."""
-    return run_sync(coro)
 
 
 async def _wind_down(callbacks: list[ShutdownCallback]) -> None:

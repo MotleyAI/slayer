@@ -5,7 +5,6 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
-from slayer.live_schema.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
@@ -33,9 +32,12 @@ async def pg(postgresql, tmp_path):
     await storage.save_datasource(ds)
     await storage.save_model(contractors_model(data_source="pg"))
     await storage.save_model(assignments_model(data_source="pg"))
+    engine = SlayerQueryEngine(storage=storage)
     try:
-        yield SlayerQueryEngine(storage=storage), ds
+        yield engine, ds
     finally:
+        await engine.aclose()
+        engine.close()
         engine_factory.invalidate_engine(ds)
 
 
@@ -46,6 +48,6 @@ async def test_lists(pg) -> None:
 
 @pytest.mark.integration
 async def test_ingested_list_columns(pg) -> None:
-    (model,) = ingest_datasource(datasource=pg[1], include_tables=["contractors"])
+    (model,) = await pg[0].ingest(pg[1], include_tables=["contractors"])
     typed = {c.name: (c.type, c.element_type) for c in model.columns if c.name in ("skills", "scores")}
     assert typed == {"skills": (DataType.ARRAY, DataType.TEXT), "scores": (DataType.ARRAY, DataType.INT)}
