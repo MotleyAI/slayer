@@ -8,23 +8,23 @@ module-level engine cache must remain in effect.
 Marked integration because it touches a real on-disk SQLite file.
 """
 
+import contextlib
+import sqlite3
 from pathlib import Path
 from collections.abc import Iterable
 
 import pytest
-import sqlalchemy as sa
 
 from slayer.core.models import DatasourceConfig
 from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient
 
 
-def _setup(client: SlayerSQLClient, statements: Iterable[str]) -> None:
-    """Run DDL/DML on the client's per-client engine (file-backed → factory engine)."""
-    engine = client._get_sync_engine_for_client()
-    with engine.begin() as conn:
+def _setup(db_path: Path, statements: Iterable[str]) -> None:
+    """Seed the file through the raw driver (SLayer's connections are read-only)."""
+    with contextlib.closing(sqlite3.connect(db_path)) as conn, conn:
         for stmt in statements:
-            conn.execute(sa.text(stmt))
+            conn.execute(stmt)
 
 
 @pytest.mark.integration
@@ -40,7 +40,7 @@ async def test_file_backed_sqlite_still_shares_state_across_async_calls(
         ),
     )
     _setup(
-        client,
+        db_path,
         [
             "CREATE TABLE t (x INTEGER)",
             "INSERT INTO t VALUES (1), (2), (3)",
@@ -55,6 +55,7 @@ async def test_file_backed_sqlite_engine_cached_in_module(tmp_path: Path) -> Non
     """White-box: file-backed SQLite routes through ``engine_factory``'s
     shared cache, cached once and reused across clients on the same connection string."""
     db_path = tmp_path / "cached.db"
+    _setup(db_path, [])
     conn_str = f"sqlite:///{db_path}"
     ds = DatasourceConfig(
         name="file_cached",

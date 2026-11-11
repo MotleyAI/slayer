@@ -7,6 +7,7 @@ import json
 import os
 import select
 import signal
+import sqlite3
 import subprocess
 import sys
 import textwrap
@@ -16,6 +17,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import psycopg
 import pytest
 from pytest_postgresql import factories
@@ -54,7 +56,9 @@ def pg_ds(postgresql_proc: Any) -> Iterator[DatasourceConfig]:
 
 @pytest.fixture
 def duckdb_ds(tmp_path: Path) -> Iterator[DatasourceConfig]:
-    ds = DatasourceConfig(name="local", type="duckdb", database=str(tmp_path / "local.duckdb"))
+    path = tmp_path / "local.duckdb"
+    duckdb.connect(str(path)).close()
+    ds = DatasourceConfig(name="local", type="duckdb", database=str(path))
     try:
         yield ds
     finally:
@@ -144,7 +148,7 @@ def test_a_local_database_file_is_released_after_a_synchronous_workflow(
     duckdb_ds: DatasourceConfig, query_engine: SlayerQueryEngine,
 ) -> None:
     client = query_engine.client_for(duckdb_ds)
-    query_engine.run_sync(client.execute("CREATE TABLE t AS SELECT 1 AS x"))
+    query_engine.run_sync(client.execute("SELECT 1 AS x"))
     assert _writable_by_another_process(duckdb_ds.database or "")
 
 
@@ -163,7 +167,7 @@ def test_synchronous_calls_repeat_safely(
     local = query_engine.client_for(duckdb_ds)
 
     async def _workflow(*, fail: bool = False) -> int:
-        await local.execute("CREATE TABLE IF NOT EXISTS t (x INTEGER)")
+        await local.execute("SELECT 1 AS x")
         pid = _pid((await pg.execute(PID_SQL)).rows)
         if fail:
             raise ValueError("workflow failed")
@@ -316,6 +320,7 @@ _EXIT_SCRIPT = textwrap.dedent("""
 def test_process_exit_leaves_nothing_open(
     pg_ds: DatasourceConfig, postgresql_proc: Any, tmp_path: Path,
 ) -> None:
+    sqlite3.connect(tmp_path / "exit.db").close()
     local = DatasourceConfig(name="file", type="sqlite", database=str(tmp_path / "exit.db"))
     payload = json.dumps([pg_ds.model_dump(), local.model_dump()])
     proc = subprocess.run(

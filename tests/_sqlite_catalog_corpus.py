@@ -90,7 +90,7 @@ async def corpus_client(corpus: Corpus) -> AsyncGenerator[tuple[SlayerSQLClient,
     engine_factory.invalidate_engine(ds)
     engine = engine_factory.get_engine(ds)
 
-    @event.listens_for(engine, "connect")
+    @event.listens_for(engine, "connect", insert=True)  # before SLayer's query_only
     def _attach(dbapi_conn: Any, _rec: Any) -> None:
         dbapi_conn.execute(f"ATTACH DATABASE '{corpus.attached_path}' AS {ATTACHED}")
         dbapi_conn.execute(TEMP_DDL)

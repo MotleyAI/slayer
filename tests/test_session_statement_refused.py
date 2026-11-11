@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -12,8 +13,7 @@ import pytest
 from slayer.core.models import DatasourceConfig
 from slayer.database import client as sql_client
 from slayer.database import engine_factory
-from slayer.database.client import SlayerSQLClient, SqlClientError, admit_statement
-from slayer.sql.dialects import PostgresDialect
+from slayer.database.client import SlayerSQLClient, SqlClientError
 
 _URLS = {
     "postgres": "postgresql+psycopg://u@db.invalid/d",
@@ -98,59 +98,28 @@ def test_untokenisable_text_is_refused() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Queries, DDL and DML are unaffected
+# Queries are unaffected
 # ---------------------------------------------------------------------------
 
-# DuckDB answers a write with its ``Count`` row.
-_WRITE_ROWS = {"sqlite": [], "duckdb": [{"Count": 1}]}
-
 _ORDINARY = [
-    ("CREATE TABLE t (x INT)", []),
-    ("INSERT INTO t VALUES (1)", _WRITE_ROWS),
-    ("UPDATE t SET x = 2", _WRITE_ROWS),
-    ("SELECT x FROM t", [{"x": 2}]),
     ("SELECT 'SET x' AS \"USE\"", [{"USE": "SET x"}]),
     ("-- BEGIN\nSELECT 1 AS one", [{"one": 1}]),
     ("SELECT 1 AS one /* ; COMMIT */", [{"one": 1}]),
+    ("WITH a AS (SELECT 1 AS x) SELECT x FROM a", [{"x": 1}]),
 ]
 
 
 @pytest.mark.parametrize("ds_type", ["sqlite", "duckdb"])
 def test_ordinary_statements_run(tmp_path: Path, ds_type: str) -> None:
-    client = SlayerSQLClient(DatasourceConfig(name="ds", type=ds_type, database=str(tmp_path / f"f.{ds_type}")))
+    path = tmp_path / f"f.{ds_type}"
+    if ds_type == "duckdb":
+        duckdb.connect(str(path)).close()
+    else:
+        sqlite3.connect(path).close()
+    client = SlayerSQLClient(DatasourceConfig(name="ds", type=ds_type, database=str(path)))
     try:
         rows = [client.execute_sync(sql).rows for sql, _ in _ORDINARY]
     finally:
         client.close()
         engine_factory.reset_cache()
-    assert rows == [expected[ds_type] if isinstance(expected, dict) else expected for _, expected in _ORDINARY]
-
-
-@pytest.mark.parametrize("path", ["sync", "async"])
-def test_duckdb_writes_are_committed(tmp_path: Path, path: str) -> None:
-    db = tmp_path / "w.duckdb"
-    client = SlayerSQLClient(DatasourceConfig(name="ds", type="duckdb", database=str(db)))
-    try:
-        for sql in ("CREATE TABLE t (x INT)", "INSERT INTO t VALUES (1), (2)"):
-            if path == "sync":
-                client.execute_sync(sql)
-            else:
-                asyncio.run(client.execute(sql))
-    finally:
-        client.close()
-        engine_factory.reset_cache()
-    with duckdb.connect(str(db), read_only=True) as conn:
-        assert conn.execute("SELECT count(*) FROM t").fetchone() == (2,)
-
-
-@pytest.mark.parametrize(
-    ("sql", "writes"),
-    [
-        ("WITH d AS (DELETE FROM t WHERE x = 1 RETURNING x) SELECT * FROM d", True),
-        ("WITH n AS (SELECT 1 AS x) INSERT INTO t SELECT x FROM n", True),
-        ("WITH n AS (SELECT 1 AS x) SELECT x FROM n", False),
-        ("SELECT 'DELETE' AS \"UPDATE\"", False),
-    ],
-)
-def test_a_cte_that_writes_is_committed(sql: str, writes: bool) -> None:
-    assert admit_statement(sql, dialect=PostgresDialect()) is writes
+    assert rows == [expected for _, expected in _ORDINARY]

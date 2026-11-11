@@ -1,10 +1,10 @@
 ## 1. Tests (pr-tests stage — all fail before implementation)
 
-- [ ] 1.1 Law test `tests/test_law_read_only_datasources.py` (§3.7). It holds three checks, and it is verified by failing on main:
+- [x] 1.1 Law test `tests/test_law_read_only_datasources.py` (§3.7). It holds three checks, and it is verified by failing on main:
   - For DuckDB file, SQLite file and Postgres (pytest-postgresql), a write fails through every construction path: factory default engine, client async engine (Postgres psycopg/asyncpg), replacement connection after invalidate, and direct use of the returned engine.
   - The default client refuses a non-read statement before sending it.
   - An in-memory SQLite or DuckDB datasource still accepts writes.
-- [ ] 1.2 DuckDB/SQLite unit tests for the `database/execution` scenarios:
+- [x] 1.2 DuckDB/SQLite unit tests for the `database/execution` scenarios:
   - read-only DuckDB file;
   - SQLite main/attached/temp writes refused, with UDFs still working;
   - in-memory writable;
@@ -12,7 +12,7 @@
   - "A missing local database file is refused", in every URL form (relative, absolute, `file:` URI, in-memory forms not refused) with no file created.
 
   Verified by the tests failing on main.
-- [ ] 1.3 Postgres unit tests (pytest-postgresql, no integration marker), verified by failing on main:
+- [x] 1.3 Postgres unit tests (pytest-postgresql, no integration marker), verified by failing on main:
   - every driver × sync/async, including autocommit;
   - `default_transaction_read_only = on`;
   - URL `options` kept;
@@ -20,9 +20,9 @@
   - pooler `BEGIN READ ONLY` on psycopg/psycopg2/asyncpg, and the `START TRANSACTION READ ONLY` swap on pg8000 with no extra statement.
 
   Gotcha: sandboxed Postgres needs `-c unix_socket_directories=` (TCP only).
-- [ ] 1.4 Client-contract tests for "The default client sends only reads" (every listed statement refused unsent; `EXPLAIN` through `execute` refused; trailing write; keywords in literals/comments; `explain()` refuses a write plan with nothing sent, not even the switch-on; in-memory accepts writes but still refuses `SET`). Also the reworded "Ordinary statements are unaffected" scenario. Verified by failing on main.
-- [ ] 1.5 `execute_sync` release test: on a DuckDB file, `SlayerSQLClient.execute_sync`, then a differently-configured `duckdb.connect` in the same process succeeds, and the next `execute_sync` succeeds. Verified by failing on main; the failure was reproduced during planning.
-- [ ] 1.6 Engine-build refusal tests:
+- [x] 1.4 Client-contract tests for "The default client sends only reads" (every listed statement refused unsent; `EXPLAIN` through `execute` refused; trailing write; keywords in literals/comments; `explain()` refuses a write plan with nothing sent, not even the switch-on; in-memory accepts writes but still refuses `SET`). Also the reworded "Ordinary statements are unaffected" scenario. Verified by failing on main.
+- [x] 1.5 `execute_sync` release test: on a DuckDB file, `SlayerSQLClient.execute_sync`, then a differently-configured `duckdb.connect` in the same process succeeds, and the next `execute_sync` succeeds. Verified by failing on main; the failure was reproduced during planning.
+- [x] 1.6 Engine-build refusal tests:
   - MySQL URL with its own `init_command` refused with a typed error naming the datasource, no connection opened;
   - `clickhouse+native` / `clickhouse+asynch` refused with an unsupported-driver error hinting `clickhouse+http`;
   - SQL Server/Snowflake/BigQuery/Trino/Oracle/Redshift connection arguments and connect-time statements unchanged (emission).
@@ -45,7 +45,7 @@
   - `tests/test_demo_jaffle_shop_healing.py:357-370` (same-process DuckDB conflict).
 
   Verify each by running it after the change.
-- [ ] 1.9 Codex-review the tests against this plan (`reviewers.codex`). Verified by every finding being resolved with the user.
+- [x] 1.9 Codex-review the tests against this plan (`reviewers.codex`). Verified by every finding being resolved with the user.
 
 ## 2. Dialect hooks and classification
 
