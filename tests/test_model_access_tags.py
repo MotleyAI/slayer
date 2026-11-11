@@ -44,9 +44,9 @@ class TestField:
     def test_defaults_to_untagged(self) -> None:
         assert _model().access_tags == []
 
-    def test_schema_version_is_18(self) -> None:
-        assert CURRENT_VERSIONS["SlayerModel"] == 19
-        assert _model().version == 19
+    def test_schema_version_is_20(self) -> None:
+        assert CURRENT_VERSIONS["SlayerModel"] == 20
+        assert _model().version == 20
 
     def test_json_round_trip(self) -> None:
         model = _model(access_tags=["hr", "HR Team"], hidden=True)
@@ -71,7 +71,7 @@ async def test_v14_model_loads_untagged_and_writes_back_at_v16(backend: str) -> 
             models=[orders_v10(version=14), customers_v10(version=14)],
         )
         assert (await must_get(storage, "orders", SHOP)).access_tags == []
-        assert (await raw_doc(storage, "orders"))["version"] == 19
+        assert (await raw_doc(storage, "orders"))["version"] == 20
 
 
 class TestMcp:

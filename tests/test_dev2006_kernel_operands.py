@@ -325,7 +325,7 @@ class TestAssociatedRankedPickStaysTyped:
         "dimensions": ["status"],
         "time_dimensions": [f1841.TimeDimension(
             dimension="customers.signup_at", granularity=f1841.TimeGranularity.MONTH)],
-        "measures": [f1841.ModelMeasure(formula="customers.spend:last", name="l")],
+        "measures": [f1841.ModelMeasure(formula="last(customers.spend)", name="l")],
     }
 
     async def test_cross_model_last_needing_association(self, dev1841_engine):

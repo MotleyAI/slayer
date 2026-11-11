@@ -34,8 +34,8 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="amount:sum", name="m")
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
+M = ModelMeasure(formula="sum(amount)", name="m")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
 
 
 class TestBroadcastMetadata:
@@ -76,8 +76,8 @@ class TestBroadcastMetadata:
         resp = await engine.execute(q(
             to_many_handling="broadcast",
             dimensions=["status"], measures=[M, CM],
-            filters=["customers.spend:sum > 0"],
-            order=[OrderItem(column="customers.spend:sum", direction="desc")],
+            filters=["sum(customers.spend) > 0"],
+            order=[OrderItem.model_validate({"column": "sum(customers.spend)", "direction": "desc"})],
         ))
         assert len(broadcast_warnings(resp)) == 1
 
@@ -88,7 +88,7 @@ class TestBroadcastMetadata:
             dimensions=["status"],
             measures=[
                 CM,
-                ModelMeasure(formula="customers.regions.pop:sum", name="pop"),
+                ModelMeasure(formula="sum(customers.regions.pop)", name="pop"),
             ],
         ))
         assert len(broadcast_warnings(resp)) == 2
@@ -100,7 +100,7 @@ class TestBroadcastMetadata:
         resp = await engine.execute(q(
             to_many_handling="broadcast",
             dimensions=["status"], measures=[M],
-            filters=["customers.spend:sum > 0"],
+            filters=["sum(customers.spend) > 0"],
         ))
         (w,) = broadcast_warnings(resp)
         assert "spend" in w.measure
@@ -118,7 +118,7 @@ class TestBroadcastMetadata:
         resp = await engine.execute(q(
             dimensions=["status"],
             measures=[M, ModelMeasure(
-                formula="customers.spend:sum(partition_by=[])", name="total",
+                formula="sum(customers.spend, partition_by=[])", name="total",
             )],
         ))
         assert broadcast_warnings(resp) == []
@@ -148,7 +148,7 @@ class TestBroadcastMetadata:
         via_reverse = await engine.execute(q(
             to_many_handling="broadcast",
             dimensions=["customers.tier"],
-            measures=[ModelMeasure(formula="customers.regions.pop:sum",
+            measures=[ModelMeasure(formula="sum(customers.regions.pop)",
                                    name="pop")],
         ))
         (w_rev,) = broadcast_warnings(via_reverse)
@@ -220,7 +220,7 @@ class TestStrictMode:
         resp = await engine.execute(q(
             to_many_handling="error", dimensions=["status"],
             measures=[ModelMeasure(
-                formula="customers.spend:sum(partition_by=[])", name="total",
+                formula="sum(customers.spend, partition_by=[])", name="total",
             )],
         ))
         for row in resp.data:

@@ -164,11 +164,11 @@ class TestCrossModelPlannerTriggerPredicate:
 
     def test_no_filter_local_measure_does_not_trigger(self):
         host = _claim_amount()
-        q = SlayerQuery(
-            source_model="claim_amount",
-            measures=[{"formula": "total_amount:sum"}],
-            dimensions=["claim.claim_number"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "claim_amount",
+            "measures": [{"formula": "sum(total_amount)"}],
+            "dimensions": ["claim.claim_number"],
+        })
         planned = plan_query(query=q, bundle=_bundle(host))
         assert planned.regroup_attach_plans == [], (
             f"Plain local aggregate must not trigger isolation; got attaches: {planned.regroup_attach_plans}"
@@ -178,7 +178,7 @@ class TestCrossModelPlannerTriggerPredicate:
         host = _claim_amount()
         q = SlayerQuery(
             source_model="claim_amount",
-            measures=[{"formula": "paid_amount:sum"}],
+            measures=[{"formula": "sum(paid_amount)"}],
             dimensions=["claim.claim_number"],
         )
         planned = plan_query(query=q, bundle=_bundle(host))
@@ -188,11 +188,11 @@ class TestCrossModelPlannerTriggerPredicate:
 
     def test_dotted_cross_model_filter_triggers_isolation(self):
         host = _claim_amount()
-        q = SlayerQuery(
-            source_model="claim_amount",
-            measures=[{"formula": "loss_payment_amt:sum"}],
-            dimensions=["claim.claim_number"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "claim_amount",
+            "measures": [{"formula": "sum(loss_payment_amt)"}],
+            "dimensions": ["claim.claim_number"],
+        })
         planned = plan_query(query=q, bundle=_bundle(host))
         attaches = [
             a for a in planned.regroup_attach_plans
@@ -210,11 +210,11 @@ class TestCrossModelPlannerTriggerPredicate:
         _, bundle = _orders_with_derived_eu_filter(
             eu_amount_filter="is_eu = 1",
         )
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "eu_amount:sum"}],
-            dimensions=["id"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(eu_amount)"}],
+            "dimensions": ["id"],
+        })
         planned = plan_query(query=q, bundle=bundle)
         attaches = [
             a for a in planned.regroup_attach_plans
@@ -229,11 +229,11 @@ class TestCrossModelPlannerTriggerPredicate:
     def test_cross_model_agg_still_triggers_via_path(self):
         """A non-empty ``source.path`` triggers the cross-model planner; the producer roots at the join target ``loss_payment``."""
         host = _claim_amount()
-        q = SlayerQuery(
-            source_model="claim_amount",
-            measures=[{"formula": "loss_payment.has_flag:sum"}],
-            dimensions=["claim.claim_number"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "claim_amount",
+            "measures": [{"formula": "sum(loss_payment.has_flag)"}],
+            "dimensions": ["claim.claim_number"],
+        })
         planned = plan_query(query=q, bundle=_bundle(host))
         assert len(planned.regroup_attach_plans) == 1
         assert planned.regroup_attach_plans[0].producer_root_model == "loss_payment"
@@ -272,11 +272,11 @@ class TestCrossModelPlannerTriggerPredicate:
             dialect="postgres",
             source_model=orders, referenced_models=[customers, regions],
         )
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "customers.premium_rev:sum"}],
-            dimensions=["id"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(customers.premium_rev)"}],
+            "dimensions": ["id"],
+        })
         planned = plan_query(query=q, bundle=bundle)
         assert len(planned.regroup_attach_plans) == 1
         assert planned.regroup_attach_plans[0].producer_root_model == "customers"
@@ -291,11 +291,11 @@ class TestProducerMode:
     def test_isolated_sub_plan_has_no_nested_cma_plans(self):
         """The host-rooted sub-plan must contain zero nested attaches, else the filtered measure re-isolates."""
         host = _claim_amount()
-        q = SlayerQuery(
-            source_model="claim_amount",
-            measures=[{"formula": "loss_payment_amt:sum"}],
-            dimensions=["claim.claim_number"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "claim_amount",
+            "measures": [{"formula": "sum(loss_payment_amt)"}],
+            "dimensions": ["claim.claim_number"],
+        })
         planned = plan_query(query=q, bundle=_bundle(host))
         # The nested scope is the producer plan itself.
         (attach,) = [
@@ -338,11 +338,11 @@ class TestHostModelFiltersInteractions:
             dialect="postgres",
             source_model=host, referenced_models=[_loss_payment()],
         )
-        q = SlayerQuery(
-            source_model="claim_amount",
-            measures=[{"formula": "loss_payment_amt:sum"}],
-            dimensions=["id"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "claim_amount",
+            "measures": [{"formula": "sum(loss_payment_amt)"}],
+            "dimensions": ["id"],
+        })
         planned = plan_query(query=q, bundle=bundle)
         assert [a for a in planned.regroup_attach_plans if a.attach_phase == "combined"]
         sql = SQLGenerator(dialect="postgres").generate_from_planned(planned, bundle=bundle)
@@ -386,17 +386,17 @@ class TestFirstLastNoNestedCmaPlans:
 
     def test_filtered_local_first_last_isolates_without_nesting(self):
         host = _claim_amount(with_time=True, with_filter_first=True)
-        q = SlayerQuery(
-            source_model="claim_amount",
-            measures=[{"formula": "latest_payment:last"}],
-            dimensions=["claim.claim_number"],
-            time_dimensions=[
+        q = SlayerQuery.model_validate({
+            "source_model": "claim_amount",
+            "measures": [{"formula": "last(latest_payment)"}],
+            "dimensions": ["claim.claim_number"],
+            "time_dimensions": [
                 TimeDimension(
                     dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
-        )
+        })
         planned = plan_query(query=q, bundle=_bundle(host))
         # The local ranked first/last desugars into a ranked-kernel producer attach.
         assert len(planned.regroup_attach_plans) == 1
@@ -545,11 +545,11 @@ class TestCrossingFirstLastStaysRanked:
     ordering subsumes crossing): one flat ranked host plan. Only the ranking TIME arg surfaces the crossed hop."""
 
     def test_derived_source_first_last_stays_ranked(self):
-        planned, _ = _s5_plans("region_pay:last(orders.created_at)")
+        planned, _ = _s5_plans("last(region_pay, orders.created_at)")
         _assert_single_ranked_host(planned)
 
     def test_structural_time_arg_stays_ranked(self):
-        planned, _ = _s5_plans("amount:last(customers.signup_at)")
+        planned, _ = _s5_plans("last(amount, customers.signup_at)")
         attach = _assert_single_ranked_host(planned)
         # The ranking key reaches through the customers join (path () if non-crossing).
         assert isinstance(attach.kernel, RankedProducerKernel)
@@ -557,7 +557,7 @@ class TestCrossingFirstLastStaysRanked:
         assert attach.kernel.ranking_time_key.path == ("customers",)
 
     def test_derived_time_arg_stays_ranked(self):
-        planned, _ = _s5_plans("amount:last(cross_time)")
+        planned, _ = _s5_plans("last(amount, cross_time)")
         _assert_single_ranked_host(planned)
 
 
@@ -566,41 +566,41 @@ class TestWidenedLaw3TriggerCrossingInputs:
     source ``Column.sql``, positional/time args, kwargs. Filter crossing is pinned above."""
 
     def test_derived_source_path_alias_triggers(self):
-        _, plans = _s5_plans("region_pay:sum")
+        _, plans = _s5_plans("sum(region_pay)")
         _assert_single_host_rooted(plans)
 
     def test_derived_source_single_dot_triggers(self):
-        _, plans = _s5_plans("cust_weight_d:sum")
+        _, plans = _s5_plans("sum(cust_weight_d)")
         _assert_single_host_rooted(plans)
 
     def test_sibling_derived_chain_triggers(self):
         # doubled_pop -> pop_helper -> crossing; sibling derived refs expand first.
-        _, plans = _s5_plans("doubled_pop:sum")
+        _, plans = _s5_plans("sum(doubled_pop)")
         _assert_single_host_rooted(plans)
 
     def test_structural_kwarg_triggers(self):
-        _, plans = _s5_plans("amount:weighted_avg(weight=customers.weight)")
+        _, plans = _s5_plans("weighted_avg(amount, weight=customers.weight)")
         _assert_single_host_rooted(plans)
 
     def test_derived_kwarg_triggers(self):
-        _, plans = _s5_plans("amount:weighted_avg(weight=region_pay)")
+        _, plans = _s5_plans("weighted_avg(amount, weight=region_pay)")
         _assert_single_host_rooted(plans)
 
     def test_user_template_fragment_kwarg_crossing_triggers(self):
         _, plans = _s5_plans(
-            "amount:scaled_sum(scale='customers.regions.weight')",
+            "scaled_sum(amount, scale='customers.regions.weight')",
         )
         _assert_single_host_rooted(plans)
 
     def test_model_default_fragment_kwarg_crossing_triggers(self):
         # Crossing input is the model-default AggregationParam sql fragment.
-        _, plans = _s5_plans("amount:wscaled_sum")
+        _, plans = _s5_plans("wscaled_sum(amount)")
         _assert_single_host_rooted(plans)
 
     def test_composite_crossing_leaf_isolates_individually(self):
-        # `region_pay:sum + amount:sum`: only the crossing LEAF isolates (one
+        # `sum(region_pay) + sum(amount)`: only the crossing LEAF isolates (one
         # hidden host-rooted plan); the local leaf stays in the base — exactly one.
-        planned, plans = _s5_plans("region_pay:sum + amount:sum")
+        planned, plans = _s5_plans("sum(region_pay) + sum(amount)")
         attach = _assert_single_host_rooted(plans)
         (sub,) = attach.substitutions
         ph_slot = next(
@@ -613,33 +613,33 @@ class TestWidenedLaw3TriggerCrossingInputs:
         )
 
     def test_local_derived_source_does_not_trigger(self):
-        _, plans = _s5_plans("local_double:sum")
+        _, plans = _s5_plans("sum(local_double)")
         assert plans == []
 
     def test_literal_kwarg_does_not_trigger(self):
-        _, plans = _s5_plans("amount:percentile(p=0.5)")
+        _, plans = _s5_plans("percentile(amount, p=0.5)")
         assert plans == []
 
     def test_local_template_fragment_does_not_trigger(self):
-        _, plans = _s5_plans("amount:scaled_sum(scale='amount * 2')")
+        _, plans = _s5_plans("scaled_sum(amount, scale='amount * 2')")
         assert plans == []
 
     def test_unparseable_template_fragment_fails_at_binding(self):
         with pytest.raises(UnanalyzableAggregationParameterError, match="scale"):
-            _s5_plans("amount:scaled_sum(scale='%% !! ((')")
+            _s5_plans("scaled_sum(amount, scale='%% !! ((')")
 
     def test_crossing_dimension_only_does_not_trigger(self):
         # A joined dimension is Law-1 (base-pull); only aggregate inputs trigger Law-3.
-        _, plans = _s5_plans("amount:sum", dimensions=["customers.region_id"])
+        _, plans = _s5_plans("sum(amount)", dimensions=["customers.region_id"])
         assert plans == []
 
     def test_local_time_arg_does_not_trigger(self):
-        _, plans = _s5_plans("amount:last(orders.created_at)")
+        _, plans = _s5_plans("last(amount, orders.created_at)")
         assert plans == []
 
     def test_source_path_still_target_rooted(self):
         # A genuine cross-model aggregate stays target-rooted at ``customers``.
-        planned, cma = _s5_plans("customers.weight:sum")
+        planned, cma = _s5_plans("sum(customers.weight)")
         assert cma == []
         assert len(planned.regroup_attach_plans) == 1
         assert planned.regroup_attach_plans[0].producer_root_model == "customers"
@@ -648,7 +648,7 @@ class TestWidenedLaw3TriggerCrossingInputs:
         # Producer mode still plans a cross-model aggregate target-rooted.
         planned = plan_as_producer(query=SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="customers.weight:sum", name="m0")],
+            measures=[ModelMeasure(formula="sum(customers.weight)", name="m0")],
         ), bundle=_s5_bundle())
         (attach,) = [
             a for a in planned.regroup_attach_plans
@@ -662,8 +662,8 @@ class TestWidenedLaw3TriggerCrossingInputs:
         q = SlayerQuery(
             source_model="orders",
             measures=[
-                {"formula": "region_pay:sum"},
-                {"formula": "region_pay:sum + amount:sum", "name": "combo"},
+                {"formula": "sum(region_pay)"},
+                {"formula": "sum(region_pay) + sum(amount)", "name": "combo"},
             ],
         )
         planned = plan_query(query=q, bundle=_s5_bundle())
@@ -680,8 +680,8 @@ class TestWidenedLaw3TriggerCrossingInputs:
         q = SlayerQuery(
             source_model="orders",
             measures=[
-                {"formula": "region_pay:sum"},
-                {"formula": "cust_weight_d:sum"},
+                {"formula": "sum(region_pay)"},
+                {"formula": "sum(cust_weight_d)"},
             ],
         )
         planned = plan_query(query=q, bundle=_s5_bundle())
@@ -698,11 +698,11 @@ class TestWidenedLaw3TriggerCrossingInputs:
 
     def test_host_row_filter_propagates_into_widened_sub_plan(self):
         # A host ROW filter must propagate into the sub-plan's filters.
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "region_pay:sum"}],
-            filters=["amount > 50"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(region_pay)"}],
+            "filters": ["amount > 50"],
+        })
         planned = plan_query(query=q, bundle=_s5_bundle())
         (attach,) = [
             a for a in planned.regroup_attach_plans
@@ -717,11 +717,11 @@ class TestWidenedLaw3TriggerCrossingInputs:
     def test_pathed_host_row_filter_propagates_into_widened_sub_plan(self):
         # A host ROW filter whose expression itself crosses a join still roots at
         # the host, so it too propagates into the sub-plan.
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "region_pay:sum"}],
-            filters=["customers.weight > 1"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(region_pay)"}],
+            "filters": ["customers.weight > 1"],
+        })
         planned = plan_query(query=q, bundle=_s5_bundle())
         (attach,) = [
             a for a in planned.regroup_attach_plans

@@ -41,7 +41,7 @@ def check_approx_median_percentile():
     print("\nMedian / percentile (approximate):")
     row = api("POST", QUERY_PATH, {
         "source_model": "orders",
-        "measures": ["quantity:median", "quantity:percentile(p=0.25)", "quantity:percentile(p=0.75)"],
+        "measures": ["median(quantity)", "percentile(quantity, p=0.25)", "percentile(quantity, p=0.75)"],
     })["data"][0]
     seeded = {o[3] for o in ORDERS}
     median = row["orders.quantity_median"]

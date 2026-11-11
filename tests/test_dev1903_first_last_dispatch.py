@@ -32,10 +32,10 @@ from tests._engine_helpers import seeded_exec_engine
 from slayer.core import syntax
 
 SAVED = [
-    ModelMeasure(formula="revenue:sum", name="rev"),
+    ModelMeasure(formula="sum(revenue)", name="rev"),
     ModelMeasure(formula="rev * 2", name="rev_twice"),
-    ModelMeasure(formula="cumsum(revenue:sum)", name="cum_rev"),
-    ModelMeasure(formula="revenue:sum * 2", name="rev2"),
+    ModelMeasure(formula="cumsum(sum(revenue))", name="cum_rev"),
+    ModelMeasure(formula="sum(revenue) * 2", name="rev2"),
 ]
 
 
@@ -43,7 +43,7 @@ def _models():
     sales = sales_model()
     sales.measures = list(SAVED)
     regions = regions_model()
-    regions.measures = [ModelMeasure(formula="factor:sum", name="tf")]
+    regions.measures = [ModelMeasure(formula="sum(factor)", name="tf")]
     return [sales, regions]
 
 
@@ -110,21 +110,14 @@ def _outcome(query: SlayerQuery):
 class TestParseIsOneNode:
     @pytest.mark.parametrize("fn", ["first", "last"])
     @pytest.mark.parametrize("arg", [
-        "revenue", "1", "revenue:sum", "sum(revenue)", "sum(revenue) + 1",
-        "revenue:sum > 100", "cumsum(weight)", "rev", "rev * 2",
+        "revenue", "1", "sum(revenue)", "sum(revenue) + 1",
+        "sum(revenue) > 100", "cumsum(weight)", "rev", "rev * 2",
         "qty * avg(revenue, partition_by=store)",
     ])
     def test_every_shape_parses_to_aggcall(self, fn, arg):
         parsed = parse_expr(f"{fn}({arg})")
         assert isinstance(parsed, AggCall), parsed
         assert parsed.agg == fn
-
-    @pytest.mark.parametrize("colon, functional", [
-        ("revenue:first", "first(revenue)"),
-        ("revenue:last(ordered_at)", "last(revenue, ordered_at)"),
-    ])
-    def test_both_spellings_collapse(self, colon, functional):
-        assert parse_expr(colon) == parse_expr(functional)
 
     def test_aggregated_operand_is_not_decided_in_the_parser(self):
         """engine P2: the parser makes no grain decision."""
@@ -139,8 +132,8 @@ class TestParseIsOneNode:
 
 class TestBindDispatch:
     @pytest.mark.parametrize("formula", [
-        "first(revenue:sum)", "last(sum(revenue))", "first(sum(revenue) + 1)",
-        "first(revenue:sum > 100)",
+        "first(sum(revenue))", "last(sum(revenue))", "first(sum(revenue) + 1)",
+        "first(sum(revenue) > 100)",
     ])
     def test_aggregated_operand_binds_to_transform(self, formula):
         key = _measure_key(formula)
@@ -155,7 +148,7 @@ class TestBindDispatch:
         assert isinstance(key, AggregateKey), key
         assert key.agg == "last"
         assert key == _measure_key(
-            "revenue:last" if ranking is None else f"revenue:last({ranking})",
+            "last(revenue)" if ranking is None else f"last(revenue, {ranking})",
         )
 
     @pytest.mark.parametrize("formula, kw", [
@@ -186,9 +179,9 @@ class TestBindDispatch:
 
 class TestSavedMeasureOperand:
     @pytest.mark.parametrize("saved, inline", [
-        ("first(rev)", "first(revenue:sum)"),
-        ("first(rev * 2)", "first(revenue:sum * 2)"),
-        ("last(rev)", "last(revenue:sum)"),
+        ("first(rev)", "first(sum(revenue))"),
+        ("first(rev * 2)", "first(sum(revenue) * 2)"),
+        ("last(rev)", "last(sum(revenue))"),
     ])
     def test_binds_to_the_inline_transform(self, saved, inline):
         key = _measure_key(saved)
@@ -196,8 +189,8 @@ class TestSavedMeasureOperand:
         assert key == _measure_key(inline)
 
     @pytest.mark.parametrize("saved, inline", [
-        ("first(rev)", "first(revenue:sum)"),
-        ("first(rev * 2)", "first(revenue:sum * 2)"),
+        ("first(rev)", "first(sum(revenue))"),
+        ("first(rev * 2)", "first(sum(revenue) * 2)"),
     ])
     def test_plans_identically(self, saved, inline):
         def plan(formula):
@@ -220,8 +213,8 @@ async def exec_engine(request):
 
 class TestSavedMeasureExecution:
     @pytest.mark.parametrize("saved, inline", [
-        ("first(rev)", "first(revenue:sum)"),
-        ("first(rev * 2)", "first(revenue:sum * 2)"),
+        ("first(rev)", "first(sum(revenue))"),
+        ("first(rev * 2)", "first(sum(revenue) * 2)"),
     ])
     async def test_values_match_inline(self, exec_engine, saved, inline):
         got = await exec_engine.execute(
@@ -245,26 +238,26 @@ PARITY = {
     "recursive_saved": lambda fn: {
         "measures": [ModelMeasure(formula=f"{fn}(rev_twice)", name="m")]},
     "alias_in_filter": lambda fn: {
-        "measures": [ModelMeasure(formula="revenue:sum", name="r")],
+        "measures": [ModelMeasure(formula="sum(revenue)", name="r")],
         "filters": [f"{fn}(r) > 0"]},
     "alias_in_order": lambda fn: {
-        "measures": [ModelMeasure(formula="revenue:sum", name="r")],
+        "measures": [ModelMeasure(formula="sum(revenue)", name="r")],
         "order": [{"column": f"{fn}(r)", "direction": "desc"}]},
     "unselected_saved_in_filter": lambda fn: {
-        "measures": [ModelMeasure(formula="qty:sum", name="q")],
+        "measures": [ModelMeasure(formula="sum(qty)", name="q")],
         "filters": [f"{fn}(rev) > 0"]},
     "unselected_saved_in_order": lambda fn: {
-        "measures": [ModelMeasure(formula="qty:sum", name="q")],
+        "measures": [ModelMeasure(formula="sum(qty)", name="q")],
         "order": [{"column": f"{fn}(rev)", "direction": "desc"}]},
     "sibling_wrappers": lambda fn: {
-        "measures": [ModelMeasure(formula="revenue:sum", name="r"),
-                     ModelMeasure(formula="qty:sum", name="s")],
+        "measures": [ModelMeasure(formula="sum(revenue)", name="r"),
+                     ModelMeasure(formula="sum(qty)", name="s")],
         "filters": [f"{fn}(r) + {fn}(s) > 0"]},
     "wrapper_of_wrapper": lambda fn: {
-        "measures": [ModelMeasure(formula=f"{fn}({fn}(revenue:sum))", name="m")]},
+        "measures": [ModelMeasure(formula=f"{fn}({fn}(sum(revenue)))", name="m")]},
     "wrapper_beside_cumsum": lambda fn: {
         "measures": [ModelMeasure(
-            formula=f"{fn}(revenue:sum) * 2 + {fn}(revenue:sum) + cumsum(qty:sum)",
+            formula=f"{fn}(sum(revenue)) * 2 + {fn}(sum(revenue)) + cumsum(sum(qty))",
             name="m")]},
     "partitioned_operand": lambda fn: {
         "dimensions": ["store"],

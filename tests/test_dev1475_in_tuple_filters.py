@@ -157,7 +157,7 @@ class TestParserGuards:
         )
         engine, _ = _make_engine_with_orders()
         query = SlayerQuery.model_validate({
-            "source_model": "orders", "measures": [{"formula": "*:count"}], "filters": ["status in 'a'"],
+            "source_model": "orders", "measures": [{"formula": "count(*)"}], "filters": ["status in 'a'"],
         })
         with pytest.raises(DateOperandTypeError, match="status"):
             engine.execute_sync(query=query, dry_run=True)
@@ -294,11 +294,11 @@ def _make_engine_with_orders_and_stores() -> tuple:
 class TestSQLEmission:
     def test_in_filter_emits_sql_in_clause(self):
         engine, _ = _make_engine_with_orders()
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            filters=["status in ('completed', 'pending')"],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "filters": ["status in ('completed', 'pending')"],
+        })
         sql = engine.execute_sync(query=query, dry_run=True).sql
 
         assert "IN" in sql
@@ -309,11 +309,11 @@ class TestSQLEmission:
 
     def test_not_in_emits_sql_not_in(self):
         engine, _ = _make_engine_with_orders()
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            filters=["status not in ('cancelled', 'expired')"],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "filters": ["status not in ('cancelled', 'expired')"],
+        })
         sql = engine.execute_sync(query=query, dry_run=True).sql
 
         # sqlglot emits the canonical ``NOT <col> IN (...)`` form (the
@@ -331,13 +331,13 @@ class TestSQLEmission:
         # Regression on 7a1110f territory: an n-ary AND fold over an IN
         # predicate plus a numeric comparison must keep both predicates.
         engine, _ = _make_engine_with_orders()
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            filters=[
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "filters": [
                 "status in ('completed', 'pending') and amount > 100",
             ],
-        )
+        })
         sql = engine.execute_sync(query=query, dry_run=True).sql
 
         assert "IN" in sql
@@ -350,12 +350,12 @@ class TestSQLEmission:
 
     def test_in_filter_on_joined_column_emits_qualified(self):
         engine, orders, stores = _make_engine_with_orders_and_stores()
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            dimensions=["stores.name"],
-            filters=["stores.name in ('Brooklyn', 'Philadelphia')"],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "dimensions": ["stores.name"],
+            "filters": ["stores.name in ('Brooklyn', 'Philadelphia')"],
+        })
         sql = engine.execute_sync(query=query, dry_run=True).sql
 
         assert "IN" in sql

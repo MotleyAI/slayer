@@ -54,16 +54,16 @@ DUCKDB_PAIR_STRIDE = 4
 #: Cross-model partitioned operands. A combined consumer needs its
 #: partition key among the query dimensions, so these pin to ``cmgrain``.
 CM_PARTITIONED_MEASURES = {
-    "cm_part": "customers.spend:sum(partition_by=customers.regions.name)",
-    "cm_last": "customers.spend:last(partition_by=customers.regions.name)",
+    "cm_part": "sum(customers.spend, partition_by=customers.regions.name)",
+    "cm_last": "last(customers.spend, partition_by=customers.regions.name)",
 }
 CM_PARTITIONED_OPERANDS = frozenset(CM_PARTITIONED_MEASURES)
 MEASURE_REQUIRED_FAMILY = {k: "cmgrain" for k in CM_PARTITIONED_MEASURES}
 
 #: A local ratio composite and a transform over it.
 RATIO_MEASURES = {
-    "ratio": "amount:sum / *:count",
-    "ratio_cumsum": "cumsum(amount:sum / *:count)",
+    "ratio": "sum(amount) / count(*)",
+    "ratio_cumsum": "cumsum(sum(amount) / count(*))",
 }
 TD_RATIO = frozenset({"ratio_cumsum"})
 
@@ -110,12 +110,12 @@ OPERAND_GRAIN = {
 
 #: Broadcast-coherence operand families (design D4) × arithmetic ops.
 OPERANDS = {
-    "plain": "amount:sum",
-    "part_region": "amount:sum(partition_by=region)",
-    "part_city": "amount:sum(partition_by=city)",
-    "last_part": "amount:last(partition_by=region)",
-    "win_part": "amount:sum(window='90d', partition_by=region)",
-    "cm": "customers.spend:sum",
+    "plain": "sum(amount)",
+    "part_region": "sum(amount, partition_by=region)",
+    "part_city": "sum(amount, partition_by=city)",
+    "last_part": "last(amount, partition_by=region)",
+    "win_part": "sum(amount, window='90d', partition_by=region)",
+    "cm": "sum(customers.spend)",
     "cm_part": CM_PARTITIONED_MEASURES["cm_part"],
     "cm_last": CM_PARTITIONED_MEASURES["cm_last"],
 }

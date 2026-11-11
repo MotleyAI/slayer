@@ -68,38 +68,38 @@ from tests._dev1832_fixtures import (
 from tests._rank_direction_fixtures import rank_windows
 
 # Source formulas under test.
-GRAINED_CUMSUM = "sum(cumsum(amount:sum(partition_by=[region, ordered_at])) - 1)"
-UNGRAINED_CUMSUM = "sum(cumsum(amount:sum))"
+GRAINED_CUMSUM = "sum(cumsum(sum(amount, partition_by=[region, ordered_at])) - 1)"
+UNGRAINED_CUMSUM = "sum(cumsum(sum(amount)))"
 RANK_MIXED = "sum(quantity * rank(avg(unit_price, partition_by=product), direction='desc'))"
 JOINED_ROWLEAF_MIXED = "sum(customers.discount * avg(amount, partition_by=status))"
 
 # Collapsing / family constituents over X = the monthly per-region total.
-_X = "amount:sum(partition_by=[region, ordered_at])"
+_X = "sum(amount, partition_by=[region, ordered_at])"
 LAST_X = f"sum(last({_X}))"
 FIRST_X = f"sum(first({_X}))"
 CUMSUM_MINUS_LAST = f"sum(cumsum({_X}) - last({_X}))"
 # Two same-op transform constituents: distinct keys (sum vs max inner), same op.
-TWO_CUMSUM = f"sum(cumsum({_X}) - cumsum(amount:max(partition_by=[region, ordered_at])))"
+TWO_CUMSUM = f"sum(cumsum({_X}) - cumsum(max(amount, partition_by=[region, ordered_at])))"
 
 # Re-aggregation constituents in a mixed row source (row leaf * re-agg).
 COLLAPSE_MIXED = f"sum(amount * last({_X}))"
 HANDWRITTEN_MIN = f"sum(amount * min({_X}, partition_by=region))"
 # The re-aggregation inside HANDWRITTEN_MIN, on its own (the phase-collision case).
 REAGG_STANDALONE = f"min({_X}, partition_by=region)"
-EMPTY_GRAIN_MIXED = "sum(amount * last(amount:sum(partition_by=ordered_at)))"
+EMPTY_GRAIN_MIXED = "sum(amount * last(sum(amount, partition_by=ordered_at)))"
 WAVG_MIN_PARAM = f"weighted_avg(amount, weight=min({_X}, partition_by=region))"
 MIXED_COMBINED = (f"sum(amount * min({_X}, partition_by=region)) "
-                  "+ amount:sum(partition_by=region)")
-WINDOWED_INNER = "sum(rank(amount:sum(window='90d', partition_by=region), direction='desc'))"
+                  "+ sum(amount, partition_by=region)")
+WINDOWED_INNER = "sum(rank(sum(amount, window='90d', partition_by=region), direction='desc'))"
 # Cross-model grained inner: the host-time-axis boundary (fanning hop), the legal
 # to-one key, and the non-time contrast that still associates.
-XMODEL_BOUNDARY = ("sum(cumsum(customers.spend:sum("
+XMODEL_BOUNDARY = ("sum(cumsum(sum(customers.spend, "
                    "partition_by=[customers.tier, ordered_at])))")
-XMODEL_TOONE = "sum(cumsum(amount:sum(partition_by=[customers.tier, ordered_at])))"
-XMODEL_CONTRAST = "customers.spend:sum(partition_by=status)"
+XMODEL_TOONE = "sum(cumsum(sum(amount, partition_by=[customers.tier, ordered_at])))"
+XMODEL_CONTRAST = "sum(customers.spend, partition_by=status)"
 # Orders-rooted mixed re-aggregation grouped by a fanning dimension (mode axis).
 FAN_DIM = "customers.regions.region_events.value"
-MIXED_FAN = "sum(weight * min(amount:sum(partition_by=[status, channel]), partition_by=status))"
+MIXED_FAN = "sum(weight * min(sum(amount, partition_by=[status, channel]), partition_by=status))"
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -172,7 +172,7 @@ class TestUngrainedTransformConstituent:
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
             measures=[ModelMeasure(
-                formula="coalesce(sum(cumsum(amount:sum)), 0)", name="m")],
+                formula="coalesce(sum(cumsum(sum(amount))), 0)", name="m")],
             time_dimensions=month_td()))
         assert _by_month(resp, "m") == pytest.approx(UNGRAINED_CUMSUM_BY_MONTH)
 
@@ -192,7 +192,7 @@ class TestDualGranularityQueryGrain:
     def test_ungrained_inner_is_grained_at_both_buckets(self, tds):
         elab = elaborate_query(
             query=monthly_q(
-                measures=[ModelMeasure(formula="sum(rank(amount:sum, direction='desc'))", name="m")],
+                measures=[ModelMeasure(formula="sum(rank(sum(amount), direction='desc'))", name="m")],
                 time_dimensions=tds),
             bundle=_monthly_bundle())
         assert elab.prebound is not None
@@ -209,7 +209,7 @@ class TestDualGranularityQueryGrain:
         # per-column grain would rank the lone yearly total (1 everywhere).
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            measures=[ModelMeasure(formula="sum(rank(amount:sum, direction='desc'))", name="m")],
+            measures=[ModelMeasure(formula="sum(rank(sum(amount), direction='desc'))", name="m")],
             time_dimensions=[*month_td(), _year_td()]))
         got = {month_key(row["monthly.ordered_at.month"]): row["monthly.m"]
                for row in resp.data}
@@ -267,7 +267,7 @@ class TestTransformSourceRejections:
         # (check_dimension_temporal_axis → TimeAxisError), position-neutral.
         query = monthly_q(
             measures=[ModelMeasure(
-                formula="sum(cumsum(amount:sum(partition_by=region)))", name="m")],
+                formula="sum(cumsum(sum(amount, partition_by=region)))", name="m")],
             time_dimensions=month_td())
         with pytest.raises(TimeAxisError, match="time axis"):
             await gen(query)
@@ -275,14 +275,14 @@ class TestTransformSourceRejections:
     async def test_axis_check_covers_filter_and_order_positions(self):
         # The axis check must walk filter and order constituents too, not just
         # measures (a coarser producer grain would else reach planning).
-        axis_missing = "sum(cumsum(amount:sum(partition_by=region)))"
+        axis_missing = "sum(cumsum(sum(amount, partition_by=region)))"
         filter_query = monthly_q(
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
             filters=[f"{axis_missing} > 5"], time_dimensions=month_td())
         with pytest.raises(TimeAxisError, match="time axis"):
             await gen(filter_query)
         order_query = monthly_q(
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
             order=[{"column": axis_missing, "direction": "desc"}],
             time_dimensions=month_td())
         with pytest.raises(TimeAxisError, match="time axis"):
@@ -293,7 +293,7 @@ class TestTransformSourceRejections:
         # reach the no-time-dimension guard (time attach + unresolved-time walk
         # descend into an aggregate arg).
         query = monthly_q(measures=[ModelMeasure(
-            formula="coalesce(sum(cumsum(amount:sum)), 0)", name="m")])
+            formula="coalesce(sum(cumsum(sum(amount))), 0)", name="m")])
         with pytest.raises(ValueError, match="unambiguous time dimension"):
             await gen(query)
 
@@ -384,7 +384,7 @@ class TestCollapsingRejections:
         # A collapsing transform over an ungrained aggregate in a computed
         # dimension is the Axiom 9 residue error — collapse does not bypass it.
         query = monthly_q(
-            dimensions=[{"expression": "last(amount:sum)", "name": "b"}],
+            dimensions=[{"expression": "last(sum(amount))", "name": "b"}],
             measures=[ModelMeasure(formula=UNGRAINED_CUMSUM, name="m")],
             time_dimensions=month_td())
         with pytest.raises(ValueError, match="partition_by"):
@@ -511,7 +511,7 @@ class TestReaggMixedSource:
     async def test_collapse_mixed_in_filter_position(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
             filters=[f"{COLLAPSE_MIXED} > 400"], time_dimensions=month_td()))
         # collapse-mixed is Jan 375 / Feb 825 / Mar 900 → only Feb, Mar survive,
         # each keeping its unfiltered amount:sum (a measure-typed filter prunes only).
@@ -520,7 +520,7 @@ class TestReaggMixedSource:
     async def test_collapse_mixed_in_order_position(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
             order=[{"column": COLLAPSE_MIXED, "direction": "desc"}],
             time_dimensions=month_td()))
         month_col = next(c for c in resp.columns if "ordered_at" in c)
@@ -555,10 +555,10 @@ class TestReaggMixedPlanStructure:
     async def test_adding_mixed_reagg_is_cardinality_neutral(self, exec_backend):
         _, engine = exec_backend
         base = await engine.execute(monthly_q(
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
             time_dimensions=month_td()))
         with_mixed = await engine.execute(monthly_q(
-            measures=[ModelMeasure(formula="amount:sum", name="s"),
+            measures=[ModelMeasure(formula="sum(amount)", name="s"),
                       ModelMeasure(formula=HANDWRITTEN_MIN, name="m")],
             time_dimensions=month_td()))
         assert len(with_mixed.data) == len(base.data)

@@ -322,7 +322,7 @@ class TestModelExtensionRegexColumnEndToEnd:
                 )],
             ),
             dimensions=[ColumnRef(name="rx")],
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         result = await engine.execute(query=query)
         by_rx = {int(row["orders.rx"]): row["orders._count"] for row in result.data}

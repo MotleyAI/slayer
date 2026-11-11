@@ -95,14 +95,14 @@ def _bundle() -> ResolvedSourceBundle:
 
 class TestLiftedDirection:
     @pytest.mark.parametrize(
-        "formula", ["cumsum(amount:sum)", "time_shift(amount:sum, -1)"],
+        "formula", ["cumsum(sum(amount))", "time_shift(sum(amount), -1)"],
     )
     async def test_band_with_transform_renders(self, formula: str) -> None:
         sql = await gen(q(
             dimensions=["region", BAND],
             time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
+                ModelMeasure(formula="sum(amount)", name="m"),
                 ModelMeasure(formula=formula, name="x"),
             ],
         ))
@@ -115,9 +115,9 @@ class TestLiftedDirection:
             dimensions=["region", BAND],
             time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
-                ModelMeasure(formula="amount:sum(partition_by=region)", name="rt"),
-                ModelMeasure(formula="time_shift(amount:sum, -1)", name="prev"),
+                ModelMeasure(formula="sum(amount)", name="m"),
+                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
+                ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
             ],
         ))
         assert "__regroup__" not in sql, sql
@@ -134,8 +134,8 @@ class TestRemainingArmsExactMessages:
             dimensions=["region", BAND],
             time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
-                ModelMeasure(formula="amount:sum(window='1y')", name="w"),
+                ModelMeasure(formula="sum(amount)", name="m"),
+                ModelMeasure(formula="sum(amount, window='1y')", name="w"),
             ],
         ))
         assert "__regroup__" not in sql, sql
@@ -145,8 +145,8 @@ class TestRemainingArmsExactMessages:
         sql = await gen(q(
             dimensions=["region", BAND],
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
-                ModelMeasure(formula="amount:last", name="l"),
+                ModelMeasure(formula="sum(amount)", name="m"),
+                ModelMeasure(formula="last(amount)", name="l"),
             ],
         ))
         assert "__regroup__" not in sql, sql
@@ -158,8 +158,8 @@ class TestRemainingArmsExactMessages:
         sql = await gen(q(
             dimensions=["region", BAND],
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
-                ModelMeasure(formula="customers.spend:sum", name="cm"),
+                ModelMeasure(formula="sum(amount)", name="m"),
+                ModelMeasure(formula="sum(customers.spend)", name="cm"),
             ],
         ))
         assert "__regroup__" not in sql, sql
@@ -191,7 +191,7 @@ class TestCteBodyArms:
         bundle = _bundle()
         planned = plan_query(query=q(
             dimensions=["region", BAND],
-            measures=[ModelMeasure(formula="amount:sum", name="m")],
+            measures=[ModelMeasure(formula="sum(amount)", name="m")],
         ), bundle=bundle)
         self._assert_hoistable(*self._split_cte_body(planned, bundle))
 
@@ -200,7 +200,7 @@ class TestCteBodyArms:
         planned = plan_query(query=q(
             dimensions=["region"],
             measures=[
-                ModelMeasure(formula="amount:sum(partition_by=region)", name="rt"),
+                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
             ],
         ), bundle=bundle)
         self._assert_hoistable(*self._split_cte_body(planned, bundle))
@@ -224,12 +224,12 @@ class TestStalePlannerRefsRepointed:
         # lifted; the residual check is attributability — `region` is a host
         # column, unreachable from the customers root.
         cband = (
-            "CASE WHEN customers.spend:sum(partition_by=region) > 100 "
+            "CASE WHEN sum(customers.spend, partition_by=region) > 100 "
             "THEN 1 ELSE 0 END"
         )
         query = q(
             dimensions=["region", {"expression": cband, "name": "cband"}],
-            measures=[ModelMeasure(formula="amount:sum", name="m")],
+            measures=[ModelMeasure(formula="sum(amount)", name="m")],
             to_many_handling="broadcast",
         )
         with pytest.raises(ValueError, match=r"partition_by") as ei:

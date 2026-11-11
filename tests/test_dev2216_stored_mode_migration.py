@@ -15,9 +15,9 @@ from slayer.storage.migrations import CURRENT_VERSIONS
 from tests._stored_upgrade_fixtures import BACKENDS, DS, memory_v2, query_backed_v10, raw_doc, raw_store, rev_query
 
 #: The last SlayerQuery version whose saves wrote the broadcast default.
-PREVIOUS = 9
+PREVIOUS = 10
 #: The last SlayerModel version before this change.
-PREVIOUS_MODEL = 18
+PREVIOUS_MODEL = 19
 
 
 def _stored(**fields: Any) -> SlayerQuery:

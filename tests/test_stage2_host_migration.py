@@ -122,7 +122,7 @@ class TestJoinOrderParity:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="customers.region_id")],    # joined dim
-            measures=[ModelMeasure(formula="wh_pop:sum")],         # derived source (warehouses)
+            measures=[ModelMeasure(formula="sum(wh_pop)")],         # derived source (warehouses)
             filters=["customers.regions.population > 100"],        # WHERE (customers→regions)
         )
         sql = await _engine_generate(
@@ -163,7 +163,7 @@ class TestPlaceholderLimitOne:
         )
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="customers.balance:sum")],
+            measures=[ModelMeasure(formula="sum(customers.balance)")],
             filters=["amount > 100"],
         )
         sql = await _engine_generate(
@@ -203,7 +203,7 @@ class TestPlaceholderLimitOne:
         )
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="customers.balance:sum")],
+            measures=[ModelMeasure(formula="sum(customers.balance)")],
             filters=["shippers.code = 'X'"],
         )
         sql = await _engine_generate(

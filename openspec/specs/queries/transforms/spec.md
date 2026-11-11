@@ -810,7 +810,7 @@ customer 2 in 2024-02/03/04/06/07/08 with amounts 300, 50, 300, 80, 300, 300
 
 - **WHEN** an inner stage aggregates customer 1's orders to month totals and an
   outer stage declares a month time dimension over the inner stage's month
-  column and requests `consecutive_periods(<total>:sum > 100)`
+  column and requests `consecutive_periods(sum(<total>) > 100)`
 - **THEN** the values are 1, 2, 3, 1, 2, 3, 4, 1, 2 — identical to the
   model-backed query
 

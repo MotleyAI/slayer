@@ -221,7 +221,7 @@ async def test_mcp_arguments_errors_and_client_never_leave(sentinel_store: str) 
             "measures": [f"{SENT}_agg({SENT}_col)"],
             "filters": [f"'{HOSTILE}' == '{HOSTILE}'"],
         }})
-        await session.call_tool("inspect_model", {"model_name": HOSTILE})
+        await session.call_tool("inspect", {"entity_type": "model", "reference": HOSTILE, "compact": False})
         await session.call_tool("save_memory", {"learning": HOSTILE, "linked_entities": [f"{SENT}_ds.{SENT}_model"]})
         await session.call_tool("search", {"question": HOSTILE})
         await session.call_tool("describe_datasource", {"name": HOSTILE})

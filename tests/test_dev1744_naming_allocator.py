@@ -210,8 +210,8 @@ class TestCrossModelCteNameAllocation:
         await _isolated_then_combined(
             engine,
             measures=[
-                ModelMeasure(formula="customers.Rev:sum", name="upper"),
-                ModelMeasure(formula="customers.rev:sum", name="lower"),
+                ModelMeasure(formula="sum(customers.Rev)", name="upper"),
+                ModelMeasure(formula="sum(customers.rev)", name="lower"),
             ],
         )
 
@@ -223,8 +223,8 @@ class TestCrossModelCteNameAllocation:
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
                 measures=[
-                    ModelMeasure(formula="customers.Rev:sum", name="upper"),
-                    ModelMeasure(formula="customers.rev:sum", name="lower"),
+                    ModelMeasure(formula="sum(customers.Rev)", name="upper"),
+                    ModelMeasure(formula="sum(customers.rev)", name="lower"),
                 ],
             ),
             dry_run=True,
@@ -247,8 +247,8 @@ class TestCrossModelCteNameAllocation:
         await _isolated_then_combined(
             engine,
             measures=[
-                ModelMeasure(formula="customers.revenue:sum", name="xmodel"),
-                ModelMeasure(formula="customers__revenue:sum", name="local"),
+                ModelMeasure(formula="sum(customers.revenue)", name="xmodel"),
+                ModelMeasure(formula="sum(customers__revenue)", name="local"),
             ],
         )
 
@@ -258,8 +258,8 @@ class TestCrossModelCteNameAllocation:
         await _isolated_then_combined(
             engine,
             measures=[
-                ModelMeasure(formula="amount:sum", name="unfiltered"),
-                ModelMeasure(formula="customers__revenue:sum", name="filtered"),
+                ModelMeasure(formula="sum(amount)", name="unfiltered"),
+                ModelMeasure(formula="sum(customers__revenue)", name="filtered"),
             ],
         )
 
@@ -271,8 +271,8 @@ class TestCrossModelCteNameAllocation:
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
                 measures=[
-                    ModelMeasure(formula="customers.revenue:sum"),
-                    ModelMeasure(formula="customers.Rev:sum"),
+                    ModelMeasure(formula="sum(customers.revenue)"),
+                    ModelMeasure(formula="sum(customers.Rev)"),
                 ],
             )
         )
@@ -299,10 +299,10 @@ class TestCrossModelCteNameAllocation:
                 measures=[
                     # Hidden CMA feeding a transform.
                     ModelMeasure(
-                        formula="cumsum(customers.revenue:sum)", name="run",
+                        formula="cumsum(sum(customers.revenue))", name="run",
                     ),
                     # A second cross-model aggregate, so a leaked alias differs.
-                    ModelMeasure(formula="customers.Rev:sum", name="rv"),
+                    ModelMeasure(formula="sum(customers.Rev)", name="rv"),
                 ],
                 to_many_handling="broadcast",
             ),
@@ -333,8 +333,8 @@ class TestCrossModelCteNameAllocation:
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
                 measures=[
-                    ModelMeasure(formula="customers.revenue:sum", name="a"),
-                    ModelMeasure(formula="customers.revenue:sum", name="b"),
+                    ModelMeasure(formula="sum(customers.revenue)", name="a"),
+                    ModelMeasure(formula="sum(customers.revenue)", name="b"),
                 ],
             ),
             dry_run=True,
@@ -350,8 +350,8 @@ class TestCrossModelCteNameAllocation:
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
                 measures=[
-                    ModelMeasure(formula="customers.revenue:sum", name="a"),
-                    ModelMeasure(formula="customers.revenue:sum", name="b"),
+                    ModelMeasure(formula="sum(customers.revenue)", name="a"),
+                    ModelMeasure(formula="sum(customers.revenue)", name="b"),
                 ],
             )
         )
@@ -425,8 +425,8 @@ class TestAllocatorRouting:
                     ),
                 ],
                 measures=[
-                    ModelMeasure(formula="amount:sum(window='90d')", name="Wm"),
-                    ModelMeasure(formula="amount:sum(window='30d')", name="wm"),
+                    ModelMeasure(formula="sum(amount, window='90d')", name="Wm"),
+                    ModelMeasure(formula="sum(amount, window='30d')", name="wm"),
                 ],
             ),
             dry_run=True,
@@ -541,8 +541,8 @@ class TestInternalNamesDoNotCollideWithUserColumns:
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
                 measures=[
-                    ModelMeasure(formula=f"{column}:sum", name="hostile_sum"),
-                    ModelMeasure(formula="amount:sum", name="amt"),
+                    ModelMeasure(formula=f"sum({column})", name="hostile_sum"),
+                    ModelMeasure(formula="sum(amount)", name="amt"),
                 ],
             )
         )
@@ -565,7 +565,7 @@ class TestInternalNamesDoNotCollideWithUserColumns:
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name=column)],
-                measures=[ModelMeasure(formula="amount:sum", name="amt")],
+                measures=[ModelMeasure(formula="sum(amount)", name="amt")],
             )
         )
         assert {r[f"orders.{column}"] for r in resp.data} == {1.0, 2.0, 3.0}
@@ -582,7 +582,7 @@ class TestInternalNamesDoNotCollideWithUserColumns:
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="amount:last", name="lastamt")],
+                measures=[ModelMeasure(formula="last(amount)", name="lastamt")],
             )
         )
         by_status = {r["orders.status"]: r["orders.lastamt"] for r in resp.data}
@@ -606,7 +606,7 @@ class TestInternalNamesDoNotCollideWithUserColumns:
                     ),
                 ],
                 measures=[
-                    ModelMeasure(formula="amount:sum(window='90d')", name="w"),
+                    ModelMeasure(formula="sum(amount, window='90d')", name="w"),
                 ],
             )
         )

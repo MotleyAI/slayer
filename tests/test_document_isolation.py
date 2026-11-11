@@ -325,9 +325,10 @@ class TestEnumerationSurfaces:
         assert all(name in text for name in GOOD_MODELS)
         _assert_one_warning(recorded, name=BAD, cause=CAUSE)
 
-    async def test_mcp_inspect_model_unknown_lists_the_rest(self, bad_store: StorageBackend, recorded: list) -> None:
-        text = await _mcp_text(bad_store, tool="inspect_model", arguments={"model_name": "nope"})
-        assert all(f"{DS}.{name}" in text for name in GOOD_MODELS)
+    async def test_mcp_inspect_model_collection_lists_the_rest(self, bad_store: StorageBackend, recorded: list) -> None:
+        text = await _mcp_text(bad_store, tool="inspect", arguments={"entity_type": "model", "format": "json"})
+        listed = {f"{e['data_source']}.{m['name']}" for e in json.loads(text)["datasources"] for m in e["models"]}
+        assert all(f"{DS}.{name}" in listed for name in GOOD_MODELS)
         _assert_one_warning(recorded, name=BAD, cause=CAUSE)
 
     async def test_search_carries_the_warning(self, bad_store: StorageBackend, recorded: list) -> None:

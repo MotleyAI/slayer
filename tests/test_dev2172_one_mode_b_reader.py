@@ -91,6 +91,6 @@ async def storage(tmp_path: Path) -> YAMLStorage:
 
 
 async def test_quoted_identifier_in_a_filter_is_tagged(storage: YAMLStorage) -> None:
-    query = SlayerQuery(source_model="orders", filters=['"region" = \'x\''], measures=[ModelMeasure(formula="*:count")])
+    query = SlayerQuery(source_model="orders", filters=['"region" = \'x\''], measures=[ModelMeasure(formula="count(*)")])
     result = await extract_entities_from_query(query, storage=storage)
     assert "mydb.orders.region" in result.canonical_forms

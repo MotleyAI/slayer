@@ -1,7 +1,5 @@
-"""DEV-1588: ``inspect`` is exposed on all four surfaces — MCP tool,
-REST ``POST /inspect``, CLI ``slayer inspect``, and ``SlayerClient.inspect``
-/ ``inspect_sync``. ``inspect_model`` is kept as a thin passthrough with a
-``DEPRECATED`` note (behaviorally unchanged).
+"""``inspect`` is exposed on all four surfaces — MCP tool, REST ``POST /inspect``,
+CLI ``slayer inspect``, and ``SlayerClient.inspect`` / ``inspect_sync``.
 """
 
 from __future__ import annotations
@@ -54,7 +52,7 @@ async def _seed(storage: YAMLStorage) -> None:
                 description="FK to customers.",
             ),
         ],
-        measures=[ModelMeasure(name="aov", formula="amount:sum / *:count")],
+        measures=[ModelMeasure(name="aov", formula="sum(amount) / count(*)")],
         aggregations=[Aggregation(name="big", formula="MAX({col})")],
     ))
     await storage.set_datasource_priority(["mydb"])
@@ -96,24 +94,6 @@ class TestMcpSurface:
             },
         )
         assert "Column: mydb.orders.amount" in out
-
-    async def test_inspect_model_passthrough_still_works(
-        self, mcp_storage: YAMLStorage
-    ) -> None:
-        server = create_mcp_server(storage=mcp_storage)
-        out = await _call_tool(
-            server, name="inspect_model",
-            arguments={"model_name": "orders", "compact": False},
-        )
-        assert "# Model: `orders`" in out
-
-    async def test_inspect_model_marked_deprecated(
-        self, mcp_storage: YAMLStorage
-    ) -> None:
-        server = create_mcp_server(storage=mcp_storage)
-        tools = {t.name: t for t in await server.list_tools()}
-        assert "inspect_model" in tools
-        assert "DEPRECATED" in (tools["inspect_model"].description or "")
 
 
 # ---------------------------------------------------------------------------
@@ -224,8 +204,7 @@ class TestCliSurface:
     def test_run_inspect_not_found_prints_string(
         self, cli_storage: YAMLStorage
     ) -> None:
-        # A not-found lookup is a descriptive string result (exit 0), not a
-        # raised error — consistent with the inspect_model precedent.
+        # A not-found lookup is a descriptive string result (exit 0), not a raised error.
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             _run_inspect(

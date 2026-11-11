@@ -35,21 +35,21 @@ HOP = "region_events"
 MODES = ["broadcast", "associate", "error"]
 
 CM_KWARG = ModelMeasure(
-    formula="customers.spend:weighted_avg(weight=customers.regions.bad_pop)", name="w")
+    formula="weighted_avg(customers.spend, weight=customers.regions.bad_pop)", name="w")
 CM_POSITIONAL = ModelMeasure(
-    formula="customers.spend:weighted_avg(customers.regions.bad_pop)", name="w")
+    formula="weighted_avg(customers.spend, customers.regions.bad_pop)", name="w")
 CM_KWARG_CHAIN = ModelMeasure(
-    formula="customers.spend:weighted_avg(weight=customers.regions.bad_pop2)", name="w")
+    formula="weighted_avg(customers.spend, weight=customers.regions.bad_pop2)", name="w")
 LOCAL_KWARG = ModelMeasure(
-    formula="amount:weighted_avg(weight=customers.regions.bad_pop)", name="w")
-SOURCE_FANNING = ModelMeasure(formula="customers.regions.bad_pop:sum", name="w")  # source crosses the hop
-CM_DEFAULT = ModelMeasure(formula="customers.spend:wsumx", name="w")       # dotted default regions.bad_pop
-CM_DEFAULT_BARE = ModelMeasure(formula="customers.regions.pop:wbadbare", name="w")  # bare owner-local default bad_pop
-CM_DEFAULT_EXPR = ModelMeasure(formula="customers.spend:wsumy", name="w")  # expr default regions.bad_pop * 1
-CM_FILTER = ModelMeasure(formula="customers.bad_pop_spend:sum", name="w")  # measure-local regions.bad_pop > 0
-CM_GOOD = ModelMeasure(formula="customers.spend:wgood", name="w")          # default regions.derived_pop (to-one)
-CM_UNPARSE = ModelMeasure(formula="customers.spend:wunparse", name="w")
-CM_EXPR_UNPARSE = ModelMeasure(formula="customers.spend:wexpr_unparse", name="w")  # unparseable expr default → unnameable
+    formula="weighted_avg(amount, weight=customers.regions.bad_pop)", name="w")
+SOURCE_FANNING = ModelMeasure(formula="sum(customers.regions.bad_pop)", name="w")  # source crosses the hop
+CM_DEFAULT = ModelMeasure(formula="wsumx(customers.spend)", name="w")       # dotted default regions.bad_pop
+CM_DEFAULT_BARE = ModelMeasure(formula="wbadbare(customers.regions.pop)", name="w")  # bare owner-local default bad_pop
+CM_DEFAULT_EXPR = ModelMeasure(formula="wsumy(customers.spend)", name="w")  # expr default regions.bad_pop * 1
+CM_FILTER = ModelMeasure(formula="sum(customers.bad_pop_spend)", name="w")  # measure-local regions.bad_pop > 0
+CM_GOOD = ModelMeasure(formula="wgood(customers.spend)", name="w")          # default regions.derived_pop (to-one)
+CM_UNPARSE = ModelMeasure(formula="wunparse(customers.spend)", name="w")
+CM_EXPR_UNPARSE = ModelMeasure(formula="wexpr_unparse(customers.spend)", name="w")  # unparseable expr default → unnameable
 
 #: wgood (to-one derived default) executes today; behaviour-preserving pin.
 WGOOD_TOONE_DEFAULT = 134000.0
@@ -142,7 +142,7 @@ class TestUnanalyzableDefinition:
         """A source column's ``filter=`` referencing an unanalyzable derived
         column is an input dependency too — fail closed, never stamped ``()``."""
         q = orders_q(measures=[ModelMeasure(
-            formula="customers.flagged_spend:sum", name="fs")])
+            formula="sum(customers.flagged_spend)", name="fs")])
         with pytest.raises(ValueError) as ei:
             await unparse_engine.execute(q)
         msg = str(ei.value)

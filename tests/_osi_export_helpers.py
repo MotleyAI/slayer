@@ -106,8 +106,7 @@ async def reimport(env: Env, document: dict[str, Any], *, name: str = "reimporte
     target = await fresh_store(env, name)
     path = target.store.parent / f"{name}.osi.yaml"
     path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
-    args = SimpleNamespace(osi_path=str(path), datasource=env.datasource, dialect=None, storage=str(target.store),
-                           models_dir=None)
+    args = SimpleNamespace(osi_path=str(path), datasource=env.datasource, dialect=None, storage=str(target.store))
     engine = _engine(target)
     buffer = io.StringIO()
     try:

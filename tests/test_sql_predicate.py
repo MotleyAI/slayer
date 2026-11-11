@@ -1,6 +1,6 @@
 """Unit tests for slayer.sql.sql_predicate.parse_sql_predicate.
 
-Mode A SQL-mode filter validator (DEV-1369 round 2). Pre-rejects DSL
+Mode A SQL-mode filter validator. Pre-rejects DSL
 constructs (aggregation references, transform calls, raw OVER) and
 extracts column-shaped identifier tokens. Does not invoke sqlglot —
 dialect-aware parsing happens at SQL generation time.
@@ -105,3 +105,27 @@ class TestSqlPredicateRejects:
     def test_raw_over_window_rejected(self) -> None:
         with pytest.raises(ValueError, match="window function"):
             parse_sql_predicate("row_number() OVER (PARTITION BY x ORDER BY y) = 1")
+
+
+class TestSqlPredicateColons:
+    """Only a complete colon aggregation suffix outside string literals is refused."""
+
+    @pytest.mark.parametrize("formula", [
+        "note = 'x:sum'",
+        "note = 'customers.revenue:sum(p=1)'",
+        "amount::int > 5",
+        "created_at::date = '2024-01-01'",
+        "id = :name",
+    ])
+    def test_non_aggregation_colons_pass(self, formula: str) -> None:
+        assert parse_sql_predicate(formula).sql == formula
+
+    @pytest.mark.parametrize("formula", [
+        "amount:sum > 5",
+        "customers.revenue:sum > 1",
+        "price:percentile(p=0.9) > 1",
+        "note = 'a' AND amount:sum > 5",
+    ])
+    def test_colon_aggregation_rejected(self, formula: str) -> None:
+        with pytest.raises(ValueError, match="aggregation reference"):
+            parse_sql_predicate(formula)

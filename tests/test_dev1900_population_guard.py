@@ -29,8 +29,8 @@ from tests._dev1900_fixtures import (
 )
 
 MODES = ["broadcast", "associate", "error"]
-SPEND_SUM_LOCAL = ModelMeasure(formula="spend:sum", name="w")   # local on customers
-ORDERS_AMOUNT_PRODUCER = ModelMeasure(formula="orders.amount:sum", name="oa")  # cross-model producer
+SPEND_SUM_LOCAL = ModelMeasure(formula="sum(spend)", name="w")   # local on customers
+ORDERS_AMOUNT_PRODUCER = ModelMeasure(formula="sum(orders.amount)", name="oa")  # cross-model producer
 
 #: producer-only orders.amount:sum over ok orders = 82 (EXISTS pushdown, no guard).
 PRODUCER_ONLY_AMOUNT = 82.0
@@ -72,11 +72,11 @@ class TestFanningPopulationFilterRestrictsByAssociation:
     @pytest.mark.parametrize("mode", MODES)
     async def test_aggregate_only_in_filter_restricts(self, engine, mode):
         """The population aggregate lives only in a measure predicate
-        (``spend:sum > 1``): the fanning row filter still restricts by
+        (``sum(spend) > 1``): the fanning row filter still restricts by
         association, so tiers gold and silver survive without fanning."""
         resp = await engine.execute(cust_q(
             dimensions=["tier"],
-            filters=["orders.status = 'ok'", "spend:sum > 1"],
+            filters=["orders.status = 'ok'", "sum(spend) > 1"],
             to_many_handling=mode))
         assert {r["customers.tier"] for r in resp.data} == {"gold", "silver"}
 

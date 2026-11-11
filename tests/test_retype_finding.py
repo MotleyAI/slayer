@@ -314,30 +314,6 @@ class TestScalarAndList:
         assert _removed(entries, "dropped") == {"gone", "n_gone"}, entries
         assert _retypes(entries, "dropped") == {}, entries
 
-    async def test_no_type_name_from_a_160_client(self, duck: Duck) -> None:
-        """A 1.6.0 client's category probe reports no database type name."""
-        engine = duck.engine(client_factory=_category_gateway)
-        with pytest.warns(FutureWarning, match="get_result_column_types"):
-            entries = await _validate(engine, "ds")
-        found = _retypes(entries, "legacy_sql")
-        _assert_live(found["span"], stored=DataType.TIMESTAMP, live=DataType.TEXT, db_type=None)
-
-
-_CATEGORY = {DataType.INT: "number", DataType.DOUBLE: "number", DataType.TIMESTAMP: "time", DataType.DATE: "time",
-             DataType.BOOLEAN: "boolean"}
-
-
-class _CategoryGateway(DelegatingSqlClient):
-    """A 1.6.0 gateway: its only type probe is ``get_column_types``."""
-
-    async def get_column_types(self, sql: str) -> dict[str, str]:
-        types = await self.inner.get_result_column_types(sql)
-        return {name: _CATEGORY.get(t.type, "string") for name, t in types.items()}
-
-
-def _category_gateway(datasource: DatasourceConfig) -> SqlClient:
-    return _CategoryGateway(SlayerSQLClient(datasource=datasource))
-
 
 class TestForceClean:
     async def test_force_clean_keeps_retyped_columns_and_their_measures(self, duck: Duck) -> None:
@@ -381,7 +357,7 @@ class TestQueryTime:
 
     async def test_postgres_json_grouped(self, pg: SlayerQueryEngine) -> None:
         with pytest.raises(SchemaDriftError) as info:
-            await pg.execute({"source_model": "pg_sql", "dimensions": ["payload"], "measures": ["*:count"]})
+            await pg.execute({"source_model": "pg_sql", "dimensions": ["payload"], "measures": ["count(*)"]})
         err = info.value
         assert "payload" not in _removed(_dump(err.to_delete), "pg_sql"), err.to_delete
         assert "pg_sql.payload" in str(err), str(err)

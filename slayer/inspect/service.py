@@ -703,7 +703,6 @@ class InspectService:
             format=fmt,
             sections=sections,
             descriptions_max_chars=descriptions_max_chars,
-            compact=compact,
         )
         if fmt == "json":
             payload = json.loads(rendered)

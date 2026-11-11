@@ -45,14 +45,14 @@ async def decimal_engine(tmp_path):
 @pytest.mark.parametrize(
     argnames="measure,query_fields,expected",
     argvalues=[
-        ("amount:sum", {}, [Decimal("90071992547409.93")]),
+        ("sum(amount)", {}, [Decimal("90071992547409.93")]),
         (
-            {"formula": "amount:sum(window='2d')", "name": "total"},
+            {"formula": "sum(amount, window='2d')", "name": "total"},
             {"time_dimensions": [{"dimension": "created_at", "granularity": "day"}]},
             [Decimal("90071992547409.91"), Decimal("90071992547409.93")],
         ),
         (
-            {"formula": "amount:sum(partition_by=created_at)", "name": "total"},
+            {"formula": "sum(amount, partition_by=created_at)", "name": "total"},
             {"dimensions": ["id", "created_at"]},
             [Decimal("0.02"), Decimal("90071992547409.91")],
         ),
@@ -77,7 +77,7 @@ async def test_inferred_decimal_aggregates_preserve_native_precision(
 async def test_explicit_double_measure_still_casts(decimal_engine):
     query = {
         "source_model": "orders",
-        "measures": [{"formula": "amount:sum", "type": "DOUBLE"}],
+        "measures": [{"formula": "sum(amount)", "type": "DOUBLE"}],
     }
     result = await decimal_engine.execute(query=query)
     sql = (await decimal_engine.execute(query=query, dry_run=True)).sql
@@ -87,7 +87,7 @@ async def test_explicit_double_measure_still_casts(decimal_engine):
 
 
 async def test_cross_model_decimal_aggregate_preserves_native_precision(decimal_engine):
-    query = {"source_model": "orders", "measures": ["customers.amount:sum"]}
+    query = {"source_model": "orders", "measures": ["sum(customers.amount)"]}
     result = await decimal_engine.execute(query=query)
     sql = (await decimal_engine.execute(query=query, dry_run=True)).sql
 

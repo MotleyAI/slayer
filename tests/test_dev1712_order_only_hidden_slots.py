@@ -226,7 +226,7 @@ class TestGroupedLocalRowColumnMaxWrapped:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="desc")],
         )
         sql = await _sql(engine, query)
@@ -241,7 +241,7 @@ class TestGroupedLocalRowColumnMaxWrapped:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
             order=[
                 OrderItem(
                     column=ColumnRef(name="created_at"), direction="desc",
@@ -258,7 +258,7 @@ class TestGroupedLocalRowColumnMaxWrapped:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
             filters=["created_at > '2024-01-01'"],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="desc")],
         )
@@ -269,7 +269,7 @@ class TestGroupedLocalRowColumnMaxWrapped:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="amount:sum", name="rev")],
+            measures=[ModelMeasure(formula="sum(amount)", name="rev")],
             order=[
                 OrderItem(column=ColumnRef(name="created_at"), direction="desc"),
                 OrderItem(column=ColumnRef(name="rev"), direction="asc"),
@@ -284,7 +284,7 @@ class TestGroupedLocalRowColumnMaxWrapped:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
             order=[OrderItem(column=ColumnRef(name="id"), direction="asc")],
         )
         sql = await _sql(engine, query)
@@ -316,7 +316,7 @@ class TestJoinedRowColumnResolved:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
             order=[OrderItem(column=ColumnRef(name="customers.region"), direction="desc")],
         )
         sql = await _sql(engine, query)
@@ -378,7 +378,7 @@ class TestJoinedRowColumnResolved:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],  # local status
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
             order=[OrderItem(column="owners.status", direction="desc")],  # joined
         )
         resp = await engine.execute(query, dry_run=True)
@@ -396,8 +396,8 @@ class TestLocalAggregateHiddenOrder:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="*:count")],
-            order=[OrderItem(column="amount:sum", direction="desc")],
+            measures=[ModelMeasure(formula="count(*)")],
+            order=[OrderItem.model_validate({"column": "sum(amount)", "direction": "desc"})],
             limit=3,
         )
         sql = await _sql(engine, query)
@@ -416,7 +416,7 @@ class TestLocalAggregateHiddenOrder:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             distinct_dimension_values=False,
-            order=[OrderItem(column="amount:sum", direction="desc")],
+            order=[OrderItem.model_validate({"column": "sum(amount)", "direction": "desc"})],
         )
         with pytest.raises(DistinctDimensionValuesError):
             await _sql(engine, query)
@@ -426,8 +426,8 @@ class TestLocalAggregateHiddenOrder:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="customers.region")],
-            measures=[ModelMeasure(formula="*:count")],
-            order=[OrderItem(column="amount:sum")],
+            measures=[ModelMeasure(formula="count(*)")],
+            order=[OrderItem.model_validate({"column": "sum(amount)"})],
             limit=10,
         )
         sql = await _sql(engine, query)
@@ -441,7 +441,7 @@ class TestLocalAggregateHiddenOrder:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="amount:sum", name="rev")],
+            measures=[ModelMeasure(formula="sum(amount)", name="rev")],
             order=[OrderItem(column="rev", direction="desc")],
             limit=5,
         )
@@ -454,8 +454,8 @@ class TestLocalAggregateHiddenOrder:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="rank(amount:sum, direction='desc')", name="rk")],
-            order=[OrderItem(column="id:count", direction="desc")],
+            measures=[ModelMeasure(formula="rank(sum(amount), direction='desc')", name="rk")],
+            order=[OrderItem.model_validate({"column": "count(id)", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         outer = _outer_select_columns(sql)
@@ -469,8 +469,8 @@ class TestLocalAggregateHiddenOrder:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension="created_at", granularity="month")],
-            measures=[ModelMeasure(formula="cumsum(amount:sum)", name="cs")],
-            order=[OrderItem(column="customers.revenue:sum", direction="desc")],
+            measures=[ModelMeasure(formula="cumsum(sum(amount))", name="cs")],
+            order=[OrderItem.model_validate({"column": "sum(customers.revenue)", "direction": "desc"})],
             to_many_handling="broadcast",
         )
         sql = await _sql(engine, query)
@@ -485,8 +485,8 @@ class TestLocalAggregateHiddenOrder:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension="created_at", granularity="month")],
-            measures=[ModelMeasure(formula="change(amount:sum)", name="ch")],
-            order=[OrderItem(column="id:count", direction="desc")],
+            measures=[ModelMeasure(formula="change(sum(amount))", name="ch")],
+            order=[OrderItem.model_validate({"column": "count(id)", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         outer = _outer_select_columns(sql)
@@ -502,8 +502,8 @@ class TestLocalAggregateHiddenOrder:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension="created_at", granularity="month")],
-            measures=[ModelMeasure(formula="cumsum(customers.revenue:sum)", name="ccr")],
-            order=[OrderItem(column="id:count", direction="desc")],
+            measures=[ModelMeasure(formula="cumsum(sum(customers.revenue))", name="ccr")],
+            order=[OrderItem.model_validate({"column": "count(id)", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         outer = _outer_select_columns(sql)
@@ -518,8 +518,8 @@ class TestExecutionHiddenOrder:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="*:count")],
-            order=[OrderItem(column="amount:sum", direction="desc")],
+            measures=[ModelMeasure(formula="count(*)")],
+            order=[OrderItem.model_validate({"column": "sum(amount)", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
         statuses = [r["orders.status"] for r in resp.data]
@@ -534,7 +534,7 @@ class TestExecutionHiddenOrder:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="desc")],
         )
         resp = await exec_engine.execute(query)
@@ -566,8 +566,8 @@ class TestExecutionHiddenOrder:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="*:count")],
-            order=[OrderItem(column="amount:sum", direction="desc")],
+            measures=[ModelMeasure(formula="count(*)")],
+            order=[OrderItem.model_validate({"column": "sum(amount)", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
         keys = set(resp.attributes.dimensions) | set(resp.attributes.measures)
@@ -581,8 +581,8 @@ class TestCrossModelHiddenOrder:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             order=[
-                OrderItem(column="customers.revenue:sum", direction="desc"),
-                OrderItem(column="customers.revenue:max", direction="asc"),
+                OrderItem.model_validate({"column": "sum(customers.revenue)", "direction": "desc"}),
+                OrderItem.model_validate({"column": "max(customers.revenue)", "direction": "asc"}),
             ],
             limit=3,
         )
@@ -606,7 +606,7 @@ class TestCrossModelHiddenOrder:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            order=[OrderItem(column="customers.revenue:sum", direction="desc")],
+            order=[OrderItem.model_validate({"column": "sum(customers.revenue)", "direction": "desc"})],
             limit=3,
         )
         engine_obj, _ = engine
@@ -617,13 +617,13 @@ class TestCrossModelHiddenOrder:
         assert _outer_select_columns(sql) == ["orders.status"]
 
     async def test_diamond_same_leaf_same_agg_distinct_targets(self, engine) -> None:
-        """Two targets exposing the same leaf+agg (``customers.revenue:sum`` vs ``suppliers.revenue:sum``): target-path identity keeps them distinct CTEs, both hidden."""
+        """Two targets exposing the same leaf+agg (``sum(customers.revenue)`` vs ``sum(suppliers.revenue)``): target-path identity keeps them distinct CTEs, both hidden."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             order=[
-                OrderItem(column="customers.revenue:sum", direction="desc"),
-                OrderItem(column="suppliers.revenue:sum", direction="asc"),
+                OrderItem.model_validate({"column": "sum(customers.revenue)", "direction": "desc"}),
+                OrderItem.model_validate({"column": "sum(suppliers.revenue)", "direction": "asc"}),
             ],
             limit=3,
         )
@@ -646,7 +646,7 @@ class TestCrossModelHiddenOrder:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             distinct_dimension_values=False,
-            order=[OrderItem(column="customers.revenue:sum", direction="desc")],
+            order=[OrderItem.model_validate({"column": "sum(customers.revenue)", "direction": "desc"})],
         )
         with pytest.raises(DistinctDimensionValuesError):
             await _sql(engine, query)
@@ -656,8 +656,8 @@ class TestCrossModelHiddenOrder:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="*:count")],
-            order=[OrderItem(column="customers.revenue:sum", direction="desc")],
+            measures=[ModelMeasure(formula="count(*)")],
+            order=[OrderItem.model_validate({"column": "sum(customers.revenue)", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
         assert all("revenue_sum" not in c for c in resp.columns), f"columns: {resp.columns}"
@@ -671,7 +671,7 @@ class TestPartitionByGuard:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="rank(amount:sum, partition_by=status, direction='desc')", name="rk")],
+            measures=[ModelMeasure(formula="rank(sum(amount), partition_by=status, direction='desc')", name="rk")],
         )
         sql = await _sql(engine, query)
         assert "PARTITION BY" in sql.upper()
@@ -681,7 +681,7 @@ class TestPartitionByGuard:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="rank(amount:sum, partition_by=orders.status, direction='desc')", name="rk")],
+            measures=[ModelMeasure(formula="rank(sum(amount), partition_by=orders.status, direction='desc')", name="rk")],
         )
         sql = await _sql(engine, query)
         assert "PARTITION BY" in sql.upper()
@@ -691,7 +691,7 @@ class TestPartitionByGuard:
             source_model="orders",
             dimensions=[ColumnRef(name="customers.region")],
             measures=[ModelMeasure(
-                formula="rank(amount:sum, partition_by=customers.region, direction='desc')", name="rk")],
+                formula="rank(sum(amount), partition_by=customers.region, direction='desc')", name="rk")],
         )
         sql = await _sql(engine, query)
         assert "PARTITION BY" in sql.upper()
@@ -702,7 +702,7 @@ class TestPartitionByGuard:
             source_model="orders",
             time_dimensions=[TimeDimension(dimension="created_at", granularity="month")],
             measures=[ModelMeasure(
-                formula="rank(amount:sum, partition_by=created_at, direction='desc')", name="rk")],
+                formula="rank(sum(amount), partition_by=created_at, direction='desc')", name="rk")],
         )
         sql = await _sql(engine, query)
         # (a) No raw bare-column projection of created_at alongside the bucket (grain widening).
@@ -745,8 +745,8 @@ class TestPartitionByGuard:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                ModelMeasure(formula="amount:sum"),
-                ModelMeasure(formula="rank(amount:sum, partition_by=customer_id, direction='desc')", name="rk"),
+                ModelMeasure(formula="sum(amount)"),
+                ModelMeasure(formula="rank(sum(amount), partition_by=customer_id, direction='desc')", name="rk"),
             ],
         )
         with pytest.raises(ValueError) as ei:
@@ -766,7 +766,7 @@ class TestPartitionByGuard:
                 TimeDimension(dimension="created_at", granularity="day"),
             ],
             measures=[ModelMeasure(
-                formula="rank(amount:sum, partition_by=created_at, direction='desc')", name="rk")],
+                formula="rank(sum(amount), partition_by=created_at, direction='desc')", name="rk")],
         )
         with pytest.raises(ValueError) as ei:
             await _sql(engine, query)
@@ -781,7 +781,7 @@ class TestPartitionByGuard:
                 TimeDimension(dimension="created_at", granularity="month"),
             ],
             measures=[ModelMeasure(
-                formula="rank(amount:sum, partition_by=created_at, direction='desc')", name="rk")],
+                formula="rank(sum(amount), partition_by=created_at, direction='desc')", name="rk")],
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.created_at", "orders.rk"]
@@ -791,7 +791,7 @@ class TestPartitionByGuard:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[ModelMeasure(
-                formula="ntile(amount:sum, n=4, partition_by=customer_id)", name="q")],
+                formula="ntile(sum(amount), n=4, partition_by=customer_id)", name="q")],
         )
         with pytest.raises(ValueError) as ei:
             await _sql(engine, query)
@@ -806,8 +806,8 @@ class TestTransformOrderSupported:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension="created_at", granularity="month")],
-            measures=[ModelMeasure(formula="amount:sum")],
-            order=[OrderItem(column="change(amount:sum)", direction="desc")],
+            measures=[ModelMeasure(formula="sum(amount)")],
+            order=[OrderItem.model_validate({"column": "change(sum(amount))", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.created_at", "orders.amount_sum"]
@@ -817,8 +817,8 @@ class TestTransformOrderSupported:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension="created_at", granularity="month")],
-            measures=[ModelMeasure(formula="amount:sum")],
-            order=[OrderItem(column="cumsum(amount:sum)", direction="desc")],
+            measures=[ModelMeasure(formula="sum(amount)")],
+            order=[OrderItem.model_validate({"column": "cumsum(sum(amount))", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.created_at", "orders.amount_sum"]
@@ -830,7 +830,7 @@ class TestTransformOrderSupported:
 
     def test_composite_order_string_now_accepted_at_construction(self) -> None:
         """Composites with or without colon aggregations are expressions, judged at binding."""
-        for text in ("amount:sum / id:count", "rev / cnt"):
+        for text in ("sum(amount) / count(id)", "rev / cnt"):
             item = OrderItem.model_validate({"column": text, "direction": "desc"})
             assert item.column.name == "_expr_pending"
             assert item.raw_formula == text
@@ -842,8 +842,8 @@ class TestHostRootedIsolatedHiddenOrder:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="*:count")],
-            order=[OrderItem(column="flagged_amount:sum", direction="desc")],
+            measures=[ModelMeasure(formula="count(*)")],
+            order=[OrderItem.model_validate({"column": "sum(flagged_amount)", "direction": "desc"})],
             limit=3,
         )
         sql = await _sql(engine, query)

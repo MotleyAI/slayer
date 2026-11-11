@@ -34,11 +34,11 @@ def _sq_model(outer: str) -> SlayerModel:
             SlayerQuery(
                 name=f"s1_{outer}", source_model="sales",
                 dimensions=[ColumnRef(name="region"), ColumnRef(name="city")],
-                measures=[ModelMeasure(formula="amount:sum", name="ct")]),
+                measures=[ModelMeasure(formula="sum(amount)", name="ct")]),
             SlayerQuery(
                 source_model=f"s1_{outer}",
                 dimensions=[ColumnRef(name="region")],
-                measures=[ModelMeasure(formula=f"ct:{outer}", name="v")]),
+                measures=[ModelMeasure(formula=f"{outer}(ct)", name="v")]),
         ])
 
 

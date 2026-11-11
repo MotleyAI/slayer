@@ -20,7 +20,7 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 ALLOWED_DELTAS: dict[str, str] = {}
 
 WORKING_PREFIX = "regroup/"
-BAND = "CASE WHEN amount:sum(partition_by=city) > 5000 THEN 1 ELSE 0 END"
+BAND = "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END"
 
 
 def _q(**kw) -> SlayerQuery:
@@ -32,37 +32,37 @@ def _cases() -> dict:
     return {
         "regroup/flagship": _q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
-            measures=[{"formula": "amount:sum", "name": "band_total"}],
+            measures=[{"formula": "sum(amount)", "name": "band_total"}],
         ),
         "regroup/cross_model_partition": _q(
             dimensions=[
                 "region",
-                {"expression": "CASE WHEN amount:sum(partition_by=customers.region_id) "
+                {"expression": "CASE WHEN sum(amount, partition_by=customers.region_id) "
                                "> 10000 THEN 1 ELSE 0 END", "name": "band"},
             ],
-            measures=[{"formula": "amount:sum", "name": "s"}],
+            measures=[{"formula": "sum(amount)", "name": "s"}],
         ),
         "regroup/filter_on_band": _q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
             filters=["band == 1"],
-            measures=[{"formula": "amount:sum", "name": "band_total"}],
+            measures=[{"formula": "sum(amount)", "name": "band_total"}],
         ),
         "guard/missing_partition_by": _q(
             dimensions=[
                 "region",
-                {"expression": "CASE WHEN amount:sum > 5000 THEN 1 ELSE 0 END",
+                {"expression": "CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END",
                  "name": "band"},
             ],
-            measures=[{"formula": "amount:sum", "name": "t"}],
+            measures=[{"formula": "sum(amount)", "name": "t"}],
         ),
         "guard/transform_in_dim": _q(
             dimensions=[
                 "region",
-                {"expression": "CASE WHEN cumsum(amount:sum) > 5000 THEN 1 ELSE 0 END",
+                {"expression": "CASE WHEN cumsum(sum(amount)) > 5000 THEN 1 ELSE 0 END",
                  "name": "x"},
             ],
             time_dimensions=month_td(),
-            measures=[{"formula": "amount:sum", "name": "t"}],
+            measures=[{"formula": "sum(amount)", "name": "t"}],
         ),
         "guard/ddv_false": _q(
             dimensions=[{"expression": BAND, "name": "band"}],

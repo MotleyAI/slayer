@@ -39,13 +39,13 @@ from tests._dev1900_fixtures import make_exec_engine as dev1900_engine
 from tests._dev1910_fixtures import make_null_status_engine
 
 MODES = [pytest.param(None, id="default"), pytest.param("associate", id="associate")]
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
 COUNT = ModelMeasure(formula="count(customers.*)", name="n")
 LAST = ModelMeasure(formula="last(customers.spend, customers.signup_at)", name="ls")
 WINDOWED = ModelMeasure(formula="sum(customers.spend, window='90d')", name="win")
 MIXED = ModelMeasure(
     formula="last(customers.spend, customers.signup_at) + sum(customers.spend, window='90d')", name="mix")
-STAGE_ROWS = ModelMeasure(formula="*:count", name="k")
+STAGE_ROWS = ModelMeasure(formula="count(*)", name="k")
 SIGNUP_MONTH = [TimeDimension(dimension="customers.signup_at", granularity=TimeGranularity.MONTH)]
 FIRST_LAST = re.compile(r"first|last", re.IGNORECASE)
 WINDOW = re.compile(r"window", re.IGNORECASE)
@@ -120,7 +120,7 @@ class TestTheDefaultAssociates:
 
     async def test_local_metric_never_double_counts(self, engine) -> None:
         kw = {"source_model": "customers", "dimensions": ["orders.status"],
-              "measures": [ModelMeasure(formula="spend:sum", name="sp")]}
+              "measures": [ModelMeasure(formula="sum(spend)", name="sp")]}
         default = await engine.execute(_q(None, **kw))
         assoc = await engine.execute(_q("associate", **kw))
         cells = _status(default, "sp", root="customers")
@@ -136,7 +136,7 @@ class TestTheDefaultAssociates:
         assert associated_warnings(resp)
 
     async def test_host_safe_partition_key_associates(self, engine) -> None:
-        part = ModelMeasure(formula="customers.spend:sum(partition_by=status)", name="cm")
+        part = ModelMeasure(formula="sum(customers.spend, partition_by=status)", name="cm")
         default = await engine.execute(_q(None, dimensions=["status"], measures=[part]))
         assoc = await engine.execute(_q("associate", dimensions=["status"], measures=[part]))
         assert _same_rows(default, assoc)
@@ -146,17 +146,17 @@ class TestTheDefaultAssociates:
 class TestModeInvariance:
     async def test_fully_attributable_query(self, engine) -> None:
         kw = {"dimensions": ["status", "customers.tier"],
-              "measures": [ModelMeasure(formula="amount:sum", name="amt")]}
+              "measures": [ModelMeasure(formula="sum(amount)", name="amt")]}
         runs = [await engine.execute(_q(mode, **kw)) for mode in (None, "broadcast", "associate", "error")]
         assert all(_same_rows(r, runs[0]) for r in runs)
         for r in runs:
             assert not broadcast_warnings(r)
             assert not associated_warnings(r)
-        total = await engine.execute(_q(None, measures=[ModelMeasure(formula="amount:sum", name="amt")]))
+        total = await engine.execute(_q(None, measures=[ModelMeasure(formula="sum(amount)", name="amt")]))
         assert sum(float(r["orders.amt"]) for r in runs[0].data) == pytest.approx(float(total.data[0]["orders.amt"]))
 
     async def test_an_associated_measure_is_cardinality_neutral(self, engine) -> None:
-        amt = ModelMeasure(formula="amount:sum", name="amt")
+        amt = ModelMeasure(formula="sum(amount)", name="amt")
         without = await engine.execute(_q(None, dimensions=["status"], measures=[amt]))
         with_cm = await engine.execute(_q(None, dimensions=["status"], measures=[amt, CM]))
         assert len(with_cm.data) == len(without.data)
@@ -256,13 +256,13 @@ class TestBroadcastFallback:
 
     @pytest.mark.parametrize("mode", [None, "broadcast", "associate", "error"])
     async def test_input_safety_is_not_a_fallback(self, crossing_engine, mode) -> None:
-        query = _q(mode, dimensions=["status"], measures=[ModelMeasure(formula="customers.vip_spend:sum", name="vip")])
+        query = _q(mode, dimensions=["status"], measures=[ModelMeasure(formula="sum(customers.vip_spend)", name="vip")])
         with pytest.raises(UnsafeJoinInputError, match="unproven join hop"):
             await crossing_engine.execute(query)
 
     async def test_partition_key_fanning_from_its_host_fails_by_default(self, fanning_engine) -> None:
         query = _q(None, source_model="regions", dimensions=["bad_pop"],
-                   measures=[ModelMeasure(formula="pop:sum(partition_by=bad_pop)", name="w")])
+                   measures=[ModelMeasure(formula="sum(pop, partition_by=bad_pop)", name="w")])
         with pytest.raises(PartitionKeyError, match="region_events"):
             await fanning_engine.execute(query)
 

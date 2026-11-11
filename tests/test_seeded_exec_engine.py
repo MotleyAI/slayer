@@ -80,7 +80,7 @@ async def test_seeded_exec_engine_smoke(dialect: str) -> None:
             holder["path"] = db_path
             assert Path(db_path).exists()
             response = await engine.execute(
-                SlayerQuery(source_model="nums", measures=["*:count"]),  # type: ignore[arg-type]
+                SlayerQuery(source_model="nums", measures=["count(*)"]),  # type: ignore[arg-type]
             )
             assert response.data[0]["nums._count"] == 3
         # D9: close() ran, then invalidate_engine(), while the db file still existed

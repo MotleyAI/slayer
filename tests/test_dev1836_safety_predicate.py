@@ -249,7 +249,7 @@ class TestMayInlineSeam:
         )
         query = q(
             dimensions=[{"name": "status"}],
-            measures=[{"formula": "gold_amount:sum", "name": "g"}],
+            measures=[{"formula": "sum(gold_amount)", "name": "g"}],
         )
         planned = plan_query(query=query, bundle=bundle)
         assert planned.regroup_attach_plans, (

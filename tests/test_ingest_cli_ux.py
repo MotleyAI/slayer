@@ -46,7 +46,6 @@ def _args(workspace: Path, **overrides) -> SimpleNamespace:
         exclude=None,
         include_views=True,
         storage=str(workspace / "storage"),
-        models_dir=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -357,7 +356,6 @@ class TestDatasourcesCreateCarveOut:
             include_views=True,
             yes=True,
             storage=str(workspace / "storage"),
-            models_dir=None,
         )
         _run_datasources_create(args, storage)
         assert "No models were generated." in capsys.readouterr().out

@@ -49,29 +49,29 @@ class TestDefinitionDefaultHomePath:
     def test_root_local_direct_default_widens_to_root(self):
         # orders.amount is the query root's own column → the default is retained
         # as a genuine `()` home candidate, exactly like the explicit weight.
-        assert _home_path("customers.spend:wsum_host") == ()
-        assert _home_path("customers.spend:wsum_host(weight=orders.amount)") == ()
+        assert _home_path("wsum_host(customers.spend)") == ()
+        assert _home_path("wsum_host(customers.spend, weight=orders.amount)") == ()
 
     def test_root_local_expression_default_widens_to_root(self):
-        assert _home_path("customers.spend:wsum_host_expr") == ()
+        assert _home_path("wsum_host_expr(customers.spend)") == ()
 
     def test_mixed_frame_expression_default_widens_to_root(self):
         # spend resolves owner-local, orders.amount root-local; the root-local ref
         # retains `()`, so the home is the root — per-reference, not whole-from-root.
-        assert _home_path("customers.spend:wsum_mixed") == ()
+        assert _home_path("wsum_mixed(customers.spend)") == ()
 
     def test_owner_reachable_dotted_default_homes_like_explicit(self):
         # regions.pop resolves owner-relative to customers.regions.pop (deeper than
         # the source), so it homes exactly as spelling that explicitly would.
-        assert (_home_path("customers.spend:wsum_regions_pop")
+        assert (_home_path("wsum_regions_pop(customers.spend)")
                 == _home_path(
-                    "customers.spend:wsum_regions_pop(weight=customers.regions.pop)")
+                    "wsum_regions_pop(customers.spend, weight=customers.regions.pop)")
                 == ("customers",))
 
     def test_bare_default_stays_owner_local(self):
         # A bare `spend` resolves to the owner's customers.spend — never resurrected
         # as a bogus root-local `()` by the retention change.
-        assert _home_path("customers.spend:wsum_bare") == ("customers",)
+        assert _home_path("wsum_bare(customers.spend)") == ("customers",)
 
     def test_bare_default_at_anchor_never_widens(self):
         # A multi-leaf expression source anchored at customers with a bare default:
@@ -96,16 +96,16 @@ class TestDefinitionDefaultExecution:
 
     async def test_root_local_direct_default_matches_explicit(self, engine):
         explicit = await self._value(
-            engine=engine, formula="customers.spend:wsum_host(weight=orders.amount)")
+            engine=engine, formula="wsum_host(customers.spend, weight=orders.amount)")
         assert explicit == pytest.approx(WSUM_HOST_VALUE)
-        default = await self._value(engine=engine, formula="customers.spend:wsum_host")
+        default = await self._value(engine=engine, formula="wsum_host(customers.spend)")
         assert default == pytest.approx(explicit)
 
     async def test_root_local_expression_default_matches_explicit(self, engine):
         explicit = await self._value(
-            engine=engine, formula="customers.spend:wsum_host_expr(weight=orders.amount)")
+            engine=engine, formula="wsum_host_expr(customers.spend, weight=orders.amount)")
         assert explicit == pytest.approx(WSUM_HOST_VALUE)
-        default = await self._value(engine=engine, formula="customers.spend:wsum_host_expr")
+        default = await self._value(engine=engine, formula="wsum_host_expr(customers.spend)")
         assert default == pytest.approx(explicit)
 
     async def test_mixed_frame_default_resolves_per_reference(self, engine):
@@ -114,19 +114,19 @@ class TestDefinitionDefaultExecution:
         oracle = await self._value(
             engine=engine, formula="sum(customers.spend * (customers.spend + amount))")
         assert oracle == pytest.approx(WSUM_MIXED_VALUE)
-        default = await self._value(engine=engine, formula="customers.spend:wsum_mixed")
+        default = await self._value(engine=engine, formula="wsum_mixed(customers.spend)")
         assert default == pytest.approx(oracle)
 
     async def test_owner_reachable_dotted_default_matches_explicit(self, engine):
         explicit = await self._value(
-            engine=engine, formula="customers.spend:wsum_regions_pop(weight=customers.regions.pop)")
-        default = await self._value(engine=engine, formula="customers.spend:wsum_regions_pop")
+            engine=engine, formula="wsum_regions_pop(customers.spend, weight=customers.regions.pop)")
+        default = await self._value(engine=engine, formula="wsum_regions_pop(customers.spend)")
         assert default == pytest.approx(explicit)
 
     async def test_bare_default_matches_explicit(self, engine):
         explicit = await self._value(
-            engine=engine, formula="customers.spend:wsum_bare(weight=customers.spend)")
-        default = await self._value(engine=engine, formula="customers.spend:wsum_bare")
+            engine=engine, formula="wsum_bare(customers.spend, weight=customers.spend)")
+        default = await self._value(engine=engine, formula="wsum_bare(customers.spend)")
         assert default == pytest.approx(explicit)
 
     async def test_windowed_root_local_default_matches_explicit(self, engine):
@@ -140,8 +140,8 @@ class TestDefinitionDefaultExecution:
             return {tuple(v for k, v in sorted(r.items()) if k != "orders.w"):
                     r["orders.w"] for r in resp.data}
         explicit = await cells(
-            "customers.spend:wsum_host(window='90d', weight=orders.amount)")
-        default = await cells("customers.spend:wsum_host(window='90d')")
+            "wsum_host(customers.spend, window='90d', weight=orders.amount)")
+        default = await cells("wsum_host(customers.spend, window='90d')")
         assert default == explicit
         assert any(v is not None for v in default.values())
 
@@ -151,11 +151,11 @@ class TestFanningDefinitionDefaultFailsClosed:
     even when another input widens the home away from it."""
 
     def test_home_widens_to_customers(self):
-        assert _home_path("customers.regions.pop:wfan_widen") == ("customers",)
+        assert _home_path("wfan_widen(customers.regions.pop)") == ("customers",)
 
     async def test_fanning_default_fails_closed(self):
         q = orders_q(measures=[ModelMeasure(
-            formula="customers.regions.pop:wfan_widen", name="m")])
+            formula="wfan_widen(customers.regions.pop)", name="m")])
         models = dev1931_models()
         with pytest.raises(ValueError, match="(?i)unproven join hop|fanning") as ei:
             await gen(query=q, models=models)
@@ -168,7 +168,7 @@ class TestUnresolvableDefaultFailsClosed:
 
     async def test_qualifier_unreachable_from_owner_and_root(self):
         q = orders_q(measures=[ModelMeasure(
-            formula="customers.spend:wsum_nowhere", name="m")])
+            formula="wsum_nowhere(customers.spend)", name="m")])
         models = dev1931_models()
         with pytest.raises(ValueError):
             await gen(query=q, models=models)
@@ -176,7 +176,7 @@ class TestUnresolvableDefaultFailsClosed:
     async def test_partially_resolvable_owner_reference(self):
         # regions.plans.fee: regions resolves from the owner, plans is missing on it.
         q = orders_q(measures=[ModelMeasure(
-            formula="customers.spend:wsum_partial", name="m")])
+            formula="wsum_partial(customers.spend)", name="m")])
         models = dev1931_models()
         with pytest.raises(ValueError):
             await gen(query=q, models=models)
@@ -184,7 +184,7 @@ class TestUnresolvableDefaultFailsClosed:
     async def test_ambiguous_owner_hop_never_reanchors_at_root(self):
         # ag is ambiguous from owner o but clean from root r — must not re-anchor at r.
         q = SlayerQuery(source_model="r", measures=[ModelMeasure(
-            formula="o.val:wscore", name="m")])
+            formula="wscore(o.val)", name="m")])
         models = ambiguous_owner_models()
         with pytest.raises(ValueError):
             await gen(query=q, models=models)

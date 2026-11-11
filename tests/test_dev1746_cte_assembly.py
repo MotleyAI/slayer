@@ -50,7 +50,7 @@ def _cross_model_query() -> SlayerQuery:
     return SlayerQuery(
         source_model="orders_x",
         dimensions=[ColumnRef(name="customers_v2.status")],
-        measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
+        measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
     )
 
 
@@ -61,8 +61,8 @@ def _two_cross_model_measures_query() -> SlayerQuery:
         source_model="orders_x",
         dimensions=[ColumnRef(name="customers_v2.status")],
         measures=[
-            ModelMeasure(formula="customers_v2.lifetime_value:sum", name="ltv"),
-            ModelMeasure(formula="customers_v2.lifetime_value:avg", name="ltv_avg"),
+            ModelMeasure(formula="sum(customers_v2.lifetime_value)", name="ltv"),
+            ModelMeasure(formula="avg(customers_v2.lifetime_value)", name="ltv_avg"),
         ],
     )
 
@@ -75,7 +75,7 @@ def _windowed_query() -> SlayerQuery:
             dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="amount:sum(window='90d')", name="rev_w")],
+        measures=[ModelMeasure(formula="sum(amount, window='90d')", name="rev_w")],
     )
 
 
@@ -89,8 +89,8 @@ def _mixed_query() -> SlayerQuery:
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
-            ModelMeasure(formula="amount:sum(window='90d')", name="rev_w"),
-            ModelMeasure(formula="customers_v2.lifetime_value:sum", name="ltv"),
+            ModelMeasure(formula="sum(amount, window='90d')", name="rev_w"),
+            ModelMeasure(formula="sum(customers_v2.lifetime_value)", name="ltv"),
         ],
     )
 

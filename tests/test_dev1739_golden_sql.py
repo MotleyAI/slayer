@@ -32,66 +32,66 @@ def _cases() -> dict:
         "local/single_key": _q(
             dimensions=["region", "city"],
             measures=[
-                {"formula": "amount:sum", "name": "city_rev"},
-                {"formula": "amount:sum(partition_by=region)", "name": "region_rev"},
+                {"formula": "sum(amount)", "name": "city_rev"},
+                {"formula": "sum(amount, partition_by=region)", "name": "region_rev"},
             ],
         ),
         "local/grand_total": _q(
             dimensions=["region", "city"],
-            measures=[{"formula": "amount:sum(partition_by=[])", "name": "g"}],
+            measures=[{"formula": "sum(amount, partition_by=[])", "name": "g"}],
         ),
         "local/multi_key": _q(
             dimensions=["region", "channel", "city"],
             measures=[
-                {"formula": "amount:sum(partition_by=[region, channel])", "name": "rc"},
+                {"formula": "sum(amount, partition_by=[region, channel])", "name": "rc"},
             ],
         ),
         "local/share_composite": _q(
             dimensions=["region", "city"],
             measures=[
-                {"formula": "amount:sum / amount:sum(partition_by=region)", "name": "sh"},
+                {"formula": "sum(amount) / sum(amount, partition_by=region)", "name": "sh"},
             ],
         ),
         "local/filtered": _q(
             dimensions=["region", "city"],
-            measures=[{"formula": "ok_amount:sum(partition_by=region)", "name": "o"}],
+            measures=[{"formula": "sum(ok_amount, partition_by=region)", "name": "o"}],
         ),
         "local/star_count": _q(
             dimensions=["region", "city"],
-            measures=[{"formula": "*:count(partition_by=region)", "name": "n"}],
+            measures=[{"formula": "count(*, partition_by=region)", "name": "n"}],
         ),
         "local/time_dim": _q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[{"formula": "amount:sum(partition_by=ordered_at)", "name": "m"}],
+            measures=[{"formula": "sum(amount, partition_by=ordered_at)", "name": "m"}],
         ),
         "local/full_grain_degenerate": _q(
             dimensions=["region", "city"],
             measures=[
-                {"formula": "amount:sum(partition_by=[region, city])", "name": "d"},
+                {"formula": "sum(amount, partition_by=[region, city])", "name": "d"},
             ],
         ),
         "cross_model/grand_total": _q(
             dimensions=["customers.tier"],
             measures=[
-                {"formula": "customers.spend:sum(partition_by=[])", "name": "t"},
+                {"formula": "sum(customers.spend, partition_by=[])", "name": "t"},
             ],
         ),
         "cross_model/rerooted": _q(
             dimensions=["customers.regions.name"],
             measures=[
-                {"formula": "customers.spend:sum(partition_by=[])", "name": "t"},
+                {"formula": "sum(customers.spend, partition_by=[])", "name": "t"},
             ],
         ),
         "cross_model/rerooted_partition_key": _q(
             dimensions=["customers.regions.name", "customers.tier"],
             measures=[
-                {"formula": "customers.spend:sum(partition_by=customers.regions.name)",
+                {"formula": "sum(customers.spend, partition_by=customers.regions.name)",
                  "name": "rt"},
             ],
         ),
         "guard/non_dimension": _q(
             dimensions=["region"],
-            measures=[{"formula": "amount:sum(partition_by=city)", "name": "x"}],
+            measures=[{"formula": "sum(amount, partition_by=city)", "name": "x"}],
         ),
         # guard/first, guard/last, guard/nested_transform, guard/in_filter,
         # guard/window_plus_partition removed — these LOCAL shapes are lifted;
@@ -102,7 +102,7 @@ def _cases() -> dict:
             to_many_handling="broadcast",
             dimensions=["region", "customers.tier"],
             measures=[
-                {"formula": "customers.spend:sum(partition_by=region)", "name": "x"},
+                {"formula": "sum(customers.spend, partition_by=region)", "name": "x"},
             ],
         ),
     }

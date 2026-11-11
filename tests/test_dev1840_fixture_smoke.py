@@ -37,8 +37,8 @@ async def exec_backend_amb(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="amount:sum", name="m")
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
+M = ModelMeasure(formula="sum(amount)", name="m")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
 
 
 class TestGraphExecutes:
@@ -72,11 +72,11 @@ class TestGraphExecutes:
         fails closed. DEV-1853 divergences.md class (d)."""
         _, engine = exec_backend_amb
         resp = await engine.execute(
-            tq(measures=[ModelMeasure(formula="reviews.stars:sum", name="rv")]),
+            tq(measures=[ModelMeasure(formula="sum(reviews.stars)", name="rv")]),
         )
         assert float(resp.data[0]["tickets.rv"]) == pytest.approx(11.0)
         ambiguous = tq(
-            measures=[ModelMeasure(formula="agents.score:sum", name="sm")],
+            measures=[ModelMeasure(formula="sum(agents.score)", name="sm")],
         )
         with pytest.raises(AmbiguousJoinPathError):
             await engine.execute(ambiguous)

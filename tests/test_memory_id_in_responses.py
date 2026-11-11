@@ -59,7 +59,7 @@ class TestStringIds:
     ) -> None:
         attached = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
         )
         await storage.save_memory(
             learning="example revenue query",

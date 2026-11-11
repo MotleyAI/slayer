@@ -199,7 +199,7 @@ def _make_server(*, mode: str, capture_log: Path):
     # Live mode: real Flight SQL server backed by the bundled Jaffle Shop demo.
     args = argparse.Namespace(
         storage=tempfile.mkdtemp(prefix="capture-live-"),
-        models_dir=None, datasource=None, force=False,
+        datasource=None, force=False,
     )
     storage = _resolve_storage(args)
     _prepare_demo(args, storage)

@@ -83,11 +83,6 @@ class TestColumnRef:
 class TestOrderItem:
     """OrderItem column coercion and raw_formula capture."""
 
-    def test_colon_syntax_normalized(self) -> None:
-        item = OrderItem(column="revenue:sum", direction="desc")
-        assert item.column.name == "revenue_sum"
-        assert item.raw_formula == "revenue:sum"
-
     def test_funcstyle_builtin_agg_preserved(self) -> None:
         """The functional spelling is preserved verbatim — a
         placeholder defers resolution to binding (like custom aggs)."""
@@ -168,16 +163,17 @@ class TestOrderShorthandHealing:
     # --- formula key composes with existing normalization ---
 
     def test_shorthand_formula_key(self) -> None:
-        q = SlayerQuery(source_model="orders", order=[{"revenue:sum": "desc"}])
-        assert q.order[0].column.name == "revenue_sum"
-        assert q.order[0].raw_formula == "revenue:sum"
+        q = SlayerQuery.model_validate({"source_model": "orders", "order": [{"sum(revenue)": "desc"}]})
+        assert q.order[0].column.name == "_funcstyle_pending"
+        assert q.order[0].raw_formula == "sum(revenue)"
         assert q.order[0].direction == "desc"
 
     def test_shorthand_formula_key_equals_canonical(self) -> None:
-        shorthand = SlayerQuery(source_model="orders", order=[{"revenue:sum": "desc"}])
-        canonical = SlayerQuery(
-            source_model="orders", order=[{"column": "revenue:sum", "direction": "desc"}]
-        )
+        shorthand = SlayerQuery.model_validate({"source_model": "orders", "order": [{"sum(revenue)": "desc"}]})
+        canonical = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "order": [{"column": "sum(revenue)", "direction": "desc"}],
+        })
         assert shorthand.order == canonical.order
 
     # --- multi-key expansion (one dict -> N OrderItems, insertion order) ---
@@ -321,22 +317,23 @@ class TestOrderShorthandHealing:
             SlayerQuery(source_model="orders", order=[{1: "desc"}])
 
     def test_multikey_formula_keys_preserve_raw_formula(self) -> None:
-        q = SlayerQuery(
-            source_model="orders", order=[{"revenue:sum": "desc", "amount:max": "asc"}]
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "order": [{"sum(revenue)": "desc", "max(amount)": "asc"}],
+        })
         assert len(q.order) == 2
-        assert q.order[0].column.name == "revenue_sum"
-        assert q.order[0].raw_formula == "revenue:sum"
+        assert q.order[0].column.name == "_funcstyle_pending"
+        assert q.order[0].raw_formula == "sum(revenue)"
         assert q.order[0].direction == "desc"
-        assert q.order[1].column.name == "amount_max"
-        assert q.order[1].raw_formula == "amount:max"
+        assert q.order[1].column.name == "_funcstyle_pending"
+        assert q.order[1].raw_formula == "max(amount)"
         assert q.order[1].direction == "asc"
 
     def test_list_orderitem_passthrough(self) -> None:
-        item = OrderItem(column="revenue:sum", direction="desc")
+        item = OrderItem.model_validate({"column": "sum(revenue)", "direction": "desc"})
         q = SlayerQuery(source_model="orders", order=[item])
         assert len(q.order) == 1
-        assert q.order[0].column.name == "revenue_sum"
+        assert q.order[0].column.name == "_funcstyle_pending"
         assert q.order[0].direction == "desc"
 
     # --- OrderItem-level direction validation + extra=forbid ---
@@ -373,14 +370,14 @@ class TestSlayerModel:
             name="test",
             sql_table="t",
             data_source="test",
-            measures=[ModelMeasure(name="aov", formula="revenue:sum / *:count")],
+            measures=[ModelMeasure(name="aov", formula="sum(revenue) / count(*)")],
         )
         assert model.get_measure("aov") is not None
         assert model.get_measure("missing") is None
 
     def test_model_measure_may_be_named_after_transform(self) -> None:
         """A transform name acts as a transform only in call position."""
-        assert ModelMeasure(name="cumsum", formula="revenue:sum").name == "cumsum"
+        assert ModelMeasure(name="cumsum", formula="sum(revenue)").name == "cumsum"
 
     def test_model_measure_formula_with_raw_over_raises(self) -> None:
         """A ``ModelMeasure`` formula containing raw `OVER (...)` SQL
@@ -593,8 +590,8 @@ class TestWithinListDuplicateNames:
     def test_duplicate_measure_names_rejected(self) -> None:
         columns = [Column(name="amount", sql="amount", type=DataType.DOUBLE)]
         measures = [
-            ModelMeasure(name="aov", formula="amount:sum / *:count"),
-            ModelMeasure(name="aov", formula="amount:avg"),
+            ModelMeasure(name="aov", formula="sum(amount) / count(*)"),
+            ModelMeasure(name="aov", formula="avg(amount)"),
         ]
         with pytest.raises(ValueError, match="duplicate.*measure|measure.*duplicate"):
             SlayerModel(
@@ -614,7 +611,7 @@ class TestWithinListDuplicateNames:
         measures are required to be named.)
         """
         columns = [Column(name="amount", sql="amount", type=DataType.DOUBLE)]
-        measures = [ModelMeasure(formula="amount:sum")]
+        measures = [ModelMeasure(formula="sum(amount)")]
         with pytest.raises(ValueError, match="must have a name"):
             SlayerModel(
                 name="orders",
@@ -634,8 +631,8 @@ class TestWithinListDuplicateNames:
                 Column(name="status", sql="status", type=DataType.TEXT),
             ],
             measures=[
-                ModelMeasure(name="aov", formula="amount:sum / *:count"),
-                ModelMeasure(name="rev", formula="amount:sum"),
+                ModelMeasure(name="aov", formula="sum(amount) / count(*)"),
+                ModelMeasure(name="rev", formula="sum(amount)"),
             ],
         )
         assert len(model.columns) == 2
@@ -799,13 +796,13 @@ class TestSourceQueryStages:
             name="saved",
             data_source="ds",
             source_queries=[
-                {"source_model": "orders", "measures": [{"formula": "*:count"}]}
+                {"source_model": "orders", "measures": [{"formula": "count(*)"}]}
             ],
         )
         assert m.source_queries is not None
         assert isinstance(m.source_queries[0], SlayerQuery)
         assert m.source_queries[0].measures is not None
-        assert m.source_queries[0].measures[0].formula == "*:count"
+        assert m.source_queries[0].measures[0].formula == "count(*)"
 
     def test_invalid_entry_type_rejected(self) -> None:
         with pytest.raises((ValueError, TypeError)):
@@ -1417,10 +1414,10 @@ class TestStringCoercion:
     """Plain strings are accepted in fields and dimensions lists."""
 
     def test_fields_plain_strings(self) -> None:
-        query = SlayerQuery(source_model="orders", measures=["*:count", "revenue:sum"])
+        query = SlayerQuery.model_validate({"source_model": "orders", "measures": ["count(*)", "sum(revenue)"]})
         assert len(query.measures) == 2
-        assert query.measures[0] == ModelMeasure(formula="*:count")
-        assert query.measures[1] == ModelMeasure(formula="revenue:sum")
+        assert query.measures[0] == ModelMeasure(formula="count(*)")
+        assert query.measures[1] == ModelMeasure(formula="sum(revenue)")
 
     def test_dimensions_plain_strings(self) -> None:
         query = SlayerQuery(source_model="orders", dimensions=["status", "customers.name"])
@@ -1431,13 +1428,13 @@ class TestStringCoercion:
         assert query.dimensions[1].model == "customers"
 
     def test_fields_mixed_strings_and_dicts(self) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=["*:count", {"formula": "revenue:sum / *:count", "name": "aov"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": ["count(*)", {"formula": "sum(revenue) / count(*)", "name": "aov"}],
+        })
         assert len(query.measures) == 2
-        assert query.measures[0] == ModelMeasure(formula="*:count")
-        assert query.measures[1] == ModelMeasure(formula="revenue:sum / *:count", name="aov")
+        assert query.measures[0] == ModelMeasure(formula="count(*)")
+        assert query.measures[1] == ModelMeasure(formula="sum(revenue) / count(*)", name="aov")
 
     def test_dimensions_mixed_strings_and_dicts(self) -> None:
         query = SlayerQuery(
@@ -1451,12 +1448,12 @@ class TestStringCoercion:
         assert query.dimensions[1].label == "Customer"
 
     def test_dict_syntax_still_works(self) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            dimensions=[{"name": "status"}],
-        )
-        assert query.measures[0] == ModelMeasure(formula="*:count")
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "dimensions": [{"name": "status"}],
+        })
+        assert query.measures[0] == ModelMeasure(formula="count(*)")
         assert query.dimensions[0].name == "status"
 
     def test_none_fields_and_dimensions(self) -> None:
@@ -1491,12 +1488,12 @@ class TestStringCoercion:
         assert td.dimension == "created_at"
 
     def test_query_with_simplified_order_and_time_dimensions(self) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=["*:count"],
-            time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            order=[{"column": "_count", "direction": "desc"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": ["count(*)"],
+            "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
+            "order": [{"column": "_count", "direction": "desc"}],
+        })
         assert query.time_dimensions[0].dimension == "created_at"
         assert query.order[0].column.name == "_count"
         assert query.order[0].direction == "desc"
@@ -1524,13 +1521,13 @@ class TestCoerceFieldsAndDimensions:
             SlayerQuery(source_model="orders", dimensions="status")
 
     def test_fields_list_of_strings_coerced(self) -> None:
-        q = SlayerQuery(source_model="orders", measures=["*:count", "revenue:sum"])
-        assert q.measures[0].formula == "*:count"
-        assert q.measures[1].formula == "revenue:sum"
+        q = SlayerQuery.model_validate({"source_model": "orders", "measures": ["count(*)", "sum(revenue)"]})
+        assert q.measures[0].formula == "count(*)"
+        assert q.measures[1].formula == "sum(revenue)"
 
     def test_fields_list_of_dicts_accepted(self) -> None:
-        q = SlayerQuery(source_model="orders", measures=[{"formula": "*:count", "name": "cnt"}])
-        assert q.measures[0].formula == "*:count"
+        q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "count(*)", "name": "cnt"}]})
+        assert q.measures[0].formula == "count(*)"
         assert q.measures[0].name == "cnt"
 
     def test_dimensions_list_of_strings_coerced(self) -> None:
@@ -1724,12 +1721,12 @@ class TestSubstituteVariables:
 
     def test_variable_in_slayer_query(self) -> None:
         """Variables field is accepted on SlayerQuery."""
-        q = SlayerQuery(
-            source_model="orders",
-            measures=["*:count"],
-            filters=["status = '{val}'"],
-            variables={"val": "completed"},
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": ["count(*)"],
+            "filters": ["status = '{val}'"],
+            "variables": {"val": "completed"},
+        })
         assert q.variables == {"val": "completed"}
 
 
@@ -1785,31 +1782,31 @@ _ROOT_QUALIFIED = {
         {"time_dimensions": [{"dimension": "created_at", "granularity": "month",
                               "date_range": ["2024-01-01", "2024-12-31"], "label": "Month"}]},
     ),
-    "colon-formula": ({"measures": ["orders.revenue:sum"]}, {"measures": ["revenue:sum"]}),
-    "star-count": ({"measures": ["orders.*:count"]}, {"measures": ["*:count"]}),
-    "arithmetic": ({"measures": ["orders.revenue:sum / orders.*:count"]}, {"measures": ["revenue:sum / *:count"]}),
-    "transform": ({"time_dimensions": [_MONTH], "measures": ["cumsum(orders.revenue:sum)"]},
-                  {"time_dimensions": [_MONTH], "measures": ["cumsum(revenue:sum)"]}),
-    "joined-formula": ({"measures": ["orders.customers.score:avg"]}, {"measures": ["customers.score:avg"]}),
-    "named-formula": ({"measures": [{"formula": "orders.revenue:sum", "name": "rev", "label": "Revenue"}]},
-                      {"measures": [{"formula": "revenue:sum", "name": "rev", "label": "Revenue"}]}),
-    "filter": ({"measures": ["*:count"], "filters": ["orders.status = 'active'"]},
-               {"measures": ["*:count"], "filters": ["status = 'active'"]}),
-    "joined-filter": ({"measures": ["*:count"], "filters": ["orders.customers.name = 'foo'"]},
-                      {"measures": ["*:count"], "filters": ["customers.name = 'foo'"]}),
+    "formula": ({"measures": ["sum(orders.revenue)"]}, {"measures": ["sum(revenue)"]}),
+    "star-count": ({"measures": ["count(orders.*)"]}, {"measures": ["count(*)"]}),
+    "arithmetic": ({"measures": ["sum(orders.revenue) / count(orders.*)"]}, {"measures": ["sum(revenue) / count(*)"]}),
+    "transform": ({"time_dimensions": [_MONTH], "measures": ["cumsum(sum(orders.revenue))"]},
+                  {"time_dimensions": [_MONTH], "measures": ["cumsum(sum(revenue))"]}),
+    "joined-formula": ({"measures": ["avg(orders.customers.score)"]}, {"measures": ["avg(customers.score)"]}),
+    "named-formula": ({"measures": [{"formula": "sum(orders.revenue)", "name": "rev", "label": "Revenue"}]},
+                      {"measures": [{"formula": "sum(revenue)", "name": "rev", "label": "Revenue"}]}),
+    "filter": ({"measures": ["count(*)"], "filters": ["orders.status = 'active'"]},
+               {"measures": ["count(*)"], "filters": ["status = 'active'"]}),
+    "joined-filter": ({"measures": ["count(*)"], "filters": ["orders.customers.name = 'foo'"]},
+                      {"measures": ["count(*)"], "filters": ["customers.name = 'foo'"]}),
     "transform-filter": (
-        {"time_dimensions": [_MONTH], "measures": ["*:count"], "filters": ["change(orders.revenue:sum) > 0"]},
-        {"time_dimensions": [_MONTH], "measures": ["*:count"], "filters": ["change(revenue:sum) > 0"]},
+        {"time_dimensions": [_MONTH], "measures": ["count(*)"], "filters": ["change(sum(orders.revenue)) > 0"]},
+        {"time_dimensions": [_MONTH], "measures": ["count(*)"], "filters": ["change(sum(revenue)) > 0"]},
     ),
-    "order-column": ({"dimensions": ["status"], "measures": ["*:count"], "order": [{"column": "orders.status", "direction": "desc"}]},
-                     {"dimensions": ["status"], "measures": ["*:count"], "order": [{"column": "status", "direction": "desc"}]}),
-    "order-colon": ({"measures": ["*:count"], "order": [{"column": "orders.revenue:sum", "direction": "desc"}]},
-                    {"measures": ["*:count"], "order": [{"column": "revenue:sum", "direction": "desc"}]}),
-    "order-multihop-colon": ({"measures": ["*:count"], "order": [{"column": "orders.customers.score:sum"}]},
-                             {"measures": ["*:count"], "order": [{"column": "customers.score:sum"}]}),
+    "order-column": ({"dimensions": ["status"], "measures": ["count(*)"], "order": [{"column": "orders.status", "direction": "desc"}]},
+                     {"dimensions": ["status"], "measures": ["count(*)"], "order": [{"column": "status", "direction": "desc"}]}),
+    "order-aggregate": ({"measures": ["count(*)"], "order": [{"column": "sum(orders.revenue)", "direction": "desc"}]},
+                    {"measures": ["count(*)"], "order": [{"column": "sum(revenue)", "direction": "desc"}]}),
+    "order-multihop-aggregate": ({"measures": ["count(*)"], "order": [{"column": "sum(orders.customers.score)"}]},
+                             {"measures": ["count(*)"], "order": [{"column": "sum(customers.score)"}]}),
     "main-time-dimension": (
-        {"time_dimensions": [_MONTH], "measures": ["change(revenue:sum)"], "main_time_dimension": "orders.created_at"},
-        {"time_dimensions": [_MONTH], "measures": ["change(revenue:sum)"], "main_time_dimension": "created_at"},
+        {"time_dimensions": [_MONTH], "measures": ["change(sum(revenue))"], "main_time_dimension": "orders.created_at"},
+        {"time_dimensions": [_MONTH], "measures": ["change(sum(revenue))"], "main_time_dimension": "created_at"},
     ),
 }
 
@@ -1831,15 +1828,15 @@ class TestRootQualifier:
 
     @pytest.mark.parametrize("query", [
         {"measures": ["count(customers.orders.id)"]},
-        {"measures": ["*:count"], "filters": ["customers.orders.status = 'paid'"]},
+        {"measures": ["count(*)"], "filters": ["customers.orders.status = 'paid'"]},
     ], ids=["formula", "filter"])
     async def test_an_inner_hop_named_like_the_root_is_still_refused(self, query: dict) -> None:
         with pytest.raises(Exception, match="customers"):
             await _prefix_sql({"source_model": "orders", **query})
 
     @pytest.mark.parametrize("query", [
-        {"measures": ["*:count"], "filters": ["reorders.status = 'active'"]},
-        {"measures": ["reorders.revenue:sum"]},
+        {"measures": ["count(*)"], "filters": ["reorders.status = 'active'"]},
+        {"measures": ["sum(reorders.revenue)"]},
     ], ids=["filter", "formula"])
     async def test_a_longer_model_name_is_no_root_qualifier(self, query: dict) -> None:
         with pytest.raises(Exception, match="reorders"):
@@ -1951,32 +1948,32 @@ class TestModelMeasureType:
     ``SlayerQuery.measures[i]`` since query measures use the same shape."""
 
     def test_default_is_none(self) -> None:
-        m = ModelMeasure(formula="*:count")
+        m = ModelMeasure(formula="count(*)")
         assert m.type is None
 
     def test_explicit_double(self) -> None:
-        m = ModelMeasure(formula="*:count / orders:count", type=DataType.DOUBLE)
+        m = ModelMeasure(formula="count(*) / count(orders)", type=DataType.DOUBLE)
         assert m.type == DataType.DOUBLE
 
     def test_explicit_int(self) -> None:
-        m = ModelMeasure(formula="*:count", type=DataType.INT)
+        m = ModelMeasure(formula="count(*)", type=DataType.INT)
         assert m.type == DataType.INT
 
     def test_legacy_string_value_absorbed(self) -> None:
         # Lenient validator on ModelMeasure.type mirrors Column.type.
-        m = ModelMeasure(formula="*:count", type="number")
+        m = ModelMeasure.model_validate({"formula": "count(*)", "type": "number"})
         assert m.type == DataType.DOUBLE
 
     def test_pseudo_type_drops_to_none(self) -> None:
-        m = ModelMeasure(formula="*:count", type="count")
+        m = ModelMeasure.model_validate({"formula": "count(*)", "type": "count"})
         assert m.type is None  # default
 
     def test_query_inline_measure_accepts_type(self) -> None:
         # SlayerQuery.measures[i] is a ModelMeasure — same shape, same field.
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count / orders:count", "name": "ratio", "type": "DOUBLE"}],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*) / count(orders)", "name": "ratio", "type": "DOUBLE"}],
+        })
         assert q.measures[0].type == DataType.DOUBLE
 
 

@@ -155,7 +155,7 @@ def _org_policy(org=ORG_A, **kw):
 async def test_no_policy_sees_all_orgs(rls_storage):
     engine = SlayerQueryEngine(storage=rls_storage)
     resp = await engine.execute(
-        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="*:count")])
+        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="count(*)")])
     )
     assert resp.data[0]["orders._count"] == 3
 
@@ -163,7 +163,7 @@ async def test_no_policy_sees_all_orgs(rls_storage):
 async def test_policy_scopes_count_to_org(rls_storage):
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
     resp = await engine.execute(
-        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="*:count")])
+        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="count(*)")])
     )
     assert resp.data[0]["orders._count"] == 2  # only orgA's two orders
 
@@ -171,7 +171,7 @@ async def test_policy_scopes_count_to_org(rls_storage):
 async def test_policy_scopes_sum_to_org(rls_storage):
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_B))
     resp = await engine.execute(
-        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="amount:sum")])
+        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="sum(amount)")])
     )
     assert resp.data[0]["orders.amount_sum"] == pytest.approx(999.0)  # only orgB
 
@@ -184,7 +184,7 @@ async def test_join_scoped_both_sides(rls_storage):
     resp = await engine.execute(
         SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
             dimensions=[ColumnRef(name="customers.region")],
         )
     )
@@ -200,7 +200,7 @@ async def test_block_fails_on_columnless_table(rls_storage):
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
     q = SlayerQuery(
         source_model="exchange_rates",
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
     )
     with pytest.raises(ForcedFilterError) as exc:
         await engine.execute(q)
@@ -215,7 +215,7 @@ async def test_pass_allows_columnless_table(rls_storage):
     resp = await engine.execute(
         SlayerQuery(
             source_model="exchange_rates",
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
     )
     assert resp.data[0]["exchange_rates._count"] == 2  # unfiltered, both rows
@@ -241,7 +241,7 @@ async def test_profiling_sample_values_org_scoped(rls_storage):
 async def test_dry_run_sql_contains_wraps(rls_storage):
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
     resp = await engine.execute(
-        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="*:count")]),
+        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="count(*)")]),
         dry_run=True,
     )
     flat = resp.sql.replace("\n", " ")
@@ -256,27 +256,27 @@ async def test_dry_run_sql_contains_wraps(rls_storage):
 async def test_explain_sql_contains_wraps(rls_storage):
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
     resp = await engine.execute(
-        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="*:count")]),
+        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="count(*)")]),
         explain=True,
     )
     # explain returns the rewritten SQL it planned, so the wrap is visible
     assert "organization_uuid = 'orgA'" in resp.sql
 
 
-# -- get_column_types under policy -------------------------------------------
+# -- get_result_column_types under policy ------------------------------------
 
 
-async def test_get_column_types_scoped_ok(rls_storage):
+async def test_get_result_column_types_scoped_ok(rls_storage):
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
-    types = await engine.get_column_types(model_name="orders", data_source="rls_sqlite")
+    types = await engine.get_result_column_types(model_name="orders", data_source="rls_sqlite")
     assert isinstance(types, dict)  # probe succeeds against the wrapped SQL
 
 
-async def test_get_column_types_blocking_policy_degrades(rls_storage):
+async def test_get_result_column_types_blocking_policy_degrades(rls_storage):
     """A blocking policy on a tenant-less model must not crash the type probe;
     it degrades to {} (the rewrite raises inside the existing try/except)."""
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
-    types = await engine.get_column_types(
+    types = await engine.get_result_column_types(
         model_name="exchange_rates", data_source="rls_sqlite"
     )
     assert types == {}
@@ -299,7 +299,7 @@ async def test_none_presence_reprobes_and_self_heals(rls_storage, monkeypatch):
     monkeypatch.setattr(SqliteDialect, "reflect_columns", flaky)
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
     query = SlayerQuery(
-        source_model="orders", measures=[ModelMeasure(formula="*:count")]
+        source_model="orders", measures=[ModelMeasure(formula="count(*)")]
     )
 
     with pytest.raises(ForcedFilterError):
@@ -326,7 +326,7 @@ async def test_column_presence_is_cached(rls_storage, monkeypatch):
     monkeypatch.setattr(SqliteDialect, "reflect_columns", counting)
 
     query = SlayerQuery(
-        source_model="orders", measures=[ModelMeasure(formula="*:count")]
+        source_model="orders", measures=[ModelMeasure(formula="count(*)")]
     )
     await engine.execute(query)
     after_first = calls["n"]
@@ -480,7 +480,7 @@ async def test_single_hop_join_scopes_orders(rls_join_storage):
     """orders lacks the tenant column but is scoped via the explicit join."""
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
     resp = await engine.execute(
-        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="*:count")])
+        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="count(*)")])
     )
     assert resp.data[0]["orders._count"] == 1  # only order 10 (orgA)
 
@@ -488,7 +488,7 @@ async def test_single_hop_join_scopes_orders(rls_join_storage):
 async def test_single_hop_join_scopes_sum(rls_join_storage):
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_B))
     resp = await engine.execute(
-        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="amount:sum")])
+        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="sum(amount)")])
     )
     assert resp.data[0]["orders.amount_sum"] == pytest.approx(999.0)  # orgB's order 11
 
@@ -497,7 +497,7 @@ async def test_multihop_join_scopes_line_items(rls_join_storage):
     """line_items reaches the tenant column via line_items -> orders -> customers."""
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
     resp = await engine.execute(
-        SlayerQuery(source_model="line_items", measures=[ModelMeasure(formula="*:count")])
+        SlayerQuery(source_model="line_items", measures=[ModelMeasure(formula="count(*)")])
     )
     assert resp.data[0]["line_items._count"] == 1  # only item 100 (orgA)
 
@@ -507,7 +507,7 @@ async def test_columnless_target_scoped_via_join(rls_join_storage):
     the correlated EXISTS rather than failing closed."""
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
     resp = await engine.execute(
-        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="*:count")])
+        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="count(*)")])
     )
     assert resp.data[0]["orders._count"] == 1  # no ForcedFilterError raised
 
@@ -516,7 +516,7 @@ async def test_anchor_directly_scoped(rls_join_storage):
     """customers is the anchor -> filtered directly by organization_uuid."""
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
     resp = await engine.execute(
-        SlayerQuery(source_model="customers", measures=[ModelMeasure(formula="*:count")])
+        SlayerQuery(source_model="customers", measures=[ModelMeasure(formula="count(*)")])
     )
     assert resp.data[0]["customers._count"] == 1  # only orgA's customer
 
@@ -527,7 +527,7 @@ async def test_unlisted_table_fails_closed(rls_join_storage):
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
     query = SlayerQuery(
         source_model="exchange_rates",
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
     )
     with pytest.raises(ForcedFilterError) as exc:
         await engine.execute(query)
@@ -542,7 +542,7 @@ async def test_whitelisted_table_passes_through(rls_join_storage):
     )
     resp = await engine.execute(
         SlayerQuery(
-            source_model="exchange_rates", measures=[ModelMeasure(formula="*:count")]
+            source_model="exchange_rates", measures=[ModelMeasure(formula="count(*)")]
         )
     )
     assert resp.data[0]["exchange_rates._count"] == 2  # both rows, unfiltered
@@ -551,7 +551,7 @@ async def test_whitelisted_table_passes_through(rls_join_storage):
 async def test_dry_run_shows_exists_wrap(rls_join_storage):
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
     resp = await engine.execute(
-        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="*:count")]),
+        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="count(*)")]),
         dry_run=True,
     )
     flat = resp.sql.replace("\n", " ")
@@ -575,13 +575,13 @@ async def test_execute_runs_no_profile_probe(rls_join_storage, monkeypatch):
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
     probes = _record_profile_probes(monkeypatch)
     await engine.execute(
-        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="*:count")])
+        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="count(*)")])
     )
     assert probes == []
 
 
-async def test_get_column_types_runs_no_profile_probe(rls_join_storage, monkeypatch):
+async def test_get_result_column_types_runs_no_profile_probe(rls_join_storage, monkeypatch):
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
     probes = _record_profile_probes(monkeypatch)
-    await engine.get_column_types(model_name="orders", data_source="rls_sqlite")
+    await engine.get_result_column_types(model_name="orders", data_source="rls_sqlite")
     assert probes == []

@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from slayer import usage_reporting
 from slayer.async_utils import run_sync
-from slayer.core.deprecation import deprecations_on_one_line, warn_deprecated
+from slayer.core.deprecation import deprecations_on_one_line
 from slayer.core.errors import SlayerError
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.format import encode_json
@@ -121,32 +121,21 @@ class RefreshSamplesResult(BaseModel):
 
 
 def _add_storage_arg(parser):
-    """Add --storage and legacy --models-dir flags to a parser."""
+    """Add the --storage flag to a parser."""
     parser.add_argument("--storage", default=None, help=_STORAGE_HELP)
-    parser.add_argument(
-        "--models-dir",
-        default=None,
-        help="(deprecated, use --storage) Path to YAML models directory",
-    )
 
 
 def _storage_path(args) -> str:
-    """The storage location, resolved once per command: --storage, --models-dir, then ``default_storage_path``."""
+    """The storage location, resolved once per command: --storage, then ``default_storage_path``."""
     resolved = getattr(args, "_resolved_storage_path", None)
     if resolved is None:
-        if args.storage:
-            resolved = args.storage
-        elif args.models_dir:
-            warn_deprecated("--models-dir is deprecated; use --storage. It works until SLayer 2.0.", removal="2.0")
-            resolved = args.models_dir
-        else:
-            resolved = default_storage_path()
+        resolved = args.storage or default_storage_path()
         args._resolved_storage_path = resolved
     return resolved
 
 
 def _resolve_storage(args):
-    """Resolve storage backend from --storage or --models-dir flags."""
+    """Resolve storage backend from the --storage flag."""
     storage = resolve_storage(_storage_path(args))
     usage_reporting.observe_storage(storage)
     return storage

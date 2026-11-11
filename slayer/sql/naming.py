@@ -30,7 +30,6 @@ from slayer.core.keys import (
 )
 from slayer.core.models import Column, SlayerModel
 from slayer.core.refs import (
-    AGG_REF_RE,
     EXPRESSION_SOURCE_KINDS,
     agg_kwarg_canonical_str,
     auto_name_from_expression,
@@ -38,6 +37,7 @@ from slayer.core.refs import (
     key_display,
     partition_by_suffix,
 )
+from slayer.core.syntax import AggCall, DottedRef, Ref, StarSource, canonical_measure_text, legacy_result_name_seed
 from slayer.sql._identifier_fit import fit_identifier
 from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, get_dialect
 from slayer.sql.naming_bijection import (  # noqa: F401
@@ -312,16 +312,21 @@ def expression_source_leaf(source: ValueKey) -> str:
     return auto_name_from_expression(key_display(rendered))
 
 
-def formula_text_alias(text: str) -> str:
-    """The public alias of a measure formula named from its canonical ``text``."""
-    # Fullmatch only — a substring heuristic once mis-captured arithmetic composites and leaked ``:``/``/`` into SQL aliases.
-    match = AGG_REF_RE.fullmatch(text)
-    if match is not None and match.group(3) is None:
-        base, agg = match.group(1), match.group(2)
-        if base.endswith(".*"):
-            return f"{base[:-2]}.{canonical_agg_name(measure_name='*', aggregation_name=agg)}"
-        return canonical_agg_name(measure_name=base, aggregation_name=agg)
-    return auto_name_from_expression(text)
+_PLAIN_SOURCE_RE = re.compile(r"\*|[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*(?:\.\*)?")
+_PLAIN_NAME_RE = re.compile(r"[a-zA-Z_]\w*")
+
+
+def formula_text_alias(parsed: object) -> str:
+    """The public alias of a parsed measure formula: ``<source>_<agg>`` for a bare aggregation of a plainly named
+    column or star, else the sanitised legacy naming seed."""
+    if (isinstance(parsed, AggCall) and not parsed.args and not parsed.kwargs and parsed.filter is None
+            and isinstance(parsed.source, (Ref, DottedRef, StarSource)) and _PLAIN_NAME_RE.fullmatch(parsed.agg)):
+        base = canonical_measure_text(parsed.source)
+        if _PLAIN_SOURCE_RE.fullmatch(base):
+            if base.endswith(".*"):
+                return f"{base[:-2]}.{canonical_agg_name(measure_name='*', aggregation_name=parsed.agg)}"
+            return canonical_agg_name(measure_name=base, aggregation_name=parsed.agg)
+    return auto_name_from_expression(legacy_result_name_seed(parsed))
 
 
 def _alias_param(value) -> str:

@@ -17,8 +17,8 @@ from slayer.sql.dialects.base import DriverFacts, SqlDialect
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
-_PG_EXTRA_DRIVERS = {"psycopg": "psycopg", "psycopg2": "psycopg2-binary", "asyncpg": "asyncpg"}
-_MYSQL_EXTRA_DRIVERS = {"pymysql": "pymysql", "aiomysql": "aiomysql"}
+_PG_EXTRA_DRIVERS = {"psycopg": "psycopg"}
+_MYSQL_EXTRA_DRIVERS = {"pymysql": "pymysql"}
 
 # ds type → (url_scheme, default_driver, install_extra)
 _EXPECTED = {
@@ -130,6 +130,11 @@ def test_extra_installs_exactly_its_extra_drivers(extra, ds_type) -> None:
 def test_all_extra_installs_every_extra_driver() -> None:
     every = {dist for t in _EXPECTED for dist in dialect_for_ds_type(t).extra_drivers.values()}
     assert every <= set(_pyproject_extras()["all"])
+
+
+def test_no_extra_installs_a_non_default_driver() -> None:
+    installed = {dist for deps in _pyproject_extras().values() for dist in deps}
+    assert installed.isdisjoint({"psycopg2", "psycopg2-binary", "asyncpg", "aiomysql"})
 
 
 @pytest.mark.parametrize("ds_type", sorted(_EXTRA_DRIVERS))

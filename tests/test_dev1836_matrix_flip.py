@@ -47,16 +47,16 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="amount:sum", name="m")
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
+M = ModelMeasure(formula="sum(amount)", name="m")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
 
 #: A local aggregation-derived (row attach) dimension: channel totals band.
 LOCAL_BAND = {
-    "expression": "CASE WHEN amount:sum(partition_by=channel) > 30 THEN 1 ELSE 0 END",
+    "expression": "CASE WHEN sum(amount, partition_by=channel) > 30 THEN 1 ELSE 0 END",
     "name": "band",
 }
 #: A bare partitioned aggregate as a dimension.
-LOCAL_BARE = {"expression": "amount:sum(partition_by=channel)", "name": "ct"}
+LOCAL_BARE = {"expression": "sum(amount, partition_by=channel)", "name": "ct"}
 
 
 def _bundle() -> ResolvedSourceBundle:
@@ -117,7 +117,7 @@ class TestRowAttachWithCrossModelMeasure:
         """Transform-root dimension family × cross-model measure."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=[{"expression": "rank(amount:sum(partition_by=channel), direction='desc')",
+            dimensions=[{"expression": "rank(sum(amount, partition_by=channel), direction='desc')",
                          "name": "rr"}],
             measures=[M, CM], to_many_handling="broadcast",
         ))
@@ -134,8 +134,8 @@ class TestRowAttachWithCrossModelMeasure:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=[{
-                "expression": ("rank(amount:sum(partition_by=channel) - "
-                               "amount:sum(partition_by=status), direction='desc')"),
+                "expression": ("rank(sum(amount, partition_by=channel) - "
+                               "sum(amount, partition_by=status), direction='desc')"),
                 "name": "mr",
             }],
             measures=[M, CM], to_many_handling="broadcast",
@@ -229,7 +229,7 @@ class TestIntermediateHopDimensions:
         tier aggregates the distinct regions its customers reach."""
         _, engine = exec_backend
         kw = {"dimensions": ["customers.tier"],
-              "measures": [M, ModelMeasure(formula="customers.regions.pop:sum", name="pop")]}
+              "measures": [M, ModelMeasure(formula="sum(customers.regions.pop)", name="pop")]}
         default = await engine.execute(q(**kw))
         assoc = await engine.execute(q(**kw, to_many_handling="associate"))
         assert sorted(map(str, default.data)) == sorted(map(str, assoc.data))
@@ -244,7 +244,7 @@ class TestIntermediateHopDimensions:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.tier"],
-            measures=[M, ModelMeasure(formula="customers.regions.pop:sum",
+            measures=[M, ModelMeasure(formula="sum(customers.regions.pop)",
                                       name="pop")],
             to_many_handling="broadcast",
         )

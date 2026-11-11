@@ -1,6 +1,6 @@
-"""Integration tests for MCP ``inspect_model`` against a real SQLite database.
+"""Integration tests for the MCP model ``inspect`` against a real SQLite database.
 
-Exercises the bits of ``inspect_model`` that need a live DB: row count, the
+Exercises the bits of the model ``inspect`` that need a live DB: row count, the
 per-dim profile (distinct values + batched min/max), and end-to-end markdown
 output.
 
@@ -237,7 +237,7 @@ class TestCollectDimProfile:
 
 
 class TestInspectModelEndToEnd:
-    """Full ``inspect_model`` run against the SQLite fixture — confirms every
+    """Full model ``inspect`` run against the SQLite fixture — confirms every
     section of the markdown output is produced end-to-end."""
 
     async def _call(self, server: Any, *, name: str, arguments: dict | None = None) -> str:
@@ -246,7 +246,7 @@ class TestInspectModelEndToEnd:
 
     async def test_full_response(self, env) -> None:
         server = create_mcp_server(storage=env["storage"])
-        result = await self._call(server, name="inspect_model", arguments={"model_name": "orders", "num_rows": 5})
+        result = await self._call(server, name="inspect", arguments={"entity_type": "model", "reference": "orders", "compact": False, "num_rows": 5})
 
         # Header + description + metadata
         assert result.startswith("# Model: `orders`")
@@ -302,7 +302,7 @@ class TestInspectModelEndToEnd:
 
     async def test_no_longer_json(self, env) -> None:
         server = create_mcp_server(storage=env["storage"])
-        result = await self._call(server, name="inspect_model", arguments={"model_name": "orders"})
+        result = await self._call(server, name="inspect", arguments={"entity_type": "model", "reference": "orders", "compact": False})
         with pytest.raises(_json.JSONDecodeError):
             _json.loads(result)
 
@@ -324,8 +324,8 @@ class TestInspectModelSectionGatingIntegration:
         sample-data entirely; the footer documents what was trimmed."""
         server = create_mcp_server(storage=env["storage"])
         result = await self._call(
-            server, name="inspect_model",
-            arguments={"model_name": "orders", "sections": ["columns"]},
+            server, name="inspect",
+            arguments={"entity_type": "model", "reference": "orders", "compact": False, "sections": ["columns"]},
         )
         # Columns full table is rendered — `sampled` column populated by the
         # live profile query (proves columns-section is fully included).
@@ -333,25 +333,22 @@ class TestInspectModelSectionGatingIntegration:
         col_section = result.split("## Columns")[1]
         # Profile data still in the columns table when columns is included
         assert "completed" in col_section
-        # No sample data section; the reachable-via-joins heading was removed
-        # entirely in DEV-1560 and must never appear.
+        # No sample data section; the removed reachable-via-joins heading must never appear.
         assert "## Data Profile" not in result
         assert "## Reachable" not in result
         # Empty list-only headings for the rest are OK (model has no measures /
         # aggregations / joins, so they render nothing); footer should still
         # document what was omitted.
         assert "> Sections shown: columns." in result
-        # ``learnings`` joined the omittable section list when DEV-1357
-        # landed; ``reachable_fields`` was removed in DEV-1560.
         assert "> Omitted: samples, learnings, saved_queries." in result
 
     async def test_descriptions_max_chars_truncates_in_columns_table(self, env) -> None:
         """descriptions_max_chars trims long descriptions and appends the marker."""
         server = create_mcp_server(storage=env["storage"])
         result = await self._call(
-            server, name="inspect_model",
+            server, name="inspect",
             arguments={
-                "model_name": "orders",
+                "entity_type": "model", "reference": "orders", "compact": False,
                 "descriptions_max_chars": 5,
                 "sections": ["columns"],
             },
@@ -363,17 +360,17 @@ class TestInspectModelSectionGatingIntegration:
 
 
 class TestMeasureTypeInference:
-    """get_column_types infers measure types via LIMIT 0 against a real DB."""
+    """get_result_column_types infers column types via LIMIT 0 against a real DB."""
 
     async def test_infers_numeric_types(self, env) -> None:
-        """amount (REAL) and quantity (INTEGER) both infer as 'number'."""
+        """amount (REAL) infers as DOUBLE and quantity (INTEGER) as INT."""
         engine = env["engine"]
-        types = await engine.get_column_types(model_name="orders")
-        assert types["amount"] == "number"
-        assert types["quantity"] == "number"
+        types = await engine.get_result_column_types(model_name="orders")
+        assert types["amount"].type == DataType.DOUBLE
+        assert types["quantity"].type == DataType.INT
 
     async def test_string_measure_inferred(self, tmp_path) -> None:
-        """A VARCHAR/TEXT measure infers as 'string'."""
+        """A TEXT column infers as TEXT."""
         db_path = tmp_path / "types.db"
         with transaction(str(db_path)) as conn:
             conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT, price REAL)")
@@ -394,20 +391,19 @@ class TestMeasureTypeInference:
         await storage.save_model(model)
         engine = SlayerQueryEngine(storage=storage)
 
-        types = await engine.get_column_types(model_name="t")
-        assert types["label"] == "string"
-        assert types["price"] == "number"
+        types = await engine.get_result_column_types(model_name="t")
+        assert types["label"].type == DataType.TEXT
+        assert types["price"].type == DataType.DOUBLE
 
-    async def test_type_appears_in_inspect_model(self, env) -> None:
-        """inspect_model columns table includes a type column with declared types."""
+    async def test_type_appears_in_model_inspect(self, env) -> None:
+        """The model inspect columns table includes a type column with declared types."""
         server = create_mcp_server(storage=env["storage"])
         content, _ = await server.call_tool(
-            name="inspect_model", arguments={"model_name": "orders", "num_rows": 0},
+            name="inspect", arguments={"entity_type": "model", "reference": "orders", "compact": False, "num_rows": 0},
         )
         result = content[0].text
         columns_section = result.split("## Columns")[1].split("##")[0]
         assert "| type |" in columns_section
-        # DEV-1361: number → DOUBLE in the new sqlglot-aligned vocabulary.
         assert "DOUBLE" in columns_section
 
     async def test_measure_sampled_shows_min_max(self, env) -> None:
@@ -455,7 +451,7 @@ class TestStringAggregationRejection:
 
     The orders fixture has a string column `status` that auto-ingestion also
     exposes as a measure (one measure per non-ID column is the default).
-    Triggering ``status:sum`` / ``status:avg`` etc. should produce a clear
+    Triggering ``sum(status)`` / ``avg(status)`` etc. should produce a clear
     ValueError, not a database-level type error."""
 
     async def _run(self, env, formula: str) -> None:
@@ -468,13 +464,13 @@ class TestStringAggregationRejection:
     @pytest.mark.parametrize("agg", ["sum", "avg", "median"])
     async def test_numeric_only_aggregations_rejected_on_string(self, env, agg: str) -> None:
         with pytest.raises(ValueError, match="is not applicable to TEXT column"):
-            await self._run(env, f"status:{agg}")
+            await self._run(env, f"{agg}(status)")
 
     async def test_min_max_allowed_on_string(self, env) -> None:
         """min/max work on strings (alphabetical ordering) — should pass."""
         q = SlayerQuery.model_validate({
             "source_model": "orders",
-            "measures": [{"formula": "status:min"}, {"formula": "status:max"}],
+            "measures": [{"formula": "min(status)"}, {"formula": "max(status)"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data  # executed without error
@@ -483,7 +479,7 @@ class TestStringAggregationRejection:
         """count/count_distinct always work regardless of type."""
         q = SlayerQuery.model_validate({
             "source_model": "orders",
-            "measures": [{"formula": "status:count"}, {"formula": "status:count_distinct"}],
+            "measures": [{"formula": "count(status)"}, {"formula": "count_distinct(status)"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data
@@ -492,7 +488,7 @@ class TestStringAggregationRejection:
         """avg/sum on the numeric `amount` measure must still work."""
         q = SlayerQuery.model_validate({
             "source_model": "orders",
-            "measures": [{"formula": "amount:sum"}, {"formula": "amount:avg"}],
+            "measures": [{"formula": "sum(amount)"}, {"formula": "avg(amount)"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data
@@ -506,7 +502,7 @@ class TestPrimaryKeyAggregationRule:
         """`:sum` on a numeric primary-key column is rejected at enrichment."""
         q = SlayerQuery.model_validate({
             "source_model": "orders",
-            "measures": [{"formula": "id:sum"}],
+            "measures": [{"formula": "sum(id)"}],
         })
         with pytest.raises(ValueError, match="primary-key column"):
             await env["engine"].execute(query=q)
@@ -515,7 +511,7 @@ class TestPrimaryKeyAggregationRule:
         """`:count` on a primary-key column is always allowed."""
         q = SlayerQuery.model_validate({
             "source_model": "orders",
-            "measures": [{"formula": "id:count"}],
+            "measures": [{"formula": "count(id)"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data
@@ -547,7 +543,7 @@ class TestIngestDatasourceModelsTool:
         )
         text = content[0].text
 
-        # DEV-1356 idempotent ingest renders "Created N new model(s):" for new
+        # Idempotent ingest renders "Created N new model(s):" for new
         # tables (replaces the legacy "Ingested N model(s):" wording).
         assert "Created 1 new model(s):" in text
         assert "widgets" in text
@@ -556,24 +552,24 @@ class TestIngestDatasourceModelsTool:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1480: structured sampled_values + distinct_count
+# Structured sampled_values + distinct_count
 # ---------------------------------------------------------------------------
 
 
 class TestInspectModelSampledValuesAndDistinctCount:
-    """End-to-end DEV-1480 contract through ``inspect_model``."""
+    """End-to-end sampled_values + distinct_count contract through the model ``inspect``."""
 
     async def _call_json(self, server, *, model_name: str) -> dict:
         content, _ = await server.call_tool(
-            name="inspect_model",
-            arguments={"model_name": model_name, "format": "json"},
+            name="inspect",
+            arguments={"entity_type": "model", "reference": model_name, "compact": False, "format": "json"},
         )
         return _json.loads(content[0].text)
 
     async def test_json_output_includes_sampled_values_and_distinct_count(
         self, env,
     ) -> None:
-        """JSON inspect_model output carries both new fields per column."""
+        """JSON model inspect output carries both new fields per column."""
         server = create_mcp_server(storage=env["storage"])
         payload = await self._call_json(server, model_name="orders")
         cols_by_name = {c["name"]: c for c in payload["columns"]}
@@ -594,8 +590,8 @@ class TestInspectModelSampledValuesAndDistinctCount:
         carried only in JSON (and in the persisted model)."""
         server = create_mcp_server(storage=env["storage"])
         content, _ = await server.call_tool(
-            name="inspect_model",
-            arguments={"model_name": "orders"},  # markdown by default
+            name="inspect",
+            arguments={"entity_type": "model", "reference": "orders", "compact": False},  # markdown by default
         )
         text = content[0].text
         col_section = text.split("## Columns")[1].split("## Measures")[0]
@@ -609,7 +605,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
         self, env,
     ) -> None:
         """A v6 model with ``sampled`` set but no ``sampled_values`` is
-        cache-miss and re-profiles on next ``inspect_model``. Pins
+        cache-miss and re-profiles on the next model ``inspect``. Pins
         ``_is_sample_cached`` validity rule."""
         storage = env["storage"]
         # Simulate a v6-era persisted state: ``sampled`` set, structured field
@@ -623,7 +619,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
         )
         server = create_mcp_server(storage=storage)
         await self._call_json(server, model_name="orders")
-        # After inspect_model runs, the structured field has been populated.
+        # After the model inspect runs, the structured field has been populated.
         reloaded = await storage.get_model("orders", data_source="test_sqlite")
         status = reloaded.get_column("status")
         assert status.sampled_values is not None
@@ -660,8 +656,8 @@ class TestInspectModelSampledValuesAndDistinctCount:
 
         server = create_mcp_server(storage=storage)
         content, _ = await server.call_tool(
-            name="inspect_model",
-            arguments={"model_name": "t", "format": "json"},
+            name="inspect",
+            arguments={"entity_type": "model", "reference": "t", "compact": False, "format": "json"},
         )
         payload = _json.loads(content[0].text)
         notes = next(c for c in payload["columns"] if c["name"] == "notes")
@@ -674,7 +670,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
     async def test_markdown_table_caps_sampled_at_20_values(
         self, tmp_path,
     ) -> None:
-        """DEV-1516: per-column markdown rendering must still show at most
+        """Per-column markdown rendering must still show at most
         20 values per column (via the persisted ``Column.sampled`` text)
         even when ``sampled_values`` holds the full 50. The markdown table
         is the all-columns-at-once surface and stays readable."""
@@ -702,8 +698,8 @@ class TestInspectModelSampledValuesAndDistinctCount:
         ))
         server = create_mcp_server(storage=storage)
         content, _ = await server.call_tool(
-            name="inspect_model",
-            arguments={"model_name": "many_values"},  # markdown
+            name="inspect",
+            arguments={"entity_type": "model", "reference": "many_values", "compact": False},  # markdown
         )
         text = content[0].text
         col_section = text.split("## Columns")[1]
@@ -723,13 +719,13 @@ class TestInspectModelSampledValuesAndDistinctCount:
         )
         # Values past the 20-cap MUST NOT appear.
         assert "k_21" not in kind_row, (
-            "DEV-1516 regression: markdown table leaked the 21st sample value "
+            "Regression: markdown table leaked the 21st sample value "
             "for one column — the 20-cap is broken."
         )
         assert "k_29" not in kind_row, (
-            "DEV-1516 regression: markdown table leaked the 29th sample value "
+            "Regression: markdown table leaked the 29th sample value "
             "for one column. The full 50 belongs only on per-column search "
-            "hits, not the all-columns inspect_model markdown surface."
+            "hits, not the all-columns model inspect markdown surface."
         )
         # And the persisted ``sampled_values`` still carries the full set.
         reloaded = await storage.get_model("many_values", data_source="mv_ds")
@@ -768,8 +764,8 @@ class TestInspectModelSampledValuesAndDistinctCount:
 
         server = create_mcp_server(storage=storage)
         content, _ = await server.call_tool(
-            name="inspect_model",
-            arguments={"model_name": "orders"},  # markdown by default
+            name="inspect",
+            arguments={"entity_type": "model", "reference": "orders", "compact": False},  # markdown by default
         )
         text = content[0].text
         col_section = text.split("## Columns")[1]
@@ -779,13 +775,13 @@ class TestInspectModelSampledValuesAndDistinctCount:
         # Legacy text MUST appear in the cell so the agent still sees data.
         assert "legacy text from v6" in status_row, (
             "legacy ``Column.sampled`` text must survive a profiling "
-            "failure in inspect_model; an empty cell is a regression."
+            "failure in the model inspect; an empty cell is a regression."
         )
 
     async def test_profiles_more_than_10_categorical_columns(
         self, tmp_path,
     ) -> None:
-        """``inspect_model`` must persist ``sampled`` for every categorical
+        """The model ``inspect`` must persist ``sampled`` for every categorical
         column, not just the first 10. Pins the ``max_dims`` cap removal on
         the persistence path."""
         db_path = tmp_path / "wide.db"
@@ -870,8 +866,8 @@ class TestInspectModelEmptyStringSampledNotClobberedByFallback:
 
         server = create_mcp_server(storage=storage)
         content, _ = await server.call_tool(
-            name="inspect_model",
-            arguments={"model_name": "t", "format": "json"},
+            name="inspect",
+            arguments={"entity_type": "model", "reference": "t", "compact": False, "format": "json"},
         )
         payload = _json.loads(content[0].text)
         notes = next(c for c in payload["columns"] if c["name"] == "notes")

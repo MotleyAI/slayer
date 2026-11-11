@@ -30,7 +30,7 @@ from tests._dev1892_fixtures import (
     ASSOC_WSUM_BY_STATUS,
 )
 
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
 #: Must name the association concept — a generic ranked/time-dimension rejection
 #: (which would fire before association eligibility) must NOT satisfy it.
 _COMBO = re.compile(r"associat|attribut|distinct.entity|combination", re.IGNORECASE)
@@ -72,7 +72,7 @@ class TestUnsupportedCombinations:
         _, engine = exec_backend
         query = assoc_q(
             dimensions=["status"], time_dimensions=_SIGNUP_TD,
-            measures=[ModelMeasure(formula="customers.spend:last", name="lastspend")])
+            measures=[ModelMeasure(formula="last(customers.spend)", name="lastspend")])
         with pytest.raises(SlayerError) as ei:
             await engine.execute(query)
         assert _COMBO.search(str(ei.value))
@@ -84,7 +84,7 @@ class TestUnsupportedCombinations:
         query = assoc_q(
             dimensions=["status"], time_dimensions=_SIGNUP_TD,
             measures=[ModelMeasure(
-                formula="customers.spend:sum(window='90d')", name="win")])
+                formula="sum(customers.spend, window='90d')", name="win")])
         with pytest.raises(SlayerError) as ei:
             await engine.execute(query)
         assert _COMBO.search(str(ei.value))
@@ -103,7 +103,7 @@ class TestMissingUniqueKey:
 class TestUnsafeInputInAssociate:
     """Input safety is mode-invariant: a crossing-hop input rejected on the broadcast/error path is rejected before association too."""
 
-    VIP = ModelMeasure(formula="customers.vip_spend:sum", name="vip")
+    VIP = ModelMeasure(formula="sum(customers.vip_spend)", name="vip")
 
     async def test_crossing_input_rejected_in_associate(self, exec_backend_crossing):
         _, engine = exec_backend_crossing
@@ -122,8 +122,8 @@ class TestColumnReferenceParameter:
     weight and the definition default both execute."""
 
     WAVG = ModelMeasure(
-        formula="customers.spend:weighted_avg(weight=customers.spend)", name="wavg")
-    WSUM = ModelMeasure(formula="customers.spend:wsum", name="wsum")
+        formula="weighted_avg(customers.spend, weight=customers.spend)", name="wavg")
+    WSUM = ModelMeasure(formula="wsum(customers.spend)", name="wsum")
 
     async def test_explicit_column_param_executes(self, exec_backend):
         _, engine = exec_backend

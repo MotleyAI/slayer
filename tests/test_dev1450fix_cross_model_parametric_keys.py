@@ -5,7 +5,7 @@ the result key, so two variants on the same target column do NOT collide
 (legacy dropped the suffix and the two columns clobbered each other).
 
 This pins the (already-correct) behavior end-to-end:
-* a single ``customers.revenue:percentile(p=0.5)`` surfaces
+* a single ``percentile(customers.revenue, p=0.5)`` surfaces
   ``orders.customers.revenue_percentile_p_0_5``;
 * ``p=0.5`` and ``p=0.95`` together surface two DISTINCT keys.
 """
@@ -83,11 +83,11 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
 
 async def test_single_cross_model_parametric_key(engine):
     resp = await engine.execute(
-        SlayerQuery(
-            source_model="orders",
-            dimensions=["customers.region"],
-            measures=[{"formula": "customers.revenue:percentile(p=0.5)"}],
-        )
+        SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": ["customers.region"],
+            "measures": [{"formula": "percentile(customers.revenue, p=0.5)"}],
+        })
     )
     assert "orders.customers.revenue_percentile_p_0_5" in resp.columns
 
@@ -98,8 +98,8 @@ async def test_two_parametric_variants_distinct_keys(engine):
             source_model="orders",
             dimensions=["customers.region"],
             measures=[
-                {"formula": "customers.revenue:percentile(p=0.5)"},
-                {"formula": "customers.revenue:percentile(p=0.95)"},
+                {"formula": "percentile(customers.revenue, p=0.5)"},
+                {"formula": "percentile(customers.revenue, p=0.95)"},
             ],
         )
     )

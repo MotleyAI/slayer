@@ -174,58 +174,58 @@ def _cases() -> dict:
         # --- host scope, plain Mode-A surfaces ---
         "host/model_filter": _q(
             dimensions=dim_status,
-            measures=[{"formula": "amount:sum", "name": "m"}],
+            measures=[{"formula": "sum(amount)", "name": "m"}],
         ),
         "host/column_sql_derived": _q(
             dimensions=[{"formula": "doubled", "name": "doubled"}],
-            measures=[{"formula": "amount:sum", "name": "m"}],
+            measures=[{"formula": "sum(amount)", "name": "m"}],
         ),
         "host/column_filter_crossing": _q(
             dimensions=dim_status,
-            measures=[{"formula": "eu_amount:sum", "name": "m"}],
+            measures=[{"formula": "sum(eu_amount)", "name": "m"}],
         ),
         "host/const_expanding_ref": _q(
             dimensions=dim_status,
-            measures=[{"formula": "amount:sum", "name": "m"}],
+            measures=[{"formula": "sum(amount)", "name": "m"}],
             filters=["flag_const == 1"],
         ),
         "host/quoted_dotted_identifier": _q(
             dimensions=[{"formula": "quoted_cross", "name": "quoted_cross"}],
-            measures=[{"formula": "amount:sum", "name": "m"}],
+            measures=[{"formula": "sum(amount)", "name": "m"}],
         ),
         "host/statement_keyword_column": _q(
             dimensions=[{"formula": "select", "name": "select"}],
-            measures=[{"formula": "amount:sum", "name": "m"}],
+            measures=[{"formula": "sum(amount)", "name": "m"}],
         ),
         "host/same_named_column_and_model": _q(
             dimensions=dim_status,
-            measures=[{"formula": "amount:sum", "name": "m"}],
+            measures=[{"formula": "sum(amount)", "name": "m"}],
             filters=["status == 'x'"],
         ),
         # --- derived expansion ---
         "expand/derived_of_derived": _q(
             dimensions=[{"formula": "deep_pop", "name": "deep_pop"}],
-            measures=[{"formula": "amount:sum", "name": "m"}],
+            measures=[{"formula": "sum(amount)", "name": "m"}],
         ),
         "expand/multi_model_derived": _q(
             dimensions=[{"formula": "multi_model", "name": "multi_model"}],
-            measures=[{"formula": "amount:sum", "name": "m"}],
+            measures=[{"formula": "sum(amount)", "name": "m"}],
         ),
         # --- cross-model _cm_ scope ---
         "cm/joined_measure": _q(
             to_many_handling="broadcast",
             dimensions=dim_status,
-            measures=[{"formula": "customers.spend:sum"}],
+            measures=[{"formula": "sum(customers.spend)"}],
         ),
         "cm/fragment_default_crossing": _q(
             to_many_handling="broadcast",
             dimensions=dim_status,
-            measures=[{"formula": "customers.spend:wscaled_sum"}],
+            measures=[{"formula": "wscaled_sum(customers.spend)"}],
         ),
         "cm/outer_where_wrapper": _q(
             dimensions=dim_status,
-            measures=[{"formula": "eu_amount:sum", "name": "eu"}],
-            filters=["eu_amount:sum > 100"],
+            measures=[{"formula": "sum(eu_amount)", "name": "eu"}],
+            filters=["sum(eu_amount) > 100"],
         ),
         # --- windowed _src scope ---
         "windowed/src_scope": _q(
@@ -233,14 +233,14 @@ def _cases() -> dict:
                 "dimension": "created_at", "granularity": "month",
                 "date_range": ["2024-01-01", "2024-12-31"],
             }],
-            measures=[{"formula": "eu_amount:sum", "name": "m"}],
+            measures=[{"formula": "sum(eu_amount)", "name": "m"}],
         ),
         "windowed/date_range_filter": _q(
             time_dimensions=[{
                 "dimension": "created_at", "granularity": "month",
                 "date_range": ["2024-01-01", "2024-12-31"],
             }],
-            measures=[{"formula": "amount:sum", "name": "m"}],
+            measures=[{"formula": "sum(amount)", "name": "m"}],
         ),
     }
 

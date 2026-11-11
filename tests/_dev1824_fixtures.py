@@ -109,7 +109,7 @@ RCM_GROUPS = frozenset({
     ("South", "CityC", "2024-03"), (None, "CityD", "2024-03"),
 })
 
-BAND35 = "CASE WHEN amount:sum(partition_by=city) > 35 THEN 1 ELSE 0 END"
+BAND35 = "CASE WHEN sum(amount, partition_by=city) > 35 THEN 1 ELSE 0 END"
 #: Band value per (region, city) under BAND35.
 BAND35_OF = {
     ("North", "CityA"): 0, ("North", "CityB"): 1, ("North", None): 0,

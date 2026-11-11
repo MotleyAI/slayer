@@ -21,7 +21,6 @@ from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.keys import ScalarCallKey
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
-    LegacyTypeCategories,
     PORTABLE_LIBRARY,
     NativeFn,
     TransactionMode,
@@ -98,12 +97,6 @@ _ODBC_SQL_TYPES: dict[int, tuple[str, DataType]] = {
     91: ("SQL_TYPE_DATE", DataType.DATE), 92: ("SQL_TYPE_TIME", DataType.TIMESTAMP),
     93: ("SQL_TYPE_TIMESTAMP", DataType.TIMESTAMP), -154: ("SQL_SS_TIME2", DataType.TIMESTAMP),
     -155: ("SQL_SS_TIMESTAMPOFFSET", DataType.TIMESTAMP),
-}
-_ODBC_LEGACY_CATEGORIES = {
-    "sql_integer": "number", "sql_smallint": "number", "sql_tinyint": "number", "sql_bigint": "number",
-    "sql_numeric": "number", "sql_decimal": "number", "sql_float": "number", "sql_real": "number",
-    "sql_double": "number", "sql_bit": "boolean", "sql_type_date": "time", "sql_type_time": "time",
-    "sql_type_timestamp": "time", "sql_ss_time2": "time", "sql_ss_timestampoffset": "time",
 }
 
 
@@ -203,15 +196,6 @@ def _bit_value(predicate: Expr) -> Expression:
 class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     sqlglot_name: str = "tsql"
     native_lists: ClassVar[bool] = False
-    # 1.6.0 read pyodbc's Python types: only bool, int and float were not strings.
-    legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories(
-        names={
-            "bit": "boolean", "tinyint": "number", "smallint": "number", "int": "number", "bigint": "number",
-            "float": "number", "real": "number", **_ODBC_LEGACY_CATEGORIES,
-        },
-        other="string",
-        unnamed={DataType.DATE: "string", DataType.TIMESTAMP: "string"},
-    )
     database_name: ClassVar[str] = "SQL Server"
     ds_type_aliases: frozenset[str] = frozenset({"mssql", "sqlserver", "tsql"})
     transaction_mode: ClassVar[TransactionMode] = "driver_autocommit"

@@ -68,8 +68,8 @@ async def _seed_orders(storage: YAMLStorage) -> None:
             Column(name="customer_id", type=DataType.INT, hidden=True),
         ],
         measures=[
-            ModelMeasure(name="revenue", formula="amount:sum"),
-            ModelMeasure(name="orders_count", formula="*:count"),
+            ModelMeasure(name="revenue", formula="sum(amount)"),
+            ModelMeasure(name="orders_count", formula="count(*)"),
         ],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
     ))
@@ -138,8 +138,8 @@ async def test_compact_markdown_emits_measure_names_only(
     })
     assert "Measures: revenue, orders_count" in result
     # The formula must NOT leak into compact output.
-    assert "amount:sum" not in result
-    assert "*:count" not in result
+    assert "sum(amount)" not in result
+    assert "count(*)" not in result
 
 
 @pytest.mark.asyncio
@@ -245,8 +245,8 @@ async def test_verbose_markdown_preserves_per_column_table(
     assert "| status |" in result
     assert "USD amount." in result
     assert "**Measures (2):**" in result
-    assert "amount:sum" in result
-    assert "*:count" in result
+    assert "sum(amount)" in result
+    assert "count(*)" in result
 
 
 @pytest.mark.asyncio
@@ -265,7 +265,7 @@ async def test_verbose_json_keeps_full_column_and_measure_payloads(
     assert "type" in orders["columns"][0]
     assert "measures" in orders
     revenue = next(mm for mm in orders["measures"] if mm["name"] == "revenue")
-    assert revenue["formula"] == "amount:sum"
+    assert revenue["formula"] == "sum(amount)"
 
 
 # ---------------------------------------------------------------------------

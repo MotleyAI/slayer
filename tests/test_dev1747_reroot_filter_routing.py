@@ -30,7 +30,7 @@ from slayer.engine.cardinality import join_safety
 from slayer.engine.compile import stages
 
 #: Cross-model aggregate + a dimension a hop past the target → planner re-roots the CTE at ``customers``.
-_CROSS_MODEL_MEASURE = {"formula": "customers.spend:sum", "name": "cs"}
+_CROSS_MODEL_MEASURE = {"formula": "sum(customers.spend)", "name": "cs"}
 
 #: Reachable from the re-rooted target (``customers -> regions``).
 FILTER_REACHABLE = "customers.regions.name == 'Alpha'"
@@ -47,24 +47,24 @@ FILTER_TAGS = "order_tags.name == 'rush'"
 #: Reachable from both scopes; changes the aggregate inside a surviving group (Alpha ``cs`` 1040→1000) — separates CTE-applied from host-applied.
 FILTER_TARGET_ATTRIBUTE = "customers.tier == 'gold'"
 #: Aggregate-phase predicate over the isolated aggregate; not host-evaluable, so it must STAY routed to the CTE.
-FILTER_AGGREGATE_REF = "customers.spend:sum > 500"
+FILTER_AGGREGATE_REF = "sum(customers.spend) > 500"
 
 #: A HOST-ROOTED shape (``cte_root_model == "orders"``): order by a derived crossing column — the filtered-local helpers live only on this route.
-_HOST_ROOTED_QUERY = SlayerQuery(
-    source_model="orders",
-    dimensions=[ColumnRef(name="status")],
-    measures=[{"formula": "amount:sum", "name": "rev"}],
-    order=[OrderItem(column=ColumnRef(name="cust_region"), direction="asc")],
-)
+_HOST_ROOTED_QUERY = SlayerQuery.model_validate({
+    "source_model": "orders",
+    "dimensions": [ColumnRef(name="status")],
+    "measures": [{"formula": "sum(amount)", "name": "rev"}],
+    "order": [OrderItem(column=ColumnRef(name="cust_region"), direction="asc")],
+})
 
 
 def _query(*filters: str) -> SlayerQuery:
-    return SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="name", model="customers.regions")],
-        measures=[{"formula": "amount:sum", "name": "rev"}, _CROSS_MODEL_MEASURE],
-        filters=list(filters) or None,
-    )
+    return SlayerQuery.model_validate({
+        "source_model": "orders",
+        "dimensions": [ColumnRef(name="name", model="customers.regions")],
+        "measures": [{"formula": "sum(amount)", "name": "rev"}, _CROSS_MODEL_MEASURE],
+        "filters": list(filters) or None,
+    })
 
 
 def _attaches(*filters: str):
@@ -201,9 +201,9 @@ class TestMixedOrPushes:
             source_model="orders",
             dimensions=[ColumnRef(name="name", model="customers.regions")],
             measures=[
-                {"formula": "amount:sum", "name": "rev"},
-                {"formula": "customers.spend:sum", "name": "cs"},
-                {"formula": "customers.regions.population:sum", "name": "pop"},
+                {"formula": "sum(amount)", "name": "rev"},
+                {"formula": "sum(customers.spend)", "name": "cs"},
+                {"formula": "sum(customers.regions.population)", "name": "pop"},
             ],
             filters=[FILTER_MIXED_OR],
         )
@@ -236,15 +236,15 @@ class TestMixedOrPushes:
 
     async def test_two_textually_distinct_filters_push_separately(self) -> None:
         """Identity is per filter text: two different mixed-OR filters yield two entries."""
-        query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="name", model="customers.regions")],
-            measures=[{"formula": "amount:sum", "name": "rev"}, _CROSS_MODEL_MEASURE],
-            filters=[
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": [ColumnRef(name="name", model="customers.regions")],
+            "measures": [{"formula": "sum(amount)", "name": "rev"}, _CROSS_MODEL_MEASURE],
+            "filters": [
                 "customers.tier == 'gold' or status == 'A'",
                 "customers.tier == 'silver' or status == 'B'",
             ],
-        )
+        })
         with tempfile.TemporaryDirectory() as d:
             db = os.path.join(d, "dev1747.db")
             seed_dev1747_sqlite(db)
@@ -312,15 +312,11 @@ class TestInternalFailuresRaise:
 class TestUnreachableDimensionsStillDrop:
     def test_unreachable_dimension_is_dropped_without_a_warning(self) -> None:
         """An unreachable DIMENSION broadcasts but must not raise a dropped-FILTER warning (D7)."""
-        query = SlayerQuery(
-            source_model="orders",
-            dimensions=[
+        query = SlayerQuery.model_validate({"source_model": "orders", "dimensions": [
                 ColumnRef(name="name", model="customers.regions"),
                 ColumnRef(name="name", model="order_tags"),
-            ],
-            measures=[{"formula": "amount:sum", "name": "rev"}, _CROSS_MODEL_MEASURE],
-            to_many_handling="broadcast",
-        )
+            ], "measures": [{"formula": "sum(amount)", "name": "rev"}, _CROSS_MODEL_MEASURE],
+            "to_many_handling": "broadcast"})
         plan = plan_query(query=query, bundle=dev1747_bundle())
         attach = next(
             a for a in plan.regroup_attach_plans
@@ -341,15 +337,15 @@ class TestFilteredLocalDispatchAccounting:
     """A ``locus="host"`` wrap (path is its crossing) must take the HOST-rooted route; a target-rooted producer would degenerate to a scalar CROSS JOIN (D2)."""
 
     def _grouped_joined_order(self) -> SlayerQuery:
-        return SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[{"formula": "amount:sum", "name": "rev"}],
-            order=[OrderItem(
+        return SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": [ColumnRef(name="status")],
+            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+            "order": [OrderItem(
                 column=ColumnRef(name="name", model="customers.regions"),
                 direction="asc",
             )],
-        )
+        })
 
     def test_host_grain_wrap_dispatches_to_the_host_rooted_route(self) -> None:
         plan = plan_query(
@@ -374,7 +370,7 @@ class TestFilteredLocalDispatchAccounting:
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
                 measures=[
-                    {"formula": "amount:sum", "name": "rev"},
+                    {"formula": "sum(amount)", "name": "rev"},
                     _CROSS_MODEL_MEASURE,
                 ],
             ),
@@ -543,7 +539,7 @@ class TestRerootedAggregateRefFilter:
         assert _lower_positions(plan).outer_where_ids, "the predicate is applied nowhere"
 
     async def test_it_restricts_rows_by_the_aggregate_predicate(self) -> None:
-        """Only Alpha's ``customers.spend:sum`` clears 500, so it is the sole surviving group — others dropped, not returned with a NULL measure."""
+        """Only Alpha's ``sum(customers.spend)`` clears 500, so it is the sole surviving group — others dropped, not returned with a NULL measure."""
         with tempfile.TemporaryDirectory() as d:
             db = os.path.join(d, "dev1747.db")
             seed_dev1747_sqlite(db)
@@ -571,9 +567,9 @@ class TestRowPhaseFiltersAlwaysApplyAtTheHost:
         source_model="orders",
         dimensions=[ColumnRef(name="name", model="customers.regions")],
         measures=[
-            {"formula": "amount:sum", "name": "rev"},
-            {"formula": "customers.spend:sum", "name": "cs"},
-            {"formula": "customers.regions.population:sum", "name": "pop"},
+            {"formula": "sum(amount)", "name": "rev"},
+            {"formula": "sum(customers.spend)", "name": "cs"},
+            {"formula": "sum(customers.regions.population)", "name": "pop"},
         ],
         filters=[FILTER_REACHABLE],
     )
@@ -600,12 +596,12 @@ class TestRowPhaseFiltersAlwaysApplyAtTheHost:
         self,
     ) -> None:
         """Adding a cross-model measure must not change which rows a filter keeps — the invariant the host-skip broke."""
-        plain = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="name", model="customers.regions")],
-            measures=[{"formula": "amount:sum", "name": "rev"}],
-            filters=[FILTER_REACHABLE],
-        )
+        plain = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": [ColumnRef(name="name", model="customers.regions")],
+            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+            "filters": [FILTER_REACHABLE],
+        })
         plain_rows = await self._rows(plain)
         mixed_rows = await self._rows(self._MIXED_ROUTES)
         assert (
@@ -618,13 +614,13 @@ class TestRowPhaseFiltersAlwaysApplyAtTheHost:
         ), "the sibling local measure changed when a cross-model one was added"
 
     async def test_applying_at_the_host_does_not_fan_out_a_sibling(self) -> None:
-        """Ruled out: the host's copy of a filter on a 1:N path (``order_tags``) must not fan out a sibling ``amount:sum`` — group A reads 24.0, not the 46.0 a three-way fan-out gives."""
+        """Ruled out: the host's copy of a filter on a 1:N path (``order_tags``) must not fan out a sibling ``sum(amount)`` — group A reads 24.0, not the 46.0 a three-way fan-out gives."""
         rows = await self._rows(SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                {"formula": "amount:sum", "name": "rev"},
-                {"formula": "order_tags.id:count", "name": "tags"},
+                {"formula": "sum(amount)", "name": "rev"},
+                {"formula": "count(order_tags.id)", "name": "tags"},
             ],
             filters=["order_tags.name == 'rush'"],
         ))

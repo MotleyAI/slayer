@@ -133,6 +133,17 @@ async def _query(storage: YAMLStorage, model: str) -> list[dict[str, object]]:
         engine.close()
 
 
+async def _ingest(*, datasource: DatasourceConfig, storage: YAMLStorage,
+                  **scope: Any) -> schema_drift.IdempotentIngestResult:
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        return await ingest_datasource_idempotent(datasource=datasource, storage=storage,
+                                                  client=engine.client_for(datasource), **scope)
+    finally:
+        await engine.aclose()
+        engine.close()
+
+
 async def _validate(storage: YAMLStorage) -> list[object]:
     engine = SlayerQueryEngine(storage=storage)
     try:
@@ -173,11 +184,11 @@ async def _only_model(storage: YAMLStorage) -> SlayerModel:
 async def test_ingested_name_with_a_space_reads_back(duck: tuple[DatasourceConfig, YAMLStorage],
                                                      scope: dict[str, Any]) -> None:
     ds, storage = duck
-    await ingest_datasource_idempotent(datasource=ds, storage=storage, **scope)
+    await _ingest(datasource=ds, storage=storage, **scope)
     model = await _only_model(storage)
     assert model.sql_table == 'sales."order items"'
     assert [r[f"{model.name}.qty"] for r in await _query(storage, model.name)] == [6]
-    again = await ingest_datasource_idempotent(datasource=ds, storage=storage, **scope)
+    again = await _ingest(datasource=ds, storage=storage, **scope)
     assert [(a.created, a.new_columns) for a in again.additions] == [(False, [])]
     assert again.to_delete == []
     assert await _validate(storage) == []

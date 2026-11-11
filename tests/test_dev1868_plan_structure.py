@@ -98,10 +98,10 @@ class TestCompositesBecomeCombinedSlots:
     AGGREGATE slot with target-rooted producers — none reaches the seam."""
 
     @pytest.mark.parametrize("formula, n_producers", [
-        ("amount:sum / customers.spend:sum", 1),
-        ("customers.spend:sum * 2", 1),
-        ("round(customers.spend:sum / amount:sum, 2)", 1),
-        ("customers.spend:sum - customers.spend:max", 2),
+        ("sum(amount) / sum(customers.spend)", 1),
+        ("sum(customers.spend) * 2", 1),
+        ("round(sum(customers.spend) / sum(amount), 2)", 1),
+        ("sum(customers.spend) - max(customers.spend)", 2),
     ])
     def test_composite_plans_with_producers(
         self, formula: str, n_producers: int,
@@ -124,7 +124,7 @@ class TestRowLeafRejectionAtPlanTime:
 
     def test_mixed_composite_rejected_by_plan_query(self) -> None:
         query = _q46(
-            measures=[ModelMeasure(formula="time_shift(revenue:sum * weight, -1)",
+            measures=[ModelMeasure(formula="time_shift(sum(revenue) * weight, -1)",
                                    name="t")])
         bundle = _bundle46()
         with pytest.raises(ValueError) as ei:

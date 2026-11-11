@@ -64,7 +64,8 @@ async def check_query_carries_finding(engine: SlayerQueryEngine, *, column: str)
 async def check_reingest_retypes(
     engine: SlayerQueryEngine, *, datasource: DatasourceConfig, table: str, column: str, element: DataType,
 ) -> None:
-    result = await ingest_datasource_idempotent(datasource=datasource, storage=engine.storage, include_tables=[table])
+    result = await ingest_datasource_idempotent(datasource=datasource, storage=engine.storage,
+                                                client=engine.client_for(datasource), include_tables=[table])
     assert any(a.model_name == MODEL and column in a.widened_columns for a in result.additions), result.additions
     loaded = await engine.storage.get_model(MODEL, data_source=datasource.name)
     assert loaded is not None

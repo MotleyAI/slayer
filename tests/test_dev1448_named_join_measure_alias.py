@@ -4,7 +4,7 @@ A user ``name`` on a join-traversed measure governs the stage's
 emitted column alias, so a downstream stage references it by that name. With
 stage-1 ``{"formula": "customers.revenue:sum", "name": "rev"}``, the stage
 schema exposes a flat column ``rev`` (NOT the canonical
-``customers__revenue_sum``), and a root stage over it resolves ``rev:max``.
+``customers__revenue_sum``), and a root stage over it resolves ``max(rev)``.
 
 End-to-end through ``engine.execute([stage1, root])``. The planner-level
 schema-column shape is pinned in ``tests/test_generator2_multistage.py``; this
@@ -95,21 +95,21 @@ async def engine() -> AsyncIterator[Tuple[SlayerQueryEngine, str]]:
 async def test_dev1448_downstream_resolves_user_name(engine):
     """The renamed join measure is referenced downstream by its user name."""
     eng, _ = engine
-    stage1 = SlayerQuery(
-        name="stage1",
-        source_model="orders",
-        dimensions=["status"],
-        measures=[{"formula": "customers.revenue:sum", "name": "rev"}],
-        to_many_handling="broadcast",
-    )
-    root = SlayerQuery(
-        source_model="stage1",
-        dimensions=["status"],
-        measures=[{"formula": "rev:max"}],
-    )
+    stage1 = SlayerQuery.model_validate({
+        "name": "stage1",
+        "source_model": "orders",
+        "dimensions": ["status"],
+        "measures": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+        "to_many_handling": "broadcast",
+    })
+    root = SlayerQuery.model_validate({
+        "source_model": "stage1",
+        "dimensions": ["status"],
+        "measures": [{"formula": "max(rev)"}],
+    })
     resp = await eng.execute([stage1, root])
     # Result-key contract: downstream stage prefix + canonical alias of the
-    # downstream measure (``rev:max`` -> ``rev_max``).
+    # downstream measure (``max(rev)`` -> ``rev_max``).
     assert resp.columns == ["stage1.status", "stage1.rev_max"]
     assert {
         tuple(sorted(r.items())) for r in resp.data
@@ -125,16 +125,16 @@ async def test_dev1448_canonical_form_not_a_downstream_name(engine):
     it raises rather than silently resolving.
     """
     eng, _ = engine
-    stage1 = SlayerQuery(
-        name="stage1",
-        source_model="orders",
-        dimensions=["status"],
-        measures=[{"formula": "customers.revenue:sum", "name": "rev"}],
-    )
-    root = SlayerQuery(
-        source_model="stage1",
-        dimensions=["status"],
-        measures=[{"formula": "customers__revenue_sum:max"}],
-    )
+    stage1 = SlayerQuery.model_validate({
+        "name": "stage1",
+        "source_model": "orders",
+        "dimensions": ["status"],
+        "measures": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+    })
+    root = SlayerQuery.model_validate({
+        "source_model": "stage1",
+        "dimensions": ["status"],
+        "measures": [{"formula": "max(customers__revenue_sum)"}],
+    })
     with pytest.raises(UnknownReferenceError):
         await eng.execute([stage1, root])

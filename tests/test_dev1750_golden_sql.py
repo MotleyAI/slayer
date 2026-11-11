@@ -46,60 +46,60 @@ def _cases() -> dict:
     return {
         # (a) local time_shift beside a cross-model sibling.
         "a/local_ts_cm_sibling": _q(to_many_handling="broadcast", measures=[
-            {"formula": "customers.spend:sum", "name": "cm"},
-            {"formula": "time_shift(amount:sum, -1)", "name": "prev"},
+            {"formula": "sum(customers.spend)", "name": "cm"},
+            {"formula": "time_shift(sum(amount), -1)", "name": "prev"},
         ]),
         # (b) host-rooted crossing-fragment inner — the named repro.
         "b/host_rooted_wscaled": _q(measures=[
-            {"formula": "time_shift(amount:wscaled_sum, -1)", "name": "prev"},
+            {"formula": "time_shift(wscaled_sum(amount), -1)", "name": "prev"},
         ]),
         "b/host_rooted_wscaled_user_kwarg": _q(measures=[
-            {"formula": "time_shift(amount:wscaled_sum(w='customers.regions.weight'), -1)",
+            {"formula": "time_shift(wscaled_sum(amount, w='customers.regions.weight'), -1)",
              "name": "prev"},
         ]),
         "b/wscaled_with_local_sibling": _q(measures=[
-            {"formula": "amount:sum", "name": "s"},
-            {"formula": "time_shift(amount:wscaled_sum, -1)", "name": "prev"},
+            {"formula": "sum(amount)", "name": "s"},
+            {"formula": "time_shift(wscaled_sum(amount), -1)", "name": "prev"},
         ]),
         # (b) crossing a 1:N join — the shifted CTE must pull the fan-out join.
         "b/liscaled_one_to_many": _q(measures=[
-            {"formula": "amount:sum", "name": "s"},
-            {"formula": "time_shift(amount:liscaled_sum, -1)", "name": "prev"},
+            {"formula": "sum(amount)", "name": "s"},
+            {"formula": "time_shift(liscaled_sum(amount), -1)", "name": "prev"},
         ]),
         # consecutive_periods — lifted entirely (no target-grain failure mode).
         "cp/local_with_cm_sibling": _q(to_many_handling="broadcast", measures=[
-            {"formula": "customers.spend:sum", "name": "cm"},
-            {"formula": "consecutive_periods(amount:sum > 0)", "name": "streak"},
+            {"formula": "sum(customers.spend)", "name": "cm"},
+            {"formula": "consecutive_periods(sum(amount) > 0)", "name": "streak"},
         ]),
         "cp/over_target_grain": _q(to_many_handling="broadcast", measures=[
-            {"formula": "consecutive_periods(customers.spend:sum > 0)", "name": "streak"},
+            {"formula": "consecutive_periods(sum(customers.spend) > 0)", "name": "streak"},
         ]),
         # change / change_pct desugar to time_shift.
         "change/of_wscaled": _q(measures=[
-            {"formula": "change(amount:wscaled_sum)", "name": "delta"},
+            {"formula": "change(wscaled_sum(amount))", "name": "delta"},
         ]),
         "change_pct/of_local_with_cm_sibling": _q(to_many_handling="broadcast", measures=[
-            {"formula": "customers.spend:sum", "name": "cm"},
-            {"formula": "change_pct(amount:sum)", "name": "delta"},
+            {"formula": "sum(customers.spend)", "name": "cm"},
+            {"formula": "change_pct(sum(amount))", "name": "delta"},
         ]),
         # (c) target-grain inner — stays guarded (records the narrowed raise).
         "c/target_grain_guarded": _q(to_many_handling="broadcast", measures=[
-            {"formula": "time_shift(customers.spend:sum, -1)", "name": "prev"},
+            {"formula": "time_shift(sum(customers.spend), -1)", "name": "prev"},
         ]),
         # window op over cross-model — never guarded; a regression anchor.
         "window/cumsum_cross_model": _q(to_many_handling="broadcast", measures=[
-            {"formula": "cumsum(customers.spend:sum)", "name": "run"},
+            {"formula": "cumsum(sum(customers.spend))", "name": "run"},
         ]),
         # composite-input transform — lifted; it now renders a
         # shifted-CTE re-aggregation beside the cross-model sibling.
         "composite/lifted": _q(to_many_handling="broadcast", measures=[
-            {"formula": "customers.spend:sum", "name": "cm"},
-            {"formula": "time_shift(amount:sum + amount:sum, -1)", "name": "prev"},
+            {"formula": "sum(customers.spend)", "name": "cm"},
+            {"formula": "time_shift(sum(amount) + sum(amount), -1)", "name": "prev"},
         ]),
         # first/last crossing time arg — records whatever the seam does.
         "first_last/crossing_time_arg": _q(to_many_handling="broadcast", measures=[
-            {"formula": "customers.spend:sum", "name": "cm"},
-            {"formula": "time_shift(amount:last(customers.signup_at), -1)", "name": "prev"},
+            {"formula": "sum(customers.spend)", "name": "cm"},
+            {"formula": "time_shift(last(amount, customers.signup_at), -1)", "name": "prev"},
         ]),
     }
 

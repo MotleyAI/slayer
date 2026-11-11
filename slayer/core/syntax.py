@@ -35,10 +35,15 @@ from slayer.core.enums import (
     ambiguous_weekday_message,
     normalize_aggregation_name,
 )
-from slayer.core.errors import GranularityCallError, IllegalWindowInFilterError, UnknownFunctionError, VariableError
+from slayer.core.errors import (
+    ColonSpellingError,
+    GranularityCallError,
+    IllegalWindowInFilterError,
+    UnknownFunctionError,
+    VariableError,
+)
 from slayer.core.json_path import JsonPathError, check_key, json_path_text, parse_json_path
 from slayer.core.keys import DATE_UNIT_ARGS, RESERVED_SCALAR_NAMES, SCALAR_FUNCTIONS, check_scalar_arity
-from slayer.core.refs import split_agg_suffix
 from slayer.core.regex_pattern import RegexPattern
 from slayer.core.scalar_args import STRING_SLOTS, check_path, check_pattern, check_replacement, slot_name
 
@@ -327,11 +332,12 @@ def _mask_placeholders(text: str) -> str:
 
 
 class _State:
-    """Per-parse scratch: the expression text and the farthest failure offset."""
+    """Per-parse scratch: the expression text, the farthest failure offset and, while rewriting, the colon spans."""
 
     def __init__(self) -> None:
         self.text = ""
         self.farthest = 0
+        self.spans: Optional[List["_ColonSpan"]] = None
 
 
 _STATE = _State()
@@ -620,16 +626,44 @@ _COLON_SOURCE = (_on(pp.Suppress(STAR), lambda _toks: StarSource())
                  | _on(_PATH_STAR.copy(), lambda toks: DottedRef(parts=(*(w.name for w in toks[0][0]), "*"),
                                             quoted=any(w.quoted for w in toks[0][0])))
                  | _on(_PATH.copy(), lambda toks: _path_node(list(toks[0]))))
-_COLON_AGG = _COLON_SOURCE + COLON + _BARE + pp.Optional(LPAR + _arg_list(_ANY_ARG, _ANY_ARG) + RPAR)
+# The removed colon spelling ``<source>:<name>[(<args>)]``: refused, or recorded by ``rewrite_colon_spans``.
+_COLON_AGG = (pp.Located(_COLON_SOURCE) + COLON + pp.Located(_BARE)
+              + pp.Optional(pp.Located(LPAR + pp.Located(_arg_list(_ANY_ARG, _ANY_ARG)) + RPAR)))
+
+
+class _ColonSpan(BaseModel):
+    """One colon span's offsets: the whole span, its source, its name (as written) and its argument list."""
+
+    start: int
+    end: int
+    source: Tuple[int, int]
+    name: str
+    args: Optional[Tuple[int, int]] = None
+
+
+def colon_twin(*, source: str, name: str, args: str = "") -> str:
+    """The functional twin of the colon span ``<source>:<name>[(<args>)]``."""
+    if name.lower() in GRANULARITY_NAMES and not args:
+        return f"date_trunc('{name}', {source})"
+    return f"{name}({source}, {args})" if args else f"{name}({source})"
 
 
 def _colon_node(toks: List[Any]) -> AggCall:
-    source, agg = toks[0], toks[1].name
-    args, kwargs, distinct = _split_args(list(toks[2]) if len(toks) > 2 else [], call=agg)
-    if distinct:
-        raise _Problem(f"{_DISTINCT_ONLY}.")
-    _reject_bare_star_args(args, kwargs, func_name=agg, original=_STATE.text)
-    return AggCall(source=source, agg=agg, args=args, kwargs=kwargs)
+    start, (source,), src_end, _name_start, (word,), end, *call = toks
+    # ``call``: the parenthesised argument list's offsets and items.
+    items: List[Any] = []
+    args_at: Optional[Tuple[int, int]] = None
+    if call:
+        _open, (args_start, (items,), args_end), end = call
+        args_at = (args_start, args_end)
+    span = _ColonSpan(start=start, end=end, source=(start, src_end), name=word.raw, args=args_at)
+    if _STATE.spans is None:
+        text = _STATE.text
+        raise ColonSpellingError(span=text[start:end], twin=colon_twin(
+            source=text[start:src_end], name=span.name, args=text[args_at[0]:args_at[1]] if args_at else ""))
+    _STATE.spans.append(span)
+    args, kwargs, _distinct = _split_args(list(items), call=word.name)
+    return AggCall(source=source, agg=word.name, args=args, kwargs=kwargs)
 
 
 _on(_COLON_AGG, _colon_node)
@@ -1778,8 +1812,7 @@ _SCALAR_MIN_MAX = {"min": "least", "max": "greatest"}
 def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin functional aggregation → transform → scalar → date-part alias → unknown-name AggCall deferral); each rung IS the documented dispatch order and splitting them hides it.
     func_name: str, *, args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...], original: str,
 ) -> ParsedExpr:
-    # ``agg`` stores the RAW token so colon and functional spellings collapse to one
-    # AggCall; ``first``/``last`` dispatch at bind by the operand's type.
+    # ``agg`` stores the RAW token; ``first``/``last`` dispatch at bind by the operand's type.
     canonical_agg = normalize_aggregation_name(func_name)
     if canonical_agg in BUILTIN_AGGREGATIONS:
         if not args:
@@ -2120,26 +2153,26 @@ def call_source(text: str) -> Optional[CallSource]:
 
 
 def _canonical_call_params(
-    args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...], *, bare_direction: bool = False,
+    args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...], *, bare_direction: bool = False, legacy: bool = False,
 ) -> str:
-    parts = [canonical_measure_text(a) for a in args]
-    parts += [_canonical_kwarg(k, v, bare_direction=bare_direction) for k, v in kwargs]
+    parts = [_render(a, legacy=legacy) for a in args]
+    parts += [_canonical_kwarg(k, v, bare_direction=bare_direction, legacy=legacy) for k, v in kwargs]
     return f"({', '.join(parts)})" if parts else ""
 
 
-def _canonical_kwarg(name: str, value: Any, *, bare_direction: bool) -> str:
-    """``name=value``; a transform's recognised ``direction`` renders as its bare normalised value."""
+def _canonical_kwarg(name: str, value: Any, *, bare_direction: bool, legacy: bool) -> str:
+    """``name=value``; a transform's recognised ``direction`` renders normalised (bare in the legacy seed)."""
     if bare_direction and name == "direction" and isinstance(value, Literal):
         direction = normalize_direction(value.value)
         if direction is not None:
-            return direction
-    return f"{name}={_canonical_kwarg_text(value)}"
+            return direction if legacy else f"direction='{direction}'"
+    return f"{name}={_canonical_kwarg_text(value, legacy=legacy)}"
 
 
-def _canonical_kwarg_text(value: Any) -> str:
+def _canonical_kwarg_text(value: Any, *, legacy: bool) -> str:
     if isinstance(value, tuple):
-        return f"[{', '.join(canonical_measure_text(v) for v in value)}]"
-    return canonical_measure_text(value)
+        return f"[{', '.join(_render(v, legacy=legacy) for v in value)}]"
+    return _render(value, legacy=legacy)
 
 
 def _identifier_text(name: str) -> str:
@@ -2164,14 +2197,24 @@ def _precedence(node: Any) -> int:
     return _P_ATOM
 
 
-def _operand_text(node: Any, *, minimum: int) -> str:
+def _operand_text(node: Any, *, minimum: int, legacy: bool) -> str:
     """``node``'s canonical text, parenthesised when it binds looser than ``minimum``."""
-    text = canonical_measure_text(node)
+    text = _render(node, legacy=legacy)
     return f"({text})" if _precedence(node) < minimum else text
 
 
-def canonical_measure_text(parsed: Any) -> str:  # NOSONAR(S3776) — flat per-node-kind rendering table; each branch is one spelling rule.
-    """Render a ``ParsedExpr`` to canonical colon-spelling text that parses back to the same tree."""
+def canonical_measure_text(parsed: Any) -> str:
+    """Render a ``ParsedExpr`` to canonical functional text that parses back to the same tree."""
+    return _render(parsed, legacy=False)
+
+
+def legacy_result_name_seed(parsed: Any) -> str:
+    """The text result keys are named from: the canonical text in the pre-2.0 aggregation spelling, so keys stay
+    stable. Never parsed or shown."""
+    return _render(parsed, legacy=True)
+
+
+def _render(parsed: Any, *, legacy: bool) -> str:  # NOSONAR(S3776) — flat per-node-kind rendering table; each branch is one spelling rule.
     if isinstance(parsed, Ref):
         return _identifier_text(parsed.name)
     if isinstance(parsed, DottedRef):
@@ -2187,47 +2230,45 @@ def canonical_measure_text(parsed: Any) -> str:  # NOSONAR(S3776) — flat per-n
     if isinstance(parsed, (Placeholder, BoundVariable)):
         return f"{{{parsed.name}}}"
     if isinstance(parsed, TupleLit):
-        return f"({', '.join(canonical_measure_text(e) for e in parsed.elements)})"
+        return f"({', '.join(_render(e, legacy=legacy) for e in parsed.elements)})"
     if isinstance(parsed, ArrayLit):
-        return f"[{', '.join(canonical_measure_text(e) for e in parsed.elements)}]"
+        return f"[{', '.join(_render(e, legacy=legacy) for e in parsed.elements)}]"
     if isinstance(parsed, AggCall):
-        return _canonical_agg_text(parsed)
+        return _canonical_agg_text(parsed, legacy=legacy)
     if isinstance(parsed, TransformCall):
-        inner = canonical_measure_text(parsed.input)
-        params = _canonical_call_params(parsed.args, parsed.kwargs, bare_direction=True)
+        inner = _render(parsed.input, legacy=legacy)
+        params = _canonical_call_params(parsed.args, parsed.kwargs, bare_direction=True, legacy=legacy)
         return f"{parsed.op}({inner}{', ' + params[1:-1] if params else ''})"
     if isinstance(parsed, ScalarCall):
-        return f"{parsed.name}({', '.join(canonical_measure_text(a) for a in parsed.args)})"
+        return f"{parsed.name}({', '.join(_render(a, legacy=legacy) for a in parsed.args)})"
     if isinstance(parsed, Cast):
         fn = "TRY_CAST" if parsed.try_ else "CAST"
-        return f"{fn}({canonical_measure_text(parsed.source)} AS {parsed.type_text})"
+        return f"{fn}({_render(parsed.source, legacy=legacy)} AS {parsed.type_text})"
     if isinstance(parsed, (Arith, Cmp)):
         prec = _precedence(parsed)
-        left = _operand_text(parsed.left, minimum=prec + 1 if isinstance(parsed, Cmp) else prec)
-        right = _operand_text(parsed.right, minimum=prec + 1)
+        left = _operand_text(parsed.left, minimum=prec + 1 if isinstance(parsed, Cmp) else prec, legacy=legacy)
+        right = _operand_text(parsed.right, minimum=prec + 1, legacy=legacy)
         return f"{left} {parsed.op} {right}"
     if isinstance(parsed, UnaryOp):
-        operand = _operand_text(parsed.operand, minimum=_precedence(parsed) + 1)
+        operand = _operand_text(parsed.operand, minimum=_precedence(parsed) + 1, legacy=legacy)
         return f"not {operand}" if parsed.op == "not" else f"{parsed.op}{operand}"
     if isinstance(parsed, BoolOp):
         prec = _precedence(parsed)
-        return f" {parsed.op} ".join(_operand_text(o, minimum=prec + 1) for o in parsed.operands)
+        return f" {parsed.op} ".join(_operand_text(o, minimum=prec + 1, legacy=legacy) for o in parsed.operands)
     return str(parsed)
 
 
-def _canonical_agg_text(parsed: AggCall) -> str:
-    source = canonical_measure_text(parsed.source)
-    if isinstance(parsed.source, (Ref, DottedRef, StarSource)):
-        text = f"{source}:{parsed.agg}{_canonical_call_params(parsed.args, parsed.kwargs)}"
+def _canonical_agg_text(parsed: AggCall, *, legacy: bool) -> str:
+    source = _render(parsed.source, legacy=legacy)
+    if legacy and isinstance(parsed.source, (Ref, DottedRef, StarSource)):
+        text = f"{source}:{parsed.agg}{_canonical_call_params(parsed.args, parsed.kwargs, legacy=legacy)}"
     else:
-        # Expression source (``sum(amount - cost)``): render functionally so the
-        # text can't collide with a distinct parse tree like ``amount - cost:sum``.
         parts = [source]
-        parts += [canonical_measure_text(a) for a in parsed.args]
-        parts += [f"{k}={_canonical_kwarg_text(v)}" for k, v in parsed.kwargs]
+        parts += [_render(a, legacy=legacy) for a in parsed.args]
+        parts += [f"{k}={_canonical_kwarg_text(v, legacy=legacy)}" for k, v in parsed.kwargs]
         text = f"{parsed.agg}({', '.join(parts)})"
     if parsed.filter is not None:
-        text += f" FILTER (WHERE {canonical_measure_text(parsed.filter)})"
+        text += f" FILTER (WHERE {_render(parsed.filter, legacy=legacy)})"
     return text
 
 
@@ -2259,19 +2300,13 @@ def _functional_suffix_text(raw: str, *, agg: str) -> str:
 
 
 def split_entity_agg_ref(raw: str) -> Tuple[str, Optional[str]]:
-    """``(prefix, agg_suffix)`` of a single aggregated-column entity
-    reference: ``sum(orders.amount)`` and the legacy ``orders.amount:sum`` split
-    identically.
+    """``(prefix, agg_suffix)`` of an entity reference: ``sum(orders.amount)`` → ``("orders.amount", "sum")``,
+    ``last(balance, updated_at)`` → ``("balance", "last(updated_at)")``; call-free text → ``(raw, None)``.
 
-    Legacy colon and call-free text splits exactly like
-    :func:`slayer.core.refs.split_agg_suffix`. Functional text must parse to
-    an ``AggCall`` over a pure column / star source; multi-column expression
-    text (``sum(a - b)``) raises ``ValueError`` — an expression is not an
-    entity.
+    Raises ``ValueError`` unless the text is one aggregation over a column or star.
     """
-    prefix, suffix = split_agg_suffix(raw)
-    if suffix is not None or "(" not in raw:
-        return prefix, suffix
+    if "(" not in raw and ":" not in raw:
+        return raw, None
     parsed = parse_expr(raw)
     if not isinstance(parsed, AggCall) or parsed.filter is not None or not isinstance(
         parsed.source, (Ref, DottedRef, StarSource)
@@ -2290,11 +2325,62 @@ def split_entity_agg_ref(raw: str) -> Tuple[str, Optional[str]]:
     return prefix, _functional_suffix_text(raw, agg=parsed.agg)
 
 
+def measure_text_at_path(formula: str, *, path: Sequence[str]) -> str:
+    """``formula`` read from the model at the join ``path``, as canonical text: an aggregation's source re-rooted
+    (``count(*)`` → ``count(customers.*)``), any other reference prefixed."""
+    node = parse_expr(formula)
+    if isinstance(node, AggCall):
+        return canonical_measure_text(node.model_copy(update={"source": _onto_path(node.source, path=tuple(path))}))
+    return canonical_measure_text(_onto_path(node, path=tuple(path)))
+
+
+# ---------------------------------------------------------------------------
+# Stored colon spans
+# ---------------------------------------------------------------------------
+
+
+def rewrite_colon_spans(text: str) -> str:
+    """``text`` with every colon span written as its functional twin (innermost first), every other byte kept.
+
+    Raises ``ValueError`` when ``text`` does not parse.
+    """
+    if ":" not in text:
+        return text
+    with _PARSE_LOCK:
+        _STATE.text, _STATE.farthest, _STATE.spans = text, 0, []
+        try:
+            _EXPRESSION.parse_string(_mask_placeholders(text), parse_all=True)
+            spans = _STATE.spans
+        except _Problem as problem:
+            raise ValueError(f"Invalid Mode-B expression {text!r}: {problem.detail}") from None
+        except pp.ParseBaseException as e:
+            raise ValueError(f"Invalid Mode-B expression {text!r}: {_syntax_message(text, e)}") from None
+        finally:
+            _STATE.spans = None
+    unique = sorted({(s.start, s.end): s for s in spans}.values(), key=lambda s: (s.start, -s.end))
+    return _rewritten(text, spans=unique, start=0, end=len(text))
+
+
+def _rewritten(text: str, *, spans: List[_ColonSpan], start: int, end: int) -> str:
+    """``text[start:end]`` with its outermost colon spans replaced by their twins."""
+    out: List[str] = []
+    cursor = start
+    for span in spans:
+        if span.start < cursor or span.end > end:
+            continue
+        args = "" if span.args is None else _rewritten(text, spans=spans, start=span.args[0], end=span.args[1])
+        source = text[span.source[0]:span.source[1]]
+        out += [text[cursor:span.start], colon_twin(source=source, name=span.name, args=args)]
+        cursor = span.end
+    out.append(text[cursor:end])
+    return "".join(out)
+
+
 __all__ = [
     "AggCall", "ArrayLit", "Arith", "BoolOp", "CallSource", "Cast", "Cmp", "DottedRef", "Literal", "ParsedExpr",
     "BoundVariable", "Placeholder", "Ref", "ScalarCall", "StarSource", "TemporalLiteral", "TransformCall", "TupleLit", "UnaryOp",
-    "aggregation_reading", "bind_variables", "call_source", "canonical_measure_text", "comparison_hint",
-    "drop_root_hop", "drop_root_qualifier", "has_bindings", "keyword_spelling", "measure_dependency_problems",
-    "parse_bound_expr", "parse_expr", "parse_template", "placeholder_names", "positional_hint", "referenced_paths", "root_relative", "split_entity_agg_ref",
+    "aggregation_reading", "bind_variables", "call_source", "canonical_measure_text", "colon_twin", "comparison_hint",
+    "drop_root_hop", "drop_root_qualifier", "has_bindings", "keyword_spelling", "legacy_result_name_seed", "measure_dependency_problems", "measure_text_at_path",
+    "parse_bound_expr", "parse_expr", "parse_template", "placeholder_names", "positional_hint", "referenced_paths", "rewrite_colon_spans", "root_relative", "split_entity_agg_ref",
     "text_paths", "variable_names", "walk_parsed", "walk_parsed_refs",
 ]

@@ -189,7 +189,7 @@ class TestCliValidateModels:
         _run_validate_models(SimpleNamespace(
             datasource="ds", model=None, cardinality=False,
             persist_cardinality=False, format="text", force_clean=False,
-            yes=False, storage=store, models_dir=None,
+            yes=False, storage=store,
         ))
         out = capsys.readouterr().out
         assert "tags" in out

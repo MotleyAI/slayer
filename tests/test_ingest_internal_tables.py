@@ -877,7 +877,6 @@ def _args(workspace: Path, **overrides) -> SimpleNamespace:
         include_views=True,
         surface_internals=False,
         storage=str(workspace / "storage"),
-        models_dir=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -1014,7 +1013,6 @@ class TestDatasourcesCreateReporting:
             surface_internals=False,
             yes=True,
             storage=str(workspace / "storage"),
-            models_dir=None,
         )
         base.update(overrides)
         return SimpleNamespace(**base)
@@ -1238,10 +1236,10 @@ class TestVisibilitySurfaces:
 
         engine = SlayerQueryEngine(storage=storage)
         resp = await engine.execute(
-            SlayerQuery(
-                source_model="_dlt_loads",
-                measures=[{"formula": "*:count", "name": "n"}],
-            )
+            SlayerQuery.model_validate({
+                "source_model": "_dlt_loads",
+                "measures": [{"formula": "count(*)", "name": "n"}],
+            })
         )
         assert resp.row_count == 1
         assert next(iter(resp.data[0].values())) == 1
@@ -1277,11 +1275,11 @@ class TestJoinsIntoHiddenModels:
 
         engine = SlayerQueryEngine(storage=storage)
         resp = await engine.execute(
-            SlayerQuery(
-                source_model="orders",
-                dimensions=["_dlt_loads.schema_name"],
-                measures=[{"formula": "amount:sum", "name": "total"}],
-            )
+            SlayerQuery.model_validate({
+                "source_model": "orders",
+                "dimensions": ["_dlt_loads.schema_name"],
+                "measures": [{"formula": "sum(amount)", "name": "total"}],
+            })
         )
         # The hidden model's name in the result key is evidence the join resolved.
         assert resp.row_count == 2

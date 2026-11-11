@@ -133,7 +133,7 @@ class TestCrossModelRenameSingleStage:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="customers.revenue:sum", name="cust_rev")],
+            measures=[ModelMeasure(formula="sum(customers.revenue)", name="cust_rev")],
             to_many_handling="broadcast",
         )
         resp = await engine.execute(query=query, dry_run=True)
@@ -164,7 +164,7 @@ class TestCrossModelRenameSingleStage:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="customers.revenue:sum", name="cust_rev")],
+            measures=[ModelMeasure(formula="sum(customers.revenue)", name="cust_rev")],
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
@@ -185,7 +185,7 @@ class TestCrossModelRenameSingleStage:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="customers.revenue:sum", name="cust_rev")],
+            measures=[ModelMeasure(formula="sum(customers.revenue)", name="cust_rev")],
         )
         resp = await engine.execute(query=query, dry_run=True)
         assert "orders.cust_rev" in resp.columns, (
@@ -203,18 +203,18 @@ class TestCrossModelRenameNestedDAG:
     async def test_cross_model_rename_propagates_to_downstream_stage(
         self, orders_customers_engine,
     ) -> None:
-        """Stage 2's ``cust_rev:max`` resolves against stage 1's renamed measure."""
+        """Stage 2's ``max(cust_rev)`` resolves against stage 1's renamed measure."""
         engine, _ = orders_customers_engine
         stage1 = SlayerQuery(
             name="stage1",
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="customers.revenue:sum", name="cust_rev")],
+            measures=[ModelMeasure(formula="sum(customers.revenue)", name="cust_rev")],
         )
         stage2 = SlayerQuery(
             source_model="stage1",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="cust_rev:max", name="top_cust_rev")],
+            measures=[ModelMeasure(formula="max(cust_rev)", name="top_cust_rev")],
         )
         resp = await engine.execute(query=[stage1, stage2], dry_run=True)
         sql = resp.sql or ""
@@ -230,18 +230,18 @@ class TestCrossModelRenameNestedDAG:
         self, orders_customers_engine,
     ) -> None:
         """Downstream-stage column for a renamed cross-model measure is the bare
-        user name, so stage 2 can write ``cust_rev:max`` directly."""
+        user name, so stage 2 can write ``max(cust_rev)`` directly."""
         engine, _ = orders_customers_engine
         stage1 = SlayerQuery(
             name="stage1",
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="customers.revenue:sum", name="cust_rev")],
+            measures=[ModelMeasure(formula="sum(customers.revenue)", name="cust_rev")],
         )
         stage2 = SlayerQuery(
             source_model="stage1",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="cust_rev:max", name="top_cust_rev")],
+            measures=[ModelMeasure(formula="max(cust_rev)", name="top_cust_rev")],
         )
         resp = await engine.execute(query=[stage1, stage2], dry_run=True)
         assert resp.sql, "dry_run must produce SQL"
@@ -259,7 +259,7 @@ class TestCrossModelRenameNestedDAG:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="customers.revenue:sum / 100")],
+            measures=[ModelMeasure(formula="sum(customers.revenue) / 100")],
             to_many_handling="broadcast",
         )
         resp = await engine.execute(query=query, dry_run=True)
@@ -291,54 +291,54 @@ class TestCrossModelRenameNestedDAG:
             name="stage1",
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="customers.revenue:sum", name="cust_rev")],
+            measures=[ModelMeasure(formula="sum(customers.revenue)", name="cust_rev")],
         )
         stage2 = SlayerQuery(
             source_model="stage1",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="customers__revenue_sum:max")],
+            measures=[ModelMeasure(formula="max(customers__revenue_sum)")],
         )
         with pytest.raises(Exception):  # noqa: BLE001 — the engine raises a domain error
             await engine.execute(query=[stage1, stage2], dry_run=True)
 
 
-# Group C — `*:count` and `:count_distinct` cross-model variants.
+# Group C — `count(*)` and `count_distinct(...)` cross-model variants.
 
 
 class TestCrossModelStarAndCountDistinctRename:
     async def test_cross_model_star_count_rename(
         self, orders_customers_engine,
     ) -> None:
-        """``customers.*:count`` renamed ``cust_n`` projects COUNT(*) under it."""
+        """``count(customers.*)`` renamed ``cust_n`` projects COUNT(*) under it."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="customers.*:count", name="cust_n")],
+            measures=[ModelMeasure(formula="count(customers.*)", name="cust_n")],
             to_many_handling="broadcast",
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
         aliases = _public_projection_aliases(sql)
         assert aliases == ["orders.status", "orders.cust_n"], (
-            f"cross-model *:count rename must surface as the public key; got "
+            f"cross-model count(*) rename must surface as the public key; got "
             f"{aliases!r}\nSQL:\n{sql}"
         )
         assert 'COUNT(*) AS "customers._count"' in sql, (
-            f"cross-model *:count CTE column must stay canonical:\n{sql}"
+            f"cross-model count(*) CTE column must stay canonical:\n{sql}"
         )
 
     async def test_cross_model_count_distinct_rename(
         self, orders_customers_engine,
     ) -> None:
-        """``customers.id:count_distinct`` renamed ``cust_distinct`` projects
+        """``count_distinct(customers.id)`` renamed ``cust_distinct`` projects
         COUNT(DISTINCT …) under it."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                ModelMeasure(formula="customers.id:count_distinct", name="cust_distinct"),
+                ModelMeasure(formula="count_distinct(customers.id)", name="cust_distinct"),
             ],
             to_many_handling="broadcast",
         )
@@ -368,7 +368,7 @@ class TestCrossModelDeclaredTypeCast:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[ModelMeasure(
-                formula="customers.revenue:sum", name="cust_rev",
+                formula="sum(customers.revenue)", name="cust_rev",
                 type=DataType.INT,
             )],
             to_many_handling="broadcast",
@@ -389,7 +389,7 @@ class TestCrossModelDeclaredTypeCast:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[ModelMeasure(
-                formula="customers.*:count", name="cust_n", type=DataType.INT,
+                formula="count(customers.*)", name="cust_n", type=DataType.INT,
             )],
             to_many_handling="broadcast",
         )
@@ -414,8 +414,8 @@ class TestCrossModelRenameCollisionGuards:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                ModelMeasure(formula="customers.revenue:sum", name="revenue_sum"),
-                ModelMeasure(formula="revenue:sum"),  # NOSONAR(S125) — explanatory note: canonical alias is "revenue_sum" (not commented-out code)
+                ModelMeasure(formula="sum(customers.revenue)", name="revenue_sum"),
+                ModelMeasure(formula="sum(revenue)"),  # NOSONAR(S125) — explanatory note: canonical alias is "revenue_sum" (not commented-out code)
             ],
         )
         with pytest.raises(ValueError, match=r"declared more than once"):
@@ -432,8 +432,8 @@ class TestCrossModelRenameCollisionGuards:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                ModelMeasure(formula="customers.revenue:sum", name="id_count_distinct"),
-                ModelMeasure(formula="customers.id:count_distinct"),
+                ModelMeasure(formula="sum(customers.revenue)", name="id_count_distinct"),
+                ModelMeasure(formula="count_distinct(customers.id)"),
             ],
             to_many_handling="broadcast",
         )
@@ -472,8 +472,8 @@ class TestCrossModelRenameCollisionGuards:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                ModelMeasure(formula="revenue:sum", name="revenue_avg"),
-                ModelMeasure(formula="revenue:avg", name="revenue_sum"),
+                ModelMeasure(formula="sum(revenue)", name="revenue_avg"),
+                ModelMeasure(formula="avg(revenue)", name="revenue_sum"),
             ],
         )
         resp = await engine.execute(query=query, dry_run=True)
@@ -485,10 +485,10 @@ class TestCrossModelRenameCollisionGuards:
         )
         # The swap didn't swap bodies: ``revenue_avg`` is still the SUM.
         assert 'SUM(orders.amount) AS REAL) AS "orders.revenue_avg"' in sql, (
-            f"'revenue_avg' must carry the declared revenue:sum body:\n{sql}"
+            f"'revenue_avg' must carry the declared sum(revenue) body:\n{sql}"
         )
         assert 'AVG(orders.amount) AS REAL) AS "orders.revenue_sum"' in sql, (
-            f"'revenue_sum' must carry the declared revenue:avg body:\n{sql}"
+            f"'revenue_sum' must carry the declared avg(revenue) body:\n{sql}"
         )
 
     async def test_cross_model_rename_collides_with_outer_source_column_raises(
@@ -515,7 +515,7 @@ class TestCrossModelRenameCollisionGuards:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="customers.revenue:sum", name="cust_rev")],
+            measures=[ModelMeasure(formula="sum(customers.revenue)", name="cust_rev")],
         )
         with pytest.raises(ValueError, match=r"matches a source column"):
             await engine.execute(query=query, dry_run=True)
@@ -529,8 +529,8 @@ class TestCrossModelRenameCollisionGuards:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                ModelMeasure(formula="customers.revenue:sum", name="metric"),
-                ModelMeasure(formula="customers.id:count_distinct", name="metric"),
+                ModelMeasure(formula="sum(customers.revenue)", name="metric"),
+                ModelMeasure(formula="count_distinct(customers.id)", name="metric"),
             ],
         )
         with pytest.raises(ValueError, match=r"declared more than once\.\n  at measure 'metric'"):
@@ -539,15 +539,15 @@ class TestCrossModelRenameCollisionGuards:
     async def test_cross_model_star_count_vs_renamed_sibling_stay_distinct(
         self, orders_customers_engine,
     ) -> None:
-        """A ``*:count`` (canonical leaf ``_count``) and a sibling renamed to
+        """A ``count(*)`` (canonical leaf ``_count``) and a sibling renamed to
         ``_count`` stay distinct: ``orders._count`` vs ``orders.customers._count``."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                ModelMeasure(formula="customers.*:count"),
-                ModelMeasure(formula="customers.revenue:sum", name="_count"),
+                ModelMeasure(formula="count(customers.*)"),
+                ModelMeasure(formula="sum(customers.revenue)", name="_count"),
             ],
             to_many_handling="broadcast",
         )
@@ -559,7 +559,7 @@ class TestCrossModelRenameCollisionGuards:
             "orders.customers._count",
             "orders._count",
         ], (
-            f"the *:count canonical leaf and the renamed sibling must stay "
+            f"the count(*) canonical leaf and the renamed sibling must stay "
             f"distinct public columns; got {aliases!r}\nSQL:\n{sql}"
         )
         assert len(set(aliases)) == len(aliases), (
@@ -580,7 +580,7 @@ class TestCrossModelRenameCollisionGuards:
             dimensions=[ColumnRef(name="customers.region_id")],
             measures=[
                 ModelMeasure(
-                    formula="customers.revenue:sum",
+                    formula="sum(customers.revenue)",
                     name="customers__region_id",
                 ),
             ],
@@ -599,7 +599,7 @@ class TestCrossModelRenameCollisionGuards:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="customers.region_id")],
-            measures=[ModelMeasure(formula="customers.revenue:sum", name="region_id")],
+            measures=[ModelMeasure(formula="sum(customers.revenue)", name="region_id")],
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
@@ -618,15 +618,15 @@ class TestCrossModelRenameCollisionGuards:
         self, orders_customers_engine,
     ) -> None:
         """A measure renamed ``revenue_sum__div__100`` and an arithmetic
-        ``revenue:sum / 100`` stay distinct; the arithmetic one derives the
+        ``sum(revenue) / 100`` stay distinct; the arithmetic one derives the
         sanitized ``orders.revenue_sum_100`` key."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                ModelMeasure(formula="customers.revenue:sum", name="revenue_sum__div__100"),
-                ModelMeasure(formula="revenue:sum / 100"),
+                ModelMeasure(formula="sum(customers.revenue)", name="revenue_sum__div__100"),
+                ModelMeasure(formula="sum(revenue) / 100"),
             ],
             to_many_handling="broadcast",
         )
@@ -658,8 +658,8 @@ class TestCrossModelRenameCollisionGuards:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                ModelMeasure(formula="revenue:sum", name="rev"),
-                ModelMeasure(formula="revenue:avg", name="rev_avg"),
+                ModelMeasure(formula="sum(revenue)", name="rev"),
+                ModelMeasure(formula="avg(revenue)", name="rev_avg"),
             ],
         )
         resp = await engine.execute(query=query, dry_run=True)
@@ -680,7 +680,7 @@ class TestRenameRegressionGuards:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="customers.revenue:sum")],
+            measures=[ModelMeasure(formula="sum(customers.revenue)")],
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
@@ -698,7 +698,7 @@ class TestRenameRegressionGuards:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="revenue:sum", name="rev")],
+            measures=[ModelMeasure(formula="sum(revenue)", name="rev")],
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
@@ -709,7 +709,7 @@ class TestRenameRegressionGuards:
         """Invariant: cross-model canonicals contain dots but ``ModelMeasure.name``
         rejects them, so a name can never equal a cross-model canonical."""
         with pytest.raises(ValidationError, match=r"only letters, digits, and underscores"):
-            ModelMeasure(formula="customers.revenue:sum", name="customers.revenue_sum")
+            ModelMeasure(formula="sum(customers.revenue)", name="customers.revenue_sum")
 
 
 # Group F — label/type propagation through the rename.
@@ -726,7 +726,7 @@ class TestCrossModelRenameLabelAndType:
             dimensions=[ColumnRef(name="status")],
             measures=[
                 ModelMeasure(
-                    formula="customers.revenue:sum",
+                    formula="sum(customers.revenue)",
                     name="cust_rev",
                     label="Customer revenue",
                 ),
@@ -756,7 +756,7 @@ class TestCrossModelRenameLabelAndType:
             dimensions=[ColumnRef(name="status")],
             measures=[
                 ModelMeasure(
-                    formula="customers.revenue:sum",
+                    formula="sum(customers.revenue)",
                     name="cust_rev",
                     type=DataType.INT,
                 ),
@@ -791,7 +791,7 @@ class TestCrossModelRenameOrderBy:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="customers.revenue:sum", name="cust_rev")],
+            measures=[ModelMeasure(formula="sum(customers.revenue)", name="cust_rev")],
             order=[OrderItem(column=ColumnRef(name="cust_rev"), direction="desc")],
             to_many_handling="broadcast",
         )
@@ -818,7 +818,7 @@ class TestCrossModelRenameFilters:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="customers.revenue:sum", name="cust_rev")],
+            measures=[ModelMeasure(formula="sum(customers.revenue)", name="cust_rev")],
             filters=["cust_rev > 100"],
             to_many_handling="broadcast",
         )
@@ -841,17 +841,17 @@ class TestCrossModelRenameFilters:
 
 
 class TestDeferredCrossModelFilterScope:
-    async def test_cross_model_filter_colon_form_with_rename_deferred(
+    async def test_cross_model_aggregate_filter_with_rename_deferred(
         self, orders_customers_engine,
     ) -> None:
-        """Colon-form filter ``customers.revenue:sum > 100`` with a rename lands
+        """Filter ``sum(customers.revenue) > 100`` with a rename lands
         as an outer WHERE on the producer CTE column; measure still projects."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="customers.revenue:sum", name="cust_rev")],
-            filters=["customers.revenue:sum > 100"],
+            measures=[ModelMeasure(formula="sum(customers.revenue)", name="cust_rev")],
+            filters=["sum(customers.revenue) > 100"],
             to_many_handling="broadcast",
         )
         resp = await engine.execute(query=query, dry_run=True)
@@ -864,7 +864,7 @@ class TestDeferredCrossModelFilterScope:
             '_cm_orders__customers__revenue_sum."customers.revenue_sum" > 100'
             in _norm(sql)
         ), (
-            f"colon-form cross-model filter must land as a WHERE on the "
+            f"cross-model aggregate filter must land as a WHERE on the "
             f"cross-model aggregate's value:\n{sql}"
         )
 
@@ -884,7 +884,7 @@ class TestCrossModelRenameMultiHopAndCTEUniqueness:
             dimensions=[ColumnRef(name="status")],
             measures=[
                 ModelMeasure(
-                    formula="customers.regions.population:sum",
+                    formula="sum(customers.regions.population)",
                     name="region_pop",
                 ),
             ],
@@ -912,8 +912,8 @@ class TestCrossModelRenameMultiHopAndCTEUniqueness:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                ModelMeasure(formula="customers.revenue:sum", name="cust_rev"),
-                ModelMeasure(formula="customers.id:count_distinct"),
+                ModelMeasure(formula="sum(customers.revenue)", name="cust_rev"),
+                ModelMeasure(formula="count_distinct(customers.id)"),
             ],
         )
         resp = await engine.execute(query=query, dry_run=True)
@@ -939,7 +939,7 @@ class TestTransformWrappedCrossModelDeferred:
     @pytest.mark.skip(
         reason=(
             "Transform-wrapped cross-model agg refs are still unsupported. "
-            "``cumsum(customers.revenue:sum)`` with a top-level ``name`` goes "
+            "``cumsum(sum(customers.revenue))`` with a top-level ``name`` goes "
             "down the transform path, not the cross-model path; on the typed "
             "pipeline it raises `Transform 'cumsum' requires an unambiguous "
             "time dimension` for this dimension-only query rather than "
@@ -957,7 +957,7 @@ class TestTransformWrappedCrossModelDeferred:
             time_dimensions=[],
             measures=[
                 ModelMeasure(
-                    formula="cumsum(customers.revenue:sum)",
+                    formula="cumsum(sum(customers.revenue))",
                     name="cum_cust_rev",
                 ),
             ],

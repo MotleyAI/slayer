@@ -107,7 +107,7 @@ dimension combination, or repeats one.
 
 #### Scenario: An order key beside a ranked measure keeps the query's grain
 - **WHEN** a grouped query declares a `first` or `last` measure (e.g.
-  `amount:last(ordered_at)`) and orders by a column that is not a dimension, local
+  `last(amount, ordered_at)`) and orders by a column that is not a dimension, local
   (`city`) or joined (`customers.regions.name`)
 - **THEN** by executed values the result has exactly one row per dimension combination
   (one row when the query has no dimensions), never one row per value of the order key

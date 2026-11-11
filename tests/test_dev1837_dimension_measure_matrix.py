@@ -63,13 +63,13 @@ async def exec_backend(request):
 
 
 ATTACH_MEASURES = {
-    "plain": "amount:sum",
-    "part": "amount:sum(partition_by=region)",
-    "win_part": "amount:sum(window='90d', partition_by=region)",
-    "last_part": "amount:last(partition_by=region)",
-    "wm": "amount:sum(window='1y')",
-    "rk": "amount:last",
-    "cm": "customers.spend:sum",
+    "plain": "sum(amount)",
+    "part": "sum(amount, partition_by=region)",
+    "win_part": "sum(amount, window='90d', partition_by=region)",
+    "last_part": "last(amount, partition_by=region)",
+    "wm": "sum(amount, window='1y')",
+    "rk": "last(amount)",
+    "cm": "sum(customers.spend)",
 }
 TD_ATTACH = frozenset({"win_part", "wm"})
 
@@ -93,7 +93,7 @@ def _needs_td(meas: str) -> bool:
 
 
 def _cell_query(family: str, meas: str, *, include_x: bool = True):
-    measures = [ModelMeasure(formula="amount:sum", name="m")]
+    measures = [ModelMeasure(formula="sum(amount)", name="m")]
     if include_x:
         measures.append(ModelMeasure(formula=_formula(meas), name="x"))
     kwargs = {"dimensions": DIM_FAMILY_DIMS[family], "measures": measures}
@@ -223,8 +223,8 @@ class TestCoexistenceTriples:
 
     async def _assert_triple(self, exec_backend, *, family: str, op: str) -> None:
         dialect, engine = exec_backend
-        m = ModelMeasure(formula="amount:sum", name="m")
-        rt = ModelMeasure(formula="amount:sum(partition_by=region)", name="rt")
+        m = ModelMeasure(formula="sum(amount)", name="m")
+        rt = ModelMeasure(formula="sum(amount, partition_by=region)", name="rt")
         x = ModelMeasure(formula=TRANSFORM_FORMULAS[op], name="x")
         query = self._triple_query(family, measures=[m, rt, x])
         m_map = GROUP_M_MONTH[family]
@@ -293,7 +293,7 @@ class TestPartitionedShiftFix:
             dimensions=["region"],
             time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum(partition_by=region)", name="rt"),
+                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
                 ModelMeasure(formula=TRANSFORM_FORMULAS[op], name="x"),
             ],
         )
@@ -318,8 +318,8 @@ class TestPartitionedShiftFix:
             dimensions=["region"],
             time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum(partition_by=region)", name="rt"),
-                ModelMeasure(formula="time_shift(amount:sum, -1)", name="prev"),
+                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
+                ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
             ],
         ), dry_run=True)
         body = _extract_cte_body(dry.sql, r"shifted_\w+")
@@ -364,16 +364,16 @@ class TestConsecutivePeriodsReset:
         self, exec_backend,
     ) -> None:
         """Codex F7 — a pass→fail→pass sequence inside one banded group:
-        band 1 months are 25 / 40 / 85, so ``amount:sum != 40`` gives streaks
+        band 1 months are 25 / 40 / 85, so ``sum(amount) != 40`` gives streaks
         1, 0, 1 (band 0's 30 / 30 gives 1, 2)."""
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=[DIM_FAMILY_DIMS["band"][1]],
             time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
+                ModelMeasure(formula="sum(amount)", name="m"),
                 ModelMeasure(
-                    formula="consecutive_periods(amount:sum != 40)", name="x",
+                    formula="consecutive_periods(sum(amount) != 40)", name="x",
                 ),
             ],
         ))
@@ -390,16 +390,16 @@ class TestConsecutivePeriodsReset:
 
 class TestExplicitTransformPartition:
     async def test_explicit_partition_by_on_transform_wins(self, exec_backend) -> None:
-        """``rank(amount:sum, partition_by=region, direction='desc')`` ranks within each region
+        """``rank(sum(amount), partition_by=region, direction='desc')`` ranks within each region
         regardless of the banded dimension (explicit keys take precedence over
         the auto-grain; only the rank family accepts a transform partition_by)."""
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=DIM_FAMILY_DIMS["band"],
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
+                ModelMeasure(formula="sum(amount)", name="m"),
                 ModelMeasure(
-                    formula="rank(amount:sum, partition_by=region, direction='desc')", name="x",
+                    formula="rank(sum(amount), partition_by=region, direction='desc')", name="x",
                 ),
             ],
         ))

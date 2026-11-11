@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import AggregationNotAllowedError
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.plan import plan_query
 from slayer.engine.profiling import (
@@ -24,7 +24,9 @@ from slayer.inspect.model_render import (
     render_model_inspection,
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.storage.migrations import CURRENT_VERSIONS
 from tests._dev1836_fixtures import make_exec_engine, orders_model
+from tests._stored_upgrade_fixtures import DS, raw_store
 
 COMPOSITE_MEMBERS = {"order_id", "line_no", "status"}
 
@@ -84,6 +86,9 @@ class TestAggregationGate:
         with pytest.raises(AggregationNotAllowedError):
             _plan(model=model, formula="sum(id)")
 
+    def test_sole_primary_key_accepts_collect(self) -> None:
+        _plan(model=orders_model(), formula="collect(id)")
+
     @pytest.mark.parametrize("formula", ["max(line_no)", "sum(line_no)"])
     def test_composite_member_aggregates_by_type(self, formula) -> None:
         _plan(model=order_lines(), formula=formula)
@@ -105,6 +110,21 @@ class TestAllowedAggregationsValidator:
         with pytest.raises(ValidationError):
             SlayerModel(name="t", data_source="test", sql_table="t", columns=columns)
 
+    @pytest.mark.parametrize("backend", ["yaml", "sqlite"])
+    async def test_sole_primary_key_may_declare_collect(self, tmp_path, backend: str) -> None:
+        doc = {"version": CURRENT_VERSIONS["SlayerModel"], "name": "stored", "sql_table": "t", "data_source": DS,
+               "columns": [{"name": "id", "type": "INT", "primary_key": True,
+                            "allowed_aggregations": ["count", "collect"]}]}
+        storage = await raw_store(backend=backend, base=str(tmp_path), models=[doc],
+                                  datasource=DatasourceConfig(name=DS, type="duckdb", database=":memory:"))
+        loaded = await storage.get_model("stored", data_source=DS)
+        assert loaded is not None
+        assert _col(model=loaded, name="id").allowed_aggregations == ["count", "collect"]
+        saved = SlayerModel(name="saved", data_source=DS, sql_table="t", columns=[
+            Column(name="id", type=DataType.INT, primary_key=True, allowed_aggregations=["count", "collect"])])
+        await storage.save_model(saved)
+        assert await storage.get_model("saved", data_source=DS) is not None
+
 
 class TestCatalogEligibility:
     def test_composite_member_gets_type_defaults(self) -> None:
@@ -116,6 +136,10 @@ class TestCatalogEligibility:
         eligible = _eligible_aggregations(column=_col(model=model, name="id"), model=model)
         assert {"count", "count_distinct", "min", "max"} <= eligible
         assert "sum" not in eligible
+
+    def test_sole_primary_key_gets_collect(self) -> None:
+        model = orders_model()
+        assert "collect" in _eligible_aggregations(column=_col(model=model, name="id"), model=model)
 
 
 class TestInspectSampling:
@@ -154,11 +178,11 @@ async def engine(request):
 
 class TestProbingAndProfiling:
     async def test_type_probe_includes_composite_members(self, engine) -> None:
-        types = await engine.get_column_types("order_lines")
+        types = await engine.get_result_column_types("order_lines")
         assert COMPOSITE_MEMBERS <= set(types)
 
     async def test_type_probe_skips_sole_primary_key(self, engine) -> None:
-        types = await engine.get_column_types("orders")
+        types = await engine.get_result_column_types("orders")
         assert "id" not in types
         assert "amount" in types
 

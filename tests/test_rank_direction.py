@@ -210,19 +210,19 @@ class TestBinding:
         ("asc", "asc"), ("Ascending", "asc"), (" ASCENDING", "asc"),
     ])
     def test_synonyms_normalise(self, spelling, canonical):
-        got = _bind(f"rank(amount:sum, direction='{spelling}')")
-        want = _bind(f"rank(amount:sum, direction='{canonical}')")
+        got = _bind(f"rank(sum(amount), direction='{spelling}')")
+        want = _bind(f"rank(sum(amount), direction='{canonical}')")
         assert isinstance(got, TransformKey)
         assert got == want
         assert ("direction", canonical) in got.kwargs
 
     def test_directions_are_distinct_values(self):
-        assert _bind("rank(amount:sum, direction='asc')") != _bind("rank(amount:sum, direction='desc')")
-        assert (_bind("dense_rank(amount:sum, direction='asc')")
-                != _bind("dense_rank(amount:sum, direction='desc')"))
+        assert _bind("rank(sum(amount), direction='asc')") != _bind("rank(sum(amount), direction='desc')")
+        assert (_bind("dense_rank(sum(amount), direction='asc')")
+                != _bind("dense_rank(sum(amount), direction='desc')"))
 
     def test_ntile_and_percent_rank_carry_no_direction(self):
-        for formula in ("ntile(amount:sum, n=4)", "percent_rank(amount:sum)"):
+        for formula in ("ntile(sum(amount), n=4)", "percent_rank(sum(amount))"):
             key = _bind(formula)
             assert isinstance(key, TransformKey)
             assert all(k != "direction" for k, _v in key.kwargs)
@@ -299,14 +299,14 @@ class TestDirectionErrors:
         assert "direction" in msg, msg
 
     @pytest.mark.parametrize("formula", [
-        "rank(amount:sum, foo=1, direction='desc')",
-        "percent_rank(amount:sum, foo=1)",
-        "consecutive_periods(amount:sum > 0, foo=1)",
-        "lag(amount:sum, periods=region)",
-        "time_shift(amount:sum, granularity='month')",
-        "ntile(amount:sum)",
-        "ntile(amount:sum, n=0)",
-        "ntile(amount:sum, n=region)",
+        "rank(sum(amount), foo=1, direction='desc')",
+        "percent_rank(sum(amount), foo=1)",
+        "consecutive_periods(sum(amount) > 0, foo=1)",
+        "lag(sum(amount), periods=region)",
+        "time_shift(sum(amount), granularity='month')",
+        "ntile(sum(amount))",
+        "ntile(sum(amount), n=0)",
+        "ntile(sum(amount), n=region)",
     ])
     def test_other_transform_argument_errors_are_typed(self, formula):
         with pytest.raises(core_errors.TransformArgumentError):
@@ -325,7 +325,7 @@ class TestDirectionErrors:
 
     def test_unknown_keyword_outside_rank_family_lists_no_rank_keywords(self):
         with pytest.raises(core_errors.TransformArgumentError) as ei:
-            _bind("lag(amount:sum, foo=1)")
+            _bind("lag(sum(amount), foo=1)")
         msg = str(ei.value)
         assert "foo" in msg, msg
         assert "partition_by" not in msg, msg

@@ -1,9 +1,9 @@
 """DEV-1450 stage 7b.15e — DEV-1445 acceptance via ``engine.execute``.
 
 DEV-1445: a renamed cross-model measure
-(``{"formula": "customers.revenue:sum", "name": "rev"}``) can be filtered by
-EITHER the user alias (``rev``) OR the dotted colon form
-(``customers.revenue:sum``). Both bind to ONE structural slot (P2/P4), so the
+(``{"formula": "sum(customers.revenue)", "name": "rev"}``) can be filtered by
+EITHER the user alias (``rev``) OR the dotted aggregation
+(``sum(customers.revenue)``). Both bind to ONE structural slot (P2/P4), so the
 two filter forms produce bit-identical results.
 
 The planner-level shape is already pinned in
@@ -106,8 +106,8 @@ def _cte_names(sql: str) -> list:
 
 
 async def test_dev1445_alias_filter_matches_dotted_filter(engine):
-    """The user alias ``rev`` and the dotted colon form
-    ``customers.revenue:sum`` bind to one slot — both filter forms produce
+    """The user alias ``rev`` and the dotted aggregation
+    ``sum(customers.revenue)`` bind to one slot — both filter forms produce
     identical results.
 
     Cross-model revenue grouped by the joined ``customers.region`` is
@@ -118,20 +118,20 @@ async def test_dev1445_alias_filter_matches_dotted_filter(engine):
     eng, _ = engine
 
     alias = await eng.execute(
-        SlayerQuery(
-            source_model="orders",
-            dimensions=["customers.region"],
-            measures=[{"formula": "customers.revenue:sum", "name": "rev"}],
-            filters=["rev >= 80"],
-        )
+        SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": ["customers.region"],
+            "measures": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+            "filters": ["rev >= 80"],
+        })
     )
     dotted = await eng.execute(
-        SlayerQuery(
-            source_model="orders",
-            dimensions=["customers.region"],
-            measures=[{"formula": "customers.revenue:sum", "name": "rev"}],
-            filters=["customers.revenue:sum >= 80"],
-        )
+        SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": ["customers.region"],
+            "measures": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+            "filters": ["sum(customers.revenue) >= 80"],
+        })
     )
 
     # Result-key contract: renamed cross-model measure surfaces as the
@@ -155,19 +155,19 @@ async def test_dev1445_filter_actually_applies(engine):
     eng, _ = engine
 
     unfiltered = await eng.execute(
-        SlayerQuery(
-            source_model="orders",
-            dimensions=["customers.region"],
-            measures=[{"formula": "customers.revenue:sum", "name": "rev"}],
-        )
+        SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": ["customers.region"],
+            "measures": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+        })
     )
     filtered = await eng.execute(
-        SlayerQuery(
-            source_model="orders",
-            dimensions=["customers.region"],
-            measures=[{"formula": "customers.revenue:sum", "name": "rev"}],
-            filters=["rev >= 80"],
-        )
+        SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": ["customers.region"],
+            "measures": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+            "filters": ["rev >= 80"],
+        })
     )
 
     assert _rowset(unfiltered.data) == _rowset(
@@ -189,12 +189,12 @@ async def test_dev1445_both_filter_forms_share_one_cte(engine):
     same value) but would emit two ``_cm_`` CTEs / two filter predicates.
     """
     eng, _ = engine
-    query = SlayerQuery(
-        source_model="orders",
-        dimensions=["customers.region"],
-        measures=[{"formula": "customers.revenue:sum", "name": "rev"}],
-        filters=["rev >= 80", "customers.revenue:sum >= 80"],
-    )
+    query = SlayerQuery.model_validate({
+        "source_model": "orders",
+        "dimensions": ["customers.region"],
+        "measures": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+        "filters": ["rev >= 80", "sum(customers.revenue) >= 80"],
+    })
     # Idempotent: giving both filter forms is the same as giving one.
     both = await eng.execute(query)
     assert _rowset(both.data) == _rowset(

@@ -18,7 +18,7 @@ from slayer.core.query import ModelMeasure, SlayerQuery
 from tests._dev1739_fixtures import cm_cte_bodies, gen, month_td
 
 # A computed dimension over a city-partitioned aggregate → legitimate ROW attach.
-BAND_CITY = "CASE WHEN amount:sum(partition_by=city) > 5000 THEN 1 ELSE 0 END"
+BAND_CITY = "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END"
 
 
 def _q(**kw) -> SlayerQuery:
@@ -37,7 +37,7 @@ class TestDeferredMeasureShapesStillRaise:
         q = _q(
             dimensions=["region"], time_dimensions=month_td(),
             measures=[ModelMeasure(
-                formula="amount:sum(window='90d', partition_by=region)",
+                formula="sum(amount, window='90d', partition_by=region)",
             )],
         )
         assert "__regroup__" not in await gen(q)
@@ -49,7 +49,7 @@ class TestDeferredMeasureShapesStillRaise:
         # (Executed values: test_dev1824_partitioned_execution.py.)
         q = _q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula=f"amount:{agg}(partition_by=region)")],
+            measures=[ModelMeasure(formula=f"{agg}(amount, partition_by=region)")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -61,7 +61,7 @@ class TestDeferredMeasureShapesStillRaise:
         q = _q(
             dimensions=["region"], time_dimensions=month_td(),
             measures=[ModelMeasure(
-                formula="cumsum(amount:sum(partition_by=region))",
+                formula="cumsum(sum(amount, partition_by=region))",
             )],
         )
         assert "__regroup__" not in await gen(q)
@@ -72,8 +72,8 @@ class TestDeferredMeasureShapesStillRaise:
         # tests/test_dev1824_partitioned_execution.py::TestFilterOnPartitioned).
         q = _q(
             dimensions=["region", "city"],
-            filters=["amount:sum(partition_by=region) > 50"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            filters=["sum(amount, partition_by=region) > 50"],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -85,11 +85,11 @@ class TestSharedAggregateRowPlusCombined:
     producers (D10 — cross-phase dedup is Stage 2)."""
 
     async def test_same_key_as_dimension_and_measure(self) -> None:
-        band = "CASE WHEN amount:sum(partition_by=region) > 5000 THEN 1 ELSE 0 END"
+        band = "CASE WHEN sum(amount, partition_by=region) > 5000 THEN 1 ELSE 0 END"
         q = _q(
             dimensions=["region", {"expression": band, "name": "band"}],
             measures=[ModelMeasure(
-                formula="amount:sum(partition_by=region)", name="region_total",
+                formula="sum(amount, partition_by=region)", name="region_total",
             )],
         )
         # Renders with both a row and a combined attach; no placeholder leaks.
@@ -106,7 +106,7 @@ class TestGrainGuardsPreserved:
         # discovery must NOT relax this to the computed-dimension leniency.
         q = _q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:sum(partition_by=city)")],
+            measures=[ModelMeasure(formula="sum(amount, partition_by=city)")],
         )
         with pytest.raises(
             ValueError, match=r"partition_by.*not a query dimension",
@@ -120,7 +120,7 @@ class TestGrainGuardsPreserved:
         q = _q(
             dimensions=["region", "customers.tier"],
             measures=[ModelMeasure(
-                formula="customers.spend:sum(partition_by=region)",
+                formula="sum(customers.spend, partition_by=region)",
             )],
             to_many_handling="broadcast",
         )
@@ -142,8 +142,8 @@ class TestGuardOrderingWithActiveRegroup:
         # no placeholder leak.
         q = _q(
             dimensions=["region", {"expression": BAND_CITY, "name": "band"}],
-            filters=["amount:sum(partition_by=region) > 50"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            filters=["sum(amount, partition_by=region) > 50"],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -153,7 +153,7 @@ class TestGuardOrderingWithActiveRegroup:
         q = _q(
             dimensions=["region", {"expression": BAND_CITY, "name": "band"}],
             filters=["band == 1"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         sql = await gen(q)
         assert "SELECT" in sql

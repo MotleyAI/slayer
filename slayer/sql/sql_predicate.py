@@ -22,7 +22,6 @@ import re
 
 from pydantic import BaseModel, Field
 
-from slayer.core.refs import AGG_REF_RE
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 import slayer.core.enums
 
@@ -34,6 +33,8 @@ class ParsedFilter(BaseModel):
 
 
 _STRING_LITERAL_RE = re.compile(r"'(?:[^'\\]|\\.)*'")
+# A Mode-B colon aggregation (``revenue:sum``, ``*:count``); never a ``::`` cast or a ``:name`` bind.
+_COLON_AGG_RE = re.compile(r"(?<![\w.*:])(\*|[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*(?:\.\*)?):(?!:)[a-zA-Z_]\w*")
 
 _DSL_TRANSFORM_CALL_RE = re.compile(
     r"\b(" + "|".join(sorted(slayer.core.enums.ALL_TRANSFORMS, key=len, reverse=True)) + r")\s*\(",
@@ -50,7 +51,7 @@ def _strip_string_literals(formula: str) -> str:
 def _reject_dsl_constructs(formula: str) -> None:
     """Raise if the SQL-mode predicate contains a SLayer DSL construct."""
     stripped = _strip_string_literals(formula)
-    agg_match = AGG_REF_RE.search(stripped)
+    agg_match = _COLON_AGG_RE.search(stripped)
     if agg_match is not None:
         raise ValueError(
             f"SQL-mode filter cannot contain a SLayer aggregation reference "

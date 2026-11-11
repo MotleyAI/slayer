@@ -52,10 +52,10 @@ class TestPostFilterOnShiftedValue:
         resp = await exec_engine.execute(q(
             dimensions=[BAND],
             time_dimensions=month_td(),
-            filters=["change(amount:sum) > 0"],
+            filters=["change(sum(amount)) > 0"],
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
-                ModelMeasure(formula="change(amount:sum)", name="c"),
+                ModelMeasure(formula="sum(amount)", name="m"),
+                ModelMeasure(formula="change(sum(amount))", name="c"),
             ],
         ))
         got = _by_band_month(resp, "m", "c")
@@ -69,8 +69,8 @@ class TestPostFilterOnShiftedValue:
         dry = await exec_engine.execute(q(
             dimensions=[BAND],
             time_dimensions=month_td(),
-            filters=["change(amount:sum) > 0"],
-            measures=[ModelMeasure(formula="change(amount:sum)", name="c")],
+            filters=["change(sum(amount)) > 0"],
+            measures=[ModelMeasure(formula="change(sum(amount))", name="c")],
         ), dry_run=True)
         assert dry.sql is not None
         assert "__regroup__" not in dry.sql, dry.sql
@@ -85,15 +85,15 @@ class TestConjunctionSplits:
             dimensions=[BAND],
             time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
-                ModelMeasure(formula="change(amount:sum)", name="c"),
+                ModelMeasure(formula="sum(amount)", name="m"),
+                ModelMeasure(formula="change(sum(amount))", name="c"),
             ],
         )
         anded = await exec_engine.execute(q(
-            filters=["band == 1 and change(amount:sum) > 0"], **base_kwargs,
+            filters=["band == 1 and change(sum(amount)) > 0"], **base_kwargs,
         ))
         separate = await exec_engine.execute(q(
-            filters=["band == 1", "change(amount:sum) > 0"], **base_kwargs,
+            filters=["band == 1", "change(sum(amount)) > 0"], **base_kwargs,
         ))
         got = _by_band_month(anded, "m", "c")
         assert set(got) == {(1, "2024-02"), (1, "2024-03")}
@@ -104,7 +104,7 @@ class TestConjunctionSplits:
     async def test_band_and_row_predicate_conjunction_splits(self, exec_engine) -> None:
         base_kwargs = dict(
             dimensions=[BAND],
-            measures=[ModelMeasure(formula="amount:sum", name="m")],
+            measures=[ModelMeasure(formula="sum(amount)", name="m")],
         )
         anded = await exec_engine.execute(q(
             filters=["band == 1 and status == 'ok'"], **base_kwargs,
@@ -125,8 +125,8 @@ class TestConjunctionSplits:
         resp = await exec_engine.execute(q(
             dimensions=[BAND],
             time_dimensions=month_td(),
-            filters=["band == 1 or change(amount:sum) > 0"],
-            measures=[ModelMeasure(formula="change(amount:sum)", name="c")],
+            filters=["band == 1 or change(sum(amount)) > 0"],
+            measures=[ModelMeasure(formula="change(sum(amount))", name="c")],
         ))
         got = _by_band_month(resp, "c")
         assert set(got) == {(1, "2024-01"), (1, "2024-02"), (1, "2024-03")}
@@ -145,8 +145,8 @@ class TestShiftedCteRegroupAwareness:
         time_dimensions=month_td(),
         filters=["band == 1"],
         measures=[
-            ModelMeasure(formula="amount:sum", name="m"),
-            ModelMeasure(formula="time_shift(amount:sum, -1)", name="prev"),
+            ModelMeasure(formula="sum(amount)", name="m"),
+            ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
         ],
     )
 

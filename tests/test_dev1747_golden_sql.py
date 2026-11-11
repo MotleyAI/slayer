@@ -57,7 +57,7 @@ def _q(**kw) -> SlayerQuery:
 
 def _cases() -> dict:
     """The matrix. Keys are stable ids — renaming one is a golden change."""
-    rev = [{"formula": "amount:sum", "name": "rev"}]
+    rev = [{"formula": "sum(amount)", "name": "rev"}]
     return {
         # --- the five ORDER BY render paths ---
         "order/host_base_alias": _q(
@@ -66,26 +66,26 @@ def _cases() -> dict:
         ),
         "order/hidden_slot_outer_trim": _q(
             dimensions=["status"], measures=rev,
-            order=[{"column": "amount:max", "direction": "desc"}],
+            order=[{"column": "max(amount)", "direction": "desc"}],
         ),
         "order/combined_cross_model": _q(
             to_many_handling="broadcast",
             dimensions=["status"],
             measures=[
-                {"formula": "amount:sum", "name": "rev"},
-                {"formula": "customers.spend:sum", "name": "cs"},
+                {"formula": "sum(amount)", "name": "rev"},
+                {"formula": "sum(customers.spend)", "name": "cs"},
             ],
             order=[{"column": "cs", "direction": "desc"}],
         ),
         "order/outer_composite": _q(
             to_many_handling="broadcast",
             dimensions=["status"],
-            measures=[{"formula": "customers.spend:sum + amount:sum", "name": "mix"}],
+            measures=[{"formula": "sum(customers.spend) + sum(amount)", "name": "mix"}],
             order=[{"column": "mix", "direction": "desc"}],
         ),
         "order/windowed_cte": _q(
             time_dimensions=_MONTH,
-            measures=[{"formula": "amount:sum(window='90d')", "name": "w"}],
+            measures=[{"formula": "sum(amount, window='90d')", "name": "w"}],
             order=[{"column": "w", "direction": "desc"}],
         ),
         # A windowed measure WITH a well-formed date_range mints a
@@ -97,12 +97,12 @@ def _cases() -> dict:
                 "dimension": "created_at", "granularity": "month",
                 "date_range": ["2024-01-01", "2024-06-30"],
             }],
-            measures=[{"formula": "amount:sum(window='90d')", "name": "w"}],
+            measures=[{"formula": "sum(amount, window='90d')", "name": "w"}],
             order=[{"column": "w", "direction": "desc"}],
         ),
         "order/transform_chain_wrap": _q(
             time_dimensions=_MONTH,
-            measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],
+            measures=[{"formula": "cumsum(sum(amount))", "name": "cs"}],
             order=[{"column": "cs", "direction": "asc"}],
         ),
         # --- D10: the wrap is direction-aware, so BOTH are pinned ---
@@ -136,8 +136,8 @@ def _cases() -> dict:
         "reroot/reachable_filter": _q(
             dimensions=["customers.regions.name"],
             measures=[
-                {"formula": "amount:sum", "name": "rev"},
-                {"formula": "customers.spend:sum", "name": "cs"},
+                {"formula": "sum(amount)", "name": "rev"},
+                {"formula": "sum(customers.spend)", "name": "cs"},
             ],
             filters=["customers.regions.name == 'Alpha'"],
         ),
@@ -146,16 +146,16 @@ def _cases() -> dict:
         "reroot/host_local_filter": _q(
             dimensions=["customers.regions.name"],
             measures=[
-                {"formula": "amount:sum", "name": "rev"},
-                {"formula": "customers.spend:sum", "name": "cs"},
+                {"formula": "sum(amount)", "name": "rev"},
+                {"formula": "sum(customers.spend)", "name": "cs"},
             ],
             filters=["status == 'A'"],
         ),
         "reroot/unreachable_filter": _q(
             dimensions=["customers.regions.name"],
             measures=[
-                {"formula": "amount:sum", "name": "rev"},
-                {"formula": "customers.spend:sum", "name": "cs"},
+                {"formula": "sum(amount)", "name": "rev"},
+                {"formula": "sum(customers.spend)", "name": "cs"},
             ],
             filters=["order_tags.name == 'rush'"],
         ),
@@ -163,24 +163,24 @@ def _cases() -> dict:
         "chain/local_multi_step": _q(
             time_dimensions=_MONTH,
             measures=[
-                {"formula": "amount:sum", "name": "rev"},
-                {"formula": "cumsum(amount:sum)", "name": "cs"},
-                {"formula": "change(amount:sum)", "name": "ch"},
+                {"formula": "sum(amount)", "name": "rev"},
+                {"formula": "cumsum(sum(amount))", "name": "cs"},
+                {"formula": "change(sum(amount))", "name": "ch"},
             ],
         ),
         "chain/local_consecutive_periods": _q(
             time_dimensions=_MONTH,
             measures=[
-                {"formula": "amount:sum", "name": "rev"},
-                {"formula": "consecutive_periods(amount:sum)", "name": "streak"},
+                {"formula": "sum(amount)", "name": "rev"},
+                {"formula": "consecutive_periods(sum(amount))", "name": "streak"},
             ],
         ),
         "chain/cross_model_window": _q(
             to_many_handling="broadcast",
             time_dimensions=_MONTH,
             measures=[
-                {"formula": "customers.spend:sum", "name": "cs"},
-                {"formula": "cumsum(customers.spend:sum)", "name": "run"},
+                {"formula": "sum(customers.spend)", "name": "cs"},
+                {"formula": "cumsum(sum(customers.spend))", "name": "run"},
             ],
         ),
         # One transform key projected under TWO names — the
@@ -188,8 +188,8 @@ def _cases() -> dict:
         "chain/transform_two_names": _q(
             time_dimensions=_MONTH,
             measures=[
-                {"formula": "cumsum(amount:sum)", "name": "run_a"},
-                {"formula": "cumsum(amount:sum)", "name": "run_b"},
+                {"formula": "cumsum(sum(amount))", "name": "run_a"},
+                {"formula": "cumsum(sum(amount))", "name": "run_b"},
             ],
         ),
         # consecutive_periods (own cp_reset/cp_value CTE path) under
@@ -197,8 +197,8 @@ def _cases() -> dict:
         "chain/consecutive_periods_two_names": _q(
             time_dimensions=_MONTH,
             measures=[
-                {"formula": "consecutive_periods(amount:sum)", "name": "streak_a"},
-                {"formula": "consecutive_periods(amount:sum)", "name": "streak_b"},
+                {"formula": "consecutive_periods(sum(amount))", "name": "streak_a"},
+                {"formula": "consecutive_periods(sum(amount))", "name": "streak_b"},
             ],
         ),
         # Two aggregates of one column in the base CTE surface in
@@ -206,8 +206,8 @@ def _cases() -> dict:
         "chain/multi_agg_base_order": _q(
             time_dimensions=_MONTH,
             measures=[
-                {"formula": "cumsum(amount:sum)", "name": "c1"},
-                {"formula": "cumsum(amount:max)", "name": "c2"},
+                {"formula": "cumsum(sum(amount))", "name": "c1"},
+                {"formula": "cumsum(max(amount))", "name": "c2"},
             ],
         ),
         # --- Dependency-split step-CTE shapes. ---
@@ -215,12 +215,12 @@ def _cases() -> dict:
         # (the dependency-split the extracted helper's ordering invariant guards).
         "chain/local_nested_window": _q(
             time_dimensions=_MONTH,
-            measures=[{"formula": "cumsum(cumsum(amount:sum))", "name": "cc"}],
+            measures=[{"formula": "cumsum(cumsum(sum(amount)))", "name": "cc"}],
         ),
         "chain/cross_model_nested_window": _q(
             to_many_handling="broadcast",
             time_dimensions=_MONTH,
-            measures=[{"formula": "cumsum(cumsum(customers.spend:sum))", "name": "cc"}],
+            measures=[{"formula": "cumsum(cumsum(sum(customers.spend)))", "name": "cc"}],
         ),
     }
 

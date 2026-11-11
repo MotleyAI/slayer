@@ -44,10 +44,10 @@ class TestRecommendAlignment:
 
     async def test_aggregation_suffixed_item_is_an_attachment(self, engine) -> None:
         rec = await engine.recommend_root_model(
-            ["customers.region", "orders.amount:sum"], data_source=DS_CHAIN,
+            ["customers.region", "sum(orders.amount)"], data_source=DS_CHAIN,
         )
         assert rec.root_model == "customers"
-        assert _path_for(rec, "orders.amount:sum").attachment is True
+        assert _path_for(rec, "sum(orders.amount)").attachment is True
 
     async def test_recommendation_matches_inference(self, engine) -> None:
         rec = await engine.recommend_root_model(

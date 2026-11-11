@@ -7,7 +7,7 @@ The built-in time spine: a virtual per-datasource calendar model every fact maps
 
 ### Requirement: Every datasource has a virtual time spine model
 
-Every datasource SHALL expose a model named `time_spine` with exactly one column, `timestamp`, of type `time`, which is its primary key and denotes every instant. The model SHALL NOT be stored; it resolves in the datasource a query runs against. It SHALL appear in model listings, `inspect`, `inspect_model` and search as a built-in model, and its description SHALL list the models wired to it with their axis columns. Saving a user model named `time_spine` SHALL be rejected with a typed error; if a stored model already has that name, any query referencing `time_spine` SHALL fail with a typed error naming the conflict, never silently using either model.
+Every datasource SHALL expose a model named `time_spine` with exactly one column, `timestamp`, of type `time`, which is its primary key and denotes every instant. The model SHALL NOT be stored; it resolves in the datasource a query runs against. It SHALL appear in model listings, `inspect` and search as a built-in model, and its description SHALL list the models wired to it with their axis columns. Saving a user model named `time_spine` SHALL be rejected with a typed error; if a stored model already has that name, any query referencing `time_spine` SHALL fail with a typed error naming the conflict, never silently using either model.
 
 #### Scenario: Spine is listed with its wired models
 

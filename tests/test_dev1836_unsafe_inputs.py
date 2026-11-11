@@ -33,7 +33,7 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="amount:sum", name="m")
+M = ModelMeasure(formula="sum(amount)", name="m")
 
 
 def _assert_clear(ei, *needles: str, remedy: bool = False) -> None:
@@ -54,7 +54,7 @@ class TestUnsafeInputs:
         _, engine = exec_backend
         query = q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.seg_label:count",
+            measures=[ModelMeasure(formula="count(customers.seg_label)",
                                    name="x")],
         )
         with pytest.raises(RAISES) as ei:
@@ -66,7 +66,7 @@ class TestUnsafeInputs:
         _, engine = exec_backend
         query = q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.vip_spend:sum",
+            measures=[ModelMeasure(formula="sum(customers.vip_spend)",
                                    name="x")],
         )
         with pytest.raises(RAISES) as ei:
@@ -79,7 +79,7 @@ class TestUnsafeInputs:
         _, engine = exec_backend
         query = q(
             dimensions=["customers.tier"],
-            measures=[ModelMeasure(formula="customers.spend:last(ordered_at)",
+            measures=[ModelMeasure(formula="last(customers.spend, ordered_at)",
                                    name="x")],
         )
         with pytest.raises(RAISES) as ei:
@@ -97,7 +97,7 @@ class TestUnsafeExplicitPartitionKeys:
         query = q(
             dimensions=["status"],
             measures=[ModelMeasure(
-                formula="customers.spend:sum(partition_by=status)", name="x",
+                formula="sum(customers.spend, partition_by=status)", name="x",
             )],
             to_many_handling="broadcast",
         )
@@ -114,7 +114,7 @@ class TestUnsafeExplicitPartitionKeys:
         query = q(
             dimensions=["customers.tier"],
             measures=[ModelMeasure(
-                formula="customers.spend:sum(partition_by=customers.segments.label)",
+                formula="sum(customers.spend, partition_by=customers.segments.label)",
                 name="x",
             )],
         )
@@ -131,7 +131,7 @@ class TestUnsafeExplicitPartitionKeys:
         query = q(
             dimensions=["status"],
             measures=[ModelMeasure(
-                formula="amount:sum(partition_by=customers.segments.label)",
+                formula="sum(amount, partition_by=customers.segments.label)",
                 name="x",
             )],
         )
@@ -147,7 +147,7 @@ class TestUnsafeExplicitPartitionKeys:
         _, engine = exec_backend
         query = q(
             dimensions=[{
-                "expression": ("CASE WHEN amount:sum(partition_by="
+                "expression": ("CASE WHEN sum(amount, partition_by="
                                "customers.segments.label) > 10 "
                                "THEN 1 ELSE 0 END"),
                 "name": "b",
@@ -163,7 +163,7 @@ class TestUnsafeExplicitPartitionKeys:
         query = q(
             to_many_handling="error", dimensions=["status"],
             measures=[ModelMeasure(
-                formula="customers.spend:sum(partition_by=status)", name="x",
+                formula="sum(customers.spend, partition_by=status)", name="x",
             )],
         )
         with pytest.raises(RAISES) as ei:
@@ -179,7 +179,7 @@ class TestSafeJoinedPartitionKey:
         query = q(
             dimensions=["customers.tier", "status"],
             measures=[M, ModelMeasure(
-                formula="amount:sum(partition_by=customers.tier)", name="pt",
+                formula="sum(amount, partition_by=customers.tier)", name="pt",
             )],
         )
         resp = await engine.execute(query)

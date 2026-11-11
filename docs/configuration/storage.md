@@ -153,7 +153,7 @@ class MyCustomStorage(StorageBackend):
     async def delete_embeddings_for_canonical(self, *, canonical_id_prefix: str) -> int: ...
 ```
 
-A backend written against 0.9.x that overrides `save_datasource` or returns a plain list from `_list_memories_rows` keeps working, with a `FutureWarning`, until 2.0 — move it to `_save_datasource_impl` and the `(memories, failed_rows)` return shape, and override only the hooks listed above.
+A backend implements `_save_datasource_impl` (not `save_datasource`), returns `(memories, failed_rows)` from `_list_memories_rows`, and overrides only the hooks listed above.
 
 If your backend stores ids as filenames (or another case-insensitive keyspace), set the class attribute `_ids_collide_as_filenames = True` — the base save templates then reject ids differing only by case — and call `await self.check_datasource_id_collision(datasource.name)` at the top of your `_save_datasource_impl`.
 

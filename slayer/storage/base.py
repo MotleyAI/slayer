@@ -13,12 +13,12 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Callable, Hashable, Iterable
 
-from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import DataType, JoinCardinality, TimeGranularity, invert_cardinality
 from slayer.core.granularity import resolve_granularity, unknown_granularity_message
 from slayer.core.time_spine import TIME_SPINE_MODEL, spine_model
 from slayer.core.errors import (
     AmbiguousModelError,
+    ColonSpellingError,
     IdCollisionError,
     MemoryNotFoundError,
     DefaultTimeDimensionTypeError,
@@ -37,6 +37,7 @@ from slayer.core.models import (
     shadows_library_function,
 )
 from slayer.core.query import SlayerQuery
+from slayer.core.syntax import parse_expr
 from slayer.core.warnings import LibraryNameShadowWarning, SlayerLibraryNameShadowWarning, caller_announces
 from slayer.embeddings.models import Embedding
 from slayer.sql import connection_policy
@@ -55,7 +56,6 @@ from slayer.storage.granularity_rename import (
     rename_in_model,
     renamed_datasource,
 )
-from slayer.storage.legacy_backends import adapt_legacy_hooks
 from slayer.storage.legacy_time_literals import legacy_literal_sites, repaired_filter
 from slayer.storage.legacy_alias_rewrite import (
     apply_dunder_rewrite_to_model_dict,
@@ -397,19 +397,10 @@ def storage_base_dir(path: str) -> str:
 
 
 def default_storage_path() -> str:
-    """Default storage dir: $SLAYER_STORAGE, else deprecated $SLAYER_MODELS_DIR, else the platform data dir (XDG on Linux, Application Support on macOS, LOCALAPPDATA on Windows)."""
+    """Default storage dir: $SLAYER_STORAGE, else the platform data dir (XDG on Linux, Application Support on macOS, LOCALAPPDATA on Windows)."""
     current = os.environ.get("SLAYER_STORAGE")
     if current:
         return current
-    legacy = os.environ.get("SLAYER_MODELS_DIR")
-    if legacy:
-        warn_deprecated(
-            "The SLAYER_MODELS_DIR environment variable is deprecated; set SLAYER_STORAGE instead. "
-            "It is read until SLayer 2.0.",
-            removal="2.0",
-        )
-        return legacy
-
     if os.name == "nt":
         base = Path(os.getenv("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     elif sys.platform == "darwin":
@@ -475,6 +466,17 @@ def _validate_path_component(value: str, *, kind: str) -> None:
             )
 
 
+def _refuse_colon_measures(model: SlayerModel) -> None:
+    """A measure formula in a removed colon spelling fails the save; other parse errors surface at binding."""
+    for measure in model.measures:
+        try:
+            parse_expr(measure.formula)
+        except ColonSpellingError:
+            raise
+        except Exception:  # noqa: BLE001, S112 — reported when a query binds it
+            continue
+
+
 def _validate_default_time_dimension(model: SlayerModel) -> None:
     column = model.get_column(model.default_time_dimension) if model.default_time_dimension else None
     if column is not None and column.type not in (DataType.DATE, DataType.TIMESTAMP):
@@ -488,10 +490,6 @@ class StorageBackend(ABC):
     #: by case (they alias on case-insensitive filesystems). Wrappers copy it.
     _ids_collide_as_filenames = False
     _instance_identity: str | None = None
-
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        super().__init_subclass__(**kwargs)
-        adapt_legacy_hooks(cls=cls, base=StorageBackend)
 
     # ---- model CRUD (composite key) ----------------------------------------
 
@@ -509,6 +507,7 @@ class StorageBackend(ABC):
         """Reserved-name and case-collision rejection, derived-column and model-filter well-formedness (reference arity + cycles) and join-edge validation against this store's peers; then a warning per dependent the save breaks, unless ``failures`` is unreported."""
         if model.name == TIME_SPINE_MODEL:
             raise ReservedModelNameError(name=model.name)
+        _refuse_colon_measures(model)
         if self._ids_collide_as_filenames:
             await self._check_model_identity_collision(model)
         # A skipped (unloadable) peer is invisible to these checks; its edge names go unchecked.

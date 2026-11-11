@@ -37,10 +37,10 @@ _MODEL_SETS = {
     "amb": ambiguity_models,
 }
 
-M = ModelMeasure(formula="amount:sum", name="m")
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
-RM = ModelMeasure(formula="stores.rent:sum", name="rm")
-SM = ModelMeasure(formula="agents.score:sum", name="sm")
+M = ModelMeasure(formula="sum(amount)", name="m")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+RM = ModelMeasure(formula="sum(stores.rent)", name="rm")
+SM = ModelMeasure(formula="sum(agents.score)", name="sm")
 
 
 def _cases() -> dict:

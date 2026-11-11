@@ -237,7 +237,7 @@ class TestRefineDictWithLiveSchema:
         d = {
             "name": "rollup",
             "data_source": "live",
-            "source_queries": [{"source_model": "items", "measures": [{"formula": "qty:sum"}]}],
+            "source_queries": [{"source_model": "items", "measures": [{"formula": "sum(qty)"}]}],
             "columns": [
                 {"name": "qty_sum", "sql": "qty_sum", "type": "DOUBLE"},
             ],
@@ -867,7 +867,6 @@ class TestCliMigrateTypes:
             command="storage",
             subcommand="migrate-types",
             storage=storage_with_v4_model["base"],
-            models_dir=None,
             dry_run=True,
             data_source=None,
         )
@@ -886,7 +885,6 @@ class TestCliMigrateTypes:
             command="storage",
             subcommand="migrate-types",
             storage=storage_with_v4_model["base"],
-            models_dir=None,
             dry_run=False,
             data_source=None,
         )

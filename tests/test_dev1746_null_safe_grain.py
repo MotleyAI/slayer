@@ -88,7 +88,7 @@ def _windowed_query() -> SlayerQuery:
             dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="amount:sum(window='90d')", name="rev_w")],
+        measures=[ModelMeasure(formula="sum(amount, window='90d')", name="rev_w")],
     )
 
 
@@ -101,7 +101,7 @@ def _windowed_chain_query() -> SlayerQuery:
             dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="amount:sum(window='90d')", name="rev_w")],
+        measures=[ModelMeasure(formula="sum(amount, window='90d')", name="rev_w")],
     )
 
 
@@ -110,7 +110,7 @@ def _cm_shared_grain_query() -> SlayerQuery:
     return SlayerQuery(
         source_model="orders_x",
         dimensions=[ColumnRef(name="customers_v2.status")],
-        measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
+        measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
     )
 
 
@@ -315,7 +315,7 @@ class TestGrainSemantics:
         caller must keep turning that into a CROSS JOIN."""
         query = SlayerQuery(
             source_model="orders_x",
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
+            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query, dialect="postgres")
         assert "CROSS JOIN _cm_" in _norm(sql), (
@@ -330,7 +330,7 @@ class TestGrainSemantics:
         """The CROSS JOIN must not multiply rows: one row, the scalar total."""
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="customers.spend:sum", name="total")],
+            measures=[ModelMeasure(formula="sum(customers.spend)", name="total")],
         )
         resp = await exec_engine.execute(query)
         assert len(resp.data) == 1, f"scalar CMA must yield ONE row:\n{resp.data}"
@@ -354,7 +354,7 @@ class TestGrainSemantics:
                 ColumnRef(name="customers_v2.status"),
                 ColumnRef(name="customers_v2.ltv_x2"),
             ],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
+            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query, dialect="postgres")
         on = _norm(joinback_on_predicate_for(sql, prefix="_cm_", dialect="postgres"))
@@ -372,7 +372,7 @@ class TestGrainSemantics:
                 dimension="customers_v2.signup_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
+            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query, dialect="postgres")
         on = _norm(joinback_on_predicate_for(sql, prefix="_cm_", dialect="postgres"))
@@ -389,7 +389,7 @@ class TestGrainSemantics:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="customers.tier")],
-            measures=[ModelMeasure(formula="customers.spend:sum", name="spend")],
+            measures=[ModelMeasure(formula="sum(customers.spend)", name="spend")],
         )
         resp = await exec_engine.execute(query)
         by_tier = {r["orders.customers.tier"]: r["orders.spend"] for r in resp.data}

@@ -44,10 +44,10 @@ def _query(*, version: int, **fields: Any) -> SlayerQuery:
 
 class TestVersions:
     def test_versions_bumped(self) -> None:
-        assert CURRENT_VERSIONS["SlayerModel"] == 19
-        assert CURRENT_VERSIONS["SlayerQuery"] == 10
+        assert CURRENT_VERSIONS["SlayerModel"] == 20
+        assert CURRENT_VERSIONS["SlayerQuery"] == 11
         assert CURRENT_VERSIONS["DatasourceConfig"] == 3
-        assert CURRENT_VERSIONS["Memory"] == 7
+        assert CURRENT_VERSIONS["Memory"] == 8
 
 
 #: (stored v17 text, the text it loads as).
@@ -88,7 +88,7 @@ class TestDistinctRewrite:
         assert [m.formula for m in mem.query.measures or []] == ['sum("distinct")']
 
     def test_a_current_document_is_not_rewritten(self) -> None:
-        assert _formulas(_model_doc(version=18, measures=[{"name": "x", "formula": "sum(distinct)"}])) == [
+        assert _formulas(_model_doc(version=19, measures=[{"name": "x", "formula": "sum(distinct)"}])) == [
             "sum(distinct)"]
 
     def test_a_client_query_is_not_rewritten(self) -> None:

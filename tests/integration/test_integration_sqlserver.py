@@ -347,7 +347,7 @@ def sqlserver_env(_sqlserver_env_storage) -> SlayerQueryEngine:
 @pytest.mark.integration
 class TestSQLServerQueries:
     async def test_count_all(self, sqlserver_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(source_model="orders", measures=[{"formula": "*:count"}])
+        query = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "count(*)"}]})
         result = await sqlserver_env.execute(query=query)
         assert result.row_count == 1
         assert result.data[0]["orders._count"] == 6
@@ -366,38 +366,29 @@ class TestSQLServerQueries:
                 )],
             ),
             dimensions=[ColumnRef(name="rx")],
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         result = await sqlserver_env.execute(query=query)
         by_rx = {int(r["orders.rx"]): r["orders._count"] for r in result.data}
         assert by_rx == {1: 2, 0: 4}
 
     async def test_sum_measure(self, sqlserver_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(source_model="orders", measures=[{"formula": "total:sum"}])
+        query = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(total)"}]})
         result = await sqlserver_env.execute(query=query)
         assert float(result.data[0]["orders.total_sum"]) == 875.0  # NOSONAR(S1244) — sum of integer cents, exact-representable
 
-    async def test_functional_aggregation_parity(self, sqlserver_env: SlayerQueryEngine) -> None:
-        colon = await sqlserver_env.execute(
-            query=SlayerQuery(source_model="orders", measures=[{"formula": "total:sum"}])
-        )
-        func = await sqlserver_env.execute(
-            query=SlayerQuery(source_model="orders", measures=[{"formula": "sum(total)"}])
-        )
-        assert float(func.data[0]["orders.total_sum"]) == float(colon.data[0]["orders.total_sum"])
-
     async def test_avg_measure(self, sqlserver_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(source_model="orders", measures=[{"formula": "avg_amount:avg"}])
+        query = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "avg(avg_amount)"}]})
         result = await sqlserver_env.execute(query=query)
         avg = float(result.data[0]["orders.avg_amount_avg"])
         assert abs(avg - 145.83) < 0.1
 
     async def test_group_by_status(self, sqlserver_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            dimensions=[{"name": "status"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "dimensions": [{"name": "status"}],
+        })
         result = await sqlserver_env.execute(query=query)
         by_status = {r["orders.status"]: r["orders._count"] for r in result.data}
         assert by_status["completed"] == 3
@@ -405,49 +396,49 @@ class TestSQLServerQueries:
         assert by_status["cancelled"] == 1
 
     async def test_filter_equals(self, sqlserver_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            filters=["status == 'completed'"],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "filters": ["status == 'completed'"],
+        })
         result = await sqlserver_env.execute(query=query)
         assert result.data[0]["orders._count"] == 3
 
     async def test_filter_gt(self, sqlserver_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            filters=["total > 100"],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "filters": ["total > 100"],
+        })
         result = await sqlserver_env.execute(query=query)
         assert result.data[0]["orders._count"] == 3
 
     async def test_order_by_desc(self, sqlserver_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            dimensions=[{"name": "status"}],
-            order=[{"column": {"name": "count"}, "direction": "desc"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "dimensions": [{"name": "status"}],
+            "order": [{"column": {"name": "count"}, "direction": "desc"}],
+        })
         result = await sqlserver_env.execute(query=query)
         assert result.data[0]["orders.status"] == "completed"
 
     async def test_limit(self, sqlserver_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            dimensions=[{"name": "status"}],
-            limit=2,
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "dimensions": [{"name": "status"}],
+            "limit": 2,
+        })
         result = await sqlserver_env.execute(query=query)
         assert result.row_count == 2
 
     async def test_multiple_measures(self, sqlserver_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}, {"formula": "total:sum"}],
-            dimensions=[{"name": "status"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}, {"formula": "sum(total)"}],
+            "dimensions": [{"name": "status"}],
+        })
         result = await sqlserver_env.execute(query=query)
         completed = next(r for r in result.data if r["orders.status"] == "completed")
         assert completed["orders._count"] == 3
@@ -455,34 +446,34 @@ class TestSQLServerQueries:
 
     async def test_time_dimension_month_granularity(self, sqlserver_env: SlayerQueryEngine) -> None:
         """SQL Server 2022 supports DATETRUNC."""
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}],
+        })
         result = await sqlserver_env.execute(query=query)
         assert result.row_count == 3
 
     async def test_time_dimension_with_date_range(self, sqlserver_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            time_dimensions=[{
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "time_dimensions": [{
                 "dimension": {"name": "created_at"},
                 "granularity": "month",
                 "date_range": ["2024-01-01", "2024-02-28"],
             }],
-        )
+        })
         result = await sqlserver_env.execute(query=query)
         total = sum(r["orders._count"] for r in result.data)
         assert total == 4
 
     async def test_composite_filter(self, sqlserver_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            filters=["status == 'completed' or status == 'pending'"],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "filters": ["status == 'completed' or status == 'pending'"],
+        })
         result = await sqlserver_env.execute(query=query)
         assert result.data[0]["orders._count"] == 5
 
@@ -494,8 +485,8 @@ class TestSQLServerQueries:
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[
-                ModelMeasure(formula="total:sum"),
-                ModelMeasure(formula="time_shift(total:sum, -1, 'month')", name="prev_month"),
+                ModelMeasure(formula="sum(total)"),
+                ModelMeasure(formula="time_shift(sum(total), -1, 'month')", name="prev_month"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
@@ -511,8 +502,8 @@ class TestSQLServerQueries:
                 dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[
-                ModelMeasure(formula="total:sum"),
-                ModelMeasure(formula="consecutive_periods(total:sum > 200)", name="positive_run"),
+                ModelMeasure(formula="sum(total)"),
+                ModelMeasure(formula="consecutive_periods(sum(total) > 200)", name="positive_run"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
@@ -533,8 +524,8 @@ class TestSQLServerQueries:
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[
-                ModelMeasure(formula="total:sum"),
-                ModelMeasure(formula="change(total:sum)", name="amount_change"),
+                ModelMeasure(formula="sum(total)"),
+                ModelMeasure(formula="change(sum(total))", name="amount_change"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
@@ -550,8 +541,8 @@ class TestSQLServerQueries:
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[
-                ModelMeasure(formula="total:sum"),
-                ModelMeasure(formula="change_pct(total:sum)", name="pct"),
+                ModelMeasure(formula="sum(total)"),
+                ModelMeasure(formula="change_pct(sum(total))", name="pct"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
@@ -567,9 +558,9 @@ class TestSQLServerQueries:
                 date_range=["2024-02-01", "2024-02-29"],
             )],
             measures=[
-                ModelMeasure(formula="total:sum"),
-                ModelMeasure(formula="time_shift(total:sum, -1, 'month')", name="prev"),
-                ModelMeasure(formula="time_shift(total:sum, 1, 'month')", name="next"),
+                ModelMeasure(formula="sum(total)"),
+                ModelMeasure(formula="time_shift(sum(total), -1, 'month')", name="prev"),
+                ModelMeasure(formula="time_shift(sum(total), 1, 'month')", name="next"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
@@ -660,7 +651,7 @@ class TestCrossModelAndMultistageSQLServer:
             time_dimensions=[TimeDimension(
                 dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
-            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="customers.avg_score:avg")],
+            measures=[ModelMeasure(formula="count(*)"), ModelMeasure(formula="avg(customers.avg_score)")],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
         result = await sqlserver_cross_model_env.execute(query=query)
@@ -673,9 +664,9 @@ class TestCrossModelAndMultistageSQLServer:
             time_dimensions=[TimeDimension(
                 dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
-            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total:sum")],
+            measures=[ModelMeasure(formula="count(*)"), ModelMeasure(formula="sum(total)")],
         )
-        outer = SlayerQuery(source_model="monthly", measures=[ModelMeasure(formula="*:count")])
+        outer = SlayerQuery(source_model="monthly", measures=[ModelMeasure(formula="count(*)")])
         result = await sqlserver_cross_model_env.execute(query=[inner, outer])
         assert result.data[0]["monthly._count"] == 3
 
@@ -685,12 +676,12 @@ class TestCrossModelAndMultistageSQLServer:
             time_dimensions=[TimeDimension(
                 dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
-            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total:sum")],
+            measures=[ModelMeasure(formula="count(*)"), ModelMeasure(formula="sum(total)")],
         )
         saved = await sqlserver_cross_model_env.create_model_from_query(query=source, name="ss_monthly")
         assert saved.source_queries is not None
         result = await sqlserver_cross_model_env.execute(
-            query=SlayerQuery(source_model="ss_monthly", measures=[ModelMeasure(formula="*:count")])
+            query=SlayerQuery(source_model="ss_monthly", measures=[ModelMeasure(formula="count(*)")])
         )
         assert result.data[0]["ss_monthly._count"] == 3
 
@@ -701,7 +692,7 @@ class TestCrossModelAndMultistageSQLServer:
                 "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
             }),
             dimensions=[ColumnRef(name="tier")],
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         result = await sqlserver_cross_model_env.execute(query=query)
         by_tier = {r["orders.tier"]: r["orders._count"] for r in result.data}
@@ -816,11 +807,11 @@ class TestRollupIngestionSQLServer:
         for m in models:
             await storage.save_model(m)
         engine = SlayerQueryEngine(storage=storage)
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            dimensions=[{"name": "customers.name"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "dimensions": [{"name": "customers.name"}],
+        })
         result = await engine.execute(query=query)
         by_name = {r["orders.customers.name"]: r["orders._count"] for r in result.data}
         assert by_name["Acme"] == 2
@@ -835,11 +826,11 @@ class TestRollupIngestionSQLServer:
         for m in models:
             await storage.save_model(m)
         engine = SlayerQueryEngine(storage=storage)
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}, {"formula": "amount:sum"}],
-            dimensions=[{"name": "customers.regions.name"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}, {"formula": "sum(amount)"}],
+            "dimensions": [{"name": "customers.regions.name"}],
+        })
         result = await engine.execute(query=query)
         by_region = {r["orders.customers.regions.name"]: r for r in result.data}
         assert by_region["US"]["orders._count"] == 3
@@ -867,11 +858,11 @@ class TestRollupIngestionSQLServer:
         for m in models:
             await storage.save_model(m)
         engine = SlayerQueryEngine(storage=storage)
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            dimensions=[{"name": "customers.regions.name"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "dimensions": [{"name": "customers.regions.name"}],
+        })
         result = await engine.execute(query=query)
         by_region = {r["orders.customers.regions.name"]: r["orders._count"] for r in result.data}
         assert by_region["US"] == 3
@@ -885,10 +876,7 @@ class TestRollupIngestionSQLServer:
         for m in models:
             await storage.save_model(m)
         engine = SlayerQueryEngine(storage=storage)
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-        )
+        query = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "count(*)"}]})
         result = await engine.execute(query=query)
         assert "LEFT JOIN" not in result.sql
         assert result.data[0]["orders._count"] == 4
@@ -901,11 +889,11 @@ class TestRollupIngestionSQLServer:
         for m in models:
             await storage.save_model(m)
         engine = SlayerQueryEngine(storage=storage)
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            dimensions=[{"name": "customers.name"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "dimensions": [{"name": "customers.name"}],
+        })
         result = await engine.execute(query=query)
         assert "LEFT JOIN" in result.sql
         assert "customers" in result.sql
@@ -919,11 +907,11 @@ class TestRollupIngestionSQLServer:
         for m in models:
             await storage.save_model(m)
         engine = SlayerQueryEngine(storage=storage)
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            dimensions=[{"name": "customers.regions.name"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "dimensions": [{"name": "customers.regions.name"}],
+        })
         result = await engine.execute(query=query)
         assert "customers" in result.sql
         assert "regions" in result.sql
@@ -965,25 +953,25 @@ class TestRollupIngestionSQLServer:
 @pytest.mark.integration
 class TestSQLServerMedianPercentileRaises:
     async def test_median_raises(self, sqlserver_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(source_model="orders", measures=[{"formula": "total:median"}])
+        query = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "median(total)"}]})
         with pytest.raises(NotImplementedError, match="(?i)median.*t-sql"):
             await sqlserver_env.execute(query=query)
 
     async def test_median_grouped_raises(self, sqlserver_env: SlayerQueryEngine) -> None:
         """Grouped median goes through the same TsqlDialect.build_median hook."""
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "total:median"}],
-            dimensions=[{"name": "status"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "median(total)"}],
+            "dimensions": [{"name": "status"}],
+        })
         with pytest.raises(NotImplementedError, match="(?i)median.*t-sql"):
             await sqlserver_env.execute(query=query)
 
     async def test_percentile_raises(self, sqlserver_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "total:percentile(p=0.5)"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "percentile(total, p=0.5)"}],
+        })
         with pytest.raises(NotImplementedError, match="(?i)percentile.*t-sql"):
             await sqlserver_env.execute(query=query)
 
@@ -1001,10 +989,7 @@ class TestSQLServerStatAggregations:
     name set (VAR / VARP / STDEV)."""
 
     async def test_stddev_samp_native_sqlserver(self, sqlserver_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "total:stddev_samp"}],
-        )
+        query = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "stddev_samp(total)"}]})
         result = await sqlserver_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         assert float(result.data[0]["orders.total_stddev_samp"]) == pytest.approx(
@@ -1022,7 +1007,7 @@ class TestSQLServerStatAggregations:
     async def test_stddev_pop_native_sqlserver(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            measures=[{"formula": "total:stddev_pop"}],
+            measures=[{"formula": "stddev_pop(total)"}],
         )
         result = await sqlserver_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -1039,10 +1024,7 @@ class TestSQLServerStatAggregations:
 
     async def test_var_samp_uses_canonical_tsql_name(self, sqlserver_env: SlayerQueryEngine) -> None:
         """T-SQL: var_samp must emit ``VAR(`` not ``VAR_SAMP(``."""
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "total:var_samp"}],
-        )
+        query = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "var_samp(total)"}]})
         result = await sqlserver_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         assert float(result.data[0]["orders.total_var_samp"]) == pytest.approx(
@@ -1062,7 +1044,7 @@ class TestSQLServerStatAggregations:
     async def test_var_pop_uses_canonical_tsql_name(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            measures=[{"formula": "total:var_pop"}],
+            measures=[{"formula": "var_pop(total)"}],
         )
         result = await sqlserver_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -1080,10 +1062,10 @@ class TestSQLServerStatAggregations:
     async def test_corr_variance_decomposition_sqlserver(self, sqlserver_env: SlayerQueryEngine) -> None:
         """T-SQL CORR uses variance-decomposition with VAR / STDEV (not
         VAR_SAMP / STDDEV_SAMP). Pin numeric + SQL shape."""
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "total:corr(other=customer_id)"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "corr(total, other=customer_id)"}],
+        })
         result = await sqlserver_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         ys = [1.0, 1.0, 2.0, 2.0, 3.0, 3.0]
@@ -1104,10 +1086,10 @@ class TestSQLServerStatAggregations:
         )
 
     async def test_covar_samp_variance_decomposition_sqlserver(self, sqlserver_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "total:covar_samp(other=customer_id)"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "covar_samp(total, other=customer_id)"}],
+        })
         result = await sqlserver_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         ys = [1.0, 1.0, 2.0, 2.0, 3.0, 3.0]
@@ -1133,7 +1115,7 @@ class TestSQLServerStatAggregations:
     async def test_covar_pop_variance_decomposition_sqlserver(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            measures=[{"formula": "total:covar_pop(other=customer_id)"}],
+            measures=[{"formula": "covar_pop(total, other=customer_id)"}],
         )
         result = await sqlserver_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -1196,14 +1178,14 @@ async def test_log10_round_trip_sqlserver(sqlserver_log10_env: SlayerQueryEngine
     """T-SQL has native LOG10 (TsqlDialect.log10_native = True). The emitted
     SQL must preserve ``LOG10(...)``."""
     result = await sqlserver_log10_env.execute(
-        SlayerQuery(source_model="orders", measures=[{"formula": "log_amount:max"}])
+        SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "max(log_amount)"}]})
     )
     assert float(result.data[0]["orders.log_amount_max"]) == pytest.approx(
         _math.log10(300.0), rel=1e-9
     )
 
     dry = await sqlserver_log10_env.execute(
-        SlayerQuery(source_model="orders", measures=[{"formula": "log_amount:max"}]),
+        SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "max(log_amount)"}]}),
         dry_run=True,
     )
     assert dry.sql is not None
@@ -1226,11 +1208,11 @@ async def test_sqlserver_week_uses_iso_week(sqlserver_env: SlayerQueryEngine) ->
     """TsqlDialect.build_date_trunc maps granularity=week to
     ``DATETRUNC(iso_week, col)`` (Monday-aligned, @@DATEFIRST-independent).
     Pin the emitted SQL."""
-    query = SlayerQuery(
-        source_model="orders",
-        measures=[{"formula": "*:count"}],
-        time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "week"}],
-    )
+    query = SlayerQuery.model_validate({
+        "source_model": "orders",
+        "measures": [{"formula": "count(*)"}],
+        "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "week"}],
+    })
     dry = await sqlserver_env.execute(query=query, dry_run=True)
     assert dry.sql is not None
     sql_lower = dry.sql.lower()
@@ -1249,8 +1231,8 @@ async def test_sqlserver_time_shift_uses_dateadd(sqlserver_env: SlayerQueryEngin
             dimension="created_at", granularity=TimeGranularity.MONTH,
         )],
         measures=[
-            ModelMeasure(formula="total:sum"),
-            ModelMeasure(formula="time_shift(total:sum, -1, 'month')", name="prev"),
+            ModelMeasure(formula="sum(total)"),
+            ModelMeasure(formula="time_shift(sum(total), -1, 'month')", name="prev"),
         ],
     )
     dry = await sqlserver_env.execute(query=query, dry_run=True)
@@ -1480,7 +1462,7 @@ class TestSQLServerDateFunctions:
 @pytest.mark.parametrize("fn", ["substring", "substr"])
 async def test_two_arg_substring_executes(sqlserver_env: SlayerQueryEngine, fn: str) -> None:
     result = await sqlserver_env.execute(query=SlayerQuery.model_validate({
-        "source_model": "orders", "measures": [{"formula": "*:count", "name": "n"}],
+        "source_model": "orders", "measures": [{"formula": "count(*)", "name": "n"}],
         "filters": [f"{fn}(status, 2) == 'ending'"],
     }))
     assert result.data[0]["orders.n"] == 2
@@ -1492,7 +1474,7 @@ async def test_two_arg_substring_keeps_trailing_spaces(sqlserver_env: SlayerQuer
     # T-SQL '=' pads trailing spaces, so a trailing 'x' makes them count.
     async def count(filters: list[str]) -> int:
         result = await sqlserver_env.execute(query=SlayerQuery.model_validate({
-            "source_model": "orders", "measures": [{"formula": "*:count", "name": "n"}], "filters": filters,
+            "source_model": "orders", "measures": [{"formula": "count(*)", "name": "n"}], "filters": filters,
         }))
         return result.data[0]["orders.n"]
 
@@ -1503,7 +1485,7 @@ async def test_two_arg_substring_keeps_trailing_spaces(sqlserver_env: SlayerQuer
 @pytest.mark.integration
 async def test_length_counts_trailing_spaces(sqlserver_env: SlayerQueryEngine) -> None:
     result = await sqlserver_env.execute(query=SlayerQuery.model_validate({
-        "source_model": "orders", "measures": [{"formula": "*:count", "name": "n"}],
+        "source_model": "orders", "measures": [{"formula": "count(*)", "name": "n"}],
         "filters": ["length(concat(status, '  ')) != length(status) + 2"],
     }))
     assert result.data[0]["orders.n"] == 0
@@ -1513,7 +1495,7 @@ async def test_length_counts_trailing_spaces(sqlserver_env: SlayerQueryEngine) -
 async def test_length_of_a_number(sqlserver_env: SlayerQueryEngine) -> None:
     async def count(filters: list[str]) -> int:
         result = await sqlserver_env.execute(query=SlayerQuery.model_validate({
-            "source_model": "orders", "measures": [{"formula": "*:count", "name": "n"}], "filters": filters,
+            "source_model": "orders", "measures": [{"formula": "count(*)", "name": "n"}], "filters": filters,
         }))
         return result.data[0]["orders.n"]
 
@@ -1911,7 +1893,7 @@ async def sqlserver_one_connection(_sqlserver_env_storage):
             engine.close()
 
 
-_EXPLAINED = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "*:count"}]})
+_EXPLAINED = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "count(*)"}]})
 
 
 @pytest.mark.integration

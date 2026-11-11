@@ -71,7 +71,7 @@ def test_source_columnsqlkey_exact_match_preserves_model_and_name() -> None:
 
 
 def test_source_starkey_path_is_stripped_to_local() -> None:
-    # ``customers.*:count`` — the rerooted source is genuinely local, so its
+    # ``count(customers.*)`` — the rerooted source is genuinely local, so its
     # path strips to (). COUNT(*) rendering is path-independent, but the key
     # must read as local so the target-scope synth helper's local branch
     # fires.
