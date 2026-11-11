@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib
-import importlib.util
 
 import pytest
 
@@ -84,13 +83,9 @@ class TestCubeDependencyCheck:
 
 
 class TestOneParser:
-    @pytest.mark.parametrize("name", [
-        "parse_formula", "FieldSpec", "AggregatedMeasureRef", "ArithmeticField", "TransformField",
-        "MixedArithmeticField", "_rewrite_funcstyle_aggregations", "_preprocess_agg_refs", "_expand_named_measures",
-    ])
-    def test_legacy_parser_deleted(self, name: str) -> None:
-        if importlib.util.find_spec("slayer.core.formula") is not None:
-            assert not hasattr(importlib.import_module("slayer.core.formula"), name)
+    def test_legacy_parser_deleted(self) -> None:
+        with pytest.raises(ImportError, match="slayer.core.syntax"):
+            importlib.import_module("slayer.core.formula")
 
     @pytest.mark.parametrize("module", ["slayer.dbt.converter", "slayer.cube.converter", "slayer.osi.converter"])
     def test_importers_do_not_use_the_legacy_parser(self, module: str) -> None:

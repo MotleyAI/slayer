@@ -6,9 +6,11 @@ Spec: compatibility/removal-tripwire › Deprecated input forms convert with a s
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 from mcp.server.fastmcp.exceptions import ToolError
 
@@ -18,9 +20,12 @@ from slayer.core.errors import SlayerError
 from slayer.core.query import QueryRefinement, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
+from slayer.storage.engine_view import EngineStorage
+from slayer.storage.yaml_storage import YAMLStorage
 from tests._deprecated_input_helpers import (
     CLEAN,
     CM,
+    CROSS,
     SAVED,
     deprecated_in,
     deprecations,
@@ -149,6 +154,51 @@ class TestRefinement:
         assert str(failed.value) == str(reference.value)
 
 
+def _store_strict_stage(engine: SlayerQueryEngine) -> None:
+    """Write ``strict`` into ``SAVED``'s stored current-version stage, as a hand edit would."""
+    assert isinstance(engine.storage, EngineStorage)
+    storage = engine.storage.inner
+    assert isinstance(storage, YAMLStorage)
+    path = next(Path(storage.base_dir).glob(f"models/*/{SAVED}.yaml"))
+    doc = yaml.safe_load(path.read_text())
+    doc["source_queries"][0]["strict"] = True
+    path.write_text(yaml.safe_dump(doc))
+
+
+class TestStoredStages:
+    """A stored stage converted on load reports on every run that reads its model."""
+
+    @pytest.fixture
+    def stored(self, engine: SlayerQueryEngine) -> SlayerQueryEngine:
+        _store_strict_stage(engine)
+        return engine
+
+    @pytest.mark.parametrize("query", [SAVED, {"source_model": SAVED, "measures": ["sum(n)"]}], ids=["by_name", "as_source"])
+    async def test_every_run_reports(self, stored: SlayerQueryEngine, query: Any) -> None:
+        for _ in range(2):
+            with recorded():
+                response = await stored.execute(query)
+            assert len(deprecated_in(response.warnings)) == 1
+
+    async def test_refined_run_reports_stage_and_refinement(self, stored: SlayerQueryEngine) -> None:
+        with recorded():
+            response = await stored.execute(SAVED, refine={"strict": False})
+        assert len(deprecated_in(response.warnings)) == 2
+
+    def test_rest_run_by_name(self, stored: SlayerQueryEngine) -> None:
+        client = TestClient(create_app(storage=stored.storage))
+        with recorded():
+            resp = client.post("/query", json={"name": SAVED})
+        assert resp.status_code == 200, resp.text
+        assert len(deprecated_in(resp.json()["warnings"])) == 1
+
+    def test_http_client_run_by_name(self, stored: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = _http_client(stored, monkeypatch)
+        with recorded():
+            response = client.query_sync(SAVED)
+        assert len(deprecated_in(response.warnings)) == 1
+
+
 class TestSurfaces:
     @pytest.mark.parametrize("case", sorted(STAGED))
     def test_rest_list_of_stages(self, engine: SlayerQueryEngine, case: str) -> None:
@@ -211,6 +261,11 @@ class TestHttpClient:
         with recorded():
             response = await run(stages)
         assert len(deprecated_in(response.warnings)) == expected
+
+    async def test_server_warnings_are_kept(self, run) -> None:
+        with recorded():
+            response = await run(strict(CROSS, False))
+        assert sorted(w.kind for w in response.warnings) == ["broadcast", "deprecated_input"]
 
     async def test_prebuilt_query(self, run) -> None:
         query, payload = _built(strict(CLEAN))

@@ -1052,11 +1052,11 @@ class SlayerQueryEngine:
         if isinstance(query, str):
             query = SavedQueryRun(name=query)
         if isinstance(query, SavedQueryRun):
-            out.extend(deprecated_inputs_of([query.refinement]))
             return await self._normalize_by_name(
                 run=query,
                 runtime_kwarg=runtime_kwarg,
                 prefer_data_source=prefer_data_source,
+                deprecations_out=out,
             )
 
         if isinstance(query, list):
@@ -1092,8 +1092,10 @@ class SlayerQueryEngine:
         run: SavedQueryRun,
         runtime_kwarg: Dict[str, Any],
         prefer_data_source: Optional[str],
+        deprecations_out: List[DeprecatedInputWarning],
     ) -> "tuple[SlayerQuery, Dict[str, SlayerQuery], Optional[str], Tuple[str, ...]]":
-        """Normalize a run-by-name input into the shared prepare tuple (``prefer_data_source`` pins the lookup)."""
+        """Normalize a run-by-name input into the shared prepare tuple (``prefer_data_source`` pins the lookup).
+        The deprecations of the stored stages and the refinement go to ``deprecations_out``."""
         name = run.name
         model = await self.storage.get_model(name, data_source=prefer_data_source)
         if model is None:
@@ -1103,6 +1105,7 @@ class SlayerQueryEngine:
                 f"Model '{name}' is not query-backed; pass a SlayerQuery "
                 f"with source_model='{name}'."
             )
+        deprecations_out.extend(deprecated_inputs_of([*model.source_queries, run.refinement]))
         prefer_data_source = model.data_source or prefer_data_source
         if run.refinement is not None and run.refinement.model_fields_set:
             # Legacy unpinned stages pin from the unrefined stage, so a refinement never moves the source.
@@ -1371,6 +1374,11 @@ class SlayerQueryEngine:
         warnings.extend(stale_spelling_warnings(list(dict.fromkeys([
             *(s for p in plans for s in p.stale_spellings), *render_stale_spellings,
         ]))))
+        # Stored query-backed models the statement reads: their stages' input deprecations.
+        warnings.extend(deprecated_inputs_of(
+            stage for name in sorted(reads) if name in bundle.query_backed
+            for stage in bundle.query_backed[name].source_queries or []
+        ))
         return _Rendered(
             built=built, dialect=dialect, datasource=datasource, bundle=bundle,
             planned_list=planned_list, emitted_list=plans, model=model, reads=reads, associated=built.associated,

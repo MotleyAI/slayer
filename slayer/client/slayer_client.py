@@ -233,7 +233,7 @@ class SlayerClient:
 
     @staticmethod
     def _parse_response(result: dict, *, deprecations: list[DeprecatedInputWarning] | None = None) -> SlayerResponse:
-        """Parse an API JSON response into a SlayerResponse carrying the client's own ``deprecations``."""
+        """Parse an API JSON response into a SlayerResponse; its warnings are the server's plus the client's ``deprecations``."""
         def _parse_meta_dict(d: dict) -> dict[str, FieldMetadata]:
             out = {}
             for k, v in (d or {}).items():
@@ -253,7 +253,7 @@ class SlayerClient:
             columns=result.get("columns") or [],
             sql=result.get("sql"),
             attributes=attributes,
-            warnings=list(deprecations or []),
+            warnings=[*(result.get("warnings") or []), *(deprecations or [])],
             population=result.get("population"),
             population_inferred=bool(result.get("population_inferred", False)),
         )
@@ -319,7 +319,7 @@ class SlayerClient:
         params = {"data_source": data_source} if data_source else None
         return await self._request(method="GET", path=f"/models/{name}", params=params)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
 
-    async def create_model(self, model: dict[str, Any]) -> dict[str, str]:
+    async def create_model(self, model: dict[str, Any]) -> dict[str, Any]:
         return await self._request(method="POST", path="/models", json=model)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
 
     async def list_datasources(self) -> list[str]:
