@@ -523,19 +523,23 @@ class _ExtensionScope(BaseModel):
             return None
 
     def _model(self, path: list[str], *, host: SlayerModel) -> SlayerModel | None:
-        """The model ``path`` names: edge tokens from ``host`` first, else a model of the scope and its edge tokens."""
+        """The model ``path`` names: edge tokens from ``host`` (a lone hop short-form routed, as the binder does),
+        else a model the query extends and its edge tokens."""
         path = list(drop_root_hop(path, host.spelling))
         if not path:
             return host
-        routed = self._walked(host, path)
-        if routed is not None:
-            return routed
+        walked = self._walked(host, path)
+        if walked is not None:
+            return walked
+        routed = self.scope.resolve(path, root=host)
+        if routed is not None and routed[1]:
+            return self.scope.models.get(routed[1][-1].target_model)
         head = self._extended(path[0])
         return self._walked(head, path[1:]) if head is not None else None
 
     def _scoped_form(self, source: str, *, agg: str | None, host: SlayerModel) -> str | None:
-        """Canonical form of a dotted ``source`` over the scope — its head an edge token from ``host``, else a model
-        the query extends — or ``None``."""
+        """Canonical form of a dotted ``source`` over the scope — its head an edge token from ``host`` or short-form
+        routed from it, else a model the query extends — or ``None``."""
         star = source.endswith(".*")
         segments = source.removesuffix(".*").split(".")
         if (star and agg != "count") or (not star and len(segments) < 2):
@@ -544,6 +548,9 @@ class _ExtensionScope(BaseModel):
             model = self._model(segments, host=host)
             return f"{model.data_source}.{model.name}" if model is not None else None
         heads = [(host, list(drop_root_qualifier(segments, host.spelling)))]
+        routed = self.scope.resolve(segments[:-1], root=host)
+        if routed is not None and routed[1]:
+            heads.append((self.scope.models[routed[1][-1].target_model], segments[-1:]))
         head = self._extended(segments[0])
         if head is not None:
             heads.append((head, segments[1:]))

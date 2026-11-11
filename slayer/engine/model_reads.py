@@ -117,7 +117,7 @@ class _Reads:
             **self.by_ds.get(model.data_source, {}), model.name: model})
 
     def read(self, name: str, *, scope: QueryScope) -> None:
-        if name not in scope.siblings and name in self.by_ds.get(scope.data_source, {}):
+        if name not in scope.shadowed and name in self.by_ds.get(scope.data_source, {}):
             self.out.add((scope.data_source, name))
 
     def model(self, model: SlayerModel) -> None:
@@ -207,30 +207,37 @@ class _Reads:
     def stage(self, query: SlayerQuery, *, scope: QueryScope) -> None:
         """What one query object reads in ``scope``: its source, the models its extensions name, what their own
         definitions read, every reference, and each INNER join's population filter."""
-        spec = query.source_model
-        if isinstance(spec, str):
-            self.read(spec, scope=scope)
-        elif isinstance(spec, SlayerModel):
-            for join in spec.joins:
-                self.read(join.target_model, scope=scope)
-        for name in extension_model_names(query):
-            self.read(name, scope=scope)
+        self.sources(query, scope=scope)
         host = scope.host
-        if host is not None and (isinstance(spec, SlayerModel) or extension_of(query, host.name) is not None):
+        if host is not None and (isinstance(query.source_model, SlayerModel) or extension_of(query, host.name) is not None):
             self.definitions(host, scope=scope)
-        for extension in query.extensions or []:
-            extended = scope.models.get(extension.source_name)
-            if extended is None:
-                continue
-            for field in [*(extension.columns or []), *(extension.measures or [])]:
-                if field.name:
-                    self.column(host=extended, name=field.name, scope=scope)
-                    self.measure(host=extended, name=field.name, scope=scope)
+        self.extension_fields(query, scope=scope)
         for parts in [*query_reference_parts(query), *scope.inner_refs]:
             if host is not None:
                 self.ref(parts, host=host, scope=scope)
             else:
                 self.product_ref(parts, scope=scope)
+
+    def sources(self, query: SlayerQuery, *, scope: QueryScope) -> None:
+        """The stored models ``query`` names as its source, its inline source's join targets and its extensions."""
+        spec = query.source_model
+        names = list(extension_model_names(query))
+        if isinstance(spec, str):
+            names.append(spec)
+        elif isinstance(spec, SlayerModel):
+            names.extend(j.target_model for j in spec.joins)
+        for name in names:
+            self.read(name, scope=scope)
+
+    def extension_fields(self, query: SlayerQuery, *, scope: QueryScope) -> None:
+        """What each of ``query``'s extension columns and measures reads, over the model it extends."""
+        for extension in query.extensions or []:
+            extended = scope.models.get(extension.source_name)
+            if extended is None:
+                continue
+            for name in [f.name for f in [*(extension.columns or []), *(extension.measures or [])] if f.name]:
+                self.column(host=extended, name=name, scope=scope)
+                self.measure(host=extended, name=name, scope=scope)
 
     def product_ref(self, parts: tuple[str, ...], *, scope: QueryScope) -> None:
         """A reference rooted at the model of the scope its head names."""

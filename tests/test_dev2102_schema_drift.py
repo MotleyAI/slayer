@@ -171,3 +171,27 @@ class TestInnerExtensionJoinRestriction:
         models = [_orders_with_stored_buyer(), customers, regions, qb]
         entries = column_dependents(models=models, model=customers, column="region_id")
         assert {e.model_name for e in entries if isinstance(e, WholeModelDelete)} == {"qb"}
+
+
+class TestExtensionDefinitionFrames:
+    def test_definition_revisiting_the_root_attributes_its_own_join(self) -> None:
+        orders = _orders().model_copy(update={"joins": [
+            ModelJoin(target_model="customers", join_pairs=[["buyer_ref", "id"]], name="customer"),
+        ]})
+        customers = _customers().model_copy(update={
+            "columns": [*_customers().columns, Column(name="last_order_id", type=DataType.INT)],
+            "joins": [ModelJoin(target_model="orders", join_pairs=[["last_order_id", "id"]], name="last_order")],
+        })
+        ext = ModelExtension(source_name="customers", columns=[
+            Column(name="latest", sql="last_order.amount", type=DataType.DOUBLE)])
+        qb = _qb(extension=ext, dimensions=["customer.latest"], measures=[{"formula": "count(*)"}])
+        entries = column_dependents(models=[orders, customers, qb], model=customers, column="last_order_id")
+        assert {e.model_name for e in entries if isinstance(e, WholeModelDelete)} == {"qb"}
+
+
+def test_an_inline_source_shadows_the_stored_model_it_is_named_like() -> None:
+    inline = _customers().model_copy(update={"sql_table": "crm_customers"})
+    qb = SlayerModel(name="qb", data_source="ds", source_queries=[
+        SlayerQuery.model_validate({"source_model": inline, "measures": [{"formula": "count(code)", "name": "c"}]})])
+    entries = column_dependents(models=[_customers(), qb], model=_customers(), column="code")
+    assert {e.model_name for e in entries if isinstance(e, WholeModelDelete)} == set()

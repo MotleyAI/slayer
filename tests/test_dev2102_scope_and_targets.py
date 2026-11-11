@@ -143,6 +143,14 @@ class TestScope:
             resp = await engine.execute([stage, root])
         assert float(resp.data[0]["customers.t"]) == 2 * TOTAL_AMOUNT
 
+    async def test_a_join_another_model_declares_into_the_sibling_source_is_walkable(self, dialect) -> None:
+        stage = q(name="s", source_model="orders", dimensions=["customer_id"])
+        root = q(source_model="s", dimensions=["customer_id", "customers.name"],
+                 extensions=[ext("customers", joins=[join("s", [["id", "customer_id"]])])])
+        async with shop(dialect) as engine:
+            resp = await engine.execute([stage, root])
+        assert {r["s.customers.name"] for r in resp.data} == {"Ann", "Bob", "Cid", "Dee", "Eve", None}
+
     async def test_the_inline_source_wins_over_a_stored_model(self, dialect) -> None:
         inline = {"name": "customers", "data_source": DS, "sql_table": "customers", "columns": [
             {"name": "id", "type": "INT", "primary_key": True}, {"name": "credit", "type": "DOUBLE"},

@@ -17,7 +17,7 @@ from slayer.core.errors import (
 )
 from slayer.core.join_edges import EdgeMerge
 from slayer.core.join_walker import OrientedJoin, resolve_hop, walk
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import ComputedDimension, ModelExtension, SlayerQuery, extension_model_names
 from slayer.core.scope import ModelScope, StageSchema
 from slayer.core.syntax import drop_root_hop, drop_root_qualifier, text_paths
@@ -60,10 +60,7 @@ def with_own_extension(model: Optional[SlayerModel], query: SlayerQuery) -> Opti
 
 def query_field_texts(query: SlayerQuery) -> Iterator[Tuple[FieldKind, str]]:
     """Every reference-bearing text of ``query`` — dimensions, time dimensions, measures, filters, order — and its kind."""
-    for dim in query.dimensions or []:
-        yield ("formula", dim.expression) if isinstance(dim, ComputedDimension) else ("ref", dim.full_name)
-    for td in query.time_dimensions or []:
-        yield "formula", td.dimension
+    yield from _dimension_texts(query)
     for measure in query.measures or []:
         if measure.formula:
             yield "formula", measure.formula
@@ -71,6 +68,13 @@ def query_field_texts(query: SlayerQuery) -> Iterator[Tuple[FieldKind, str]]:
         yield "filter", f
     for item in query.order or []:
         yield ("formula", item.raw_formula) if item.raw_formula else ("ref", item.column.full_name)
+
+
+def _dimension_texts(query: SlayerQuery) -> Iterator[Tuple[FieldKind, str]]:
+    for dim in query.dimensions or []:
+        yield ("formula", dim.expression) if isinstance(dim, ComputedDimension) else ("ref", dim.full_name)
+    for td in query.time_dimensions or []:
+        yield "formula", td.dimension
 
 
 def query_reference_parts(query: SlayerQuery) -> List[Tuple[str, ...]]:
@@ -96,23 +100,40 @@ def extend_models(
         if model is not None:
             out[model.name] = overlay_columns_and_measures(model, extension)
     merge = EdgeMerge(models=out, reserved_names=reserved_names, stored_edge_names=stored_edge_names)
-    restrictions: List[InnerRestriction] = []
-    for extension in query.extensions or []:
-        for join in extension.joins or [] if extension.source_name in merge.models else []:
-            if join.target_model not in merge.models and lookup(join.target_model, merge.models) is None:
-                continue
-            try:
-                merged = merge.add(declaring=extension.source_name, join=join)
-            except ValueError as exc:  # QueryExtensionError included
-                on_conflict(exc)
-                continue
-            if join.join_type is JoinType.INNER:
-                source, target = merge.models[extension.source_name], merge.models[join.target_model]
-                restrictions.append(InnerRestriction(
-                    model=source.spelling, token=merged.token, key=merged.edge.join_pairs[0][1],
-                    label=f"INNER join from {source.spelling!r} to {target.spelling!r}" + (f" in {where}" if where else ""),
-                ))
-    return merge.models, restrictions
+    inner = [
+        (extension.source_name, join)
+        for extension in query.extensions or [] if extension.source_name in merge.models
+        for join in extension.joins or []
+        if _merged(declaring=extension.source_name, join=join, merge=merge, lookup=lookup, on_conflict=on_conflict)
+        and join.join_type is JoinType.INNER
+    ]
+    # Tokens come from the final graph: a later declaration may name an edge an earlier one created.
+    final = EdgeMerge(models=merge.models)
+    return merge.models, [_restriction(declaring=d, join=j, merge=final, where=where) for d, j in inner]
+
+
+def _merged(
+    *, declaring: str, join: ModelJoin, merge: EdgeMerge, lookup: _Lookup, on_conflict: Callable[[ValueError], None],
+) -> bool:
+    """Merge one extension join into ``merge``; whether it merged."""
+    if join.target_model not in merge.models and lookup(join.target_model, merge.models) is None:
+        return False
+    try:
+        merge.add(declaring=declaring, join=join)
+    except ValueError as exc:  # QueryExtensionError included
+        on_conflict(exc)
+        return False
+    return True
+
+
+def _restriction(*, declaring: str, join: ModelJoin, merge: EdgeMerge, where: Optional[str]) -> InnerRestriction:
+    """The population filter of the INNER ``join``, read off the merged graph it already belongs to."""
+    merged = merge.add(declaring=declaring, join=join)
+    source, target = merge.models[declaring], merge.models[join.target_model]
+    return InnerRestriction(
+        model=source.spelling, token=merged.token, key=merged.edge.join_pairs[0][1],
+        label=f"INNER join from {source.spelling!r} to {target.spelling!r}" + (f" in {where}" if where else ""),
+    )
 
 
 def declaring_model_path(
@@ -168,6 +189,8 @@ class QueryScope(BaseModel):
     models: Dict[str, SlayerModel] = Field(default_factory=dict)
     # Each INNER extension join's population filter reference from the host: hops, edge token, target key.
     inner_refs: Tuple[Tuple[str, ...], ...] = ()
+    # Stored model names a sibling stage or the inline source stands in for.
+    shadowed: FrozenSet[str] = frozenset()
 
     @property
     def siblings(self) -> FrozenSet[str]:
@@ -247,28 +270,32 @@ def _scope(
         **stored, **{n: _sibling_host(n, query=query, data_source=data_source) for n in siblings}}
     spec = query.source_model
     resolved, base, _ = _chain_base(spec, named=named)
+    host_name = spec if isinstance(spec, str) and resolved else None
     if isinstance(spec, SlayerModel):
         models[spec.name] = spec
-    host_name = spec.name if isinstance(spec, SlayerModel) else spec if resolved else None
+        host_name = spec.name
     models, restrictions = extend_models(
         query, models, lookup=lambda name, universe: universe.get(name), on_conflict=lambda _exc: None)
     host = models.get(host_name) if host_name is not None else None
     bases = {"": base if resolved else None, **{n: _chain_base(n, named=named)[1] for n in siblings}}
+    inline = {spec.name} if isinstance(spec, SlayerModel) else set()
     return QueryScope.model_construct(
-        data_source=data_source, host=host, bases=bases, models=models,
+        data_source=data_source, host=host, bases=bases, models=models, shadowed=frozenset({*siblings, *inline}),
         inner_refs=tuple(r for r in (_inner_ref(x, host=host, models=models) for x in restrictions) if r is not None),
     )
 
 
 def _sibling_host(name: str, *, query: SlayerQuery, data_source: str) -> SlayerModel:
     """Sibling stage ``name`` as ``query`` reads it: the output fields its extension joins name, on either side."""
+    extension = extension_of(query, name)
+    defined = {c.name for c in extension.columns or []} if extension is not None else set()
     keys = [
         pair[0 if e.source_name == name else 1]
         for e in query.extensions or [] for j in e.joins or [] if name in (e.source_name, j.target_model)
         for pair in j.join_pairs
     ]
     return SlayerModel.model_construct(
-        name=name, data_source=data_source, columns=[Column(name=k) for k in dict.fromkeys(keys)])
+        name=name, data_source=data_source, columns=[Column(name=k) for k in dict.fromkeys(keys) if k not in defined])
 
 
 def _inner_ref(
@@ -355,6 +382,12 @@ def _extended_scope(
 ) -> "ModelScope | StageSchema | None":
     if isinstance(scope, ModelScope) and scope.source_model is not None:
         return ModelScope(source_model=models.get(scope.source_model.name, scope.source_model))
-    if isinstance(scope, StageSchema) and source is not None and extension_of(query, source.name) is not None:
+    if isinstance(scope, StageSchema) and source is not None and _touches(query, source.name):
         return ModelScope(source_model=source)
     return scope
+
+
+def _touches(query: SlayerQuery, name: str) -> bool:
+    """Whether ``query`` extends model ``name`` or joins to it."""
+    return extension_of(query, name) is not None or any(
+        j.target_model == name for e in query.extensions or [] for j in e.joins or [])

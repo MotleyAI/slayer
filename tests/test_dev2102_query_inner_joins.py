@@ -65,6 +65,15 @@ async def _outcome(engine: SlayerQueryEngine, query: SlayerQuery) -> Any:
 
 
 class TestRootAndStoredEdges:
+    async def test_an_inner_join_a_later_extension_names_restricts_by_that_name(self, dialect) -> None:
+        query = q(source_model="events", dimensions=["id"], extensions=[
+            ext("events", joins=[join("users", [["user_id", "id"]], join_type="inner"),
+                                 join("users", [["id", "id"]], name="other")]),
+            ext("users", joins=[join("events", [["id", "user_id"]], name="primary")])])
+        async with shop(dialect) as engine:
+            resp = await engine.execute(query)
+        assert values(resp, "events.id") == {1}
+
     async def test_inner_on_root_keeps_matched_rows_once(self, dialect) -> None:
         async with shop(dialect) as engine:
             resp = await engine.execute(q(source_model="customers", extensions=[_vip()], dimensions=["name"]))

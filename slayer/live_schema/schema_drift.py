@@ -834,30 +834,38 @@ def _stage_scopes(qb_model: SlayerModel, *, models_by_name: dict[str, SlayerMode
 
 
 def _terminal_base(name: str, *, scope: QueryScope) -> str | None:
-    """The stored or inline model a reference landing on ``name`` reads: a sibling stage's chain end, else ``name``."""
-    return scope.bases.get(name) if name in scope.siblings else name
+    """The stored model a reference landing on ``name`` reads: a sibling stage's chain end, none for the inline
+    source, else ``name``."""
+    if name in scope.siblings:
+        return scope.bases.get(name)
+    return None if name in scope.shadowed else name
 
 
-def _attribute_ref_to_base(
-    *,
-    ref: str,
-    base_name: str,
-    scope: QueryScope,
-) -> str | None:
-    """Walk ``ref`` through the stage's join graph; the leaf column name when it resolves to ``base_name``, else None (bare refs attribute to the stage source)."""
-    if scope.host is None:
-        return None
-    resolved = scope.resolve(ref.split(".")[:-1])
-    if resolved is None:
+#: A reference and the model it is spelled from (``None``: the stage source).
+_FramedRef = tuple[str | None, str]
+
+
+def _resolved(ref: str, *, scope: QueryScope, root: str | None) -> tuple[str, list[OrientedJoin]] | None:
+    """The model ``ref``'s hops reach from ``root`` (default: the stage source) and the edges walked, or None."""
+    start = scope.models.get(root) if root is not None else scope.host
+    resolved = scope.resolve(ref.split(".")[:-1], root=start) if start is not None else None
+    if start is None or resolved is None:
         return None
     chain = resolved[1]
-    terminal = chain[-1].target_model if chain else scope.host.name
-    return ref.rsplit(".", 1)[-1] if _terminal_base(terminal, scope=scope) == base_name else None
+    return (chain[-1].target_model if chain else start.name), chain
 
 
-def _ref_edges(*, ref: str, scope: QueryScope) -> list[OrientedJoin]:
+def _attribute_ref_to_base(*, ref: str, base_name: str, scope: QueryScope, root: str | None = None) -> str | None:
+    """Walk ``ref`` through the stage's join graph; the leaf column name when it resolves to ``base_name``, else None (bare refs attribute to the stage source)."""
+    resolved = _resolved(ref, scope=scope, root=root)
+    if resolved is None:
+        return None
+    return ref.rsplit(".", 1)[-1] if _terminal_base(resolved[0], scope=scope) == base_name else None
+
+
+def _ref_edges(*, ref: str, scope: QueryScope, root: str | None = None) -> list[OrientedJoin]:
     """The edges ``ref``'s path walks over the stage scope (query-local included), a short-form ref along its route."""
-    resolved = scope.resolve(ref.split(".")[:-1])
+    resolved = _resolved(ref, scope=scope, root=root)
     return resolved[1] if resolved is not None else []
 
 
@@ -889,34 +897,30 @@ def _extension_field(model: SlayerModel | None, name: str) -> Column | ModelMeas
     return model.get_column(name) or model.get_measure(name)
 
 
-def _field_definition_refs(*, ref: str, scope: QueryScope) -> list[str]:
-    """The refs inside the extension field ``ref`` names, spelled from the stage source."""
-    resolved = scope.resolve(ref.split(".")[:-1])
-    if resolved is None or scope.host is None:
+def _field_definition_refs(ref: _FramedRef, *, scope: QueryScope) -> list[_FramedRef]:
+    """The refs inside the extension field ``ref`` names, each spelled from the model that owns the field."""
+    root, text = ref
+    resolved = _resolved(text, scope=scope, root=root)
+    field = _extension_field(scope.models.get(resolved[0]), text.rsplit(".", 1)[-1]) if resolved is not None else None
+    if resolved is None or field is None:
         return []
-    hops, chain = resolved
-    terminal = chain[-1].target_model if chain else scope.host.name
-    field = _extension_field(scope.models.get(terminal), ref.rsplit(".", 1)[-1])
-    if field is None:
-        return []
-    inner = (r.split(".") for r in _definition_refs(field))
-    return [".".join([*hops, *(p[1:] if len(p) > 1 and p[0] == terminal else p)]) for p in inner]
+    return [(resolved[0], r) for r in _definition_refs(field)]
 
 
-def _stage_dependency_refs(*, stage: SlayerQuery, scope: QueryScope) -> list[str]:
+def _stage_dependency_refs(*, stage: SlayerQuery, scope: QueryScope) -> list[_FramedRef]:
     """Every ref ``stage`` reads: its own, its INNER restrictions, and those inside the extension fields they reach."""
-    refs = [*_stage_refs(stage), *(".".join(parts) for parts in scope.inner_refs)]
+    refs: list[_FramedRef] = [(None, r) for r in [*_stage_refs(stage), *(".".join(p) for p in scope.inner_refs)]]
     pending = list(refs) if stage.extensions else []
     while pending:
-        new = [r for r in _field_definition_refs(ref=pending.pop(), scope=scope) if r not in refs]
+        new = [r for r in _field_definition_refs(pending.pop(), scope=scope) if r not in refs]
         refs += new
         pending += new
     return refs
 
 
-def _refs_on_base(*, refs: list[str], base_name: str, scope: QueryScope) -> set[str]:
+def _refs_on_base(*, refs: list[_FramedRef], base_name: str, scope: QueryScope) -> set[str]:
     """Column names ``refs`` read *on* ``base_name``, walked through the stage's join graph."""
-    attributed = (_attribute_ref_to_base(ref=ref, base_name=base_name, scope=scope) for ref in refs)
+    attributed = (_attribute_ref_to_base(ref=ref, base_name=base_name, scope=scope, root=root) for root, ref in refs)
     return {leaf for leaf in attributed if leaf is not None}
 
 
@@ -924,13 +928,13 @@ def _stage_join_targets(stage: SlayerQuery, *, scope: QueryScope) -> set[str]:
     """The stored models a stage's inline source joins and its extensions name."""
     source = stage.source_model
     inline = {j.target_model for j in source.joins} if isinstance(source, SlayerModel) else set()
-    return (inline | set(extension_model_names(stage))) - scope.siblings
+    return (inline | set(extension_model_names(stage))) - scope.shadowed
 
 
 def _check_stage_against_base(
     *,
     stage: SlayerQuery,
-    refs: list[str],
+    refs: list[_FramedRef],
     base_name: str,
     scope: QueryScope,
     state: _CascadeState,
@@ -945,7 +949,7 @@ def _check_stage_against_base(
 
 def _stage_uses_dropped_join(
     *,
-    refs: list[str],
+    refs: list[_FramedRef],
     base_name: str,
     scope: QueryScope,
     dropped_joins: _DroppedJoins,
@@ -954,8 +958,8 @@ def _stage_uses_dropped_join(
     dropped = dropped_joins.get(base_name, [])
     if not dropped:
         return None
-    for ref in refs:
-        for edge in _ref_edges(ref=ref, scope=scope):
+    for root, ref in refs:
+        for edge in _ref_edges(ref=ref, scope=scope, root=root):
             hit = next((d for d in dropped if edge.declaring_model == base_name and d.matches_hop(edge)), None)
             if hit is not None:
                 return hit.name or hit.target_model
@@ -973,7 +977,7 @@ def _check_stage_for_whole_drop(
     candidate_base_names: set[str],
 ) -> DeleteReason | None:
     """First whole-drop trigger for one stage of a query-backed model, or None."""
-    if base_name in whole_dropped_models:
+    if base_name in whole_dropped_models and base_name not in scope.shadowed:
         return DeleteReason(
             target=f"model:{qb_name}",
             reason=(

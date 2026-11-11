@@ -134,3 +134,21 @@ def test_a_rootless_sibling_stage_extension_reads_through_its_joins() -> None:
         q(source_model="s", dimensions=["customer_id", "customers.regions.name"],
           extensions=[ext("s", joins=[_TO_CUSTOMERS])])])
     assert (DS, "regions") in models_read_by(backed, models=[orders(), customers(home), regions()])
+
+
+def test_a_sibling_join_key_its_extension_defines_is_one_column() -> None:
+    home = ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])
+    backed = SlayerModel(name="backed", data_source=DS, source_queries=[
+        q(name="s", source_model="orders", dimensions=["customer_id"]),
+        q(source_model="s", dimensions=["customers.regions.name"], extensions=[ext(
+            "s", columns=[{"name": "customer_key", "sql": "customer_id", "type": "INT"}],
+            joins=[join("customers", [["customer_key", "id"]])])])])
+    assert (DS, "regions") in models_read_by(backed, models=[orders(), customers(home), regions()])
+
+
+def test_an_inline_source_shadows_a_same_named_stored_model() -> None:
+    inline = {"name": "customers", "data_source": DS, "sql_table": "customers", "columns": [
+        {"name": "id", "type": "INT", "primary_key": True}, {"name": "credit", "type": "DOUBLE"}]}
+    query = q(source_model=inline, measures=[{"formula": "c10", "name": "t"}],
+              extensions=[ext("customers", measures=[{"name": "c10", "formula": "sum(credit)"}])])
+    assert (DS, "customers") not in models_read_by(query, models=[orders(), customers(), regions()], data_source=DS)

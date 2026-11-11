@@ -135,6 +135,15 @@ class TestExtensionJoinPaths:
         result = await extract_entities_from_query(_projecting(path, extension=_JOINED_JOIN), storage=storage)
         assert "mydb.regions.name" in result.canonical_forms
 
+    async def test_short_form_route_resolves_in_the_query_datasource(self, named_storage: StorageBackend) -> None:
+        q = SlayerQuery(
+            source_model="orders", dimensions=[ColumnRef(name="regions.name")],
+            measures=[ModelMeasure(formula="count(*)")], extensions=[_JOINED_JOIN],
+        )
+        result = await extract_entities_from_query(q, storage=named_storage)
+        assert "mydb.regions.name" in result.canonical_forms
+        assert "otherdb.regions.name" not in result.canonical_forms
+
     async def test_extension_column_reads_through_extension_join(self, storage: StorageBackend) -> None:
         extension = _ROOT_JOIN.model_copy(update={
             "columns": [Column(name="region_label", sql="regions.name", type=DataType.TEXT)],
