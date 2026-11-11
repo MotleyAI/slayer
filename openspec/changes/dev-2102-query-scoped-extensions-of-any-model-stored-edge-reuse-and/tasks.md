@@ -12,7 +12,7 @@
   - legacy form plus `extensions` for the same model conflicts;
   - current-version legacy form is rejected;
   - profiling and the facade emit no deprecation warning.
-- [x] 1.5 `tests/test_dev2102_stored_upgrade.py`: the v9 → v10 migration over a model's `source_queries`, a saved query, a current-version `Memory` holding a v9 query, and an unversioned legacy memory. No warning, extension intact, idempotent, recorded rows unchanged.
+- [x] 1.5 `tests/test_dev2102_stored_upgrade.py`: the v10 → v11 migration (v9 documents pass through the colon upgrade first) over a model's `source_queries`, a saved query, a current-version `Memory` holding a v9 query, and an unversioned legacy memory. No warning, extension intact, idempotent, recorded rows unchanged.
 - [x] 1.6 `tests/test_dev2102_edge_merge.py`, executed on SQLite and DuckDB. Every `models/join-traversal` scenario:
   - reversed declaration, type not splitting, alias canonicalisation, alias over parallel edges, equal-pair ambiguity;
   - named-pair mismatch, cardinality conflict, alias stealing another edge's name, two names for one relationship;
@@ -42,7 +42,7 @@
   - `source_model_name` simplified.
 
   Verify with test 1.3.
-- [x] 2.2 `slayer/storage/migrations.py`: `CURRENT_VERSIONS["SlayerQuery"] = 10` and a v9 migration hoisting the legacy root extension (one shared conversion). Freshness detection plus `warn_deprecated(..., removal="3.0")` at `_migrate_and_rewrite`. Verify with tests 1.4 and 1.5.
+- [x] 2.2 `slayer/storage/migrations.py`: `CURRENT_VERSIONS["SlayerQuery"] = 11` and a v10 migration hoisting the legacy root extension (one shared conversion). Freshness detection plus `warn_deprecated(..., removal="3.0")` at `_migrate_and_rewrite`. Verify with tests 1.4 and 1.5.
 - [x] 2.3 Every stored-dict walker in `slayer/storage/*` that reads a query's `source_model` extension also walks `extensions` (granularity rename, rank direction, stored repair, sql-string, time-dimension text, distinct column, `base.py`). Verify with test 1.5 and the existing migration suites.
 
 ## 3. Engine
