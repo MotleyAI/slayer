@@ -28,6 +28,7 @@ from slayer.core.errors import AmbiguousJoinPathError, UnsupportedServerFunction
 from slayer.core.syntax import parse_expr
 from slayer.core.join_walker import resolve_hop
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel, join_key_error
+from slayer.core.names import name_taken
 from slayer.core.query import SlayerQuery
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
 from slayer.engine.binding import bind_model_formula
@@ -1013,15 +1014,14 @@ class OsiToSlayerConverter:
 
     def _model_has_column(self, model_name: str, column: str) -> bool:
         model = self._models.get(model_name)
-        return model is not None and any(c.name == column for c in model.columns)
+        return model is not None and name_taken(column, (c.name for c in model.columns))
 
     def _model_has_name(self, model_name: str, name: str) -> bool:
         """Whether ``name`` is taken by a column or measure (one shared namespace)."""
         model = self._models.get(model_name)
         if model is None:
             return False
-        return (any(c.name == name for c in model.columns)
-                or any(m.name == name for m in model.measures))
+        return name_taken(name, [*(c.name for c in model.columns), *(m.name for m in model.measures if m.name)])
 
     def _missing_join_columns(self, rel: OSIRelationship) -> list[str]:
         """Qualified relationship key names that are not plain base columns of their model."""
@@ -1153,7 +1153,7 @@ class OsiToSlayerConverter:
 
         # Measures and columns share one namespace on the anchor model.
         anchor_model = self._models[anchor]
-        if any(m.name == metric.name for m in anchor_model.measures):
+        if name_taken(metric.name, (m.name for m in anchor_model.measures if m.name)):
             self._unconv(
                 f"Metric {metric.name!r} duplicates an existing measure on "
                 f"model {anchor!r}.",

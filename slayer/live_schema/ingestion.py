@@ -26,6 +26,7 @@ from slayer.core.models import (
     sanitize_model_name,
 )
 from slayer.core.join_edges import edge_reference
+from slayer.core.names import name_taken
 from slayer.core.query import extract_variable_refs
 from slayer.live_schema import schema_drift
 from slayer.live_schema import broken_dependents as dependents  # module import: in an import cycle
@@ -1371,6 +1372,22 @@ def _merge_persisted_columns(
     return out
 
 
+def _case_free_new_columns(columns: list[Column], *, taken: list[str], model: str) -> list[Column]:
+    """``columns``, each whose name a model name takes in another case renamed ``<name>_<n>`` (smallest free n)."""
+    out: list[Column] = []
+    for column in columns:
+        name, n = column.name, 2
+        while name_taken(name, taken):
+            name, n = f"{column.name}_{n}", n + 1
+        if name != column.name:
+            logger.warning("model %r: live column %r differs from a model name only in case; ingested as %r",
+                           model, column.name, name)
+            column = column.model_copy(update={"name": name, "sql": column.sql or column.name})
+        taken.append(name)
+        out.append(column)
+    return out
+
+
 def _additive_merge_existing(
     *,
     persisted: SlayerModel,
@@ -1397,10 +1414,14 @@ def _additive_merge_existing(
     merged_columns = columns.columns
 
     matched = persisted_names | set(live_name.values())
-    new_cols = [
-        c.model_copy(update={"primary_key": False}) if c.primary_key and not fill_key else c
-        for c in fresh.columns if c.name not in matched and _spelling(c) not in matched
-    ]
+    new_cols = _case_free_new_columns(
+        [
+            c.model_copy(update={"primary_key": False}) if c.primary_key and not fill_key else c
+            for c in fresh.columns if c.name not in matched and _spelling(c) not in matched
+        ],
+        taken=[*(c.name for c in merged_columns), *(m.name for m in persisted.measures if m.name)],
+        model=persisted.name,
+    )
     merged_columns.extend(new_cols)
     new_column_names = [c.name for c in new_cols]
 

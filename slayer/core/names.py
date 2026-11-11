@@ -47,6 +47,12 @@ def _unique(*, name: str, hits: List[str]) -> Optional[str]:
     return hits[0] if hits else None
 
 
+def name_taken(name: str, taken: Iterable[str]) -> bool:
+    """Whether ``name`` equals one of ``taken`` in any case (a model's names are one case-insensitive namespace)."""
+    folded = name.casefold()
+    return any(t.casefold() == folded for t in taken)
+
+
 def folded_collisions(names: Iterable[str]) -> list[list[str]]:
     """Groups of distinct names equal up to case, each sorted."""
     groups: dict[str, list[str]] = {}

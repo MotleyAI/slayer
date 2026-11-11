@@ -356,6 +356,13 @@ def test_dataset_scoped_and_model_scoped_metric_name_clash(db: Path) -> None:
     assert mentions(result, "tot")
 
 
+def test_metric_named_like_a_measure_in_another_case_is_refused(db: Path) -> None:
+    orders = _orders(metrics=[m("tot", "SUM(amount)"), m("TOT", "MAX(amount)")])
+    result = convert(db=db, docs=documents(flat([orders])))
+    assert [x.name for x in by_name(result)["orders"].measures if x.name and x.name.casefold() == "tot"] == ["tot"]
+    assert mentions(result, "TOT")
+
+
 def test_duplicate_dataset_names_across_documents_are_refused(db: Path) -> None:
     docs = documents(flat([_orders()], name="a"), flat([_orders()], name="b"))
     with pytest.raises(OsiConversionError):
