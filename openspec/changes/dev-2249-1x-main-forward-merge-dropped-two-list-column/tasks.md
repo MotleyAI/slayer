@@ -20,7 +20,7 @@
 - [x] 3.2 `slayer/core/enums.py`: add `"collect"` to `PRIMARY_KEY_AGGREGATIONS` and its comment; verify 1.3 passes
 - [x] 3.3 `scripts/forward_merge_specs.py` and an empty `openspec/forward-merge-ledger.yaml` (Pydantic models for the ledger and requirements; `git` via subprocess); verify 1.5 passes and `python -m scripts.forward_merge_specs --base origin/main --head HEAD` passes on this branch
 - [x] 3.4 `.github/workflows/ci.yml` `lint` job: `fetch-depth: 0`, fetch `1.x`, and a `pull_request`-only step running the guard against `github.event.pull_request.base.sha` and the head SHA; verify the YAML parses and the step's command runs locally
-- [ ] 3.5 Verify 1.4 and 1.6 pass; run the full unit suite `poetry run pytest -m "not integration"`
+- [x] 3.5 Verify 1.4 and 1.6 pass; run the full unit suite `poetry run pytest -m "not integration"`
 
 ## 4. Docs and help
 
@@ -32,4 +32,4 @@
 ## 5. Gates
 
 - [x] 5.1 `poetry run ruff check slayer/ tests/ scripts/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check`, `openspec validate dev-2249-1x-main-forward-merge-dropped-two-list-column --strict`
-- [ ] 5.2 Integration suite with the CI invocation from CLAUDE.md
+- [x] 5.2 Integration suite with the CI invocation from CLAUDE.md
