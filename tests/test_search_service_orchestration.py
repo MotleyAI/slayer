@@ -65,6 +65,14 @@ async def seeded_storage() -> AsyncIterator[StorageBackend]:
         yield s
 
 
+class _InFlight:
+    """Retriever calls running now, and the most that ever overlapped."""
+
+    def __init__(self) -> None:
+        self.now = 0
+        self.peak = 0
+
+
 class _CapturingRetriever(Retriever):
     """Captures every argument passed to ``retrieve`` so tests can
     assert the orchestrator built each piece of shared state ONCE per
@@ -78,8 +86,10 @@ class _CapturingRetriever(Retriever):
         text_by_id: dict | None = None,
         warning: str | None = None,
         delay_s: float = 0.0,
+        in_flight: _InFlight | None = None,
     ) -> None:
         self.name = name
+        self._in_flight = in_flight or _InFlight()
         self._memory_ranking = memory_ranking or []
         self._entity_ranking = entity_ranking or []
         self._text_by_id = text_by_id or {}
@@ -112,8 +122,13 @@ class _CapturingRetriever(Retriever):
         self.captured_datasources.append(datasource)
         if corpus is not None:
             self.captured_corpus_ids.append(id(corpus))
-        if self._delay_s > 0:
-            await asyncio.sleep(self._delay_s)
+        self._in_flight.now += 1
+        self._in_flight.peak = max(self._in_flight.peak, self._in_flight.now)
+        try:
+            if self._delay_s > 0:
+                await asyncio.sleep(self._delay_s)
+        finally:
+            self._in_flight.now -= 1
         return RetrievalResult(
             memory_ranking=list(self._memory_ranking),
             entity_ranking=list(self._entity_ranking),
@@ -178,24 +193,15 @@ async def test_corpus_built_once_when_question_active_via_patched_builder(
 async def test_retrievers_invoked_in_parallel_via_gather(
     seeded_storage: StorageBackend,
 ) -> None:
-    """If retriever calls were sequential, wall-clock would be ≈3*delay.
-    Parallel via gather: ≈1*delay."""
-    delay = 0.2
-    r1 = _CapturingRetriever(name="r1", delay_s=delay)
-    r2 = _CapturingRetriever(name="r2", delay_s=delay)
-    r3 = _CapturingRetriever(name="r3", delay_s=delay)
-    service = SearchService(storage=seeded_storage, retrievers=[r1, r2, r3])
-    start = asyncio.get_event_loop().time()
+    """Sequential calls never overlap; gathered calls are all in flight at once."""
+    in_flight = _InFlight()
+    retrievers: list[Retriever] = [_CapturingRetriever(name=f"r{i}", delay_s=0.05, in_flight=in_flight) for i in (1, 2, 3)]
+    service = SearchService(storage=seeded_storage, retrievers=retrievers)
     await service.search(
         entities=["mydb.orders.amount"], question="amount",
         max_results=12,
     )
-    elapsed = asyncio.get_event_loop().time() - start
-    # Should be roughly one delay (parallel), not three (sequential).
-    assert elapsed < delay * 2.5, (
-        f"retrievers appear sequential — elapsed={elapsed:.3f}s for "
-        f"3*{delay}s delays."
-    )
+    assert in_flight.peak == 3
 
 
 async def test_warning_order_matches_retriever_declaration_not_completion(

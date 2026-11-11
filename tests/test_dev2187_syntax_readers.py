@@ -24,7 +24,7 @@ from slayer.core.syntax import (
     (("reorders", "status"), ("reorders", "status")),
 ])
 def test_drop_root_qualifier(parts: tuple[str, ...], expected: tuple[str, ...]) -> None:
-    assert tuple(drop_root_qualifier(parts, "orders")) == expected
+    assert tuple(drop_root_qualifier(parts, "orders", quoted=())) == expected
 
 
 @pytest.mark.parametrize(("text", "expected"), [

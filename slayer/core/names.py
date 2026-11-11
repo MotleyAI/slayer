@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable, Optional
+from typing import Iterable, List, Optional, Sequence
 
 from slayer.core.errors import AmbiguousReferenceError
 
@@ -20,7 +20,26 @@ def match_name(*, name: str, declared: Iterable[str], quoted: bool) -> Optional[
     if quoted:
         return None
     folded = name.casefold()
-    hits = [d for d in names if d.casefold() == folded]
+    return _unique(name=name, hits=[d for d in names if d.casefold() == folded])
+
+
+def match_path(*, parts: Sequence[str], declared: Iterable[str], quoted: Sequence[bool]) -> Optional[str]:
+    """``match_name`` for a dotted declared name, segment by segment: ``quoted[i]`` makes segment ``i`` exact."""
+    names = list(dict.fromkeys(declared))
+    text = ".".join(parts)
+    if text in names:
+        return text
+    return _unique(name=text, hits=[d for d in names if _segments_match(parts=parts, declared=d.split("."), quoted=quoted)])
+
+
+def _segments_match(*, parts: Sequence[str], declared: Sequence[str], quoted: Sequence[bool]) -> bool:
+    return len(parts) == len(declared) and all(
+        p == d or (not (i < len(quoted) and quoted[i]) and p.casefold() == d.casefold())
+        for i, (p, d) in enumerate(zip(parts, declared))
+    )
+
+
+def _unique(*, name: str, hits: List[str]) -> Optional[str]:
     if len(hits) > 1:
         raise AmbiguousReferenceError(
             name, hits, suggestion="Quote the exact name: " + " or ".join(quoted_name(h) for h in sorted(hits)) + ".",

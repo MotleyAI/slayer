@@ -256,7 +256,7 @@ def _detect_cycle_dfs(
 
 def _hop_path(*, quals, host: SlayerModel) -> tuple[str, ...]:
     """A reference's join-hop tokens with ``host``'s own name dropped; empty = host-local."""
-    return drop_root_hop(quals, host.spelling)
+    return drop_root_hop(quals, host.spelling, head_quoted=True)
 
 
 def _classify_hop_path(

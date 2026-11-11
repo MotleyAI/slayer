@@ -57,7 +57,7 @@ from slayer.core.join_walker import (
     walk_miss,
     walk_terminal,
 )
-from slayer.core.names import match_name
+from slayer.core.names import match_name, match_path
 from slayer.core.models import (
     VALUE_PLACEHOLDER,
     Aggregation,
@@ -101,6 +101,7 @@ from slayer.core.syntax import (
     canonical_measure_text,
     classify_arguments,
     comparison_hint,
+    dotted_quoting,
     drop_root_qualifier,
     keyword_spelling,
     parse_bound_expr,
@@ -290,9 +291,9 @@ def _resolve_column_ref(
             suggestion=None,
         )
     if isinstance(parsed, DottedRef):
-        bound_col = _resolve_dotted(parsed.parts, scope=scope, bundle=bundle)
+        bound_col = _resolve_dotted(parsed.parts, scope=scope, bundle=bundle, quoted=dotted_quoting(parsed))
     else:
-        bound_col = _resolve_ref(parsed.name, scope=scope, bundle=bundle)
+        bound_col = _resolve_ref(parsed.name, scope=scope, bundle=bundle, quoted=parsed.quoted)
     if not isinstance(bound_col, (ColumnKey, ColumnSqlKey)):
         # Defensive: an identifier ref against a ModelScope is always a column.
         raise ValueError(
@@ -514,7 +515,7 @@ def _bind_leaf(
             )
         return _resolve_dotted(
             parsed.parts, scope=scope, bundle=bundle, alias_map=alias_map,
-            measure_ctx=measure_ctx, quoted=tuple(parsed.quoted_at(i) for i in range(len(parsed.parts))),
+            measure_ctx=measure_ctx, quoted=dotted_quoting(parsed),
         )
     except UnknownReferenceError as e:
         raise _with_hint(e, hint=_QUOTE_HINT.format(name=e.name)) if parsed.quoted else e
@@ -833,7 +834,9 @@ def _walk_join_chain(
     if miss.kind == "unloaded":
         assert miss.target is not None
         raise _target_not_in_bundle(parts=parts, target=miss.target)
-    _reject_opaque_elements(host=host, hop_path=hop_path, index=miss.index, parts=parts, models_by_name=models_by_name)
+    _reject_opaque_elements(
+        host=host, hop_path=hop_path, index=miss.index, parts=parts, models_by_name=models_by_name, quoted=quoted,
+    )
     return _route_edgeless_hop(
         host=host, hop=miss.token, hop_path=hop_path, leaf=leaf, parts=parts,
         models_by_name=models_by_name, quoted=bool(quoted) and quoted[0],
@@ -842,11 +845,12 @@ def _walk_join_chain(
 
 def _reject_opaque_elements(
     *, host: SlayerModel, hop_path: Tuple[str, ...], index: int, parts: Tuple[str, ...],
-    models_by_name: Dict[str, SlayerModel],
+    models_by_name: Dict[str, SlayerModel], quoted: Tuple[bool, ...],
 ) -> None:
     """A hop naming a list of opaque elements: they have no element access."""
-    owner = resolved_terminal(root=host, path=hop_path[:index], models_by_name=models_by_name)
-    column = owner.get_column(hop_path[index]) if owner is not None else None
+    walked = walk_terminal(root=host, path=hop_path[:index], models_by_name=models_by_name, quoted=quoted[:index])
+    hop_quoted = index < len(quoted) and quoted[index]
+    column = walked[0].get_column(hop_path[index], quoted=hop_quoted) if walked is not None else None
     if column is not None and column.type is DataType.ARRAY:
         raise UnknownReferenceError(
             name=".".join(parts), scope_kind="ModelScope",
@@ -931,11 +935,12 @@ def _resolve_dotted(
     Resolution order: root qualifier dropped → declared alias (dotted text) → join walk
     → leaf column → saved measure (re-anchored into host coords, eligible position)."""
     original_parts = parts
-    parts = drop_root_qualifier(parts, root_spelling(scope))
-    quoted = tuple(quoted[len(original_parts) - len(parts):]) + (False,) * max(0, len(parts) - len(quoted))
+    original_quoted = tuple(quoted[:len(parts)]) + (False,) * max(0, len(parts) - len(quoted))
+    parts = drop_root_qualifier(parts, root_spelling(scope), quoted=original_quoted)
+    quoted = original_quoted[len(original_parts) - len(parts):]
     if alias_map:
-        for dotted_text in dict.fromkeys((".".join(parts), ".".join(original_parts))):
-            alias = match_name(name=dotted_text, declared=alias_map, quoted=any(quoted))
+        for path, flags in dict.fromkeys(((parts, quoted), (original_parts, original_quoted))):
+            alias = match_path(parts=path, declared=alias_map, quoted=flags)
             if alias is not None:
                 return alias_map[alias]
 
@@ -946,7 +951,7 @@ def _resolve_dotted(
         )
 
     if isinstance(scope, StageSchema):
-        scope = _stage_list_scope(parts, scope=scope, bundle=bundle, leaf=LIST_ELEMENT_COLUMN)
+        scope = _stage_list_scope(parts, scope=scope, bundle=bundle, leaf=LIST_ELEMENT_COLUMN, quoted=quoted)
 
     assert isinstance(scope, ModelScope)
     if scope.source_model is None:
@@ -975,10 +980,16 @@ def _resolve_dotted(
 
 
 def _stage_list_scope(
-    parts: Tuple[str, ...], *, scope: StageSchema, bundle: ResolvedSourceBundle, leaf: str,
+    parts: Tuple[str, ...], *, scope: StageSchema, bundle: ResolvedSourceBundle, leaf: str, quoted: Tuple[bool, ...],
 ) -> ModelScope:
     """The stage's model scope for ``L.value`` / ``L.*`` over its list column ``L``; any other dotted ref is illegal."""
-    head = scope.resolve_flat_name(parts[0]) if len(parts) == 2 and parts[1] == leaf else None
+    element_shaped = len(parts) == 2 and match_name(name=parts[1], declared=[leaf], quoted=quoted[1]) is not None
+    head = scope.resolve_flat_name(parts[0], quoted=quoted[0]) if element_shaped else None
+    if element_shaped and head is None:
+        raise UnknownReferenceError(
+            name=".".join(parts), scope_kind="StageSchema",
+            scope_summary=f"{scope.label} columns: {[c.name for c in scope.columns]}", suggestion=None,
+        )
     if head is None or head.type != DataType.ARRAY or bundle.source_model is None:
         raise IllegalScopeReferenceError(
             name=".".join(parts),
@@ -1135,15 +1146,18 @@ def _resolve_dotted_star(
     *,
     scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
+    quoted: Tuple[bool, ...],
 ) -> StarKey:
     """Resolve a dotted star (``customers.*``) to a ``StarKey`` whose ``path`` is
     the validated hop chain (empty path = local star)."""
     assert parts and parts[-1] == "*"
-    parts = drop_root_qualifier(parts, root_spelling(scope))
+    original_parts = parts
+    parts = drop_root_qualifier(parts, root_spelling(scope), quoted=quoted)
+    quoted = quoted[len(original_parts) - len(parts):]
     if parts == ("*",):
         return StarKey()
     if isinstance(scope, StageSchema):
-        scope = _stage_list_scope(parts, scope=scope, bundle=bundle, leaf="*")
+        scope = _stage_list_scope(parts, scope=scope, bundle=bundle, leaf="*", quoted=quoted)
     assert isinstance(scope, ModelScope)
     host = scope.source_model
     if host is None:
@@ -1157,7 +1171,7 @@ def _resolve_dotted_star(
     # Validate the hop chain (raises on missing / circular join, auto-routes a
     # short form); the routed effective path carries the star.
     _, effective_hop_path = _walk_join_chain(
-        hop_path=hop_path, host=host, bundle=bundle, parts=parts, leaf="*",
+        hop_path=hop_path, host=host, bundle=bundle, parts=parts, leaf="*", quoted=quoted[:-1],
     )
     return StarKey(path=tuple(effective_hop_path))
 
@@ -1322,15 +1336,9 @@ def _bind_agg_call(
     ) is None:
         raise (GranularityCallError if parsed.agg.lower() == "date_trunc" else ValueError)(parsed.library_error)
     parsed = _classified(parsed, bundle=bundle)
-    granularity = _callee_granularity(parsed.agg, bundle=bundle)
-    if granularity is not None and parsed.colon:
-        return _bind_colon_bucket(parsed, scope=scope, bundle=bundle, granularity=granularity)
-    if granularity is not None and _owner_definition(
-        parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
-    ) is None:
-        raise GranularityCallError.no_call_form(
-            str(granularity), operand=", ".join(canonical_measure_text(a) for a in (parsed.source, *parsed.args)),
-        )
+    bucket = _bind_granularity_call(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
+    if bucket is not None:
+        return bucket
     op = normalize_aggregation_name(parsed.agg)
     custom = [a.name for m in _bundle_models(bundle) for a in m.aggregations]
     if op not in BUILTIN_AGGREGATIONS and match_name(name=parsed.agg, declared=custom, quoted=False) is None:
@@ -1347,6 +1355,25 @@ def _bind_agg_call(
                 scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
             )
     return _bind_agg(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
+
+
+def _bind_granularity_call(
+    parsed: AggCall, *,
+    scope: ModelScope | StageSchema,
+    bundle: ResolvedSourceBundle,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]],
+) -> Optional[TimeTruncKey]:
+    """A colon bucket for a granularity callee; a granularity no aggregation shadows is refused; else ``None``."""
+    granularity = _callee_granularity(parsed.agg, bundle=bundle)
+    if granularity is None:
+        return None
+    if parsed.colon:
+        return _bind_colon_bucket(parsed, scope=scope, bundle=bundle, granularity=granularity)
+    if _owner_definition(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map) is None:
+        raise GranularityCallError.no_call_form(
+            str(granularity), operand=", ".join(canonical_measure_text(a) for a in (parsed.source, *parsed.args)),
+        )
+    return None
 
 
 _FILTER_CLAUSE = "FILTER (WHERE …)"
@@ -1490,7 +1517,7 @@ def _bind_agg_source(
         # Cross-model star: ``count(customers.*)`` → a StarKey carrying the join
         # path so the planner routes COUNT(*) through the join graph.
         return _resolve_dotted_star(
-            parsed.source.parts, scope=scope, bundle=bundle,
+            parsed.source.parts, scope=scope, bundle=bundle, quoted=dotted_quoting(parsed.source),
         )
     if isinstance(parsed.source, (Ref, DottedRef)):
         bound_source = _bind(

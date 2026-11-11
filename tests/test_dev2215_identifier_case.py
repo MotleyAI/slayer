@@ -10,8 +10,15 @@ from typing import Any
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import AmbiguousReferenceError, SlayerError, UnknownReferenceError
+from slayer.core.errors import (
+    AmbiguousReferenceError,
+    IllegalScopeReferenceError,
+    SlayerError,
+    UnknownReferenceError,
+)
 from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.names import match_path
+from slayer.core.query import ColumnRef, ComputedDimension, QueryRefinement, SlayerQuery, refine_query
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.facade.catalog import build_catalog
 from slayer.facade.translator import QueryResult, translate
@@ -78,6 +85,66 @@ class TestFolding:
         query = q(dimensions=['"Customers".region'], measures=[m("count(*)", "n")])
         with pytest.raises(UnknownReferenceError):
             await engine.execute(query)
+
+    @pytest.mark.parametrize("query", [
+        q(dimensions=['"ORDERS".status'], measures=[m("count(*)", "n")]),
+        q(measures=[m('count("ORDERS".*)', "n")]),
+        q(time_dimensions=[{"dimension": '"ORDERS".created_at', "granularity": "month"}], measures=[m("count(*)", "n")]),
+    ], ids=["dimension", "star", "time-dimension"])
+    async def test_a_quoted_root_qualifier_is_exact(self, engine: SlayerQueryEngine, query: Any) -> None:
+        with pytest.raises(UnknownReferenceError):
+            await engine.execute(query)
+
+    @pytest.mark.parametrize("dimension", ['"status"', '"orders".status', 'orders."status"', '"orders"."status"'])
+    async def test_a_quoted_dimension_is_its_column(self, engine: SlayerQueryEngine, dimension: str) -> None:
+        quoted = await engine.execute(q(dimensions=[dimension], measures=[m("count(*)", "n")]))
+        plain = await engine.execute(q(dimensions=["status"], measures=[m("count(*)", "n")]))
+        assert quoted.columns == plain.columns
+        assert sorted_rows(quoted) == sorted_rows(plain)
+
+    async def test_a_quoted_time_dimension_is_its_column(self, engine: SlayerQueryEngine) -> None:
+        quoted = await engine.execute(q(time_dimensions=[{"dimension": '"orders"."created_at"', "granularity": "month"}],
+                                        measures=[m("count(*)", "n")]))
+        plain = await engine.execute(q(time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
+                                       measures=[m("count(*)", "n")]))
+        assert quoted.columns == plain.columns
+        assert sorted_rows(quoted) == sorted_rows(plain)
+
+    async def test_a_quoted_column_object_time_dimension_is_exact(self, engine: SlayerQueryEngine) -> None:
+        query = q(time_dimensions=[{"dimension": {"name": "CREATED_AT", "quoted": [True]}, "granularity": "month"}],
+                  measures=[m("count(*)", "n")])
+        with pytest.raises(UnknownReferenceError):
+            await engine.execute(query)
+
+    @pytest.mark.parametrize(("column", "error"), [('"status"', None), ('"STATUS"', UnknownReferenceError)])
+    async def test_a_quoted_order_column_is_exact(self, engine: SlayerQueryEngine, column: str,
+                                                  error: type[SlayerError] | None) -> None:
+        query = q(measures=[m("count(*)", "n")], dimensions=["region"], order=[{"column": column, "direction": "desc"}])
+        if error is None:
+            assert (await engine.execute(query)).data
+        else:
+            with pytest.raises(error):
+                await engine.execute(query)
+
+    async def test_a_quoted_root_qualifier_in_its_case_is_dropped(self, engine: SlayerQueryEngine) -> None:
+        resp = await engine.execute(q(measures=[m('count("orders".status)', "n")]))
+        assert num(single(resp, "n")) == 6.0
+
+    @pytest.mark.parametrize(("ref", "error"), [
+        ("ITEMS.value", None), ('"items".value', None), ('"ITEMS".value', UnknownReferenceError),
+        ("items.VALUE", None), ('items."value"', None), ('items."VALUE"', IllegalScopeReferenceError),
+    ])
+    async def test_a_list_element_reference_follows_quoting(self, ref: str, error: type[SlayerError] | None) -> None:
+        stages: list[Any] = [
+            {"name": "s", "source_model": "orders", "dimensions": ["status"], "measures": [m("collect(note)", "items")]},
+            {"source_model": "s", "measures": [m(f"count({ref})", "c")]},
+        ]
+        async with dev2215_engine("duckdb") as eng:
+            if error is None:
+                assert num(single(await eng.execute(stages), "c", model="s")) == 5.0
+            else:
+                with pytest.raises(error):
+                    await eng.execute(stages)
 
     async def test_join_names_fold(self, engine: SlayerQueryEngine) -> None:
         folded = await engine.execute(q(dimensions=["CUSTOMERS.region"], measures=[m("count(*)", "n")]))
@@ -275,6 +342,51 @@ async def test_a_stored_query_with_colliding_names_keeps_running() -> None:
     async with dev2215_engine("sqlite", models=[*dev2215_models(), saved]) as eng:
         resp = await eng.execute(q(source_model="saved", measures=[m("sum(Total)", "a")]))
     assert num(single(resp, "a", model="saved")) == 160.0
+
+
+@pytest.mark.parametrize(("parts", "quoted", "expected"), [
+    (("Foo", "BAR"), (True, False), "Foo.bar"),
+    (("FOO", "bar"), (True, False), None),
+    (("foo", "Bar"), (False, True), None),
+    (("FOO", "BAR"), (), "Foo.bar"),
+])
+def test_dotted_names_match_per_segment(parts: tuple[str, ...], quoted: tuple[bool, ...], expected: str | None) -> None:
+    assert match_path(parts=parts, declared=["Foo.bar", "other"], quoted=quoted) == expected
+
+
+def test_dotted_names_colliding_by_case_are_ambiguous() -> None:
+    with pytest.raises(AmbiguousReferenceError):
+        match_path(parts=("a", "b"), declared=["A.b", "a.B"], quoted=())
+
+
+@pytest.mark.parametrize(("dimension", "expected"), [
+    ('"Revenue"', {"name": "Revenue", "quoted": [True]}),
+    ('ledger."Revenue"', {"name": "Revenue", "model": "ledger", "quoted": [False, True]}),
+    ("Revenue", {"name": "Revenue"}),
+])
+def test_a_reference_dimension_is_a_column_ref_keeping_its_quoting(dimension: str, expected: dict[str, Any]) -> None:
+    query = q(source_model="ledger", dimensions=[dimension], measures=[m("count(*)", "n")])
+    dumped = query.model_dump(mode="json", exclude_none=True)["dimensions"]
+    assert dumped == [expected]
+    assert SlayerQuery.model_validate(query.model_dump(mode="json")).dimensions == query.dimensions
+
+
+def test_an_explicitly_named_reference_stays_computed() -> None:
+    (dim,) = q(dimensions=[{"expression": '"status"', "name": "st"}]).dimensions or []
+    assert isinstance(dim, ComputedDimension)
+
+
+def test_a_refinement_dedupes_a_quoted_and_a_plain_reference() -> None:
+    saved = q(dimensions=['"orders".status'], measures=[m("count(*)", "n")])
+    refined = refine_query(saved=saved, refinement=QueryRefinement.model_validate({"dimensions": ["status"]}))
+    assert [d.full_name for d in refined.dimensions or [] if isinstance(d, ColumnRef)] == ["orders.status"]
+
+
+def test_a_quoted_dimension_takes_its_column_name() -> None:
+    with pytest.raises(ValueError, match="used twice"):
+        q(dimensions=['"status"'], time_dimensions=[{"dimension": "created_at", "granularity": "month", "name": "status"}])
+    q(dimensions=['"orders".status'],
+      time_dimensions=[{"dimension": "created_at", "granularity": "month", "name": "orders_status"}])
 
 
 def test_model_lookups_fold() -> None:

@@ -173,7 +173,7 @@ def _query_dimension_refs(query: SlayerQuery) -> list[str]:
         if isinstance(dim, ComputedDimension):
             refs.extend(_computed_dimension_refs(dim.expression, root=root))
         else:
-            refs.append(".".join(drop_root_qualifier(dim.parts, root)))
+            refs.append(".".join(drop_root_qualifier(dim.parts, root, quoted=dim.quoted_parts)))
     for td in query.time_dimensions or []:
         refs.extend(_computed_dimension_refs(td.dimension, root=root))
     return refs

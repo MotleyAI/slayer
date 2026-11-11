@@ -16,8 +16,10 @@ from pydantic import (
     Discriminator,
     Field,
     PrivateAttr,
+    SerializerFunctionWrapHandler,
     Tag,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -32,6 +34,7 @@ from slayer.core.models import (
     SlayerModel,
     _validate_model_name,
 )
+from slayer.core.names import quoted_name
 from slayer.core.refs import auto_name_from_expression
 from slayer.core.time_points import TIME_POINT_FORMS, is_time_point_shape
 from slayer.core.syntax import (
@@ -43,6 +46,7 @@ from slayer.core.syntax import (
     StarSource,
     call_source,
     canonical_measure_text,
+    dotted_quoting,
     drop_root_qualifier,
     parse_expr,
     parse_template,
@@ -600,6 +604,10 @@ class ColumnRef(BaseModel):
     name: str
     model: str | None = None
     label: str | None = None
+    quoted: list[bool] | None = Field(
+        default=None,
+        description="Per path segment, whether it was double-quoted (matched exactly); omitted when none is.",
+    )
 
     @model_validator(mode="after")
     def _parse_dotted_name(self) -> "ColumnRef":
@@ -622,11 +630,35 @@ class ColumnRef(BaseModel):
                     )
         return self
 
+    @model_validator(mode="after")
+    def _check_quoted(self) -> "ColumnRef":
+        if self.quoted is not None and len(self.quoted) != len(self.parts):
+            raise ValueError(f"'quoted' needs one flag per segment of {self.full_name!r}, got {self.quoted!r}")
+        if self.quoted is not None and not any(self.quoted):
+            self.quoted = None
+        return self
+
+    @model_serializer(mode="wrap")
+    def _omit_unquoted(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data = handler(self)
+        if self.quoted is None:
+            data.pop("quoted", None)
+        return data
+
     @property
     def full_name(self) -> str:
         if self.model:
             return f"{self.model}.{self.name}"
         return self.name
+
+    @property
+    def quoted_parts(self) -> tuple[bool, ...]:
+        return tuple(self.quoted) if self.quoted is not None else (False,) * len(self.parts)
+
+    @property
+    def spelling(self) -> str:
+        """The reference as Mode-B text, its quoted segments double-quoted."""
+        return ".".join(quoted_name(p) if q else p for p, q in zip(self.parts, self.quoted_parts))
 
     @property
     def parts(self) -> tuple[str, ...]:
@@ -636,6 +668,19 @@ class ColumnRef(BaseModel):
     def from_string(cls, s: str) -> ColumnRef:
         """Create a ColumnRef from a string. Dots are parsed by the validator."""
         return cls(name=s)
+
+
+def column_ref_of(text: str) -> ColumnRef | None:
+    """``text`` as a column reference when it is a bare, possibly quoted, identifier or dotted path, else ``None``."""
+    if _is_valid_column_ref_name(text):
+        return ColumnRef.from_string(text)
+    parsed = _parsed_or_none(text)
+    if not isinstance(parsed, (Ref, DottedRef)):
+        return None
+    parts = (parsed.name,) if isinstance(parsed, Ref) else parsed.parts
+    if not all(_NAME_PATTERN.match(p) for p in parts):
+        return None
+    return ColumnRef(name=parts[-1], model=".".join(parts[:-1]) or None, quoted=list(dotted_quoting(parsed)))
 
 
 class ComputedDimension(BaseModel):
@@ -704,7 +749,7 @@ def _order_formula_candidate(v: str) -> str | None:
     """``v`` verbatim if it is an expression rather than a column reference, else ``None``;
     shared by ``_capture_raw_formula`` and ``_coerce_order_column`` so they can't drift.
     Binding judges whether the expression is legal there."""
-    if _is_valid_column_ref_name(v):
+    if column_ref_of(v) is not None:
         return None
     if _parsed_or_none(v) is None:
         # Rejected text: a colon spelling reaches binding, which reports the syntax error.
@@ -740,7 +785,7 @@ def _coerce_order_column(v: Any) -> Any:
     if not isinstance(v, str):
         return v
     if _order_formula_candidate(v) is None:
-        return {"name": v}
+        return column_ref_of(v) or {"name": v}
     call = call_source(v)
     if call is not None:
         return {"name": _FUNCSTYLE_PENDING if len(call.callee) == 1 else _EXPR_PENDING}
@@ -791,9 +836,9 @@ def _reject_time_dimension_placeholders(entry: Any, *, granularity: Any = None, 
 def _legacy_column_ref_text(value: Any) -> Any:
     """The dotted text of a legacy column-reference object (``{"name", "model"}`` or a ``ColumnRef``)."""
     if isinstance(value, ColumnRef):
-        return value.full_name
-    if isinstance(value, dict) and isinstance(name := value.get("name"), str):
-        return f"{value['model']}.{name}" if value.get("model") else name
+        return value.spelling
+    if isinstance(value, dict) and isinstance(value.get("name"), str):
+        return ColumnRef.model_validate({k: v for k, v in value.items() if k in ("name", "model", "quoted")}).spelling
     return value
 
 
@@ -851,7 +896,7 @@ class TimeDimension(BaseModel):
     @property
     def column_ref(self) -> ColumnRef | None:
         """The dimension as a column reference when it is one, else ``None``."""
-        return ColumnRef.from_string(self.dimension) if _is_valid_column_ref_name(self.dimension) else None
+        return column_ref_of(self.dimension)
 
     @property
     def effective_name(self) -> str | None:
@@ -955,15 +1000,17 @@ def _coerce_measures(v: Any) -> Any:
 
 def _coerce_dimension_item(item: Any) -> Any:
     """Coerce one ``dimensions`` entry: a bare identifier / dotted path stays a ``ColumnRef``, any other string parses as a Mode-B expression → ``ComputedDimension`` (neither raises)."""
-    if isinstance(item, (ColumnRef, ComputedDimension)):
+    if isinstance(item, ComputedDimension):
+        return _reference_or_computed(item)
+    if isinstance(item, ColumnRef):
         return item
     if isinstance(item, dict):
         if "expression" in item:
-            return ComputedDimension(**item)
+            return _reference_or_computed(ComputedDimension(**item))
         return item
     if isinstance(item, str):
-        if _is_valid_column_ref_name(item):
-            return {"name": item}
+        if (ref := column_ref_of(item)) is not None:
+            return ref
         try:
             parse_expr(item)
         except Exception as exc:
@@ -974,6 +1021,13 @@ def _coerce_dimension_item(item: Any) -> Any:
             ) from exc
         return ComputedDimension(expression=item)
     return item
+
+
+def _reference_or_computed(dimension: ComputedDimension) -> ColumnRef | ComputedDimension:
+    """An unnamed computed dimension that is just a reference is that column reference."""
+    if dimension.name != computed_dimension_name(dimension.template):
+        return dimension
+    return column_ref_of(dimension.expression) or dimension
 
 
 def _coerce_dimensions(v: Any) -> Any:
@@ -1069,10 +1123,12 @@ SourceSpec = Annotated[
 
 def _root_relative_ref(ref: ColumnRef, root: str | None) -> ColumnRef:
     """``ref`` with a leading root qualifier dropped."""
-    kept = drop_root_qualifier(ref.parts, root)
+    kept = drop_root_qualifier(ref.parts, root, quoted=ref.quoted_parts)
     if kept == ref.parts:
         return ref
-    return ColumnRef(name=kept[-1], model=".".join(kept[:-1]) or None, label=ref.label)
+    return ColumnRef(
+        name=kept[-1], model=".".join(kept[:-1]) or None, label=ref.label, quoted=list(ref.quoted_parts[-len(kept):]),
+    )
 
 
 def _parsed_identity(text: str, root: str | None) -> str:

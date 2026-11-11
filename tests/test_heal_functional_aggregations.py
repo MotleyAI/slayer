@@ -180,8 +180,9 @@ class TestMethodCallExecuted:
         self, engine: SlayerQueryEngine, healed: str, canonical_text: str,
     ) -> None:
         expected = await engine.execute(by_region(canonical_text))
+        query = by_region(healed)
         with pytest.warns(FutureWarning, match=re.escape(SLAYER_3)):
-            actual = await engine.execute(by_region(healed))
+            actual = await engine.execute(query)
         assert actual.columns == expected.columns
         assert table(actual, ordered=False) == table(expected, ordered=False)
         assert actual.sql == expected.sql

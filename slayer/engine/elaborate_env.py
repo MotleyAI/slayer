@@ -1272,6 +1272,10 @@ def _raise_not_a_time_point(*, operand: object, text: str) -> NoReturn:
     )
 
 
+_NOT_IN = "not in"
+_MEMBERSHIP_SQL = {"in": "IN", _NOT_IN: "NOT IN"}
+
+
 def _lower_time_point(
     key: TimePointCmpKey, *, column_type: ColumnTypeFn, now: datetime, units: Mapping[str, CustomGranularity],
 ) -> ValueKey:
@@ -1281,7 +1285,7 @@ def _lower_time_point(
     point = resolve_time_point(key.point, now=now, units=units)
     if point is None:
         _raise_not_a_time_point(operand=key.operand, text=key.point)
-    op = {"in": "=", "not in": "!="}.get(key.op, key.op)
+    op = {"in": "=", _NOT_IN: "!="}.get(key.op, key.op)
     if isinstance(point, Instant):
         if gran is None:
             return ArithmeticKey(op=_arith_op(op), operands=(target, _bound(point.value, t=t, key=key)))
@@ -1328,9 +1332,9 @@ def _raise_sub_day(key: TimePointCmpKey) -> NoReturn:
 
 def _non_temporal_comparison(key: TimePointCmpKey, *, units: Mapping[str, CustomGranularity]) -> ValueKey:
     """A literal time point against a non-temporal operand keeps its plain-string meaning."""
-    op_text = "IN" if key.op == "in" else "NOT IN" if key.op == "not in" else key.op
+    op_text = _MEMBERSHIP_SQL.get(key.op, key.op)
     check_extraction_literal(operand=key.operand, text=key.point, op=op_text, units=units)
-    if key.op in ("in", "not in") or is_relative_token(key.point, units=units):
+    if key.op in _MEMBERSHIP_SQL or is_relative_token(key.point, units=units):
         raise DateOperandTypeError(
             summary=f"'{key.point}' is a time point, but `{_operand_display(key.operand)}` "
             f"is not a DATE or TIMESTAMP operand.",

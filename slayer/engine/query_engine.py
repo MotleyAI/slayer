@@ -378,7 +378,7 @@ def _with_default_order(query: SlayerQuery, *, bundle: ResolvedSourceBundle) -> 
     buckets: List[str] = []
     for d in query.dimensions or []:
         if not isinstance(d, ComputedDimension):
-            dimensions.append(d.full_name)
+            dimensions.append(d.spelling)
         elif (colon := _datasource_colon_bucket(d, bundle=bundle)) is not None:
             buckets.append(f"date_trunc('{colon[1]}', {colon[0]})")
         else:

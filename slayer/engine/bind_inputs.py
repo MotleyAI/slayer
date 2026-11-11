@@ -124,6 +124,7 @@ from slayer.core.syntax import (
     TransformCall,
     call_keywords,
     canonical_measure_text,
+    dotted_quoting,
     drop_root_qualifier,
     parse_bound_expr,
     parse_expr,
@@ -517,7 +518,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             else:
                 # Bind the FULL reference — a dotted ORDER ColumnRef would otherwise rebind as the wrong host column.
                 bo = bind_expr(
-                    parsed=parse_expr(full_name),
+                    parsed=parse_expr(o.column.spelling),
                     scope=scope,
                     bundle=bundle,
                 )
@@ -870,7 +871,7 @@ def _retyped_after_coercion(
 def _joined_column_type(
     *, source_model: SlayerModel, full_name: str, bundle: ResolvedSourceBundle,
 ) -> Optional[DataType]:
-    *hops, leaf = drop_root_qualifier(full_name.split("."), source_model.spelling)
+    *hops, leaf = drop_root_qualifier(full_name.split("."), source_model.spelling, quoted=())
     current = resolved_terminal(
         root=source_model, path=tuple(hops),
         models_by_name=bundle.models_by_name,
@@ -974,7 +975,9 @@ def _resolve_saved_measure_ref(
         return None
     if not isinstance(node, (Ref, DottedRef)):
         return None
-    parts = drop_root_qualifier((node.name,) if isinstance(node, Ref) else node.parts, host.spelling)
+    parts = drop_root_qualifier(
+        (node.name,) if isinstance(node, Ref) else node.parts, host.spelling, quoted=dotted_quoting(node),
+    )
     text = ".".join(parts)
     *hops, leaf = parts
     located = (
@@ -1128,7 +1131,7 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
             # path (``bound.routed_dotted``) — not the short form typed — drives the
             # result key, type, opaque guard, and description.
             bound = bind_expr(
-                parsed=parse_expr(full),
+                parsed=parse_expr(d.spelling),
                 scope=scope,
                 bundle=bundle,
             )
@@ -1170,7 +1173,9 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
             granularity = _td_granularity(td, bundle=bundle)
             btd = bind_time_dimension(td=td, scope=scope, bundle=bundle, granularity=granularity)
             td_types.append(_check_time_dimension(td=td, btd=btd, scope=scope, bundle=bundle, granularity=granularity))
-            bound_tds.append((td, btd.bound, td.effective_name or btd.bound.routed_dotted or td.dimension))
+            column = td.column_ref
+            canonical = td.effective_name or btd.bound.routed_dotted or (column.full_name if column else td.dimension)
+            bound_tds.append((td, btd.bound, canonical))
     _assert_equivalent_tds_agree(bound_tds)
     dim_alias_map.update(_time_dimension_aliases(bound_tds))
     _td_source_counts = Counter(_td_source(bound) for _, bound, _ in bound_tds)
@@ -1618,17 +1623,18 @@ def _passes_grain_kwargs(text: str) -> bool:
 
 
 def _td_column_parts(td: TimeDimension, *, root: Optional[str]) -> Optional[Tuple[str, ...]]:
-    return drop_root_qualifier(td.column_ref.parts, root) if td.column_ref is not None else None
+    ref = td.column_ref
+    return drop_root_qualifier(ref.parts, root, quoted=ref.quoted_parts) if ref is not None else None
 
 
-def _reference_parts(text: str) -> Tuple[str, ...]:
-    """A reference's path as parsed; unparseable text is one name."""
+def _reference_parts(text: str, *, root: Optional[str]) -> Tuple[str, ...]:
+    """A reference's root-relative path as parsed; unparseable text is one name."""
     try:
         node = parse_expr(text)
     except ValueError:
         return (text,)
     if isinstance(node, DottedRef):
-        return node.parts
+        return drop_root_qualifier(node.parts, root, quoted=dotted_quoting(node))
     if isinstance(node, Ref):
         return (node.name,)
     return (text,)
@@ -1640,7 +1646,7 @@ def _named_td_matches(
     """(name or full-name matches, leaf matches) for ``target`` among ``tds``: a time
     dimension's name, else a column's full or leaf name. Two same-column buckets share
     a full name, so full matches is a list, not a single TD."""
-    parts = drop_root_qualifier(_reference_parts(target), root)
+    parts = _reference_parts(target, root=root)
     named = [td for td in tds if len(parts) == 1 and td.effective_name == parts[0]]
     if named:
         return named, []

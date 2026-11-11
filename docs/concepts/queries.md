@@ -41,6 +41,7 @@ Each entry in `dimensions` is either a bare string (the canonical short form for
 |-------|------|-------------|
 | `name` | string | Column name. Supports dotted paths for joined models. |
 | `label` | string | Optional human-readable display name |
+| `quoted` | list[bool] | Optional, one flag per path segment: a flagged segment matches its declared name exactly. A double-quoted string (`"\"Revenue\""`, `orders."status"`) is read as this column reference, named like its unquoted spelling. |
 
 ### Expression dimensions
 

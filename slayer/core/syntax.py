@@ -1225,23 +1225,25 @@ def _text_legacy_spans(text: str) -> List[LegacySpan]:
     out: List[LegacySpan] = []
     for region in (r for r in regions if r.kind == "code"):
         chunk = text[region.start:region.end]
-        is_none = list(_IS_NONE_RE.finditer(chunk))
-        for m in is_none:
-            negated = m.group(1) is not None
-            out.append(LegacySpan(
-                kind="is not None" if negated else "is None", start=region.start + m.start(),
-                end=region.start + m.end(), written=m.group(0), twin="IS NOT NULL" if negated else "IS NULL",
-            ))
-        covered = [(m.start(), m.end()) for m in is_none]
-        for m in _NONE_RE.finditer(chunk):
-            if not any(a <= m.start() < b for a, b in covered):
-                out.append(LegacySpan(kind="bare None", start=region.start + m.start(), end=region.start + m.end(),
-                                      written="None", twin="NULL"))
-        for m in re.finditer("==", chunk):
-            out.append(LegacySpan(kind="==", start=region.start + m.start(), end=region.start + m.end(),
-                                  written="==", twin="="))
+        out += _none_spans(chunk, offset=region.start)
+        out += [LegacySpan(kind="==", start=region.start + m.start(), end=region.start + m.end(), written="==", twin="=")
+                for m in re.finditer("==", chunk)]
         for m in _IN_LIST_RE.finditer(chunk):
             out += _bracket_list_spans(text, regions=regions, open_at=region.start + m.end() - 1)
+    return out
+
+
+def _none_spans(chunk: str, *, offset: int) -> List[LegacySpan]:
+    """``is [not] None`` and bare ``None`` in code ``chunk`` starting at ``offset``."""
+    is_none = list(_IS_NONE_RE.finditer(chunk))
+    out = [
+        LegacySpan(kind="is not None" if m.group(1) else "is None", start=offset + m.start(), end=offset + m.end(),
+                   written=m.group(0), twin="IS NOT NULL" if m.group(1) else "IS NULL")
+        for m in is_none
+    ]
+    covered = [(m.start(), m.end()) for m in is_none]
+    out += [LegacySpan(kind="bare None", start=offset + m.start(), end=offset + m.end(), written="None", twin="NULL")
+            for m in _NONE_RE.finditer(chunk) if not any(a <= m.start() < b for a, b in covered)]
     return out
 
 
@@ -2233,16 +2235,30 @@ def walk_parsed(node: Any) -> Iterator[Any]:
 # ---------------------------------------------------------------------------
 
 
-def drop_root_hop(hops: Sequence[str], root: Optional[str]) -> Tuple[str, ...]:
-    """A reference's join ``hops`` without a leading qualifier naming the query root ``root`` (in any case)."""
+def drop_root_hop(hops: Sequence[str], root: Optional[str], *, head_quoted: bool) -> Tuple[str, ...]:
+    """A reference's join ``hops`` without a leading qualifier naming the query root ``root`` (exactly when
+    ``head_quoted``, else in any case)."""
     hops = tuple(hops)
-    return hops[1:] if root is not None and hops and match_name(name=hops[0], declared=[root], quoted=False) else hops
+    return (
+        hops[1:] if root is not None and hops and match_name(name=hops[0], declared=[root], quoted=head_quoted)
+        else hops
+    )
 
 
-def drop_root_qualifier(parts: Sequence[str], root: Optional[str]) -> Tuple[str, ...]:
-    """``parts`` without a leading qualifier naming the query root ``root`` (``r.x`` ≡ ``x``)."""
+def drop_root_qualifier(parts: Sequence[str], root: Optional[str], *, quoted: Sequence[bool]) -> Tuple[str, ...]:
+    """``parts`` without a leading qualifier naming the query root ``root`` (``r.x`` ≡ ``x``); ``quoted`` flags
+    each quoted segment."""
     parts = tuple(parts)
-    return parts if len(parts) < 2 else (*drop_root_hop(parts[:-1], root), parts[-1])
+    if len(parts) < 2:
+        return parts
+    return (*drop_root_hop(parts[:-1], root, head_quoted=bool(quoted[:1]) and quoted[0]), parts[-1])
+
+
+def dotted_quoting(node: Any) -> Tuple[bool, ...]:
+    """Each segment's quoted flag of a parsed ``Ref`` / ``DottedRef``."""
+    if isinstance(node, Ref):
+        return (node.quoted,)
+    return tuple(node.quoted_at(i) for i in range(len(node.parts)))
 
 
 def root_relative(parsed: Any, root: Optional[str]) -> Any:
@@ -2257,9 +2273,9 @@ def _root_relative(node: Any, *, root: str, memo: Dict[int, Any]) -> Any:
         return node
     if id(node) not in memo:
         if isinstance(node, DottedRef):
-            parts = drop_root_qualifier(node.parts, root)
-            dropped = len(node.parts) - len(parts)
-            quoted_parts = tuple(node.quoted_at(i) for i in range(dropped, len(node.parts)))
+            all_quoted = dotted_quoting(node)
+            parts = drop_root_qualifier(node.parts, root, quoted=all_quoted)
+            quoted_parts = all_quoted[len(node.parts) - len(parts):]
             if parts == ("*",):
                 memo[id(node)] = StarSource()
             elif len(parts) == 1:
@@ -2291,7 +2307,10 @@ def text_paths(text: str, *, root: Optional[str]) -> List[Tuple[str, ...]]:
         parsed = parse_template(text)
     except Exception:  # noqa: BLE001 — unparseable text reads nothing
         return []
-    return [drop_root_qualifier(path, root) for path in referenced_paths(parsed)]
+    return [
+        drop_root_qualifier((node.name,) if isinstance(node, Ref) else node.parts, root, quoted=dotted_quoting(node))
+        for node in walk_parsed(parsed) if isinstance(node, (Ref, DottedRef))
+    ]
 
 
 class CallSource(BaseModel):
@@ -2527,7 +2546,7 @@ __all__ = [
     "aggregation_reading", "bind_variables", "call_keywords", "call_source", "canonical_measure_text",
     "classify_arguments",
     "comparison_hint",
-    "drop_root_hop", "drop_root_qualifier", "has_bindings", "keyword_spelling", "measure_dependency_problems",
+    "dotted_quoting", "drop_root_hop", "drop_root_qualifier", "has_bindings", "keyword_spelling", "measure_dependency_problems",
     "parse_bound_expr", "parse_expr", "parse_template", "placeholder_names", "positional_hint", "referenced_paths", "root_relative", "split_entity_agg_ref",
     "text_paths", "variable_names", "walk_parsed", "walk_parsed_refs",
 ]

@@ -30,9 +30,11 @@ def _walk_spec(spec: SourceSpec | None, against: AbstractSet[str], out: Set[str]
     """Collect sibling refs from a ``source_model`` spec (``slayer.core.names.match_name``)."""
     if spec is None:
         return
-    names = [spec] if isinstance(spec, str) else [
-        *([spec.source_name] if isinstance(spec, ModelExtension) else []), *(j.target_model for j in spec.joins or []),
-    ]
+    if isinstance(spec, str):
+        names = [spec]
+    else:
+        extended = [spec.source_name] if isinstance(spec, ModelExtension) else []
+        names = [*extended, *(j.target_model for j in spec.joins or [])]
     for name in names:
         found = match_name(name=name, declared=against, quoted=False)
         if found is not None:

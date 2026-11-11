@@ -201,7 +201,7 @@ class _Reads:
 
     def path(self, hops: Sequence[str], *, host: SlayerModel) -> SlayerModel | None:
         """The model ``hops`` lands on from ``host``, recording each hop; ``None`` when unresolvable."""
-        hops = drop_root_hop(hops, host.spelling)
+        hops = drop_root_hop(hops, host.spelling, head_quoted=False)
         if not hops:
             return host
         peers = self.peers(host)
