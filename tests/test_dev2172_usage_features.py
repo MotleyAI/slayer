@@ -57,7 +57,7 @@ MEASURE_TABLE: list[tuple[str, list[str], list[str], list[str], list[str]]] = [
     ("count(DISTINCT x)", ["count_distinct"], [], [], []),
     ("array_length(tags)", ["custom"], [], [], []),
     ("dsum(amount)", ["custom"], [], [], []),
-    ("amount:sum", ["sum"], [], [], []),
+    ("sum(amount)", ["sum"], [], [], []),
     ("time_shift(sum(amount), -1)", ["sum"], ["time_shift"], [], []),
     ("cumsum(sum(x)) / count(*)", ["sum", "count"], ["cumsum"], [], []),
     ("collect(city)", ["collect"], [], [], []),

@@ -68,7 +68,7 @@ async def _assert_parity(engine, *, inline, splice, columns: List[str], rows: Li
 
 class TestParity:
     async def test_as_the_source(self, engine) -> None:
-        outer = query(source_model="cust_rev", measures=[m("rev:sum", "total"), m("top:max", "mx")])
+        outer = query(source_model="cust_rev", measures=[m("sum(rev)", "total"), m("max(top)", "mx")])
         await _assert_parity(
             engine, inline=outer, splice=[*explicit_splice(cust_rev_model()), outer],
             columns=["cust_rev.total", "cust_rev.mx"],
@@ -76,8 +76,8 @@ class TestParity:
 
     async def test_as_a_stage_source(self, engine) -> None:
         s = query(name="s", source_model="cust_rev", dimensions=["customer_id"],
-                  measures=[m("rev:sum", "tot")])
-        root = query(source_model="s", measures=[m("tot:sum", "t"), m("*:count", "n")])
+                  measures=[m("sum(rev)", "tot")])
+        root = query(source_model="s", measures=[m("sum(tot)", "t"), m("count(*)", "n")])
         await _assert_parity(
             engine, inline=[s, root], splice=[*explicit_splice(cust_rev_model()), s, root],
             columns=["s.t", "s.n"], rows=[{"s.t": 145.0, "s.n": 5}])
@@ -96,10 +96,10 @@ class TestParity:
         await _assert_parity(
             engine,
             inline=query(source_model="clients", dimensions=["tier"],
-                         measures=[m("cust_rev.rev:sum", "r")]),
+                         measures=[m("sum(cust_rev.rev)", "r")]),
             splice=[*explicit_splice(cust_rev_model()),
                     query(**_join("clients", "cust_rev", [["id", "customer_id"]]),
-                          dimensions=["tier"], measures=[m("cust_rev.rev:sum", "r")])],
+                          dimensions=["tier"], measures=[m("sum(cust_rev.rev)", "r")])],
             columns=["clients.tier", "clients.r"],
             rows=[{"clients.tier": t, "clients.r": v} for t, v in AMOUNT_BY_TIER.items()])
 
@@ -113,9 +113,9 @@ class TestParity:
 
         monkeypatch.setattr(query_engine_module, "plan_stages", spy)
         s1 = query(name="s1", source_model="cust_rev", dimensions=["customer_id"],
-                   measures=[m("rev:sum", "a")])
+                   measures=[m("sum(rev)", "a")])
         s2 = query(name="s2", source_model="cust_rev", dimensions=["customer_id"],
-                   measures=[m("top:max", "b")])
+                   measures=[m("max(top)", "b")])
         root = query(**_join("s1", "s2", [["customer_id", "customer_id"]]),
                      dimensions=["customer_id", "a", "s2.b"])
         resp = await engine.execute([s1, s2, root])
@@ -126,12 +126,12 @@ class TestParity:
 
     async def test_two_models_sharing_a_private_name_beside_a_user_stage(self, engine) -> None:
         user_x = query(name="x", source_model="customers", dimensions=["id", "tier"],
-                       measures=[m("spend:sum", "sp")])
+                       measures=[m("sum(spend)", "sp")])
         root = query(
             source_model="x", extensions=[{"source_name": "x", "joins": [
                 {"target_model": "cust_rev", "join_pairs": [["id", "customer_id"]]},
                 {"target_model": "ok_rev", "join_pairs": [["id", "customer_id"]]}]}],
-            dimensions=["id", "tier", "cust_rev.rev", "ok_rev.ok_rev"], measures=[m("sp:sum", "spend")])
+            dimensions=["id", "tier", "cust_rev.rev", "ok_rev.ok_rev"], measures=[m("sum(sp)", "spend")])
         spend = {1: 100.0, 2: 150.0, 3: 60.0, 4: 40.0, 5: 80.0}
         tier = {1: "gold", 2: "silver", 3: "gold", 4: "bronze", 5: "silver"}
         await _assert_parity(
@@ -144,7 +144,7 @@ class TestParity:
 
     async def test_dependency_through_a_join_target_only(self, engine) -> None:
         resp = await engine.execute(query(
-            source_model="jt_qb", dimensions=["tier"], measures=[m("v:sum", "total")]))
+            source_model="jt_qb", dimensions=["tier"], measures=[m("sum(v)", "total")]))
         assert resp.columns == ["jt_qb.tier", "jt_qb.total"]
         assert rows_by(resp.data, key="jt_qb.tier", value="jt_qb.total") == AMOUNT_BY_TIER
 
@@ -153,10 +153,10 @@ class TestParity:
 # One flat WITH.
 # --------------------------------------------------------------------------- #
 _CONSUMERS = {
-    "source": query(source_model="cust_rev", measures=[m("rev:sum", "t")]),
-    "nested": query(source_model="status_share", dimensions=["status"], measures=[m("rr:sum", "t")]),
+    "source": query(source_model="cust_rev", measures=[m("sum(rev)", "t")]),
+    "nested": query(source_model="status_share", dimensions=["status"], measures=[m("sum(rr)", "t")]),
     "join_target": query(source_model="clients", dimensions=["tier"],
-                         measures=[m("cust_rev.rev:sum", "r")]),
+                         measures=[m("sum(cust_rev.rev)", "r")]),
 }
 
 
@@ -188,9 +188,9 @@ class TestOneFlatWith:
     @pytest.mark.parametrize("variant", list(EMBEDDED_WITH))
     async def test_embedded_with_is_renamed_scope_correctly(self, engine, variant) -> None:
         s1 = query(name="s1", source_model=variant, dimensions=["customer_id"],
-                   measures=[m("amount:sum", "a")])
+                   measures=[m("sum(amount)", "a")])
         s2 = query(name="s2", source_model="with_t", dimensions=["customer_id"],
-                   measures=[m("amount:sum", "b")])
+                   measures=[m("sum(amount)", "b")])
         root = query(**_join("s1", "s2", [["customer_id", "customer_id"]]),
                      dimensions=["customer_id", "a", "s2.b"])
         resp = await engine.execute([s1, s2, root])
@@ -204,7 +204,7 @@ class TestOneFlatWith:
 # --------------------------------------------------------------------------- #
 class TestMetadata:
     async def test_labels_and_formats_match_the_explicit_splice(self, engine) -> None:
-        outer = query(source_model="monthly", dimensions=["status"], measures=[m("rev:sum", "t")])
+        outer = query(source_model="monthly", dimensions=["status"], measures=[m("sum(rev)", "t")])
         got, ref = await _assert_parity(
             engine, inline=outer, splice=[*explicit_splice(monthly_model()), outer],
             columns=["monthly.status", "monthly.t"],
@@ -218,12 +218,12 @@ class TestMetadata:
 
     async def test_time_defaulting_through_a_spliced_model(self, engine) -> None:
         resp = await engine.execute(query(
-            source_model="monthly", dimensions=["status"], measures=[m("rev:last", "lr")]))
+            source_model="monthly", dimensions=["status"], measures=[m("last(rev)", "lr")]))
         assert resp.columns == ["monthly.status", "monthly.lr"]
         assert rows_by(resp.data, key="monthly.status", value="monthly.lr") == LAST_MONTHLY_BY_STATUS
 
     async def test_join_cardinality_matches_the_explicit_splice(self, engine) -> None:
-        measures = [m("spend:sum", "sp"), m("cust_rev.rev:sum", "r")]
+        measures = [m("sum(spend)", "sp"), m("sum(cust_rev.rev)", "r")]
         got, ref = await _assert_parity(
             engine,
             inline=query(source_model="clients", dimensions=["tier"], measures=measures),
@@ -256,11 +256,11 @@ def _v_models(*, source: Optional[str], inner: Optional[str], outer: Optional[st
         name="v_inner", data_source="test",
         source_queries=[query(
             source_model="orders_v", dimensions=dims, filters=["amount >= {th}"],
-            measures=[m("amount:sum", "rev")], variables={"th": stage} if stage else {})],
+            measures=[m("sum(amount)", "rev")], variables={"th": stage} if stage else {})],
         query_variables={"th": inner} if inner else {})
     v_outer = SlayerModel(
         name="v_outer", data_source="test",
-        source_queries=[query(source_model="v_inner", dimensions=dims, measures=[m("rev:sum", "tot")])],
+        source_queries=[query(source_model="v_inner", dimensions=dims, measures=[m("sum(rev)", "tot")])],
         query_variables={"th": outer} if outer else {})
     return [orders_model(), customers_model(), orders_v_model(default=source), v_inner, v_outer]
 
@@ -271,7 +271,7 @@ class TestVariableLayering:
         present = {layer: value for layer, value, _ in _LAYERS[: top + 1]}
         models = _v_models(source=present.get("source"), inner=present.get("inner"),
                            outer=present.get("outer"), stage=present.get("stage"), dims=[])
-        consumer = query(source_model="v_outer", measures=[m("tot:sum", "t")],
+        consumer = query(source_model="v_outer", measures=[m("sum(tot)", "t")],
                          variables={"th": present["query"]} if "query" in present else {})
         runtime = {"th": present["runtime"]} if "runtime" in present else None
         async with dev1966_engine("sqlite", models=models) as e:
@@ -280,8 +280,8 @@ class TestVariableLayering:
 
     async def test_conflicting_contexts_fail_closed(self) -> None:
         models = _v_models(source=None, inner="18", outer="22", stage=None, dims=["status"])
-        s1 = query(name="s1", source_model="v_inner", dimensions=["status"], measures=[m("rev:sum", "a")])
-        s2 = query(name="s2", source_model="v_outer", dimensions=["status"], measures=[m("tot:sum", "b")])
+        s1 = query(name="s1", source_model="v_inner", dimensions=["status"], measures=[m("sum(rev)", "a")])
+        s2 = query(name="s2", source_model="v_outer", dimensions=["status"], measures=[m("sum(tot)", "b")])
         root = query(**_join("s1", "s2", [["status", "status"]]),
                      dimensions=["status", "a", "s2.b"])
         async with dev1966_engine("sqlite", models=models) as e:
@@ -302,7 +302,7 @@ _EXT = {
 class TestExtensions:
     async def test_root_extension_applies_once(self, engine) -> None:
         outer = query(source_model="cust_rev", extensions=[_EXT], dimensions=["customers.tier"],
-                      measures=[m("rev2:sum", "r2"), m("rev:sum", "r")])
+                      measures=[m("sum(rev2)", "r2"), m("sum(rev)", "r")])
         await _assert_parity(
             engine, inline=outer, splice=[*explicit_splice(cust_rev_model()), outer],
             columns=["cust_rev.customers.tier", "cust_rev.r2", "cust_rev.r"],
@@ -316,10 +316,10 @@ class TestExtensions:
         assert len(joined) == 1, dry.sql
 
     async def test_stage_level_measure_extension_executes(self, engine) -> None:
-        mm = {"name": "mm", "formula": "rev:sum"}
+        mm = {"name": "mm", "formula": "sum(rev)"}
         s = query(name="s", source_model="cust_rev", extensions=[{"source_name": "cust_rev", "measures": [mm]}],
                   dimensions=["customer_id"], measures=["mm"])
-        outer = query(source_model="s", measures=[m("mm:sum", "t")])
+        outer = query(source_model="s", measures=[m("sum(mm)", "t")])
         await _assert_parity(
             engine, inline=[s, outer], splice=[*explicit_splice(cust_rev_model()), s, outer],
             columns=["s.t"], rows=[{"s.t": sum(CUST_REV.values())}])
@@ -330,7 +330,7 @@ class TestExtensions:
 # --------------------------------------------------------------------------- #
 class TestSplicedWarnings:
     async def test_broadcast_inside_a_query_backed_model_is_visible(self, engine) -> None:
-        q = query(source_model="bcast_qb", dimensions=["status"], measures=[m("amt2:sum", "t")])
+        q = query(source_model="bcast_qb", dimensions=["status"], measures=[m("sum(amt2)", "t")])
         with pytest.warns(UserWarning):
             resp = await engine.execute(q)
         assert rows_by(resp.data, key="bcast_qb.status", value="bcast_qb.t") == AMOUNT_BY_STATUS
@@ -344,7 +344,7 @@ class TestSplicedWarnings:
         consumer = query(
             name="r", **_join("orders", "cust_rev", [["customer_id", "customer_id"]]),
             dimensions=["status"],
-            measures=[m("amount:sum", "m"), m("customers.spend:sum", "cm"), m("cust_rev.rev:max", "rm")])
+            measures=[m("sum(amount)", "m"), m("sum(customers.spend)", "cm"), m("max(cust_rev.rev)", "rm")])
         with pytest.warns(UserWarning):
             got = await engine.execute(consumer)
         spliced = [*explicit_splice(cust_rev_model()), consumer]

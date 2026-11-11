@@ -70,7 +70,7 @@ class TestKernelCarriesPickedParams:
     def test_association_kernel_picks_the_weight(self) -> None:
         planned = plan_query(
             query=assoc_q(dimensions=["status"], measures=[ModelMeasure(
-                formula="customers.spend:weighted_avg(weight=customers.spend)",
+                formula="weighted_avg(customers.spend, weight=customers.spend)",
                 name="w")]),
             bundle=_orders_bundle())
         [attach] = _association_attaches(planned)
@@ -127,10 +127,10 @@ class TestCardinalityInvariant:
     ) -> None:
         base = await reagg_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:sum", name="tot")]))
+            measures=[ModelMeasure(formula="sum(amount)", name="tot")]))
         withw = await reagg_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:sum", name="tot"),
+            measures=[ModelMeasure(formula="sum(amount)", name="tot"),
                       ModelMeasure(formula=_WAVG_REAGG, name="w")]))
         a = {k: v["sales.tot"] for k, v in region_key(base).items()}
         b = {k: v["sales.tot"] for k, v in region_key(withw).items()}

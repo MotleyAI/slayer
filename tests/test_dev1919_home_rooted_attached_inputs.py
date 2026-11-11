@@ -71,7 +71,7 @@ from tests._dev1919_fixtures import (
     windowed_param_by_month,
 )
 
-AMOUNT = ModelMeasure(formula="amount:sum", name="a")
+AMOUNT = ModelMeasure(formula="sum(amount)", name="a")
 
 
 def _m(formula: str) -> ModelMeasure:
@@ -200,7 +200,7 @@ class TestAttributableDimensionsNeedNoAssociation:
         """D4 control: first/last by an attributable dimension takes the plain path."""
         resp = await orders_engine.execute(mode_q(
             "associate", dimensions=["customers.tier"],
-            measures=[_m("customers.spend:last(customers.signup_at)")]))
+            measures=[_m("last(customers.spend, customers.signup_at)")]))
         assert_cells(tier_vals(resp), {"gold": 55.0, "silver": 80.0, "bronze": 40.0, None: None})
         _assert_no_mode_warnings(resp)
 

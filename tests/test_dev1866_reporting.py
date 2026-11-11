@@ -37,10 +37,10 @@ from tests._dev1866_fixtures import (
     seed_chain_storage,
 )
 
-_INFERRED = SlayerQuery(
-    dimensions=["customers.region"],
-    measures=[{"formula": "orders.amount:sum", "name": "rev"}],
-)
+_INFERRED = SlayerQuery.model_validate({
+    "dimensions": ["customers.region"],
+    "measures": [{"formula": "sum(orders.amount)", "name": "rev"}],
+})
 
 
 @pytest.fixture
@@ -90,7 +90,7 @@ class TestExplicitVsInferredReporting:
             query=SlayerQuery(
                 source_model="customers",
                 dimensions=["region"],
-                measures=[ModelMeasure(formula="orders.amount:sum", name="rev")],
+                measures=[ModelMeasure(formula="sum(orders.amount)", name="rev")],
             ),
             name="cust_by_region",
         )
@@ -102,7 +102,7 @@ class TestExplicitVsInferredReporting:
     async def test_stage_population_reports_the_stage_name(self, engine, dry_run) -> None:
         stage = SlayerQuery.model_validate({
             "name": "by_region", "source_model": "customers", "dimensions": ["region"],
-            "measures": [{"formula": "orders.amount:sum", "name": "rev"}],
+            "measures": [{"formula": "sum(orders.amount)", "name": "rev"}],
         })
         main = SlayerQuery.model_validate({"source_model": "by_region", "measures": [{"formula": "sum(rev)"}]})
         resp = await engine.execute([stage, main], dry_run=dry_run)
@@ -133,11 +133,11 @@ class TestReportedAcrossExecutionModes:
     async def test_cache_twin_reports_current_inferred_flag(self, engine) -> None:
         """Explicit and inferred twins share a cache key (identical SQL); a cache
         hit must report the CURRENT query's inferred flag, not the stored one."""
-        explicit = SlayerQuery(
-            source_model="customers",
-            dimensions=["customers.region"],
-            measures=[{"formula": "orders.amount:sum", "name": "rev"}],
-        )
+        explicit = SlayerQuery.model_validate({
+            "source_model": "customers",
+            "dimensions": ["customers.region"],
+            "measures": [{"formula": "sum(orders.amount)", "name": "rev"}],
+        })
         first = await engine.execute(explicit, cache=True)
         assert first.population_inferred is False
         assert engine.cache_size == 1

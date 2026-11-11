@@ -35,6 +35,7 @@ from pydantic import BaseModel
 
 from slayer.core.errors import (
     AmbiguousModelError,
+    ColonSpellingError,
     CircularJoinPathError,
     EntityResolutionError,
     UnknownFunctionError,
@@ -204,7 +205,7 @@ async def _resolve_dotted_against_model(
     return f"{final_model.data_source}.{final_model.name}"
 
 
-async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching the spec's resolution-case table; splitting per-case helpers would obscure the shared error-message style and warning aggregation
+async def resolve_entity(
     raw: str,
     *,
     storage: StorageBackend,
@@ -225,10 +226,8 @@ async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching 
     if not raw:
         raise EntityResolutionError("entity reference is empty")
 
-    # ``memory:<id>`` branch must run BEFORE ``_strip_agg_suffix``
-    # — otherwise ``memory:abc`` would be parsed as prefix ``memory`` plus
-    # agg ``abc``. Memory ids are opaque strings (with a small charset
-    # forbidden); the resolver checks existence via ``get_memory_row``.
+    # ``memory:<id>`` runs before the parser, which would refuse it as a colon spelling. Memory ids are
+    # opaque strings (with a small charset forbidden); the resolver checks existence via ``get_memory_row``.
     if raw.startswith(_MEMORY_PREFIX):
         memory_id = raw[len(_MEMORY_PREFIX):]
         try:
@@ -242,12 +241,21 @@ async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching 
             )
         return EntityResolution(canonical_forms=[raw])
 
-    # ``sum(a.b)`` and the legacy ``a.b:sum`` resolve identically; expression text is not an entity.
+    # Expression text is not an entity; a colon spelling is refused.
     try:
         prefix, suffix = split_entity_agg_ref(raw)
+    except ColonSpellingError:
+        raise
     except ValueError as exc:  # UnknownFunctionError is a ValueError subclass
         raise EntityResolutionError(str(exc)) from exc
     agg = suffix.split("(", 1)[0] if suffix is not None else None
+    return await _resolve_reference(raw=raw, prefix=prefix, agg=agg, storage=storage, source_model=source_model)
+
+
+async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch matching the spec's resolution-case table; splitting per-case helpers would obscure the shared error-message style and warning aggregation
+    *, raw: str, prefix: str, agg: str | None, storage: StorageBackend, source_model: SlayerModel | None,
+) -> EntityResolution:
+    """Resolve the reference ``prefix`` (aggregated by ``agg``, if any) written as ``raw``."""
 
     # ``count(*)`` special case (§3.1): collapses to the source model.
     # Only ``count`` is valid for the wildcard; ``sum(*)`` etc. would
@@ -418,13 +426,17 @@ def _ref_token(node: Ref | DottedRef) -> str:
     return node.name if isinstance(node, Ref) else ".".join(node.parts)
 
 
-def _agg_call_tokens(node: AggCall) -> Iterable[str]:
+#: An entity token: a reference's text, or an aggregation's ``(source, agg)``.
+EntityToken = str | tuple[str, str]
+
+
+def _agg_call_tokens(node: AggCall) -> Iterable[EntityToken]:
     """Entity token(s) for one aggregation call."""
     source = node.source
     if isinstance(source, (Ref, DottedRef)):
-        yield f"{_ref_token(source)}:{node.agg}"
+        yield _ref_token(source), node.agg
     elif isinstance(source, StarSource):
-        yield f"*:{node.agg}"
+        yield "*", node.agg
     else:
         # Expression source (``sum(amount - cost)``): the expression
         # itself is not an entity — tag each operand ref.
@@ -433,15 +445,12 @@ def _agg_call_tokens(node: AggCall) -> Iterable[str]:
                 yield _ref_token(inner)
 
 
-def _formula_entity_tokens(parsed: ParsedExpr) -> Iterable[str]:
+def _formula_entity_tokens(parsed: ParsedExpr) -> Iterable[EntityToken]:
     """Yield every entity *token* referenced by a parsed Mode-B formula.
 
-    Aggregations surface as legacy colon tokens ``"<source>:<agg>"`` (``*:count``
-    included verbatim), bare and dotted refs surface as their textual form.
-    Each token is fed one-by-one into ``resolve_entity`` downstream, which
-    canonicalises it (stripping the agg suffix, collapsing ``*:count`` to the
-    model, walking dotted join paths). No binding — the resolver does its own
-    resolution.
+    Aggregations surface as ``(source, agg)`` (``("*", "count")`` included), bare and dotted refs as their
+    textual form. Each token is resolved downstream (the aggregation dropped, ``count(*)`` collapsed to the
+    model, dotted join paths walked). No binding — the resolver does its own resolution.
 
     Aggregation args / kwargs (e.g. ``weighted_avg(weight=quantity)``) and
     transform partition columns are opaque (legacy parity) — only the
@@ -454,7 +463,7 @@ def _formula_entity_tokens(parsed: ParsedExpr) -> Iterable[str]:
             yield _ref_token(node)
 
 
-def _field_entity_tokens(kind: FieldKind, text: str) -> list[str]:
+def _field_entity_tokens(kind: FieldKind, text: str) -> list[EntityToken]:
     """Entity tokens of one query field; an unparseable formula is a single token."""
     if kind == "ref":
         return [text]
@@ -508,13 +517,14 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
     } | {td.name for td in query.time_dimensions or [] if td.name}
     for kind, text in query_field_texts(query):
         for token in _field_entity_tokens(kind, text):
-            if token in local_names:
+            if isinstance(token, tuple):
+                source, agg = token
+                result = await _resolve_reference(
+                    raw=f"{agg}({source})", prefix=source, agg=agg, storage=storage, source_model=source_model)
+            elif token in local_names:
                 continue
-            result = await resolve_entity(
-                token,
-                storage=storage,
-                source_model=source_model,
-            )
+            else:
+                result = await resolve_entity(token, storage=storage, source_model=source_model)
             _add(result.canonical_forms)
             warnings.extend(result.warnings)
 

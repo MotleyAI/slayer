@@ -454,7 +454,7 @@ def test_query_v1_to_v2_fields_renamed() -> None:
     })
     assert q.version == mig.CURRENT_VERSIONS["SlayerQuery"]
     assert q.measures is not None
-    assert q.measures[0].formula == "revenue:sum"
+    assert q.measures[0].formula == "sum(revenue)"
     assert q.measures[0].name == "rev"
 
 
@@ -535,7 +535,7 @@ def test_model_v1_to_v2_source_queries_nested_rename() -> None:
     # renamed to 'measures' and version bumped to current.
     assert isinstance(inner, SlayerQuery)
     assert inner.measures is not None
-    assert inner.measures[0].formula == "revenue:sum"
+    assert inner.measures[0].formula == "sum(revenue)"
     assert inner.measures[0].name == "rev"
     assert inner.version == mig.CURRENT_VERSIONS["SlayerQuery"]
 
@@ -584,7 +584,7 @@ def test_model_v2_input_with_source_queries_preserved() -> None:
     inner = m.source_queries[0]
     assert isinstance(inner, SlayerQuery)
     assert inner.measures is not None
-    assert inner.measures[0].formula == "revenue:sum"
+    assert inner.measures[0].formula == "sum(revenue)"
     assert inner.measures[0].name == "rev"
 
 
@@ -818,7 +818,7 @@ async def _build_engine_with_orders(tmpdir: str):
 async def test_engine_dry_run_kwarg_slayer_query_input() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         engine = await _build_engine_with_orders(tmp)
-        q = SlayerQuery(source_model="orders", measures=[{"formula": "*:count"}])
+        q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "count(*)"}]})
         result = await engine.execute(query=q, dry_run=True)
         assert result.data == []
         assert "COUNT(*)" in result.sql
@@ -828,7 +828,7 @@ async def test_engine_dry_run_kwarg_dict_input() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         engine = await _build_engine_with_orders(tmp)
         result = await engine.execute(
-            query={"source_model": "orders", "measures": [{"formula": "*:count"}]},
+            query={"source_model": "orders", "measures": [{"formula": "count(*)"}]},
             dry_run=True,
         )
         assert result.data == []
@@ -841,7 +841,7 @@ async def test_engine_dry_run_kwarg_list_input() -> None:
         engine = await _build_engine_with_orders(tmp)
         result = await engine.execute(
             query=[
-                {"source_model": "orders", "measures": [{"formula": "*:count"}]},
+                {"source_model": "orders", "measures": [{"formula": "count(*)"}]},
             ],
             dry_run=True,
         )

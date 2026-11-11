@@ -18,10 +18,10 @@ from typing import Any
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
-    "SlayerModel": 18,
-    "SlayerQuery": 10,
+    "SlayerModel": 19,
+    "SlayerQuery": 11,
     "DatasourceConfig": 3,
-    "Memory": 7,
+    "Memory": 8,
     "Embedding": 1,
 }
 
@@ -196,7 +196,7 @@ def hoist_root_extension(data: dict) -> dict:
     return {**data, "source_model": source["source_name"], "extensions": [source, *(data.get("extensions") or [])]}
 
 
-register_migration(entity="SlayerQuery", source_version=9, stored_only=True)(hoist_root_extension)
+register_migration(entity="SlayerQuery", source_version=10, stored_only=True)(hoist_root_extension)
 
 
 def migrate(entity: str, data: Any) -> Any:
@@ -249,3 +249,4 @@ from slayer.storage import stored_repair_migration  # noqa: E402, F401  # ALLOW(
 from slayer.storage import sql_string_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import time_dimension_text_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import distinct_column_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import colon_spelling_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here

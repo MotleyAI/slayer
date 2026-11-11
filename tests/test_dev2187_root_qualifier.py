@@ -57,7 +57,6 @@ POSITIONS = {
         {"time_dimensions": [{"dimension": "coalesce(shipped_at, created_at)", "granularity": "month", "name": "d"}]},
     ),
     "measure": ({"measures": ["sum(orders.amount)"]}, {"measures": ["sum(amount)"]}),
-    "colon-measure": ({"measures": ["orders.amount:sum"]}, {"measures": ["amount:sum"]}),
     "star-count": ({"measures": ["count(orders.*)"]}, {"measures": ["count(*)"]}),
     "arithmetic-measure": (
         {"measures": [{"formula": "sum(orders.amount) / count(orders.*)", "name": "avg_amount"}]},
@@ -86,9 +85,9 @@ POSITIONS = {
          "order": [{"column": "sum(orders.amount)", "direction": "desc"}]},
         {"dimensions": ["status"], "measures": ["sum(amount)"], "order": [{"column": "sum(amount)", "direction": "desc"}]},
     ),
-    "order-colon": (
-        {"dimensions": ["status"], "measures": ["amount:sum"], "order": [{"column": "orders.amount:sum"}]},
-        {"dimensions": ["status"], "measures": ["amount:sum"], "order": [{"column": "amount:sum"}]},
+    "order-aggregate": (
+        {"dimensions": ["status"], "measures": ["sum(amount)"], "order": [{"column": "sum(orders.amount)"}]},
+        {"dimensions": ["status"], "measures": ["sum(amount)"], "order": [{"column": "sum(amount)"}]},
     ),
     "main-time-dimension": (
         {"time_dimensions": ["month(created_at)"], "measures": [{"formula": "change(sum(amount))", "name": "c"}],

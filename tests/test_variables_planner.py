@@ -285,7 +285,7 @@ class TestApplyVariablesToQuery:
             source_model="orders",
             measures=[
                 ModelMeasure(
-                    formula="amount:sum", name="rev", label="display_{x}"
+                    formula="sum(amount)", name="rev", label="display_{x}"
                 )
             ],
             filters=["status = '{s}'"],
@@ -300,14 +300,14 @@ class TestApplyVariablesToQuery:
     def test_measure_formula_substituted(self) -> None:
         q = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount:sum * {x}", name="rev")],
+            measures=[ModelMeasure(formula="sum(amount) * {x}", name="rev")],
             filters=["status = '{s}'"],
         )
         out = apply_variables_to_query(
             query=q, variables={"s": "active", "x": 10}
         )
         assert out.measures is not None
-        assert out.measures[0].formula == "amount:sum * 10"
+        assert out.measures[0].formula == "sum(amount) * 10"
         assert out.measures[0].name == "rev"
 
     def test_applying_twice_with_same_vars_is_a_no_op_on_second_pass(self) -> None:
@@ -325,7 +325,7 @@ class TestApplyVariablesToQuery:
     def test_other_fields_preserved_after_substitution(self) -> None:
         q = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount:sum", name="rev")],
+            measures=[ModelMeasure(formula="sum(amount)", name="rev")],
             dimensions=[ColumnRef(name="status")],
             filters=["status = '{s}'"],
             limit=10,
@@ -353,15 +353,15 @@ def _template(entry) -> str | None:
 
 class TestFormulaSurfaces:
     def test_unnamed_measure_substituted_with_template(self) -> None:
-        out = apply_variables_to_query(query=_q(measures=["amount:sum * {k} / 100"]), variables={"k": 10})
+        out = apply_variables_to_query(query=_q(measures=["sum(amount) * {k} / 100"]), variables={"k": 10})
         assert out.measures is not None
         (m,) = out.measures
-        assert m.formula == "amount:sum * 10 / 100"
+        assert m.formula == "sum(amount) * 10 / 100"
         assert m.name is None
-        assert _template(m) == "amount:sum * {k} / 100"
+        assert _template(m) == "sum(amount) * {k} / 100"
 
     def test_unchanged_measure_has_no_template(self) -> None:
-        out = apply_variables_to_query(query=_q(measures=["amount:sum"], filters=["a > {k}"]), variables={"k": 1})
+        out = apply_variables_to_query(query=_q(measures=["sum(amount)"], filters=["a > {k}"]), variables={"k": 1})
         assert out.measures is not None
         assert _template(out.measures[0]) is None
 
@@ -384,13 +384,12 @@ class TestFormulaSurfaces:
         out = apply_variables_to_query(query=_q(dimensions=["region"]), variables={"k": 1})
         assert out.dimensions == [ColumnRef(name="region")]
 
-    @pytest.mark.parametrize("column", ["amount:sum * {k}", "sum(amount) * {k}"])
-    def test_order_expression_substituted(self, column: str) -> None:
+    def test_order_expression_substituted(self) -> None:
         out = apply_variables_to_query(
-            query=_q(order=[{"column": column, "direction": "desc"}]), variables={"k": -1},
+            query=_q(order=[{"column": "sum(amount) * {k}", "direction": "desc"}]), variables={"k": -1},
         )
         assert out.order is not None
-        assert out.order[0].raw_formula == column.replace("{k}", "-1")
+        assert out.order[0].raw_formula == "sum(amount) * -1"
         assert out.order[0].direction == "desc"
 
     def test_date_range_bounds_substituted(self) -> None:
@@ -432,9 +431,8 @@ class TestFormulaSurfaces:
             name="regions", values=("North", "South"), listed=True)
 
     @pytest.mark.parametrize("kw", [
-        {"measures": ["amount:sum * {? {k} ?}"]},
+        {"measures": ["sum(amount) * {? {k} ?}"]},
         {"dimensions": [{"expression": "amount * {? {k} ?}", "name": "d"}]},
-        {"order": [{"column": "amount:sum * {? {k} ?}"}]},
     ])
     def test_optional_block_rejected(self, kw) -> None:
         query = _q(**kw)
@@ -443,9 +441,9 @@ class TestFormulaSurfaces:
         assert "filters" not in str(info.value)
 
     @pytest.mark.parametrize("kw", [
-        {"measures": ["amount:sum * {k}"]},
+        {"measures": ["sum(amount) * {k}"]},
         {"dimensions": ["amount * {k}"]},
-        {"order": [{"column": "amount:sum * {k}"}]},
+        {"order": [{"column": "sum(amount) * {k}"}]},
     ])
     def test_undefined_variable_raises(self, kw) -> None:
         query = _q(**kw)
@@ -460,14 +458,14 @@ class TestFormulaSurfaces:
 
 class TestRebuild:
     def test_fields_set_and_version_preserved(self) -> None:
-        q = _q(measures=["amount:sum * {k}"])
+        q = _q(measures=["sum(amount) * {k}"])
         out = apply_variables_to_query(query=q, variables={"k": 2})
         assert out.model_fields_set == q.model_fields_set
         assert out.version == q.version
 
     def test_extensions_preserved(self) -> None:
-        ext = ModelExtension(source_name="orders", measures=[ModelMeasure(name="x", formula="amount:sum")])
-        q = SlayerQuery.model_validate({"source_model": "orders", "extensions": [ext], "measures": ["amount:sum * {k}"]})
+        ext = ModelExtension(source_name="orders", measures=[ModelMeasure(name="x", formula="sum(amount)")])
+        q = SlayerQuery.model_validate({"source_model": "orders", "extensions": [ext], "measures": ["sum(amount) * {k}"]})
         out = apply_variables_to_query(query=q, variables={"k": 2})
         assert out.source_model == "orders"
         assert out.extensions == [ext]
@@ -477,27 +475,27 @@ class TestRebuild:
             name="inline_orders", sql_table="orders", data_source="ds",
             columns=[Column(name="amount", type=DataType.DOUBLE)],
         )
-        q = SlayerQuery.model_validate({"source_model": model, "measures": ["amount:sum * {k}"]})
+        q = SlayerQuery.model_validate({"source_model": model, "measures": ["sum(amount) * {k}"]})
         out = apply_variables_to_query(query=q, variables={"k": 2})
         assert isinstance(out.source_model, SlayerModel)
         assert out.source_model == model
 
     def test_refined_saved_query_preserved(self) -> None:
-        saved = _q(dimensions=["region"], measures=["amount:sum * {k}"], limit=5)
+        saved = _q(dimensions=["region"], measures=["sum(amount) * {k}"], limit=5)
         refined = refine_query(saved=saved, refinement=QueryRefinement.model_validate({"filters": ["status == '{s}'"]}))
         out = apply_variables_to_query(query=refined, variables={"k": 3, "s": "ok"})
         assert out.model_fields_set == refined.model_fields_set
         assert out.filters == ["status == 'ok'"]
         assert out.measures is not None
-        assert out.measures[0].formula == "amount:sum * 3"
+        assert out.measures[0].formula == "sum(amount) * 3"
         assert out.dimensions == [ColumnRef(name="region")]
         assert out.limit == 5
 
     def test_input_not_mutated(self) -> None:
-        q = _q(measures=["amount:sum * {k}"], dimensions=["amount * {k}"])
+        q = _q(measures=["sum(amount) * {k}"], dimensions=["amount * {k}"])
         apply_variables_to_query(query=q, variables={"k": 2})
         assert q.measures is not None
-        assert q.measures[0].formula == "amount:sum * {k}"
+        assert q.measures[0].formula == "sum(amount) * {k}"
         assert q.dimensions is not None
         d = q.dimensions[0]
         assert isinstance(d, ComputedDimension)
@@ -508,9 +506,9 @@ class TestPlaceholderNames:
     def _all_surfaces(self) -> SlayerQuery:
         return _q(
             filters=["amount > {f}"],
-            measures=["amount:sum * {m}"],
+            measures=["sum(amount) * {m}"],
             dimensions=["amount * {d}"],
-            order=[{"column": "amount:sum * {o}"}],
+            order=[{"column": "sum(amount) * {o}"}],
             time_dimensions=[TimeDimension.model_validate(
                 {"dimension": "ordered_at", "granularity": "month", "date_range": ["{s}", None]},
             )],
@@ -534,16 +532,16 @@ def _model_with_measure(formula: str, **kw) -> SlayerModel:
 
 class TestSavedMeasureSubstitution:
     def test_placeholder_names_include_saved_measures(self) -> None:
-        assert model_placeholder_names(_model_with_measure("amount:sum * {k}")) == {"k"}
+        assert model_placeholder_names(_model_with_measure("sum(amount) * {k}")) == {"k"}
 
     def test_saved_measure_block_needs_pass(self) -> None:
-        assert model_needs_substitution_pass(_model_with_measure("amount:sum * {? {k} ?}"))
+        assert model_needs_substitution_pass(_model_with_measure("sum(amount) * {? {k} ?}"))
 
     def test_saved_measure_formula_substituted(self) -> None:
         out = substitute_model_sql_surfaces(
-            model=_model_with_measure("amount:sum * {k}"), variables={"k": 10}, backslash_escapes=False,
+            model=_model_with_measure("sum(amount) * {k}"), variables={"k": 10}, backslash_escapes=False,
         )
-        assert out.measures[0].formula == "amount:sum * 10"
+        assert out.measures[0].formula == "sum(amount) * 10"
         assert out.measures[0].name == "scaled"
 
     @pytest.mark.parametrize("backslash_escapes", [False, True])
@@ -555,12 +553,12 @@ class TestSavedMeasureSubstitution:
         assert out.measures[0].formula == "sum(CASE WHEN status == 'O''Brien' THEN 1 ELSE 0 END)"
 
     def test_saved_measure_optional_block_rejected(self) -> None:
-        model = _model_with_measure("amount:sum * {? {k} ?}")
+        model = _model_with_measure("sum(amount) * {? {k} ?}")
         with pytest.raises(ValueError, match="Optional blocks"):
             substitute_model_sql_surfaces(model=model, variables={"k": 1}, backslash_escapes=False)
 
     def test_saved_measure_undefined_variable_raises(self) -> None:
-        model = _model_with_measure("amount:sum * {k}")
+        model = _model_with_measure("sum(amount) * {k}")
         with pytest.raises(ValueError, match="Undefined variable 'k'"):
             substitute_model_sql_surfaces(model=model, variables={"j": 1}, backslash_escapes=False)
 

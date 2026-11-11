@@ -983,6 +983,15 @@ class GranularityCallError(SlayerError, ValueError):
         )
 
 
+class ColonSpellingError(SlayerError, ValueError):
+    """A removed colon spelling (``x:agg``, ``col:gran``); ``twin`` is its functional spelling."""
+
+    def __init__(self, *, span: str, twin: str) -> None:
+        self.span = span
+        self.twin = twin
+        super().__init__(f"The colon spelling {span!r} was removed in SLayer 2.0; write {twin} instead.")
+
+
 class UnresolvableOrderColumnError(SlayerError, ValueError):
     """An ``order`` item references a column not bindable to the query's FROM scope (usually an unprojected joined column whose join was never resolved); rejected at compile time rather than emitting failing SQL."""
 

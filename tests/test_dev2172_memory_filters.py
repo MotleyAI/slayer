@@ -28,16 +28,16 @@ from slayer.storage.yaml_storage import YAMLStorage
     ("customers.name = 'x'", {"customers.name"}),
     ("skills.value = 'go'", {"skills.value"}),
     ("contains_any(skills, ['go'])", {"skills"}),
-    ("amount:sum > 100", {"amount:sum"}),
+    ("sum(amount) > 100", {("amount", "sum")}),
 ])
-def test_filter_tokens(text: str, tokens: set[str]) -> None:
+def test_filter_tokens(text: str, tokens: set) -> None:
     assert set(_field_entity_tokens("filter", text)) == tokens
 
 
 def test_aggregate_filter_tokens_carry_no_keywords() -> None:
     tokens = _field_entity_tokens("filter", "count(*) FILTER (WHERE amount > 0) > 1")
-    assert "*:count" in tokens
-    assert not {t.upper() for t in tokens} & {"FILTER", "WHERE", "COUNT"}
+    assert ("*", "count") in tokens
+    assert not {t.upper() for t in tokens if isinstance(t, str)} & {"FILTER", "WHERE", "COUNT"}
 
 
 @pytest.mark.parametrize("text", ["status = = 'x'", "lower(", "status = 'unterminated"])
@@ -59,6 +59,6 @@ async def storage(tmp_path: Path) -> YAMLStorage:
 
 async def test_cast_filter_tags_only_the_column(storage: YAMLStorage) -> None:
     query = SlayerQuery(source_model="orders", filters=["CAST(amount AS INT) > 1"],
-                        measures=[ModelMeasure(formula="*:count")])
+                        measures=[ModelMeasure(formula="count(*)")])
     result = await extract_entities_from_query(query, storage=storage)
     assert result.canonical_forms == ["mydb.orders", "mydb.orders.amount"]

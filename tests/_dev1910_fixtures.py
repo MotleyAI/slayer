@@ -56,16 +56,16 @@ async def make_null_status_engine(
         yield engine
 
 
-SPEND_SUM = ModelMeasure(formula="customers.spend:sum", name="csp")
-AMOUNT_SUM = ModelMeasure(formula="amount:sum", name="amt")
-LOCAL_SPEND_SUM = ModelMeasure(formula="spend:sum", name="sp")  # customers-rooted
-REGION_POP_SUM = ModelMeasure(formula="customers.regions.pop:sum", name="rp")
-STORE_RENT_SUM = ModelMeasure(formula="stores.rent:sum", name="rent")
+SPEND_SUM = ModelMeasure(formula="sum(customers.spend)", name="csp")
+AMOUNT_SUM = ModelMeasure(formula="sum(amount)", name="amt")
+LOCAL_SPEND_SUM = ModelMeasure(formula="sum(spend)", name="sp")  # customers-rooted
+REGION_POP_SUM = ModelMeasure(formula="sum(customers.regions.pop)", name="rp")
+STORE_RENT_SUM = ModelMeasure(formula="sum(stores.rent)", name="rent")
 # home-determined weight (includes c7) vs a fanning host column across the hop.
 SPEND_WAVG_HOME = ModelMeasure(
-    formula="customers.spend:weighted_avg(weight=customers.spend)", name="wa")
+    formula="weighted_avg(customers.spend, weight=customers.spend)", name="wa")
 SPEND_WAVG_AMOUNT = ModelMeasure(
-    formula="customers.spend:weighted_avg(weight=amount)", name="wa")
+    formula="weighted_avg(customers.spend, weight=amount)", name="wa")
 
 
 def status_vals(resp, measure: str, *, root: str = "orders") -> dict:

@@ -131,7 +131,7 @@ async def test_query_only_runs_channel_1_via_extracted_entities(
     response = await service.search(
         query={
             "source_model": "orders",
-            "measures": [{"formula": "amount_paid:sum"}],
+            "measures": [{"formula": "sum(amount_paid)"}],
         },
         max_results=20,
         compact=False,
@@ -345,7 +345,7 @@ async def test_resolved_input_entities_populated_for_query_input(
     response = await service.search(
         query={
             "source_model": "orders",
-            "measures": [{"formula": "amount_paid:sum"}],
+            "measures": [{"formula": "sum(amount_paid)"}],
         },
     )
     # Both the source model and the referenced column should be resolved.
@@ -361,7 +361,7 @@ async def test_resolved_input_entities_combined_input_dedupes(
         entities=["warehouse.orders.amount_paid"],
         query={
             "source_model": "orders",
-            "measures": [{"formula": "amount_paid:sum"}],
+            "measures": [{"formula": "sum(amount_paid)"}],
         },
     )
     # `amount_paid` appears via both inputs but should not duplicate.
@@ -396,7 +396,7 @@ async def storage_with_query_memories(
             entities=["warehouse.orders.amount_paid"],
             query=SlayerQuery(
                 source_model="orders",
-                measures=[ModelMeasure(formula="amount_paid:sum")],
+                measures=[ModelMeasure(formula="sum(amount_paid)")],
             ),
         )
     return storage_with_corpus

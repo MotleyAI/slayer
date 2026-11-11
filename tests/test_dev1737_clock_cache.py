@@ -73,7 +73,7 @@ class TestClockBypass:
             "name": "recent_orders", "source_model": "orders", "dimensions": ["status"],
             "measures": [{"formula": "count(*)", "name": "n"}], "filters": ["created_at <= now()"],
         })
-        outer = SlayerQuery.model_validate({"source_model": "recent_orders", "measures": ["n:sum"]})
+        outer = SlayerQuery.model_validate({"source_model": "recent_orders", "measures": ["sum(n)"]})
         await engine.execute([inner, outer], cache=True)
         await engine.execute([inner, outer], cache=True)
         assert len(_data(data_calls)) == 2

@@ -106,7 +106,7 @@ class TestExplicitPartitionBy:
         """An explicit partition_by naming the fanning derived dimension is an
         error outside associate — every partition key must be attributable."""
         measure = ModelMeasure(
-            formula="amount:sum(partition_by=customers.regions.bad_pop)", name="w")
+            formula="sum(amount, partition_by=customers.regions.bad_pop)", name="w")
         q = orders_q(dimensions=[BAD_POP], measures=[measure], to_many_handling=mode)
         with pytest.raises(ValueError) as ei:
             await engine.execute(q)

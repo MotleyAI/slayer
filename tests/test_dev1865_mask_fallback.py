@@ -17,10 +17,10 @@ from tests._dev1865_fixtures import ModelMeasure, make_exec_engine, q
 # the outer scope the fallback routes to actually exists.
 _QUERY_KWARGS = dict(
     dimensions=["region", "city"],
-    filters=["amount:sum > 55"],
+    filters=["sum(amount) > 55"],
     measures=[
-        ModelMeasure(formula="amount:sum", name="s"),
-        ModelMeasure(formula="amount:sum(partition_by=region)", name="part"),
+        ModelMeasure(formula="sum(amount)", name="s"),
+        ModelMeasure(formula="sum(amount, partition_by=region)", name="part"),
     ],
 )
 

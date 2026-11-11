@@ -104,7 +104,7 @@ class TestProjectedGrainKeyUnderShift:
         resp = await exec_engine.execute(_q(
             measures=[ModelMeasure(formula="time_shift(store, -1)", name="t")], **kw))
         plain = await exec_engine.execute(_q(
-            measures=[ModelMeasure(formula="revenue:sum", name="r")], **kw))
+            measures=[ModelMeasure(formula="sum(revenue)", name="r")], **kw))
         cells = {(r["sales.store"], month_key(r["sales.ordered_at"])) for r in resp.data}
         assert len(cells) == len(resp.data) == len(plain.data)
         for r in resp.data:
@@ -117,7 +117,7 @@ class TestProjectedGrainKeyUnderShift:
             measures=[ModelMeasure(formula="time_shift(store in ('A', 'B'), -1)",
                                    name="t")], **kw))
         plain = await exec_engine.execute(_q(
-            measures=[ModelMeasure(formula="revenue:sum", name="r")], **kw))
+            measures=[ModelMeasure(formula="sum(revenue)", name="r")], **kw))
         assert len(resp.data) == len(plain.data)
         for r in resp.data:
             assert r["sales.t"] in (None, r["sales.store"] in ("A", "B")), r
@@ -127,9 +127,9 @@ class TestProjectedGrainKeyUnderShift:
         kw = {"dimensions": ["store"], "time_dimensions": month_td()}
         resp = await exec_engine.execute(_q(
             filters=["time_shift(store, -1) = 'A'"],
-            measures=[ModelMeasure(formula="revenue:sum", name="r")], **kw))
+            measures=[ModelMeasure(formula="sum(revenue)", name="r")], **kw))
         plain = await exec_engine.execute(_q(
-            measures=[ModelMeasure(formula="revenue:sum", name="r")], **kw))
+            measures=[ModelMeasure(formula="sum(revenue)", name="r")], **kw))
         store_a = sorted(month_key(r["sales.ordered_at"]) for r in plain.data
                          if r["sales.store"] == "A")
         got = sorted((r["sales.store"], month_key(r["sales.ordered_at"])) for r in resp.data)

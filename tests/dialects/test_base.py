@@ -290,7 +290,7 @@ async def test_chain_outer_wrap_with_order() -> None:
 
 async def test_chain_outer_wrap_hidden_order_by_names_the_carried_alias() -> None:
     """A non-projected sort key resolves to the alias the chain carries."""
-    sql = await gen(cumsum_chain(order=[{"column": "amount:max", "direction": "desc"}]),
+    sql = await gen(cumsum_chain(order=[{"column": "max(amount)", "direction": "desc"}]),
                     dialect="postgres")
     assert outer_order(sql, "postgres") == [("orders.amount_max", "", True)], sql
 

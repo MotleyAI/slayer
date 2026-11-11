@@ -41,7 +41,7 @@ def test_encode_multi_hop() -> None:
 
 
 def test_encode_leading_underscore_leaf() -> None:
-    """``orders._count`` (the canonical alias for ``*:count``) encodes to
+    """``orders._count`` (the canonical alias for ``count(*)``) encodes to
     ``orders____count`` — three underscores from the dot plus the literal
     leading underscore of the leaf."""
     assert encode_alias("orders._count") == "orders____count"

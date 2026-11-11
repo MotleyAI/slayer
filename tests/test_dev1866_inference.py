@@ -65,10 +65,10 @@ class TestSelection:
     async def test_canonical_picks_coarse_side(self, storage) -> None:
         """dims on customers + a measure on orders ⇒ population = customers."""
         choice = await infer_population(
-            query=SlayerQuery(
-                dimensions=["customers.region"],
-                measures=[{"formula": "orders.amount:sum", "name": "rev"}],
-            ),
+            query=SlayerQuery.model_validate({
+                "dimensions": ["customers.region"],
+                "measures": [{"formula": "sum(orders.amount)", "name": "rev"}],
+            }),
             storage=storage,
         )
         assert isinstance(choice, PopulationChoice)
@@ -77,10 +77,10 @@ class TestSelection:
 
     async def test_measure_does_not_shift_population(self, storage) -> None:
         with_measure = await infer_population(
-            query=SlayerQuery(
-                dimensions=["customers.region"],
-                measures=[{"formula": "orders.amount:sum", "name": "rev"}],
-            ),
+            query=SlayerQuery.model_validate({
+                "dimensions": ["customers.region"],
+                "measures": [{"formula": "sum(orders.amount)", "name": "rev"}],
+            }),
             storage=storage,
         )
         without_measure = await infer_population(
@@ -105,7 +105,7 @@ class TestSelection:
         choice = await infer_population(
             query=SlayerQuery(
                 dimensions=["customers.region"],
-                filters=["orders.amount:sum > 100"],
+                filters=["sum(orders.amount) > 100"],
             ),
             storage=storage,
         )
@@ -188,10 +188,10 @@ class TestSelection:
         """A measure referencing a model in another datasource must not affect
         scoping — measures never participate in inference."""
         choice = await infer_population(
-            query=SlayerQuery(
-                dimensions=["customers.region"],
-                measures=[{"formula": "widgets.x:count", "name": "wc"}],
-            ),
+            query=SlayerQuery.model_validate({
+                "dimensions": ["customers.region"],
+                "measures": [{"formula": "count(widgets.x)", "name": "wc"}],
+            }),
             storage=storage,
         )
         assert choice.model_name == "customers"
@@ -231,10 +231,10 @@ class TestDeterminationItems:
         assert items == {"customers.region"}
 
     def test_measures_never_participate(self) -> None:
-        items = self._items(SlayerQuery(
-            dimensions=["customers.region"],
-            measures=[{"formula": "orders.amount:sum", "name": "rev"}],
-        ))
+        items = self._items(SlayerQuery.model_validate({
+            "dimensions": ["customers.region"],
+            "measures": [{"formula": "sum(orders.amount)", "name": "rev"}],
+        }))
         assert items == {"customers.region"}
 
     def test_saved_measure_filter_ref_dropped(self) -> None:
@@ -269,7 +269,7 @@ class TestDeterminationItems:
     def test_aggregation_filter_dropped(self) -> None:
         items = self._items(SlayerQuery(
             dimensions=["customers.region"],
-            filters=["orders.amount:sum > 100"],
+            filters=["sum(orders.amount) > 100"],
         ))
         assert items == {"customers.region"}
 
@@ -282,14 +282,14 @@ class TestDeterminationItems:
     def test_computed_dim_excludes_refs_inside_aggregation(self) -> None:
         items = self._items(SlayerQuery(dimensions=[
             "customers.region",
-            ComputedDimension(expression="orders.amount:sum", name="tot"),
+            ComputedDimension(expression="sum(orders.amount)", name="tot"),
         ]))
         assert items == {"customers.region"}
 
     def test_computed_dim_partition_by_participates(self) -> None:
         items = self._items(SlayerQuery(dimensions=[
             ComputedDimension(
-                expression="orders.amount:sum(partition_by=customers.tier)",
+                expression="sum(orders.amount, partition_by=customers.tier)",
                 name="share",
             ),
         ]))

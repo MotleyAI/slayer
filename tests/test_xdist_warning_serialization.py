@@ -24,8 +24,8 @@ from slayer.core.warnings import NormalizationWarning, SlayerNormalizationWarnin
 def _carriers() -> list[UserWarning]:
     nw = NormalizationWarning(
         rule_id="FUNC_STYLE_AGG",
-        original="sum(revenue)",
-        normalized="revenue:sum",
+        original="SUM(revenue)",
+        normalized="sum(revenue)",
         location="measures[0].formula",
     )
     return [

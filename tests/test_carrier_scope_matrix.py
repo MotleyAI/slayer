@@ -125,7 +125,7 @@ class TestScopeClosureInvariant:
     async def test_host_base_agg_source_columnkey(self) -> None:
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
             dimensions=[ColumnRef(name="status")],
         )
         sql = await _gen(query, _orders())
@@ -136,7 +136,7 @@ class TestScopeClosureInvariant:
     async def test_host_base_where_filter_typed(self) -> None:
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
             filters=["amount > 100"],
         )
         sql = await _gen(query, _orders())
@@ -148,7 +148,7 @@ class TestScopeClosureInvariant:
         # LEFT JOIN into the host base scope; still closed.
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
             filters=["customers.region_id > 0"],
         )
         sql = await _gen(query, _orders(), extra_models=[_customers(), _regions()])
@@ -157,7 +157,7 @@ class TestScopeClosureInvariant:
 
     async def test_host_base_model_filter(self) -> None:
         query = SlayerQuery(
-            source_model="orders", measures=[ModelMeasure(formula="amount:sum")],
+            source_model="orders", measures=[ModelMeasure(formula="sum(amount)")],
         )
         sql = await _gen(query, _orders(filters=["amount > 0"]))
         assert "WHERE" in sql
@@ -166,7 +166,7 @@ class TestScopeClosureInvariant:
     async def test_cross_model_cm_cte_agg_source(self) -> None:
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="customers.balance:sum")],
+            measures=[ModelMeasure(formula="sum(customers.balance)")],
             dimensions=[ColumnRef(name="status")],
         )
         sql = await _gen(query, _orders(), extra_models=[_customers(), _regions()])
@@ -178,7 +178,7 @@ class TestScopeClosureInvariant:
             source_model="orders",
             time_dimensions=[TimeDimension(
                 dimension="created_at", granularity=TimeGranularity.MONTH)],
-            measures=[ModelMeasure(formula="balance:last(ordered_at)")],
+            measures=[ModelMeasure(formula="last(balance, ordered_at)")],
         )
         sql = await _gen(query, _orders())
         assert "_cm_" in sql  # ranked producer under the uniform _cm_ scope
@@ -192,8 +192,8 @@ class TestScopeClosureInvariant:
             time_dimensions=[TimeDimension(
                 dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[
-                ModelMeasure(formula="amount:sum"),
-                ModelMeasure(formula="time_shift(amount:sum, -1)", name="prev"),
+                ModelMeasure(formula="sum(amount)"),
+                ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
             ],
         )
         sql = await _gen(query, _orders())
@@ -203,7 +203,7 @@ class TestScopeClosureInvariant:
     async def test_order_ref_by_measure(self) -> None:
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount:sum", name="rev")],
+            measures=[ModelMeasure(formula="sum(amount)", name="rev")],
             dimensions=[ColumnRef(name="status")],
             order=[OrderItem(column="rev", direction="desc")],
         )
@@ -215,7 +215,7 @@ class TestScopeClosureInvariant:
         # A per-measure Column.filter (local) on the host base scope.
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="active_amount:sum")],
+            measures=[ModelMeasure(formula="sum(active_amount)")],
             dimensions=[ColumnRef(name="status")],
         )
         model = _orders(extra=[
@@ -230,7 +230,7 @@ class TestScopeClosureInvariant:
     async def test_cross_model_closed_across_dialects(self, dialect: str) -> None:
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="customers.balance:sum")],
+            measures=[ModelMeasure(formula="sum(customers.balance)")],
             dimensions=[ColumnRef(name="status")],
         )
         sql = await _gen(query, _orders(), extra_models=[_customers(), _regions()],
@@ -249,7 +249,7 @@ class TestSemanticPinsSqlShape:
         # cardinality-changing join of the CTE body.
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="customers.balance:sum")],
+            measures=[ModelMeasure(formula="sum(customers.balance)")],
             filters=["status = 'paid'"],
         )
         sql = await _gen(query, _orders(), extra_models=[_customers(), _regions()])
@@ -267,7 +267,7 @@ class TestSemanticPinsSqlShape:
         # pinned in test_integration_duckdb.py::TestF1F4SemanticValues.
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="customers.balance:sum")],
+            measures=[ModelMeasure(formula="sum(customers.balance)")],
             dimensions=[ColumnRef(name="status")],
         )
         sql = await _gen(query, _orders(), extra_models=[_customers(), _regions()])
@@ -287,7 +287,7 @@ class TestRlsIsolationCte:
     async def _cross_model_sql(self) -> str:
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="customers.balance:sum")],
+            measures=[ModelMeasure(formula="sum(customers.balance)")],
             dimensions=[ColumnRef(name="status")],
         )
         sql = await _gen(query, _orders(), extra_models=[_customers(), _regions()])
@@ -341,7 +341,7 @@ class TestScopeDefectPins:
             source_model="orders",
             time_dimensions=[TimeDimension(
                 dimension="created_at", granularity=TimeGranularity.MONTH)],
-            measures=[ModelMeasure(formula="amount:sum(window='90d')", name="rev_w")],
+            measures=[ModelMeasure(formula="sum(amount, window='90d')", name="rev_w")],
         )
         sql = await _gen(query, _orders())
         assert "_cm_" in sql  # windowed producer under the uniform _cm_ scope
@@ -352,7 +352,7 @@ class TestScopeDefectPins:
         ])
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="customers.deep_pop:sum")],
+            measures=[ModelMeasure(formula="sum(customers.deep_pop)")],
         )
         sql = await _gen(query, _orders(), extra_models=[customers, _regions()])
         cm_body = _cte_body(sql, r"_cm_\w+")
@@ -368,8 +368,8 @@ class TestScopeDefectPins:
                 dimension="created_at", granularity=TimeGranularity.MONTH)],
             dimensions=[ColumnRef(name="customers.region_id")],
             measures=[
-                ModelMeasure(formula="amount:sum"),
-                ModelMeasure(formula="time_shift(amount:sum, -1)", name="prev"),
+                ModelMeasure(formula="sum(amount)"),
+                ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
             ],
         )
         sql = await _gen(query, _orders(), extra_models=[_customers(), _regions()])

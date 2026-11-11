@@ -36,10 +36,10 @@ AMOUNT_SUM = AggCall(source=AMOUNT, agg="sum")
     ("region in ({k})", Cmp(op="in", left=Ref(name="region"), right=K)),
     ("region not in ({k})", Cmp(op="not in", left=Ref(name="region"), right=K)),
     ("sum({k})", AggCall(source=K, agg="sum")),
-    ("amount:percentile({k})", AggCall(source=AMOUNT, agg="percentile", args=(K,))),
-    ("amount:sum(window={k})", AggCall(source=AMOUNT, agg="sum", kwargs=(("window", K),))),
-    ("lag(amount:sum, {k})", TransformCall(op="lag", input=AMOUNT_SUM, args=(K,))),
-    ("lag(amount:sum, offset={k})", TransformCall(op="lag", input=AMOUNT_SUM, kwargs=(("offset", K),))),
+    ("percentile(amount, {k})", AggCall(source=AMOUNT, agg="percentile", args=(K,))),
+    ("sum(amount, window={k})", AggCall(source=AMOUNT, agg="sum", kwargs=(("window", K),))),
+    ("lag(sum(amount), {k})", TransformCall(op="lag", input=AMOUNT_SUM, args=(K,))),
+    ("lag(sum(amount), offset={k})", TransformCall(op="lag", input=AMOUNT_SUM, kwargs=(("offset", K),))),
     ("round(amount, {k})", ScalarCall(name="round", args=(AMOUNT, K))),
     (
         "CASE WHEN amount > {k} THEN {k} ELSE 0 END",
@@ -51,7 +51,7 @@ AMOUNT_SUM = AggCall(source=AMOUNT, agg="sum")
     ("CASE WHEN amount > 1 THEN 0 ELSE {k} END", ScalarCall(
         name="iif", args=(Cmp(op=">", left=AMOUNT, right=Literal(value=Decimal(1))), Literal(value=Decimal(0)), K),
     )),
-    ("amount:sum * {k}", Arith(op="*", left=AMOUNT_SUM, right=K)),
+    ("sum(amount) * {k}", Arith(op="*", left=AMOUNT_SUM, right=K)),
 ])
 def test_placeholder_position(text: str, expected) -> None:
     assert parse_expr(text) == expected
@@ -61,9 +61,8 @@ def test_filter_parser_admits_placeholder() -> None:
     assert parse_expr("amount = {k}") == Cmp(op="==", left=AMOUNT, right=K)
 
 
-@pytest.mark.parametrize("text", ["amount:sum * {k} / 100", "sum(amount) * {k} / 100"])
-def test_canonical_text_renders_placeholder(text: str) -> None:
-    assert canonical_measure_text(parse_expr(text)) == "amount:sum * {k} / 100"
+def test_canonical_text_renders_placeholder() -> None:
+    assert canonical_measure_text(parse_expr("sum(amount) * {k} / 100")) == "sum(amount) * {k} / 100"
 
 
 @pytest.mark.parametrize("text", ["amount * {a, b}", "amount * {1}", "amount * {a.b}", "amount * {}"])

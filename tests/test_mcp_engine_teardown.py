@@ -92,13 +92,13 @@ async def _call(server, *, name: str, arguments: dict[str, Any] | None = None) -
 
 
 async def _query_count(server, *, source_model: str) -> int:
-    """Run the ``query`` tool for ``*:count`` and return the integer count."""
+    """Run the ``query`` tool for ``count(*)`` and return the integer count."""
     text = await _call(
         server, name="query",
         arguments={
             "query": {
                 "source_model": source_model,
-                "measures": [{"formula": "*:count"}],
+                "measures": [{"formula": "count(*)"}],
             },
             "format": "json",
         },
@@ -156,7 +156,7 @@ class TestContractAttribute:
         monkeypatch.setattr(SlayerQueryEngine, "execute", _spy)
         await _call(
             server, name="query",
-            arguments={"query": [{"source_model": "t", "measures": [{"formula": "*:count"}]}]},
+            arguments={"query": [{"source_model": "t", "measures": [{"formula": "count(*)"}]}]},
         )
 
         assert captured["self"] is server._slayer_engine

@@ -70,7 +70,7 @@ async def storage_rich() -> AsyncIterator[StorageBackend]:
             measures=[
                 ModelMeasure(
                     name="revenue",
-                    formula="amount_paid:sum",
+                    formula="sum(amount_paid)",
                     description="revenue measure desc.",
                 ),
             ],

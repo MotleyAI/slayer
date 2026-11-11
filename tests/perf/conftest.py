@@ -150,9 +150,10 @@ async def _create_env(order_count: int) -> BenchEnv:
     slayer_engine = SlayerQueryEngine(storage=storage)
 
     # Warmup: run a simple query to prime DB caches and connection pool
-    await slayer_engine.execute(query=SlayerQuery(
-        source_model="orders", measures=[{"formula": "*:count"}],
-    ))
+    await slayer_engine.execute(query=SlayerQuery.model_validate({
+        "source_model": "orders",
+        "measures": [{"formula": "count(*)"}],
+    }))
 
     return slayer_engine, dataset
 

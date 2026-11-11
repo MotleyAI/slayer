@@ -39,7 +39,7 @@ class TestRankedTemporalValueNotTruncated:
     ) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="ordered_at:last", name="lt")],
+            measures=[ModelMeasure(formula="last(ordered_at)", name="lt")],
         ))
         got = {r["orders.region"]: str(r["orders.lt"])[:10] for r in resp.data}
         assert got == REGION_LAST_AT
@@ -49,7 +49,7 @@ class TestRankedTemporalValueNotTruncated:
     ) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="ordered_at:first", name="ft")],
+            measures=[ModelMeasure(formula="first(ordered_at)", name="ft")],
         ))
         got = {r["orders.region"]: str(r["orders.ft"])[:10] for r in resp.data}
         assert got == REGION_FIRST_AT

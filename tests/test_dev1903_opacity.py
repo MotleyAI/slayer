@@ -29,11 +29,11 @@ from tests._dev1919_fixtures import (
 # the orphan order's NULL name meets the NULL cell. rank desc: North 1, South 2, NULL 3.
 _REGION_SPEND = "sum(customers.spend, partition_by=customers.regions.name)"
 SOURCE = f"sum(amount * {_REGION_SPEND})"
-KWARG = f"amount:weighted_avg(weight={_REGION_SPEND})"
-TRANSFORM = f"amount:weighted_avg(weight=rank({_REGION_SPEND}, direction='desc'))"
+KWARG = f"weighted_avg(amount, weight={_REGION_SPEND})"
+TRANSFORM = f"weighted_avg(amount, weight=rank({_REGION_SPEND}, direction='desc'))"
 #: host column masked to North customers: its own closure crosses to regions.
 NORTH_OUTER = f"sum(north_amount * {_REGION_SPEND})"
-NORTH_INNER = "amount:weighted_avg(weight=sum(north_amount, partition_by=channel))"
+NORTH_INNER = "weighted_avg(amount, weight=sum(north_amount, partition_by=channel))"
 
 CASES = [
     # ok: 10·280 + 30·280 + 5·195 + 15·195 + 7·40 + 12·280 + 3·280 = 19580
@@ -142,7 +142,7 @@ class TestOwnClosureStillJudged:
         assert_cells(status_vals(resp), {"ok": 4310.0 / 365.0, "new": 4225.0 / 145.0})
 
     @pytest.mark.parametrize("formula", [
-        "amount:weighted_avg(weight=sum(customers.flagged_spend, "
+        "weighted_avg(amount, weight=sum(customers.flagged_spend, "
         "partition_by=customers.regions.name))",
         "sum(amount * sum(customers.flagged_spend, partition_by=customers.regions.name))",
     ], ids=["kwarg", "source"])

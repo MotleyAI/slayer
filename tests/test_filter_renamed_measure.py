@@ -1,8 +1,8 @@
-"""Filter / ORDER BY on raw colon-syntax measure formula must
+"""Filter / ORDER BY on a raw aggregation formula must
 resolve to the user-assigned alias when the same node renames the measure.
 
-Bug: filter ``"operbotdetref:count_distinct >= 5"`` paired with a measure
-``{"formula": "operbotdetref:count_distinct", "name": "robot_count"}`` was
+Bug: filter ``"count_distinct(operbotdetref) >= 5"`` paired with a measure
+``{"formula": "count_distinct(operbotdetref)", "name": "robot_count"}`` was
 rendered as ``WHERE per_robot_stats.operbotdetref_count_distinct >= 5``
 (canonical alias) — but the inner SELECT exposes only
 ``per_robot_stats.robot_count`` (user alias), so the query failed at
@@ -43,10 +43,10 @@ async def _generate(query: SlayerQuery, model: SlayerModel) -> str:
 
 
 class TestFilterRenamedMeasureRemap:
-    """The fix: filter `col:agg` with a same-node rename resolves to user alias."""
+    """The fix: filter `agg(col)` with a same-node rename resolves to user alias."""
 
     async def test_filter_renamed_measure_resolves_to_alias(self) -> None:
-        """Exact bug shape: filter uses the raw colon formula; same node
+        """Exact bug shape: filter uses the raw aggregation formula; same node
         renames the measure. The rendered SQL must apply the predicate to the
         actual aggregate (HAVING COUNT(DISTINCT customer_id) >= 5), NOT to a
         non-existent canonical alias `customer_id_count_distinct`.
@@ -56,9 +56,9 @@ class TestFilterRenamedMeasureRemap:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                ModelMeasure(formula="customer_id:count_distinct", name="num_customers"),
+                ModelMeasure(formula="count_distinct(customer_id)", name="num_customers"),
             ],
-            filters=["customer_id:count_distinct >= 5"],
+            filters=["count_distinct(customer_id) >= 5"],
         )
         sql = await _generate(query, model)
 
@@ -84,7 +84,7 @@ class TestFilterRenamedMeasureRemap:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                ModelMeasure(formula="customer_id:count_distinct", name="num_customers"),
+                ModelMeasure(formula="count_distinct(customer_id)", name="num_customers"),
             ],
             filters=["num_customers >= 5"],
         )
@@ -96,15 +96,15 @@ class TestFilterRenamedMeasureRemap:
         assert "customer_id_count_distinct" not in sql
 
     async def test_filter_unrenamed_measure_uses_canonical(self) -> None:
-        """Regression: when the measure is NOT renamed, filter on the colon
-        form resolves to the canonical alias as before.
+        """Regression: when the measure is NOT renamed, filter on the
+        aggregation resolves to the canonical alias as before.
         """
         model = _orders_model()
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="customer_id:count_distinct")],
-            filters=["customer_id:count_distinct >= 5"],
+            measures=[ModelMeasure(formula="count_distinct(customer_id)")],
+            filters=["count_distinct(customer_id) >= 5"],
         )
         sql = await _generate(query, model)
 
@@ -114,8 +114,8 @@ class TestFilterRenamedMeasureRemap:
         assert "customer_id_count_distinct" in sql
 
     async def test_filter_mixed_renamed_and_canonical(self) -> None:
-        """Arithmetic filter combining a renamed colon ref and an unrenamed
-        colon ref. The renamed half remaps; the unrenamed half stays
+        """Arithmetic filter combining a renamed aggregation and an unrenamed
+        one. The renamed half remaps; the unrenamed half stays
         canonical.
         """
         model = _orders_model()
@@ -123,10 +123,10 @@ class TestFilterRenamedMeasureRemap:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                ModelMeasure(formula="amount:sum", name="revenue"),
-                ModelMeasure(formula="customer_id:count_distinct"),
+                ModelMeasure(formula="sum(amount)", name="revenue"),
+                ModelMeasure(formula="count_distinct(customer_id)"),
             ],
-            filters=["amount:sum / customer_id:count_distinct > 100"],
+            filters=["sum(amount) / count_distinct(customer_id) > 100"],
         )
         sql = await _generate(query, model)
 
@@ -136,7 +136,7 @@ class TestFilterRenamedMeasureRemap:
         # rename consumed that slot.
         assert "HAVING" in sql, sql
         assert '"orders.revenue"' in sql
-        # Canonical for `amount:sum` must not appear (it's renamed to revenue).
+        # Canonical for `sum(amount)` must not appear (it's renamed to revenue).
         assert "orders.amount_sum" not in sql, (
             f"renamed canonical leaked:\n{sql}"
         )
@@ -156,9 +156,9 @@ class TestFilterRenamedMeasureRemap:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                ModelMeasure(formula="customer_id:count_distinct", name="num_customers"),
+                ModelMeasure(formula="count_distinct(customer_id)", name="num_customers"),
             ],
-            filters=["customer_id:count_distinct >= 5"],
+            filters=["count_distinct(customer_id) >= 5"],
         )
         sql = await _generate(query, model)
         having = _having_text(sql)
@@ -175,10 +175,10 @@ class TestFilterRenamedMeasureRemap:
 
 
 class TestOrderByRenamedMeasureRemap:
-    """ORDER BY on the raw colon form must remap to the user alias too."""
+    """ORDER BY on the raw aggregation must remap to the user alias too."""
 
     async def test_order_by_renamed_measure_canonical_form(self) -> None:
-        """``order=["customer_id:count_distinct desc"]`` with a renamed
+        """``order=["count_distinct(customer_id) desc"]`` with a renamed
         measure must resolve to the user alias, not to a non-existent
         canonical column.
         """
@@ -187,9 +187,9 @@ class TestOrderByRenamedMeasureRemap:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                ModelMeasure(formula="customer_id:count_distinct", name="num_customers"),
+                ModelMeasure(formula="count_distinct(customer_id)", name="num_customers"),
             ],
-            order=[OrderItem(column="customer_id:count_distinct", direction="desc")],
+            order=[OrderItem.model_validate({"column": "count_distinct(customer_id)", "direction": "desc"})],
         )
         sql = await _generate(query, model)
 
@@ -209,7 +209,7 @@ class TestOrderByRenamedMeasureRemap:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                ModelMeasure(formula="customer_id:count_distinct", name="num_customers"),
+                ModelMeasure(formula="count_distinct(customer_id)", name="num_customers"),
             ],
             order=[OrderItem(column=ColumnRef(name="num_customers"), direction="desc")],
         )
@@ -226,7 +226,7 @@ class TestRemapEdgeCases:
     ) -> None:
         """The filter remap is identifier-
         level only — canonical-name matches inside quoted string literals
-        must NOT be rewritten. Example: filter ``country:first = 'country_first'``
+        must NOT be rewritten. Example: filter ``first(country) = 'country_first'``
         with the measure renamed to ``primary_country`` must remap the
         first occurrence (the alias) but leave the literal
         ``'country_first'`` alone, otherwise the filter compares the
@@ -246,9 +246,9 @@ class TestRemapEdgeCases:
         query = SlayerQuery(
             source_model="orders",
             measures=[
-                ModelMeasure(formula="country:first", name="primary_country"),
+                ModelMeasure(formula="first(country)", name="primary_country"),
             ],
-            filters=["country:first = 'country_first'"],
+            filters=["first(country) = 'country_first'"],
         )
         sql = await _generate(query, model)
         # The literal 'country_first' must still appear in the emitted
@@ -261,12 +261,12 @@ class TestRemapEdgeCases:
     @pytest.mark.parametrize(
         ("formula_a", "formula_b"),
         [
-            # Two plain colon-syntax aggregates — Codex round 3 finding.
-            ("amount:sum", "profit:avg"),
+            # Two plain aggregates.
+            ("sum(amount)", "avg(profit)"),
             # Two arithmetic / non-aggregate measures — CodeRabbit + Codex
             # round 4: the duplicate-name check must cover all measure
             # kinds, not just the local legacy aggregated-measure node rename branch.
-            ("amount:sum / 100", "profit:avg * 2"),
+            ("sum(amount) / 100", "avg(profit) * 2"),
         ],
         ids=["plain_agg", "arithmetic"],
     )
@@ -280,7 +280,7 @@ class TestRemapEdgeCases:
         silently collapse to one alias, making filter/ORDER BY refs bind
         to whichever measure was processed first. The pre-pass validator
         must reject the collision regardless of measure shape — plain
-        colon aggregates, cross-model aggregates, or arithmetic /
+        aggregates, cross-model aggregates, or arithmetic /
         transform expressions.
         """
         model = SlayerModel(
@@ -315,8 +315,8 @@ class TestRemapEdgeCases:
         to the SAME underlying aggregate even though the user declared two
         distinct measures. Refuse the query at enrichment time.
 
-        Example: ``revenue:sum`` renamed to ``profit_avg`` AND a separate
-        ``profit:avg`` measure both end up at ``<model>.profit_avg``.
+        Example: ``sum(revenue)`` renamed to ``profit_avg`` AND a separate
+        ``avg(profit)`` measure both end up at ``<model>.profit_avg``.
         """
         model = SlayerModel(
             name="orders",
@@ -335,8 +335,8 @@ class TestRemapEdgeCases:
             measures=[
                 # Rename to a name that collides with the second measure's
                 # auto-canonical (``profit_avg``).
-                ModelMeasure(formula="revenue:sum", name="profit_avg"),
-                ModelMeasure(formula="profit:avg"),  # NOSONAR(S125) — canonical = "profit_avg" (explanatory note, not commented-out code)
+                ModelMeasure(formula="sum(revenue)", name="profit_avg"),
+                ModelMeasure(formula="avg(profit)"),  # NOSONAR(S125) — canonical = "profit_avg" (explanatory note, not commented-out code)
             ],
         )
         with pytest.raises(ValueError, match=r"declared more than once"):
@@ -347,7 +347,7 @@ class TestRemapEdgeCases:
     ) -> None:
         """If the canonical agg alias
         of a renamed measure literally shadows a source ``Column`` on the
-        model, the colon-form filter ``col:agg <op> N`` is ambiguous (it
+        model, the filter ``agg(col) <op> N`` is ambiguous (it
         could mean the renamed aggregate or the source column). Refuse
         the query at enrichment time rather than silently picking one and
         producing surprising SQL.
@@ -361,7 +361,7 @@ class TestRemapEdgeCases:
                 Column(name="status", sql="status", type=DataType.TEXT),
                 Column(name="amount", sql="amount", type=DataType.DOUBLE),
                 # Pathological: a real column whose name happens to equal
-                # the canonical alias of ``amount:sum``.
+                # the canonical alias of ``sum(amount)``.
                 Column(name="amount_sum", sql="amount_sum", type=DataType.DOUBLE),
             ],
         )
@@ -370,7 +370,7 @@ class TestRemapEdgeCases:
             dimensions=[ColumnRef(name="status")],
             # Rename triggers the collision check: canonical
             # ``amount_sum`` already names a source column.
-            measures=[ModelMeasure(formula="amount:sum", name="revenue")],
+            measures=[ModelMeasure(formula="sum(amount)", name="revenue")],
         )
         with pytest.raises(ValueError, match=r"shadows a source column"):
             await _generate(query, model)
@@ -404,7 +404,7 @@ class TestRemapEdgeCases:
             dimensions=[ColumnRef(name="status")],
             measures=[
                 # Triggers the rename branch — populates canonical_to_user_name.
-                ModelMeasure(formula="customer_id:count_distinct", name="num_customers"),
+                ModelMeasure(formula="count_distinct(customer_id)", name="num_customers"),
             ],
         )
         sql = await _generate(query, model)
@@ -425,7 +425,7 @@ class TestRemapEdgeCases:
     async def test_query_measure_name_collides_with_source_column_raises(
         self,
     ) -> None:
-        """Codex F2: ``{"formula": "amount:sum", "name": "status"}`` where
+        """Codex F2: ``{"formula": "sum(amount)", "name": "status"}`` where
         ``status`` is a source column must raise at enrichment with a clear
         message — otherwise alias-form filters silently bind to the source
         column instead of the renamed measure.
@@ -434,7 +434,7 @@ class TestRemapEdgeCases:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="id")],
-            measures=[ModelMeasure(formula="amount:sum", name="status")],
+            measures=[ModelMeasure(formula="sum(amount)", name="status")],
         )
         with pytest.raises(ValueError, match=r"matches a source column"):
             await _generate(query, model)

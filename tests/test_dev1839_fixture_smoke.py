@@ -102,7 +102,7 @@ class TestSeededDataset:
     async def test_channel_grain_totals(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region", "city", "channel"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         by = rows_by(resp, "orders.region", "orders.city", "orders.channel")
         assert set(by) == set(RCC_TOTAL)
@@ -112,7 +112,7 @@ class TestSeededDataset:
     async def test_ok_region_totals(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="ok_amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(ok_amount)", name="s")],
         ))
         by = rows_by(resp, "orders.region")
         assert {k[0]: float(r["orders.s"]) for k, r in by.items()} == pytest.approx(

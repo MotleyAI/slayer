@@ -42,9 +42,9 @@ from tests._gateway_harness import (
 )
 from tests.pg_facade.test_connection import _FakeWriter, _messages, _query, _startup, _terminate
 
-COUNT_ORDERS = {"source_model": "orders", "measures": [{"formula": "*:count", "name": "n"}]}
+COUNT_ORDERS = {"source_model": "orders", "measures": [{"formula": "count(*)", "name": "n"}]}
 REVENUE_BY_STATUS = {
-    "source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "amount:sum", "name": "rev"}],
+    "source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "sum(amount)", "name": "rev"}],
 }
 
 
@@ -144,7 +144,7 @@ class TestStatementsReachTheFactoryClient:
 
 _PUSHED = q(
     dimensions=["customers.tier"],
-    measures=[ModelMeasure(formula="amount:sum", name="m"), ModelMeasure(formula="customers.spend:sum", name="cm")],
+    measures=[ModelMeasure(formula="sum(amount)", name="m"), ModelMeasure(formula="sum(customers.spend)", name="cm")],
     filters=["channel = 'app'"],
 )
 
@@ -286,7 +286,7 @@ class TestEngineOwnsItsClients:
 
         assert asyncio.run(_inside_a_loop()) == 4
         with pytest.raises(SlayerError):
-            client.query_sync({"source_model": "no_such_model", "measures": [{"formula": "*:count"}]})
+            client.query_sync({"source_model": "no_such_model", "measures": [{"formula": "count(*)"}]})
         assert acloses() == 0
 
     def test_run_sync_leaves_custom_clients_open_when_cancelled(self, shop: Shop) -> None:

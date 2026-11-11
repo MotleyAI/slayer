@@ -34,7 +34,7 @@ EXTENSION = {
 }
 EXTENSION_WITH_MEASURES = {
     "source_name": "orders",
-    "measures": [{"formula": "amount:sum", "name": "rev"}],
+    "measures": [{"formula": "sum(amount)", "name": "rev"}],
 }
 EXTENSION_WITH_FILTERS = {"source_name": "orders", "filters": ["subtotal > tax_paid * 5"]}
 INLINE_MODEL = {
@@ -44,7 +44,7 @@ INLINE_MODEL = {
     "columns": [{"name": "x", "sql": "x", "type": "DOUBLE"}],
 }
 JOIN_TO_CUSTOMERS = {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}
-ONE_MEASURE = [{"formula": "amount:sum"}]
+ONE_MEASURE = [{"formula": "sum(amount)"}]
 
 
 def _leaf_types(tp) -> set:
@@ -234,7 +234,7 @@ class TestTypedAtConstruction:
         assert QueryRequest(source_model=model).source_model is model
 
     def test_rest_body_model_types_the_spec_and_feeds_the_query(self) -> None:
-        req = QueryRequest.model_validate({"source_model": "orders", "extensions": [EXTENSION], "measures": ["amount:sum"]})
+        req = QueryRequest.model_validate({"source_model": "orders", "extensions": [EXTENSION], "measures": ["sum(amount)"]})
         assert isinstance((req.extensions or [])[0], ModelExtension)
         q = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert (q.source_model, q.extensions) == (req.source_model, req.extensions)
@@ -262,7 +262,7 @@ class TestRoundTrip:
     ], ids=["extension", "model"])
     @pytest.mark.parametrize("mode", ["python", "json"])
     def test_dump_then_validate_equals_the_original(self, raw, mode) -> None:
-        q = _query(**raw, measures=["amount:sum"])
+        q = _query(**raw, measures=["sum(amount)"])
         again = SlayerQuery.model_validate(q.model_dump(mode=mode))
         assert again == q
         assert type(again.source_model) is type(q.source_model)
@@ -340,7 +340,7 @@ class TestExecutionParity:
     async def test_extension_columns_execute(self, chain_engine) -> None:
         resp = await chain_engine.execute(_query(
             source_model="orders", extensions=[EXTENSION],
-            measures=[{"formula": "double_amount:sum", "name": "dbl"}],
+            measures=[{"formula": "sum(double_amount)", "name": "dbl"}],
         ))
         assert resp.data[0]["orders.dbl"] == pytest.approx(130.0)
         assert resp.population == "orders"
@@ -351,7 +351,7 @@ class TestExecutionParity:
                 "name": "inl_orders", "data_source": DS_CHAIN, "sql_table": "orders",
                 "columns": [{"name": "amount", "type": "DOUBLE"}],
             },
-            measures=[{"formula": "amount:sum", "name": "total"}],
+            measures=[{"formula": "sum(amount)", "name": "total"}],
         ))
         assert resp.data[0]["inl_orders.total"] == pytest.approx(65.0)
         assert resp.population == "inl_orders"

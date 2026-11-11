@@ -91,7 +91,7 @@ async def inspect_setup(tmp_path) -> AsyncIterator[tuple[InspectService, object]
                    description="Hidden but inspectable.", hidden=True),
         ],
         measures=[
-            ModelMeasure(name="aov", formula="amount:sum / *:count",
+            ModelMeasure(name="aov", formula="sum(amount) / count(*)",
                          description="Average order value."),
         ],
         aggregations=[
@@ -222,7 +222,7 @@ async def test_measure_does_not_refresh(inspect_setup, monkeypatch) -> None:
     out = await svc.inspect(
         reference="ds.orders.aov", entity_type="measure", compact=False,
     )
-    assert "amount:sum / *:count" in out
+    assert "sum(amount) / count(*)" in out
     assert calls == [], "measures have no sample concept"
 
 

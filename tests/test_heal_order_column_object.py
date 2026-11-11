@@ -30,7 +30,7 @@ def by_region(order: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 class TestOrderItemCoercion:
-    @pytest.mark.parametrize("expr", ["sum(amount)", "amount:sum", "sum(amount) / count(*)", "rank(sum(amount), direction='desc')"])
+    @pytest.mark.parametrize("expr", ["sum(amount)", "sum(amount) / count(*)", "rank(sum(amount), direction='desc')"])
     def test_object_equals_string_form(self, expr: str) -> None:
         healed = SlayerQuery.model_validate(by_region([{"column": {"name": expr}}]))
         canonical = SlayerQuery.model_validate(by_region([{"column": expr}]))

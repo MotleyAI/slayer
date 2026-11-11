@@ -30,6 +30,7 @@ from slayer.core.models import (
 )
 from slayer.core.query import SlayerQuery
 from slayer.embeddings import client as embedding_client
+from slayer.search.retrievers.embeddings import EmbeddingRetriever
 from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
 from slayer.storage.yaml_storage import YAMLStorage
@@ -194,7 +195,7 @@ async def _seed_invariance_corpus(storage: StorageBackend) -> None:
             entities=["warehouse.orders.amount_paid"],
             query=SlayerQuery(
                 source_model="orders",
-                measures=[ModelMeasure(formula="amount_paid:sum")],
+                measures=[ModelMeasure(formula="sum(amount_paid)")],
             ),
         )
 
@@ -400,7 +401,6 @@ async def storage_with_embeddings(
             embedding_client, "embed_query", stub_embed_query,
         )
 
-        from slayer.search.retrievers.embeddings import EmbeddingRetriever
         emb_retriever = EmbeddingRetriever(storage=storage)
         persisted_models = []
         for m in _make_models():

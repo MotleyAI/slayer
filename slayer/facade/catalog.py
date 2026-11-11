@@ -33,6 +33,8 @@ from slayer.core.models import (
     SlayerModel,
     is_identifier,
 )
+from slayer.core.refs import functional_agg_text
+from slayer.core.syntax import measure_text_at_path
 from slayer.engine.key_metadata import aggregated_type
 from slayer.facade.datatypes import SUPPORTED_DATATYPES
 
@@ -126,9 +128,9 @@ def local_metrics(table: FacadeTable) -> list[FacadeMetric]:
        ``customers.regions.population_sum`` produced by joining sibling
        models' metrics under a dotted prefix.
     2. **Synthetic same-model entries** — the ``row_count`` rule-1
-       metric (``measure_formula="*:count"``), the column × built-in-
-       aggregation cartesian (``<col>_<agg>``, keyed by the legacy colon
-       formula ``<col>:<agg>``), and the column × custom-aggregation
+       metric (``measure_formula="count(*)"``), the column × built-in-
+       aggregation cartesian (``<col>_<agg>``, keyed by the formula
+       ``<agg>(<col>)``), and the column × custom-aggregation
        cartesian. None of these are user-authored — they're catalog
        fan-out so BI tools can pick any column × any agg.
     3. **Saved measures** — ``ModelMeasure`` entries where the catalog
@@ -471,11 +473,7 @@ def _metric_expansion(
         prefix = _path_dotted(path)
         joined_local = _local_metrics_for(model=joined_model)
         for m in joined_local:
-            if m.measure_formula == "*:count":
-                # The internal legacy-colon star count, dotted-prefixed by the joined model.
-                formula = f"{prefix}.*:count"
-            else:
-                formula = f"{prefix}.{m.measure_formula}"
+            formula = measure_text_at_path(m.measure_formula, path=path)
             out.append(
                 FacadeMetric(
                     name=f"{prefix}.{m.name}",
@@ -489,7 +487,7 @@ def _metric_expansion(
 
 
 def _synthetic_row_count(model: SlayerModel) -> FacadeMetric:
-    """Rule 1: synthetic row-count metric (legacy colon ``*:count`` formula), renamed on collision."""
+    """Rule 1: synthetic row-count metric (``count(*)``), renamed on collision."""
     name = "row_count"
     if any(c.name == "row_count" for c in model.columns):
         name = "_row_count"
@@ -503,7 +501,7 @@ def _synthetic_row_count(model: SlayerModel) -> FacadeMetric:
         name=name,
         description=f"Row count of {model.name}",
         data_type=DataType.INT,
-        measure_formula="*:count",
+        measure_formula="count(*)",
     )
 
 
@@ -530,7 +528,7 @@ def _column_x_builtin_aggs(model: SlayerModel) -> list[FacadeMetric]:
             description=_describe_column_agg(column=col, agg=agg),
             label=col.label,
             data_type=aggregated_type(model=model, measure_name=col.name, aggregation=agg),
-            measure_formula=f"{col.name}:{agg}",
+            measure_formula=functional_agg_text(source=col.name, suffix=agg),
         )
         for col in model.columns
         if not col.hidden
@@ -551,7 +549,7 @@ def _column_x_custom_aggs(model: SlayerModel) -> list[FacadeMetric]:
             ),
             label=col.label,
             data_type=aggregated_type(model=model, measure_name=col.name, aggregation=agg.name),
-            measure_formula=f"{col.name}:{agg.name}",
+            measure_formula=functional_agg_text(source=col.name, suffix=agg.name),
         )
         for agg in custom
         for col in model.columns

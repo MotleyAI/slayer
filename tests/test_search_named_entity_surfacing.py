@@ -32,7 +32,13 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import SlayerQuery
-from slayer.search.service import SearchService
+from slayer.search.service import (
+    LookupFound,
+    LookupHidden,
+    LookupMissing,
+    SearchService,
+    _lookup_named_entity,
+)
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -70,7 +76,7 @@ def _make_corpus_models() -> list[SlayerModel]:
             measures=[
                 ModelMeasure(
                     name="aov",
-                    formula="amount:sum / *:count",
+                    formula="sum(amount) / count(*)",
                     description="Average order value.",
                 ),
             ],
@@ -368,7 +374,7 @@ async def test_memory_id_in_entities_surfaces_query_bearing_in_example_queries(
         entities=["warehouse.orders.amount"],
         query=SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
         ),
     )
     resp = await service.search(
@@ -435,7 +441,7 @@ async def test_query_arg_entities_also_surface_in_entities_bucket(
 ) -> None:
     q = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="amount:sum")],
+        measures=[ModelMeasure(formula="sum(amount)")],
     )
     resp = await service.search(
         query=q,
@@ -698,7 +704,7 @@ async def test_stale_query_warning_for_named_memory_id_default_cap(
         entities=["warehouse.orders.amount"],
         query=SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
         ),
     )
     # Make `amount` stale — the attached query no longer resolves.
@@ -728,7 +734,7 @@ async def test_stale_query_warning_for_named_memory_id_under_tight_cap(
         entities=["warehouse.orders.amount"],
         query=SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
         ),
     )
     await _make_amount_stale(storage)
@@ -761,13 +767,6 @@ async def test_lookup_returns_missing_when_model_deleted_after_resolution(
     """``_lookup_named_entity`` returns ``Missing`` (not ``Hidden``) when
     the canonical resolved successfully but the model was deleted in the
     window between resolution and lookup."""
-    from slayer.search.service import (
-        _lookup_named_entity,
-        LookupFound,
-        LookupHidden,
-        LookupMissing,
-    )
-
     canonical = "warehouse.orders.amount"
     # Sanity: it exists pre-delete.
     result = await _lookup_named_entity(
@@ -791,12 +790,6 @@ async def test_lookup_returns_missing_when_bare_datasource_deleted(
     """Bare ``<ds>`` lookup re-verifies datasource membership via
     ``list_datasources()`` — a datasource that's gone returns ``Missing``,
     not a stale render."""
-    from slayer.search.service import (
-        _lookup_named_entity,
-        LookupFound,
-        LookupMissing,
-    )
-
     canonical = "empty_ds"
     pre = await _lookup_named_entity(
         canonical=canonical, storage=storage, corpus=None,

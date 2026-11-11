@@ -48,7 +48,7 @@ from tests._dev1838_fixtures import (
 )
 from tests.test_dev1837_guards import ARM_COMBINED_CTE_BODY, ARM_ROW_CTE_BODY
 
-M = ModelMeasure(formula="amount:sum", name="m")
+M = ModelMeasure(formula="sum(amount)", name="m")
 
 #: The generator's re-rooted first/last CTE-body residual (generator.py) —
 #: the third guard the lift removes.
@@ -84,7 +84,7 @@ class TestNestedAttachInsideProducer:
     async def test_row_attach_inside_filtered_local_subplan(self, exec_backend):
         dialect, engine = exec_backend
         query = q(dimensions=["status", BAND],
-                  measures=[M, ModelMeasure(formula="gold_amount:sum", name="g")])
+                  measures=[M, ModelMeasure(formula="sum(gold_amount)", name="g")])
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.status", "orders.band")
         got = {
@@ -119,9 +119,9 @@ class TestNestedAttachInsideProducer:
         producer rides inside the filtered-local sub-plan's grain."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=["status", {"expression": "amount:last(partition_by=city)",
+            dimensions=["status", {"expression": "last(amount, partition_by=city)",
                                    "name": "cl"}],
-            measures=[ModelMeasure(formula="gold_amount:sum", name="g")],
+            measures=[ModelMeasure(formula="sum(gold_amount)", name="g")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.status", "orders.cl")
@@ -146,7 +146,7 @@ class TestNestedAttachInsideProducer:
         regress it."""
         dialect, engine = exec_backend
         query = q(dimensions=["status", BAND],
-                  measures=[ModelMeasure(formula="customers.spend:last",
+                  measures=[ModelMeasure(formula="last(customers.spend)",
                                          name="sl")])
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.status", "orders.band")
@@ -164,8 +164,8 @@ class TestNestedAttachInsideProducer:
         filtered-local measure renders one flat WITH today."""
         dialect, engine = exec_backend
         query = q(dimensions=["status"],
-                  measures=[ModelMeasure(formula="gold_amount:sum", name="g")],
-                  order=[OrderItem(column="amount:last", direction="desc")])
+                  measures=[ModelMeasure(formula="sum(gold_amount)", name="g")],
+                  order=[OrderItem.model_validate({"column": "last(amount)", "direction": "desc"})])
         resp = await engine.execute(query)
         got = [(r["orders.status"], float(r["orders.g"])) for r in resp.data]
         assert got == [("new", 20.0), ("ok", 10.0)]
@@ -179,7 +179,7 @@ class TestNonFinalStage:
     @staticmethod
     def _banded_stages(**stage2_kwargs) -> list:
         stage1 = q(name="banded", dimensions=["region", BAND],
-                   measures=[ModelMeasure(formula="amount:sum", name="bt")])
+                   measures=[ModelMeasure(formula="sum(amount)", name="bt")])
         stage2 = SlayerQuery(source_model="banded",
                              extensions=[ModelExtension(source_name="banded")],
                              **stage2_kwargs)
@@ -191,7 +191,7 @@ class TestNonFinalStage:
         dialect, engine = exec_backend
         stages = self._banded_stages(
             dimensions=["region"], filters=["band == 1"],
-            measures=[ModelMeasure(formula="bt:sum", name="total")],
+            measures=[ModelMeasure(formula="sum(bt)", name="total")],
         )
         resp = await engine.execute(stages)
         by = rows_by(resp, "banded.region")
@@ -209,13 +209,13 @@ class TestNonFinalStage:
         dialect, engine = exec_backend
         stages = [
             q(name="s1", dimensions=["region"],
-              measures=[ModelMeasure(formula="amount:sum", name="m"),
-                        ModelMeasure(formula="amount:sum(partition_by=[])",
+              measures=[ModelMeasure(formula="sum(amount)", name="m"),
+                        ModelMeasure(formula="sum(amount, partition_by=[])",
                                      name="gt")]),
             SlayerQuery(source_model="s1", extensions=[ModelExtension(source_name="s1")],
                         dimensions=["region"],
-                        measures=[ModelMeasure(formula="m:sum", name="ms"),
-                                  ModelMeasure(formula="gt:max", name="gts")]),
+                        measures=[ModelMeasure(formula="sum(m)", name="ms"),
+                                  ModelMeasure(formula="max(gt)", name="gts")]),
         ]
         resp = await engine.execute(stages)
         by = rows_by(resp, "s1.region")
@@ -232,12 +232,12 @@ class TestNonFinalStage:
         stages = [
             q(name="s1", dimensions=["region", BAND],
               time_dimensions=month_td(),
-              measures=[ModelMeasure(formula="amount:sum", name="m"),
-                        ModelMeasure(formula="amount:sum(window='1y')",
+              measures=[ModelMeasure(formula="sum(amount)", name="m"),
+                        ModelMeasure(formula="sum(amount, window='1y')",
                                      name="w")]),
             SlayerQuery(source_model="s1", extensions=[ModelExtension(source_name="s1")],
                         dimensions=["region"],
-                        measures=[ModelMeasure(formula="w:max", name="wm")]),
+                        measures=[ModelMeasure(formula="max(w)", name="wm")]),
         ]
         resp = await engine.execute(stages)
         by = rows_by(resp, "s1.region")
@@ -259,10 +259,10 @@ class TestNestingIsCardinalityNeutral:
             dims = ["region", BAND] if with_band else ["region"]
             return [
                 q(name="s1", dimensions=dims,
-                  measures=[ModelMeasure(formula="amount:sum", name="bt")]),
+                  measures=[ModelMeasure(formula="sum(amount)", name="bt")]),
                 SlayerQuery(source_model="s1", extensions=[ModelExtension(source_name="s1")],
                             dimensions=["region"],
-                            measures=[ModelMeasure(formula="bt:sum", name="t")]),
+                            measures=[ModelMeasure(formula="sum(bt)", name="t")]),
             ]
 
         with_attach = await engine.execute(stages(True))

@@ -95,7 +95,7 @@ NULL_STATUS_LAST = 52.0
 
 #: ``fan``: order 15 carries four tags, TWO of them ``rush``. The duplicate is
 #: what makes 1:N multiply-per-match observable — filtering to ``rush`` matches
-#: order 15 twice, so a sibling ``amount:sum`` doubles its contribution while
+#: order 15 twice, so a sibling ``sum(amount)`` doubles its contribution while
 #: the ranked pick, which only cares which row is newest, does not move.
 FAN_FIRST = 71.0
 FAN_LAST = 73.0
@@ -161,7 +161,7 @@ def seed_dev1748_sqlite(db_path: str) -> None:
             [
                 (100, 1, "gold", CUSTOMER_SPEND_FIRST, "2024-01-01"),
                 (102, 2, "silver", 75.0, "2024-02-01"),
-                # Signed up last -> wins ``customers.spend:last``.
+                # Signed up last -> wins ``last(customers.spend)``.
                 (101, 2, None, CUSTOMER_SPEND_LAST, "2024-03-01"),
             ],
         )

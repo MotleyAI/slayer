@@ -1,6 +1,6 @@
 """DEV-1854 — ``consecutive_periods`` over null-test predicates (``is None`` /
 ``is not None``), executed on SQLite + DuckDB against
-``tests/_dev1846_fixtures.py``. Store B's March ``hi_rev:sum`` is NULL (no row
+``tests/_dev1846_fixtures.py``. Store B's March ``sum(hi_rev)`` is NULL (no row
 clears the >15 filter); store A's never is.
 """
 
@@ -42,12 +42,12 @@ def _by_store_month(resp) -> dict:
 
 class TestNullTestExecution:
     async def test_top_level_is_not_null_by_store(self, exec_engine) -> None:
-        """``hi_rev:sum is not None`` drives the streak: A never NULL → 1,2,3;
+        """``sum(hi_rev) is not None`` drives the streak: A never NULL → 1,2,3;
         B NULL in March → 1, 2, 0."""
         resp = await exec_engine.execute(_q(
             dimensions=["store"],
             measures=[ModelMeasure(
-                formula="consecutive_periods(hi_rev:sum is not None)",
+                formula="consecutive_periods(sum(hi_rev) is not None)",
                 name="streak")],
         ))
         by = _by_store_month(resp)
@@ -63,7 +63,7 @@ class TestNullTestExecution:
         resp = await exec_engine.execute(_q(
             dimensions=["store"],
             measures=[ModelMeasure(
-                formula="consecutive_periods(hi_rev:sum is None)",
+                formula="consecutive_periods(sum(hi_rev) is None)",
                 name="streak")],
         ))
         by = _by_store_month(resp)
@@ -81,7 +81,7 @@ class TestNullTestExecution:
         resp = await exec_engine.execute(_q(
             dimensions=["store"],
             measures=[ModelMeasure(
-                formula="consecutive_periods(hi_rev:sum is not None and cost:sum > 0)",
+                formula="consecutive_periods(sum(hi_rev) is not None and sum(cost) > 0)",
                 name="streak")],
         ))
         by = _by_store_month(resp)
@@ -112,7 +112,7 @@ class TestNullTestTypingContract:
         """``(… is None) + 1`` is 1 or 2, never 0: B's NULL March keeps the run going."""
         resp = await exec_engine.execute(_q(
             dimensions=["store"],
-            measures=[ModelMeasure(formula="consecutive_periods((hi_rev:sum is None) + 1)", name="streak")],
+            measures=[ModelMeasure(formula="consecutive_periods((sum(hi_rev) is None) + 1)", name="streak")],
         ))
         by = _by_store_month(resp)
         for store in ("A", "B"):

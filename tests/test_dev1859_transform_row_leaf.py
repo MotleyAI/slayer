@@ -39,7 +39,7 @@ SHAPES = {
     "bare": "weight",
     "composite": "weight * qty",
     "predicate": "weight > 0",
-    "mixed": "weight * revenue:sum(partition_by=store)",
+    "mixed": "weight * sum(revenue, partition_by=store)",
 }
 
 
@@ -141,7 +141,7 @@ class TestGrainRefiningLeafRejected:
     async def test_filter_position(self, exec_engine):
         q = _q(time_dimensions=month_td(),
                filters=["cumsum(weight) > 0"],
-               measures=[ModelMeasure(formula="revenue:sum", name="r")])
+               measures=[ModelMeasure(formula="sum(revenue)", name="r")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(q)
         _assert_leg_b_message(str(ei.value), "cumsum")
@@ -149,7 +149,7 @@ class TestGrainRefiningLeafRejected:
     async def test_order_position(self, exec_engine):
         q = _q(time_dimensions=month_td(),
                order=[{"column": "rank(qty, direction='desc')", "direction": "desc"}],
-               measures=[ModelMeasure(formula="revenue:sum", name="r")])
+               measures=[ModelMeasure(formula="sum(revenue)", name="r")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(q)
         _assert_leg_b_message(str(ei.value), "rank")
@@ -203,7 +203,7 @@ class TestWalkerBehaviourUnchanged:
         resp = await exec_engine.execute(_q(
             dimensions=["store"], time_dimensions=month_td(),
             measures=[ModelMeasure(
-                formula="cumsum(weight:sum(partition_by=store))", name="t")]))
+                formula="cumsum(sum(weight, partition_by=store))", name="t")]))
         assert resp.data
 
     async def test_all_projected_composite_is_legal(self, exec_engine):
@@ -241,7 +241,7 @@ class TestLastOverShiftComposition:
     async def test_last_over_change_broadcasts_latest_period(self, exec_engine):
         resp = await exec_engine.execute(_q(
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="last(change(revenue:sum))", name="t")]))
+            measures=[ModelMeasure(formula="last(change(sum(revenue)))", name="t")]))
         # revenue:sum 60/100/60 → change NULL/+40/-40; last() = -40 broadcast.
         got = {month_key(r["sales.ordered_at"]): r["sales.t"] for r in resp.data}
         assert got == {"2024-01": -40.0, "2024-02": -40.0, "2024-03": -40.0}
@@ -254,9 +254,9 @@ class TestLastOverShiftComposition:
         # store A 30/40/50 → +10 (dropped). Pin the survivors and their change.
         resp = await exec_engine.execute(_q(
             time_dimensions=month_td(), dimensions=["store"],
-            measures=["revenue:sum",
-                      ModelMeasure(formula="change(revenue:sum)", name="ch")],
-            filters=["last(change(revenue:sum)) < 0"]))
+            measures=["sum(revenue)",
+                      ModelMeasure(formula="change(sum(revenue))", name="ch")],
+            filters=["last(change(sum(revenue))) < 0"]))
         rows = [(r["sales.store"], month_key(r["sales.ordered_at"]), r["sales.ch"])
                 for r in resp.data]
         assert len(rows) == 3  # no duplicate broadcast rows

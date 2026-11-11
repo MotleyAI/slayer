@@ -24,10 +24,10 @@ from tests._dev1840_fixtures import (
     tq,
 )
 
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
-RM = ModelMeasure(formula="stores.rent:sum", name="rm")
-SM = ModelMeasure(formula="agents.score:sum", name="sm")
-RV = ModelMeasure(formula="reviews.stars:sum", name="rv")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+RM = ModelMeasure(formula="sum(stores.rent)", name="rm")
+SM = ModelMeasure(formula="sum(agents.score)", name="sm")
+RV = ModelMeasure(formula="sum(reviews.stars)", name="rv")
 
 
 def _plan(query, models=None):

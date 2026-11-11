@@ -36,7 +36,7 @@ class TestProducerOutputAlias:
         sql = await gen(_q(
             dimensions=["region", "city"],
             measures=[ModelMeasure(
-                formula="amount:sum(partition_by=region)", name="region_rev",
+                formula="sum(amount, partition_by=region)", name="region_rev",
             )],
         ), dialect=dialect)
         body = cm_cte_bodies(sql)
@@ -48,7 +48,7 @@ class TestProducerOutputAlias:
         sql = await gen(_q(
             dimensions=["region", "city"],
             measures=[ModelMeasure(
-                formula="amount:sum / amount:sum(partition_by=region)", name="sh",
+                formula="sum(amount) / sum(amount, partition_by=region)", name="sh",
             )],
         ), dialect=dialect)
         body = cm_cte_bodies(sql)
@@ -65,7 +65,7 @@ async def test_filtered_measure_predicate_lives_in_producer(dialect: str) -> Non
     sql = await gen(_q(
         dimensions=["region", "city"],
         measures=[ModelMeasure(
-            formula="ok_amount:sum(partition_by=region)", name="o",
+            formula="sum(ok_amount, partition_by=region)", name="o",
         )],
     ), dialect=dialect)
     body = cm_cte_bodies(sql)

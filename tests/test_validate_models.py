@@ -558,9 +558,9 @@ class TestCascadeRules:
         """
         model = _orders_model(
             measures=[
-                ModelMeasure(formula="amount:sum", name="total_amount"),
+                ModelMeasure(formula="sum(amount)", name="total_amount"),
                 # transitive: refs total_amount which itself refs dropped 'amount'
-                ModelMeasure(formula="total_amount / *:count", name="aov"),
+                ModelMeasure(formula="total_amount / count(*)", name="aov"),
             ],
         )
         edit = EditModelDelete(
@@ -762,15 +762,15 @@ class TestCascadeRules:
             name="qb_orders_summary",
             data_source="ds",
             source_queries=[
-                SlayerQuery(
-                    name="stage_a",
-                    source_model="orders",
-                    measures=[{"formula": "amount:sum", "name": "total"}],
-                ),
-                SlayerQuery(
-                    source_model="stage_a",
-                    measures=[{"formula": "total:max", "name": "peak"}],
-                ),
+                SlayerQuery.model_validate({
+                    "name": "stage_a",
+                    "source_model": "orders",
+                    "measures": [{"formula": "sum(amount)", "name": "total"}],
+                }),
+                SlayerQuery.model_validate({
+                    "source_model": "stage_a",
+                    "measures": [{"formula": "max(total)", "name": "peak"}],
+                }),
             ],
         )
         # 'amount' on orders dropped — qb_orders_summary stage_a refs it
@@ -787,11 +787,11 @@ class TestCascadeRules:
         qb_entry = _entry_for("qb_orders_summary", out)
         assert isinstance(qb_entry, WholeModelDelete)
 
-    def test_rule_6_query_backed_stage_filter_with_colon_syntax_cascades(
+    def test_rule_6_query_backed_stage_filter_with_aggregation_cascades(
         self,
     ) -> None:
         """A query-backed model whose stage filter uses Mode B DSL constructs
-        (``revenue:sum > 100``, ``change(...) > 0``) must still trigger a
+        (``sum(revenue) > 100``, ``change(...) > 0``) must still trigger a
         cascade drop when the underlying column is dropped. Regression for
         Stage filters were once routed through the SQL-only ref
         extractor and returned ``[]``, so drift cascades were missed.
@@ -801,13 +801,11 @@ class TestCascadeRules:
             name="qb_orders_filtered",
             data_source="ds",
             source_queries=[
-                SlayerQuery(
-                    source_model="orders",
-                    measures=[{"formula": "amount:sum", "name": "total"}],
-                    # DSL filter using colon-syntax aggregation — must be
-                    # parsed by the DSL parser so 'amount' surfaces as a ref.
-                    filters=["amount:sum > 100"],
-                ),
+                SlayerQuery.model_validate({
+                    "source_model": "orders",
+                    "measures": [{"formula": "sum(amount)", "name": "total"}],
+                    "filters": ["sum(amount) > 100"],
+                }),
             ],
         )
         edit = EditModelDelete(
@@ -834,10 +832,10 @@ class TestCascadeRules:
             name="qb_orders",
             data_source="ds",
             source_queries=[
-                SlayerQuery(
-                    source_model="orders",
-                    measures=[{"formula": "amount:sum", "name": "total"}],
-                ),
+                SlayerQuery.model_validate({
+                    "source_model": "orders",
+                    "measures": [{"formula": "sum(amount)", "name": "total"}],
+                }),
             ],
         )
         whole = WholeModelDelete(model_name="orders", data_source="ds")
@@ -861,7 +859,7 @@ class TestCascadeRules:
                 # don't trigger cascade, so this column survives.
                 Column(name="id_doubled", sql="id * 2", type=DataType.DOUBLE),
             ],
-            measures=[ModelMeasure(formula="id:count_distinct", name="unique_ids")],
+            measures=[ModelMeasure(formula="count_distinct(id)", name="unique_ids")],
         )
         edit = EditModelDelete(
             model_name="orders",
@@ -1319,7 +1317,7 @@ class TestValidateModelsSqliteProbe:
             ],
             measures=[
                 ModelMeasure(
-                    formula="tempstabidx:sum",
+                    formula="sum(tempstabidx)",
                     name="stab_total",
                 ),
             ],

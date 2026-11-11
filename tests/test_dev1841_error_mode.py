@@ -24,10 +24,10 @@ from tests._dev1841_fixtures import (
     rows_by,
 )
 
-M = ModelMeasure(formula="amount:sum", name="m")
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
-SM = ModelMeasure(formula="agents.score:sum", name="sm")
-SP = ModelMeasure(formula="spend:sum", name="sp")
+M = ModelMeasure(formula="sum(amount)", name="m")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+SM = ModelMeasure(formula="sum(agents.score)", name="sm")
+SP = ModelMeasure(formula="sum(spend)", name="sp")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -115,7 +115,7 @@ class TestErrorModePasses:
         resp = await engine.execute(error_q(
             dimensions=["status"],
             measures=[ModelMeasure(
-                formula="customers.spend:sum(partition_by=[])", name="total")]))
+                formula="sum(customers.spend, partition_by=[])", name="total")]))
         for row in resp.data:
             assert float(row["orders.total"]) == pytest.approx(BCAST_SPEND_CROSS)
 
@@ -140,7 +140,7 @@ class TestStrictParity:
         migrated = SlayerQuery.model_validate({
             "version": 3, "source_model": "orders", "strict": True,
             "dimensions": ["status"],
-            "measures": [{"formula": "customers.spend:sum", "name": "cm"}],
+            "measures": [{"formula": "sum(customers.spend)", "name": "cm"}],
         })
         assert migrated.to_many_handling == "error"
         with pytest.raises((SlayerError, ValueError)):

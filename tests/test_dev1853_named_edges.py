@@ -58,23 +58,26 @@ class TestNamesAreDirectionAgnostic:
     async def test_reverse_measure_through_the_billing_edge(
         self, named_engine,
     ) -> None:
-        resp = await named_engine.execute(SlayerQuery(
-            source_model="customers", dimensions=["name"],
-            measures=[{"formula": "billing_customer.amount:sum", "name": "b"}]))
+        resp = await named_engine.execute(SlayerQuery.model_validate({
+            "source_model": "customers",
+            "dimensions": ["name"],
+            "measures": [{"formula": "sum(billing_customer.amount)", "name": "b"}],
+        }))
         got = {r["customers.name"]: r["customers.b"] for r in resp.data}
         assert got == PARALLEL_BILLING_AMOUNTS
 
 
 class TestNamedTerminalMetadata:
     async def test_time_dimension_grouping_and_ordering(self, named_engine) -> None:
-        resp = await named_engine.execute(SlayerQuery(
-            source_model="orders",
-            time_dimensions=[TimeDimension(
+        resp = await named_engine.execute(SlayerQuery.model_validate({
+            "source_model": "orders",
+            "time_dimensions": [TimeDimension(
                 dimension="billing_customer.signup_at",
                 granularity=TimeGranularity.MONTH)],
-            measures=[{"formula": "amount:sum", "name": "t"}],
-            order=[{"column": "billing_customer.signup_at",
-                    "direction": "asc"}]))
+            "measures": [{"formula": "sum(amount)", "name": "t"}],
+            "order": [{"column": "billing_customer.signup_at",
+                    "direction": "asc"}],
+        }))
         key = "orders.billing_customer.signup_at"
         assert key in resp.data[0]
         months = [str(r[key])[:7] for r in resp.data]
@@ -92,7 +95,7 @@ class TestNamedTerminalMetadata:
     ) -> None:
         resp = await named_engine.execute(SlayerQuery(
             source_model="orders", dimensions=["billing_customer.tier"],
-            measures=[{"formula": "billing_customer.spend:sum",
+            measures=[{"formula": "sum(billing_customer.spend)",
                        "name": "cs"}]))
         got = {r["orders.billing_customer.tier"]: r["orders.cs"]
                for r in resp.data}
@@ -105,7 +108,7 @@ class TestNamedEdgeInRankedProducer:
         resp = await named_engine.execute(SlayerQuery(
             source_model="orders",
             measures=[{"formula":
-                       "billing_customer.spend:last(billing_customer.signup_at)",
+                       "last(billing_customer.spend, billing_customer.signup_at)",
                        "name": "l"}]))
         assert len(resp.data) == 1
         assert resp.data[0]["orders.l"] == \
@@ -147,7 +150,7 @@ class TestNamedEdgeValidationConsumers:
             if col.name == "spend":
                 col.allowed_aggregations = ["sum"]
         cust.measures = [*cust.measures, ModelMeasure(
-            name="total_b", formula="billing_customer.amount:sum")]
+            name="total_b", formula="sum(billing_customer.amount)")]
         await storage.save_model(cust)
 
     async def test_column_filter_applies_over_the_named_edge(
@@ -156,7 +159,7 @@ class TestNamedEdgeValidationConsumers:
         await self._augment_customers(named_engine)
         resp = await named_engine.execute(SlayerQuery(
             source_model="orders",
-            measures=[{"formula": "billing_customer.gold_spend:sum",
+            measures=[{"formula": "sum(billing_customer.gold_spend)",
                        "name": "g"}]))
         # Gold customers only (Alice 100 + Cara 60), not the full 310.
         assert resp.data[0]["orders.g"] == 160.0
@@ -165,9 +168,10 @@ class TestNamedEdgeValidationConsumers:
         self, named_engine,
     ) -> None:
         await self._augment_customers(named_engine)
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "billing_customer.spend:avg", "name": "a"}])
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "avg(billing_customer.spend)", "name": "a"}],
+        })
         with pytest.raises(AggregationNotAllowedError):
             await named_engine.execute(query)
 
@@ -195,12 +199,13 @@ class TestNamedEdgeValidationConsumers:
         self, named_engine,
     ) -> None:
         await self._augment_customers(named_engine)
-        resp = await named_engine.execute(SlayerQuery(
-            source_model="orders",
-            time_dimensions=[TimeDimension(
+        resp = await named_engine.execute(SlayerQuery.model_validate({
+            "source_model": "orders",
+            "time_dimensions": [TimeDimension(
                 dimension="billing_customer.signup_day",
                 granularity=TimeGranularity.MONTH)],
-            measures=[{"formula": "amount:sum", "name": "t"}]))
+            "measures": [{"formula": "sum(amount)", "name": "t"}],
+        }))
         months = {str(r["orders.billing_customer.signup_day"])[:7]: r["orders.t"]
                   for r in resp.data}
         assert months == PARALLEL_BILLING_MONTH_AMOUNTS
@@ -209,10 +214,12 @@ class TestNamedEdgeValidationConsumers:
         self, named_engine,
     ) -> None:
         """The hidden host-grain MIN/MAX order wrap walks the named edge."""
-        resp = await named_engine.execute(SlayerQuery(
-            source_model="orders", dimensions=["status"],
-            measures=[{"formula": "amount:sum", "name": "t"}],
-            order=[{"column": "billing_customer.name", "direction": "desc"}]))
+        resp = await named_engine.execute(SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": ["status"],
+            "measures": [{"formula": "sum(amount)", "name": "t"}],
+            "order": [{"column": "billing_customer.name", "direction": "desc"}],
+        }))
         # Desc by each group's max billing name: ok (Bob) before new (Alice).
         assert [r["orders.status"] for r in resp.data] == ["ok", "new"]
         assert [r["orders.t"] for r in resp.data] == [40.0, 20.0]

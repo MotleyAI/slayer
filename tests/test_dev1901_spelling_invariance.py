@@ -115,14 +115,14 @@ def _joined_tables(sql: str) -> set:
 
 @pytest.mark.parametrize("col", ["store_no", "customers.spend", "cust_spend", "customers.regions.pop"])
 async def test_join_registration(col: str) -> None:
-    plain = await _sql(f"amount:wsum(weight={col})")
-    frag = await _sql(f"amount:wsum(weight='{col} * 1')")
+    plain = await _sql(f"wsum(amount, weight={col})")
+    frag = await _sql(f"wsum(amount, weight='{col} * 1')")
     assert _joined_tables(frag) == _joined_tables(plain)
 
 
 async def test_fanning_leaf_refused_in_both_spellings() -> None:
     col = "customers.regions.region_events.value"
-    for formula in (f"amount:wsum(weight={col})", f"amount:wsum(weight='{col} * 1')"):
+    for formula in (f"wsum(amount, weight={col})", f"wsum(amount, weight='{col} * 1')"):
         with pytest.raises(ValueError, match="(?i)unproven join hop") as ei:
             await _sql(formula)
         assert "region_events" in str(ei.value)

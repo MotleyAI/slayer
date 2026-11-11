@@ -70,7 +70,7 @@ def _block_model() -> SlayerModel:
 async def test_optional_block_collapses_to_unfiltered_when_missing():
     engine, tmp = await _engine_with(_block_model())
     try:
-        q = SlayerQuery(source_model="orders", measures=[{"formula": "amount:sum"}])
+        q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
         resp = await engine.execute(q)
         assert _sum(resp, "orders.amount_sum") == 735.0
     finally:
@@ -80,11 +80,11 @@ async def test_optional_block_collapses_to_unfiltered_when_missing():
 async def test_optional_block_filters_with_in_list_when_present():
     engine, tmp = await _engine_with(_block_model())
     try:
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:sum"}],
-            variables={"regions": ["US", "CA"]},
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)"}],
+            "variables": {"regions": ["US", "CA"]},
+        })
         resp = await engine.execute(q)
         assert _sum(resp, "orders.amount_sum") == 460.0  # US 160 + CA 300
     finally:
@@ -94,11 +94,11 @@ async def test_optional_block_filters_with_in_list_when_present():
 async def test_optional_block_single_value_list():
     engine, tmp = await _engine_with(_block_model())
     try:
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:sum"}],
-            variables={"regions": ["EU"]},
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)"}],
+            "variables": {"regions": ["EU"]},
+        })
         resp = await engine.execute(q)
         assert _sum(resp, "orders.amount_sum") == 275.0
     finally:
@@ -119,11 +119,11 @@ async def test_required_var_alongside_block_raises_and_names_it():
     )
     engine, tmp = await _engine_with(model)
     try:
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:sum"}],
-            variables={"regions": ["US"]},  # min_amount omitted
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)"}],
+            "variables": {"regions": ["US"]},
+        })
         with pytest.raises(Exception, match="min_amount"):
             await engine.execute(q)
     finally:
@@ -182,7 +182,7 @@ async def test_bare_var_default_satisfies_required_at_runtime():
     )
     engine, tmp = await _engine_with(model)
     try:
-        q = SlayerQuery(source_model="orders", measures=[{"formula": "amount:sum"}])
+        q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
         resp = await engine.execute(q)
         assert _sum(resp, "orders.amount_sum") == 275.0  # EU only
     finally:

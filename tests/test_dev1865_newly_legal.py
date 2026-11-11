@@ -34,13 +34,13 @@ class TestCrossModelPartitionedFilter:
     ) -> None:
         base = q(
             dimensions=["customers.regions.name", "customers.tier"],
-            measures=[ModelMeasure(formula="customers.spend:sum", name="sp")],
+            measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],
         )
         unfiltered = rows_by(await exec_engine.execute(base), RK_REGION, RK_TIER)
         filtered = rows_by(await exec_engine.execute(q(
             dimensions=["customers.regions.name", "customers.tier"],
-            filters=["customers.spend:sum(partition_by=customers.regions.name) > 100"],
-            measures=[ModelMeasure(formula="customers.spend:sum", name="sp")],
+            filters=["sum(customers.spend, partition_by=customers.regions.name) > 100"],
+            measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],
         )), RK_REGION, RK_TIER)
         # RegN partition total 300 > 100 survives; RegS total 50 does not.
         assert {k[0] for k in filtered} == {"RegN"}
@@ -56,9 +56,9 @@ class TestCrossModelPartitionedFilter:
         base = q(
             dimensions=["customers.regions.name", "customers.tier"],
             measures=[
-                ModelMeasure(formula="customers.spend:sum", name="sp"),
+                ModelMeasure(formula="sum(customers.spend)", name="sp"),
                 ModelMeasure(
-                    formula="customers.spend:sum(partition_by=customers.regions.name)",
+                    formula="sum(customers.spend, partition_by=customers.regions.name)",
                     name="rsp",
                 ),
             ],
@@ -66,11 +66,11 @@ class TestCrossModelPartitionedFilter:
         unfiltered = rows_by(await exec_engine.execute(base), RK_REGION, RK_TIER)
         filtered = rows_by(await exec_engine.execute(q(
             dimensions=["customers.regions.name", "customers.tier"],
-            filters=["customers.spend:sum(partition_by=customers.regions.name) > 100"],
+            filters=["sum(customers.spend, partition_by=customers.regions.name) > 100"],
             measures=[
-                ModelMeasure(formula="customers.spend:sum", name="sp"),
+                ModelMeasure(formula="sum(customers.spend)", name="sp"),
                 ModelMeasure(
-                    formula="customers.spend:sum(partition_by=customers.regions.name)",
+                    formula="sum(customers.spend, partition_by=customers.regions.name)",
                     name="rsp",
                 ),
             ],
@@ -92,13 +92,13 @@ class TestLocalPartitionedFilter:
     async def test_keep_rows_whose_partition_total_qualifies(self, exec_engine) -> None:
         base = q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         unfiltered = rows_by(await exec_engine.execute(base), "orders.region", "orders.city")
         filtered = rows_by(await exec_engine.execute(q(
             dimensions=["region", "city"],
-            filters=["amount:sum(partition_by=region) > 50"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            filters=["sum(amount, partition_by=region) > 50"],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )), "orders.region", "orders.city")
         # North (100) and NULL-region (60) qualify; South (50) does not.
         assert {k for k in filtered} == {k for k in unfiltered if REGION_TOTAL[k[0]] > 50}
@@ -113,13 +113,13 @@ class TestLocalPartitionedFilter:
 
         combined = await exec_engine.execute(q(
             dimensions=["region", "city"],
-            filters=["amount:sum(partition_by=region) > 50 and city != 'CityB'"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            filters=["sum(amount, partition_by=region) > 50 and city != 'CityB'"],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         separate = await exec_engine.execute(q(
             dimensions=["region", "city"],
-            filters=["amount:sum(partition_by=region) > 50", "city != 'CityB'"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            filters=["sum(amount, partition_by=region) > 50", "city != 'CityB'"],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         assert key(combined) == key(separate)
 
@@ -133,12 +133,12 @@ class TestComputedDimAggregateMixing:
         # masks per base row before re-aggregation — a field-typed conjunct.
         dims = ["region", "city", {"expression": BAND35, "name": "band"}]
         unfiltered = rows_by(await exec_engine.execute(q(
-            dimensions=dims, measures=[ModelMeasure(formula="amount:sum", name="s")],
+            dimensions=dims, measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )), "orders.region", "orders.city")
         filtered = rows_by(await exec_engine.execute(q(
             dimensions=dims,
             filters=["band == 1 or channel == 'app'"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )), "orders.region", "orders.city")
         # Row mask keeps a row iff its city total > 35 OR its channel is app.
         assert set(filtered) <= set(unfiltered)
@@ -154,12 +154,12 @@ class TestComputedDimAggregateMixing:
         # query grain — a measure-typed conjunct that prunes cells only.
         dims = ["region", "city", {"expression": BAND35, "name": "band"}]
         unfiltered = rows_by(await exec_engine.execute(q(
-            dimensions=dims, measures=[ModelMeasure(formula="amount:sum", name="s")],
+            dimensions=dims, measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )), "orders.region", "orders.city")
         filtered = rows_by(await exec_engine.execute(q(
             dimensions=dims,
-            filters=["amount:sum(partition_by=city) > 45 or amount:sum > 55"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            filters=["sum(amount, partition_by=city) > 45 or sum(amount) > 55"],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )), "orders.region", "orders.city")
         expected = {k for k, v in CITY_TOTAL.items() if v > 45}
         assert set(filtered) == expected
@@ -177,12 +177,12 @@ class TestComputedDimOwnAggregateIsField:
     async def test_filter_on_own_partition_aggregate_row_masks(self, exec_engine) -> None:
         dims = ["region", "city", {"expression": BAND35, "name": "band"}]
         unfiltered = rows_by(await exec_engine.execute(q(
-            dimensions=dims, measures=[ModelMeasure(formula="amount:sum", name="s")],
+            dimensions=dims, measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )), "orders.region", "orders.city")
         filtered = rows_by(await exec_engine.execute(q(
             dimensions=dims,
-            filters=["amount:sum(partition_by=city) > 45"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            filters=["sum(amount, partition_by=city) > 45"],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )), "orders.region", "orders.city")
         expected = {k for k, v in CITY_TOTAL.items() if v > 45}
         assert set(filtered) == expected

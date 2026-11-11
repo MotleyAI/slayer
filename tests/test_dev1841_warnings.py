@@ -32,7 +32,7 @@ from tests._dev1841_fixtures import (
     status_key,
 )
 
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
 
 #: SLayer's own to-many warnings — scope past incidental (e.g. 3.14) warnings.
 _SLAYER_TO_MANY_WARNINGS = (
@@ -100,7 +100,7 @@ class TestAssociatedWarning:
         resp = await engine.execute(assoc_q(
             dimensions=["status"],
             measures=[ModelMeasure(
-                formula="customers.spend:sum(partition_by=status)", name="cm")]))
+                formula="sum(customers.spend, partition_by=status)", name="cm")]))
         assert associated_warnings(resp) == []
         by = status_key(resp)
         for status, spend in ASSOC_SPEND_BY_STATUS.items():

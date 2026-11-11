@@ -26,6 +26,7 @@ import tempfile
 from collections.abc import AsyncIterator
 
 import pytest
+from pydantic import BaseModel
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
@@ -36,6 +37,14 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.embeddings import client as embedding_client
+from slayer.search import index as index_mod
+from slayer.search.index import _collect_render_pairs
+from slayer.search.render import (
+    RenderedEntity,
+    collect_model_entity_pairs,
+    render_datasource_pair,
+)
+from slayer.search.retrievers import embeddings as emb_mod
 from slayer.search.retrievers.embeddings import EmbeddingRetriever
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -61,7 +70,7 @@ def _model_with_full_subtree() -> SlayerModel:
             ),
         ],
         measures=[
-            ModelMeasure(name="aov", formula="amount:sum / *:count"),
+            ModelMeasure(name="aov", formula="sum(amount) / count(*)"),
         ],
         aggregations=[
             Aggregation(name="paid_only_sum", formula="SUM({col})"),
@@ -100,8 +109,6 @@ async def storage() -> AsyncIterator[YAMLStorage]:
 
 
 def test_collect_model_entity_pairs_visible_model_produces_full_subtree() -> None:
-    from slayer.search.render import collect_model_entity_pairs
-
     model = _model_with_full_subtree()
     pairs = collect_model_entity_pairs(model=model)
     canonicals = [p.canonical_id for p in pairs]
@@ -123,8 +130,6 @@ def test_collect_model_entity_pairs_visible_model_produces_full_subtree() -> Non
 
 
 def test_collect_model_entity_pairs_hidden_model_returns_empty() -> None:
-    from slayer.search.render import collect_model_entity_pairs
-
     pairs = collect_model_entity_pairs(model=_hidden_model())
     assert pairs == []
 
@@ -135,9 +140,6 @@ def test_collect_render_pairs_uses_unified_helper() -> None:
     the (canonical_id, kind, text) triples produced for a model in the
     corpus build are identical to what ``collect_model_entity_pairs``
     returns for that model."""
-    from slayer.search.index import _collect_render_pairs
-    from slayer.search.render import collect_model_entity_pairs
-
     model = _model_with_full_subtree()
     corpus_pairs = _collect_render_pairs(
         memories=[], visible_models=[model], datasources=[],
@@ -180,8 +182,6 @@ async def test_embedding_refresh_model_subtree_uses_unified_helper(
     from ``collect_model_entity_pairs``. This pins the unification: any
     drift between the corpus-build dispatch and the embedding-refresh
     dispatch will fail."""
-    from slayer.search.render import collect_model_entity_pairs
-
     captured: list[str] = []
 
     async def stub_embed_batch(  # NOSONAR(S7503) — stub matches embed_batch signature
@@ -222,13 +222,11 @@ async def test_render_datasource_pair_used_by_index_and_embedding_paths(
     """``render_datasource_pair`` produces identical text to the
     embedding-side and index-side datasource doc renders, including for
     a datasource with zero models."""
-    from slayer.search.index import _collect_render_pairs
-    from slayer.search.render import render_datasource_pair
-
     # ---- "warehouse" (has models) -----------------------------------------
     orders = await storage.get_model("orders", data_source="warehouse")
     audit = await storage.get_model("internal_audit", data_source="warehouse")
-    assert orders is not None and audit is not None
+    assert orders is not None
+    assert audit is not None
 
     pair_ws = render_datasource_pair(
         name="warehouse", models=[orders, audit],
@@ -281,10 +279,6 @@ async def test_render_datasource_pair_used_by_index_and_embedding_paths(
 
 
 def test_rendered_entity_is_pydantic_model_with_expected_fields() -> None:
-    from pydantic import BaseModel
-
-    from slayer.search.render import RenderedEntity
-
     assert issubclass(RenderedEntity, BaseModel)
     re = RenderedEntity(
         canonical_id="warehouse.orders", kind="model", text="…",
@@ -306,9 +300,6 @@ def test_index_corpus_path_actually_calls_collect_model_entity_pairs(
     """Pinned by monkeypatching the symbol where ``_collect_render_pairs``
     looks it up: if the corpus dispatch still has a private duplicate,
     the sentinel never appears in the output."""
-    from slayer.search.render import RenderedEntity
-    from slayer.search import index as index_mod
-
     sentinel = RenderedEntity(
         canonical_id="SENTINEL.x", kind="model", text="SENTINEL_TEXT",
     )
@@ -337,9 +328,6 @@ async def test_embedding_path_actually_calls_collect_model_entity_pairs(
     """Pinned by monkeypatching the symbol where ``refresh_model_subtree``
     looks it up: if the embedding dispatch still has a private duplicate,
     the sentinel text never reaches the embedding batch."""
-    from slayer.search.render import RenderedEntity
-    from slayer.search.retrievers import embeddings as emb_mod
-
     sentinel_text = "SENTINEL_EMB_TEXT"
     sentinel = RenderedEntity(
         canonical_id="SENTINEL.x", kind="model", text=sentinel_text,
@@ -371,9 +359,6 @@ def test_index_corpus_path_actually_calls_render_datasource_pair(
 ) -> None:
     """Same sentinel pattern for the datasource doc — the corpus path
     must route through ``render_datasource_pair``."""
-    from slayer.search.render import RenderedEntity
-    from slayer.search import index as index_mod
-
     sentinel = RenderedEntity(
         canonical_id="SENTINEL_DS", kind="datasource",
         text="SENTINEL_DS_TEXT",
@@ -404,9 +389,6 @@ async def test_embedding_path_actually_calls_render_datasource_pair(
     stub_available: None,
 ) -> None:
     """Same sentinel pattern for the embedding-side datasource refresh."""
-    from slayer.search.render import RenderedEntity
-    from slayer.search.retrievers import embeddings as emb_mod
-
     sentinel_text = "SENTINEL_DS_EMB_TEXT"
     sentinel = RenderedEntity(
         canonical_id="SENTINEL_DS", kind="datasource", text=sentinel_text,

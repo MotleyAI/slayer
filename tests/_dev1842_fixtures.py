@@ -44,18 +44,18 @@ from tests._dev1836_fixtures import (  # noqa: E402,F401  (re-export)
 # proven-hop / unproven-hop, partition_by local / grand, transform, typed,
 # round-trip, cross-model cycle). See EQUIV_PAIRS for the hand-expanded twins.
 CUSTOMER_MEASURES: List[ModelMeasure] = [
-    ModelMeasure(name="aov", formula="spend:sum / *:count"),
+    ModelMeasure(name="aov", formula="sum(spend) / count(*)"),
     ModelMeasure(name="aov_big", formula="aov * 2"),
-    ModelMeasure(name="self_aov", formula="customers.spend:sum / customers.*:count"),
-    ModelMeasure(name="pop_total", formula="regions.pop:sum"),
-    ModelMeasure(name="gold_spend_total", formula="gold_spend:sum"),
-    ModelMeasure(name="north_spend_total", formula="north_spend:sum"),
-    ModelMeasure(name="vip_spend_total", formula="vip_spend:sum"),
-    ModelMeasure(name="spend_by_tier", formula="spend:sum(partition_by=tier)"),
-    ModelMeasure(name="spend_grand", formula="spend:sum(partition_by=[])"),
-    ModelMeasure(name="spend_run", formula="cumsum(spend:sum)"),
-    ModelMeasure(name="typed_aov", formula="spend:sum / *:count", type=DataType.DOUBLE),
-    ModelMeasure(name="order_total", formula="orders.amount:sum"),
+    ModelMeasure(name="self_aov", formula="sum(customers.spend) / count(customers.*)"),
+    ModelMeasure(name="pop_total", formula="sum(regions.pop)"),
+    ModelMeasure(name="gold_spend_total", formula="sum(gold_spend)"),
+    ModelMeasure(name="north_spend_total", formula="sum(north_spend)"),
+    ModelMeasure(name="vip_spend_total", formula="sum(vip_spend)"),
+    ModelMeasure(name="spend_by_tier", formula="sum(spend, partition_by=tier)"),
+    ModelMeasure(name="spend_grand", formula="sum(spend, partition_by=[])"),
+    ModelMeasure(name="spend_run", formula="cumsum(sum(spend))"),
+    ModelMeasure(name="typed_aov", formula="sum(spend) / count(*)", type=DataType.DOUBLE),
+    ModelMeasure(name="order_total", formula="sum(orders.amount)"),
     ModelMeasure(name="cyc_c", formula="orders.cyc_o"),
 ]
 
@@ -63,14 +63,14 @@ CUSTOMER_MEASURES: List[ModelMeasure] = [
 # dotted cross-model reference, plus the cross-model cycle partner.
 ORDERS_MEASURES: List[ModelMeasure] = [
     ModelMeasure(name="host_runs_dotted", formula="cumsum(customers.aov)"),
-    ModelMeasure(name="host_mix", formula="amount:sum / customers.aov"),
+    ModelMeasure(name="host_mix", formula="sum(amount) / customers.aov"),
     ModelMeasure(name="cyc_o", formula="customers.cyc_c"),
 ]
 
 
 # Models — DEV-1836 shapes with the saved measures overlaid.
 #: A filtered column whose predicate crosses the PROVEN customers → regions hop
-#: (safe cross-model input, so ``north_spend:sum`` executes; cf. ``vip_spend``).
+#: (safe cross-model input, so ``sum(north_spend)`` executes; cf. ``vip_spend``).
 _NORTH_SPEND = Column(
     name="north_spend", type=DataType.DOUBLE, sql="spend",
     filter="regions.name = 'North'",
@@ -143,33 +143,33 @@ def broadcast_warnings(resp) -> list:
 #: MUST be bound-tree-identical — identical SQL and executed values. The hand
 #: forms are all DEV-1836-supported cross-model spellings that work today.
 EQUIV_PAIRS = {
-    "simple_composite": ("customers.aov", "customers.spend:sum / customers.*:count"),
+    "simple_composite": ("customers.aov", "sum(customers.spend) / count(customers.*)"),
     "nested_saved": ("customers.aov_big",
-                     "(customers.spend:sum / customers.*:count) * 2"),
+                     "(sum(customers.spend) / count(customers.*)) * 2"),
     "self_qualified": ("customers.self_aov",
-                       "customers.spend:sum / customers.*:count"),
-    "nested_join": ("customers.pop_total", "customers.regions.pop:sum"),
-    "filter_owner_local": ("customers.gold_spend_total", "customers.gold_spend:sum"),
-    "filter_join_crossing": ("customers.north_spend_total", "customers.north_spend:sum"),
+                       "sum(customers.spend) / count(customers.*)"),
+    "nested_join": ("customers.pop_total", "sum(customers.regions.pop)"),
+    "filter_owner_local": ("customers.gold_spend_total", "sum(customers.gold_spend)"),
+    "filter_join_crossing": ("customers.north_spend_total", "sum(customers.north_spend)"),
     "partition_local": ("customers.spend_by_tier",
-                        "customers.spend:sum(partition_by=customers.tier)"),
+                        "sum(customers.spend, partition_by=customers.tier)"),
     "partition_grand": ("customers.spend_grand",
-                        "customers.spend:sum(partition_by=[])"),
+                        "sum(customers.spend, partition_by=[])"),
     "host_wraps_dotted": ("cumsum(customers.aov)",
-                          "cumsum(customers.spend:sum / customers.*:count)"),
-    "host_mixes_dotted": ("amount:sum / customers.aov",
-                          "amount:sum / (customers.spend:sum / customers.*:count)"),
+                          "cumsum(sum(customers.spend) / count(customers.*))"),
+    "host_mixes_dotted": ("sum(amount) / customers.aov",
+                          "sum(amount) / (sum(customers.spend) / count(customers.*))"),
 }
 
 #: The transform pair needs a host time dimension; kept separate so callers can
 #: attach ``time_dimensions`` for both spellings.
-TRANSFORM_PAIR = ("customers.spend_run", "cumsum(customers.spend:sum)")
+TRANSFORM_PAIR = ("customers.spend_run", "cumsum(sum(customers.spend))")
 
 #: Pairs where the hand form itself is REJECTED today by a DEV-1836 guard (an
 #: input crossing an unproven join hop). The dotted form must inherit the same
 #: rejection — parity is "both raise the same error", not "same values".
 PARITY_ERROR_PAIRS = {
-    "filter_unproven_hop": ("customers.vip_spend_total", "customers.vip_spend:sum"),
+    "filter_unproven_hop": ("customers.vip_spend_total", "sum(customers.vip_spend)"),
 }
 
 

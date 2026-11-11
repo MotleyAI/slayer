@@ -53,10 +53,10 @@ from tests._dev1865_fixtures import plan as orders_plan
 from tests._dev1865_fixtures import q as orders_q
 from tests._engine_helpers import _extract_cte_body
 
-P = "amount:sum(partition_by=region)"
+P = "sum(amount, partition_by=region)"
 R = "avg(sum(amount, partition_by=[city, region]), partition_by=region)"
-C = "amount:sum(partition_by=[city, region])"
-TOT = ModelMeasure(formula="amount:sum", name="tot")
+C = "sum(amount, partition_by=[city, region])"
+TOT = ModelMeasure(formula="sum(amount)", name="tot")
 N = ModelMeasure(formula="count(*)", name="n")
 
 RD_P = {"expression": P, "name": "rd"}
@@ -124,7 +124,7 @@ class TestAggregateDimensionAsMeasure:
     async def test_partitioned_aggregate(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", RD_P],
-            measures=[_m(f"{P} + 1", "p1"), _m(f"{P} * 2 + amount:sum", "p2")]))
+            measures=[_m(f"{P} + 1", "p1"), _m(f"{P} * 2 + sum(amount)", "p2")]))
         assert _col(resp, "p1") == _plus(P_BY_REGION, 1)
         assert _col(resp, "p2") == {"North": 270.0, "South": 420.0, "East": 540.0,
                                     "Gap": 60.0, "Void": None}
@@ -132,7 +132,7 @@ class TestAggregateDimensionAsMeasure:
     async def test_reaggregation(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", RD_R],
-            measures=[_m(f"{R} + 1", "r1"), _m(f"{R} * 2 + amount:sum", "r2")]))
+            measures=[_m(f"{R} + 1", "r1"), _m(f"{R} * 2 + sum(amount)", "r2")]))
         assert _col(resp, "r1") == _plus(R_BY_REGION, 1)
         assert _col(resp, "r2") == {"North": 180.0, "South": 280.0, "East": 300.0,
                                     "Gap": 40.0, "Void": None}
@@ -175,7 +175,7 @@ class TestAggregateDimensionAsOrderTarget:
 class TestFinerGrainedAggregateDimensionInFilter:
     async def test_measure_typed_filter_reads_the_dimension(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", X_C], measures=[TOT], filters=[f"{C} < amount:sum"]))
+            dimensions=["region", X_C], measures=[TOT], filters=[f"{C} < sum(amount)"]))
         got = [(r["sales.region"], r["sales.x"], r["sales.tot"]) for r in resp.data]
         assert got == [("East", 50.0, 100.0)]
 
@@ -254,7 +254,7 @@ class TestGrandTotalCell:
 
     async def test_cross_model(self, exec_engine):
         resp = await exec_engine.execute(chain_q(
-            measures=[_m("1"), _m("customers.id:count", "c")]))
+            measures=[_m("1"), _m("count(customers.id)", "c")]))
         assert resp.data == [{"corders.m": 1, "corders.c": 3}]
 
 
@@ -262,7 +262,7 @@ class TestGrandTotalCell:
 # IN over aggregates: phase follows the operands, and no column is dropped.
 # --------------------------------------------------------------------------- #
 IN_P = f"{P} in (90, 140)"
-TOP2 = "rank(amount:sum, direction='desc') in (1, 2)"
+TOP2 = "rank(sum(amount), direction='desc') in (1, 2)"
 P_HIT = {"North": True, "South": True, "East": False, "Gap": False, "Void": None}
 TOP2_HIT = {"North": False, "South": True, "East": True, "Gap": False, "Void": None}
 
@@ -279,7 +279,7 @@ class TestInPredicateOverAggregates:
         pytest.param(["region"], f"{P} not in (90, 140)",
                      {k: None if v is None else not v for k, v in P_HIT.items()}, id="not-in"),
         pytest.param(["region"], f"{R} in (45, 70)", P_HIT, id="reaggregation"),
-        pytest.param(["region"], "amount:sum in (90, 140)", P_HIT, id="plain-aggregate"),
+        pytest.param(["region"], "sum(amount) in (90, 140)", P_HIT, id="plain-aggregate"),
         pytest.param(["region"], TOP2, TOP2_HIT, id="transform"),
     ])
     async def test_measure(self, exec_engine, dims, formula, expected):
@@ -299,7 +299,7 @@ class TestInPredicateOverAggregates:
     async def test_cross_model(self, exec_engine):
         resp = await exec_engine.execute(chain_q(
             dimensions=["customers.regions.name"],
-            measures=[_m("customers.id:count in (2, 99)")]))
+            measures=[_m("count(customers.id) in (2, 99)")]))
         assert _truth(resp, key="corders.customers.regions.name") == {
             "North": True, "South": False}
 
@@ -359,7 +359,7 @@ class TestUnrenderedPublicSlotFailsClosed:
     async def test_transform_chain(self, monkeypatch):
         monkeypatch.setattr(SQLGenerator, "_unmaterialised_post_slots",
                             staticmethod(lambda _pq, _aliases: []))
-        query = sales_q(dimensions=["region"], measures=[_m("rank(amount:sum, direction='desc') + 1")])
+        query = sales_q(dimensions=["region"], measures=[_m("rank(sum(amount), direction='desc') + 1")])
         with pytest.raises(ValueError, match="silently dropped"):
             await gen(query, dialect="duckdb")
 
@@ -394,7 +394,7 @@ class TestStageDimensionValue:
         resp = await exec_engine.execute([
             SlayerQuery.model_validate({
                 "name": "st", "source_model": "sales", "dimensions": ["region", "city"],
-                "measures": [{"formula": "amount:sum", "name": "tot"}]}),
+                "measures": [{"formula": "sum(amount)", "name": "tot"}]}),
             SlayerQuery.model_validate({
                 "source_model": "st", "dimensions": ["region"],
                 "measures": [{"formula": "iif(region == 'North', sum(tot), 0)", "name": "m"}]}),
@@ -426,9 +426,9 @@ _PARITY = [
                  id="plain"),
     pytest.param(sales_q, ["region"], "iif(region == 'North', sum(amount), 0)",
                  "sales.region", 0, id="conditional"),
-    pytest.param(sales_q, ["region", RD_P], f"{P} + amount:sum", "sales.region", 200,
+    pytest.param(sales_q, ["region", RD_P], f"{P} + sum(amount)", "sales.region", 200,
                  id="partitioned"),
-    pytest.param(sales_q, ["region", RD_R], f"{R} + amount:sum", "sales.region", 150,
+    pytest.param(sales_q, ["region", RD_R], f"{R} + sum(amount)", "sales.region", 150,
                  id="reaggregation"),
     pytest.param(chain_q, ["customers.regions.name"],
                  "iif(customers.regions.name == 'North', sum(amount), 0)",
@@ -506,7 +506,7 @@ class TestMeasureTypingErrors:
         as_measure = orders_q(dimensions=["region"], time_dimensions=month_td(),
                               measures=[_m(expr)])
         as_filter = orders_q(dimensions=["region"], time_dimensions=month_td(),
-                             measures=[_m("amount:sum", "s")], filters=[f"{expr} > 0"])
+                             measures=[_m("sum(amount)", "s")], filters=[f"{expr} > 0"])
         with pytest.raises(PositionTypingError) as measure_ei:
             orders_plan(as_measure)
         with pytest.raises(PositionTypingError) as filter_ei:
@@ -517,8 +517,8 @@ class TestMeasureTypingErrors:
 
 class TestExistingMeasureErrorsTakePrecedence:
     @pytest.mark.parametrize(("dims", "formula"), [
-        pytest.param(["region"], "amount:sum(partition_by=city)", id="partition-key"),
-        pytest.param(["region"], "amount:sum(partition_by=city) + amount",
+        pytest.param(["region"], "sum(amount, partition_by=city)", id="partition-key"),
+        pytest.param(["region"], "sum(amount, partition_by=city) + amount",
                      id="partition-key-and-row-reference"),
         pytest.param(["region", CITY_BAND], C, id="banded-dimension-aggregate"),
     ])
@@ -531,7 +531,7 @@ class TestExistingMeasureErrorsTakePrecedence:
 
     @pytest.mark.parametrize(("formula", "family"), [
         pytest.param("rank(amount, direction='desc') + amount", TransformInputError, id="transform-input"),
-        pytest.param("cumsum(amount:sum) + amount", TimeAxisError, id="time-axis"),
+        pytest.param("cumsum(sum(amount)) + amount", TimeAxisError, id="time-axis"),
         pytest.param(f"sum({C}, window='90d') + amount", ReaggregationError,
                      id="reaggregation-window"),
     ])

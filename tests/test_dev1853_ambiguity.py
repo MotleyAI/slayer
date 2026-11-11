@@ -64,9 +64,10 @@ class TestParallelEdgesFailClosed:
             await unnamed_engine.execute(query)
 
     async def test_measure_path_fails_closed(self, unnamed_engine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "customers.spend:sum", "name": "s"}])
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(customers.spend)", "name": "s"}],
+        })
         with pytest.raises(AmbiguousJoinPathError):
             await unnamed_engine.execute(query)
 

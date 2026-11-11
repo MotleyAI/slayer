@@ -141,7 +141,7 @@ class TestConstructionRejects:
         ``model_validator(mode="after")`` into a ``ValidationError``.
         The error message bubbles up unchanged either way."""
         status_dim = ColumnRef(name="status")
-        count_measure = ModelMeasure(formula="*:count")
+        count_measure = ModelMeasure(formula="count(*)")
         with pytest.raises(ValueError) as exc:
             SlayerQuery(
                 source_model="orders",
@@ -306,58 +306,58 @@ class TestCompileRejects:
             await _engine_generate(query=query, model=model)
         return str(exc.value)
 
-    async def test_filter_colon_agg(self) -> None:
-        """Case 3: ``"revenue:sum > 100"`` → reject."""
+    async def test_filter_aggregation(self) -> None:
+        """Case 3: ``"sum(revenue) > 100"`` → reject."""
         model = _orders_model()
         q = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            filters=["amount:sum > 100"],
+            filters=["sum(amount) > 100"],
             distinct_dimension_values=False,
         )
         msg = await self._expect_reject(q, model)
-        assert "amount:sum" in msg or "aggregation" in msg.lower()
+        assert "sum(amount)" in msg or "aggregation" in msg.lower()
 
     async def test_filter_star_count(self) -> None:
-        """Case 4: ``"*:count > 0"`` → reject."""
+        """Case 4: ``"count(*) > 0"`` → reject."""
         model = _orders_model()
         q = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            filters=["*:count > 0"],
+            filters=["count(*) > 0"],
             distinct_dimension_values=False,
         )
         await self._expect_reject(q, model)
 
     async def test_filter_transform_call(self) -> None:
-        """Case 5: ``"rank(amount:sum, direction='desc') <= 5"`` → reject."""
+        """Case 5: ``"rank(sum(amount), direction='desc') <= 5"`` → reject."""
         model = _orders_model()
         q = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            filters=["rank(amount:sum, direction='desc') <= 5"],
+            filters=["rank(sum(amount), direction='desc') <= 5"],
             distinct_dimension_values=False,
         )
         await self._expect_reject(q, model)
 
     async def test_filter_arithmetic_over_aggregation(self) -> None:
-        """Case 6: ``"amount:sum / amount > 0"`` → reject."""
+        """Case 6: ``"sum(amount) / amount > 0"`` → reject."""
         model = _orders_model()
         q = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            filters=["amount:sum / amount > 0"],
+            filters=["sum(amount) / amount > 0"],
             distinct_dimension_values=False,
         )
         await self._expect_reject(q, model)
 
     async def test_order_raw_formula_contains_measure(self) -> None:
-        """Case 7: ``raw_formula="amount:sum"`` on order → reject."""
+        """Case 7: ``raw_formula="sum(amount)"`` on order → reject."""
         model = _orders_model()
         q = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            order=[OrderItem(column=ColumnRef(name="status"), raw_formula="amount:sum")],
+            order=[OrderItem(column=ColumnRef(name="status"), raw_formula="sum(amount)")],
             distinct_dimension_values=False,
         )
         await self._expect_reject(q, model)
@@ -365,7 +365,7 @@ class TestCompileRejects:
     async def test_order_on_bare_model_measure_name(self) -> None:
         """Case 15: order column resolves to a saved ``ModelMeasure``."""
         model = _orders_model(
-            measures=[ModelMeasure(formula="amount:sum", name="aov")],
+            measures=[ModelMeasure(formula="sum(amount)", name="aov")],
         )
         q = SlayerQuery(
             source_model="orders",
@@ -378,7 +378,7 @@ class TestCompileRejects:
     async def test_filter_on_bare_model_measure_name(self) -> None:
         """Case 16: filter resolves to a saved ``ModelMeasure``."""
         model = _orders_model(
-            measures=[ModelMeasure(formula="amount:sum", name="aov")],
+            measures=[ModelMeasure(formula="sum(amount)", name="aov")],
         )
         q = SlayerQuery(
             source_model="orders",
@@ -402,11 +402,11 @@ class TestCompileRejects:
                 ),
             ],
         )
-        # Custom aggregation via colon syntax: `amount:weighted_revenue(weight=...)`
+        # Custom aggregation: `weighted_revenue(amount, weight=...)`
         q = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            filters=["amount:weighted_revenue(weight=amount) > 0"],
+            filters=["weighted_revenue(amount, weight=amount) > 0"],
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError):
@@ -414,7 +414,7 @@ class TestCompileRejects:
 
     async def test_order_arithmetic_over_aggregations(self) -> None:
         """Codex + CodeRabbit (PR #172): ``raw_formula`` of arithmetic
-        over aggregations (``revenue:sum / *:count``) parses as
+        over aggregations (``sum(revenue) / count(*)``) parses as
         ``ArithmeticField`` with ``agg_refs`` non-empty. Must reject in
         raw-row mode — otherwise hidden aggregate measures get
         materialised and ``GROUP BY`` returns."""
@@ -422,7 +422,7 @@ class TestCompileRejects:
         q = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            order=[OrderItem(column=ColumnRef(name="aov"), raw_formula="amount:sum / *:count")],
+            order=[OrderItem(column=ColumnRef(name="aov"), raw_formula="sum(amount) / count(*)")],
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError):
@@ -448,7 +448,7 @@ class TestCompileRejects:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             filters=["{agg_filter}"],
-            variables={"agg_filter": "amount:sum > 100"},
+            variables={"agg_filter": "sum(amount) > 100"},
             distinct_dimension_values=False,
         )
         with pytest.raises(ValueError, match="variables supply literal values"):
@@ -467,13 +467,13 @@ class TestErrorMessage:
         q = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            filters=["amount:sum > 100"],
+            filters=["sum(amount) > 100"],
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError) as exc:
             await _engine_generate(query=q, model=model)
         # The offending filter text must appear in the message.
-        assert "amount:sum > 100" in str(exc.value)
+        assert "sum(amount) > 100" in str(exc.value)
 
     async def test_message_points_at_the_fix(self) -> None:
         """Case 30: error message includes the remediation hint."""
@@ -481,7 +481,7 @@ class TestErrorMessage:
         q = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            filters=["amount:sum > 100"],
+            filters=["sum(amount) > 100"],
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError) as exc:
@@ -501,20 +501,20 @@ class TestErrorMessage:
         q = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            order=[OrderItem(column=ColumnRef(name="status"), raw_formula="amount:sum")],
+            order=[OrderItem(column=ColumnRef(name="status"), raw_formula="sum(amount)")],
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError) as exc:
             await _engine_generate(query=q, model=model)
         msg = str(exc.value)
         # Either the offending raw_formula text or "order" must appear.
-        assert "amount:sum" in msg or "order" in msg.lower()
+        assert "sum(amount)" in msg or "order" in msg.lower()
 
     def test_construction_message_names_offending_field(self) -> None:
         """Construction-time message points at ``measures`` or
         ``dimensions/time_dimensions``."""
         status_dim = ColumnRef(name="status")
-        count_measure = ModelMeasure(formula="*:count")
+        count_measure = ModelMeasure(formula="count(*)")
         with pytest.raises(ValueError) as exc:
             SlayerQuery(
                 source_model="orders",
@@ -660,7 +660,7 @@ class TestMultiStageDag:
             outer = SlayerQuery(
                 source_model="raw_rows",
                 dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="amount:sum")],
+                measures=[ModelMeasure(formula="sum(amount)")],
                 # Outer is default True (with aggregation, GROUP BY is mandatory).
             )
             resp = await engine.execute([inner, outer], dry_run=True)
@@ -829,7 +829,7 @@ class TestMCPSurface:
                     {
                         "source_model": "raw_rows",
                         "dimensions": ["status"],
-                        "measures": [{"formula": "amount:sum"}],
+                        "measures": [{"formula": "sum(amount)"}],
                     },
                 ],
                 "format": "json",
@@ -862,7 +862,7 @@ class TestMCPSurface:
                             "source_model": "raw_rows",
                             "dimensions": ["status"],
                             # Outer has flag=False but also a measure → reject.
-                            "measures": [{"formula": "amount:sum"}],
+                            "measures": [{"formula": "sum(amount)"}],
                             "distinct_dimension_values": False,
                         },
                     ],
@@ -913,7 +913,7 @@ class TestRESTSurface:
                     {
                         "source_model": "raw_rows",
                         "dimensions": ["status"],
-                        "measures": [{"formula": "amount:sum"}],
+                        "measures": [{"formula": "sum(amount)"}],
                     },
                 ],
             },
@@ -965,7 +965,7 @@ class TestSlayerClientBody:
         outer = SlayerQuery(
             source_model="raw_rows",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
         )
         body = SlayerClient._build_query_body([inner, outer])
         assert "queries" in body

@@ -84,31 +84,31 @@ class TestHomePaths:
 
     def test_single_cancel_homes_at_customers_regions(self):
         assert _home_path(
-            "customers.regions.countries.gdp:wsum_region_pop") == ("customers", "regions")
+            "wsum_region_pop(customers.regions.countries.gdp)") == ("customers", "regions")
 
     def test_double_cancel_homes_at_customers(self):
         assert _home_path(
-            "customers.regions.countries.gdp:wsum_cust_spend2") == ("customers",)
+            "wsum_cust_spend2(customers.regions.countries.gdp)") == ("customers",)
 
     def test_cancel_then_forward_deep_homes_at_customers(self):
         assert _home_path(
-            "customers.regions.countries.gdp:wsum_plan_fee") == ("customers",)
+            "wsum_plan_fee(customers.regions.countries.gdp)") == ("customers",)
 
     def test_two_frame_homes_at_customers(self):
         assert _home_path(
-            "customers.regions.countries.gdp:wsum_two") == ("customers",)
+            "wsum_two(customers.regions.countries.gdp)") == ("customers",)
 
     def test_events_cancel_homes_at_region_events(self):
-        assert _home_path("customers.regions.region_events.value:wsum_rp") \
+        assert _home_path("wsum_rp(customers.regions.region_events.value)") \
             == ("customers", "regions", "region_events")
 
     # --- pins that already hold (root-fallback / root-name resolution) ---
     def test_cancel_then_forward_shallow_homes_at_customers_pin(self):
-        assert _home_path("customers.regions.pop:wsum_cust_plan_fee") == ("customers",)
+        assert _home_path("wsum_cust_plan_fee(customers.regions.pop)") == ("customers",)
 
     def test_owner_at_root_self_name_homes_at_root_pin(self):
-        assert _home_path("amount:wself") == ()
-        assert _home_path("amount:wself_expr") == ()
+        assert _home_path("wself(amount)") == ()
+        assert _home_path("wself_expr(amount)") == ()
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -128,52 +128,52 @@ class TestExecutedValues:
 
     async def test_single_cancel(self, engine):
         explicit = await _value(
-            engine, "customers.regions.countries.gdp:wsum_region_pop"
-            "(weight=customers.regions.pop)")
+            engine, "wsum_region_pop(customers.regions.countries.gdp, "
+            "weight=customers.regions.pop)")
         assert explicit == pytest.approx(SINGLE_CANCEL)
-        default = await _value(engine, "customers.regions.countries.gdp:wsum_region_pop")
+        default = await _value(engine, "wsum_region_pop(customers.regions.countries.gdp)")
         assert default == pytest.approx(explicit)
 
     async def test_double_cancel(self, engine):
         explicit = await _value(
-            engine, "customers.regions.countries.gdp:wsum_cust_spend2"
-            "(weight=customers.spend)")
+            engine, "wsum_cust_spend2(customers.regions.countries.gdp, "
+            "weight=customers.spend)")
         assert explicit == pytest.approx(DOUBLE_CANCEL)
-        default = await _value(engine, "customers.regions.countries.gdp:wsum_cust_spend2")
+        default = await _value(engine, "wsum_cust_spend2(customers.regions.countries.gdp)")
         assert default == pytest.approx(explicit)
 
     async def test_cancel_then_forward_deep(self, engine):
         explicit = await _value(
-            engine, "customers.regions.countries.gdp:wsum_plan_fee"
-            "(weight=customers.plans.fee)")
+            engine, "wsum_plan_fee(customers.regions.countries.gdp, "
+            "weight=customers.plans.fee)")
         assert explicit == pytest.approx(CANCEL_FORWARD_PLAN)
-        default = await _value(engine, "customers.regions.countries.gdp:wsum_plan_fee")
+        default = await _value(engine, "wsum_plan_fee(customers.regions.countries.gdp)")
         assert default == pytest.approx(explicit)
 
     async def test_cancel_then_forward_shallow_pin(self, engine):
         explicit = await _value(
-            engine, "customers.regions.pop:wsum_cust_plan_fee"
-            "(weight=customers.plans.fee)")
+            engine, "wsum_cust_plan_fee(customers.regions.pop, "
+            "weight=customers.plans.fee)")
         assert explicit == pytest.approx(CANCEL_FORWARD_POP)
-        default = await _value(engine, "customers.regions.pop:wsum_cust_plan_fee")
+        default = await _value(engine, "wsum_cust_plan_fee(customers.regions.pop)")
         assert default == pytest.approx(explicit)
 
     async def test_two_frame(self, engine):
         explicit = await _value(
-            engine, "customers.regions.countries.gdp:wsum_two"
-            "(w1=customers.regions.pop, w2=customers.plans.fee)")
+            engine, "wsum_two(customers.regions.countries.gdp, "
+            "w1=customers.regions.pop, w2=customers.plans.fee)")
         assert explicit == pytest.approx(TWO_FRAME)
-        default = await _value(engine, "customers.regions.countries.gdp:wsum_two")
+        default = await _value(engine, "wsum_two(customers.regions.countries.gdp)")
         assert default == pytest.approx(explicit)
 
     async def test_events_cancel_over_a_to_one_reverse_hop(self, engine):
         # The default, the explicit twin AND the plain product all home at
         # region_events over the to-one reverse hop back to regions (D9).
         explicit = await _value(
-            engine, "customers.regions.region_events.value:wsum_rp"
-            "(weight=customers.regions.pop)")
+            engine, "wsum_rp(customers.regions.region_events.value, "
+            "weight=customers.regions.pop)")
         assert explicit == pytest.approx(EVENTS_CANCEL)
-        default = await _value(engine, "customers.regions.region_events.value:wsum_rp")
+        default = await _value(engine, "wsum_rp(customers.regions.region_events.value)")
         assert default == pytest.approx(explicit)
         plain = await _value(
             engine, "sum(customers.regions.region_events.value * customers.regions.pop)")
@@ -181,9 +181,9 @@ class TestExecutedValues:
 
     async def test_owner_at_root_self_name_pin(self, engine):
         for agg in ("wself", "wself_expr"):
-            explicit = await _value(engine, f"amount:{agg}(weight=cost)")
+            explicit = await _value(engine, f"{agg}(amount, weight=cost)")
             assert explicit == pytest.approx(SELF)
-            default = await _value(engine, f"amount:{agg}")
+            default = await _value(engine, f"{agg}(amount)")
             assert default == pytest.approx(explicit)
 
 
@@ -207,9 +207,9 @@ async def test_ship_region_extension_edge_name_spelling_survives(dialect):
             return float(resp.data[0]["orders.w"]), dry.sql
 
     ev, explicit_sql = await run(
-        "ship_region.countries.gdp:wsum_region_pop(weight=ship_region.pop)")
+        "wsum_region_pop(ship_region.countries.gdp, weight=ship_region.pop)")
     assert ev == pytest.approx(SINGLE_CANCEL)
-    dv, default_sql = await run("ship_region.countries.gdp:wsum_region_pop")
+    dv, default_sql = await run("wsum_region_pop(ship_region.countries.gdp)")
     assert dv == pytest.approx(ev)
     # Spelling survives: the default reads pop through the ship_region-joined
     # regions, never a second `regions` join (which the current fan renders).
@@ -223,26 +223,26 @@ class TestKernelExpressionDefaults:
     async def test_association_expression_default(self, engine):
         # Each response's cells are read immediately (response data reflects the
         # engine's current state, so a later execute would otherwise mask it).
-        base = "customers.regions.countries.gdp:wsum_region_pop_expr"
+        base = "wsum_region_pop_expr(customers.regions.countries.gdp)"
         default = _cells(await engine.execute(orders_q(
             dimensions=["status"], to_many_handling="associate",
             measures=[ModelMeasure(formula=base, name="w")])))
         explicit = _cells(await engine.execute(orders_q(
             dimensions=["status"], to_many_handling="associate",
-            measures=[ModelMeasure(formula=f"{base}(weight=customers.regions.pop)",
+            measures=[ModelMeasure(formula=f"{base[:-1]}, weight=customers.regions.pop)",
                                    name="w")])))
         assert default == explicit
         assert {k[0]: float(v) for k, v in default.items()} == ASSOC_EXPR
 
     async def test_trailing_window_expression_default(self, engine):
-        base = "customers.regions.countries.gdp:wsum_cust_spend2_expr"
+        base = "wsum_cust_spend2_expr(customers.regions.countries.gdp)"
         default = _cells(await engine.execute(orders_q(
             time_dimensions=signup_month_td(),
-            measures=[ModelMeasure(formula=f"{base}(window='1y')", name="w")])))
+            measures=[ModelMeasure(formula=f"{base[:-1]}, window='1y')", name="w")])))
         explicit = _cells(await engine.execute(orders_q(
             time_dimensions=signup_month_td(),
             measures=[ModelMeasure(
-                formula=f"{base}(window='1y', weight=customers.spend)", name="w")])))
+                formula=f"{base[:-1]}, window='1y', weight=customers.spend)", name="w")])))
         assert default == explicit
         months = {month_key(k[0]): float(v) for k, v in default.items()
                   if k[0] is not None}
@@ -262,9 +262,9 @@ class TestStageQueryUnaffected:
         """A later stage aggregating a stage's output resolves no definition
         default (a stage has no model host) — executes exactly as before."""
         stage1 = orders_q(name="stage1", dimensions=["status"],
-                          measures=[ModelMeasure(formula="amount:sum", name="amount_sum")])
+                          measures=[ModelMeasure(formula="sum(amount)", name="amount_sum")])
         root = SlayerQuery(source_model="stage1", dimensions=[ColumnRef(name="status")],
-                           measures=[ModelMeasure(formula="amount_sum:max", name="mx")])
+                           measures=[ModelMeasure(formula="max(amount_sum)", name="mx")])
         resp = await engine.execute([stage1, root])
         vals = sorted(float(next(v for k, v in r.items() if "mx" in k))
                       for r in resp.data)
@@ -276,15 +276,15 @@ class TestCancelThenFanningHop:
 
     def test_homes_like_the_explicit_twin(self):
         home = ("customers", "regions", "region_events")
-        assert _home_path("customers.regions.countries.gdp:wsum_fan") == home
-        assert _home_path("customers.regions.countries.gdp:wsum_fan"
-                          "(weight=customers.regions.region_events.value)") == home
+        assert _home_path("wsum_fan(customers.regions.countries.gdp)") == home
+        assert _home_path("wsum_fan(customers.regions.countries.gdp, "
+                          "weight=customers.regions.region_events.value)") == home
 
     async def test_equals_the_explicit_twin(self, engine):
         explicit = await _value(
-            engine, "customers.regions.countries.gdp:wsum_fan"
-            "(weight=customers.regions.region_events.value)")
-        default = await _value(engine, "customers.regions.countries.gdp:wsum_fan")
+            engine, "wsum_fan(customers.regions.countries.gdp, "
+            "weight=customers.regions.region_events.value)")
+        default = await _value(engine, "wsum_fan(customers.regions.countries.gdp)")
         assert default == pytest.approx(explicit)
         plain = await _value(
             engine, "sum(customers.regions.countries.gdp * customers.regions.region_events.value)")
@@ -296,7 +296,7 @@ class TestFailClosed:
         # D3: `regions` cancels, then `plans` misses (not a hop from regions) —
         # never re-anchored at the root.
         with pytest.raises(UnresolvableDimensionJoinError):
-            await _gen("customers.regions.countries.gdp:wsum_cancel_miss")
+            await _gen("wsum_cancel_miss(customers.regions.countries.gdp)")
 
     async def test_second_order_nowhere_default_raises_unresolvable(self):
         with pytest.raises(UnresolvableDimensionJoinError, match="(?i)nowhere"):
@@ -306,11 +306,11 @@ class TestFailClosed:
         # DEV-1952 owns the model-SQL derived-column revisit; only the query-typed
         # revisit is pinned here.
         with pytest.raises(ValueError, match="(?i)circular"):
-            await _gen("customers.regions.customers.spend:sum")
+            await _gen("sum(customers.regions.customers.spend)")
 
     @pytest.mark.parametrize("formula", [
-        "pop:wsum_cust_spend",
-        "pop:wsum_cust_spend(weight=customers.spend)"])
+        "wsum_cust_spend(pop)",
+        "wsum_cust_spend(pop, weight=customers.spend)"])
     async def test_reverse_hop_not_on_the_path_stays_refused(self, formula):
         # Rooted at regions, `customers` is not on the path: nothing cancels, and
         # BOTH the default and its explicit twin fail with the same input-safety
