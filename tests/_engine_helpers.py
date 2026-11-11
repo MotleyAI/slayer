@@ -85,7 +85,12 @@ async def owned_query_engine(
         yield engine
     finally:
         try:
-            await asyncio.shield(engine.aclose())
+            release = asyncio.ensure_future(engine.aclose())
+            try:
+                await asyncio.shield(release)
+            except asyncio.CancelledError:
+                await release  # cancelled mid-release: still finish it on this loop before re-raising
+                raise
         finally:
             try:
                 engine.close()

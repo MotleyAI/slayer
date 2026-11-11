@@ -129,7 +129,12 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> 
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> Generator[None, None, None]:
-    yield
+    try:
+        yield
+    except BaseException as exc:
+        for violation in _judge():
+            exc.add_note(violation)
+        raise
     violations = _judge()
     if violations:
         pytest.fail("\n".join(violations), pytrace=False)

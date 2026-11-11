@@ -360,6 +360,18 @@ async def test_released_client_passes():
     client = SlayerSQLClient(DS)
     await hand_out(client)
     await client.aclose()
+
+
+@pytest.fixture
+async def leaks_then_teardown_raises():
+    client = SlayerSQLClient(DS)
+    await hand_out(client)
+    yield
+    raise RuntimeError("teardown boom")
+
+
+def test_teardown_raises_and_leaks(leaks_then_teardown_raises):
+    pass
 """
 
 _LAW_ENGINES = """\
@@ -576,6 +588,7 @@ class LawCase(BaseModel):
     project: str
     node: str
     blames: str | None
+    keeps: str | None = None  # an error the teardown raised itself, which must survive the judgment
 
 
 _LAW_CASES = [
@@ -586,6 +599,9 @@ _LAW_CASES = [
     LawCase(project="main", node="test_a_function.py::test_inline_client_dropped",
             blames="test_a_function.py::test_inline_client_dropped"),
     LawCase(project="main", node="test_a_function.py::test_released_client_passes", blames=None),
+    # A raising teardown is still judged, and its own error kept.
+    LawCase(project="main", node="test_a_function.py::test_teardown_raises_and_leaks",
+            blames="test_a_function.py::test_teardown_raises_and_leaks", keeps="RuntimeError: teardown boom"),
     LawCase(project="main", node="test_b_engines.py::test_through_the_helper", blames=None),
     LawCase(project="main", node="test_b_engines.py::test_client_factory_leak",
             blames="test_b_engines.py::test_client_factory_leak"),
@@ -655,18 +671,15 @@ def _run_scratch(root: Path, files: dict[str, str]) -> ScratchRun:
         (root / name).write_text(source)
     xml = root / "junit.xml"
     tests = [name for name in files if name.startswith("test_")]
-    try:
-        proc = subprocess.run(
-            [
-                sys.executable, "-m", "pytest", *tests,
-                "-p", "no:cacheprovider", "-p", "no:xdist", "-p", "no:randomly",
-                "-q", "--continue-on-collection-errors", f"--junitxml={xml}",
-            ],
-            cwd=str(root), capture_output=True, text=True,
-            env={**os.environ, "PYTHONPATH": str(REPO)}, timeout=_SCRATCH_TIMEOUT,
-        )
-    except subprocess.TimeoutExpired as exc:
-        pytest.fail(f"scratch run in {root} hung:\n{exc.stdout!r}\n{exc.stderr!r}", pytrace=False)
+    proc = subprocess.run(
+        [
+            sys.executable, "-m", "pytest", *tests,
+            "-p", "no:cacheprovider", "-p", "no:xdist", "-p", "no:randomly",
+            "-q", "--continue-on-collection-errors", f"--junitxml={xml}",
+        ],
+        cwd=str(root), capture_output=True, text=True,
+        env={**os.environ, "PYTHONPATH": str(REPO)}, timeout=_SCRATCH_TIMEOUT,
+    )
     output = proc.stdout + proc.stderr
     return ScratchRun(outcomes=_junit_outcomes(xml) if xml.exists() else {}, output=output)
 
@@ -691,3 +704,5 @@ def test_async_engine_release_law(case: LawCase, law_runs: dict[str, ScratchRun]
     assert got.message.startswith("failed on teardown"), got.message
     assert case.blames in got.message, got.message
     assert _LAW_DS in got.message, got.message
+    if case.keeps is not None:
+        assert case.keeps in got.message, got.message
