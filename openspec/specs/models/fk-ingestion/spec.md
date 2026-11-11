@@ -196,7 +196,7 @@ member, SHALL NOT count as a key.
 - **THEN** `items`, `orders`, `supplies` and `tweets` carry their FK joins (items → orders,
   items → products, orders → customers, orders → stores, supplies → products, tweets → customers),
   every model's primary key is set (`supplies` composite `id, sku`), and the README query
-  `{"source_model": "orders", "measures": ["sum(order_total)", "change_pct(sum(order_total))"], "dimensions": ["stores.name", "month(ordered_at)"]}`
+  `{"source_model": "orders", "measures": ["sum(order_total)", "change_pct(sum(order_total))"], "dimensions": ["stores.name", "date_trunc('month', ordered_at)"]}`
   returns rows
 
 #### Scenario: DuckDB UNIQUE constraints mark columns unique

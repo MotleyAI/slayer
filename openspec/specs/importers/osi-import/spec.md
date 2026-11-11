@@ -139,7 +139,7 @@ The selected expression SHALL be read with the conventions of its own dialect, w
 
 ### Requirement: Current-spec models expose their declared fields
 
-For a current-spec document, each dataset's model SHALL expose exactly its declared fields as visible columns (plus any hidden helper columns the import needs: metric operands). Source columns that no field declares SHALL NOT appear as visible columns of the model. A field expression SHALL still be able to read any column of the dataset's source, with the source's meaning, unless another field holds that column's name, in which case the reading field is dropped with a report. A dataset that declares no fields SHALL still import, with a warning that it exposes no columns.
+For a current-spec document, each dataset's model SHALL expose exactly its declared fields as visible columns (plus any hidden helper columns the import needs: metric operands). Source columns that no field declares SHALL NOT appear as visible columns of the model. A field expression SHALL still be able to read any column of the dataset's source, with the source's meaning, unless another field holds that column's name, in which case the reading field is dropped with a report. A dataset that declares no fields SHALL still import, with a warning that it exposes no columns. Within a dataset, declared field names and dataset-scoped metric names SHALL be unique, compared case-insensitively as Ossie compares unquoted identifiers. A document that breaks this SHALL be refused: the import SHALL fail naming the dataset and the clashing names, and SHALL import nothing.
 
 #### Scenario: Renamed field hides its source column
 - **WHEN** dataset `orders` has source columns `o_orderkey` and `o_totalprice` and declares fields `order_id: o_orderkey` and `total_amount: o_totalprice`
@@ -156,6 +156,10 @@ For a current-spec document, each dataset's model SHALL expose exactly its decla
 #### Scenario: Dataset without fields
 - **WHEN** a current-spec dataset declares no fields
 - **THEN** its model imports with no visible columns and the report holds a warning for that dataset
+
+#### Scenario: Names repeated within a dataset
+- **WHEN** dataset `orders` declares fields `amount` and `Amount`, or a field `total` and a dataset-scoped metric `TOTAL`, or two dataset-scoped metrics named `tot`
+- **THEN** the import fails naming `orders` and the clashing names, and no model is imported
 
 ### Requirement: Field expressions are validated against the live source
 
@@ -231,7 +235,7 @@ For a current-spec document, a model-scoped metric SHALL reference fields only a
 
 ### Requirement: Identifier case in metric references
 
-An unquoted identifier in a metric expression SHALL match a declared field or dataset name case-insensitively; a double-quoted identifier SHALL match exactly. When an unquoted identifier matches more than one declared name, the metric SHALL be reported as ambiguous. The stored measure SHALL reference fields by their declared names.
+An unquoted identifier in a metric expression SHALL match a declared field or dataset name case-insensitively; a double-quoted identifier SHALL match exactly. The stored measure SHALL reference fields by their declared names.
 
 #### Scenario: Case-insensitive match
 - **WHEN** dataset `orders` declares field `amount` and a dataset-scoped metric is `SUM(Amount)`
@@ -242,8 +246,8 @@ An unquoted identifier in a metric expression SHALL match a declared field or da
 - **THEN** the metric is reported as unconverted
 
 #### Scenario: Case-only ambiguity
-- **WHEN** dataset `orders` declares fields `id` and `ID` and a dataset-scoped metric is `COUNT(DISTINCT id)`
-- **THEN** the metric is reported as ambiguous
+- **WHEN** dataset `orders` declares fields `id` and `ID`
+- **THEN** the import fails naming `orders`, `id` and `ID`
 
 ### Requirement: Legacy documents keep lenient resolution
 
@@ -263,7 +267,7 @@ For a legacy-wrapper document, each model SHALL expose all introspected source c
 
 ### Requirement: Dataset-scoped metrics become measures on their dataset
 
-Each metric in `datasets[].metrics` SHALL become a measure on that dataset's model. A dataset-scoped metric whose name collides with a column or another measure on that model SHALL be reported as unconverted.
+Each metric in `datasets[].metrics` SHALL become a measure on that dataset's model. A dataset-scoped metric whose name collides with another column or measure on that model — a hidden helper column, a SLayer-only column, or a model-scoped metric's measure — SHALL be reported as unconverted; a collision with a declared field or another dataset-scoped metric of the same dataset refuses the document (Current-spec models expose their declared fields).
 
 #### Scenario: Dataset-scoped metric
 - **WHEN** dataset `orders` declares field `amount` and metric `total_amount: SUM(amount)`
@@ -271,7 +275,7 @@ Each metric in `datasets[].metrics` SHALL become a measure on that dataset's mod
 
 #### Scenario: Name collision with a field
 - **WHEN** dataset `orders` declares field `revenue` and dataset-scoped metric `revenue: SUM(amount)`
-- **THEN** the metric is reported as unconverted
+- **THEN** the import fails naming `orders` and `revenue`
 
 ### Requirement: FILTER aggregates
 

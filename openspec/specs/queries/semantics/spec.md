@@ -404,7 +404,7 @@ dimension's `name`, else its canonical dotted path — never an internal alias.
 #### Scenario: Diagnostics name dimensions by their query name
 - **WHEN** a re-aggregation broadcasts over the joined dimension `customers.regions.name`
   (e.g. `avg(sum(amount, partition_by=amount))` rooted at `corders`), and another over a
-  named computed dimension `is_p` defined as `product == 'P'`, and each query also runs
+  named computed dimension `is_p` defined as `product = 'P'`, and each query also runs
   under `to_many_handling: "error"`
 - **THEN** the broadcast warnings and the errors name `customers.regions.name` and
   `is_p` — never a `__`-joined path or a generated `grain_…` alias
@@ -566,9 +566,9 @@ column's values.
   `partition_by=` remedy
 
 #### Scenario: Row-level expression over grain members partitions exactly
-- **WHEN** a query over dimensions `[region, city == 'Alpha']` selects
+- **WHEN** a query over dimensions `[region, city = 'Alpha']` selects
   `avg(sum(amount, partition_by=[city, region]))` under each `to_many_handling` mode
-- **THEN** each `(region, city == 'Alpha')` row carries the average of exactly its own
+- **THEN** each `(region, city = 'Alpha')` row carries the average of exactly its own
   city cells — `(North, true)` 30, `(North, false)` 60, `(South, true)` 40,
   `(South, false)` 100, `(East, false)` 60, Gap's NULL-city cell 12, `(Gap, false)` 8,
   `(Void, false)` NULL — by executed values on SQLite and DuckDB, with no broadcast or
@@ -576,7 +576,7 @@ column's values.
 
 #### Scenario: Expression over a to-one-determined dimension matches its plain spelling
 - **WHEN** the operand is `sum(amount, partition_by=customer_id)` rooted at `corders` and
-  the query dimension is `customers.regions.name == 'North'`
+  the query dimension is `customers.regions.name = 'North'`
 - **THEN** the `true` cell carries 35 and the `false` cell 100 — the values the plain
   `customers.regions.name` dimension gives North and South — by executed values, with no
   warning
@@ -589,7 +589,7 @@ column's values.
 
 #### Scenario: Expression over an undetermined column still resolves per mode
 - **WHEN** a query over dimensions `[region, is_p]`, with `is_p` defined as
-  `product == 'P'`, selects `avg(sum(amount, partition_by=[city, region]))`
+  `product = 'P'`, selects `avg(sum(amount, partition_by=[city, region]))`
 - **THEN** under the default mode each region's value repeats across `is_p` and the
   broadcast warning names `is_p`, the reason that the operand grain does not determine
   it, and the `partition_by=` remedy; under `to_many_handling: "error"` the query fails
