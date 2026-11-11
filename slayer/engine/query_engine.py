@@ -10,11 +10,10 @@ import decimal
 import logging
 import tempfile
 import warnings as _warnings_module
-from collections.abc import AsyncGenerator, Awaitable
+from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Any, Callable, Coroutine, Dict, Iterator, List, Optional, Set, Tuple, TypeVar, Unpack
 
-import sqlalchemy as sa
 from sqlglot import exp
 from sqlglot.expressions.core import Expr
 from pydantic import (
@@ -24,8 +23,7 @@ from pydantic import (
     model_validator,
 )
 
-from slayer.async_utils import run_sync, run_sync_on_caller_thread
-from slayer.core.deprecation import warn_deprecated
+from slayer.async_utils import run_sync
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, RANKED_AGGREGATIONS, JoinCardinality, TimeGranularity
 from slayer.core.errors import (
     AggregationArgumentError,
@@ -68,14 +66,10 @@ from slayer.core.query import (
     OrderItem,
     QueryRefinement,
     SlayerQuery,
-    call_callee,
-    colon_bucket,
-    computed_dimension_name,
     extract_variable_refs,
     refine_query,
     render_probe_text,
 )
-from slayer.core.granularity import resolve_granularity
 from slayer.core.join_search import blocking_pairs, shortest_routes, unreachable_target
 from slayer.engine.column_dependency import check_definition_ambiguity, check_definition_reach, check_model_filters
 from slayer.engine.population.inference import (
@@ -172,13 +166,11 @@ from slayer.database.client import (
     _is_auth_failure,
     _is_transient_db_error,
     _is_unreachable_db_error,
-    adapt_client,
     classify_model_sql,
     render_type_probe,
     sql_model_trial_query,
-    type_categories,
 )
-from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, dialect_for_sa_backend, get_dialect
+from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, get_dialect
 from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.render.library import check_library_support
 from slayer.sql.naming import key_identifier
@@ -358,37 +350,22 @@ def _merge_query_variables(
     return {**(outer or {}), **(stage or {}), **(runtime or {})}
 
 
-def _datasource_colon_bucket(d: ComputedDimension, *, bundle: ResolvedSourceBundle) -> Optional[Tuple[str, str]]:
-    """``(column, granularity)`` of an unnamed colon ``col:gran`` dimension of a datasource granularity, else ``None``."""
-    if d.name != computed_dimension_name(d.template):
-        return None
-    colon = colon_bucket(call_callee(d.expression)[0])
-    return colon if colon is not None and resolve_granularity(colon[1], defined=bundle.granularities) else None
-
-
-def _with_default_order(query: SlayerQuery, *, bundle: ResolvedSourceBundle) -> SlayerQuery:
+def _with_default_order(query: SlayerQuery) -> SlayerQuery:
     """``query`` ordered by its projected dimensions, ascending, in result-column order, when it has no order.
 
     Each item is spelled as its dimension is declared, so it binds onto the projected value.
     """
     if query.order or query.distinct_dimension_values is False:
         return query
-    dimensions: List[str] = []
-    # A colon bucket of a datasource granularity projects after the other dimensions, with the time dimensions.
-    buckets: List[str] = []
-    for d in query.dimensions or []:
-        if not isinstance(d, ComputedDimension):
-            dimensions.append(d.spelling)
-        elif (colon := _datasource_colon_bucket(d, bundle=bundle)) is not None:
-            buckets.append(f"date_trunc('{colon[1]}', {colon[0]})")
-        else:
-            dimensions.append(d.name or d.expression)
+    dimensions = [
+        d.spelling if not isinstance(d, ComputedDimension) else d.name or d.expression for d in query.dimensions or []
+    ]
     time_dimensions = [
         f"date_trunc('{td.granularity.value if isinstance(td.granularity, TimeGranularity) else td.granularity}', "
         f"{td.dimension})"
         for td in query.time_dimensions or []
     ]
-    columns = [*dimensions, *time_dimensions, *buckets]
+    columns = [*dimensions, *time_dimensions]
     if not columns:
         return query
     return query.model_copy(update={"order": [OrderItem.model_validate({"column": c, "implied": True}) for c in columns]})
@@ -1352,7 +1329,7 @@ class SlayerQueryEngine:
         bundle = bundle.model_copy(update={"stage_source_models": stage_sources})
 
         if result_order:
-            query = _with_default_order(query, bundle=bundle)
+            query = _with_default_order(query)
 
         # Plan the DAG (root last) and compose the whole chain as one statement.
         planned_list = plan_stages(queries=[*normed_named.values(), query], bundle=bundle)
@@ -1479,7 +1456,7 @@ class SlayerQueryEngine:
         client = self._sql_clients.get(key)
         if client is None:
             factory = self._client_factory
-            client = adapt_client(factory(datasource)) if factory is not None else SlayerSQLClient(datasource=datasource)
+            client = factory(datasource) if factory is not None else SlayerSQLClient(datasource=datasource)
             self._sql_clients[key] = client
         return client
 
@@ -2034,21 +2011,6 @@ class SlayerQueryEngine:
             projection_aliases=projection_result_keys(root_planned=root), type_probe=True,
         )
         return built, dialect, root
-
-    async def get_column_types(self, model_name: str, data_source: Optional[str] = None) -> Dict[str, str]:
-        """Deprecated: the 1.5.0 category probe; use ``get_result_column_types``."""
-        warn_deprecated(
-            "SlayerQueryEngine.get_column_types() returns 1.5.0 type categories and is removed in SLayer 2.0; "
-            "use get_result_column_types(), which returns SLayer types and database type names.",
-            removal="2.0",
-        )
-        types = await self.get_result_column_types(model_name, data_source=data_source)
-        model = await self.storage.get_model(model_name, data_source=data_source)
-        try:
-            ds_type = (await self._resolve_datasource(model=model)).type if model is not None else None
-        except ValueError:
-            ds_type = None
-        return type_categories(types, dialect=dialect_for_ds_type(ds_type))
 
     async def get_result_column_types(  # NOSONAR(S3776) — linear probe pipeline: query-backed prelude → bundle → expand-nested → plan → render → execute → result-key map-back. Splitting hides the order; each step is its own try/except + early-return so flatness is the easier read.
         self,
@@ -3253,29 +3215,6 @@ async def short_lived_engine(
                 await asyncio.shield(engine.aclose())
             finally:
                 engine.close()
-
-
-def run_over_caller_engine(
-    sa_engine: sa.Engine, *, data_source: str, work: Callable[[SqlClient], Awaitable[_T]],
-) -> _T:
-    """Run ``work`` synchronously over a short-lived engine's client wrapping the caller's ``sa_engine``.
-
-    The client reads on the caller's thread (in-memory pools are thread-bound) and never disposes the engine.
-    """
-    datasource = DatasourceConfig(
-        name=data_source,
-        type=dialect_for_sa_backend(sa_engine.url.get_backend_name()).sqlglot_name,
-        connection_string=str(sa_engine.url),
-    )
-
-    def _caller_client(ds: DatasourceConfig) -> SlayerSQLClient:
-        return SlayerSQLClient(datasource=ds, sa_engine=sa_engine)
-
-    async def _run() -> _T:
-        async with short_lived_engine(client_factory=_caller_client) as engine:
-            return await work(engine.client_for(datasource))
-
-    return run_sync_on_caller_thread(_run())
 
 
 def _entry_client_key(entry: _CacheEntry) -> ClientCacheKey:

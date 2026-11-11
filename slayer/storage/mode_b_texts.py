@@ -2,11 +2,12 @@
 models and extensions, and a memory's query. Mode-A text (``Column.sql``, ``sql_table``, model ``filters``,
 aggregation formulas) is never visited."""
 
+import contextlib
 from collections.abc import Callable
 from typing import Any
 
 from slayer.core.legacy_spellings import LegacySpan, rewrite_spans
-from slayer.core.syntax import call_spans, legacy_spans
+from slayer.core.syntax import call_spans, legacy_spans, rewrite_colon_spans
 from slayer.storage.rank_direction_migration import rewrite_query_fields
 
 TextRewrite = Callable[[str], str]
@@ -63,6 +64,16 @@ def bucket_calls_as_date_trunc(text: str, *, units: frozenset[str]) -> str:
         out.append(text[cursor:call.start] + f"date_trunc('{unit}', ")
         cursor = paren + 1
     return "".join(out) + text[cursor:]
+
+
+def custom_buckets_as_date_trunc(text: str, *, units: frozenset[str]) -> str:
+    """``text`` with each bucket of a granularity in ``units`` — a call ``u(x)`` or a stored colon ``x:u`` — spelled
+    ``date_trunc('u', x)``."""
+    if not units:
+        return text
+    with contextlib.suppress(ValueError):
+        text = rewrite_colon_spans(text, units=units)
+    return bucket_calls_as_date_trunc(text, units=units)
 
 
 def renamed_calls(text: str, *, old: str, new: str) -> str:

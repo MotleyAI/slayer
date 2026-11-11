@@ -33,7 +33,7 @@ def _q(dimensions: list) -> SlayerQuery:
     return fx.q(
         source_model="orders",
         dimensions=dimensions,
-        measures=[{"formula": "*:count"}],
+        measures=[{"formula": "count(*)"}],
     )
 
 
@@ -88,7 +88,7 @@ class TestNonRegression:
 
     async def test_partition_by_aggregate_dimension_unaffected(self, exec_engine) -> None:
         resp = await exec_engine.execute(
-            _q(["status", "amount:sum(partition_by=status) > 20"])
+            _q(["status", "sum(amount, partition_by=status) > 20"])
         )
         assert "orders._count" in resp.columns
         assert len(resp.data) == 2
@@ -108,7 +108,7 @@ class TestNonRegression:
         query = fx.q(
             source_model="orders",
             dimensions=["status"],
-            measures=[{"formula": "*:count"}],
+            measures=[{"formula": "count(*)"}],
             filters=[f"date_trunc('month', created_at) >= '{bound}'"],
         )
         resp = await exec_engine.execute(query)

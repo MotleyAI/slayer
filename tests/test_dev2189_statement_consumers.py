@@ -135,7 +135,7 @@ LONG = "a" * 70
 @pytest.mark.parametrize("policy", [None, "join_multi_hop"])
 async def test_length_fitted_result_names_come_back_canonical(policy: Optional[str]) -> None:
     long_query = SlayerQuery.model_validate({
-        "source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "amount:sum", "name": LONG}],
+        "source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "sum(amount)", "name": LONG}],
     })
     async with emission_engine("postgres") as (base, _):
         engine = SlayerQueryEngine(storage=base.storage, policy=POLICIES[policy] if policy else None)

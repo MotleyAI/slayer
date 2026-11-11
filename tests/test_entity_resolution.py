@@ -83,7 +83,7 @@ async def storage() -> AsyncIterator[StorageBackend]:
                     ),
                 ],
                 measures=[
-                    ModelMeasure(formula="amount:sum / *:count", name="aov"),
+                    ModelMeasure(formula="sum(amount) / count(*)", name="aov"),
                 ],
                 aggregations=[
                     Aggregation(
@@ -424,12 +424,12 @@ class TestResolveEntityCaseDDatasourceModelCollision:
 
 
 class TestResolveEntityAggregationStripping:
-    async def test_colon_sum_strips_to_column(
+    async def test_sum_strips_to_column(
         self, storage: StorageBackend
     ) -> None:
-        # "orders.amount:sum" canonicalises to mydb.orders.amount.
+        # "sum(orders.amount)" canonicalises to mydb.orders.amount.
         result = await resolve_entity(
-            "orders.amount:sum", storage=storage
+            "sum(orders.amount)", storage=storage
         )
         assert result.canonical_forms == ["mydb.orders.amount"]
 
@@ -437,7 +437,7 @@ class TestResolveEntityAggregationStripping:
         self, storage: StorageBackend
     ) -> None:
         result = await resolve_entity(
-            "orders.amount:weighted_avg(weight=amount)", storage=storage
+            "weighted_avg(orders.amount, weight=amount)", storage=storage
         )
         assert result.canonical_forms == ["mydb.orders.amount"]
 
@@ -445,7 +445,7 @@ class TestResolveEntityAggregationStripping:
         self, storage: StorageBackend
     ) -> None:
         result = await resolve_entity(
-            "orders.amount:corr(other=amount)", storage=storage
+            "corr(orders.amount, other=amount)", storage=storage
         )
         assert result.canonical_forms == ["mydb.orders.amount"]
 
@@ -454,9 +454,9 @@ class TestResolveEntityStarCount:
     async def test_star_count_with_model_resolves_to_model(
         self, storage: StorageBackend
     ) -> None:
-        # "orders.*:count" → the model itself (per §3.1).
+        # "count(orders.*)" → the model itself (per §3.1).
         result = await resolve_entity(
-            "orders.*:count", storage=storage
+            "count(orders.*)", storage=storage
         )
         assert result.canonical_forms == ["mydb.orders"]
 
@@ -464,7 +464,7 @@ class TestResolveEntityStarCount:
         self, storage: StorageBackend
     ) -> None:
         with pytest.raises(EntityResolutionError) as exc_info:
-            await resolve_entity("*:count", storage=storage)
+            await resolve_entity("count(*)", storage=storage)
         assert "count(*)" in str(exc_info.value)
 
     async def test_star_count_with_source_model_uses_it(
@@ -472,20 +472,20 @@ class TestResolveEntityStarCount:
     ) -> None:
         orders = await storage.get_model("orders", data_source="mydb")
         result = await resolve_entity(
-            "*:count", storage=storage, source_model=orders
+            "count(*)", storage=storage, source_model=orders
         )
         assert result.canonical_forms == ["mydb.orders"]
 
     async def test_star_with_non_count_aggregation_rejected(
         self, storage: StorageBackend
     ) -> None:
-        """``*:sum`` and similar must not silently collapse to the
+        """``sum(*)`` and similar must not silently collapse to the
         source model — only ``count`` is the valid wildcard form. The
         previous code accepted any aggregation, which would corrupt the
         canonical-entity index for memories tagged via a query that
         used a malformed wildcard."""
         orders = await storage.get_model("orders", data_source="mydb")
-        for bad in ("*:sum", "*:avg"):
+        for bad in ("sum(*)", "avg(*)"):
             with pytest.raises(EntityResolutionError) as exc_info:
                 await resolve_entity(
                     bad, storage=storage, source_model=orders
@@ -495,7 +495,7 @@ class TestResolveEntityStarCount:
     async def test_model_star_with_non_count_aggregation_rejected(
         self, storage: StorageBackend
     ) -> None:
-        for bad in ("orders.*:sum", "orders.*:avg"):
+        for bad in ("sum(orders.*)", "avg(orders.*)"):
             with pytest.raises(EntityResolutionError) as exc_info:
                 await resolve_entity(bad, storage=storage)
             assert bad in str(exc_info.value)
@@ -545,7 +545,7 @@ class TestExtractEntitiesFromQuery:
     ) -> None:
         q = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders" in result.canonical_forms
@@ -556,7 +556,7 @@ class TestExtractEntitiesFromQuery:
         q = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.status" in result.canonical_forms
@@ -567,7 +567,7 @@ class TestExtractEntitiesFromQuery:
         q = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="customers.name")],
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.customers.name" in result.canonical_forms
@@ -581,7 +581,7 @@ class TestExtractEntitiesFromQuery:
     ) -> None:
         q = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.amount" in result.canonical_forms
@@ -597,7 +597,7 @@ class TestExtractEntitiesFromQuery:
                     granularity=TimeGranularity.DAY,
                 )
             ],
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.ordered_at" in result.canonical_forms
@@ -608,7 +608,7 @@ class TestExtractEntitiesFromQuery:
         q = SlayerQuery(
             source_model="orders",
             filters=["status = 'paid'", "amount > 100"],
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.status" in result.canonical_forms
@@ -620,7 +620,7 @@ class TestExtractEntitiesFromQuery:
         q = SlayerQuery(
             source_model="orders",
             filters=["status = '{status_val}'"],
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
             variables={"status_val": "paid"},
         )
         result = await extract_entities_from_query(q, storage=storage)
@@ -635,7 +635,7 @@ class TestExtractEntitiesFromQuery:
             source_model="orders",
             dimensions=[ColumnRef(name="amount")],
             filters=["amount > 100"],
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert (
@@ -647,11 +647,11 @@ class TestExtractEntitiesFromQuery:
     ) -> None:
         q = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         # Pin the exact list — a regression that adds an extra entity
-        # for ``*:count`` (e.g. tagging ``*`` as its own thing) would
+        # for ``count(*)`` (e.g. tagging ``*`` as its own thing) would
         # silently pass a membership check.
         assert result.canonical_forms == ["mydb.orders"]
 
@@ -661,7 +661,7 @@ class TestExtractEntitiesFromQuery:
         q = SlayerQuery(
             source_model="orders",
             filters=["nonexistent_col > 100"],
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         with pytest.raises(EntityResolutionError):
             await extract_entities_from_query(q, storage=storage)

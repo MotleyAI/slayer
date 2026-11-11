@@ -36,7 +36,7 @@ class TestStamping:
     async def test_aggregated_query_stamps_composite_grain(self, engine) -> None:
         model = await engine.create_model_from_query(
             q(dimensions=["status", "channel"],
-              measures=[ModelMeasure(formula="amount:sum", name="total")]),
+              measures=[ModelMeasure(formula="sum(amount)", name="total")]),
             "vm_agg",
         )
         assert _pk_names(model) == {"status", "channel"}
@@ -66,7 +66,7 @@ class TestStampedModelProvesJoins:
     async def test_join_onto_complete_grain_is_provable(self, engine) -> None:
         model = await engine.create_model_from_query(
             q(dimensions=["status", "channel"],
-              measures=[ModelMeasure(formula="amount:sum", name="total")]),
+              measures=[ModelMeasure(formula="sum(amount)", name="total")]),
             "vm_kpis",
         )
         full = ModelJoin(
@@ -78,7 +78,7 @@ class TestStampedModelProvesJoins:
     async def test_join_onto_partial_grain_stays_unproven(self, engine) -> None:
         model = await engine.create_model_from_query(
             q(dimensions=["status", "channel"],
-              measures=[ModelMeasure(formula="amount:sum", name="total")]),
+              measures=[ModelMeasure(formula="sum(amount)", name="total")]),
             "vm_kpis2",
         )
         partial = ModelJoin(
@@ -93,7 +93,7 @@ class TestStampedModelProvesJoins:
         join onto the query-backed model keeps exact per-dimension values."""
         await engine.create_model_from_query(
             q(dimensions=["status", "channel"],
-              measures=[ModelMeasure(formula="amount:sum", name="total")]),
+              measures=[ModelMeasure(formula="sum(amount)", name="total")]),
             "vm_grain",
         )
         host = orders_model()
@@ -105,7 +105,7 @@ class TestStampedModelProvesJoins:
         await engine.storage.save_model(host, _validate=False)
         resp = await engine.execute(q(
             source_model="orders_kpi", dimensions=["status"],
-            measures=[ModelMeasure(formula="vm_grain.total:sum", name="t")],
+            measures=[ModelMeasure(formula="sum(vm_grain.total)", name="t")],
         ))
         got = {r["orders_kpi.status"]: float(r["orders_kpi.t"])
                for r in resp.data}

@@ -23,7 +23,7 @@ from tests._dev2215_fixtures import future_warnings, recorded_warnings
 from tests._stored_upgrade_fixtures import BACKENDS, DS, memory_v2, raw_store, run, seed_shop
 
 #: The versions every document written before this change carries.
-PRE = {"SlayerModel": 18, "SlayerQuery": 9, "Memory": 7}
+PRE = {"SlayerModel": 19, "SlayerQuery": 10, "Memory": 8}
 FISCAL_YEAR = {"name": "fiscal_year", "base": "year", "origin": "2000-04-01"}
 _COLUMNS = [
     {"name": "order_id", "type": "INT", "primary_key": True},
@@ -205,6 +205,17 @@ class TestBucketCalls:
                                                          backend: str) -> None:
         storage = await store(tmp_path, shop_ds, backend=backend, models=[orders_doc(measures=[
             {"name": "fys", "formula": "count_distinct(fiscal_year(ordered_at))"}])])
+        model = await storage.get_model("orders", data_source=DS)
+        assert model is not None
+        assert [m.formula for m in model.measures] == ["count_distinct(date_trunc('fiscal_year', ordered_at))"]
+
+    @pytest.mark.parametrize("backend", BACKENDS)
+    async def test_a_stored_colon_custom_granularity_becomes_date_trunc(
+        self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
+    ) -> None:
+        doc = orders_doc(version=PRE["SlayerModel"] - 1, measures=[
+            {"name": "fys", "formula": "count_distinct(ordered_at:fiscal_year)"}])
+        storage = await store(tmp_path, shop_ds, backend=backend, models=[doc])
         model = await storage.get_model("orders", data_source=DS)
         assert model is not None
         assert [m.formula for m in model.measures] == ["count_distinct(date_trunc('fiscal_year', ordered_at))"]

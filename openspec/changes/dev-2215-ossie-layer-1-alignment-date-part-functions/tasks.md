@@ -40,7 +40,7 @@
 
 ## 7. Stored upgrade
 
-- [x] 7.1 One versioned step (SlayerModel 18→19, SlayerQuery 9→10, Memory 7→8, `stored_only`) that rewrites built-in bucket calls to `date_trunc`, legacy spans to their twins, and `agg` aggregations to `agg_aggregation` with every call rewritten. One recursive walker over the Mode-B field matrix (settle `Column.filter`'s mode from its parser first) covers nested documents. Verify with the `models/stored-upgrade` scenarios.
+- [x] 7.1 One versioned step (SlayerModel 19→20, SlayerQuery 10→11, Memory 8→9, `stored_only`) that rewrites built-in bucket calls to `date_trunc`, legacy spans to their twins, and `agg` aggregations to `agg_aggregation` with every call rewritten. One recursive walker over the Mode-B field matrix (settle `Column.filter`'s mode from its parser first) covers nested documents. Verify with the `models/stored-upgrade` scenarios.
 - [x] 7.2 Storage load path: capture raw versions, settle datasource granularity names, rewrite pre-bump custom-granularity calls, then run the versioned migrations. Idempotent. Verify with the custom-granularity memory scenario, an interrupted-load test, already-current documents, and inline and query-backed models.
 - [x] 7.3 Library growth: the `reserved` vocabulary and `MIGRATED` entry for `agg`. Verify with `tests/test_library_growth.py`.
 

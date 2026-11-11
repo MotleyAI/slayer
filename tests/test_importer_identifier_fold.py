@@ -11,7 +11,6 @@ from typing import Any, cast
 import pytest
 import sqlalchemy as sa
 import sqlglot
-from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.sql.elements import quoted_name
 from sqlglot import exp
 
@@ -25,17 +24,17 @@ from slayer.cube.report import CubeConversionResult
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject
 from slayer.live_schema.ingestion import IntrospectedColumn
-from slayer.engine.query_engine import run_over_caller_engine
 from slayer.importers import column_types
 from slayer.importers.column_types import LiveDatasource
 from slayer.importers.physical import UndecidableIdentifierCaseError
 from slayer.osi import converter as osi_converter
 from slayer.database import engine_factory
-from slayer.sql.dialects import get_dialect
+from slayer.sql.dialects import SqliteDialect, get_dialect
+from slayer.sql.dialects.reflection import column_from_sa_type
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2171_fixtures import (
-    column, cube_issues, cube_report_messages, models_of, run_cli, source_column, stored_model, typing_notes,
-    write_yaml,
+    collect_over_engine, column, cube_issues, cube_report_messages, models_of, run_cli, source_column, stored_model,
+    typing_notes, write_yaml,
 )
 from tests._engine_helpers import _engine_generate, disposable_engine
 from tests._osi_helpers import by_name, cols, convert, disable_type_probe, documents, ds, f, f_dialects, flat, seed_db
@@ -51,7 +50,7 @@ def _cube(*cubes: dict[str, Any], dialect: str | None = "postgres", engine: sa.E
     project = project or CubeProject.model_validate({"cubes": list(cubes)})
     converter = CubeToSlayerConverter(project=project, data_source=DS, target_dialect=dialect)
     if engine is not None:
-        run_over_caller_engine(engine, data_source=DS, work=lambda client: converter.collect_metadata(client=client))
+        collect_over_engine(collect=lambda client: converter.collect_metadata(client=client), engine=engine)
     return converter.convert()
 
 
@@ -200,12 +199,18 @@ async def test_folding_dialect_generates_unquoted_folded_names(dialect: str) -> 
     assert all((i.name, i.quoted) == ("orderamount", False) for i in physical)
 
 
+def _reflect_as(monkeypatch: pytest.MonkeyPatch, reflected: list[dict[str, Any]]) -> None:
+    """SQLite's column read yields ``reflected`` (Inspector-shaped dicts)."""
+    monkeypatch.setattr(SqliteDialect, "reflect_columns", lambda _self, **_kw: [
+        column_from_sa_type(name=c["name"], sa_type=c["type"]) for c in reflected])
+
+
 @pytest.fixture
 def snowflake_reflection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[sa.Engine]:
     """An engine whose live table ``t`` reflects as Snowflake would hold ``FOO``, ``"foo"`` and ``"Foo"``."""
     reflected = [{"name": "foo", "type": sa.INTEGER()}, {"name": quoted_name("foo", True), "type": sa.INTEGER()},
                  {"name": "Foo", "type": sa.INTEGER()}]
-    monkeypatch.setattr(Inspector, "get_columns", lambda _self, _table, schema=None, **_kw: list(reflected))
+    _reflect_as(monkeypatch, reflected)
     with disposable_engine(f"sqlite:///{tmp_path / 'live.db'}") as engine:
         with engine.connect() as conn:
             conn.execute(sa.text("CREATE TABLE t (x INTEGER)"))
@@ -283,7 +288,7 @@ def test_source_resolution_report_survives_metadata_collection(tmp_path: Path) -
                      regular=[{"name": "src", "raw_code": "SELECT qty FROM orders WHERE x = {{ var('limit') }}"}],
                      dialect="duckdb")
     with disposable_engine(f"duckdb:///{tmp_path / 'shop.duckdb'}") as engine:
-        run_over_caller_engine(engine, data_source=DS, work=lambda client: converter.collect_metadata(client=client))
+        collect_over_engine(collect=lambda client: converter.collect_metadata(client=client), engine=engine)
     messages = [w.message for w in converter.convert().warnings if w.category == "sql_inline"]
     assert [m for m in messages if "var('limit')" in m]
 
@@ -395,7 +400,7 @@ def test_osi_field_matches_a_live_column_case_insensitively_on_duckdb(osi_db: Pa
 def test_osi_fields_read_the_exact_and_folded_snowflake_columns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Snowflake columns ``"foo"`` and ``BAR``, as SQLAlchemy reflects them."""
     reflected = [{"name": quoted_name("foo", True), "type": sa.INTEGER()}, {"name": "bar", "type": sa.INTEGER()}]
-    monkeypatch.setattr(Inspector, "get_columns", lambda _self, _table, schema=None, **_kw: list(reflected))
+    _reflect_as(monkeypatch, reflected)
     db = seed_db(directory=tmp_path, dialect="sqlite", statements=["CREATE TABLE t (x INTEGER)"])
     result = convert(db=db, db_dialect="sqlite", target_dialect="snowflake", docs=documents(flat([
         ds("t", source="t", fields=[f("foo", '"foo"'), f("exact", '"foo"'), f("upper", "BAR")])])))
@@ -436,8 +441,8 @@ def test_live_source_reflects_a_quoted_lowercase_table_exactly(tmp_path: Path, m
     monkeypatch.setattr(column_types, "introspect_table_columns", record)
     datasource = LiveDatasource(offline_reason=None, data_source=DS, db_type="snowflake", dialect="snowflake")
     with disposable_engine(f"sqlite:///{tmp_path / 'live.db'}") as engine:
-        run_over_caller_engine(engine, data_source=DS, work=lambda client: datasource.collect(
-            client=client, convert=lambda: datasource.source(sql_table='"lower_schema"."lower_table"')))
+        collect_over_engine(collect=lambda client: datasource.collect(
+            client=client, convert=lambda: datasource.source(sql_table='"lower_schema"."lower_table"')), engine=engine)
     (call,) = seen
     assert (getattr(call["table_name"], "quote", None), getattr(call["ref"].token, "quote", None)) == (True, True)
     assert call["ref"].qualify(call["table_name"], dialect=get_dialect("snowflake")) == '"lower_schema"."lower_table"'

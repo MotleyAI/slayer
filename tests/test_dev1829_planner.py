@@ -56,7 +56,7 @@ class TestCombinedAttachReplacesCrossModelPlan:
             query=_q(
                 dimensions=["region", "city"],
                 measures=[ModelMeasure(
-                    formula="amount:sum(partition_by=region)", name="region_rev",
+                    formula="sum(amount, partition_by=region)", name="region_rev",
                 )],
             ),
             bundle=_bundle(),
@@ -71,7 +71,7 @@ class TestCombinedAttachReplacesCrossModelPlan:
             query=_q(
                 dimensions=["region", "city"],
                 measures=[ModelMeasure(
-                    formula="amount:sum(partition_by=region)", name="region_rev",
+                    formula="sum(amount, partition_by=region)", name="region_rev",
                 )],
             ),
             bundle=_bundle(),
@@ -92,7 +92,7 @@ class TestCombinedAttachReplacesCrossModelPlan:
             query=_q(
                 dimensions=["region", "city"],
                 measures=[ModelMeasure(
-                    formula="amount:sum(partition_by=region)", name="region_rev",
+                    formula="sum(amount, partition_by=region)", name="region_rev",
                 )],
             ),
             bundle=_bundle(),
@@ -118,7 +118,7 @@ class TestCombinedAttachReplacesCrossModelPlan:
             query=_q(
                 dimensions=["region", "city"],
                 measures=[ModelMeasure(
-                    formula="amount:sum(partition_by=[])", name="g",
+                    formula="sum(amount, partition_by=[])", name="g",
                 )],
             ),
             bundle=_bundle(),
@@ -135,8 +135,8 @@ class TestSamePartitionSetInterning:
             query=_q(
                 dimensions=["region", "city"],
                 measures=[
-                    ModelMeasure(formula="amount:sum(partition_by=region)", name="rsum"),
-                    ModelMeasure(formula="amount:avg(partition_by=region)", name="ravg"),
+                    ModelMeasure(formula="sum(amount, partition_by=region)", name="rsum"),
+                    ModelMeasure(formula="avg(amount, partition_by=region)", name="ravg"),
                 ],
             ),
             bundle=_bundle(),
@@ -152,8 +152,8 @@ class TestSamePartitionSetInterning:
         sql = await gen(_q(
             dimensions=["region", "city"],
             measures=[
-                ModelMeasure(formula="amount:sum(partition_by=region)", name="rsum"),
-                ModelMeasure(formula="amount:avg(partition_by=region)", name="ravg"),
+                ModelMeasure(formula="sum(amount, partition_by=region)", name="rsum"),
+                ModelMeasure(formula="avg(amount, partition_by=region)", name="ravg"),
             ],
         ))
         assert _count_isolated_ctes(sql) == 1
@@ -163,8 +163,8 @@ class TestSamePartitionSetInterning:
             query=_q(
                 dimensions=["region", "city"],
                 measures=[
-                    ModelMeasure(formula="amount:sum(partition_by=region)", name="a"),
-                    ModelMeasure(formula="amount:sum(partition_by=region)", name="b"),
+                    ModelMeasure(formula="sum(amount, partition_by=region)", name="a"),
+                    ModelMeasure(formula="sum(amount, partition_by=region)", name="b"),
                 ],
             ),
             bundle=_bundle(),
@@ -179,8 +179,8 @@ class TestSamePartitionSetInterning:
         sql = await gen(_q(
             dimensions=["region", "city"],
             measures=[
-                ModelMeasure(formula="amount:sum(partition_by=region)", name="a"),
-                ModelMeasure(formula="amount:sum(partition_by=region)", name="b"),
+                ModelMeasure(formula="sum(amount, partition_by=region)", name="a"),
+                ModelMeasure(formula="sum(amount, partition_by=region)", name="b"),
             ],
         ))
         assert _count_isolated_ctes(sql) == 1
@@ -194,9 +194,9 @@ class TestSamePartitionSetInterning:
             query=_q(
                 dimensions=["region", "channel", "city"],
                 measures=[
-                    ModelMeasure(formula="amount:sum(partition_by=region)", name="rr"),
+                    ModelMeasure(formula="sum(amount, partition_by=region)", name="rr"),
                     ModelMeasure(
-                        formula="amount:sum(partition_by=[region, channel])", name="rc",
+                        formula="sum(amount, partition_by=[region, channel])", name="rc",
                     ),
                 ],
             ),
@@ -221,8 +221,8 @@ class TestCoexistenceWithIsolatedFamilies:
         q = _q(
             dimensions=["region", "city"],
             measures=[
-                ModelMeasure(formula="amount:sum(partition_by=region)", name="region_rev"),
-                ModelMeasure(formula="customers.spend:sum", name="cm"),
+                ModelMeasure(formula="sum(amount, partition_by=region)", name="region_rev"),
+                ModelMeasure(formula="sum(customers.spend)", name="cm"),
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
@@ -240,8 +240,8 @@ class TestCoexistenceWithIsolatedFamilies:
         q = _q(
             dimensions=["region"], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum(partition_by=region)", name="region_rev"),
-                ModelMeasure(formula="amount:sum(window='90d')", name="w"),
+                ModelMeasure(formula="sum(amount, partition_by=region)", name="region_rev"),
+                ModelMeasure(formula="sum(amount, window='90d')", name="w"),
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
@@ -259,8 +259,8 @@ class TestCoexistenceWithIsolatedFamilies:
         q = _q(
             dimensions=["region", "city"], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum(partition_by=region)", name="region_rev"),
-                ModelMeasure(formula="amount:last", name="lst"),
+                ModelMeasure(formula="sum(amount, partition_by=region)", name="region_rev"),
+                ModelMeasure(formula="last(amount)", name="lst"),
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
@@ -278,8 +278,8 @@ class TestCoexistenceWithIsolatedFamilies:
         q = _q(
             dimensions=["region"], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum(partition_by=region)", name="region_rev"),
-                ModelMeasure(formula="cumsum(amount:sum)", name="cs"),
+                ModelMeasure(formula="sum(amount, partition_by=region)", name="region_rev"),
+                ModelMeasure(formula="cumsum(sum(amount))", name="cs"),
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
@@ -295,11 +295,11 @@ class TestCoexistenceWithIsolatedFamilies:
         q = _q(
             dimensions=[
                 "region", "city",
-                {"expression": "CASE WHEN amount:sum(partition_by=city) > 5000 "
+                {"expression": "CASE WHEN sum(amount, partition_by=city) > 5000 "
                                "THEN 1 ELSE 0 END", "name": "band"},
             ],
             measures=[ModelMeasure(
-                formula="amount:sum(partition_by=region)", name="region_rev",
+                formula="sum(amount, partition_by=region)", name="region_rev",
             )],
         )
         planned = plan_query(query=q, bundle=_bundle())

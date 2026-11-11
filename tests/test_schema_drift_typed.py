@@ -132,24 +132,24 @@ class TestWalkParsedRefs:
         nodes = list(walk_parsed_refs(parse_expr("aov")))
         assert nodes == [Ref(name="aov")]
 
-    def test_colon_agg_yields_aggcall_not_inner_ref(self) -> None:
-        nodes = list(walk_parsed_refs(parse_expr("amount:sum")))
+    def test_agg_yields_aggcall_not_inner_ref(self) -> None:
+        nodes = list(walk_parsed_refs(parse_expr("sum(amount)")))
         assert nodes == [AggCall(source=Ref(name="amount"), agg="sum")]
 
     def test_star_count_yields_aggcall_with_star_source(self) -> None:
-        nodes = list(walk_parsed_refs(parse_expr("*:count")))
+        nodes = list(walk_parsed_refs(parse_expr("count(*)")))
         assert len(nodes) == 1
         assert isinstance(nodes[0], AggCall)
         assert nodes[0].agg == "count"
 
     def test_dotted_agg_yields_dotted_source(self) -> None:
-        nodes = list(walk_parsed_refs(parse_expr("customers.revenue:sum")))
+        nodes = list(walk_parsed_refs(parse_expr("sum(customers.revenue)")))
         assert len(nodes) == 1
         assert isinstance(nodes[0], AggCall)
         assert nodes[0].source == DottedRef(parts=("customers", "revenue"))
 
     def test_arithmetic_descends_both_operands(self) -> None:
-        nodes = list(walk_parsed_refs(parse_expr("amount:sum / count_col:sum")))
+        nodes = list(walk_parsed_refs(parse_expr("sum(amount) / sum(count_col)")))
         aggs = {
             n.source.name
             for n in nodes
@@ -160,12 +160,12 @@ class TestWalkParsedRefs:
     def test_transform_descends_input_only(self) -> None:
         # partition_by kwarg columns are NOT yielded (legacy parity).
         nodes = list(
-            walk_parsed_refs(parse_expr("cumsum(amount:sum, partition_by=region)"))
+            walk_parsed_refs(parse_expr("cumsum(sum(amount), partition_by=region)"))
         )
         assert nodes == [AggCall(source=Ref(name="amount"), agg="sum")]
 
     def test_scalar_call_descends_args(self) -> None:
-        nodes = list(walk_parsed_refs(parse_expr("coalesce(amount:sum, 0)")))
+        nodes = list(walk_parsed_refs(parse_expr("coalesce(sum(amount), 0)")))
         assert nodes == [AggCall(source=Ref(name="amount"), agg="sum")]
 
     def test_transform_list_partition_by_parses_and_skips_kwargs(self) -> None:
@@ -173,7 +173,7 @@ class TestWalkParsedRefs:
         # only the transform input, so partition columns never surface.
         nodes = list(
             walk_parsed_refs(
-                parse_expr("rank(amount:sum, partition_by=[region, channel], direction='desc')")
+                parse_expr("rank(sum(amount), partition_by=[region, channel], direction='desc')")
             )
         )
         assert nodes == [AggCall(source=Ref(name="amount"), agg="sum")]
@@ -182,7 +182,7 @@ class TestWalkParsedRefs:
         # weighted_avg(weight=quantity): only the aggregated source surfaces,
         # not the weight column (legacy parity — agg args/kwargs are opaque).
         nodes = list(
-            walk_parsed_refs(parse_expr("price:weighted_avg(weight=quantity)"))
+            walk_parsed_refs(parse_expr("weighted_avg(price, weight=quantity)"))
         )
         assert len(nodes) == 1
         (agg,) = nodes
@@ -193,7 +193,7 @@ class TestWalkParsedRefs:
     def test_nested_scalar_arith_agg_mixed(self) -> None:
         # The plan's marquee shape: coalesce(<arith over aggs>, 0).
         nodes = list(
-            walk_parsed_refs(parse_expr("coalesce(amount:sum + revenue:sum, 0)"))
+            walk_parsed_refs(parse_expr("coalesce(sum(amount) + sum(revenue), 0)"))
         )
         aggs = {
             n.source.name
@@ -207,14 +207,14 @@ class TestMeasureFormulaRefs:
     """``_measure_formula_refs`` — the cascade's textual name extractor."""
 
     def test_simple_agg(self) -> None:
-        assert _measure_formula_refs("amount:sum") == {"amount"}
+        assert _measure_formula_refs("sum(amount)") == {"amount"}
 
     def test_star_count_excluded(self) -> None:
         # ``*`` is not a real column reference.
-        assert _measure_formula_refs("*:count") == set()
+        assert _measure_formula_refs("count(*)") == set()
 
     def test_cross_model_dotted(self) -> None:
-        assert _measure_formula_refs("customers.revenue:sum") == {
+        assert _measure_formula_refs("sum(customers.revenue)") == {
             "customers.revenue"
         }
 
@@ -229,29 +229,28 @@ class TestMeasureFormulaRefs:
         assert _measure_formula_refs("aov") == {"aov"}
 
     def test_arithmetic_with_bare_and_star(self) -> None:
-        assert _measure_formula_refs("total_amount / *:count") == {
+        assert _measure_formula_refs("total_amount / count(*)") == {
             "total_amount"
         }
 
     def test_arithmetic_two_aggs(self) -> None:
-        assert _measure_formula_refs("amount:sum / count_col:sum") == {
+        assert _measure_formula_refs("sum(amount) / sum(count_col)") == {
             "amount",
             "count_col",
         }
 
     def test_transform_inner_only(self) -> None:
-        assert _measure_formula_refs("cumsum(amount:sum)") == {"amount"}
+        assert _measure_formula_refs("cumsum(sum(amount))") == {"amount"}
 
     def test_transform_list_partition_by_inner_only(self) -> None:
         # List-valued partition_by is documented Mode-B grammar; parse_expr
         # must accept it. Only the inner value's refs surface (legacy never
         # extracted the partition columns either).
         assert _measure_formula_refs(
-            "rank(revenue:sum, partition_by=[status, customer_id], direction='desc')"
+            "rank(sum(revenue), partition_by=[status, customer_id], direction='desc')"
         ) == {"revenue"}
 
     def test_func_style_simple_agg_rewritten(self) -> None:
-        # Function-style aggs on legacy formulas are rewritten to colon form.
         assert _measure_formula_refs("sum(amount)") == {"amount"}
 
     def test_func_style_count_star_excluded(self) -> None:
@@ -261,17 +260,17 @@ class TestMeasureFormulaRefs:
         assert _measure_formula_refs("sum(amount) / count(*)") == {"amount"}
 
     def test_mixed_transform_in_arithmetic(self) -> None:
-        assert _measure_formula_refs("cumsum(amount:sum) / *:count") == {
+        assert _measure_formula_refs("cumsum(sum(amount)) / count(*)") == {
             "amount"
         }
 
     def test_scalar_call_inner_agg(self) -> None:
-        assert _measure_formula_refs("*:count / nullif(revenue:max, 0)") == {
+        assert _measure_formula_refs("count(*) / nullif(max(revenue), 0)") == {
             "revenue"
         }
 
     def test_scalar_call_over_arith_of_aggs(self) -> None:
-        assert _measure_formula_refs("coalesce(amount:sum + revenue:sum, 0)") == {
+        assert _measure_formula_refs("coalesce(sum(amount) + sum(revenue), 0)") == {
             "amount",
             "revenue",
         }
@@ -287,19 +286,19 @@ class TestMeasureFormulaRefs:
 
     def test_predicate_with_transform(self) -> None:
         # filter-shape formula (comparison wrapping a transform).
-        assert _measure_formula_refs("change(amount:sum) > 0") == {"amount"}
+        assert _measure_formula_refs("change(sum(amount)) > 0") == {"amount"}
 
     def test_boolop_descends_all_operands(self) -> None:
         assert _measure_formula_refs(
-            "amount:sum > 0 and revenue:sum > 0"
+            "sum(amount) > 0 and sum(revenue) > 0"
         ) == {"amount", "revenue"}
 
     def test_unary_not_descends_operand(self) -> None:
-        assert _measure_formula_refs("not (amount:sum > 0)") == {"amount"}
+        assert _measure_formula_refs("not (sum(amount) > 0)") == {"amount"}
 
     def test_weighted_avg_kwarg_column_not_extracted(self) -> None:
         # Legacy parity: the weight column is not a cascade ref.
-        assert _measure_formula_refs("price:weighted_avg(weight=quantity)") == {
+        assert _measure_formula_refs("weighted_avg(price, weight=quantity)") == {
             "price"
         }
 
@@ -307,17 +306,12 @@ class TestMeasureFormulaRefs:
         assert _measure_formula_refs("this is not ) valid (") == set()
 
     def test_bare_dunder_identifier_is_extracted(self) -> None:
-        # DEV-1743: parse_expr no longer rejects ``__`` in a bare identifier,
-        # so a bare ``robot__details`` ref is extracted like any other
-        # (matching the colon-agg source case below).
+        # A bare ``robot__details`` ref is extracted like any other (matching the aggregation-source case below).
         assert _measure_formula_refs("robot__details") == {"robot__details"}
 
-    def test_colon_agg_dunder_source_is_extracted(self) -> None:
-        # ``__`` inside a colon-agg SOURCE is captured pre-AST (not a bare
-        # identifier), so parse_expr does NOT reject it — matching the legacy
-        # walk and supporting persisted query-backed ``__``-named columns
-        # (DEV-1450 C11).
-        assert _measure_formula_refs("robot__details:sum") == {
+    def test_agg_dunder_source_is_extracted(self) -> None:
+        # Supports persisted query-backed ``__``-named columns.
+        assert _measure_formula_refs("sum(robot__details)") == {
             "robot__details"
         }
 
@@ -327,30 +321,27 @@ class TestFilterRefsDslParity:
     ``parse_expr`` (verified green on the legacy implementation first).
     Set equality only: reference order is expression order."""
 
-    def test_colon_agg(self) -> None:
-        assert set(_filter_refs_dsl("revenue:sum > 100")) == {"revenue"}
-
     def test_funcstyle_builtin_agg(self) -> None:
         assert set(_filter_refs_dsl("sum(revenue) > 100")) == {"revenue"}
 
-    def test_colon_agg_alias(self) -> None:
-        assert set(_filter_refs_dsl("revenue:countd > 5")) == {"revenue"}
+    def test_agg_alias(self) -> None:
+        assert set(_filter_refs_dsl("countd(revenue) > 5")) == {"revenue"}
 
-    def test_colon_custom_agg(self) -> None:
-        assert set(_filter_refs_dsl("revenue:my_custom_agg > 5")) == {"revenue"}
+    def test_custom_agg(self) -> None:
+        assert set(_filter_refs_dsl("my_custom_agg(revenue) > 5")) == {"revenue"}
 
     def test_dotted_path(self) -> None:
         assert set(_filter_refs_dsl("customers.regions.name == 'EU'")) == {
             "customers.regions.name"
         }
 
-    def test_dotted_colon_agg(self) -> None:
-        assert set(_filter_refs_dsl("customers.revenue:sum > 10")) == {
+    def test_dotted_agg(self) -> None:
+        assert set(_filter_refs_dsl("sum(customers.revenue) > 10")) == {
             "customers.revenue"
         }
 
     def test_star_count_excluded(self) -> None:
-        assert set(_filter_refs_dsl("*:count > 3")) == set()
+        assert set(_filter_refs_dsl("count(*) > 3")) == set()
 
     def test_like_filter(self) -> None:
         assert set(_filter_refs_dsl("name LIKE 'a%'")) == {"name"}
@@ -362,7 +353,7 @@ class TestFilterRefsDslParity:
         }
 
     def test_agg_and_column_mixed(self) -> None:
-        assert set(_filter_refs_dsl("amount:sum > 100 and region == 'EU'")) == {
+        assert set(_filter_refs_dsl("sum(amount) > 100 and region == 'EU'")) == {
             "amount",
             "region",
         }

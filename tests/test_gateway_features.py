@@ -47,7 +47,7 @@ from tests._gateway_harness import (
 from tests._stored_upgrade_fixtures import raw_store
 
 REVENUE_BY_STATUS = {
-    "source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "amount:sum", "name": "rev"}],
+    "source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "sum(amount)", "name": "rev"}],
 }
 ORDERS_PROJECT = DbtProject(
     semantic_models=[], metrics=[],

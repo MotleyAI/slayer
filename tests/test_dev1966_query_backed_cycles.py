@@ -22,7 +22,7 @@ from tests._dev1966_fixtures import customers_model, m, orders_model, query, see
 
 def _qb(name: str, source: str) -> SlayerModel:
     return SlayerModel(name=name, data_source="test", source_queries=[
-        query(source_model=source, measures=[m("amount:sum", "amount")])])
+        query(source_model=source, measures=[m("sum(amount)", "amount")])])
 
 
 #: shape → (stored models, the model the surface starts from, the expected ordered path).
@@ -35,10 +35,9 @@ _SHAPES = {
 async def _raise_via(surface: str, engine: SlayerQueryEngine, models: List[SlayerModel],
                      start: str) -> BaseException:
     calls: dict[str, Callable[[], Awaitable[object]]] = {
-        "consumer": lambda: engine.execute(query(source_model=start, measures=[m("amount:sum", "t")])),
+        "consumer": lambda: engine.execute(query(source_model=start, measures=[m("sum(amount)", "t")])),
         "run_by_name": lambda: engine.execute(start),
         "save_model": lambda: engine.save_model(next(x for x in models if x.name == start)),
-        "get_column_types": lambda: engine.get_column_types(start),
     }
     with pytest.raises(SlayerError) as exc:
         await calls[surface]()
@@ -58,7 +57,7 @@ async def _engine(tmp: str, models: List[SlayerModel], *, omit: str = "") -> Tup
 
 
 @pytest.mark.parametrize("shape", list(_SHAPES))
-@pytest.mark.parametrize("surface", ["consumer", "run_by_name", "save_model", "get_column_types"])
+@pytest.mark.parametrize("surface", ["consumer", "run_by_name", "save_model"])
 async def test_cycle_raises_naming_the_ordered_path(surface, shape) -> None:
     models, start, path = _SHAPES[shape]
     with tempfile.TemporaryDirectory() as tmp:
@@ -74,7 +73,7 @@ async def test_cycle_raises_naming_the_ordered_path(surface, shape) -> None:
 async def test_every_surface_raises_the_same_type() -> None:
     types = set()
     for models, start, _ in _SHAPES.values():
-        for surface in ["consumer", "run_by_name", "save_model", "get_column_types"]:
+        for surface in ["consumer", "run_by_name", "save_model"]:
             with tempfile.TemporaryDirectory() as tmp:
                 engine, _ = await _engine(tmp, models, omit=start if surface == "save_model" else "")
                 types.add(type(await _raise_via(surface, engine, models, start)))

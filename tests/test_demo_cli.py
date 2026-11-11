@@ -23,7 +23,6 @@ from tests._fake_uvicorn import fake_uvicorn
 def _make_args(**overrides):
     defaults = dict(
         storage=None,
-        models_dir=None,
         connection_string="demo",
         name=None,
         description=None,
@@ -105,7 +104,7 @@ class TestServeMcpDemoHook:
             sys.modules, "uvicorn", fake_uvicorn(lambda app, host, port: calls.append(f"uvicorn:{app}:{host}:{port}"))
         )
 
-        args = argparse.Namespace(host="h", port=1, storage=None, models_dir=None, demo=True)
+        args = argparse.Namespace(host="h", port=1, storage=None, demo=True)
         cli._run_serve(args=args)
 
         assert calls == ["prepare", "uvicorn:APP:h:1"]
@@ -125,7 +124,7 @@ class TestServeMcpDemoHook:
         fake_mcp.create_mcp_server = lambda *args, **kwargs: _FakeMCP()
         monkeypatch.setitem(sys.modules, "slayer.mcp.server", fake_mcp)
 
-        args = argparse.Namespace(storage=None, models_dir=None, demo=True)
+        args = argparse.Namespace(storage=None, demo=True)
         cli._run_mcp(args=args)
 
         assert calls == ["prepare", "mcp.run"]
@@ -267,11 +266,11 @@ class TestDemoEnrichment:
 
     def test_duplicate_measure_names_not_added(self):
         model = self._orders_model()
-        model.measures = [ModelMeasure(name="total_revenue", formula="subtotal:sum")]
+        model.measures = [ModelMeasure(name="total_revenue", formula="sum(subtotal)")]
         jaffle_shop.apply_demo_enrichment(model)
         revenue = [m for m in model.measures if m.name == "total_revenue"]
         assert len(revenue) == 1
-        assert revenue[0].formula == "subtotal:sum"
+        assert revenue[0].formula == "sum(subtotal)"
 
     def test_unknown_model_untouched(self):
         model = SlayerModel(name="unrelated", sql_table="t", data_source="other")

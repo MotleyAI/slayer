@@ -10,9 +10,11 @@ and the executor cache. The Metabase v0.62 golden-corpus tests live in
 from __future__ import annotations
 
 import logging
+import zlib
 
 import pytest
 import sqlglot
+from pydantic import BaseModel
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
@@ -22,6 +24,7 @@ from slayer.facade.catalog import (
     build_catalog_grouped_by_schema,
 )
 from slayer.facade.catalog_sql import (
+    _PG_CATALOG_NAMES,
     KNOWN_SYSTEM_OIDS,
     CatalogRelation,
     CatalogSqlExecutor,
@@ -31,7 +34,8 @@ from slayer.facade.catalog_sql import (
     stable_oid,
 )
 from slayer.facade.rows import FacadeColumn, RowBatch
-from slayer.facade.translator import TranslationError
+from slayer.facade.translator import PgCatalogResult, TranslationError, translate
+from slayer.pg_facade.protocol import OID_FLOAT8, OID_INT8, OID_TEXT
 
 
 # --- fixtures ---------------------------------------------------------------
@@ -55,7 +59,7 @@ def _demo_catalog() -> FacadeCatalog:
         ],
         measures=[
             ModelMeasure(
-                name="aov", formula="revenue:sum / *:count", type=DataType.DOUBLE,
+                name="aov", formula="sum(revenue) / count(*)", type=DataType.DOUBLE,
                 description="Average order value",
             ),
         ],
@@ -619,7 +623,8 @@ def test_information_schema_four_part_qualified_column_resolves() -> None:
         "ORDER BY slayer.information_schema.columns.ordinal_position "
         "LIMIT 1"
     )
-    assert batch.rows and "column_name" in batch.rows[0]
+    assert batch.rows
+    assert "column_name" in batch.rows[0]
 
 
 def test_pg_catalog_query_filters_by_current_schema() -> None:
@@ -650,9 +655,6 @@ def test_catalog_union_all_routes_to_executor() -> None:
     relation — previously the Select-only gate raised
     ``Unsupported statement: Union`` before the executor branch
     ever fired."""
-    from slayer.facade.translator import (
-        PgCatalogResult, translate,
-    )
     sql = (
         "SELECT n.nspname, c.relname FROM pg_catalog.pg_class c "
         "INNER JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid "
@@ -770,7 +772,8 @@ def test_is_schemata_lists_custom_postgres_schemas() -> None:
     assert t2["table_schema"] == "warehouse"
     # pg_namespace lists the custom schema with a distinct (non-public) oid.
     ns = {r["nspname"]: r["oid"] for r in relations["pg_namespace"].rows}
-    assert "warehouse" in ns and "public" in ns
+    assert "warehouse" in ns
+    assert "public" in ns
     assert ns["warehouse"] != ns["public"]
     # pg_class points t2 at the warehouse namespace.
     t2_class = next(r for r in relations["pg_class"].rows if r["relname"] == "t2")
@@ -1044,13 +1047,13 @@ def test_translate_wraps_catalog_executor_error_with_warning(caplog) -> None:
     """The plan: executor errors → TranslationError(...) after logger.warning.
     Test the translate() entry point, not the executor directly, so the
     wrapping behaviour is the asserted contract."""
-    from slayer.facade.translator import translate
     catalog = _demo_catalog()
     sql = "SELECT no_such_fn() FROM pg_catalog.pg_namespace"
     with caplog.at_level(logging.WARNING):
+        executor = _executor(catalog)
         with pytest.raises(TranslationError):
             translate(sql, catalog, dialect="postgres",
-                      catalog_sql_executor=_executor(catalog))
+                      catalog_sql_executor=executor)
     # WARNING log carries the offending SQL.
     assert any(sql in r.getMessage() for r in caplog.records)
 
@@ -1080,7 +1083,7 @@ def test_executor_for_invalidates_on_catalog_change() -> None:
                 Column(name="status", type=DataType.TEXT),
                 Column(name="ordered_at", type=DataType.TIMESTAMP),
             ],
-            measures=[ModelMeasure(name="aov", formula="revenue:sum / *:count", type=DataType.DOUBLE)],
+            measures=[ModelMeasure(name="aov", formula="sum(revenue) / count(*)", type=DataType.DOUBLE)],
         ),
         SlayerModel(
             name="customers", data_source="jaffle", sql_table="customers",
@@ -1150,7 +1153,6 @@ def test_executor_for_evicts_at_four_entries() -> None:
 
 def test_catalog_relation_is_pydantic_basemodel_not_dataclass() -> None:
     # Project convention: no dataclasses; everything goes through Pydantic.
-    from pydantic import BaseModel
     assert issubclass(CatalogRelation, BaseModel)
 
 
@@ -1168,12 +1170,10 @@ def test_stable_oid_is_deterministic_and_positive() -> None:
 def test_stable_oid_matches_crc32_not_builtin_hash() -> None:
     # Pin the exact crc32-derived value so a regression to the per-process
     # salted builtin hash() (which would NOT be stable across restarts) fails.
-    import zlib
     assert stable_oid("jaffle", "orders") == zlib.crc32(b"jaffle.orders") & 0x7FFFFFFF
 
 
 def test_pg_attribute_oids_match_datatype() -> None:
-    from slayer.pg_facade.protocol import OID_FLOAT8, OID_TEXT
     relations = {r.name: r for r in build_catalog_relations(_demo_catalog())}
     # Demo catalog folds datasource "jaffle" under schema "public", so table
     # OIDs are namespaced by the schema name.
@@ -1335,7 +1335,6 @@ class TestCatalogRoutingAllowlistParity:
     knows about the table. Lock the two in step."""
 
     def test_every_pg_builder_is_in_the_routing_allowlist(self) -> None:
-        from slayer.facade.catalog_sql import _PG_CATALOG_NAMES
         # Every relation the builder list emits whose name starts with `pg_`
         # must appear in the allowlist. (information_schema relations are
         # built under `_is_<name>` and use a separate allowlist.)
@@ -1350,7 +1349,6 @@ class TestCatalogRoutingAllowlistParity:
 
     @pytest.mark.parametrize("table", ["pg_am", "pg_roles", "pg_database"])
     def test_is_catalog_only_recognises_new_pg_tables(self, table: str) -> None:
-        from slayer.facade.catalog_sql import is_catalog_only
         sql = f"SELECT * FROM pg_catalog.{table}"
         assert is_catalog_only(_parse(sql)) is True
         # Bare names too (without the pg_catalog. qualifier).
@@ -1361,7 +1359,6 @@ class TestCatalogRoutingAllowlistParity:
         """The actual psql-emitted ``\\d`` shape (multi-JOIN through
         pg_class + pg_namespace + pg_am) must route to the catalog
         executor — not to user-table resolution."""
-        from slayer.facade.catalog_sql import is_catalog_only
         sql = (
             "SELECT n.nspname, c.relname, c.relkind "
             "FROM pg_catalog.pg_class c "
@@ -1439,7 +1436,8 @@ class TestRegclassMapCustomSchema:
         oid_qualified = ex._regclass_map.get("people.employees")
         oid_public = ex._regclass_map.get("public.employees")
         oid_bare = ex._regclass_map.get("employees")
-        assert oid_qualified is not None and oid_qualified > 0
+        assert oid_qualified is not None
+        assert oid_qualified > 0
         assert oid_qualified == oid_public == oid_bare
 
 
@@ -1456,7 +1454,6 @@ class TestPublicSchemaFallbackGuard:
     def test_public_fallback_works_with_single_schema(self) -> None:
         """Backward-compat: one-datasource catalog accepts ``public.X``
         as an alias for whatever the real schema name happens to be."""
-        from slayer.facade.translator import translate
         sql = "SELECT id FROM public.orders"
         result = translate(sql, _demo_catalog(), dialect="postgres")
         assert result.facade_table.name == "orders"
@@ -1464,7 +1461,6 @@ class TestPublicSchemaFallbackGuard:
     def test_public_fallback_rejected_with_multiple_schemas(self) -> None:
         """Isolation: with two datasources / two schemas, ``public.X``
         can't reach across — caller must qualify with the real schema."""
-        from slayer.facade.translator import translate, TranslationError
         cat_a = build_catalog(models_by_datasource={"sales": [
             SlayerModel(name="orders", data_source="sales", sql_table="orders",
                         columns=[Column(name="id", type=DataType.INT, primary_key=True)]),
@@ -1475,8 +1471,7 @@ class TestPublicSchemaFallbackGuard:
         ]})
         # Merge them into one multi-schema catalog (mimics the
         # postgres_schema-per-datasource layout).
-        from slayer.facade.catalog import FacadeCatalog as _FC
-        multi = _FC(
+        multi = FacadeCatalog(
             catalog_name=cat_a.catalog_name,
             schemas=list(cat_a.schemas) + list(cat_b.schemas),
         )
@@ -1565,7 +1560,6 @@ class TestSchemaQualifiedCastRewrite:
 
     def test_pg_catalog_regtype_string_lookup(self) -> None:
         # ``int8`` is a known type — resolves to its wire OID.
-        from slayer.pg_facade.protocol import OID_INT8
         batch = _run("SELECT CAST('int8' AS pg_catalog.regtype) AS o")
         assert batch.rows == [{"o": OID_INT8}]
 

@@ -310,8 +310,8 @@ def _cm_vehicle_query() -> SlayerQuery:
             TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)
         ],
         measures=[
-            ModelMeasure(formula="customers.Rev:sum", name="up"),
-            ModelMeasure(formula="customers.rev:sum", name="down"),
+            ModelMeasure(formula="sum(customers.Rev)", name="up"),
+            ModelMeasure(formula="sum(customers.rev)", name="down"),
         ],
     )
 
@@ -334,8 +334,8 @@ def _case_only_result_names_query() -> SlayerQuery:
             )
         ],
         measures=[
-            ModelMeasure(formula="time_shift(revenue:sum, -1, 'month')", name="Foo"),
-            ModelMeasure(formula="time_shift(revenue:max, -2, 'month')", name="foo"),
+            ModelMeasure(formula="time_shift(sum(revenue), -1, 'month')", name="Foo"),
+            ModelMeasure(formula="time_shift(max(revenue), -2, 'month')", name="foo"),
         ],
     )
 
@@ -433,10 +433,10 @@ class TestE2eCaseFoldingAllDialects:
             ],
             measures=[
                 ModelMeasure(
-                    formula="consecutive_periods(revenue:sum > 0)", name="Foo",
+                    formula="consecutive_periods(sum(revenue) > 0)", name="Foo",
                 ),
                 ModelMeasure(
-                    formula="consecutive_periods(revenue:sum > 100)", name="foo",
+                    formula="consecutive_periods(sum(revenue) > 100)", name="foo",
                 ),
             ],
         )

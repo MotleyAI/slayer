@@ -92,11 +92,11 @@ class TestTypeAndFormatInheritance:
 
     async def test_inferred_type_matches_hand_expanded(self) -> None:
         """``customers.aov`` (no declared type) infers the SAME type as the
-        hand-expanded ``customers.spend:sum / customers.*:count``."""
+        hand-expanded ``sum(customers.spend) / count(customers.*)``."""
         dotted = await self._virtual_column(
             ModelMeasure(formula="customers.aov", name="af"), "af")
         hand = await self._virtual_column(
-            ModelMeasure(formula="customers.spend:sum / customers.*:count", name="af"),
+            ModelMeasure(formula="sum(customers.spend) / count(customers.*)", name="af"),
             "af")
         assert dotted.type == hand.type
 
@@ -104,6 +104,6 @@ class TestTypeAndFormatInheritance:
         dotted = await self._virtual_column(
             ModelMeasure(formula="customers.aov", name="af"), "af")
         hand = await self._virtual_column(
-            ModelMeasure(formula="customers.spend:sum / customers.*:count", name="af"),
+            ModelMeasure(formula="sum(customers.spend) / count(customers.*)", name="af"),
             "af")
         assert dotted.format == hand.format

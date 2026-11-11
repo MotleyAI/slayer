@@ -60,7 +60,7 @@ async def seeded_storage_path():
                         type=DataType.TEXT,
                     ),
                 ],
-                measures=[ModelMeasure(formula="amount:sum", name="rev")],
+                measures=[ModelMeasure(formula="sum(amount)", name="rev")],
             )
         )
         await s.set_datasource_priority(["mydb"])
@@ -78,7 +78,6 @@ def _args(
 ) -> SimpleNamespace:
     return SimpleNamespace(
         storage=storage_path,
-        models_dir=None,
         memory_command=memory_command,
         learning=learning,
         entities=entities,
@@ -105,7 +104,7 @@ class TestMemorySaveSubcommand:
         query_json = json.dumps(
             {
                 "source_model": "orders",
-                "measures": [{"formula": "amount:sum"}],
+                "measures": [{"formula": "sum(amount)"}],
             }
         )
         _run_memory(
@@ -130,7 +129,7 @@ class TestMemorySaveSubcommand:
             json.dumps(
                 {
                     "source_model": "orders",
-                    "measures": [{"formula": "amount:sum"}],
+                    "measures": [{"formula": "sum(amount)"}],
                 }
             )
         )

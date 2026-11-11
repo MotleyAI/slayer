@@ -96,7 +96,7 @@ def _home_path(formula: str) -> tuple:
 class TestDefaultEqualsTwin:
     async def test_one_query_both_spellings(self, engine) -> None:
         resp = await engine.execute(orders_q(
-            measures=["amount:wsum", "amount:wsum(weight=store_no)"]))
+            measures=["wsum(amount)", "wsum(amount, weight=store_no)"]))
         row = resp.data[0]
         assert float(row["orders.amount_wsum"]) == pytest.approx(WSUM)
         assert float(row["orders.amount_wsum_weight_store_no"]) == pytest.approx(WSUM)
@@ -106,21 +106,21 @@ class TestExpressionDefaultEveryProducer:
     """``CASE`` defaults equal the expression-source spelling at the same home."""
 
     async def test_local(self, engine) -> None:
-        assert await _value(engine, "amount:wcase") == pytest.approx(WCASE_LOCAL)
+        assert await _value(engine, "wcase(amount)") == pytest.approx(WCASE_LOCAL)
         assert await _value(engine, f"sum(amount * {CASE_O})") == pytest.approx(WCASE_LOCAL)
 
     async def test_cross_model(self, engine) -> None:
-        assert await _value(engine, "customers.spend:wcase_c") == pytest.approx(WCASE_CM)
+        assert await _value(engine, "wcase_c(customers.spend)") == pytest.approx(WCASE_CM)
         assert await _value(
             engine, f"sum(customers.spend * {CASE_C_Q})") == pytest.approx(WCASE_CM)
 
     async def test_association(self, engine) -> None:
         kw = dict(dim="status", to_many_handling="associate")
-        assert await _by(engine, "customers.spend:wcase_c", **kw) == WCASE_ASSOC
+        assert await _by(engine, "wcase_c(customers.spend)", **kw) == WCASE_ASSOC
         assert await _by(engine, f"sum(customers.spend * {CASE_C_Q})", **kw) == WCASE_ASSOC
 
     async def test_trailing_window(self, engine) -> None:
-        assert await _by_month(engine, "customers.spend:wcase_c(window='1y')") == WCASE_WINDOW
+        assert await _by_month(engine, "wcase_c(customers.spend, window='1y')") == WCASE_WINDOW
         assert await _by_month(
             engine, f"sum(customers.spend * {CASE_C_Q}, window='1y')") == WCASE_WINDOW
 
@@ -131,7 +131,7 @@ class TestExpressionDefaultEveryProducer:
             engine, f"sum({inner} * {CASE_POP})") == pytest.approx(WCASE_SECOND_ORDER)
 
     async def test_string_fragment_twin(self, engine) -> None:
-        assert await _value(engine, f"amount:wsum(weight='{CASE_O}')") \
+        assert await _value(engine, f"wsum(amount, weight='{CASE_O}')") \
             == pytest.approx(WCASE_LOCAL)
 
 
@@ -140,13 +140,13 @@ class TestDefaultInFilterAndOrder:
 
     @pytest.mark.parametrize("agg", ["wcs", "wcd"])
     async def test_measure_position(self, engine, agg: str) -> None:
-        assert await _by(engine, f"amount:{agg}", dim="status") == WCS_BY_STATUS
+        assert await _by(engine, f"{agg}(amount)", dim="status") == WCS_BY_STATUS
 
     @pytest.mark.parametrize("agg", ["wcs", "wcd"])
     async def test_filter_position(self, engine, agg: str) -> None:
         threshold = (WCS_BY_STATUS["ok"] + WCS_BY_STATUS["new"]) / 2
-        query = orders_q(dimensions=["status"], measures=[{"formula": "amount:sum", "name": "s"}],
-                         filters=[f"amount:{agg} > {threshold}"])
+        query = orders_q(dimensions=["status"], measures=[{"formula": "sum(amount)", "name": "s"}],
+                         filters=[f"{agg}(amount) > {threshold}"])
         resp = await engine.execute(query)
         assert {r["orders.status"]: float(r["orders.s"]) for r in resp.data} \
             == {"ok": AMOUNT_BY_STATUS["ok"]}
@@ -156,8 +156,8 @@ class TestDefaultInFilterAndOrder:
 
     @pytest.mark.parametrize("agg", ["wcs", "wcd"])
     async def test_order_key(self, engine, agg: str) -> None:
-        query = orders_q(dimensions=["status"], measures=[{"formula": "amount:sum", "name": "s"}],
-                         order=[{"column": f"amount:{agg}", "direction": "asc"}])
+        query = orders_q(dimensions=["status"], measures=[{"formula": "sum(amount)", "name": "s"}],
+                         order=[{"column": f"{agg}(amount)", "direction": "asc"}])
         resp = await engine.execute(query)
         assert [r["orders.status"] for r in resp.data] == sorted(
             WCS_BY_STATUS, key=WCS_BY_STATUS.__getitem__)
@@ -168,9 +168,9 @@ class TestDefaultInFilterAndOrder:
 
 class TestStringFragments:
     async def test_string_equals_unquoted(self, engine) -> None:
-        assert await _value(engine, "amount:wsum(weight='customers.region_id')") \
+        assert await _value(engine, "wsum(amount, weight='customers.region_id')") \
             == pytest.approx(W_REGION_ID)
-        assert await _value(engine, "amount:wsum(weight=customers.region_id)") \
+        assert await _value(engine, "wsum(amount, weight=customers.region_id)") \
             == pytest.approx(W_REGION_ID)
 
 
@@ -178,26 +178,26 @@ class TestShadowedBareDefault:
     """A bare ``factor`` default reads the owner's column, not the root's."""
 
     async def test_cross_model(self, engine) -> None:
-        assert await _value(engine, "customers.spend:wshadow") == pytest.approx(SHADOW_CM)
+        assert await _value(engine, "wshadow(customers.spend)") == pytest.approx(SHADOW_CM)
         assert await _value(
-            engine, "customers.spend:wshadow(weight=customers.factor)") == pytest.approx(SHADOW_CM)
+            engine, "wshadow(customers.spend, weight=customers.factor)") == pytest.approx(SHADOW_CM)
 
     async def test_association(self, engine) -> None:
         kw = dict(dim="status", to_many_handling="associate")
-        assert await _by(engine, "customers.spend:wshadow", **kw) == SHADOW_ASSOC
+        assert await _by(engine, "wshadow(customers.spend)", **kw) == SHADOW_ASSOC
         assert await _by(
-            engine, "customers.spend:wshadow(weight=customers.factor)", **kw) == SHADOW_ASSOC
+            engine, "wshadow(customers.spend, weight=customers.factor)", **kw) == SHADOW_ASSOC
 
     async def test_trailing_window(self, engine) -> None:
-        assert await _by_month(engine, "customers.spend:wshadow(window='1y')") == SHADOW_WINDOW
+        assert await _by_month(engine, "wshadow(customers.spend, window='1y')") == SHADOW_WINDOW
         assert await _by_month(
-            engine, "customers.spend:wshadow(window='1y', weight=customers.factor)") \
+            engine, "wshadow(customers.spend, window='1y', weight=customers.factor)") \
             == SHADOW_WINDOW
 
 
 class TestQuotedMixedFrameDefault:
     async def test_quoted_owner_column_plus_root_column(self, engine) -> None:
-        assert await _value(engine, "customers.spend:wmix_q") == pytest.approx(MIX_QUOTED)
+        assert await _value(engine, "wmix_q(customers.spend)") == pytest.approx(MIX_QUOTED)
         assert await _value(
             engine, "sum(customers.spend * (customers.group + amount))") \
             == pytest.approx(MIX_QUOTED)
@@ -208,16 +208,16 @@ class TestFanningDefaultHomesLikeItsTwin:
 
     def test_home_path(self) -> None:
         home = ("customers", "regions", "region_events")
-        assert _home_path("customers.regions.countries.gdp:wsum_fan") == home
-        assert _home_path("customers.regions.countries.gdp:wsum_fan"
-                          "(weight=customers.regions.region_events.value)") == home
+        assert _home_path("wsum_fan(customers.regions.countries.gdp)") == home
+        assert _home_path("wsum_fan(customers.regions.countries.gdp, "
+                          "weight=customers.regions.region_events.value)") == home
 
     async def test_executes(self, engine) -> None:
-        assert await _value(engine, "customers.regions.countries.gdp:wsum_fan") \
+        assert await _value(engine, "wsum_fan(customers.regions.countries.gdp)") \
             == pytest.approx(WSUM_FAN)
         assert await _value(
-            engine, "customers.regions.countries.gdp:wsum_fan"
-                    "(weight=customers.regions.region_events.value)") == pytest.approx(WSUM_FAN)
+            engine, "wsum_fan(customers.regions.countries.gdp, "
+                    "weight=customers.regions.region_events.value)") == pytest.approx(WSUM_FAN)
         assert await _value(
             engine, "sum(customers.regions.countries.gdp * customers.regions.region_events.value)") \
             == pytest.approx(WSUM_FAN)
@@ -226,7 +226,7 @@ class TestFanningDefaultHomesLikeItsTwin:
 class TestFailClosed:
     async def test_local_kwarg_on_a_fanning_path_stays_refused(self) -> None:
         with pytest.raises(ValueError, match="(?i)unproven join hop") as ei:
-            await _gen("pop:wsum_cust_spend(weight=region_events.value)", source_model="regions")
+            await _gen("wsum_cust_spend(pop, weight=region_events.value)", source_model="regions")
         assert "region_events" in str(ei.value)
 
 
@@ -257,8 +257,8 @@ class TestDefaultAndTwinOneProducer:
     """``weight`` defaults to ``customers.hr.pop``: default and twin share one producer."""
 
     QUERY = {"source_model": "orders", "dimensions": ["customers.hr.rname"],
-             "measures": [{"formula": "amount:wpop", "name": "a"},
-                          {"formula": "amount:wpop(weight=customers.hr.pop)", "name": "b"}]}
+             "measures": [{"formula": "wpop(amount)", "name": "a"},
+                          {"formula": "wpop(amount, weight=customers.hr.pop)", "name": "b"}]}
 
     async def test_both_names_one_value(self, engine1954) -> None:
         resp = await engine1954.execute(SlayerQuery.model_validate(self.QUERY))

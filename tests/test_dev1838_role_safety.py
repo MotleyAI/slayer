@@ -33,7 +33,7 @@ from tests._dev1838_fixtures import (
 )
 
 RAISES = (SlayerError, ValueError, NotImplementedError)
-M = ModelMeasure(formula="amount:sum", name="m")
+M = ModelMeasure(formula="sum(amount)", name="m")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -62,7 +62,7 @@ class TestCrossedPredicateFailsClosed:
         _, engine = exec_backend
         query = q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="alpha_amount:sum", name="a")],
+            measures=[ModelMeasure(formula="sum(alpha_amount)", name="a")],
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)
@@ -72,7 +72,7 @@ class TestCrossedPredicateFailsClosed:
         _, engine = exec_backend
         query = q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="rush_amount:sum", name="r")],
+            measures=[ModelMeasure(formula="sum(rush_amount)", name="r")],
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)
@@ -82,7 +82,7 @@ class TestCrossedPredicateFailsClosed:
         _, engine = exec_backend
         query = q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="alpha_amount:last", name="al")],
+            measures=[ModelMeasure(formula="last(alpha_amount)", name="al")],
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)
@@ -92,7 +92,7 @@ class TestCrossedPredicateFailsClosed:
         _, engine = exec_backend
         query = q(
             dimensions=["status"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="rush_amount:sum(window='90d')",
+            measures=[ModelMeasure(formula="sum(rush_amount, window='90d')",
                                    name="rw")],
         )
         with pytest.raises(RAISES) as ei:
@@ -107,7 +107,7 @@ class TestCrossedArgumentFailsClosed:
         _, engine = exec_backend
         query = q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="amount:tscaled_sum", name="t")],
+            measures=[ModelMeasure(formula="tscaled_sum(amount)", name="t")],
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)
@@ -118,7 +118,7 @@ class TestCrossedArgumentFailsClosed:
         query = q(
             dimensions=["status"],
             measures=[ModelMeasure(
-                formula="amount:last(customers.segments.updated_at)",
+                formula="last(amount, customers.segments.updated_at)",
                 name="lu")],
         )
         with pytest.raises(RAISES) as ei:
@@ -134,7 +134,7 @@ class TestProvenHopsKeepExactValues:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["status"],
-            measures=[M, ModelMeasure(formula="gold_amount:sum", name="g")],
+            measures=[M, ModelMeasure(formula="sum(gold_amount)", name="g")],
         ))
         by = rows_by(resp, "orders.status")
         for status, expected in GOLD_BY_STATUS.items():
@@ -149,7 +149,7 @@ class TestProvenHopsKeepExactValues:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="gold_amount:last", name="gl")],
+            measures=[ModelMeasure(formula="last(gold_amount)", name="gl")],
         ))
         by = rows_by(resp, "orders.status")
         assert by[("ok",)]["orders.gl"] is None
@@ -161,7 +161,7 @@ class TestProvenHopsKeepExactValues:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["city"],
-            measures=[ModelMeasure(formula="gold_amount:last", name="gl")],
+            measures=[ModelMeasure(formula="last(gold_amount)", name="gl")],
         ))
         by = rows_by(resp, "orders.city")
         assert float(by[("CityA",)]["orders.gl"]) == pytest.approx(20.0)
@@ -172,7 +172,7 @@ class TestProvenHopsKeepExactValues:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["status"],
-            measures=[M, ModelMeasure(formula="amount:wscaled_sum", name="w")],
+            measures=[M, ModelMeasure(formula="wscaled_sum(amount)", name="w")],
         ))
         by = rows_by(resp, "orders.status")
         for status, expected in WSCALED_BY_STATUS.items():
@@ -182,7 +182,7 @@ class TestProvenHopsKeepExactValues:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="amount:last(customers.signup_at)",
+            measures=[ModelMeasure(formula="last(amount, customers.signup_at)",
                                    name="ls")],
         ))
         by = rows_by(resp, "orders.status")

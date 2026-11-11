@@ -1,0 +1,58 @@
+version: 15
+name: contractors
+sql_table: contractors
+source_kind: table
+query_variables: {}
+data_source: shop
+columns:
+- name: id
+  sql: id
+  type: INT
+  primary_key: true
+  unique: false
+  hidden: false
+  format:
+    type: integer
+  allowed_aggregations:
+  - count
+  - collect
+- name: name
+  sql: name
+  type: TEXT
+  primary_key: false
+  unique: false
+  hidden: false
+- name: team
+  sql: team
+  type: TEXT
+  primary_key: false
+  unique: false
+  hidden: false
+- name: skills
+  sql: skills
+  type: ARRAY
+  element_type: TEXT
+  db_type: VARCHAR[]
+  primary_key: false
+  unique: false
+  hidden: false
+- name: scores
+  sql: scores
+  type: ARRAY
+  element_type: INT
+  db_type: INTEGER[]
+  primary_key: false
+  unique: false
+  hidden: false
+measures:
+- formula: collect(id)
+  name: ids
+- formula: collect(skills.value)
+  name: skill_set
+- formula: count(skills)
+  name: with_skills
+aggregations: []
+joins: []
+filters: []
+hidden: false
+access_tags: []

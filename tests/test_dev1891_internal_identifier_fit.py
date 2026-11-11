@@ -85,14 +85,14 @@ LONG_COL_NAME = "user_metric_" + "z" * 60        # 72 bytes, a user COLUMN NAME
 CANON_REGION = "amount_sum_partition_by_region"
 CANON_CITY = "amount_sum_partition_by_city"
 FORCED_LIMIT = 24
-RBAND = "CASE WHEN amount:sum(partition_by=region) > 55 THEN 1 ELSE 0 END"
+RBAND = "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END"
 COLLIDE_QUERY = q(
     dimensions=[
         "region",
         {"expression": RBAND, "name": "rband"},
         {"expression": BAND35, "name": "cband"},
     ],
-    measures=[ModelMeasure(formula="amount:sum", name="s")],
+    measures=[ModelMeasure(formula="sum(amount)", name="s")],
 )
 
 _GOLDEN_CASES = _cases()
@@ -213,7 +213,7 @@ class TestNestedAttachEmission:
         query = SlayerQuery(
             source_model="qb",
             dimensions=[ColumnRef(name="band")],
-            measures=[ModelMeasure(formula="s:sum", name="t")],
+            measures=[ModelMeasure(formula="sum(s)", name="t")],
         )
         sql = await _dry_sql([*dev1824_models(), qb], query)
         over = [n for n in _identifiers(sql, "postgres") if _nbytes(n) > PG_LIMIT]
@@ -326,19 +326,19 @@ class TestUserSurfacesExempt:
         model = self._orders(extra_columns=[
             Column(name="wide", sql=f'"{PHYS_COL}"', type=DataType.DOUBLE),
         ])
-        sql = await _dry_sql([model], self._query("wide:sum"))
+        sql = await _dry_sql([model], self._query("sum(wide)"))
         assert f'"{PHYS_COL}"' in sql
 
     async def test_column_filter_survives(self) -> None:
         model = self._orders(extra_columns=[
             Column(name="okwide", sql="amount", filter=f'"{PHYS_COL}" > 0', type=DataType.DOUBLE),
         ])
-        sql = await _dry_sql([model], self._query("okwide:sum"))
+        sql = await _dry_sql([model], self._query("sum(okwide)"))
         assert f'"{PHYS_COL}"' in sql
 
     async def test_model_filters_survive(self) -> None:
         model = self._orders(filters=[f'"{PHYS_COL}" IS NOT NULL'])
-        sql = await _dry_sql([model], self._query("amount:sum"))
+        sql = await _dry_sql([model], self._query("sum(amount)"))
         assert f'"{PHYS_COL}"' in sql
 
     async def test_sql_table_survives(self) -> None:
@@ -346,7 +346,7 @@ class TestUserSurfacesExempt:
         query = SlayerQuery(
             source_model="wtab",
             dimensions=[ColumnRef(name="region")],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         sql = await _dry_sql([model], query)
         assert PHYS_TBL in sql
@@ -359,7 +359,7 @@ class TestUserSurfacesExempt:
         query = SlayerQuery(
             source_model=ext,
             dimensions=[ColumnRef(name="region")],
-            measures=[ModelMeasure(formula="extwide:sum", name="w")],
+            measures=[ModelMeasure(formula="sum(extwide)", name="w")],
         )
         sql = await _dry_sql([self._orders()], query)
         assert f'"{PHYS_COL}"' in sql
@@ -371,12 +371,12 @@ class TestUserSurfacesExempt:
         inner = SlayerQuery(
             name="s1", source_model="wide_src",
             dimensions=[ColumnRef(name="region")],
-            measures=[ModelMeasure(formula="wide:sum", name="w")],
+            measures=[ModelMeasure(formula="sum(wide)", name="w")],
         )
         outer = SlayerQuery(
             source_model="s1",
             dimensions=[ColumnRef(name="region")],
-            measures=[ModelMeasure(formula="w:sum", name="tw")],
+            measures=[ModelMeasure(formula="sum(w)", name="tw")],
         )
         sql = await _dry_sql([wide_src], [inner, outer])
         assert f'"{PHYS_COL}"' in sql
@@ -395,7 +395,7 @@ class TestUserSurfacesExempt:
         query = SlayerQuery(
             source_model="sqlm",
             dimensions=[ColumnRef(name="region")],
-            measures=[ModelMeasure(formula="wide:sum", name="w")],
+            measures=[ModelMeasure(formula="sum(wide)", name="w")],
         )
         sql = await _dry_sql([model], query)
         assert f'"{PHYS_COL}"' in sql
@@ -407,7 +407,7 @@ class TestUserSurfacesExempt:
         query = SlayerQuery(
             source_model=inline,
             dimensions=[ColumnRef(name="region")],
-            measures=[ModelMeasure(formula="wide:sum", name="w")],
+            measures=[ModelMeasure(formula="sum(wide)", name="w")],
         )
         sql = await _dry_sql([], query)
         assert f'"{PHYS_COL}"' in sql
@@ -427,7 +427,7 @@ class TestUserSurfacesExempt:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="region")],
-            measures=[ModelMeasure(formula="dims.wide:sum", name="w")],
+            measures=[ModelMeasure(formula="sum(dims.wide)", name="w")],
         )
         sql = await _dry_sql([host, dims], query)
         assert f'"{PHYS_COL}"' in sql
@@ -441,7 +441,7 @@ class TestUserSurfacesExempt:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name=LONG_COL_NAME)],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         sql = await _dry_sql([model], query)
         assert LONG_COL_NAME in sql

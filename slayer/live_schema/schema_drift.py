@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import functools
 import logging
 import re
 import time
 from collections import OrderedDict
-from collections.abc import AsyncGenerator, Awaitable, Callable, Collection, Coroutine, Iterable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Collection, Iterable
 from contextlib import asynccontextmanager
 from typing import (
     Annotated,
@@ -22,8 +21,6 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validat
 from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
-from slayer.async_utils import marked_coroutine_function
-from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Column,
@@ -36,6 +33,7 @@ from slayer.core.models import (
 from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
 from slayer.core.refs import IDENTIFIER_RE
 from slayer.core.warnings import BrokenDependentWarning
+from slayer.sql.dialects.reflection import TableKeyReadFailure
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.live_schema.introspect_utils import reflect_columns
 from slayer.live_schema.schema_scope import (
@@ -52,7 +50,6 @@ from slayer.live_schema.schema_scope import (
     table_schema_ref,
 )
 from slayer.live_schema import ingestion
-from slayer.engine import query_engine
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError, StoredDocumentLoadError
 from slayer.core.join_edges import JoinEdgeRef, edge_reference, is_addressable
 from slayer.core.join_search import reachable
@@ -70,7 +67,7 @@ from slayer.core.syntax import (
     walk_parsed_refs,
 )
 from slayer.database import sqlite_introspect
-from slayer.database.client import SqlClient, adapt_client, render_type_probe
+from slayer.database.client import SqlClient, render_type_probe
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.dialects.reflection import ResultColumnType
 from slayer.database.engine_factory import ClientCacheKey, client_cache_key
@@ -295,6 +292,8 @@ class IdempotentIngestResult(BaseModel):
     skipped_schemas: list[Any] = Field(default_factory=list)
     # Stored definitions a list re-type this pass breaks.
     broken_dependents: list[BrokenDependentWarning] = Field(default_factory=list)
+    # Key reads that failed: those keys are missing until a re-ingest reads them.
+    key_read_failures: list[TableKeyReadFailure] = Field(default_factory=list)
 
 
 class AppliedEntry(BaseModel):
@@ -2438,58 +2437,21 @@ async def _collect_sql_diffs(
     return out
 
 
-_UNSET: Any = object()
-
-
-@marked_coroutine_function
-def validate_datasource(
+async def validate_datasource(
     *,
     datasource: DatasourceConfig,
     models: list[SlayerModel],
-    client: SqlClient | None = None,
+    client: SqlClient,
     available_in_ds: set[str] | None = None,
     snapshot: DriftSnapshot | None = None,
     findings_out: list[RetypeFinding] | None = None,
-    sql_clients: object = _UNSET,
-) -> Coroutine[Any, Any, list[ToDeleteEntry]]:
+) -> list[ToDeleteEntry]:
     """Validate ``models`` (all one DS) against the live schema through ``client``. Read-only.
 
     ``available_in_ds`` names every model of the DS (default: ``models``); a
     ``snapshot`` scopes introspection to ``models``' objects and reuses its facts;
     ``findings_out`` collects the report-only re-type findings.
-    Omitting ``client`` or passing ``sql_clients`` (ignored) is deprecated.
     """
-    if client is None or sql_clients is not _UNSET:
-        warn_deprecated(
-            "validate_datasource() without client= (or with sql_clients=, now ignored) is deprecated; pass "
-            "client=engine.client_for(datasource). The old form works until SLayer 2.0.",
-            removal="2.0",
-        )
-    validate = functools.partial(
-        _validate_datasource, datasource=datasource, models=models, available_in_ds=available_in_ds,
-        snapshot=snapshot, findings_out=findings_out,
-    )
-    if client is not None:
-        return validate(client=adapt_client(client))
-    return _validate_short_lived(datasource=datasource, validate=validate)
-
-
-async def _validate_short_lived(
-    *, datasource: DatasourceConfig, validate: Callable[..., Awaitable[list[ToDeleteEntry]]],
-) -> list[ToDeleteEntry]:
-    async with query_engine.short_lived_engine() as engine:
-        return await validate(client=engine.client_for(datasource))
-
-
-async def _validate_datasource(
-    *,
-    datasource: DatasourceConfig,
-    models: list[SlayerModel],
-    client: SqlClient,
-    available_in_ds: set[str] | None,
-    snapshot: DriftSnapshot | None,
-    findings_out: list[RetypeFinding] | None,
-) -> list[ToDeleteEntry]:
     if not models:
         return []
     if snapshot is not None:

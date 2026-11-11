@@ -53,7 +53,7 @@ def _catalog() -> FacadeCatalog:
             Column(name="is_paid", type=DataType.BOOLEAN),
         ],
         measures=[
-            ModelMeasure(name="aov", formula="revenue:sum / *:count",
+            ModelMeasure(name="aov", formula="sum(revenue) / count(*)",
                          type=DataType.DOUBLE),
         ],
         joins=[ModelJoin(target_model="customers", join_pairs=[["id", "id"]])],
@@ -608,7 +608,7 @@ def test_simple_metric_and_dimension(dialect) -> None:
     assert result.query.source_model == "orders"
     assert result.query.measures is not None
     assert len(result.query.measures) == 1
-    assert result.query.measures[0].formula == "revenue:sum"
+    assert result.query.measures[0].formula == "sum(revenue)"
     assert result.query.dimensions is not None
     assert [d.full_name for d in result.query.dimensions] == ["status"]
     mapping = dict(result.column_name_mapping)
@@ -622,7 +622,7 @@ def test_row_count_metric_maps_to_star_count(dialect) -> None:
     result = translate(sql="SELECT row_count FROM orders", catalog=_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
     assert result.query.measures is not None
-    assert result.query.measures[0].formula == "*:count"
+    assert result.query.measures[0].formula == "count(*)"
 
 
 def test_saved_measure_aov_maps_to_bare_name(dialect) -> None:
@@ -667,7 +667,7 @@ def test_sum_of_column_maps_to_measure(dialect) -> None:
     result = translate(sql="SELECT SUM(revenue) FROM orders", catalog=_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
     assert result.query.measures is not None
-    assert result.query.measures[0].formula == "revenue:sum"
+    assert result.query.measures[0].formula == "sum(revenue)"
     # Default (unaliased) projected name mirrors the catalog metric name.
     assert dict(result.column_name_mapping) == {"orders.revenue_sum": "revenue_sum"}
 
@@ -676,14 +676,14 @@ def test_count_star_maps_to_star_count(dialect) -> None:
     result = translate(sql="SELECT COUNT(*) FROM orders", catalog=_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
     assert result.query.measures is not None
-    assert result.query.measures[0].formula == "*:count"
+    assert result.query.measures[0].formula == "count(*)"
 
 
 def test_count_of_column_maps_to_count(dialect) -> None:
     result = translate(sql="SELECT COUNT(status) FROM orders", catalog=_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
     assert result.query.measures is not None
-    assert result.query.measures[0].formula == "status:count"
+    assert result.query.measures[0].formula == "count(status)"
 
 
 def test_count_distinct_maps_to_count_distinct(dialect) -> None:
@@ -693,7 +693,7 @@ def test_count_distinct_maps_to_count_distinct(dialect) -> None:
     )
     assert isinstance(result, QueryResult)
     assert result.query.measures is not None
-    assert result.query.measures[0].formula == "status:count_distinct"
+    assert result.query.measures[0].formula == "count_distinct(status)"
 
 
 def test_aggregate_over_joined_column_resolves_same_as_named_metric(dialect) -> None:
@@ -717,7 +717,7 @@ def test_avg_min_max_of_column_map(fn: str, agg: str, dialect) -> None:
     result = translate(sql=f"SELECT {fn}(revenue) FROM orders", catalog=_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
     assert result.query.measures is not None
-    assert result.query.measures[0].formula == f"revenue:{agg}"
+    assert result.query.measures[0].formula == f"{agg}(revenue)"
 
 
 def test_aggregate_alias_renames_projection(dialect) -> None:
@@ -726,7 +726,7 @@ def test_aggregate_alias_renames_projection(dialect) -> None:
     assert dict(result.column_name_mapping) == {"orders.rev": "rev"}
     assert result.query.measures is not None
     assert result.query.measures[0].name == "rev"
-    assert result.query.measures[0].formula == "revenue:sum"
+    assert result.query.measures[0].formula == "sum(revenue)"
 
 
 def test_aggregate_ineligible_for_column_errors(dialect) -> None:
@@ -734,7 +734,7 @@ def test_aggregate_ineligible_for_column_errors(dialect) -> None:
     catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
         translate(sql="SELECT SUM(status) FROM orders", catalog=catalog, dialect=dialect)
-    assert "status:sum" in str(exc_info.value)
+    assert "sum(status)" in str(exc_info.value)
 
 
 def test_aggregate_over_saved_measure_errors_with_followup(dialect) -> None:
@@ -752,7 +752,7 @@ def test_aggregate_over_expression_errors_with_followup(dialect) -> None:
 
 
 def test_count_of_expression_is_not_row_count(dialect) -> None:
-    # COUNT(<expression>) must NOT be mis-mapped to *:count (row count).
+    # COUNT(<expression>) must NOT be mis-mapped to count(*) (row count).
     catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
         translate(
@@ -762,14 +762,14 @@ def test_count_of_expression_is_not_row_count(dialect) -> None:
     assert AGG_OVER_MEASURE_MESSAGE in str(exc_info.value)
 
 
-def test_having_aggregate_maps_to_colon_filter(dialect) -> None:
+def test_having_aggregate_maps_to_functional_filter(dialect) -> None:
     result = translate(
         sql="SELECT status, SUM(revenue) FROM orders GROUP BY status "
             "HAVING SUM(revenue) > 1000",
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filters == ["revenue:sum > 1000"]
+    assert result.query.filters == ["sum(revenue) > 1000"]
 
 
 def test_having_aggregate_literal_on_left_flips(dialect) -> None:
@@ -779,7 +779,7 @@ def test_having_aggregate_literal_on_left_flips(dialect) -> None:
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filters == ["revenue:sum > 1000"]
+    assert result.query.filters == ["sum(revenue) > 1000"]
 
 
 def test_order_by_aggregate_expression_resolves(dialect) -> None:
@@ -807,7 +807,7 @@ def test_where_on_aggregate_alias_for_count_star_resolves(dialect) -> None:
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filters == ["*:count > 1"]
+    assert result.query.filters == ["count(*) > 1"]
 
 
 def test_where_on_aggregate_alias_literal_on_left_flips(dialect) -> None:
@@ -817,7 +817,7 @@ def test_where_on_aggregate_alias_literal_on_left_flips(dialect) -> None:
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filters == ["*:count > 1"]
+    assert result.query.filters == ["count(*) > 1"]
 
 
 def test_where_on_aggregate_alias_for_sum_resolves(dialect) -> None:
@@ -827,7 +827,7 @@ def test_where_on_aggregate_alias_for_sum_resolves(dialect) -> None:
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filters == ["revenue:sum > 1000"]
+    assert result.query.filters == ["sum(revenue) > 1000"]
 
 
 def test_having_on_aggregate_alias_resolves(dialect) -> None:
@@ -837,7 +837,7 @@ def test_having_on_aggregate_alias_resolves(dialect) -> None:
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filters == ["revenue:sum > 1000"]
+    assert result.query.filters == ["sum(revenue) > 1000"]
 
 
 def test_order_by_aggregate_alias_for_count_star(dialect) -> None:
@@ -873,18 +873,18 @@ def test_where_on_aggregate_alias_gte_comparator_resolves(dialect) -> None:
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filters == ["*:count >= 5"]
+    assert result.query.filters == ["count(*) >= 5"]
 
 
 def test_where_on_aggregate_alias_count_distinct_resolves(dialect) -> None:
-    """Colon-form emission uses the catalog's pre-expanded ``measure_formula``."""
+    """Emission uses the catalog's pre-expanded ``measure_formula``."""
     result = translate(
         sql='SELECT status, COUNT(DISTINCT id) AS "uniq" FROM orders '
             'WHERE "uniq" > 1 GROUP BY status',
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filters == ["id:count_distinct > 1"]
+    assert result.query.filters == ["count_distinct(id) > 1"]
 
 
 def test_where_aggregate_alias_against_another_aggregate_is_an_aggregate_filter(dialect) -> None:
@@ -896,7 +896,7 @@ def test_where_aggregate_alias_against_another_aggregate_is_an_aggregate_filter(
         catalog=catalog, dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filters == ["*:count > revenue:sum"]
+    assert result.query.filters == ["count(*) > sum(revenue)"]
 
 
 def test_where_aggregate_alias_match_is_case_sensitive(dialect) -> None:
@@ -908,7 +908,7 @@ def test_where_aggregate_alias_match_is_case_sensitive(dialect) -> None:
     )
     assert isinstance(result, QueryResult)
     filters = result.query.filters or []
-    assert "*:count > 1" not in filters
+    assert "count(*) > 1" not in filters
     # Verbatim path emits the column UN-quoted (``Count``, not ``"Count"``).
     assert len(filters) == 1
     assert "Count > 1" in filters[0]
@@ -954,7 +954,7 @@ def test_having_aggregate_alias_against_another_aggregate_is_an_aggregate_filter
         catalog=catalog, dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filters == ["*:count > revenue:sum"]
+    assert result.query.filters == ["count(*) > sum(revenue)"]
 
 
 @pytest.mark.parametrize("alias_form", [
@@ -969,7 +969,7 @@ def test_where_on_qualified_aggregate_alias_resolves(alias_form, dialect) -> Non
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filters == ["*:count > 1"]
+    assert result.query.filters == ["count(*) > 1"]
 
 
 def test_where_on_dimension_alias_does_not_route_to_aggregate_path(dialect) -> None:
@@ -981,7 +981,7 @@ def test_where_on_dimension_alias_does_not_route_to_aggregate_path(dialect) -> N
     )
     assert isinstance(result, QueryResult)
     filters = result.query.filters or []
-    assert "*:count = 'x'" not in filters
+    assert "count(*) = 'x'" not in filters
     assert len(filters) == 1
 
 
@@ -1338,13 +1338,13 @@ def test_not_equal_rewrites_to_dsl_neq(dialect) -> None:
 
 
 def test_metric_in_where_passes_through_for_having(dialect) -> None:
-    """A bare-metric WHERE ref lands as canonical colon-form (classified as HAVING)."""
+    """A bare-metric WHERE ref lands as canonical functional text (classified as HAVING)."""
     result = translate(
         sql="SELECT revenue_sum, status FROM orders WHERE revenue_sum > 1000",
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filters == ["revenue:sum > 1000"]
+    assert result.query.filters == ["sum(revenue) > 1000"]
 
 
 # --- GROUP BY / ORDER BY / LIMIT / OFFSET ------------------------------------
@@ -1668,7 +1668,7 @@ def test_cast_unknown_source_datatype_admits_text_only(dialect) -> None:
             Column(name="amount", type=DataType.DOUBLE),
         ],
         measures=[
-            ModelMeasure(name="custom_metric", formula="amount:sum"),  # type is None
+            ModelMeasure(name="custom_metric", formula="sum(amount)"),  # type is None
         ],
     )
     catalog = build_catalog(models_by_datasource={"jaffle": [orders]})
@@ -2041,7 +2041,7 @@ def test_cast_metric_projection_overrides_wire_type(dialect) -> None:
     )
     assert isinstance(result, QueryResult)
     assert result.query.measures is not None
-    assert result.query.measures[0].formula == "revenue:sum"
+    assert result.query.measures[0].formula == "sum(revenue)"
     # Declared metric type is DOUBLE; CAST(<metric> AS TEXT) overrides.
     assert result.projection_types == [DataType.TEXT]
 
@@ -2235,7 +2235,7 @@ def test_left_join_subquery_filter_on_joined_metric_groups(clause, dialect) -> N
     sql = _STORES_WITH_METRIC_JOIN + f'{clause} "Stores"."tax_rate_avg" > 0.1'
     result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
-    assert result.query.filters == ["stores.tax_rate:avg > 0.1"]
+    assert result.query.filters == ["avg(stores.tax_rate) > 0.1"]
     assert result.query.distinct_dimension_values is True
 
 
@@ -2265,17 +2265,17 @@ def test_left_join_subquery_case_only_alias_is_an_identity_projection(dialect) -
 
 
 @pytest.mark.parametrize(("sql", "expected"), [
-    ("SELECT status FROM orders WHERE (revenue_sum > 100)", "(revenue:sum > 100)"),
-    ("SELECT status FROM orders WHERE revenue_sum BETWEEN 1 AND 2", "(revenue:sum >= 1 AND revenue:sum <= 2)"),
-    ("SELECT status FROM orders WHERE revenue_sum > -1", "revenue:sum > -1"),
-    ("SELECT status FROM orders WHERE -1 < revenue_sum", "revenue:sum > -1"),
-    ("SELECT status FROM orders GROUP BY status HAVING revenue_sum > 1", "revenue:sum > 1"),
-    ("SELECT status FROM orders GROUP BY status HAVING SUM(revenue) > -1", "revenue:sum > -1"),
-    ("SELECT status FROM orders GROUP BY status HAVING (SUM(revenue) > 1)", "revenue:sum > 1"),
+    ("SELECT status FROM orders WHERE (revenue_sum > 100)", "(sum(revenue) > 100)"),
+    ("SELECT status FROM orders WHERE revenue_sum BETWEEN 1 AND 2", "(sum(revenue) >= 1 AND sum(revenue) <= 2)"),
+    ("SELECT status FROM orders WHERE revenue_sum > -1", "sum(revenue) > -1"),
+    ("SELECT status FROM orders WHERE -1 < revenue_sum", "sum(revenue) > -1"),
+    ("SELECT status FROM orders GROUP BY status HAVING revenue_sum > 1", "sum(revenue) > 1"),
+    ("SELECT status FROM orders GROUP BY status HAVING SUM(revenue) > -1", "sum(revenue) > -1"),
+    ("SELECT status FROM orders GROUP BY status HAVING (SUM(revenue) > 1)", "sum(revenue) > 1"),
     ("SELECT status FROM orders WHERE ordered_at >= DATE '2024-01-01' OR revenue_sum > 1",
-     "ordered_at >= '2024-01-01 00:00:00' OR revenue:sum > 1"),
+     "ordered_at >= '2024-01-01 00:00:00' OR sum(revenue) > 1"),
     ("SELECT ordered_at FROM orders GROUP BY ordered_at HAVING ordered_at >= DATE '2024-01-01' OR revenue_sum > 1",
-     "ordered_at >= '2024-01-01 00:00:00' OR revenue:sum > 1"),
+     "ordered_at >= '2024-01-01 00:00:00' OR sum(revenue) > 1"),
 ])
 def test_metric_reference_in_any_predicate_shape_is_an_aggregate_filter(sql, expected, dialect) -> None:
     result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)

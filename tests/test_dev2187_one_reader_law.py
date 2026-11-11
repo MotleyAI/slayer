@@ -316,21 +316,15 @@ ORDER_PINS: dict[str, tuple[Optional[str], str, Optional[str]]] = {
     "status": (None, "status", None),
     "customers.name": ("customers", "name", None),
     "orders.status": ("orders", "status", None),
-    "revenue:sum": (None, "revenue_sum", "revenue:sum"),
-    "*:count": (None, "_count", "*:count"),
-    "orders.revenue:sum": ("orders", "revenue_sum", "orders.revenue:sum"),
-    "orders.customers.score:sum": ("orders.customers", "score_sum", "orders.customers.score:sum"),
-    "revenue:sum(x)": (None, "revenue_sum", "revenue:sum(x)"),
     "sum(revenue)": (None, "_funcstyle_pending", "sum(revenue)"),
     "my_agg(price)": (None, "_funcstyle_pending", "my_agg(price)"),
     "month(created_at)": (None, "_funcstyle_pending", "month(created_at)"),
     "count(*)": (None, "_funcstyle_pending", "count(*)"),
     "sum(orders.amount)": (None, "_funcstyle_pending", "sum(orders.amount)"),
     'sum("amount")': (None, "_funcstyle_pending", 'sum("amount")'),
-    "change(revenue:sum)": (None, "_funcstyle_pending", "change(revenue:sum)"),
+    "change(sum(revenue))": (None, "_funcstyle_pending", "change(sum(revenue))"),
     "rev / cnt": (None, "_expr_pending", "rev / cnt"),
     "amount::int": (None, "_expr_pending", "amount::int"),
-    "sum(amount):x": (None, "_expr_pending", "sum(amount):x"),
     "orders.amount + 1": (None, "_expr_pending", "orders.amount + 1"),
 }
 
@@ -381,8 +375,6 @@ TD_PINS: dict[str, tuple[str, str]] = {
     "date_trunc('month', note || '(')": ("note || '('", "month"),
     "date_trunc('month', date_trunc('day', created_at))": ("date_trunc('day', created_at)", "month"),
     "date_trunc('month', created_at - -c)": ("created_at - -c", "month"),
-    "created_at:month": ("created_at", "month"),
-    "orders.created_at:month": ("orders.created_at", "month"),
 }
 
 TD_REFUSED = ["date_trunc('month', created_at, x=1)", "date_trunc('month', {x})", "date_trunc('{g}', created_at)",
@@ -435,6 +427,6 @@ async def test_a_bare_column_measure_moves_to_dimensions(engine: SlayerQueryEngi
     assert "orders.status" in resp.columns
 
 
-@pytest.mark.parametrize("measures", [["revenue"], ["sum(amount)"], ["amount:sum"]], ids=["saved", "call", "colon"])
+@pytest.mark.parametrize("measures", [["revenue"], ["sum(amount)"]], ids=["saved", "call"])
 async def test_a_measure_stays_a_measure(engine: SlayerQueryEngine, measures: list[str]) -> None:
     assert _misplaced(await engine.execute(_orders(measures=measures))) == []

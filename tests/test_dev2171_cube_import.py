@@ -447,7 +447,7 @@ class TestTyping:
         project = CubeProject.model_validate({"cubes": [cube(measures=total), cube("orders_b", measures=total)]})
         with unreachable_engine(tmp_path) as (engine, attempts):
             converter = CubeToSlayerConverter(project=project, data_source=DS)
-            collect_over_engine(lambda client: converter.collect_metadata(client=client), engine)
+            collect_over_engine(collect=lambda client: converter.collect_metadata(client=client), engine=engine)
             result = converter.convert()
         assert len(attempts) == 1
         (note,) = typing_notes(i.message for i in result.report.issues if i.severity == "info")

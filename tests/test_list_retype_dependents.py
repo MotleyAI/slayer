@@ -44,7 +44,7 @@ LIVE = (
 TAGS = "contractors.tags"
 NT = ModelMeasure(name="nt", formula="max(tags)")
 FIRST_TAG = Column(name="first_tag", sql="upper(tags)", type=DataType.TEXT)
-BY_TAG = {"source_model": "contractors", "measures": ["*:count"], "filters": ["tags = 'go'"]}
+BY_TAG = {"source_model": "contractors", "measures": ["count(*)"], "filters": ["tags = 'go'"]}
 
 Key = tuple[str, str, str]
 
@@ -214,7 +214,7 @@ class TestNotReported:
     async def test_a_dependant_that_still_works(self) -> None:
         n_tagged = ModelMeasure(name="n_tagged", formula="count(tags)")
         n_sets = ModelMeasure(name="n_sets", formula="count_distinct(tags)")
-        by_set = {"source_model": "contractors", "dimensions": ["tags"], "measures": ["*:count"]}
+        by_set = {"source_model": "contractors", "dimensions": ["tags"], "measures": ["count(*)"]}
         async with _env(contractors(measures=(NT, n_tagged, n_sets)), saved={"by_set": by_set}) as env:
             broken = _by_key(await env.reingest())
         assert ("contractors", "measure", "nt") in broken, broken
@@ -311,7 +311,7 @@ class TestSurfaces:
     def test_cli_lists_each_broken_dependant(self, workspace: Path, capsys: pytest.CaptureFixture[str]) -> None:
         ds, _ = run_sync(_seed(str(workspace), models=(contractors(),), saved={"by_tag": BY_TAG}))
         args = SimpleNamespace(datasource="ds", schema=None, include=None, exclude=None, include_views=True,
-                               surface_internals=False, storage=str(workspace / "store"), models_dir=None)
+                               surface_internals=False, storage=str(workspace / "store"))
         try:
             with contextlib.suppress(SystemExit):
                 _run_ingest(args)

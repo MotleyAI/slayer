@@ -137,7 +137,7 @@ class TestJoinedTimeBucket:
             time_dimensions=[MONTH_TD],
             measures=[m(f"sum(sum(account_snapshots.balance, {P}))")]))
         base = await engine.execute(query(
-            time_dimensions=[MONTH_TD], measures=[m("account_snapshots.balance:sum")]))
+            time_dimensions=[MONTH_TD], measures=[m("sum(account_snapshots.balance)")]))
         got = cells(resp, keys=("snapshot_date",))
         approx_cells(got, {(k,): v for k, v in SUM_SUM_P_BY_MONTH.items()})
         assert set(got) == set(cells(base, keys=("snapshot_date",)))
@@ -145,10 +145,10 @@ class TestJoinedTimeBucket:
     async def test_adding_the_measure_keeps_rows_and_siblings(self, engine):
         base = await engine.execute(query(
             dimensions=["name"], time_dimensions=[MONTH_TD],
-            measures=[m("account_snapshots.balance:sum", "b")]))
+            measures=[m("sum(account_snapshots.balance)", "b")]))
         both = await engine.execute(query(
             dimensions=["name"], time_dimensions=[MONTH_TD],
-            measures=[m("account_snapshots.balance:sum", "b"),
+            measures=[m("sum(account_snapshots.balance)", "b"),
                       m(f"sum(max(account_snapshots.balance, {P}))")]))
         assert cells(both, keys=BY_NAME_MONTH, value="b") == cells(base, keys=BY_NAME_MONTH, value="b")
 
@@ -231,7 +231,7 @@ class TestPositions:
     async def test_order_only_key(self, engine):
         resp = await engine.execute(query(
             dimensions=["name"], time_dimensions=[MONTH_TD],
-            measures=[m("account_snapshots.balance:sum", "b")],
+            measures=[m("sum(account_snapshots.balance)", "b")],
             order=[{"column": f"sum(max(account_snapshots.balance, {P}))", "direction": "desc"}]))
         n, t = col(resp.columns, "name"), col(resp.columns, "snapshot_date")
         order = [(r[n], str(r[t])[:7]) for r in resp.data]

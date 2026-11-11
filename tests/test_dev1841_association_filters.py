@@ -30,7 +30,7 @@ from tests._dev1841_fixtures import (
     status_key,
 )
 
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])

@@ -97,8 +97,8 @@ class TestGroupedAndUngrouped:
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[
-                {"formula": "amount:first", "name": "f"},
-                {"formula": "amount:last", "name": "l"},
+                {"formula": "first(amount)", "name": "f"},
+                {"formula": "last(amount)", "name": "l"},
             ],
         )
         first = by_group(rows, key="orders.status", value="orders.f")
@@ -115,7 +115,7 @@ class TestGroupedAndUngrouped:
     ) -> None:
         """No dimensions at all: one partition, one answer. Order 16 is the
         newest row in the table."""
-        rows = await _rows(engine, measures=[{"formula": "amount:last", "name": "l"}])
+        rows = await _rows(engine, measures=[{"formula": "last(amount)", "name": "l"}])
         assert rows == [{"orders.l": FAN_LAST}]
 
     async def test_a_null_grain_member_gets_its_own_group_and_a_real_value(
@@ -126,8 +126,8 @@ class TestGroupedAndUngrouped:
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[
-                {"formula": "amount:first", "name": "f"},
-                {"formula": "amount:last", "name": "l"},
+                {"formula": "first(amount)", "name": "f"},
+                {"formula": "last(amount)", "name": "l"},
             ],
         )
         first = by_group(rows, key="orders.status", value="orders.f")
@@ -146,7 +146,7 @@ class TestGroupedAndUngrouped:
         rows = await _rows(
             engine,
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=[{"formula": "amount:last", "name": "l"}],
+            measures=[{"formula": "last(amount)", "name": "l"}],
         )
         by_month = by_group(rows, key="orders.created_at", value="orders.l")
 
@@ -163,7 +163,7 @@ class TestGroupedAndUngrouped:
         customer-100 order, whose newest is order 2."""
         rows = await _rows(
             engine, dimensions=["customers.regions.name"],
-            measures=[{"formula": "amount:last", "name": "l"}],
+            measures=[{"formula": "last(amount)", "name": "l"}],
         )
         by_region = by_group(
             rows, key="orders.customers.regions.name", value="orders.l",
@@ -189,8 +189,8 @@ class TestNulls:
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[
-                {"formula": "amount:first", "name": "f"},
-                {"formula": "amount:last", "name": "l"},
+                {"formula": "first(amount)", "name": "f"},
+                {"formula": "last(amount)", "name": "l"},
             ],
         )
         assert by_group(rows, key="orders.status", value="orders.l")["nullval"] is None
@@ -209,8 +209,8 @@ class TestNulls:
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[
-                {"formula": "amount:first", "name": "f"},
-                {"formula": "amount:last", "name": "l"},
+                {"formula": "first(amount)", "name": "f"},
+                {"formula": "last(amount)", "name": "l"},
             ],
         )
         assert by_group(
@@ -229,7 +229,7 @@ class TestNulls:
         query that ignored the explicit arg would return 32.0 here."""
         rows = await _rows(
             engine, dimensions=["status"],
-            measures=[{"formula": "amount:last(shipped_at)", "name": "l"}],
+            measures=[{"formula": "last(amount, shipped_at)", "name": "l"}],
         )
         assert by_group(
             rows, key="orders.status", value="orders.l",
@@ -256,8 +256,8 @@ class TestTiesAreNondeterministic:
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[
-                {"formula": "amount:first", "name": "f"},
-                {"formula": "amount:last", "name": "l"},
+                {"formula": "first(amount)", "name": "f"},
+                {"formula": "last(amount)", "name": "l"},
             ],
         )
         first = by_group(rows, key="orders.status", value="orders.f")["tie"]
@@ -275,7 +275,7 @@ class TestTiesAreNondeterministic:
         implementation."""
         rows = await _rows(
             engine, dimensions=["status"],
-            measures=[{"formula": "amount:last(shipped_at)", "name": "l"}],
+            measures=[{"formula": "last(amount, shipped_at)", "name": "l"}],
         )
         assert by_group(
             rows, key="orders.status", value="orders.l",
@@ -295,12 +295,12 @@ class TestFilteredFirstLast:
         filtered ``last`` picks the MASKED value at the newest row by time, never
         the newest MATCHING row. ``filt``'s newest row (5.0) is below the
         ``big_amount`` threshold, so ``big_amount`` is NULL there and
-        ``big_amount:last`` is NULL — the older matching 61.0 is not reached
+        ``last(big_amount)`` is NULL — the older matching 61.0 is not reached
         (ranking never sees the filter; a row-restricting WHERE belongs in the
         query, not the column)."""
         rows = await _rows(
             engine, dimensions=["status"],
-            measures=[{"formula": "big_amount:last", "name": "l"}],
+            measures=[{"formula": "last(big_amount)", "name": "l"}],
         )
         assert by_group(
             rows, key="orders.status", value="orders.l",
@@ -317,7 +317,7 @@ class TestFilteredFirstLast:
         drops the group entirely."""
         rows = await _rows(
             engine, dimensions=["status"],
-            measures=[{"formula": "big_amount:last", "name": "l"}],
+            measures=[{"formula": "last(big_amount)", "name": "l"}],
         )
         by_status = by_group(rows, key="orders.status", value="orders.l")
 
@@ -331,11 +331,11 @@ class TestFilteredFirstLast:
         a filtered measure must not change WHICH groups the query returns."""
         unfiltered = await _rows(
             engine, dimensions=["status"],
-            measures=[{"formula": "amount:last", "name": "l"}],
+            measures=[{"formula": "last(amount)", "name": "l"}],
         )
         filtered = await _rows(
             engine, dimensions=["status"],
-            measures=[{"formula": "big_amount:last", "name": "l"}],
+            measures=[{"formula": "last(big_amount)", "name": "l"}],
         )
         assert (
             {row["orders.status"] for row in filtered}
@@ -351,7 +351,7 @@ class TestFilteredFirstLast:
         """
         rows = await _rows(
             engine, dimensions=["status"],
-            measures=[{"formula": "gold_amount:last", "name": "l"}],
+            measures=[{"formula": "last(gold_amount)", "name": "l"}],
         )
         by_status = by_group(rows, key="orders.status", value="orders.l")
 
@@ -370,11 +370,11 @@ class TestFilteredFirstLast:
         (DEV-1832: the filter never restricts the ranking)."""
         derived = await _rows(
             engine, dimensions=["status"],
-            measures=[{"formula": "doubled_big:last", "name": "l"}],
+            measures=[{"formula": "last(doubled_big)", "name": "l"}],
         )
         plain = await _rows(
             engine, dimensions=["status"],
-            measures=[{"formula": "big_amount:last", "name": "l"}],
+            measures=[{"formula": "last(big_amount)", "name": "l"}],
         )
         derived_by_status = by_group(derived, key="orders.status", value="orders.l")
         assert (
@@ -399,7 +399,7 @@ class TestFilteredFirstLast:
         entirely."""
         rows = await _rows(
             engine, source_model="empty_orders",
-            measures=[{"formula": "big_amount:last", "name": "l"}],
+            measures=[{"formula": "last(big_amount)", "name": "l"}],
         )
         assert rows == [{"empty_orders.l": None}]
 
@@ -413,11 +413,11 @@ class TestEmptySource:
     async def test_ungrouped_over_an_empty_table_returns_one_null_row(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """One row, NULL — the same thing ``amount:sum`` does over no rows.
+        """One row, NULL — the same thing ``sum(amount)`` does over no rows.
         Zero rows would be a different answer to a different question."""
         rows = await _rows(
             engine, source_model="empty_orders",
-            measures=[{"formula": "amount:last", "name": "l"}],
+            measures=[{"formula": "last(amount)", "name": "l"}],
         )
         assert rows == [{"empty_orders.l": None}]
 
@@ -428,11 +428,11 @@ class TestEmptySource:
         aggregate family and not the other."""
         ranked = await _rows(
             engine, source_model="empty_orders",
-            measures=[{"formula": "amount:last", "name": "m"}],
+            measures=[{"formula": "last(amount)", "name": "m"}],
         )
         summed = await _rows(
             engine, source_model="empty_orders",
-            measures=[{"formula": "amount:sum", "name": "m"}],
+            measures=[{"formula": "sum(amount)", "name": "m"}],
         )
         assert len(ranked) == len(summed) == 1
         assert ranked[0]["empty_orders.m"] is None
@@ -446,7 +446,7 @@ class TestEmptySource:
         that forces the single-row answer."""
         rows = await _rows(
             engine, source_model="empty_orders", dimensions=["status"],
-            measures=[{"formula": "amount:last", "name": "l"}],
+            measures=[{"formula": "last(amount)", "name": "l"}],
         )
         assert rows == []
 
@@ -465,7 +465,7 @@ class TestExplicitTimeArgs:
         them."""
         rows = await _rows(
             engine, dimensions=["status"],
-            measures=[{"formula": "amount:last(shipped_at)", "name": "l"}],
+            measures=[{"formula": "last(amount, shipped_at)", "name": "l"}],
         )
         assert by_group(
             rows, key="orders.status", value="orders.l",
@@ -481,8 +481,8 @@ class TestExplicitTimeArgs:
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[
-                {"formula": "amount:last(created_at)", "name": "a"},
-                {"formula": "amount:last(shipped_at)", "name": "b"},
+                {"formula": "last(amount, created_at)", "name": "a"},
+                {"formula": "last(amount, shipped_at)", "name": "b"},
             ],
         )
         by_created = by_group(rows, key="orders.status", value="orders.a")
@@ -499,11 +499,11 @@ class TestExplicitTimeArgs:
         must equal ranking by ``created_at``."""
         derived = await _rows(
             engine, dimensions=["status"],
-            measures=[{"formula": "amount:last(created_alias)", "name": "l"}],
+            measures=[{"formula": "last(amount, created_alias)", "name": "l"}],
         )
         plain = await _rows(
             engine, dimensions=["status"],
-            measures=[{"formula": "amount:last(created_at)", "name": "l"}],
+            measures=[{"formula": "last(amount, created_at)", "name": "l"}],
         )
         derived_by_status = by_group(derived, key="orders.status", value="orders.l")
         assert (
@@ -535,7 +535,7 @@ class TestExplicitTimeArgs:
         ranking column returns ``PAID_LAST`` and fails here."""
         rows = await _rows(
             engine, dimensions=["status"],
-            measures=[{"formula": "amount:last(customers.signup_alias)", "name": "l"}],
+            measures=[{"formula": "last(amount, customers.signup_alias)", "name": "l"}],
         )
         by_status = by_group(rows, key="orders.status", value="orders.l")
         assert by_status["paid"] == PAID_BY_JOINED_SIGNUP
@@ -551,14 +551,14 @@ class TestCrossModel:
     async def test_a_cross_model_first_last_ranks_in_the_target_scope(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``customers.spend:last`` ranks CUSTOMERS by the target model's own
+        """``last(customers.spend)`` ranks CUSTOMERS by the target model's own
         ``default_time_dimension`` (``signup_at``), not orders by
         ``created_at``. Customer 101 signed up last; customer 100 first."""
         rows = await _rows(
             engine,
             measures=[
-                {"formula": "customers.spend:first", "name": "f"},
-                {"formula": "customers.spend:last", "name": "l"},
+                {"formula": "first(customers.spend)", "name": "f"},
+                {"formula": "last(customers.spend)", "name": "l"},
             ],
         )
         assert rows == [{"orders.f": CUSTOMER_SPEND_FIRST, "orders.l": CUSTOMER_SPEND_LAST}]
@@ -571,7 +571,7 @@ class TestCrossModel:
         rows = await _rows(
             engine,
             measures=[
-                {"formula": "customers.spend:last(customers.signup_at)", "name": "l"},
+                {"formula": "last(customers.spend, customers.signup_at)", "name": "l"},
             ],
         )
         assert rows == [{"orders.l": CUSTOMER_SPEND_LAST}]
@@ -584,7 +584,7 @@ class TestCrossModel:
         rows = await _rows(
             engine,
             measures=[
-                {"formula": "customers.spend:last(customers.signup_alias)", "name": "l"},
+                {"formula": "last(customers.spend, customers.signup_alias)", "name": "l"},
             ],
         )
         assert rows == [{"orders.l": CUSTOMER_SPEND_LAST}]
@@ -600,7 +600,7 @@ class TestCrossModel:
         rows = await _rows(
             engine,
             measures=[
-                {"formula": "customers.spend:last(customers.deep_opened)", "name": "l"},
+                {"formula": "last(customers.spend, customers.deep_opened)", "name": "l"},
             ],
         )
         assert rows[0]["orders.l"] in (CUSTOMER_SPEND_LAST, 75.0)
@@ -621,7 +621,7 @@ class TestCrossingInputsAndFanout:
         """
         rows = await _rows(
             engine, dimensions=["status"],
-            measures=[{"formula": "cust_region:last", "name": "l"}],
+            measures=[{"formula": "last(cust_region)", "name": "l"}],
         )
         by_status = by_group(rows, key="orders.status", value="orders.l")
         assert by_status["paid"] == "Alpha"
@@ -631,19 +631,19 @@ class TestCrossingInputsAndFanout:
         self, engine: SlayerQueryEngine,
     ) -> None:
         """P-C's cardinality clause, stated in rows: adding a first/last measure
-        must not move a sibling ``amount:sum``. The sibling's value is compared
+        must not move a sibling ``sum(amount)``. The sibling's value is compared
         against the SAME query without the first/last, so this holds the line
         both today and after the rewrite moves the ranking into its own CTE."""
         with_ranked = await _rows(
             engine, dimensions=["status"],
             measures=[
-                {"formula": "amount:last", "name": "l"},
-                {"formula": "amount:sum", "name": "s"},
+                {"formula": "last(amount)", "name": "l"},
+                {"formula": "sum(amount)", "name": "s"},
             ],
         )
         without = await _rows(
             engine, dimensions=["status"],
-            measures=[{"formula": "amount:sum", "name": "s"}],
+            measures=[{"formula": "sum(amount)", "name": "s"}],
         )
         sums = by_group(with_ranked, key="orders.status", value="orders.s")
         assert sums == by_group(without, key="orders.status", value="orders.s")
@@ -654,18 +654,18 @@ class TestCrossingInputsAndFanout:
     async def test_a_star_count_sibling_is_unchanged_too(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``*:count`` has no source column, so it takes a different render path
-        than ``amount:sum`` and needs its own containment pin."""
+        """``count(*)`` has no source column, so it takes a different render path
+        than ``sum(amount)`` and needs its own containment pin."""
         with_ranked = await _rows(
             engine, dimensions=["status"],
             measures=[
-                {"formula": "amount:last", "name": "l"},
-                {"formula": "*:count", "name": "n"},
+                {"formula": "last(amount)", "name": "l"},
+                {"formula": "count(*)", "name": "n"},
             ],
         )
         without = await _rows(
             engine, dimensions=["status"],
-            measures=[{"formula": "*:count", "name": "n"}],
+            measures=[{"formula": "count(*)", "name": "n"}],
         )
         counts = by_group(with_ranked, key="orders.status", value="orders.n")
         assert counts == by_group(without, key="orders.status", value="orders.n")
@@ -676,16 +676,16 @@ class TestCrossingInputsAndFanout:
         self, engine: SlayerQueryEngine,
     ) -> None:
         """Order 15 is tagged ``rush`` TWICE. The fanning ``rush`` population
-        filter restricts by association (DEV-1909), so ``amount:sum`` counts each
+        filter restricts by association (DEV-1909), so ``sum(amount)`` counts each
         matching order once — order 15 and order 16 — never doubling order 15.
-        ``amount:last`` does not move either, because duplicating a row cannot
+        ``last(amount)`` does not move either, because duplicating a row cannot
         change which row is newest."""
         rows = await _rows(
             engine, dimensions=["status"],
             filters=["order_tags.name == 'rush'"],
             measures=[
-                {"formula": "amount:last", "name": "l"},
-                {"formula": "amount:sum", "name": "s"},
+                {"formula": "last(amount)", "name": "l"},
+                {"formula": "sum(amount)", "name": "s"},
             ],
         )
         last = by_group(rows, key="orders.status", value="orders.l")
@@ -701,7 +701,7 @@ class TestCrossingInputsAndFanout:
         in three tag groups. Each ranks over the rows that reached it."""
         rows = await _rows(
             engine, dimensions=["order_tags.name"],
-            measures=[{"formula": "amount:last", "name": "l"}],
+            measures=[{"formula": "last(amount)", "name": "l"}],
         )
         by_tag = by_group(rows, key="orders.order_tags.name", value="orders.l")
 
@@ -725,8 +725,8 @@ class TestComposition:
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[
-                {"formula": "amount:first", "name": "f"},
-                {"formula": "amount:last", "name": "l"},
+                {"formula": "first(amount)", "name": "f"},
+                {"formula": "last(amount)", "name": "l"},
             ],
         )
         assert by_group(rows, key="orders.status", value="orders.f")["paid"] == PAID_FIRST
@@ -741,8 +741,8 @@ class TestComposition:
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[
-                {"formula": "amount:last", "name": "l1"},
-                {"formula": "amount:last", "name": "l2"},
+                {"formula": "last(amount)", "name": "l1"},
+                {"formula": "last(amount)", "name": "l2"},
             ],
         )
         assert by_group(rows, key="orders.status", value="orders.l1") == by_group(
@@ -753,13 +753,13 @@ class TestComposition:
     async def test_an_arithmetic_composite_of_two_ranked_operands(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``amount:last - amount:first`` — inline over one ranked scope today,
+        """``last(amount) - first(amount)`` — inline over one ranked scope today,
         an outer composite over two CTEs after the rewrite. ``filt`` is the
         discriminator: its difference is NEGATIVE, so an implementation that
         swapped the operands would be caught."""
         rows = await _rows(
             engine, dimensions=["status"],
-            measures=[{"formula": "amount:last - amount:first", "name": "d"}],
+            measures=[{"formula": "last(amount) - first(amount)", "name": "d"}],
         )
         by_status = by_group(rows, key="orders.status", value="orders.d")
 
@@ -771,13 +771,13 @@ class TestComposition:
     async def test_a_ranked_measure_under_a_transform_chain(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``cumsum(amount:last)`` — the ranked value feeds a window function in
+        """``cumsum(last(amount))`` — the ranked value feeds a window function in
         a later stage, so the ranked result must be materialised as a column the
         chain can read."""
         rows = await _rows(
             engine,
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=[{"formula": "cumsum(amount:last)", "name": "c"}],
+            measures=[{"formula": "cumsum(last(amount))", "name": "c"}],
         )
         # The WHOLE ordered sequence, not two sampled points: a running total
         # can land on the right final value while every step before it is
@@ -805,14 +805,14 @@ class TestFilteringAndOrderingOnARankedMeasure:
     async def test_a_comparison_on_a_ranked_measure_drops_groups(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``amount:last > 30`` is an AGGREGATE-phase filter over a value that
+        """``last(amount) > 30`` is an AGGREGATE-phase filter over a value that
         lives in its own scope after the rewrite, so it moves from HAVING to an
         outer WHERE. The ROW SET must not change: exactly the groups whose last
         exceeds 30, and a group whose last is NULL is not one of them."""
         rows = await _rows(
             engine, dimensions=["status"],
-            measures=[{"formula": "amount:last", "name": "l"}],
-            filters=[f"amount:last > {BIG_AMOUNT_THRESHOLD + 10}"],
+            measures=[{"formula": "last(amount)", "name": "l"}],
+            filters=[f"last(amount) > {BIG_AMOUNT_THRESHOLD + 10}"],
         )
         assert by_group(rows, key="orders.status", value="orders.l") == {
             None: NULL_STATUS_LAST,
@@ -827,7 +827,7 @@ class TestFilteringAndOrderingOnARankedMeasure:
         the ``nullval`` group is at the end rather than at the front."""
         rows = await _rows(
             engine, dimensions=["status"],
-            measures=[{"formula": "amount:last", "name": "l"}],
+            measures=[{"formula": "last(amount)", "name": "l"}],
             order=[{"column": "l", "direction": "desc"}],
         )
         values = [row["orders.l"] for row in rows]
@@ -850,8 +850,8 @@ class TestFilteringAndOrderingOnARankedMeasure:
         emitted columns are exactly the declared ones, in declaration order."""
         rows = await _rows(
             engine, dimensions=["status"],
-            measures=[{"formula": "amount:sum", "name": "s"}],
-            order=[{"column": "amount:last", "direction": "desc"}],
+            measures=[{"formula": "sum(amount)", "name": "s"}],
+            order=[{"column": "last(amount)", "direction": "desc"}],
         )
         assert list(rows[0]) == ["orders.status", "orders.s"]
         assert [row["orders.status"] for row in rows] == [

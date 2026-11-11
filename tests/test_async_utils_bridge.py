@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import contextvars
 import os
@@ -22,7 +23,7 @@ import sqlalchemy as sa
 import sqlalchemy.event as sa_event
 
 from slayer import async_utils
-from slayer.async_utils import on_caller_thread, run_sync, run_sync_on_caller_thread
+from slayer.async_utils import on_caller_thread, run_sync
 from slayer.core.models import DatasourceConfig
 from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient
@@ -190,8 +191,8 @@ def test_interrupt_cancels_the_workflow_and_waits_for_its_cleanup() -> None:
     assert run_sync(_value(1)) == 1
 
 
-def _interrupt_scheduling(monkeypatch: pytest.MonkeyPatch, *, after: threading.Event | None) -> None:
-    """The next workflow's scheduling is interrupted: after ``after`` is set, or before it schedules."""
+def _interrupt_scheduling(monkeypatch: pytest.MonkeyPatch, *, scheduled: bool) -> None:
+    """The next workflow's scheduling raises KeyboardInterrupt, never blocking: after it schedules, or before."""
     loop = run_sync(_running_loop())
     real, fired = loop.call_soon_threadsafe, threading.Event()
 
@@ -200,13 +201,38 @@ def _interrupt_scheduling(monkeypatch: pytest.MonkeyPatch, *, after: threading.E
         if fired.is_set() or not isinstance(getattr(callback, "__self__", None), async_utils._Workflow):
             return real(callback, *args, **kwargs)
         fired.set()
-        if after is None:
-            raise KeyboardInterrupt
-        real(callback, *args, **kwargs)
-        assert after.wait(_BOUND)
+        if scheduled:
+            real(callback, *args, **kwargs)
         raise KeyboardInterrupt
 
     monkeypatch.setattr(loop, "call_soon_threadsafe", _interrupted)
+
+
+def _interrupt_after_start(monkeypatch: pytest.MonkeyPatch, *, after: threading.Event) -> list[float]:
+    """The next workflow raises KeyboardInterrupt once ``start()`` returned and ``after`` is set; returns when it fired.
+
+    The bridge loop takes ``bridge.lock`` meanwhile, as a previous workflow's settling does.
+    """
+    loop = run_sync(_running_loop())
+    real_start, returned, fired_at = async_utils._Workflow.start, threading.Event(), []
+
+    def _contend() -> None:
+        returned.wait(_BOUND)
+        with async_utils._bridge.lock:
+            pass
+
+    def _start(self: async_utils._Workflow) -> None:
+        real_start(self)
+        if returned.is_set():
+            return
+        returned.set()
+        assert after.wait(_BOUND)
+        fired_at.append(time.monotonic())
+        raise KeyboardInterrupt
+
+    loop.call_soon_threadsafe(_contend)
+    monkeypatch.setattr(async_utils._Workflow, "start", _start)
+    return fired_at
 
 
 def test_an_interrupt_just_after_submission_cancels_the_workflow(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -225,7 +251,7 @@ def test_an_interrupt_just_after_submission_cancels_the_workflow(monkeypatch: py
     def _call() -> None:
         run_sync(waiting)
 
-    _interrupt_scheduling(monkeypatch, after=started)
+    _interrupt_after_start(monkeypatch, after=started)
     with pytest.raises(KeyboardInterrupt):
         _bounded(_call)
     assert cancelled.is_set()
@@ -233,29 +259,70 @@ def test_an_interrupt_just_after_submission_cancels_the_workflow(monkeypatch: py
 
 
 def test_cleanup_after_an_interrupt_is_bounded_overall(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A workflow that ignores cancellation and keeps queueing caller-thread work cannot hold the caller."""
+    """A workflow that ignores cancellation and never lets the caller queue run dry cannot hold the caller."""
     started, stop = threading.Event(), threading.Event()
+    returned_at: list[float] = []
 
     async def _stubborn() -> None:
+        calls = async_utils._caller_calls.get()
+        assert calls is not None
+
+        def _step() -> None:
+            time.sleep(0.05)
+            # Capped so an unbounded cleanup fails fast instead of outliving the test.
+            if not stop.is_set() and time.monotonic() - fired_at[0] < 3:
+                calls.put((_step, concurrent.futures.Future()))
+
+        calls.put((_step, concurrent.futures.Future()))
         started.set()
         while not stop.is_set():
             with contextlib.suppress(asyncio.CancelledError):
-                await on_caller_thread(lambda: time.sleep(0.05))
+                await asyncio.sleep(0.05)
 
     workflow = _stubborn()
 
     def _call() -> None:
-        run_sync(workflow)
+        try:
+            run_sync(workflow)
+        finally:
+            returned_at.append(time.monotonic())
 
     monkeypatch.setattr(async_utils, "_CLEANUP_SECONDS", 0.5)
-    _interrupt_scheduling(monkeypatch, after=started)
-    begun = time.monotonic()
+    fired_at = _interrupt_after_start(monkeypatch, after=started)
     try:
         with pytest.raises(KeyboardInterrupt):
             _bounded(_call)
     finally:
         stop.set()
-    assert time.monotonic() - begun < 5
+    assert returned_at[0] - fired_at[0] < async_utils._CLEANUP_SECONDS + 1
+
+
+def test_an_interrupt_after_scheduling_before_the_workflow_runs_closes_it_unstarted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ran, release = threading.Event(), threading.Event()
+    loop = run_sync(_running_loop())
+
+    async def _never() -> None:
+        ran.set()
+
+    workflow = _never()
+
+    def _call() -> None:
+        run_sync(workflow)
+
+    _interrupt_scheduling(monkeypatch, scheduled=True)
+    loop.call_soon_threadsafe(release.wait, _BOUND)
+    begun = time.monotonic()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            _bounded(_call)
+        assert time.monotonic() - begun < 5
+    finally:
+        release.set()
+    assert _bounded(lambda: run_sync(_value(6))) == 6
+    assert workflow.cr_frame is None
+    assert not ran.is_set()
 
 
 def test_an_interrupt_before_submission_closes_the_workflow_unstarted(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -269,7 +336,7 @@ def test_an_interrupt_before_submission_closes_the_workflow_unstarted(monkeypatc
     def _call() -> None:
         run_sync(workflow)
 
-    _interrupt_scheduling(monkeypatch, after=None)
+    _interrupt_scheduling(monkeypatch, scheduled=False)
     begun = time.monotonic()
     with pytest.raises(KeyboardInterrupt):
         _bounded(_call)
@@ -351,7 +418,7 @@ def test_caller_thread_calls_stay_on_the_caller_thread(tmp_path: Path) -> None:
             rows = [(await client.execute("SELECT 1 AS x")).rows for _ in range(2)]
             return threading.get_ident(), rows
 
-        workflow_thread, rows = run_sync_on_caller_thread(_workflow())
+        workflow_thread, rows = run_sync(_workflow())
     assert rows == [[{"x": 1}]] * 2
     assert checkouts
     assert set(checkouts) == {threading.get_ident()}
@@ -367,9 +434,23 @@ def test_caller_thread_calls_from_inside_a_running_loop(tmp_path: Path) -> None:
         client = _caller_engine_client(engine, path)
 
         async def _inside() -> list[Any]:
-            return run_sync_on_caller_thread(client.execute("SELECT 1 AS x")).rows
+            return run_sync(client.execute("SELECT 1 AS x")).rows
 
         assert asyncio.run(_inside()) == [{"x": 1}]
+    assert checkouts
+    assert set(checkouts) == {threading.get_ident()}
+
+
+def test_a_callers_in_memory_engine_serves_synchronous_calls() -> None:
+    with disposable_engine("sqlite://") as engine:
+        with engine.begin() as conn:
+            conn.execute(sa.text("CREATE TABLE t (x INTEGER)"))
+            conn.execute(sa.text("INSERT INTO t VALUES (1), (2)"))
+        checkouts: list[int] = []
+        sa_event.listen(engine, "checkout", lambda *_a: checkouts.append(threading.get_ident()))
+        client = SlayerSQLClient(DatasourceConfig(name="c", type="sqlite", database=":memory:"), sa_engine=engine)
+        rows = run_sync(client.execute("SELECT x FROM t ORDER BY x")).rows
+    assert rows == [{"x": 1}, {"x": 2}]
     assert checkouts
     assert set(checkouts) == {threading.get_ident()}
 
@@ -382,11 +463,11 @@ def test_a_raising_caller_thread_call_propagates() -> None:
         await on_caller_thread(_boom)
 
     def _run_workflow() -> None:
-        run_sync_on_caller_thread(_workflow())
+        run_sync(_workflow())
 
     with pytest.raises(ValueError, match="boom"):
         _bounded(_run_workflow)
-    assert _bounded(lambda: run_sync_on_caller_thread(_value(3))) == 3
+    assert _bounded(lambda: run_sync(_value(3))) == 3
 
 
 @_POSIX_MAIN_THREAD
@@ -413,11 +494,11 @@ def test_interrupting_a_caller_thread_workflow_cleans_up() -> None:
     begun = time.monotonic()
     workflow = _workflow()
     with pytest.raises(KeyboardInterrupt):
-        run_sync_on_caller_thread(workflow)
+        run_sync(workflow)
     timer.join(_BOUND)
     assert time.monotonic() - begun < _BOUND
     assert cleaned.is_set()
-    assert run_sync_on_caller_thread(_value(4)) == 4
+    assert run_sync(_value(4)) == 4
 
 
 # ---------------------------------------------------------------------------

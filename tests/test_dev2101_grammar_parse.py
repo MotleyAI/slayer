@@ -227,10 +227,7 @@ class TestKeywordArguments:
         assert bound("sum(amount = 10)") == bound("sum(amount == 10)")
 
 
-class TestColonAndCast:
-    def test_colon_aggregation_kept(self) -> None:
-        same("amount:sum", "sum(amount)")
-
+class TestCast:
     def test_double_colon_is_a_cast(self) -> None:
         parsed = parse_expr("amount::int")
         assert isinstance(parsed, Cast)
@@ -265,10 +262,6 @@ class TestColonAndCast:
         parsed = parse_expr("sum(CAST(amount AS DECIMAL(10,2)))")
         assert isinstance(parsed, AggCall)
         assert isinstance(parsed.source, Cast)
-
-    def test_colon_aggregation_over_cast_free_text(self) -> None:
-        assert isinstance(parse_expr("revenue:sum"), AggCall)
-        assert isinstance(parse_expr("revenue::text"), Cast)
 
 
 class TestIdentifiers:
@@ -418,8 +411,6 @@ class TestRejectionsWithHints:
 class TestLegacySpellingsKept:
     @pytest.mark.parametrize(("legacy", "canonical"), [
         ("customers.sum(revenue)", "sum(customers.revenue)"),
-        ("revenue:sum", "sum(revenue)"),
-        ("*:count", "count(*)"),
         ("status == 'paid' and region is not None", "status = 'paid' AND region IS NOT NULL"),
         ("region in ['EU', 'US']", "region IN ('EU', 'US')"),
     ])

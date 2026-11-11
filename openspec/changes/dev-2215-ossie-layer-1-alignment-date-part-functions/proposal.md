@@ -45,7 +45,7 @@ SLayer 2.0 makes Mode B compliant with Ossie's portable expression language (`co
   - `slayer/core/models.py`: save-time collision checks; the `agg` reservation.
   - `slayer/sql/generator.py` and `slayer/sql/render/ranked.py`: the `first`/`last` NULL-key shape.
   - `slayer/facade/translator.py`: extraction projections.
-  - `slayer/storage/`: a new migration step (SlayerModel 18→19, SlayerQuery 9→10, Memory 7→8) and the custom-granularity load pipeline.
+  - `slayer/storage/`: a new migration step (SlayerModel 19→20, SlayerQuery 10→11, Memory 8→9) and the custom-granularity load pipeline.
   - Ingestion: case-only-distinct column names.
   - `tests/test_library_growth.py` and `tests/test_law_removal_tripwire.py`: pins.
 - Architecture: `architecture/python.engine.arc42.md` P8 and `architecture/python.storage.arc42.md` P3.2, worded as approved.

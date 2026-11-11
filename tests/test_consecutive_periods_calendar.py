@@ -113,12 +113,12 @@ class TestCalendarStreak:
             "name": "s1", "source_model": "orders",
             "time_dimensions": [{"dimension": "order_date", "granularity": "month"}],
             "filters": ["customer_id = 1"],
-            "measures": [{"formula": "amount:sum", "name": "total"}],
+            "measures": [{"formula": "sum(amount)", "name": "total"}],
         })
         outer = SlayerQuery.model_validate({
             "source_model": "s1",
             "time_dimensions": [{"dimension": "order_date", "granularity": "month"}],
-            "measures": [{"formula": "consecutive_periods(total:sum > 100)", "name": "v"}],
+            "measures": [{"formula": "consecutive_periods(sum(total) > 100)", "name": "v"}],
         })
         resp = await exec_engine.execute(query=[inner, outer])
         got = _unique([(month_of(r["s1.order_date"]), int(r["s1.v"])) for r in resp.data])

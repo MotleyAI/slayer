@@ -19,8 +19,6 @@ from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.dialects.reflection import ReflectedForeignKey, TableKeys, TableLocation
 from tests._pg_helpers import pg_database
 
-pytestmark = pytest.mark.filterwarnings("ignore::FutureWarning")
-
 postgresql_proc = factories.postgresql_proc(port=None)
 
 _SCHEMA = [

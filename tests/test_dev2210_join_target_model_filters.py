@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -25,6 +26,13 @@ JAN_MAR = ["2024-01-01", "2024-03-31"]
 async def engine(request: pytest.FixtureRequest) -> AsyncIterator[SlayerQueryEngine]:
     async with filtered_engine(request.param, request) as eng:
         yield eng
+
+
+@pytest.mark.filterwarnings("error::ResourceWarning", "error::pytest.PytestUnraisableExceptionWarning")
+async def test_postgres_engine_closes_its_connections(request: pytest.FixtureRequest) -> None:
+    async with filtered_engine("postgres", request) as eng:
+        assert await _ids(eng, source="orders") == {1, 2, 3, 4}
+    gc.collect()
 
 
 async def _run(engine: SlayerQueryEngine, **body: Any) -> SlayerResponse:

@@ -70,7 +70,7 @@ def test_ds_type_aliases() -> None:
 
 
 def test_explain_prefix_is_none() -> None:
-    """BigQuery has no SQL-level EXPLAIN; ``explain_prefix is None`` signals ``build_explain_sql`` to raise."""
+    """BigQuery has no SQL-level EXPLAIN; ``explain_prefix is None`` signals ``explain_statements`` to raise."""
     assert BigqueryDialect().explain_prefix is None
 
 
@@ -388,7 +388,7 @@ class TestEngineDecodeIntegration:
     """End-to-end: stub client returns mangled keys; engine decodes them before packaging into ``SlayerResponse``."""
 
     async def test_non_empty_rows_decoded_in_response(self) -> None:
-        # ``*:count`` measure has alias ``orders._count`` (canonical, with
+        # ``count(*)`` measure has alias ``orders._count`` (canonical, with
         # leading underscore). Encoding: ``.`` -> ``___``, no other change
         # (no pre-existing ``___`` to escape). Result: ``orders____count``
         # (3 underscores from the dot + 1 from ``_count`` = 4 underscores).
@@ -397,11 +397,11 @@ class TestEngineDecodeIntegration:
         rows = [{"orders____count": 42, "orders___status": "paid"}]
         engine, tmp, _ = await _build_bigquery_engine(rows)
         try:
-            query = SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "*:count"}],
-                dimensions=["status"],
-            )
+            query = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "count(*)"}],
+                "dimensions": ["status"],
+            })
             resp = await engine.execute(query)
             # Keys must be decoded back to dotted form on the response.
             assert resp.data == [{"orders._count": 42, "orders.status": "paid"}]
@@ -412,11 +412,11 @@ class TestEngineDecodeIntegration:
         """When rows are empty, ``columns = expected_columns`` per the engine's response shape contract."""
         engine, tmp, _ = await _build_bigquery_engine(rows=[])
         try:
-            query = SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "*:count"}],
-                dimensions=["status"],
-            )
+            query = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "count(*)"}],
+                "dimensions": ["status"],
+            })
             resp = await engine.execute(query)
             assert resp.data == []
             # Expected-columns fallback fires when rows is empty.
@@ -586,11 +586,11 @@ async def test_virtual_model_wrapped_refs_match_mangled_inner_bigquery() -> None
         model = SlayerModel(
             name="qb_orders",
             data_source="bq",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "*:count"}],
-                dimensions=["status"],
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "count(*)"}],
+                "dimensions": ["status"],
+            })],
         )
         vmodel = await engine._expand_query_backed_model(
             model=model,
@@ -841,7 +841,7 @@ def test_build_engine_oauth_validates_before_importing_optional_driver() -> None
 
 @pytest.mark.parametrize(
     ("column", "alias"),
-    [("created_at", "orders___created_at"), ("amount:max", "orders___amount_max")],
+    [("created_at", "orders___created_at"), ("max(amount)", "orders___amount_max")],
 )
 async def test_bigquery_outer_wrap_order_by_keeps_full_alias(column: str, alias: str) -> None:
     """No empty backtick qualifier; the alias keeps its model prefix (public or hidden)."""
@@ -870,7 +870,7 @@ async def test_bigquery_computed_measure_with_order_by_resolves() -> None:
         time_dimensions=[
             TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)
         ],
-        measures=[ModelMeasure(formula="revenue:sum / quantity:sum", name="aov")],
+        measures=[ModelMeasure(formula="sum(revenue) / sum(quantity)", name="aov")],
         order=[OrderItem(column="created_at", direction="desc")],
         limit=6,
     )

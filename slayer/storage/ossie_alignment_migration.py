@@ -1,4 +1,4 @@
-"""SlayerModel v19 / SlayerQuery v10 / Memory v8: a stored bucket call ``<unit>(x)`` becomes ``date_trunc('<unit>', x)``,
+"""SlayerModel v20 / SlayerQuery v11 / Memory v9: a stored bucket call ``<unit>(x)`` becomes ``date_trunc('<unit>', x)``,
 each deprecated spelling its canonical twin, and an aggregation named ``agg`` (now reserved) ``agg_aggregation`` with
 every call to it.
 
@@ -56,6 +56,6 @@ def upgrade_query(data: dict) -> dict:
     return rewrite_query_texts(data, upgraded_text)
 
 
-register_migration(entity="SlayerModel", source_version=18, stored_only=True)(upgrade_model)
-register_migration(entity="SlayerQuery", source_version=9, stored_only=True)(upgrade_query)
-register_migration(entity="Memory", source_version=7, stored_only=True)(stamp_memory_query)
+register_migration(entity="SlayerModel", source_version=19, stored_only=True)(upgrade_model)
+register_migration(entity="SlayerQuery", source_version=10, stored_only=True)(upgrade_query)
+register_migration(entity="Memory", source_version=8, stored_only=True)(stamp_memory_query)

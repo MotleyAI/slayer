@@ -40,12 +40,12 @@ def _query(granularity: str, *measures) -> dict:
 
 
 def _shift(granularity: TimeGranularity, offset: int, *, bucket: TimeGranularity | None = None) -> dict:
-    return _query((bucket or granularity).value, "v:sum", {
-        "formula": f"time_shift(v:sum, {offset}, '{granularity.value}')", "name": "x"})
+    return _query((bucket or granularity).value, "sum(v)", {
+        "formula": f"time_shift(sum(v), {offset}, '{granularity.value}')", "name": "x"})
 
 
 def _window(duration: str, bucket: str) -> dict:
-    return _query(bucket, {"formula": f"v:sum(window='{duration}')", "name": "x"})
+    return _query(bucket, {"formula": f"sum(v, window='{duration}')", "name": "x"})
 
 
 def _cases() -> dict:
@@ -54,7 +54,7 @@ def _cases() -> dict:
     }
     cases.update({
         "shift|day_on_month|-1": _shift(TG.DAY, -1, bucket=TG.MONTH),
-        "trunc|week_sunday": _query("week_sunday", "v:sum"),
+        "trunc|week_sunday": _query("week_sunday", "sum(v)"),
         "window|1m|day": _window("1m", "day"),
         "window|90d|month": _window("90d", "month"),
         "window|2w|week": _window("2w", "week"),
@@ -146,7 +146,7 @@ async def test_time_shift_uses_date_add(spy, dialect: str, granularity: TimeGran
 @pytest.mark.parametrize("dialect", [d for d in TIER1 if d != "bigquery"])
 async def test_sunday_week_truncation_uses_date_add(spy, dialect: str) -> None:
     calls = spy(dialect)
-    await _engine_generate(query=[_query("week_sunday", "v:sum")], model=_ev_model(), dialect=dialect)
+    await _engine_generate(query=[_query("week_sunday", "sum(v)")], model=_ev_model(), dialect=dialect)
     assert ("days", 1) in calls, calls
     assert ("days", -1) in calls, calls
 

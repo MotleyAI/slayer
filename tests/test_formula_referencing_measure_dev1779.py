@@ -59,9 +59,9 @@ _CANON_UNIQUE = "orders.customer_count_distinct"
 def _habit_measures() -> list[ModelMeasure]:
     """order_count / unique_customers, plus the formula that divides them."""
     return [
-        ModelMeasure(name="order_count", formula="id:count"),
-        ModelMeasure(name="unique_customers", formula="customer:count_distinct"),
-        ModelMeasure(name="total_revenue", formula="revenue:sum"),
+        ModelMeasure(name="order_count", formula="count(id)"),
+        ModelMeasure(name="unique_customers", formula="count_distinct(customer)"),
+        ModelMeasure(name="total_revenue", formula="sum(revenue)"),
         ModelMeasure(name="habit_score", formula="order_count / unique_customers"),
     ]
 
@@ -232,7 +232,7 @@ async def test_transform_wrapped_reference_follows_rename(tmp_path) -> None:
         tmp_path,
         seed=False,
         measures=[
-            ModelMeasure(name="order_count", formula="id:count"),
+            ModelMeasure(name="order_count", formula="count(id)"),
             ModelMeasure(name="running_orders", formula="cumsum(order_count)"),
         ],
     )
@@ -256,7 +256,7 @@ async def test_change_pct_desugar_reference_follows_rename(tmp_path) -> None:
         tmp_path,
         seed=False,
         measures=[
-            ModelMeasure(name="order_count", formula="id:count"),
+            ModelMeasure(name="order_count", formula="count(id)"),
             ModelMeasure(name="mom_orders", formula="change_pct(order_count)"),
         ],
     )
@@ -310,7 +310,7 @@ async def test_formula_referencing_nonexistent_measure_raises(tmp_path) -> None:
         tmp_path,
         seed=False,
         measures=[
-            ModelMeasure(name="order_count", formula="id:count"),
+            ModelMeasure(name="order_count", formula="count(id)"),
             ModelMeasure(name="bad", formula="order_count / nonexistent_measure"),
         ],
     )
@@ -327,7 +327,7 @@ async def test_transform_referencing_nonexistent_measure_raises(tmp_path) -> Non
         tmp_path,
         seed=False,
         measures=[
-            ModelMeasure(name="order_count", formula="id:count"),
+            ModelMeasure(name="order_count", formula="count(id)"),
             ModelMeasure(name="running_bad", formula="cumsum(nonexistent_measure)"),
         ],
     )

@@ -380,7 +380,7 @@ def _windowed_query(**kw) -> SlayerQuery:
     base = dict(
         source_model="orders",
         time_dimensions=[_MONTHLY_CREATED_AT],
-        measures=[ModelMeasure(formula="revenue:sum(window='90d')", name="rev_90d")],
+        measures=[ModelMeasure(formula="sum(revenue, window='90d')", name="rev_90d")],
     )
     base.update(kw)
     return SlayerQuery.model_validate(base)
@@ -707,8 +707,8 @@ class TestWindowedSrcFrameBounds:
     async def test_two_windowed_measures_share_the_residual(self) -> None:
         query = _windowed_query(
             measures=[
-                ModelMeasure(formula="revenue:sum(window='90d')", name="rev_90d"),
-                ModelMeasure(formula="revenue:avg(window='30d')", name="rev_30d"),
+                ModelMeasure(formula="sum(revenue, window='90d')", name="rev_90d"),
+                ModelMeasure(formula="avg(revenue, window='30d')", name="rev_30d"),
             ],
             filters=["created_at >= '2024-06-01' and status = 'paid'"],
         )
@@ -865,7 +865,7 @@ def _shift_query(**kw) -> SlayerQuery:
     base = dict(
         source_model="orders",
         time_dimensions=[_MONTHLY_CREATED_AT],
-        measures=[ModelMeasure(formula="time_shift(revenue:sum, -1, 'month')", name="prev")],
+        measures=[ModelMeasure(formula="time_shift(sum(revenue), -1, 'month')", name="prev")],
     )
     base.update(kw)
     return SlayerQuery.model_validate(base)

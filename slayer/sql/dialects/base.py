@@ -19,7 +19,6 @@ from sqlglot.expressions.core import Expr, Expression
 from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
 from sqlglot.errors import SqlglotError
 
-from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
 from slayer.core.errors import (
     ExplainUnsupportedError,
@@ -59,11 +58,11 @@ from slayer.sql.dialects.reflection import (
     inspector_foreign_keys,
     inspector_unique_constraints,
     inspector_unique_indexes,
+    keys_of_reads,
     recover,
     relation,
     result_column_type_of_name,
     schema_token,
-    without_primary_key,
 )
 from slayer.sql.naming_bijection import decode_alias, encode_alias
 
@@ -568,36 +567,6 @@ def _sqlglot_masking_lexis(sqlglot_name: str) -> SqlLexis:
     )
 
 
-_SLAYER_TYPE_CATEGORIES: Mapping[DataType, str] = {
-    DataType.INT: "number", DataType.DOUBLE: "number", DataType.DATE: "time", DataType.TIMESTAMP: "time",
-    DataType.BOOLEAN: "boolean",
-}
-
-
-class LegacyTypeCategories(BaseModel):
-    """A dialect's SLayer 1.6.0 category per database type name, read only by the deprecated category probes.
-
-    A name (lower-case, parenthesised parts dropped) matches ``names``, else the first ``contains`` substring
-    (upper-case), else takes ``other``; an unclassified column takes its SLayer type's category."""
-
-    model_config = ConfigDict(frozen=True)
-
-    names: Mapping[str, str] = Field(default_factory=dict)
-    contains: tuple[tuple[str, str], ...] = ()
-    other: str | None = None
-    unnamed: Mapping[DataType, str] = Field(default_factory=dict)
-
-    def category(self, column: ResultColumnType) -> str:
-        if column.db_type is not None:
-            name = " ".join(re.sub(r"\([^)]*\)", " ", column.db_type).lower().split())
-            found = self.names.get(name) or next(
-                (c for token, c in self.contains if token in column.db_type.upper()), self.other)
-            if found is not None:
-                return found
-            return _SLAYER_TYPE_CATEGORIES.get(column.type, "string")
-        return self.unnamed.get(column.type) or _SLAYER_TYPE_CATEGORIES.get(column.type, "string")
-
-
 def describe_type_name_code(
     description_row: Sequence[Any], *, overrides: Mapping[str, DataType] | None = None,
 ) -> ResultColumnType | None:
@@ -735,13 +704,6 @@ class DriverFacts(BaseModel):
         """The default driver: ``url_scheme``'s ``+driver`` part."""
         return _scheme_driver(self.url_scheme)
 
-    def bundled_non_default(self, url: URL) -> bool:
-        """Whether ``url`` names a driver the extra installs besides the default."""
-        driver = url.get_driver_name()
-        return url.get_backend_name() in self.url_backends and driver in self.extra_drivers and (
-            driver != self.default_driver
-        )
-
     def refuses_loop(self, driver: str | None, loop: object) -> bool:
         """Whether ``driver``'s async mode refuses ``loop``'s kind."""
         refused = self.refused_loops.get(driver or "", frozenset())
@@ -817,8 +779,6 @@ class SqlDialect(BaseModel):
 
     # Dates live in TEXT columns: a stored DATE/TIMESTAMP over live TEXT is no drift.
     temporal_text_compatible: bool = False
-    # The deprecated category probes' 1.6.0 classification.
-    legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories()
 
     # Cursor metadata carries column types; when not, types are read off a row, so an empty result has none.
     cursor_reports_types: bool = True
@@ -1945,21 +1905,6 @@ class SqlDialect(BaseModel):
             )
         return ExplainStatements(statement=f"{self.explain_prefix} {sql}")
 
-    def build_explain_sql(self, sql: str) -> str:
-        """Deprecated: the EXPLAIN as one text; use ``explain_statements``."""
-        warn_deprecated(
-            "SqlDialect.build_explain_sql() is removed in SLayer 2.0; use explain_statements(), "
-            "which also expresses an EXPLAIN that switches session plan mode.",
-            removal="2.0",
-        )
-        statements = self.explain_statements(sql)
-        if statements.session_on is not None:
-            raise ExplainUnsupportedError(
-                f"The {self.sqlglot_name} EXPLAIN switches session plan mode, which one text cannot express; "
-                "use explain_statements()."
-            )
-        return statements.statement
-
     # Runtime hooks: keep dialect conditionals out of engine_factory / client.
 
     def build_connection_url(
@@ -2162,28 +2107,29 @@ class SqlDialect(BaseModel):
         self, *, connection: CatalogConnection | None, inspector: Any, table: str, schema: str | None,
         catalog: str | None,
     ) -> TableKeys:
-        """PK, FKs and whole-table unique key sets; each read best-effort, a failure logged at WARNING."""
+        """PK, FKs and whole-table unique key sets; each read best-effort, a failure logged at WARNING and listed."""
         token = schema_token(schema=schema, catalog=catalog)
-        pk = best_effort(
-            lambda: self._primary_key(
-                connection=connection, inspector=inspector, table=table, schema=schema, catalog=catalog,
+        return keys_of_reads(
+            primary_key=best_effort(
+                lambda: self._primary_key(
+                    connection=connection, inspector=inspector, table=table, schema=schema, catalog=catalog,
+                ),
+                connection=connection, default=[], table=table, what="primary key",
             ),
-            connection=connection, default=[], table=table, what="primary key",
-        )
-        fks = best_effort(
-            lambda: inspector_foreign_keys(inspector, table=table, token=token),
-            connection=connection, default=[], table=table, what="foreign keys",
-        )
-        uniques = best_effort(
-            lambda: inspector_unique_constraints(inspector, table=table, token=token),
-            connection=connection, default=[], table=table, what="unique constraints",
-        )
-        indexes = best_effort(
-            lambda: inspector_unique_indexes(inspector, table=table, token=token),
-            connection=connection, default=[], table=table, what="unique indexes",
-        )
-        return TableKeys(
-            primary_key=pk, foreign_keys=fks, unique_key_sets=without_primary_key(pk, uniques + indexes),
+            foreign_keys=best_effort(
+                lambda: inspector_foreign_keys(inspector, table=table, token=token),
+                connection=connection, default=[], table=table, what="foreign keys",
+            ),
+            unique_sets=[
+                best_effort(
+                    lambda: inspector_unique_constraints(inspector, table=table, token=token),
+                    connection=connection, default=[], table=table, what="unique constraints",
+                ),
+                best_effort(
+                    lambda: inspector_unique_indexes(inspector, table=table, token=token),
+                    connection=connection, default=[], table=table, what="unique indexes",
+                ),
+            ],
         )
 
     def _primary_key(

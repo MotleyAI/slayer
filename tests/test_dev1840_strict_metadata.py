@@ -53,10 +53,10 @@ async def exec_backend_amb(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="amount:sum", name="m")
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
-SM = ModelMeasure(formula="agents.score:sum", name="sm")
-RV = ModelMeasure(formula="reviews.stars:sum", name="rv")
+M = ModelMeasure(formula="sum(amount)", name="m")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+SM = ModelMeasure(formula="sum(agents.score)", name="sm")
+RV = ModelMeasure(formula="sum(reviews.stars)", name="rv")
 
 
 class TestPushedFiltersAreSilent:

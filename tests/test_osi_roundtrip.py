@@ -18,7 +18,11 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests._osi_export_fixtures import (
     BASIC_MEASURES, DATASOURCE, col, customers, measure, monthly_revenue, orders, orders_columns, rich_orders, visits,
 )
-from tests._osi_export_helpers import Env, export, fresh_store, make_env, normalized, reimport, save, stored
+from tests._osi_export_helpers import (
+    Env, convert_document, doc_text, export, fresh_store, make_env, normalized, reimport, rows, save, stored, validate,
+)
+from tests._osi_helpers import ds, entries, f, flat
+from tests._osi_helpers import m as osi_metric
 
 EXAMPLE_DIR = Path(__file__).parent.parent / "docs" / "examples" / "13_osi_import"
 
@@ -244,3 +248,22 @@ async def test_worked_example_round_trip(tmp_path: Path) -> None:
     for name in ("orders", "customers", "products", "regions"):
         payloads += _payloads(await stored(first, name), extra_dimensions=[], empty_filter=None)
     assert await _mismatches(first, second, payloads) == []
+
+
+async def test_source_columns_round_trip(tmp_path: Path) -> None:
+    env = await make_env(tmp_path)
+    document = flat([ds("orders", fields=[f("order_id", "o_orderkey"), f("amount")], primary_key=["order_id"],
+                        metrics=[osi_metric("units", "SUM(source.quantity)"),
+                                 osi_metric("total", "SUM(source.amount)")])])
+    first, _ = await reimport(env, document, name="first")
+    exported = (await export(first)).document
+    validate(exported)
+    second, _ = await reimport(env, exported, name="second")
+    assert doc_text((await export(second)).document) == doc_text(exported)
+    orders_model = await stored(second, "orders")
+    assert {c.name for c in orders_model.columns if not c.hidden} == {"order_id", "amount"}
+    assert [c for c in orders_model.columns if c.hidden]
+    assert not [e for e in entries(convert_document(env, exported)) if e.category == "extension"]
+    payload = {"source_model": "orders", "measures": ["units", "total"]}
+    assert normalized(await rows(second, payload)) == normalized(await rows(first, payload))
+    assert normalized(await rows(first, payload)) == normalized([{"orders.units": 11, "orders.total": 46}])

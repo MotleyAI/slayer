@@ -1336,9 +1336,7 @@ def _bind_agg_call(
     ) is None:
         raise (GranularityCallError if parsed.agg.lower() == "date_trunc" else ValueError)(parsed.library_error)
     parsed = _classified(parsed, bundle=bundle)
-    bucket = _bind_granularity_call(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
-    if bucket is not None:
-        return bucket
+    _refuse_granularity_call(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
     op = normalize_aggregation_name(parsed.agg)
     custom = [a.name for m in _bundle_models(bundle) for a in m.aggregations]
     if op not in BUILTIN_AGGREGATIONS and match_name(name=parsed.agg, declared=custom, quoted=False) is None:
@@ -1357,23 +1355,20 @@ def _bind_agg_call(
     return _bind_agg(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
 
 
-def _bind_granularity_call(
+def _refuse_granularity_call(
     parsed: AggCall, *,
     scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]],
-) -> Optional[TimeTruncKey]:
-    """A colon bucket for a granularity callee; a granularity no aggregation shadows is refused; else ``None``."""
+) -> None:
+    """A granularity called like a function, unless an aggregation of that name shadows it, is refused."""
     granularity = _callee_granularity(parsed.agg, bundle=bundle)
-    if granularity is None:
-        return None
-    if parsed.colon:
-        return _bind_colon_bucket(parsed, scope=scope, bundle=bundle, granularity=granularity)
-    if _owner_definition(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map) is None:
+    if granularity is not None and _owner_definition(
+        parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+    ) is None:
         raise GranularityCallError.no_call_form(
             str(granularity), operand=", ".join(canonical_measure_text(a) for a in (parsed.source, *parsed.args)),
         )
-    return None
 
 
 _FILTER_CLAUSE = "FILTER (WHERE …)"
@@ -1422,18 +1417,6 @@ def _carrying_filter(key: AggregateKey, *, condition: ValueKey) -> AggregateKey:
     if window_kwarg_of(key) is not None:
         raise _filter_error("cannot combine with window= here; filter the query's rows instead.")
     return key.model_copy(update={"filter": condition})
-
-
-def _bind_colon_bucket(
-    parsed: AggCall, *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle, granularity: Granularity,
-) -> TimeTruncKey:
-    """The colon spelling ``col:gran``: the row-level bucket of ``col``."""
-    if parsed.args or parsed.kwargs or isinstance(parsed.source, StarSource):
-        raise GranularityCallError.wrong_shape(f"{canonical_measure_text(parsed.source)}:{parsed.agg}")
-    return _bind_date_trunc(
-        DateTrunc(unit=str(granularity), value=parsed.source),
-        source=_bind(parsed.source, scope=scope, bundle=bundle, in_filter=False), bundle=bundle,
-    )
 
 
 def _bind_date_trunc(parsed: DateTrunc, *, source: ValueKey, bundle: ResolvedSourceBundle) -> TimeTruncKey:

@@ -31,30 +31,30 @@ def _m(formula: str) -> list[ModelMeasure]:
 def _cases() -> dict:
     G = "customers.regions.countries.gdp"
     return {
-        "cancel/single": {"kw": {"measures": _m(f"{G}:wsum_region_pop")}},
-        "cancel/double": {"kw": {"measures": _m(f"{G}:wsum_cust_spend2")}},
-        "cancel/forward": {"kw": {"measures": _m(f"{G}:wsum_plan_fee")}},
-        "cancel/two_frame": {"kw": {"measures": _m(f"{G}:wsum_two")}},
+        "cancel/single": {"kw": {"measures": _m(f"wsum_region_pop({G})")}},
+        "cancel/double": {"kw": {"measures": _m(f"wsum_cust_spend2({G})")}},
+        "cancel/forward": {"kw": {"measures": _m(f"wsum_plan_fee({G})")}},
+        "cancel/two_frame": {"kw": {"measures": _m(f"wsum_two({G})")}},
         "cancel/events_reverse_hop": {
-            "kw": {"measures": _m("customers.regions.region_events.value:wsum_rp")}},
-        "cancel/owner_at_root": {"kw": {"measures": _m("amount:wself")}},
+            "kw": {"measures": _m("wsum_rp(customers.regions.region_events.value)")}},
+        "cancel/owner_at_root": {"kw": {"measures": _m("wself(amount)")}},
         "cancel/association_expr": {
             "kw": {"dimensions": ["status"], "to_many_handling": "associate",
-                   "measures": _m(f"{G}:wsum_region_pop_expr")}},
+                   "measures": _m(f"wsum_region_pop_expr({G})")}},
         "cancel/windowed_expr": {
             "kw": {"time_dimensions": signup_month_td(),
-                   "measures": _m(f"{G}:wsum_cust_spend2_expr(window='1y')")}},
+                   "measures": _m(f"wsum_cust_spend2_expr({G}, window='1y')")}},
         "cancel/ship_region_extension": {
             "ext": True,
-            "kw": {"measures": _m("ship_region.countries.gdp:wsum_region_pop")}},
+            "kw": {"measures": _m("wsum_region_pop(ship_region.countries.gdp)")}},
         "cancel/second_order_root_frame": {
             "kw": {"measures": _m(
                 "wavg_pop_expr(sum(amount, partition_by=customers.regions.id))")}},
-        "closed/cancel_then_fanning": {"kw": {"measures": _m(f"{G}:wsum_fan")}},
+        "closed/cancel_then_fanning": {"kw": {"measures": _m(f"wsum_fan({G})")}},
         "closed/second_order_nowhere": {
             "kw": {"measures": _m("wnowhere(sum(amount, partition_by=status))")}},
         "closed/query_typed_revisit": {
-            "kw": {"measures": _m("customers.regions.customers.spend:sum")}},
+            "kw": {"measures": _m("sum(customers.regions.customers.spend)")}},
     }
 
 

@@ -49,7 +49,7 @@ def _rows(out: str) -> list:
 EXPLICIT_TD_QUERY = {
     "source_model": "orders",
     "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
-    "measures": [{"formula": "amount:sum"}],
+    "measures": [{"formula": "sum(amount)"}],
 }
 
 
@@ -58,7 +58,7 @@ class TestMcpSurface:
         string_form = await _call(mcp_server, query={
             "source_model": "orders",
             "time_dimensions": ["date_trunc('month', created_at)"],
-            "measures": [{"formula": "amount:sum"}],
+            "measures": [{"formula": "sum(amount)"}],
         }, format="json")
         explicit_form = await _call(
             mcp_server, query=EXPLICIT_TD_QUERY, format="json",
@@ -69,7 +69,7 @@ class TestMcpSurface:
         out = await _call(mcp_server, query={
             "source_model": "orders",
             "dimensions": ["date_trunc('month', created_at)"],
-            "measures": [{"formula": "amount:sum"}],
+            "measures": [{"formula": "sum(amount)"}],
         }, format="json")
         assert {
             r["orders.created_at"]: r["orders.amount_sum"] for r in _rows(out)
@@ -112,7 +112,7 @@ class TestStoredQuerySurface:
             "source_queries": [{
                 "source_model": "orders",
                 "time_dimensions": ["date_trunc('month', created_at)"],
-                "measures": [{"formula": "amount:sum"}],
+                "measures": [{"formula": "sum(amount)"}],
             }],
         })
         await storage.save_model(model)
@@ -128,7 +128,7 @@ class TestRestSurface:
         string_form = rest_client.post("/query", json={
             "source_model": "orders",
             "time_dimensions": ["date_trunc('month', created_at)"],
-            "measures": [{"formula": "amount:sum"}],
+            "measures": [{"formula": "sum(amount)"}],
         })
         assert string_form.status_code == 200, string_form.text
         explicit_form = rest_client.post("/query", json=EXPLICIT_TD_QUERY)
@@ -139,7 +139,7 @@ class TestRestSurface:
         req = QueryRequest.model_validate({
             "source_model": "orders",
             "time_dimensions": ["date_trunc('month', created_at)"],
-            "measures": [{"formula": "amount:sum"}],
+            "measures": [{"formula": "sum(amount)"}],
         })
         query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert query.time_dimensions == [

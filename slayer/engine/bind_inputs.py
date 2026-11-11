@@ -49,12 +49,11 @@ from slayer.core.query import (
     SlayerQuery,
     TimeDimension,
     call_callee,
-    colon_bucket,
     computed_dimension_name,
     functional_call_column,
     granularity_call_parts,
 )
-from slayer.core.refs import bucket_remedy, dotted_key_display, first_bucket_remedy
+from slayer.core.refs import auto_name_from_expression, bucket_remedy, dotted_key_display, first_bucket_remedy
 from slayer.core.time_bounds import is_frame_bound
 from slayer.core.time_points import floor_to
 from slayer.core.scope import (
@@ -123,7 +122,6 @@ from slayer.core.syntax import (
     Ref,
     TransformCall,
     call_keywords,
-    canonical_measure_text,
     dotted_quoting,
     drop_root_qualifier,
     parse_bound_expr,
@@ -332,7 +330,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         )
     check_spine_clash(clash=bundle.spine_clash and is_spine_query(query))
     _check_column_granularities(bundle=bundle)
-    query = _resolve_dimension_calls(query, bundle=bundle)
+    _check_dimension_calls(query, bundle=bundle)
     query = _dedupe_equivalent_time_dimensions(query, scope=scope, bundle=bundle)
 
     # Runs BEFORE binding so the targeted error wins over the binder's generic one.
@@ -1281,8 +1279,8 @@ def _canonical_alias_for_formula(
     root: Optional[str] = None,
 ) -> str:
     """Canonical public alias for a measure formula: ``canonical_aggregate_alias`` for an unfiltered
-    AggregateKey root, else :func:`formula_text_alias` of the canonical text of ``parsed`` with its
-    ``root`` qualifier dropped (so every spelling of one formula derives one alias)."""
+    AggregateKey root, else :func:`formula_text_alias` of ``parsed`` with its ``root`` qualifier dropped (so every
+    spelling of one formula derives one alias)."""
     filtered = parsed is not None and any(
         isinstance(n, AggCall) and n.filter is not None for n in walk_parsed(parsed))
     if bound is not None and isinstance(bound.value_key, AggregateKey) and not filtered:
@@ -1293,7 +1291,9 @@ def _canonical_alias_for_formula(
         if alias is not None:
             return alias
         # None means the source exposes no leaf/column name; use the text-shape path.
-    return formula_text_alias(canonical_measure_text(root_relative(parsed, root)) if parsed is not None else formula.strip())
+    if parsed is None:
+        return auto_name_from_expression(formula.strip())
+    return formula_text_alias(root_relative(parsed, root))
 
 
 def _resolve_shift_units(key: ValueKey, *, bundle: ResolvedSourceBundle) -> ValueKey:
@@ -1333,24 +1333,11 @@ def _check_column_granularities(*, bundle: ResolvedSourceBundle) -> None:
                 )
 
 
-def _resolve_dimension_calls(query: SlayerQuery, *, bundle: ResolvedSourceBundle) -> SlayerQuery:
-    """An unnamed colon ``col:gran`` dimension of a datasource granularity becomes a time dimension; an unnamed
-    single-column call naming no aggregation or granularity fails."""
-    kept: list = []
-    moved: List[TimeDimension] = []
+def _check_dimension_calls(query: SlayerQuery, *, bundle: ResolvedSourceBundle) -> None:
+    """An unnamed single-column call naming no aggregation or granularity fails."""
     for item in query.dimensions or []:
         if isinstance(item, ComputedDimension) and item.name == computed_dimension_name(item.template):
-            colon = colon_bucket(call_callee(item.expression)[0])
-            if colon is not None and resolve_granularity(colon[1], defined=bundle.granularities) is not None:
-                moved.append(TimeDimension.model_validate({"dimension": colon[0], "granularity": colon[1]}))
-                continue
             _check_dimension_call(item.expression, bundle=bundle)
-        kept.append(item)
-    if not moved:
-        return query
-    return query.model_copy(update={
-        "dimensions": kept or None, "time_dimensions": [*(query.time_dimensions or []), *moved],
-    })
 
 
 def _dedupe_equivalent_time_dimensions(

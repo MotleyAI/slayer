@@ -475,7 +475,7 @@ DEFAULT_AGGREGATIONS_BY_TYPE: dict[DataType, frozenset[str]] = {
     DataType.ARRAY: frozenset({"count", "count_distinct"}),
 }
 
-# A sole primary key is restricted to counting and min/max, regardless of data type.
+# A sole primary key is restricted to counting, min/max and collect, regardless of data type.
 PRIMARY_KEY_AGGREGATIONS: frozenset[str] = frozenset({
-    "count", "count_distinct", "count_distinct_approx", "min", "max",
+    "count", "count_distinct", "count_distinct_approx", "min", "max", "collect",
 })

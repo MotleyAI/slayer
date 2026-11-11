@@ -162,7 +162,7 @@ class TestSqlModeRuntime:
         )
         query = SlayerQuery(
             source_model="m",
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
         )
         # This once raised "Unknown filter function 'json_extract'" at enrichment
         # time; it renders — the Mode A model filter survives into the WHERE of
@@ -190,7 +190,7 @@ class TestSqlModeRuntime:
         )
         query = SlayerQuery(
             source_model="m",
-            measures=[ModelMeasure(formula="active_amount:sum")],
+            measures=[ModelMeasure(formula="sum(active_amount)")],
         )
         sql = await _engine_generate(query=query, model=model)
         # The Column.filter goes onto the measure as a CASE WHEN wrapper
@@ -235,7 +235,7 @@ class TestSqlModeRuntime:
         )
         query = SlayerQuery(
             source_model="m",
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         sql = await _engine_generate(
             query=query, model=model, extra_models=[customers, regions],
@@ -288,7 +288,7 @@ class TestSqlModeRejection:
                 name="m",
                 sql_table="t",
                 data_source="test",
-                filters=["cumsum(revenue:sum) > 0"],
+                filters=["cumsum(sum(revenue)) > 0"],
                 columns=columns,
             )
 
@@ -322,26 +322,26 @@ class TestSqlModeRejection:
 class TestDslModeAcceptance:
     """DSL constructs work as before. Ensures the new validators don't over-reject."""
 
-    def test_query_filter_accepts_aggregation_colon(self) -> None:
+    def test_query_filter_accepts_aggregation(self) -> None:
         q = SlayerQuery(
             source_model="orders",
-            filters=["revenue:sum > 100"],
+            filters=["sum(revenue) > 100"],
         )
-        assert q.filters == ["revenue:sum > 100"]
+        assert q.filters == ["sum(revenue) > 100"]
 
     def test_query_filter_accepts_transform_predicate(self) -> None:
         q = SlayerQuery(
             source_model="orders",
-            filters=["change(revenue:sum) > 0"],
+            filters=["change(sum(revenue)) > 0"],
         )
-        assert q.filters == ["change(revenue:sum) > 0"]
+        assert q.filters == ["change(sum(revenue)) > 0"]
 
     def test_query_filter_accepts_nested_transform(self) -> None:
         q = SlayerQuery(
             source_model="orders",
-            filters=["last(change(revenue:sum)) < 0"],
+            filters=["last(change(sum(revenue))) < 0"],
         )
-        assert q.filters == ["last(change(revenue:sum)) < 0"]
+        assert q.filters == ["last(change(sum(revenue))) < 0"]
 
     def test_query_filter_accepts_dotted_join_path(self) -> None:
         q = SlayerQuery(
@@ -360,8 +360,8 @@ class TestDslModeAcceptance:
 
     def test_model_measure_accepts_cross_model_dotted_ref(self) -> None:
         """Cross-model dotted refs in ModelMeasure formulas remain supported (per spec)."""
-        m = ModelMeasure(name="cust_rev", formula="customers.revenue:sum")
-        assert m.formula == "customers.revenue:sum"
+        m = ModelMeasure(name="cust_rev", formula="sum(customers.revenue)")
+        assert m.formula == "sum(customers.revenue)"
 
 
 class TestDslModeRejection:

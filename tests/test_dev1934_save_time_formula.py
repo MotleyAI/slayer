@@ -156,7 +156,7 @@ class TestEngineCheck:
         monkeypatch.setattr(SlayerQueryEngine, "_validate_and_populate_cache", _spy_expand)
         model = SlayerModel(
             name="obs", data_source=_DS,
-            source_queries=[SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="amount:sum")])],
+            source_queries=[SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="sum(amount)")])],
             aggregations=[Aggregation(name="custom_agg", formula=_BROKEN)],
         )
         with pytest.raises(SqlTemplateError, match="custom_agg"):
@@ -176,7 +176,7 @@ class TestEngineCheck:
         # `#` is a comment in MySQL, so `{mask}` is never read there (it is on SQLite).
         model = SlayerModel(
             name="obs", data_source=_DS,
-            source_queries=[SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="amount:sum")])],
+            source_queries=[SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="sum(amount)")])],
             aggregations=[Aggregation.model_validate({
                 "name": "masked", "formula": "SUM({value}) # {mask}",
                 "params": [{"name": "mask", "sql": "1"}],
@@ -287,8 +287,8 @@ class TestRest:
             assert resp.status_code == 400, resp.text
             return resp.json()["detail"]
 
-        twin = detail("amount:custom_agg((bogus=1))")
-        message = detail("amount:custom_agg(bogus=1)")
+        twin = detail("custom_agg(amount, (bogus=1))")
+        message = detail("custom_agg(amount, bogus=1)")
         assert "got 'bogus'" not in message
         assert "==" not in message
         assert ("bogus" in message) == ("bogus" in twin)
@@ -353,14 +353,14 @@ class TestMcp:
         saved = await store.get_model("orders", data_source=_DS)
         assert [a.name for a in saved.aggregations] == ["sum_sq"]
         resp = await engine.execute(SlayerQuery(
-            source_model="orders", measures=[ModelMeasure(formula="amount:sum_sq", name="m")],
+            source_model="orders", measures=[ModelMeasure(formula="sum_sq(amount)", name="m")],
         ))
         assert resp.data[0]["orders.m"] == pytest.approx(13.0)
 
     async def test_create_model_aggregations_with_query_rejected(self, mcp) -> None:
         server, _engine, _store = mcp
         out = await _call(server=server, name="create_model", arguments={
-            "name": "qb", "query": {"source_model": "orders", "measures": ["*:count"]},
+            "name": "qb", "query": {"source_model": "orders", "measures": ["count(*)"]},
             "aggregations": [{"name": "sum_sq", "formula": "SUM({value} * {value})"}],
         })
         assert "Error" in out
@@ -440,7 +440,7 @@ async def test_ranked_formula_rejected_before_backing_query_expansion(
     monkeypatch.setattr(SlayerQueryEngine, "_validate_and_populate_cache", _spy_expand)
     model = SlayerModel(
         name="obs", data_source=_DS,
-        source_queries=[SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="amount:sum")])],
+        source_queries=[SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="sum(amount)")])],
         aggregations=[Aggregation(name="last", formula="MAX({value})")],
     )
     with pytest.raises(AggregationArgumentError, match="ranked aggregation cannot take a formula"):

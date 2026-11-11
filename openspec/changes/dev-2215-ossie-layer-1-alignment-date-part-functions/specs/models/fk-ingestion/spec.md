@@ -6,8 +6,10 @@ indexes that constrain the whole table over plain columns, and SHALL use them fo
 and uniqueness flags, joins and join cardinality, on every SQLAlchemy release the package's
 dependency range allows. On DuckDB the keys SHALL be read from DuckDB's own catalog, never through
 another database's catalog queries, scoped to the table's catalog and schema so a same-named table in
-another attached catalog or schema contributes nothing. A partial unique index, or a unique index with
-an expression member, SHALL NOT count as a key.
+another attached catalog or schema contributes nothing. On SQLite the keys SHALL be read from SQLite's
+own catalog, scoped to the table's schema (`main`, `temp` or an attached database), and no SQLite key
+read SHALL run a statement that fails. A partial unique index, or a unique index with an expression
+member, SHALL NOT count as a key.
 
 #### Scenario: DuckDB demo keeps its joins on a fresh install
 - **WHEN** the bundled Jaffle Shop demo is ingested with the newest SQLAlchemy release the dependency
@@ -39,3 +41,16 @@ an expression member, SHALL NOT count as a key.
 #### Scenario: The host database's generic catalog queries are not consulted on DuckDB
 - **WHEN** SQLAlchemy's generic key reflection raises for every DuckDB table
 - **THEN** DuckDB ingestion still produces every primary key, unique key and join
+
+#### Scenario: SQLite keys are read without a failing statement
+- **WHEN** a SQLite database holding a composite primary key, a `WITHOUT ROWID` table, a foreign key
+  naming no parent columns, a composite foreign key, a UNIQUE constraint, a unique index, a partial
+  unique index, a unique index over a column and an expression, a keyless table and a view is ingested
+- **THEN** every declared key is ingested — the implicit foreign key resolving to the parent's primary
+  key — the partial and the mixed column-and-expression index count as no key, the keyless table and
+  the view have none, and no statement executed while reading keys fails
+
+#### Scenario: SQLite keys are scoped to the table's schema
+- **WHEN** a SQLite database has an attached database holding a same-named table with different keys,
+  and a temporary table with keys
+- **THEN** each location's keys are its own

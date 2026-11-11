@@ -21,7 +21,7 @@ class TestGranularitySuffixedKeys:
         resp = await exec_engine.execute(fx.q(
             source_model="orders",
             dimensions=["date_trunc('month', created_at)", "date_trunc('year', created_at)"],
-            measures=[{"formula": "amount:sum"}],
+            measures=[{"formula": "sum(amount)"}],
         ))
         assert resp.columns == [
             "orders.created_at.month",
@@ -48,7 +48,7 @@ class TestGranularitySuffixedKeys:
             dimensions=[
                 "date_trunc('month', customers.created_at)", "date_trunc('year', customers.created_at)",
             ],
-            measures=[{"formula": "amount:sum"}],
+            measures=[{"formula": "sum(amount)"}],
         ))
         assert resp.columns == [
             "orders.customers.created_at.month",
@@ -73,7 +73,7 @@ class TestGranularitySuffixedKeys:
                 {"dimension": "created_at", "granularity": "month"},
                 {"dimension": "created_at", "granularity": "year"},
             ],
-            measures=[{"formula": "amount:sum"}],
+            measures=[{"formula": "sum(amount)"}],
         ))
         assert resp.columns == [
             "orders.created_at.month",
@@ -86,7 +86,7 @@ class TestGranularitySuffixedKeys:
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "year"}],
             dimensions=["date_trunc('month', created_at)"],
-            measures=[{"formula": "amount:sum"}],
+            measures=[{"formula": "sum(amount)"}],
         ))
         assert set(resp.columns) == {
             "orders.created_at.year",
@@ -98,7 +98,7 @@ class TestGranularitySuffixedKeys:
         resp = await exec_engine.execute(fx.q(
             source_model="orders",
             dimensions=["date_trunc('month', created_at)"],
-            measures=[{"formula": "amount:sum"}],
+            measures=[{"formula": "sum(amount)"}],
         ))
         assert resp.columns == ["orders.created_at", "orders.amount_sum"]
 
@@ -107,7 +107,7 @@ class TestGranularitySuffixedKeys:
         resp = await exec_engine.execute(fx.q(
             source_model="orders",
             dimensions=["date_trunc('year', created_at)", "date_trunc('month', customers.created_at)"],
-            measures=[{"formula": "amount:sum"}],
+            measures=[{"formula": "sum(amount)"}],
         ))
         assert set(resp.columns) == {
             "orders.created_at",
@@ -122,7 +122,7 @@ class TestDuplicateTimeDimensions:
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
             dimensions=["date_trunc('month', created_at)"],
-            measures=[{"formula": "amount:sum"}],
+            measures=[{"formula": "sum(amount)"}],
         )
         assert not q.dimensions, q.dimensions
         assert q.time_dimensions == [
@@ -133,7 +133,7 @@ class TestDuplicateTimeDimensions:
         q = fx.q(
             source_model="orders",
             dimensions=["date_trunc('month', created_at)", "date_trunc('month', created_at)"],
-            measures=[{"formula": "amount:sum"}],
+            measures=[{"formula": "sum(amount)"}],
         )
         assert q.time_dimensions == [
             fx.td(dimension="created_at", granularity="month")
@@ -146,7 +146,7 @@ class TestDuplicateTimeDimensions:
                 {"dimension": "created_at", "granularity": "month"},
                 {"dimension": "created_at", "granularity": "month"},
             ],
-            measures=[{"formula": "amount:sum"}],
+            measures=[{"formula": "sum(amount)"}],
         )
         assert q.time_dimensions == [
             fx.td(dimension="created_at", granularity="month")
@@ -160,7 +160,7 @@ class TestDuplicateTimeDimensions:
         q = fx.q(
             source_model="orders",
             time_dimensions=[dict(entry), dict(entry)],
-            measures=[{"formula": "amount:sum"}],
+            measures=[{"formula": "sum(amount)"}],
         )
         assert q.time_dimensions == [TimeDimension.model_validate(entry)]
 
@@ -169,7 +169,7 @@ class TestDuplicateTimeDimensions:
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
             dimensions=["date_trunc('month', created_at)"],
-            measures=[{"formula": "amount:sum"}],
+            measures=[{"formula": "sum(amount)"}],
         ))
         assert resp.columns == ["orders.created_at", "orders.amount_sum"]
         assert {
@@ -190,7 +190,7 @@ class TestDuplicateTimeDimensions:
                     {"dimension": "created_at", "granularity": "month"},
                     {"dimension": "created_at", "granularity": "month", **metadata},
                 ],
-                measures=[{"formula": "amount:sum"}],
+                measures=[{"formula": "sum(amount)"}],
             )
         msg = str(ei.value)
         assert "created_at" in msg
@@ -205,7 +205,7 @@ class TestDuplicateTimeDimensions:
                 {"dimension": "created_at", "granularity": "month"},
                 {"dimension": "orders.created_at", "granularity": "month"},
             ],
-            measures=[{"formula": "amount:sum"}],
+            measures=[{"formula": "sum(amount)"}],
         )
         assert q.time_dimensions == [
             fx.td(dimension="created_at", granularity="month")
@@ -221,5 +221,5 @@ class TestDuplicateTimeDimensions:
                     {"dimension": "created_at", "granularity": "month", "label": "A"},
                     {"dimension": "orders.created_at", "granularity": "month", "label": "B"},
                 ],
-                measures=[{"formula": "amount:sum"}],
+                measures=[{"formula": "sum(amount)"}],
             )

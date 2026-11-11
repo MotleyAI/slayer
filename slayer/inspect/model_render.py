@@ -1,4 +1,4 @@
-"""Model-render core shared by the ``inspect`` surfaces and the deprecated ``inspect_model`` tool.
+"""Model-render core shared by the ``inspect`` surfaces.
 
 Must NOT import ``slayer.mcp`` — ``mcp/server.py`` imports from here (circular).
 """
@@ -24,7 +24,6 @@ from slayer.core.query import (
 from slayer.live_schema.ingestion import _friendly_db_error
 from slayer.engine.profiling import ensure_samples_fresh
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.search.render import compact_description_from_learning
 from slayer.database.client import ResultColumnType
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
@@ -524,7 +523,7 @@ async def _oriented_hops(
     return neighbors(model=model, models_by_name={**{m.name: m for m in peers}, model.name: model})
 
 
-async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of the inspect_model tool body; the section-gating + cache-miss + dual markdown/json render is intentionally a single linear pass
+async def render_model_inspection(  # NOSONAR(S3776) — the section-gating + cache-miss + dual markdown/json render is intentionally a single linear pass
     *,
     model: SlayerModel,
     storage: StorageBackend,
@@ -534,7 +533,6 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
     format: str = "markdown",
     sections: list[str] | None = None,
     descriptions_max_chars: int | None = None,
-    compact: bool = True,
 ) -> str:
     """Render a complete-yet-compact view of an already-resolved model.
 
@@ -823,16 +821,8 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
             for memory in relevant_learnings:
                 matched = sorted(set(wanted) & set(memory.entities))
                 matched_md = ", ".join(f"`{e}`" for e in matched)
-                if compact:
-                    body = (
-                        memory.description
-                        if memory.description
-                        else compact_description_from_learning(memory.learning)
-                    )
-                else:
-                    body = memory.learning
                 lines.append(
-                    f"- **M{memory.id}** ({matched_md}): {body}"
+                    f"- **M{memory.id}** ({matched_md}): {memory.learning}"
                 )
             out_sections.append("\n".join(lines))
 
@@ -965,34 +955,16 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 payload["sample_sql"] = sample_sql
 
         if "learnings" in included_set and relevant_learnings:
-            if compact:
-                payload["learnings"] = [
-                    {
-                        "id": memory.id,
-                        "description": (
-                            memory.description
-                            if memory.description
-                            else compact_description_from_learning(
-                                memory.learning,
-                            )
-                        ),
-                        "matched_entities": sorted(
-                            set(wanted) & set(memory.entities)
-                        ),
-                    }
-                    for memory in relevant_learnings
-                ]
-            else:
-                payload["learnings"] = [
-                    {
-                        "id": memory.id,
-                        "learning": memory.learning,
-                        "matched_entities": sorted(
-                            set(wanted) & set(memory.entities)
-                        ),
-                    }
-                    for memory in relevant_learnings
-                ]
+            payload["learnings"] = [
+                {
+                    "id": memory.id,
+                    "learning": memory.learning,
+                    "matched_entities": sorted(
+                        set(wanted) & set(memory.entities)
+                    ),
+                }
+                for memory in relevant_learnings
+            ]
 
         if saved_queries:
             payload["saved_queries"] = saved_queries

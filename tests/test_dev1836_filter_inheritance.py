@@ -33,8 +33,8 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="amount:sum", name="m")
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
+M = ModelMeasure(formula="sum(amount)", name="m")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
 
 
 class TestAttributableRowFilters:
@@ -110,7 +110,7 @@ class TestAggregatePhaseRouting:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.tier"], measures=[M, CM],
-            filters=["customers.spend:sum > 100"],
+            filters=["sum(customers.spend) > 100"],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.customers.tier")
@@ -131,7 +131,7 @@ class TestAggregatePhaseRouting:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"], measures=[M],
-            filters=["amount:sum > 30"],
+            filters=["sum(amount) > 30"],
         ))
         by = rows_by(resp, "orders.customers.tier")
         assert set(by) == {("gold",), ("bronze",)}

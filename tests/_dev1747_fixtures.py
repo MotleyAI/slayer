@@ -13,7 +13,7 @@ What lives here:
   accident. The names are deliberately not the group names, so a test reading
   the wrong column fails rather than coincidentally matching.
 * **A 1:N fan-out table** (``order_tags``) so the DEV-1735 containment claim is
-  testable: ordering by a tag name must not multiply a sibling ``amount:sum``.
+  testable: ordering by a tag name must not multiply a sibling ``sum(amount)``.
   Order 1 carries three tags; every other order carries one.
 * **A NULL joined name** (region 4) so null-ordering has real data to sort.
 * **Model builders** — :func:`dev1747_models` (SQLite-shaped, bare

@@ -184,7 +184,7 @@ class TestBandedDimensionOpacity:
         planned = plan_query(
             query=sales_q(
                 dimensions=[{"expression": MIXED_BAND_EXPR, "name": "mixed_band"}],
-                measures=[ModelMeasure(formula="amount:sum", name="tot")]),
+                measures=[ModelMeasure(formula="sum(amount)", name="tot")]),
             bundle=_bundle())
         assert len(planned.regroup_attach_plans) == 1
 

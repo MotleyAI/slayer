@@ -47,8 +47,8 @@ from tests._dev1840_fixtures import (
 
 _SETTING = "allow_experimental_correlated_subqueries"
 
-M = ModelMeasure(formula="amount:sum", name="m")
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
+M = ModelMeasure(formula="sum(amount)", name="m")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
 
 PUSHED = q(dimensions=["customers.tier"], measures=[M, CM],
            filters=["channel = 'app'"])

@@ -67,7 +67,7 @@ def _crossing_grain_query() -> SlayerQuery:
         source_model="orders_x",
         dimensions=[ColumnRef(name="customers_v2.deep_pop")],
         measures=[ModelMeasure(
-            formula="customers_v2.lifetime_value:first", name="f",
+            formula="first(customers_v2.lifetime_value)", name="f",
         )],
     )
 
@@ -76,7 +76,7 @@ def _crossing_value_query() -> SlayerQuery:
     return SlayerQuery(
         source_model="orders_x",
         dimensions=[ColumnRef(name="customers_v2.status")],
-        measures=[ModelMeasure(formula="customers_v2.deep_weight:first", name="f")],
+        measures=[ModelMeasure(formula="first(customers_v2.deep_weight)", name="f")],
     )
 
 
@@ -85,8 +85,8 @@ def _two_distinct_crossing_values_query() -> SlayerQuery:
         source_model="orders_x",
         dimensions=[ColumnRef(name="customers_v2.status")],
         measures=[
-            ModelMeasure(formula="customers_v2.deep_weight:first", name="w"),
-            ModelMeasure(formula="customers_v2.deep_pop:first", name="p"),
+            ModelMeasure(formula="first(customers_v2.deep_weight)", name="w"),
+            ModelMeasure(formula="first(customers_v2.deep_pop)", name="p"),
         ],
     )
 
@@ -227,7 +227,7 @@ class TestDedupParity:
             source_model="orders_x",
             dimensions=[ColumnRef(name="customers_v2.deep_weight")],
             measures=[ModelMeasure(
-                formula="customers_v2.deep_weight:first", name="f",
+                formula="first(customers_v2.deep_weight)", name="f",
             )],
         )
         sql = await _gen(query, dialect="postgres")
@@ -246,8 +246,8 @@ class TestDedupParity:
             source_model="orders_x",
             dimensions=[ColumnRef(name="customers_v2.status")],
             measures=[
-                ModelMeasure(formula="customers_v2.deep_weight:first", name="a"),
-                ModelMeasure(formula="customers_v2.deep_weight:last", name="b"),
+                ModelMeasure(formula="first(customers_v2.deep_weight)", name="a"),
+                ModelMeasure(formula="last(customers_v2.deep_weight)", name="b"),
             ],
         )
         sql = await _gen(query, dialect="postgres")
@@ -275,7 +275,7 @@ class TestRankedPathUsesTheOneMaterialiser:
         return SlayerQuery(
             source_model="orders_x",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="cust_ltv:first", name="f")],
+            measures=[ModelMeasure(formula="first(cust_ltv)", name="f")],
         )
 
     async def test_local_first_last_still_materialises_correctly(self) -> None:

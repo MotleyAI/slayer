@@ -73,7 +73,7 @@ def _seeded_in_memory_engine(
     workspace: Path, *, rows: int,
 ) -> tuple[SlayerQueryEngine, SlayerSQLClient]:
     """Query engine over an in-memory datasource whose db is seeded through the
-    client's own (StaticPool-shared) engine, registered under its real key."""
+    client's own (one-connection) engine, registered under its real key."""
     ds = _mem_ds("mem")
     storage = YAMLStorage(base_dir=str(workspace / "mem_store"))
     asyncio.run(storage.save_datasource(ds))
@@ -106,7 +106,7 @@ def _dispose_spy():
     an instance-level patch applied afterwards would miss the latter (D4).
 
     Calls through to the real dispose so the connection actually closes — a plain
-    mock would leave the private StaticPool connection open, leaking it on 3.13+.
+    mock would leave the private in-memory connection open, leaking it on 3.13+.
     """
     real = sa.engine.base.Engine.dispose
     with patch.object(sa.engine.base.Engine, "dispose", autospec=True) as spy:
@@ -265,10 +265,10 @@ class TestQueryEngineClose:
         db = workspace / "reuse.db"
         _seed_counter(db, rows=3)
         engine = _file_engine(db)
-        first = engine.execute_sync(SlayerQuery(source_model="t", measures=["*:count"]))  # type: ignore[arg-type]
+        first = engine.execute_sync(SlayerQuery(source_model="t", measures=["count(*)"]))  # type: ignore[arg-type]
         assert first.data[0]["t._count"] == 3
         engine.close()
-        again = engine.execute_sync(SlayerQuery(source_model="t", measures=["*:count"]))  # type: ignore[arg-type]
+        again = engine.execute_sync(SlayerQuery(source_model="t", measures=["count(*)"]))  # type: ignore[arg-type]
         assert again.data[0]["t._count"] == 3
 
     def test_in_memory_query_engine_rebuilds_empty_after_close(self, workspace: Path) -> None:
@@ -277,12 +277,12 @@ class TestQueryEngineClose:
         trace of the seeded table, then a re-seeded query succeeds."""
         engine_factory.reset_cache()
         engine, _client = _seeded_in_memory_engine(workspace, rows=2)
-        seeded = asyncio.run(engine.execute(SlayerQuery(source_model="t", measures=["*:count"])))  # type: ignore[arg-type]
+        seeded = asyncio.run(engine.execute(SlayerQuery(source_model="t", measures=["count(*)"])))  # type: ignore[arg-type]
         assert seeded.data[0]["t._count"] == 2
         engine.close()
         assert engine._sql_clients == {}
         # The fresh in-memory db is empty — the seeded table is specifically gone.
-        empty_probe = engine.execute(SlayerQuery(source_model="t", measures=["*:count"]))  # type: ignore[arg-type]
+        empty_probe = engine.execute(SlayerQuery(source_model="t", measures=["count(*)"]))  # type: ignore[arg-type]
         with pytest.raises(Exception) as excinfo:  # NOSONAR(S5958) — DB error type varies (schema-drift vs no-such-table across the path); the message asserted next is the contract
             asyncio.run(empty_probe)
         assert "no such table" in str(excinfo.value).lower()
@@ -296,7 +296,7 @@ class TestQueryEngineClose:
             conn.exec_driver_sql("INSERT INTO t (v) VALUES (5)")
             conn.commit()
         engine._sql_clients[client_cache_key(ds)] = fresh
-        reused = asyncio.run(engine.execute(SlayerQuery(source_model="t", measures=["*:count"])))  # type: ignore[arg-type]
+        reused = asyncio.run(engine.execute(SlayerQuery(source_model="t", measures=["count(*)"])))  # type: ignore[arg-type]
         assert reused.data[0]["t._count"] == 1
         engine_factory.reset_cache()
 

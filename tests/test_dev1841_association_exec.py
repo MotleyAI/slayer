@@ -1,5 +1,5 @@
 """DEV-1841 task 4.1 — distinct-entity association, executed values on SQLite +
-DuckDB: cross-model, multi-hop, ``*:count``, median, measure-local filter,
+DuckDB: cross-model, multi-hop, ``count(*)``, median, measure-local filter,
 mode-invariance of attributable slices, and cardinality neutrality.
 
 Spec: openspec …/specs/queries/attribution-modes — "Distinct-entity association
@@ -31,8 +31,8 @@ from tests._dev1841_fixtures import (
     status_key,
 )
 
-M = ModelMeasure(formula="amount:sum", name="m")
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
+M = ModelMeasure(formula="sum(amount)", name="m")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -72,7 +72,7 @@ class TestCrossModelAssociation:
         _, engine = exec_backend
         resp = await engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.*:count", name="nc")]))
+            measures=[ModelMeasure(formula="count(customers.*)", name="nc")]))
         by = status_key(resp)
         for status, n in ASSOC_COUNT_BY_STATUS.items():
             assert int(by[(status,)]["orders.nc"]) == n
@@ -83,13 +83,13 @@ class TestCrossModelAssociation:
         """DEV-1832: a non-star ``count`` over a filtered association column counts
         only the entities whose masked value is non-NULL (COUNT(_v)), NOT every
         associated entity (COUNT(*)). ``gold_spend`` masks ``spend`` to gold tier,
-        so ``gold_spend:count`` = distinct GOLD customers/cell — a strict subset of
-        ``customers.*:count`` (ok 5 / new 3). The pre-fix COUNT(*) would return the
+        so ``count(gold_spend)`` = distinct GOLD customers/cell — a strict subset of
+        ``count(customers.*)`` (ok 5 / new 3). The pre-fix COUNT(*) would return the
         full population."""
         _, engine = exec_backend_ext
         resp = await engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.gold_spend:count", name="gc")]))
+            measures=[ModelMeasure(formula="count(customers.gold_spend)", name="gc")]))
         by = status_key(resp)
         # gold (c1,c3,c6) with an ok order: c1,c3,c6 → 3; with a new order: c1 → 1.
         for status, n in {"ok": 3, "new": 1}.items():
@@ -101,7 +101,7 @@ class TestCrossModelAssociation:
         _, engine = exec_backend
         resp = await engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.spend:median", name="med")]))
+            measures=[ModelMeasure(formula="median(customers.spend)", name="med")]))
         by = status_key(resp)
         for status, med in ASSOC_MEDIAN_BY_STATUS.items():
             assert float(by[(status,)]["orders.med"]) == pytest.approx(med)
@@ -112,7 +112,7 @@ class TestCrossModelAssociation:
         _, engine = exec_backend
         resp = await engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.regions.pop:sum",
+            measures=[ModelMeasure(formula="sum(customers.regions.pop)",
                                    name="pop")]))
         by = status_key(resp)
         for status, pop in ASSOC_POP_BY_STATUS.items():
@@ -131,7 +131,7 @@ class TestCrossModelAssociation:
         _, engine = exec_backend
         resp = await engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula=f"customers.spend:{agg}", name="v")]))
+            measures=[ModelMeasure(formula=f"{agg}(customers.spend)", name="v")]))
         by = status_key(resp)
         for status, val in expected.items():
             assert float(by[(status,)]["orders.v"]) == pytest.approx(val)
@@ -178,7 +178,7 @@ class TestMeasureLocalFilter:
         _, engine = exec_backend_ext
         resp = await engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.gold_spend:sum",
+            measures=[ModelMeasure(formula="sum(customers.gold_spend)",
                                    name="gs")]))
         by = status_key(resp)
         assert set(by) == {("ok",), ("new",)}

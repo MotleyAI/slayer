@@ -49,20 +49,23 @@ class TestPushdownWithoutDeclaredReverseJoin:
     async def test_semi_join_over_the_inverted_default_left_edge(
         self, fwd_engine,
     ) -> None:
-        resp = await fwd_engine.execute(SlayerQuery(
-            source_model="orders", filters=["status = 'ok'"],
-            measures=[{"formula": "customers.spend:sum", "name": "cs"}]))
+        resp = await fwd_engine.execute(SlayerQuery.model_validate({
+            "source_model": "orders",
+            "filters": ["status = 'ok'"],
+            "measures": [{"formula": "sum(customers.spend)", "name": "cs"}],
+        }))
         assert len(resp.data) == 1
         assert resp.data[0]["orders.cs"] == pytest.approx(CHAIN_PUSHDOWN_OK_SPEND)
 
 
 class TestAmbiguousCorrelationFailsClosed:
     def _query(self, *, to_many_handling: str = "broadcast") -> SlayerQuery:
-        return SlayerQuery(
-            source_model="customers",
-            measures=[{"formula": "regions.pop:sum", "name": "rp"}],
-            filters=["orders.status = 'ok'"],
-            to_many_handling=to_many_handling)
+        return SlayerQuery.model_validate({
+            "source_model": "customers",
+            "measures": [{"formula": "sum(regions.pop)", "name": "rp"}],
+            "filters": ["orders.status = 'ok'"],
+            "to_many_handling": to_many_handling,
+        })
 
     async def test_lenient_mode_errors_instead_of_drop_and_warn(
         self, unnamed_engine,
@@ -89,7 +92,7 @@ class TestNamedEdgeTargetPathPushesDown:
         # (which is ambiguous across the billing/shipping pair).
         resp = await named_engine.execute(SlayerQuery(
             source_model="orders", filters=["status = 'ok'"],
-            measures=[{"formula": "billing_customer.spend:sum",
+            measures=[{"formula": "sum(billing_customer.spend)",
                        "name": "cs"}]))
         assert len(resp.data) == 1
         # Billing customers with an ok order: Alice (o1) 100 + Bob (o3) 150.
@@ -102,7 +105,7 @@ class TestNamedEdgeTargetPathPushesDown:
         # bind to the reverse chain node, not resolve the token as a model.
         resp = await named_engine.execute(SlayerQuery(
             source_model="orders",
-            measures=[{"formula": "billing_customer.regions.pop:sum",
+            measures=[{"formula": "sum(billing_customer.regions.pop)",
                        "name": "rp"}],
             filters=["billing_customer.tier = 'gold'"]))
         assert len(resp.data) == 1
@@ -116,10 +119,11 @@ class TestNamedEdgeCarriesTheCorrelation:
     ) -> None:
         # Customers with an ok billing order: Alice, Bob — both North.
         # North's pop counts once (never join-multiplied); South is excluded.
-        resp = await named_engine.execute(SlayerQuery(
-            source_model="customers",
-            measures=[{"formula": "regions.pop:sum", "name": "rp"}],
-            filters=["billing_customer.status = 'ok'"]))
+        resp = await named_engine.execute(SlayerQuery.model_validate({
+            "source_model": "customers",
+            "measures": [{"formula": "sum(regions.pop)", "name": "rp"}],
+            "filters": ["billing_customer.status = 'ok'"],
+        }))
         assert len(resp.data) == 1
         assert resp.data[0]["customers.rp"] == \
             pytest.approx(PARALLEL_PUSHDOWN_BILLING_OK_POP)
@@ -134,7 +138,7 @@ class TestReverseRoundTripComposes:
             assert customers is not None
             customers.measures = [
                 *customers.measures,
-                ModelMeasure(name="order_total", formula="orders.amount:sum"),
+                ModelMeasure(name="order_total", formula="sum(orders.amount)"),
             ]
             await storage.save_model(customers)
             query = SlayerQuery(

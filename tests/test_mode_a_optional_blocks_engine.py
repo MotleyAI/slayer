@@ -70,7 +70,7 @@ def _block_model() -> SlayerModel:
 async def test_optional_block_collapses_to_unfiltered_when_missing():
     engine, tmp = await _engine_with(_block_model())
     try:
-        q = SlayerQuery(source_model="orders", measures=[{"formula": "amount:sum"}])
+        q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
         resp = await engine.execute(q)
         assert _sum(resp, "orders.amount_sum") == 735.0
     finally:
@@ -80,11 +80,11 @@ async def test_optional_block_collapses_to_unfiltered_when_missing():
 async def test_optional_block_filters_with_in_list_when_present():
     engine, tmp = await _engine_with(_block_model())
     try:
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:sum"}],
-            variables={"regions": ["US", "CA"]},
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)"}],
+            "variables": {"regions": ["US", "CA"]},
+        })
         resp = await engine.execute(q)
         assert _sum(resp, "orders.amount_sum") == 460.0  # US 160 + CA 300
     finally:
@@ -94,11 +94,11 @@ async def test_optional_block_filters_with_in_list_when_present():
 async def test_optional_block_single_value_list():
     engine, tmp = await _engine_with(_block_model())
     try:
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:sum"}],
-            variables={"regions": ["EU"]},
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)"}],
+            "variables": {"regions": ["EU"]},
+        })
         resp = await engine.execute(q)
         assert _sum(resp, "orders.amount_sum") == 275.0
     finally:
@@ -119,11 +119,11 @@ async def test_required_var_alongside_block_raises_and_names_it():
     )
     engine, tmp = await _engine_with(model)
     try:
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:sum"}],
-            variables={"regions": ["US"]},  # min_amount omitted
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)"}],
+            "variables": {"regions": ["US"]},
+        })
         with pytest.raises(Exception, match="min_amount"):
             await engine.execute(q)
     finally:
@@ -131,7 +131,7 @@ async def test_required_var_alongside_block_raises_and_names_it():
 
 
 async def test_dimension_query_over_block_model_resolves_types():
-    # Exercises get_column_types: blocks must collapse under the defaults probe.
+    # Exercises get_result_column_types: blocks must collapse under the defaults probe.
     engine, tmp = await _engine_with(_block_model())
     try:
         q = SlayerQuery(source_model="orders", dimensions=["region"])
@@ -182,14 +182,14 @@ async def test_bare_var_default_satisfies_required_at_runtime():
     )
     engine, tmp = await _engine_with(model)
     try:
-        q = SlayerQuery(source_model="orders", measures=[{"formula": "amount:sum"}])
+        q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
         resp = await engine.execute(q)
         assert _sum(resp, "orders.amount_sum") == 275.0  # EU only
     finally:
         tmp.cleanup()
 
 
-async def test_get_column_types_probes_scalar_and_date_and_list_contexts():
+async def test_get_result_column_types_probes_scalar_and_date_and_list_contexts():
     # The defaults probe must yield valid SQL across all optional-context shapes:
     # a scalar-cast block, a date-range block, and an IN-list block.
     model = SlayerModel(
@@ -209,7 +209,7 @@ async def test_get_column_types_probes_scalar_and_date_and_list_contexts():
     engine, tmp = await _engine_with(model)
     try:
         # All optional blocks collapse under the empty defaults probe -> valid SQL.
-        types = await engine.get_column_types("orders")
+        types = await engine.get_result_column_types("orders")
         assert isinstance(types, dict)  # degrades gracefully, never raises
     finally:
         tmp.cleanup()

@@ -24,8 +24,6 @@ from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._pg_helpers import pg_database
 
-pytestmark = pytest.mark.filterwarnings("ignore::FutureWarning")
-
 # Clean paths: an unclosed connection or transport fails the test.
 _NO_LEAKS = pytest.mark.filterwarnings(
     "error::ResourceWarning", "error::pytest.PytestUnraisableExceptionWarning",
@@ -127,7 +125,7 @@ async def test_query_engine_execute_sync_inside_a_running_loop(pg_ds: Datasource
         columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
     ), _validate=False)
     engine = SlayerQueryEngine(storage=storage)
-    query = SlayerQuery.model_validate({"source_model": "orders", "measures": ["*:count"]})
+    query = SlayerQuery.model_validate({"source_model": "orders", "measures": ["count(*)"]})
     try:
         awaited = await engine.execute(query)
         bridged = engine.execute_sync(query)

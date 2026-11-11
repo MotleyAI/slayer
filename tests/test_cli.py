@@ -115,7 +115,6 @@ class TestRunQueryFileLoading:
             variables=None,
             variables_json=None,
             storage=str(tmp_path / "storage"),
-            models_dir=None,
             dry_run=False,
             explain=False,
             format="table",
@@ -165,7 +164,7 @@ class TestRunQueryRefine:
     def _args(self, query_input: str, store: str) -> SimpleNamespace:
         return SimpleNamespace(
             query_json=query_input, refine='{"dimensions": ["region"]}', variables=None,
-            variables_json=None, storage=store, models_dir=None, dry_run=False, explain=False, format="json",
+            variables_json=None, storage=store, dry_run=False, explain=False, format="json",
         )
 
     def test_rejected_with_json_query(self, store: str) -> None:

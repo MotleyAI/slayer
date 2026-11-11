@@ -36,8 +36,9 @@ from slayer.core.models import (
 )
 from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery, TimeDimension
 from slayer.live_schema import ingestion
-from slayer.live_schema.ingestion import ingest_datasource, ingest_datasource_idempotent
-from slayer.engine.query_engine import SlayerQueryEngine, run_over_caller_engine
+from slayer.live_schema.ingestion import ingest_datasource_idempotent
+from slayer.live_schema.schema_drift import IdempotentIngestResult
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.importers.column_types import LiveDatasource, LiveSource
 from slayer.database import client, engine_factory
 from slayer.database.client import ResultColumnType
@@ -258,6 +259,16 @@ async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
         sql_client.close()
 
 
+def _ingest_idempotent(*, datasource: DatasourceConfig, storage: YAMLStorage,
+                       **scope: Any) -> IdempotentIngestResult:
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        return engine.run_sync(ingest_datasource_idempotent(datasource=datasource, storage=storage,
+                                                            client=engine.client_for(datasource), **scope))
+    finally:
+        engine.close()
+
+
 @pytest.fixture
 def sf_engine(sf_datasource: DatasourceConfig, sf_transient_schema):
     """An ``sa.Engine`` for the transient schema.
@@ -347,7 +358,7 @@ def test_basic_query(sf_storage_with_models) -> None:
     engine = SlayerQueryEngine(storage=sf_storage_with_models)
     result = run_sync(engine.execute(SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="quantity:sum")],
+        measures=[ModelMeasure(formula="sum(quantity)")],
     )))
     rows = result.data
     assert len(rows) == 1
@@ -360,19 +371,13 @@ def test_try_cast_integer_targets(sf_storage_with_models) -> None:
     run_sync(check_try_cast_targets(SlayerQueryEngine(storage=sf_storage_with_models), model="orders"))
 
 
-def test_functional_aggregation_parity(sf_storage_with_models) -> None:
-    """sum(quantity) returns the same value as quantity:sum."""
+def test_functional_aggregation(sf_storage_with_models) -> None:
     engine = SlayerQueryEngine(storage=sf_storage_with_models)
-    colon = run_sync(engine.execute(SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="quantity:sum")],
-    )))
     func = run_sync(engine.execute(SlayerQuery(
         source_model="orders",
         measures=[ModelMeasure(formula="sum(quantity)")],
     )))
     assert int(next(iter(func.data[0].values()))) == 16
-    assert func.data == colon.data
 
 
 def test_query_with_dimension(sf_storage_with_models) -> None:
@@ -381,7 +386,7 @@ def test_query_with_dimension(sf_storage_with_models) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         source_model="orders",
         dimensions=[ColumnRef(name="status")],
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
     )))
     rows = result.data
     statuses = {row.get("orders.status") for row in rows}
@@ -403,7 +408,7 @@ def test_dev1933_regex_literal_extension_column(sf_storage_with_models) -> None:
             )],
         ),
         dimensions=[ColumnRef(name="rx")],
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
     )))
     by_rx = {int(r["orders.rx"]): r["orders._count"] for r in result.data}
     assert by_rx == {1: 2, 0: 4}
@@ -420,7 +425,7 @@ def test_rollup_join_via_explicit_joins(sf_storage_with_models) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         source_model="orders",
         dimensions=[ColumnRef(name="customers.regions.name")],
-        measures=[ModelMeasure(formula="quantity:sum")],
+        measures=[ModelMeasure(formula="sum(quantity)")],
     )))
     rows = result.data
     region_names = {row.get("orders.customers.regions.name") for row in rows}
@@ -438,8 +443,8 @@ def test_median_percentile_native(sf_storage_with_models) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         source_model="orders",
         measures=[
-            ModelMeasure(formula="quantity:median"),
-            ModelMeasure(formula="quantity:percentile(p=0.5)"),
+            ModelMeasure(formula="median(quantity)"),
+            ModelMeasure(formula="percentile(quantity, p=0.5)"),
         ],
     )))
     rows = result.data
@@ -457,8 +462,8 @@ def test_stddev_var_native(sf_storage_with_models) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         source_model="orders",
         measures=[
-            ModelMeasure(formula="quantity:stddev_samp"),
-            ModelMeasure(formula="quantity:var_samp"),
+            ModelMeasure(formula="stddev_samp(quantity)"),
+            ModelMeasure(formula="var_samp(quantity)"),
         ],
     )))
     rows = result.data
@@ -474,8 +479,8 @@ def test_corr_covar_native(sf_storage_with_models) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         source_model="orders",
         measures=[
-            ModelMeasure(formula="quantity:corr(other=customer_id)"),
-            ModelMeasure(formula="quantity:covar_samp(other=customer_id)"),
+            ModelMeasure(formula="corr(quantity, other=customer_id)"),
+            ModelMeasure(formula="covar_samp(quantity, other=customer_id)"),
         ],
     )))
     rows = result.data
@@ -494,7 +499,7 @@ def test_date_trunc_quarter(sf_storage_with_models) -> None:
             dimension="created_at",
             granularity=TimeGranularity.QUARTER,
         )],
-        measures=[ModelMeasure(formula="quantity:sum")],
+        measures=[ModelMeasure(formula="sum(quantity)")],
     )))
     rows = result.data
     # All orders are in Q1 2024 → exactly one row.
@@ -511,8 +516,8 @@ def test_time_shift_dateadd(sf_storage_with_models) -> None:
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
-            ModelMeasure(formula="quantity:sum"),
-            ModelMeasure(formula="time_shift(quantity:sum, -1, 'month')", name="prev_month"),
+            ModelMeasure(formula="sum(quantity)"),
+            ModelMeasure(formula="time_shift(sum(quantity), -1, 'month')", name="prev_month"),
         ],
     )))
     rows = result.data
@@ -527,10 +532,10 @@ def test_rank_transforms(sf_storage_with_models) -> None:
         source_model="orders",
         dimensions=[ColumnRef(name="status")],
         measures=[
-            ModelMeasure(formula="quantity:sum"),
-            ModelMeasure(formula="rank(quantity:sum, direction='desc')", name="qty_rank"),
-            ModelMeasure(formula="dense_rank(quantity:sum, direction='desc')", name="qty_dense_rank"),
-            ModelMeasure(formula="ntile(quantity:sum, n=2)", name="qty_bucket"),
+            ModelMeasure(formula="sum(quantity)"),
+            ModelMeasure(formula="rank(sum(quantity), direction='desc')", name="qty_rank"),
+            ModelMeasure(formula="dense_rank(sum(quantity), direction='desc')", name="qty_dense_rank"),
+            ModelMeasure(formula="ntile(sum(quantity), n=2)", name="qty_bucket"),
         ],
     )))
     rows = result.data
@@ -773,7 +778,7 @@ def test_explain_query_uses_explain_using_json(sf_storage_with_models) -> None:
     result = run_sync(engine.execute(
         query=SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="quantity:sum")],
+            measures=[ModelMeasure(formula="sum(quantity)")],
         ),
         explain=True,
     ))
@@ -863,7 +868,7 @@ def test_query_result_keys_use_lowercase(sf_storage_with_models) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         source_model="orders",
         dimensions=[ColumnRef(name="status")],
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
     )))
     rows = result.data
     assert rows
@@ -928,7 +933,7 @@ def test_dev1645_mixed_case_column_executes(sf_dev1645_storage) -> None:
     engine = SlayerQueryEngine(storage=sf_dev1645_storage)
     result = run_sync(engine.execute(SlayerQuery(
         source_model="dev1645_accounts",
-        measures=[ModelMeasure(formula="*:count", name="cnt")],
+        measures=[ModelMeasure(formula="count(*)", name="cnt")],
         filters=["is_inactive == True"],
     )))
     assert result.data[0]["dev1645_accounts.cnt"] == 2
@@ -963,7 +968,7 @@ def sf_dev2120_storage(sf_transient_schema: str, sf_datasource: DatasourceConfig
         base = lib_model(data_source="sf_test")
         run_sync(storage.save_model(base.model_copy(update={
             "columns": [c.model_copy(update={"sql": c.name}) for c in base.columns]})))
-        for model in ingest_datasource(datasource=sf_datasource, include_tables=["docs"]):
+        for model in run_sync(_ingest(sf_datasource, include_tables=["docs"])):
             run_sync(storage.save_model(model))
         yield storage
     finally:
@@ -1032,7 +1037,7 @@ def sf_lists(_sf_list_tables, sf_datasource: DatasourceConfig, tmp_path):
 
 
 def _elements(datasource: DatasourceConfig, table: str) -> dict[str, tuple[DataType, DataType | None]]:
-    (model,) = ingest_datasource(datasource=datasource, include_tables=[table])
+    (model,) = run_sync(_ingest(datasource, include_tables=[table]))
     return {c.name: (c.type, c.element_type) for c in model.columns if c.name != "id"}
 
 
@@ -1074,7 +1079,7 @@ def test_structured_array_needs_no_inference_query(sf_lists, sf_datasource: Data
 ])
 def test_list_functions_on_a_structured_array(sf_lists, sf_datasource: DatasourceConfig, filters, kept) -> None:
     storage, _ = sf_lists
-    (model,) = ingest_datasource(datasource=sf_datasource, include_tables=["structured"])
+    (model,) = run_sync(_ingest(sf_datasource, include_tables=["structured"]))
     run_sync(storage.save_model(model))
     resp = run_sync(SlayerQueryEngine(storage=storage).execute(
         {"source_model": "structured", "dimensions": ["id"], "filters": filters}))
@@ -1085,10 +1090,10 @@ def test_reingest_reinfers_only_unknown_elements(sf_lists, sf_datasource: Dataso
     storage, cur = sf_lists
     cur.execute("CREATE OR REPLACE TABLE reingested CLONE inferred")  # a private copy: the seeded tables stay read-only
     try:
-        for model in ingest_datasource(datasource=sf_datasource, include_tables=["reingested"]):
+        for model in run_sync(_ingest(sf_datasource, include_tables=["reingested"])):
             run_sync(storage.save_model(model))
         cur.execute("INSERT INTO reingested SELECT 2, ARRAY_CONSTRUCT('x'), NULL, NULL, ARRAY_CONSTRUCT(7)")
-        run_sync(ingest_datasource_idempotent(datasource=sf_datasource, storage=storage, include_tables=["reingested"]))
+        _ingest_idempotent(datasource=sf_datasource, storage=storage, include_tables=["reingested"])
         model = run_sync(storage.get_model("reingested", data_source="sf_test"))
     finally:
         cur.execute("DROP TABLE IF EXISTS reingested")
@@ -1193,15 +1198,20 @@ def test_quoted_lowercase_table_ingests_types_and_queries(sf_datasource, sf_engi
     try:
         live = LiveDatasource(offline_reason=None, data_source="sf_test", db_type="snowflake", dialect="snowflake")
         sql_table = f'{sf_transient_schema}."lower_items"'
-        run_over_caller_engine(sf_engine, data_source="sf_test", work=lambda client: live.collect(
-            client=client, convert=lambda: live.source(sql_table=sql_table)))
+        caller = SlayerQueryEngine(storage=YAMLStorage(base_dir=str(tmp_path / "caller")),
+                                   client_factory=lambda ds: client.SlayerSQLClient(datasource=ds, sa_engine=sf_engine))
+        try:
+            caller.run_sync(live.collect(client=caller.client_for(sf_datasource),
+                                         convert=lambda: live.source(sql_table=sql_table)))
+        finally:
+            caller.close()
         source = live.source(sql_table=sql_table)
         assert isinstance(source, LiveSource)
         assert source.column("qty") == (DataType.INT, None)
         storage = YAMLStorage(base_dir=str(tmp_path))
         run_sync(storage.save_datasource(sf_datasource))
-        run_sync(ingest_datasource_idempotent(datasource=sf_datasource, storage=storage, schema=sf_transient_schema,
-                                              include_tables=["lower_items"]))
+        _ingest_idempotent(datasource=sf_datasource, storage=storage, schema=sf_transient_schema,
+                           include_tables=["lower_items"])
         model = run_sync(storage.get_model("lower_items"))
         assert model is not None
         assert model.sql_table == f'{sf_transient_schema}."lower_items"'

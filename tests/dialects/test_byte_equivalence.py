@@ -41,7 +41,7 @@ async def _gen(dialect: str, query: SlayerQuery, model: SlayerModel) -> str:
 
 _BASIC_QUERY = SlayerQuery(
     source_model="orders",
-    measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="revenue:sum")],
+    measures=[ModelMeasure(formula="count(*)"), ModelMeasure(formula="sum(revenue)")],
     dimensions=[ColumnRef(name="status")],
 )
 
@@ -147,7 +147,7 @@ async def test_byte_equivalence_basic_query(
 
 _TRUNC_QUERY = SlayerQuery(
     source_model="orders",
-    measures=[ModelMeasure(formula="revenue:sum")],
+    measures=[ModelMeasure(formula="sum(revenue)")],
     time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
 )
 
@@ -242,7 +242,7 @@ async def test_byte_equivalence_date_trunc_month(
 
 _MEDIAN_QUERY = SlayerQuery(
     source_model="orders",
-    measures=[ModelMeasure(formula="revenue:median")],
+    measures=[ModelMeasure(formula="median(revenue)")],
     dimensions=[ColumnRef(name="status")],
 )
 
@@ -325,7 +325,7 @@ def test_byte_equivalence_median_tsql_raises(orders_model: SlayerModel) -> None:
 
 _PCT_QUERY = SlayerQuery(
     source_model="orders",
-    measures=[ModelMeasure(formula="revenue:percentile(p=0.95)")],
+    measures=[ModelMeasure(formula="percentile(revenue, p=0.95)")],
     dimensions=[ColumnRef(name="status")],
 )
 
@@ -397,7 +397,7 @@ async def test_byte_equivalence_percentile(
 
 _CORR_QUERY = SlayerQuery(
     source_model="orders",
-    measures=[ModelMeasure(formula="revenue:corr(other=quantity)")],
+    measures=[ModelMeasure(formula="corr(revenue, other=quantity)")],
     dimensions=[ColumnRef(name="status")],
 )
 
@@ -455,7 +455,7 @@ async def test_byte_equivalence_corr_tsql_decomposition(
 _TIME_SHIFT_QUERY = SlayerQuery(
     source_model="orders",
     measures=[
-        ModelMeasure(formula="time_shift(revenue:sum, -1, 'month')", name="rev_prev"),
+        ModelMeasure(formula="time_shift(sum(revenue), -1, 'month')", name="rev_prev"),
     ],
     time_dimensions=[
         TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH),
@@ -505,7 +505,7 @@ async def test_byte_equivalence_time_shift_tsql(orders_model: SlayerModel) -> No
 _CUMSUM_QUERY = SlayerQuery(
     source_model="orders",
     measures=[
-        ModelMeasure(formula="cumsum(revenue:sum)", name="cum_rev"),
+        ModelMeasure(formula="cumsum(sum(revenue))", name="cum_rev"),
     ],
     time_dimensions=[
         TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH),
@@ -562,7 +562,7 @@ def orders_model_with_json() -> SlayerModel:
 
 _JSON_QUERY = SlayerQuery(
     source_model="orders",
-    measures=[ModelMeasure(formula="*:count")],
+    measures=[ModelMeasure(formula="count(*)")],
     dimensions=[ColumnRef(name="json_data")],
 )
 

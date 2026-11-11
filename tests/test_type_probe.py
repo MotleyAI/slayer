@@ -26,7 +26,6 @@ from slayer.database.client import (
     SlayerSQLClient,
     TypeProbe,
     UnparseableTypeProbeError,
-    get_column_types_sync,
     get_result_column_types_sync,
     render_type_probe,
     sql_model_trial_query,
@@ -131,7 +130,7 @@ def test_door_executes_the_probe_verbatim(sqlite_engine: sa.Engine) -> None:
     seen: list[str] = []
     event.listen(sqlite_engine, "before_cursor_execute", lambda _c, _cur, statement, *_a: seen.append(statement))
     probe = render_type_probe(exp.select("a", "b").from_("t"), dialect=SqliteDialect())
-    assert get_column_types_sync(probe, engine=sqlite_engine, db_type="sqlite") == {"a": "number", "b": "string"}
+    assert get_result_column_types_sync(probe, engine=sqlite_engine, db_type="sqlite") == _TYPED
     statement, *census = seen
     assert statement == probe.sql
     assert census == [probe.census_sql(["a", "b"], dialect=SqliteDialect())]
@@ -275,7 +274,7 @@ async def _captured_engine_probe(ds_type: str) -> str:
             client = MagicMock()
             client.get_result_column_types = capture
             engine._sql_clients[client_cache_key(ds)] = client
-            await engine.get_column_types("orders")
+            await engine.get_result_column_types("orders")
     (probe,) = seen
     assert isinstance(probe, TypeProbe)
     return probe.sql
@@ -314,10 +313,10 @@ async def test_engine_probe_applies_the_session_policy(tmp_path: Path) -> None:
 
     try:
         with patch.object(SlayerSQLClient, "get_result_column_types", spy):
-            types = await engine.get_column_types("orders")
+            types = await engine.get_result_column_types("orders")
     finally:
         engine.close()
-    assert types.get("revenue") == "number"
+    assert types["revenue"].type == DataType.DOUBLE
     (sql,) = seen
     assert "secret-org" in sql
     assert sql.endswith(") AS _types LIMIT 1")

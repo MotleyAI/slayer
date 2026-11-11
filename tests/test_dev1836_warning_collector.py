@@ -33,9 +33,9 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="amount:sum", name="m")
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
-POP = ModelMeasure(formula="customers.regions.pop:sum", name="pop")
+M = ModelMeasure(formula="sum(amount)", name="m")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+POP = ModelMeasure(formula="sum(customers.regions.pop)", name="pop")
 
 
 #: Outside DEV-1840 pushdown scope for EVERY producer root here (the OR mixes
@@ -89,7 +89,7 @@ class TestPushedFilterEntryIdentity:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=[{
-                "expression": ("CASE WHEN customers.regions.pop:sum("
+                "expression": ("CASE WHEN sum(customers.regions.pop, "
                                "partition_by=customers.regions.name) > 150 "
                                "THEN 'hi' ELSE 'lo' END"),
                 "name": "pband",
@@ -113,8 +113,8 @@ class TestBroadcastDedup:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["status"], measures=[M, CM, POP],
-            filters=["customers.spend:sum > 0"],
-            order=[OrderItem(column="customers.spend:sum", direction="desc")],
+            filters=["sum(customers.spend) > 0"],
+            order=[OrderItem.model_validate({"column": "sum(customers.spend)", "direction": "desc"})],
         ))
         warnings = broadcast_warnings(resp)
         assert len(warnings) == 2

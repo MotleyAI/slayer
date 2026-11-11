@@ -90,7 +90,7 @@ def test_rest_returns_no_backing_sql() -> None:
 
 
 async def test_dry_run_renders_the_sql(storage: StorageBackend) -> None:
-    response = await run(storage, {"source_model": "rev", "measures": [{"formula": "rev:sum"}]}, dry_run=True)
+    response = await run(storage, {"source_model": "rev", "measures": [{"formula": "sum(rev)"}]}, dry_run=True)
     assert response.sql is not None
     assert "orders" in response.sql
     assert "stale_marker" not in response.sql

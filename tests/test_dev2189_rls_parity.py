@@ -287,7 +287,7 @@ async def test_the_type_probe_fails_closed_to_no_types(kind: str, monkeypatch: p
         async with file_engine("sqlite") as (base, _):
             engine = await _scoped_engine(base, kind, monkeypatch)
             try:
-                types = await engine.get_column_types("orders")
+                types = await engine.get_result_column_types("orders")
             finally:
                 engine.close()
     assert types == {}

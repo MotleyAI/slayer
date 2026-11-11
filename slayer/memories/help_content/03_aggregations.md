@@ -22,7 +22,7 @@ one of its parameters (`weighted_avg(x, weight = qty)`) and a comparison otherwi
 named like a parameter. In a scalar function (`iif(status = 'paid', …)`) `=` compares.
 
 A sole primary-key column only takes `count`, `count_distinct`,
-`count_distinct_approx`, `min` and `max`; a column's `allowed_aggregations` may
+`count_distinct_approx`, `min`, `max` and `collect`; a column's `allowed_aggregations` may
 restrict it further. Expressions are not gated: `sum(price * quantity)` works.
 
 ## Expressions and booleans

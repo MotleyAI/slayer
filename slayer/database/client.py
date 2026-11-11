@@ -31,9 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from slayer import async_utils
 from slayer.async_utils import on_caller_thread, run_sync
-from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import DataType
-from slayer.core.errors import ExplainUnsupportedError
 from slayer.core.models import DatasourceConfig
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
 from slayer.database import engine_factory
@@ -221,11 +219,6 @@ def _types_from_cursor(result: Any, *, dialect: SqlDialect) -> dict[str, ResultC
         first = dict(zip(columns, rows[0])) if rows else {}
         types = {name: t or _first_value_type(first.get(name)) for name, t in types.items()}
     return {name: t or _TEXT for name, t in types.items()}
-
-
-def type_categories(types: dict[str, ResultColumnType], *, dialect: SqlDialect) -> dict[str, str]:
-    """The 1.6.0 categories (``number`` / ``string`` / ``time`` / ``boolean``) of typed probe results."""
-    return {name: dialect.legacy_type_categories.category(column) for name, column in types.items()}
 
 
 async def _run_sync_in_thread(func, *args, **kwargs):
@@ -627,20 +620,6 @@ def get_result_column_types_sync(
             _close_probe_transaction(conn, autocommit=autocommit)
 
 
-def get_column_types_sync(
-    sql: str, *, engine: sa.Engine, db_type: str | None = None, datasource_name: str | None = None,
-) -> dict[str, str]:
-    """Deprecated: the 1.5.0 category probe over an existing engine; use ``get_result_column_types_sync``."""
-    warn_deprecated(
-        "get_column_types_sync() returns 1.5.0 type categories and is removed in SLayer 2.0; "
-        "use get_result_column_types_sync(), which returns SLayer types and database type names.",
-        removal="2.0",
-    )
-    return type_categories(get_result_column_types_sync(
-        sql, engine=engine, db_type=db_type, datasource_name=datasource_name,
-    ), dialect=dialect_for_ds_type(db_type))
-
-
 async def _get_result_column_types_async(
     probe: TypeProbe,
     *,
@@ -732,6 +711,8 @@ class SlayerSQLClient:
         # Guards the per-loop registry; never held across engine construction or disposal.
         self._async_lock = threading.Lock()
         self._sync_engine: sa.Engine | None = sa_engine
+        # Serializes the lazy first build, so concurrent first calls share one engine (one in-memory database).
+        self._sync_engine_lock = threading.Lock()
         self._sync_engine_owner: EngineOwner | None = "caller" if sa_engine is not None else None
         # Backstop disposing a client-owned engine when the client is collected unclosed.
         self._sync_engine_finalizer: weakref.finalize | None = None
@@ -843,16 +824,6 @@ class SlayerSQLClient:
             return None
         return self._get_async_engine()
 
-    def _warn_bundled_driver(self, url: URL) -> None:
-        facts = self._dialect.driver_facts(self.datasource.type)
-        if facts.bundled_non_default(url):
-            warn_deprecated(
-                f"motley-slayer[{facts.install_extra}] stops installing {url.get_driver_name()} in 2.0; "
-                "depend on it directly.",
-                removal="2.0",
-                stacklevel=3,
-            )
-
     def _get_async_engine(self) -> AsyncEngine:
         """The running loop's async engine, built on first use there."""
         loop = asyncio.get_running_loop()
@@ -866,7 +837,6 @@ class SlayerSQLClient:
         conn_str = ds.get_connection_string()
         connection_policy.check_transaction_pooler_backend(ds, url=conn_str)
         load_driver(ds, conn_str, dialect=self._dialect, is_async=True)
-        self._warn_bundled_driver(make_url(conn_str))
         built = create_async_engine(conn_str, **connection_policy.engine_kwargs(
             url=conn_str, dialect=self._dialect, datasource=ds, is_async=True,
         ))
@@ -885,12 +855,19 @@ class SlayerSQLClient:
     def _get_sync_engine_for_client(self) -> sa.Engine:
         """Return a per-client sync engine.
 
-        In-memory SQLite gets a private StaticPool engine (isolated per client),
+        In-memory SQLite gets a private one-connection engine (isolated per client),
         owned and disposed here with a finalizer backstop; everything else
         delegates to engine_factory, which owns and disposes it.
         """
         if self._sync_engine is not None:
             return self._sync_engine
+        with self._sync_engine_lock:
+            if self._sync_engine is not None:
+                return self._sync_engine
+            return self._build_sync_engine()
+
+    def _build_sync_engine(self) -> sa.Engine:
+        """Build and retain this client's sync engine; the caller holds ``_sync_engine_lock``."""
         ds = self._connection_datasource()
         conn_str = ds.get_connection_string()
         connection_policy.check_transaction_pooler_backend(ds, url=conn_str)
@@ -904,8 +881,6 @@ class SlayerSQLClient:
             return engine
         self._sync_engine = engine_factory.get_engine(ds)
         self._sync_engine_owner = "factory"
-        with contextlib.suppress(ArgumentError):
-            self._warn_bundled_driver(make_url(conn_str))
         return self._sync_engine
 
     async def _blocking(self, func: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
@@ -1047,15 +1022,6 @@ class SlayerSQLClient:
             datasource_name=self.datasource.name,
             transaction_local=self.datasource.transaction_pooler,
         )
-
-    async def get_column_types(self, sql: str) -> dict[str, str]:
-        """Deprecated: the 1.5.0 category probe; use ``get_result_column_types``."""
-        warn_deprecated(
-            "SlayerSQLClient.get_column_types() returns 1.5.0 type categories and is removed in SLayer 2.0; "
-            "use get_result_column_types(), which returns SLayer types and database type names.",
-            removal="2.0",
-        )
-        return type_categories(await self.get_result_column_types(sql), dialect=self._dialect)
 
     async def server_profile(self) -> ServerProfile:
         """The server's profile for this client's engine, probed once per engine."""
@@ -1786,17 +1752,6 @@ class DelegatingSqlClient:
     async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
         return await self.inner.get_result_column_types(sql)
 
-    async def get_column_types(self, sql: str) -> dict[str, str]:
-        """Deprecated: the 1.6.0 category probe; use ``get_result_column_types``."""
-        warn_deprecated(
-            "DelegatingSqlClient.get_column_types() returns 1.6.0 type categories and is removed in SLayer 2.0; "
-            "use get_result_column_types(), which returns SLayer types and database type names.",
-            removal="2.0",
-        )
-        return type_categories(
-            await self.inner.get_result_column_types(sql), dialect=dialect_for_ds_type(self.datasource.type),
-        )
-
     async def server_profile(self) -> ServerProfile:
         return await self.inner.server_profile()
 
@@ -1848,61 +1803,3 @@ class BorrowedSqlClient(DelegatingSqlClient):
 
     def close(self) -> None:
         """No-op: the lender closes ``inner``."""
-
-
-_CATEGORY_TYPES = {
-    "number": DataType.DOUBLE, "string": DataType.TEXT, "time": DataType.TIMESTAMP, "boolean": DataType.BOOLEAN,
-}
-
-
-class _CategoryProbeClient(DelegatingSqlClient):
-    """A client written for 1.6.0, whose type probe is ``get_column_types``: its categories read as types."""
-
-    async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
-        warn_deprecated(
-            "A SQL client's get_column_types() is the 1.6.0 type probe and is no longer called in SLayer 2.0; "
-            "implement get_result_column_types(), which returns SLayer types and database type names.",
-            removal="2.0",
-        )
-        categories: dict[str, str] = await self.inner.get_column_types(sql)  # pyright: ignore[reportAttributeAccessIssue]
-        return {name: ResultColumnType(type=_CATEGORY_TYPES.get(c, DataType.TEXT)) for name, c in categories.items()}
-
-
-class _ExecuteExplainClient(DelegatingSqlClient):
-    """A client written before ``explain``: a single-statement explain runs through its ``execute``."""
-
-    async def explain(self, statements: ExplainStatements) -> ExecutionResult:
-        if statements.session_on is not None:
-            raise ExplainUnsupportedError(
-                f"The {self.datasource.type} EXPLAIN switches session plan mode, which a SQL client without explain() "
-                "cannot run; implement explain(statements)."
-            )
-        warn_deprecated(
-            "A SQL client without explain() has EXPLAIN run through its execute(), which stops in SLayer 2.0; "
-            "implement explain(statements).",
-            removal="2.0",
-        )
-        return await self.inner.execute(statements.statement)
-
-
-def _overridden(client: DelegatingSqlClient, name: str) -> bool:
-    return getattr(type(client), name) is not getattr(DelegatingSqlClient, name)
-
-
-def _served(client: SqlClient, name: str) -> bool:
-    """Whether a client not built on ``DelegatingSqlClient`` has its own ``name``, not the protocol stub."""
-    method = getattr(client, name, None)
-    return method is not None and getattr(method, "__func__", None) is not getattr(SqlClient, name)
-
-
-def adapt_client(client: SqlClient) -> SqlClient:
-    """``client``, wrapped to serve through its older forms what it serves only that way: the 1.6.0
-    ``get_column_types`` probe, and EXPLAIN through ``execute``."""
-    if isinstance(client, DelegatingSqlClient):
-        probe_160 = not _overridden(client, "get_result_column_types") and _overridden(client, "get_column_types")
-        explains = _overridden(client, "explain") or not _overridden(client, "execute")
-    else:
-        probe_160 = not _served(client, "get_result_column_types") and hasattr(client, "get_column_types")
-        explains = _served(client, "explain")
-    adapted = _CategoryProbeClient(client) if probe_160 else client
-    return adapted if explains else _ExecuteExplainClient(adapted)

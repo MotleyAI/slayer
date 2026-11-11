@@ -46,7 +46,7 @@ def storage(request: pytest.FixtureRequest) -> Iterator[StorageBackend]:
 def sample_query() -> SlayerQuery:
     return SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
     )
 
 
@@ -113,7 +113,7 @@ class TestMemoryCRUD:
         assert loaded.query.source_model == "orders"
         assert loaded.query.measures is not None
         assert len(loaded.query.measures) == 1
-        assert loaded.query.measures[0].formula == "*:count"
+        assert loaded.query.measures[0].formula == "count(*)"
 
     async def test_get_missing_raises(self, storage: StorageBackend) -> None:
         with pytest.raises(MemoryNotFoundError):

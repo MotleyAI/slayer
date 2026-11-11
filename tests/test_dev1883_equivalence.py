@@ -19,7 +19,7 @@ def _functional() -> SlayerQuery:
     return fx.q(
         source_model="orders",
         dimensions=["date_trunc('month', created_at)"],
-        measures=[{"formula": "amount:sum"}],
+        measures=[{"formula": "sum(amount)"}],
     )
 
 
@@ -27,7 +27,7 @@ def _explicit() -> SlayerQuery:
     return fx.q(
         source_model="orders",
         time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-        measures=[{"formula": "amount:sum"}],
+        measures=[{"formula": "sum(amount)"}],
     )
 
 
@@ -51,7 +51,7 @@ class TestEquivalence:
         string_form = fx.q(
             source_model="orders",
             time_dimensions=["date_trunc('month', created_at)"],
-            measures=[{"formula": "amount:sum"}],
+            measures=[{"formula": "sum(amount)"}],
         )
         functional = await engine.execute(string_form, dry_run=True)
         explicit = await engine.execute(_explicit(), dry_run=True)
@@ -66,7 +66,7 @@ class TestEquivalence:
             source_model="orders",
             dimensions=["date_trunc('month', created_at)", "date_trunc('year', customers.created_at)"],
             main_time_dimension="created_at",
-            measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],
+            measures=[{"formula": "cumsum(sum(amount))", "name": "cs"}],
         ), dry_run=True)
         explicit = await engine.execute(fx.q(
             source_model="orders",
@@ -75,7 +75,7 @@ class TestEquivalence:
                 {"dimension": "customers.created_at", "granularity": "year"},
             ],
             main_time_dimension="created_at",
-            measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],
+            measures=[{"formula": "cumsum(sum(amount))", "name": "cs"}],
         ), dry_run=True)
         assert functional.sql == explicit.sql
 
@@ -83,13 +83,13 @@ class TestEquivalence:
         functional = await engine.execute(fx.q(
             source_model="orders",
             dimensions=["date_trunc('month', created_at)"],
-            measures=[{"formula": "amount:sum"}],
+            measures=[{"formula": "sum(amount)"}],
             whole_periods_only=True,
         ), dry_run=True)
         explicit = await engine.execute(fx.q(
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=[{"formula": "amount:sum"}],
+            measures=[{"formula": "sum(amount)"}],
             whole_periods_only=True,
         ), dry_run=True)
         assert functional.sql == explicit.sql
@@ -98,14 +98,14 @@ class TestEquivalence:
         functional = await exec_engine.execute(fx.q(
             source_model="orders",
             dimensions=["date_trunc('month', customers.created_at)"],
-            measures=[{"formula": "amount:sum"}],
+            measures=[{"formula": "sum(amount)"}],
         ))
         explicit = await exec_engine.execute(fx.q(
             source_model="orders",
             time_dimensions=[
                 {"dimension": "customers.created_at", "granularity": "month"}
             ],
-            measures=[{"formula": "amount:sum"}],
+            measures=[{"formula": "sum(amount)"}],
         ))
         assert functional.columns == explicit.columns
         assert functional.data == explicit.data

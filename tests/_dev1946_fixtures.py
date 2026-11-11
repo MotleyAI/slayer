@@ -34,29 +34,29 @@ from tests._dev1919_fixtures import RANKED, ranked_by_tier, ranked_global
 # --------------------------------------------------------------------------- #
 # Formula constants (one per delta scenario shape).
 # --------------------------------------------------------------------------- #
-RANKED_POSITIONAL = ("customers.spend:weighted_avg("
+RANKED_POSITIONAL = ("weighted_avg(customers.spend, "
                      "rank(sum(amount, partition_by=customers.regions.name), direction='desc'))")
-LAST_PARAM = ("customers.spend:weighted_avg(weight=last(sum(amount, "
+LAST_PARAM = ("weighted_avg(customers.spend, weight=last(sum(amount, "
               "partition_by=[customers.regions.name, ordered_at])))")
-DET_CUMSUM = ("customers.spend:weighted_avg(weight=cumsum(sum(amount, "
+DET_CUMSUM = ("weighted_avg(customers.spend, weight=cumsum(sum(amount, "
               "partition_by=[customers.regions.name, customers.signup_at])))")
-NOAXIS_CUMSUM = ("customers.spend:weighted_avg(weight=cumsum(sum(amount, "
+NOAXIS_CUMSUM = ("weighted_avg(customers.spend, weight=cumsum(sum(amount, "
                  "partition_by=customers.regions.name)))")
-UNGRAINED_RANK = "customers.spend:weighted_avg(weight=rank(sum(amount), direction='desc'))"
-WINDOWED_INNER = ("customers.spend:weighted_avg(weight=rank(sum(amount, "
+UNGRAINED_RANK = "weighted_avg(customers.spend, weight=rank(sum(amount), direction='desc'))"
+WINDOWED_INNER = ("weighted_avg(customers.spend, weight=rank(sum(amount, "
                   "window='1y', partition_by=customers.regions.name), direction='desc'))")
-WINDOWED_OUTER = ("customers.spend:weighted_avg(window='1y', "
+WINDOWED_OUTER = ("weighted_avg(customers.spend, window='1y', "
                   "weight=rank(sum(amount, partition_by=customers.regions.name), direction='desc'))")
-NESTED = ("customers.spend:weighted_avg(weight=weighted_avg(amount, "
+NESTED = ("weighted_avg(customers.spend, weight=weighted_avg(amount, "
           "weight=rank(sum(amount, partition_by=customers.regions.name), direction='desc'), "
           "partition_by=customers.regions.name))")
-XMODEL_LOCAL = ("amount:weighted_avg(weight=rank(sum(customers.spend, "
+XMODEL_LOCAL = ("weighted_avg(amount, weight=rank(sum(customers.spend, "
                 "partition_by=customers.regions.name), direction='desc'))")
-OWN_PARTITION = ("customers.spend:weighted_avg(weight=rank("
+OWN_PARTITION = ("weighted_avg(customers.spend, weight=rank("
                  "sum(amount, partition_by=[customers.regions.name, customers.tier]), "
                  "partition_by=customers.regions.name, direction='desc'))")
 #: refused at bind: a transform is not a valid first/last ranking key.
-LAST_RANK_KEY = ("customers.spend:last(rank(sum(amount, "
+LAST_RANK_KEY = ("last(customers.spend, rank(sum(amount, "
                  "partition_by=customers.regions.name), direction='desc'))")
 #: refused at bind (non-goal): an expression-valued parameter.
 EXPR_ARG = "weighted_avg(amount, weight=quantity * 2)"

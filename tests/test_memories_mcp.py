@@ -114,7 +114,7 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
                     type=DataType.DOUBLE,
                 ),
             ],
-            measures=[ModelMeasure(formula="amount:sum / *:count", name="aov")],
+            measures=[ModelMeasure(formula="sum(amount) / count(*)", name="aov")],
             aggregations=[
                 Aggregation(
                     name="weighted_score",
@@ -213,7 +213,7 @@ class TestSaveMemoryEntityList:
             arguments={
                 "learning": "n",
                 "linked_entities": [
-                    "orders.amount:sum",
+                    "sum(orders.amount)",
                     "mydb.orders.amount",
                     "status",
                 ],
@@ -279,7 +279,7 @@ class TestSaveMemoryQuery:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
             filters=["status = 'paid'"],
         )
         result = await _call(
@@ -306,7 +306,7 @@ class TestSaveMemoryQuery:
     ) -> None:
         query_dict = {
             "source_model": "orders",
-            "measures": [{"formula": "*:count"}],
+            "measures": [{"formula": "count(*)"}],
         }
         result = await _call(
             mcp_server,
@@ -327,7 +327,7 @@ class TestSaveMemoryQuery:
     ) -> None:
         query = SlayerQuery(
             source_model="customers",
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         result = await _call(
             mcp_server,

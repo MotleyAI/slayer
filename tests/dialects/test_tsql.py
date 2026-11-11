@@ -12,7 +12,6 @@ from sqlglot import exp
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.errors import ExplainUnsupportedError
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -183,15 +182,6 @@ def test_tsql_build_covar_2arg_covar_pop_uses_varp() -> None:
     assert "VARP" in sql
 
 
-# build_explain_sql — deprecated; SHOWPLAN is session state it cannot express
-
-
-def test_tsql_build_explain_sql_refuses() -> None:
-    dialect = TsqlDialect()
-    with pytest.warns(FutureWarning, match="explain_statements"), pytest.raises(ExplainUnsupportedError):
-        dialect.build_explain_sql("SELECT 1")
-
-
 # Outer wrap: T-SQL accepts WITH only as a statement prefix, so the chain's CTEs
 # sit on the statement and pagination is TOP / OFFSET … FETCH.
 
@@ -210,8 +200,8 @@ async def _tsql(query) -> str:
 
 def _plain_hidden_order(**kw) -> SlayerQuery:
     """A no-transform query whose hidden ORDER BY slot forces the outer trim wrap."""
-    return q(dimensions=["status"], measures=["amount:sum"],
-             order=[{"column": "amount:max", "direction": "desc"}], **kw)
+    return q(dimensions=["status"], measures=["sum(amount)"],
+             order=[{"column": "max(amount)", "direction": "desc"}], **kw)
 
 
 async def test_tsql_chain_ctes_are_hoisted_to_the_statement() -> None:
@@ -264,7 +254,7 @@ async def test_tsql_chain_with_order_and_offset() -> None:
 
 async def test_tsql_hidden_alias_in_order_by() -> None:
     """ORDER BY may name a carried alias that is not in the public projection."""
-    sql = await _tsql(cumsum_chain(order=[{"column": "amount:max", "direction": "desc"}]))
+    sql = await _tsql(cumsum_chain(order=[{"column": "max(amount)", "direction": "desc"}]))
     top = parse(sql, "tsql")
     assert [c.name for c in top.args["order"].find_all(exp.Column)] == ["orders___amount_max"]
     assert "orders___amount_max" in outer_derived(top).named_selects
@@ -273,8 +263,8 @@ async def test_tsql_hidden_alias_in_order_by() -> None:
 
 async def test_tsql_hoisted_ctes_keep_dependency_order() -> None:
     sql = await _tsql(cumsum_chain(measures=[
-        {"formula": "cumsum(amount:sum)", "name": "running"},
-        {"formula": "change(cumsum(amount:sum))", "name": "d"},
+        {"formula": "cumsum(sum(amount))", "name": "running"},
+        {"formula": "change(cumsum(sum(amount)))", "name": "d"},
     ]))
     names = cte_names(assert_single_top_level_with(sql, "tsql"))
     assert names[0] == "base", names
@@ -434,16 +424,16 @@ class TestEngineTsqlDecodeIntegration:
 
     async def test_non_empty_rows_decoded_in_response(self) -> None:
         # ``orders.status`` encodes to ``orders___status``.
-        # ``*:count`` measure alias ``orders._count`` encodes to
+        # ``count(*)`` measure alias ``orders._count`` encodes to
         # ``orders____count`` (3 underscores from the dot + 1 leading).
         rows = [{"orders____count": 42, "orders___status": "paid"}]
         engine, tmp, _ = await _build_tsql_engine(rows)
         try:
-            query = SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "*:count"}],
-                dimensions=[ColumnRef(name="status")],
-            )
+            query = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "count(*)"}],
+                "dimensions": [ColumnRef(name="status")],
+            })
             resp = await engine.execute(query)
             assert resp.data == [{"orders._count": 42, "orders.status": "paid"}]
         finally:
@@ -452,11 +442,11 @@ class TestEngineTsqlDecodeIntegration:
     async def test_empty_rows_response_falls_back_to_expected_columns(self) -> None:
         engine, tmp, _ = await _build_tsql_engine(rows=[])
         try:
-            query = SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "*:count"}],
-                dimensions=[ColumnRef(name="status")],
-            )
+            query = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "count(*)"}],
+                "dimensions": [ColumnRef(name="status")],
+            })
             resp = await engine.execute(query)
             assert resp.data == []
             assert "orders._count" in resp.columns
@@ -555,7 +545,7 @@ def _orders_model_tsql() -> SlayerModel:
 
 
 async def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
-    """``change_pct(total:sum)`` builds shifted/self-join/step CTEs."""
+    """``change_pct(sum(total))`` builds shifted/self-join/step CTEs."""
     q = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
@@ -564,8 +554,8 @@ async def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
             date_range=["2024-03-01", "2024-03-31"],
         )],
         measures=[
-            ModelMeasure(formula="total:sum"),
-            ModelMeasure(formula="change_pct(total:sum)", name="pct"),
+            ModelMeasure(formula="sum(total)"),
+            ModelMeasure(formula="change_pct(sum(total))", name="pct"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )

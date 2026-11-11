@@ -14,9 +14,8 @@ from slayer.core.query import SlayerQuery, extract_model_variables
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.js_parser import parse_cube_js
 from slayer.cube.models import CubeProject
-from slayer.engine.query_engine import SlayerQueryEngine, run_over_caller_engine
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._engine_helpers import disposable_engine
 
 duckdb = pytest.importorskip("duckdb")
 
@@ -51,13 +50,13 @@ def _seed(db_path: str) -> None:
     con.close()
 
 
-async def _import_and_engine(tmp_path):
+@pytest.fixture
+async def imported(tmp_path):
     db_path = str(tmp_path / "rr.duckdb")
     _seed(db_path)
     storage = YAMLStorage(base_dir=str(tmp_path / "store"))
-    await storage.save_datasource(
-        DatasourceConfig(name="rr_ds", type="duckdb", database=db_path)
-    )
+    datasource = DatasourceConfig(name="rr_ds", type="duckdb", database=db_path)
+    await storage.save_datasource(datasource)
     with open(_FIXTURE, encoding="utf-8") as fh:
         source = fh.read()
     parsed = parse_cube_js(source)
@@ -67,13 +66,17 @@ async def _import_and_engine(tmp_path):
         project=CubeProject(cubes=parsed.cubes, views=parsed.views),
         data_source="rr_ds", parse_issues=parsed.issues,
     )
-    with disposable_engine(f"duckdb:///{db_path}") as sa_engine:
-        run_over_caller_engine(sa_engine, data_source="rr_ds", work=lambda c: converter.collect_metadata(client=c))
-    result = converter.convert()
-    assert not result.report.has_errors, [i.message for i in result.report.issues if i.severity == "error"]
-    model = next(m for m in result.models if m.name == "RrDrivers")
-    await storage.save_model(model)
-    return SlayerQueryEngine(storage=storage), model
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        await converter.collect_metadata(client=engine.client_for(datasource))
+        result = converter.convert()
+        assert not result.report.has_errors, [i.message for i in result.report.issues if i.severity == "error"]
+        model = next(m for m in result.models if m.name == "RrDrivers")
+        await storage.save_model(model)
+        yield engine, model
+    finally:
+        await engine.aclose()
+        engine.close()
 
 
 def _sole_value(resp):
@@ -81,15 +84,15 @@ def _sole_value(resp):
     return next(iter(resp.data[0].values()))
 
 
-async def test_import_yields_expected_variable_contract(tmp_path):
-    _, model = await _import_and_engine(tmp_path)
+async def test_import_yields_expected_variable_contract(imported):
+    _, model = imported
     v = extract_model_variables(model)
     assert set(v.required) == {"fulfillment_date_from", "fulfillment_date_to"}
     assert set(v.optional) == {"brand", "market", "category"}
 
 
-async def test_count_with_optional_omitted_is_unfiltered(tmp_path):
-    engine, _ = await _import_and_engine(tmp_path)
+async def test_count_with_optional_omitted_is_unfiltered(imported):
+    engine, _ = imported
     q = SlayerQuery(
         source_model="RrDrivers", measures=[{"formula": "count"}], variables=_FULL_VARS,
     )
@@ -97,8 +100,8 @@ async def test_count_with_optional_omitted_is_unfiltered(tmp_path):
     assert _sole_value(resp) == 3
 
 
-async def test_count_with_brand_pushdown(tmp_path):
-    engine, _ = await _import_and_engine(tmp_path)
+async def test_count_with_brand_pushdown(imported):
+    engine, _ = imported
     q = SlayerQuery(
         source_model="RrDrivers", measures=[{"formula": "count"}],
         variables={**_FULL_VARS, "brand": ["Acme"]},
@@ -107,13 +110,13 @@ async def test_count_with_brand_pushdown(tmp_path):
     assert _sole_value(resp) == 2
 
 
-async def test_count_with_scalar_brand_pushdown(tmp_path):
+async def test_count_with_scalar_brand_pushdown(imported):
     """A bare scalar for an importer-generated ``IN ({var})`` pushdown must
     behave exactly like the one-element list — the importer wrote the
     parentheses, so the caller has nowhere to put the quotes. Without the
     declared-list coercion this renders ``IN (Acme)`` and DuckDB fails on the
     unknown column reference."""
-    engine, _ = await _import_and_engine(tmp_path)
+    engine, _ = imported
     q = SlayerQuery(
         source_model="RrDrivers", measures=[{"formula": "count"}],
         variables={**_FULL_VARS, "brand": "Acme"},
@@ -122,8 +125,8 @@ async def test_count_with_scalar_brand_pushdown(tmp_path):
     assert _sole_value(resp) == 2
 
 
-async def test_scalar_and_list_pushdowns_agree(tmp_path):
-    engine, _ = await _import_and_engine(tmp_path)
+async def test_scalar_and_list_pushdowns_agree(imported):
+    engine, _ = imported
 
     async def _count(brand):
         q = SlayerQuery(
@@ -135,8 +138,8 @@ async def test_scalar_and_list_pushdowns_agree(tmp_path):
     assert await _count("Zeta") == await _count(["Zeta"]) == 1
 
 
-async def test_grouped_max_measure(tmp_path):
-    engine, _ = await _import_and_engine(tmp_path)
+async def test_grouped_max_measure(imported):
+    engine, _ = imported
     q = SlayerQuery(
         source_model="RrDrivers", dimensions=["category"],
         measures=[{"formula": "qty_ty"}], variables=_FULL_VARS,
@@ -150,8 +153,8 @@ async def test_grouped_max_measure(tmp_path):
     assert by_cat == {"Shoes": 10, "Hats": 8}
 
 
-async def test_required_filter_omitted_raises_and_names_variable(tmp_path):
-    engine, _ = await _import_and_engine(tmp_path)
+async def test_required_filter_omitted_raises_and_names_variable(imported):
+    engine, _ = imported
     q = SlayerQuery(
         source_model="RrDrivers", measures=[{"formula": "count"}],
         variables={"brand": ["Acme"]},  # required date vars omitted

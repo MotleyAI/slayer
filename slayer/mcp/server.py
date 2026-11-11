@@ -14,8 +14,6 @@ from pydantic import Discriminator, Field, Tag
 from sqlalchemy.exc import DatabaseError
 
 from slayer import __version__, usage_reporting
-
-from slayer.core.deprecation import warn_deprecated
 from slayer.core.errors import (
     AmbiguousModelError,
     EntityResolutionError,
@@ -45,6 +43,8 @@ from slayer.live_schema.ingestion import (
     _hidden_internal_line,
     _unhide_hint,
     IngestableObject,
+    key_read_failure_line,
+    key_read_failures_header,
     list_ingestable_objects,
 )
 from slayer.live_schema.schema_scope import schema_ref_from_token, validate_scope_args
@@ -397,6 +397,12 @@ def _render_skipped_schemas_section(skipped_schemas: list[Any]) -> list[str]:
     return out
 
 
+def _render_key_read_failures_section(lost: list[Any]) -> list[str]:
+    if not lost:
+        return []
+    return ["", key_read_failures_header(len(lost)), *(f"- {key_read_failure_line(entry)}" for entry in lost)]
+
+
 def _render_hidden_internals_section(
     hidden: list[Any], *, data_source: str | None = None
 ) -> list[str]:
@@ -445,9 +451,11 @@ async def _render_ingest_result(
     skipped_schemas = list(getattr(result, "skipped_schemas", None) or [])
     hidden_internals = list(getattr(result, "hidden_internals", None) or [])
     broken = list(getattr(result, "broken_dependents", None) or [])
+    lost = list(getattr(result, "key_read_failures", None) or [])
     datasource_described = bool(getattr(result, "datasource_described", False))
     if (
         not broken
+        and not lost
         and not additions
         and not result.to_delete
         and not result.errors
@@ -480,6 +488,7 @@ async def _render_ingest_result(
     # Same order as the CLI renderer, so the two surfaces read alike.
     lines.extend(_render_skipped_section(skipped))
     lines.extend(_render_skipped_schemas_section(skipped_schemas))
+    lines.extend(_render_key_read_failures_section(lost))
     lines.extend(
         _render_hidden_internals_section(hidden_internals, data_source=ds.name)
     )
@@ -638,45 +647,6 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             datasource_name=datasource_name,
             models=matched,
             fmt=fmt,
-            compact=compact,
-        )
-
-    @tool()
-    async def inspect_model(
-        model_name: Annotated[str, Field(description="Model name.")],
-        num_rows: Annotated[int, Field(description="Sample rows.")] = 3,
-        show_sql: Annotated[bool, Field(description="Include generated SQL.")] = False,
-        format: Annotated[str, Field(description='"markdown" or "json".')] = "markdown",
-        sections: Annotated[list[str] | None, Field(description="Sections to render; default all.")] = None,
-        descriptions_max_chars: Annotated[int | None, Field(description="Truncate descriptions to this length.")] = None,
-        data_source: Annotated[str | None, Field(description="The model's datasource.")] = None,
-        compact: Annotated[bool, Field(description="Compact rendering.")] = True,
-    ) -> str:
-        """DEPRECATED: use `inspect` with entity_type="model"."""
-        warn_deprecated(
-            'The MCP inspect_model tool is deprecated; call inspect with entity_type="model". '
-            "It is served until SLayer 2.0.",
-            removal="2.0",
-        )
-        try:
-            model = await storage.get_model_or_builtin(model_name, data_source=data_source)
-        except AmbiguousModelError as exc:
-            return _ambiguous_with_mcp_hint(exc)
-        if model is None:
-            available = sorted(
-                f"{m.data_source}.{m.name}"
-                for m in DocumentLoadFailures().skip(await storage.load_models()) if not m.hidden
-            )
-            return f"Model '{model_name}' not found. Available models: {', '.join(available)}"
-        return await render_model_inspection(
-            model=model,
-            storage=storage,
-            engine=engine,
-            num_rows=num_rows,
-            show_sql=show_sql,
-            format=format,
-            sections=sections,
-            descriptions_max_chars=descriptions_max_chars,
             compact=compact,
         )
 
@@ -1403,6 +1373,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         if save_errors:
             lines.append(f"Failed to save {len(save_errors)} model(s):")
             lines.extend(save_errors)
+        lines.extend(_render_key_read_failures_section(ingest_output.key_read_failures))
 
         return "\n".join(lines)
 

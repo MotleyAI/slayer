@@ -452,7 +452,7 @@ class _KeylessInspector:
 
 
 @pytest.mark.parametrize(("dialect", "backend"), [
-    (SnowflakeDialect(), "snowflake"), (BigqueryDialect(), "bigquery"), (SqliteDialect(), "sqlite"),
+    (SnowflakeDialect(), "snowflake"), (BigqueryDialect(), "bigquery"),
 ])
 def test_keyless_table_reads_no_catalog_where_the_inspector_is_final(dialect: SqlDialect, backend: str) -> None:
     """Snowflake's INFORMATION_SCHEMA has no KEY_COLUMN_USAGE, so its Inspector's empty PK is final."""
@@ -495,7 +495,7 @@ class TestSqliteBaseKeys:
             )
         assert not [s for s in seen if "information_schema" in s.lower()]
 
-    def test_columns_through_the_inspector(self, sqlite_engine) -> None:
+    def test_columns(self, sqlite_engine) -> None:
         with sqlite_engine.connect() as conn:
             cols = SqliteDialect().reflect_columns(
                 connection=conn, inspector=sa.inspect(conn),

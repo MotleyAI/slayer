@@ -177,11 +177,10 @@ class TestAliasCollisions:
             public_name="rev",
             phase=Phase.AGGREGATE,
         )
+        key = AggregateKey(source=ColumnKey(path=(), leaf="revenue"), agg="sum")
         with pytest.raises(DuplicateMeasureNameError):
             r.intern(
-                key=AggregateKey(
-                    source=ColumnKey(path=(), leaf="revenue"), agg="sum",
-                ),
+                key=key,
                 declared_name="rev",
                 public_name="rev",
                 phase=Phase.AGGREGATE,
@@ -190,26 +189,24 @@ class TestAliasCollisions:
     def test_name_collides_with_source_column_raises(self):
         # A declared name matching a column on the host model is rejected.
         r = ValueRegistry(source_column_names=frozenset({"amount"}))
+        key = AggregateKey(source=ColumnKey(path=(), leaf="revenue"), agg="sum")
         with pytest.raises(MeasureNameCollidesWithColumnError):
             r.intern(
-                key=AggregateKey(
-                    source=ColumnKey(path=(), leaf="revenue"), agg="sum",
-                ),
+                key=key,
                 declared_name="amount",
                 public_name="amount",
                 phase=Phase.AGGREGATE,
             )
 
     def test_canonical_alias_shadowing_raises(self):
-        # `revenue:sum` canonicalises to `revenue_sum`. If the model has
+        # `sum(revenue)` canonicalises to `revenue_sum`. If the model has
         # a source column literally named `revenue_sum`, the canonical
         # alias collides — reject.
         r = ValueRegistry(source_column_names=frozenset({"revenue_sum"}))
+        key = AggregateKey(source=ColumnKey(path=(), leaf="revenue"), agg="sum")
         with pytest.raises(CanonicalAliasShadowsColumnError):
             r.intern(
-                key=AggregateKey(
-                    source=ColumnKey(path=(), leaf="revenue"), agg="sum",
-                ),
+                key=key,
                 declared_name="revenue_sum",
                 public_name=None,
                 canonical_alias="revenue_sum",
@@ -280,7 +277,7 @@ class TestLiterals:
 
 class TestParameterizedKeyInterning:
     def test_cross_model_aggregate_key_different_from_local(self):
-        """``customers.revenue:sum`` and local ``revenue:sum`` intern to
+        """``sum(customers.revenue)`` and local ``sum(revenue)`` intern to
         different slots — the join path is part of the structural key."""
         r = ValueRegistry()
         local = r.intern(
@@ -299,7 +296,7 @@ class TestParameterizedKeyInterning:
         assert len(r.slots) == 2
 
     def test_ntile_kwargs_with_different_n_intern_separately(self):
-        """``ntile(x:sum, n=3)`` and ``ntile(x:sum, n=4)`` intern to
+        """``ntile(sum(x), n=3)`` and ``ntile(sum(x), n=4)`` intern to
         different slots."""
         r = ValueRegistry()
         agg = AggregateKey(source=ColumnKey(path=(), leaf="revenue"), agg="sum")

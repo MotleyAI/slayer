@@ -22,10 +22,10 @@ from tests._dev1841_fixtures import (
 
 #: metric root spans local column, star-count, deep hop, and percentile family.
 MEASURES = {
-    "spend": "customers.spend:sum",
-    "count": "customers.*:count",
-    "pop": "customers.regions.pop:sum",
-    "median": "customers.spend:median",
+    "spend": "sum(customers.spend)",
+    "count": "count(customers.*)",
+    "pop": "sum(customers.regions.pop)",
+    "median": "median(customers.spend)",
 }
 #: reachable dimensions and their (host-local) values.
 DIMENSIONS = {"status": ["ok", "new"], "channel": ["app", "web"]}

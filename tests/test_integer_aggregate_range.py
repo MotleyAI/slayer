@@ -25,7 +25,7 @@ def integer_orders():
                 {"name": "amount", "type": "INT"},
                 {"name": "created_at", "type": "TIMESTAMP"},
             ],
-            "measures": [{"name": "as_int", "formula": "amount:sum", "type": "INT"}],
+            "measures": [{"name": "as_int", "formula": "sum(amount)", "type": "INT"}],
         }
     )
 
@@ -53,7 +53,7 @@ def _sql(*, model, measures, referenced_models=(), **query_kwargs):
     ],
 )
 def test_inferred_integer_aggregate_preserves_native_range(integer_orders, sql_type, amount, aggregation, expected):
-    sql, planned = _sql(model=integer_orders, measures=[f"amount:{aggregation}"])
+    sql, planned = _sql(model=integer_orders, measures=[f"{aggregation}(amount)"])
     # first/last desugar onto the regroup primitive: their public
     # slot is ROW-phase; the other aggregations keep an AGGREGATE-phase slot.
     slot = next(
@@ -74,7 +74,7 @@ def test_inferred_integer_aggregate_preserves_native_range(integer_orders, sql_t
 
 @pytest.mark.parametrize(
     "measure",
-    [{"formula": "amount:sum", "type": "INT"}, "as_int"],
+    [{"formula": "sum(amount)", "type": "INT"}, "as_int"],
 )
 def test_explicit_integer_measure_casts_to_64_bit(integer_orders, measure):
     sql, _ = _sql(model=integer_orders, measures=[measure])
@@ -88,9 +88,9 @@ def test_explicit_integer_measure_casts_to_64_bit(integer_orders, measure):
 @pytest.mark.parametrize(
     "formula,expected",
     [
-        ("amount:sum(window='2d')", [4_000_000_001, 8_000_000_002]),
-        ("cumsum(amount:sum)", [4_000_000_001, 8_000_000_002]),
-        ("time_shift(amount:sum, periods=-1)", [4_000_000_001]),
+        ("sum(amount, window='2d')", [4_000_000_001, 8_000_000_002]),
+        ("cumsum(sum(amount))", [4_000_000_001, 8_000_000_002]),
+        ("time_shift(sum(amount), periods=-1)", [4_000_000_001]),
     ],
 )
 def test_integer_range_survives_window_and_shift_paths(integer_orders, formula, expected):
@@ -120,7 +120,7 @@ def test_joined_integer_aggregate_preserves_cast_intent(integer_orders, explicit
             "joins": [],
         }
     )
-    measure = {"formula": "customers.amount:sum", "name": "total"}
+    measure = {"formula": "sum(customers.amount)", "name": "total"}
     if explicit:
         measure["type"] = "INT"
     sql, _ = _sql(
@@ -139,7 +139,7 @@ def test_joined_integer_aggregate_preserves_cast_intent(integer_orders, explicit
 
 @pytest.mark.parametrize("explicit", [False, True])
 def test_partitioned_integer_aggregate_preserves_cast_intent(integer_orders, explicit):
-    measure = {"formula": "amount:sum(partition_by=created_at)", "name": "total"}
+    measure = {"formula": "sum(amount, partition_by=created_at)", "name": "total"}
     if explicit:
         measure["type"] = "INT"
     sql, _ = _sql(model=integer_orders, measures=[measure], dimensions=["id", "created_at"])
@@ -152,7 +152,7 @@ def test_partitioned_integer_aggregate_preserves_cast_intent(integer_orders, exp
 
 @pytest.mark.parametrize("values,expected", [([], None), ([None], None), ([None, 4_000_000_001], 4_000_000_001)])
 def test_inferred_integer_sum_preserves_null_and_empty_semantics(integer_orders, values, expected):
-    sql, _ = _sql(model=integer_orders, measures=["amount:sum"])
+    sql, _ = _sql(model=integer_orders, measures=["sum(amount)"])
     with duckdb.connect() as connection:
         connection.execute("CREATE TABLE orders (amount BIGINT)")
         for value in values:

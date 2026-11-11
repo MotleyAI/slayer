@@ -19,8 +19,6 @@ from slayer.database.client import SlayerSQLClient
 from tests._pg_helpers import pg_database
 from tests._pg_statement_log import LOGGED_POSTGRES_OPTIONS, LoggedEntry, ServerLog, between
 
-pytestmark = pytest.mark.filterwarnings("ignore::FutureWarning")
-
 postgresql_logged = factories.postgresql_proc(port=None, postgres_options=LOGGED_POSTGRES_OPTIONS)
 
 REPO = Path(__file__).resolve().parent.parent

@@ -1,8 +1,6 @@
-"""EXPLAIN as a typed statement set built by the dialect (spec: sql/client-contract)."""
+"""EXPLAIN as a typed statement set built by the dialect (spec: database/client-contract)."""
 
 from __future__ import annotations
-
-import warnings
 
 import pytest
 from pydantic import ValidationError
@@ -97,28 +95,3 @@ class TestExplainSessionHook:
     def test_the_default_has_no_session_mode(self, enabled: bool) -> None:
         assert SqlDialect().explain_session(enabled) is None
         assert PostgresDialect().explain_session(enabled) is None
-
-
-def _deprecations(caught: list[warnings.WarningMessage]) -> list[str]:
-    return [str(w.message) for w in caught if issubclass(w.category, FutureWarning)]
-
-
-def _names_replacement(message: str) -> bool:
-    return "build_explain_sql()" in message and "explain_statements" in message and "SLayer 2.0" in message
-
-
-class TestDeprecatedSingleTextBuilder:
-    def test_postgres_returns_its_single_statement_and_warns(self) -> None:
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            sql = PostgresDialect().build_explain_sql(_SQL)
-        assert sql == f"EXPLAIN ANALYZE {_SQL}"
-        assert any(_names_replacement(m) for m in _deprecations(caught)), _deprecations(caught)
-
-    @pytest.mark.parametrize("dialect", [TsqlDialect(), BigqueryDialect()], ids=["tsql", "bigquery"])
-    def test_session_mode_and_unsupported_dialects_raise_and_warn(self, dialect: SqlDialect) -> None:
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            with pytest.raises(ExplainUnsupportedError):
-                dialect.build_explain_sql(_SQL)
-        assert any(_names_replacement(m) for m in _deprecations(caught)), _deprecations(caught)

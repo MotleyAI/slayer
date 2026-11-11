@@ -21,12 +21,12 @@ ALLOWED_DELTAS: dict[str, str] = {}
 
 WORKING_PREFIX = "lift/"
 
-RANK_DIM = "rank(amount:sum(partition_by=region), direction='desc')"
+RANK_DIM = "rank(sum(amount, partition_by=region), direction='desc')"
 WBAND = (
-    "CASE WHEN amount:sum(window='90d', partition_by=region) > 50 THEN 1 ELSE 0 END"
+    "CASE WHEN sum(amount, window='90d', partition_by=region) > 50 THEN 1 ELSE 0 END"
 )
 CBAND = (
-    "CASE WHEN cumsum(amount:sum(partition_by=[region, ordered_at])) > 50 "
+    "CASE WHEN cumsum(sum(amount, partition_by=[region, ordered_at])) > 50 "
     "THEN 1 ELSE 0 END"
 )
 
@@ -36,44 +36,44 @@ def _cases() -> dict:
         "lift/window_partition": q(
             dimensions=["region", "city"], time_dimensions=month_td(),
             measures=[ModelMeasure(
-                formula="amount:sum(window='90d', partition_by=region)", name="w",
+                formula="sum(amount, window='90d', partition_by=region)", name="w",
             )],
         ),
         "lift/two_ranked_producers": q(
             dimensions=["region", "city"],
             measures=[
-                ModelMeasure(formula="amount:last(partition_by=region)", name="a"),
-                ModelMeasure(formula="amount:last(partition_by=city)", name="b"),
+                ModelMeasure(formula="last(amount, partition_by=region)", name="a"),
+                ModelMeasure(formula="last(amount, partition_by=city)", name="b"),
             ],
         ),
         "lift/three_level_nesting": q(
             dimensions=["region", {"expression": CBAND, "name": "cband"}],
             time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum", name="s"),
+                ModelMeasure(formula="sum(amount)", name="s"),
                 ModelMeasure(
-                    formula="amount:sum(window='90d', partition_by=region)",
+                    formula="sum(amount, window='90d', partition_by=region)",
                     name="w",
                 ),
-                ModelMeasure(formula="amount:last(partition_by=region)", name="l"),
+                ModelMeasure(formula="last(amount, partition_by=region)", name="l"),
             ],
         ),
         "lift/first_last_partition": q(
             dimensions=["region", "city"],
             measures=[ModelMeasure(
-                formula="amount:last(partition_by=region)", name="l",
+                formula="last(amount, partition_by=region)", name="l",
             )],
         ),
         "lift/temporal_partition_last": q(
             dimensions=["region", "city"], time_dimensions=month_td(),
             measures=[ModelMeasure(
-                formula="amount:last(partition_by=[region, ordered_at])", name="l",
+                formula="last(amount, partition_by=[region, ordered_at])", name="l",
             )],
         ),
         "lift/cumsum_partitioned": q(
             dimensions=["region", "city"], time_dimensions=month_td(),
             measures=[ModelMeasure(
-                formula="cumsum(amount:sum(partition_by=[region, ordered_at]))",
+                formula="cumsum(sum(amount, partition_by=[region, ordered_at]))",
                 name="c",
             )],
         ),
@@ -83,108 +83,108 @@ def _cases() -> dict:
         ),
         "lift/filter_partitioned": q(
             dimensions=["region", "city"],
-            filters=["amount:sum(partition_by=region) > 50"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            filters=["sum(amount, partition_by=region) > 50"],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ),
         "lift/filter_conjunct_split": q(
             dimensions=["region", "city"],
-            filters=["amount:sum(partition_by=region) > 50 and city != 'CityB'"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            filters=["sum(amount, partition_by=region) > 50 and city != 'CityB'"],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ),
         "lift/coexist_row_combined": q(
             dimensions=["region", {"expression": BAND35, "name": "band"}],
             measures=[
-                ModelMeasure(formula="amount:sum", name="s"),
-                ModelMeasure(formula="amount:sum(partition_by=region)", name="rt"),
+                ModelMeasure(formula="sum(amount)", name="s"),
+                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
             ],
         ),
         "lift/coexist_same_agg_both": q(
             dimensions=[
                 "region",
-                {"expression": "CASE WHEN amount:sum(partition_by=region) > 55 "
+                {"expression": "CASE WHEN sum(amount, partition_by=region) > 55 "
                                "THEN 1 ELSE 0 END", "name": "band"},
             ],
             measures=[ModelMeasure(
-                formula="amount:sum(partition_by=region)", name="rt",
+                formula="sum(amount, partition_by=region)", name="rt",
             )],
         ),
         "lift/order_raw_aggregate": q(
             dimensions=["region", "city", {"expression": BAND35, "name": "band"}],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
-            order=[{"column": "amount:sum(partition_by=city)", "direction": "asc"}],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            order=[{"column": "sum(amount, partition_by=city)", "direction": "asc"}],
         ),
         "lift/coexist_windowed": q(
             dimensions=["region", "city"], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum(partition_by=region)", name="rt"),
-                ModelMeasure(formula="amount:sum(window='1y')", name="w"),
+                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
+                ModelMeasure(formula="sum(amount, window='1y')", name="w"),
             ],
         ),
         "lift/coexist_first_last": q(
             dimensions=["region", "city"],
             measures=[
-                ModelMeasure(formula="amount:sum(partition_by=region)", name="rt"),
-                ModelMeasure(formula="amount:last", name="l"),
+                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
+                ModelMeasure(formula="last(amount)", name="l"),
             ],
         ),
         "lift/coexist_cross_model": q(
             dimensions=["region", "city"],
             measures=[
-                ModelMeasure(formula="amount:sum(partition_by=region)", name="rt"),
-                ModelMeasure(formula="customers.spend:sum", name="cm"),
+                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
+                ModelMeasure(formula="sum(customers.spend)", name="cm"),
             ],
         ),
         "lift/coexist_transform": q(
             dimensions=["region", "city"], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum(partition_by=region)", name="rt"),
-                ModelMeasure(formula="cumsum(amount:sum)", name="c"),
+                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
+                ModelMeasure(formula="cumsum(sum(amount))", name="c"),
             ],
         ),
         "lift/dim_two_partition_sets": q(
             dimensions=[
                 "region",
-                {"expression": "amount:sum(partition_by=city) - "
-                               "amount:sum(partition_by=region)", "name": "gap"},
+                {"expression": "sum(amount, partition_by=city) - "
+                               "sum(amount, partition_by=region)", "name": "gap"},
             ],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ),
         "lift/dim_rank": q(
             dimensions=["region", {"expression": RANK_DIM, "name": "rr"}],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ),
         "lift/dim_first_last": q(
             dimensions=[
                 "region",
-                {"expression": "amount:last(partition_by=region)", "name": "la"},
+                {"expression": "last(amount, partition_by=region)", "name": "la"},
             ],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ),
         "lift/dim_window": q(
             dimensions=["region", {"expression": WBAND, "name": "wband"}],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ),
         "guard/dim_bare_aggregate": q(
             dimensions=[
                 "region",
-                {"expression": "CASE WHEN amount:sum > 50 THEN 1 ELSE 0 END",
+                {"expression": "CASE WHEN sum(amount) > 50 THEN 1 ELSE 0 END",
                  "name": "b"},
             ],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ),
         "guard/dim_cross_model_source": q(
             dimensions=[
                 "region",
-                {"expression": "CASE WHEN customers.spend:sum(partition_by=region) "
+                {"expression": "CASE WHEN sum(customers.spend, partition_by=region) "
                                "> 100 THEN 1 ELSE 0 END", "name": "cband"},
             ],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ),
         "guard/filter_no_common_scope": q(
             dimensions=["region", "city"],
-            filters=["amount:sum(partition_by=region) > 50 or status == 'ok'"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            filters=["sum(amount, partition_by=region) > 50 or status == 'ok'"],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ),
         "lift/nested_attach": q(
             dimensions=[
@@ -193,10 +193,10 @@ def _cases() -> dict:
                 # over bigquery's 300-byte limit — the tier-1 identifier-fitting
                 # premise pinned in test_dev1891_internal_identifier_fit.py (D5's
                 # Column.filter desugar shortened the encoding).
-                {"expression": "amount:sum(partition_by=[band, region, customer_id])",
+                {"expression": "sum(amount, partition_by=[band, region, customer_id])",
                  "name": "b2"},
             ],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ),
     }
 
