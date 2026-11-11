@@ -55,6 +55,12 @@ Principles that bind the design:
 15. **Save-time refusal**, through the existing save-time stage planning, of stored stages whose extensions are guaranteed to fail. (default, system P11)
 16. **Every stored-dict walker in `slayer/storage/*`** that reads a query's `source_model` extension also walks `extensions`, because walkers that run at or after v11 see the new shape. (default)
 17. **Codex findings folded**: alias map (8), binder entry point (2), two names for one relationship (14), the orientation of "target key" plus the INNER edge-case tests (2), profiling and usage reporting as consumers (7), the nested memory-query migration tests. None were rejected or deferred. (codex)
+18. **One static query scope.** A pure builder gives, for each query object of a query list, the model universe exactly as the engine resolves it, and the access-filter read set, schema-drift dependency attribution and memory entity extraction read only it: (user)
+   - a sibling stage is a host named as the stage, carrying its output fields and query-local joins, and shadows a same-named stored model (engine P11); its datasource is its resolved source's, or, when that cannot be determined statically, every datasource holding a model the stage names;
+   - every extension is overlaid and its joins merged, so an alias or a query-local edge carries the canonical token;
+   - each INNER extension join yields its restriction path from the population, routed as the binder routes it (decision 2).
+
+   The engine's per-stage overlay shares the builder's core: strict in the engine, lenient in the static readers (a conflicting declaration is skipped). It lives in `slayer.engine`, because the INNER route uses the engine's short-form routing and `memories` has no arrow to `ir`.
 
 ## Risks / Trade-offs
 

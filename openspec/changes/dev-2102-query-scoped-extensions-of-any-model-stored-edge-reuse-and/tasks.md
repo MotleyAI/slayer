@@ -30,7 +30,7 @@
   - unreachable and ambiguous errors naming the declaration;
   - LEFT never restricting, a reused stored INNER edge, rootless inference, raw-row mode.
 - [x] 1.8 `tests/test_dev2102_scope_and_targets.py`: extensions of joined models (dimension and measure); scope invisibility to the next stage and to stored definitions; resolution order; unknown target; `time_spine` rejected; query-backed measures in a non-root stage; save-time refusal; usage-reporting features for root and non-root extensions.
-- [ ] 1.9 Run `poetry run pytest -m "not integration"` and confirm the new tests fail for the expected reasons, and nothing else regresses from the respelling.
+- [x] 1.9 Run `poetry run pytest -m "not integration"` and confirm the new tests fail for the expected reasons, and nothing else regresses from the respelling.
 
 ## 2. IR, migration, deprecation
 
@@ -75,3 +75,16 @@
   Verify with `tests/test_doc_examples.py` and `tests/test_docs_guards.py`.
 - [x] 5.3 Re-execute every edited notebook with `jupyter nbconvert --to notebook --execute --inplace`, and verify the outputs are fresh.
 - [ ] 5.4 Full unit suite `poetry run pytest -m "not integration"`, the integration suite with the CI invocation, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs the baseline), and the enforcement bundle (`la-arch-check`, `npx -y likec4@1.47.0 validate architecture`). All green.
+
+## 6. One static query scope (review round 3)
+
+- [ ] 6.1 Failing tests first, one per round-3 CodeRabbit thread, each failing on `11a594ed`:
+  - model reads: a sibling stage named like a stored model shadows it (no read of it, no duplicate-column error);
+  - model reads: the chained-sibling path `s1 → s2 → customers.regions` records `regions`;
+  - model reads: a sibling with an inferred source in a query-backed model without a datasource still records its extension joins' targets;
+  - schema drift: an extension column on a sibling stage reading through an extension join is a dependency of the query-backed model.
+- [ ] 6.2 The shared scope in `slayer/engine/extensions.py` (decision 18): one core for overlay, edge merge and the INNER restriction path, strict for the engine and lenient for the static readers. `apply_query_extensions` and the INNER routing in `bind_inputs` call it. `models_as_extended` in `slayer/ir/source_bundle.py` is folded into it and deleted.
+- [ ] 6.3 `slayer/engine/model_reads.py` reads the scope: delete `_scope`, `_scoped_model`, `_stage_host`, `_stage_hosts`, `_stage_data_sources`, `extension_definitions`, the `peers()` override and the per-query scoping in `unhosted_ref`.
+- [ ] 6.4 `slayer/live_schema/schema_drift.py` reads the scope: delete `_build_stage_graph`, `_StageGraph`, `_stage_cascade_state`'s own overlay, `_extension_fields`, `_inner_restriction_refs` and the stage-local hop walking in `_resolved_hops` / `_ref_edges`.
+- [ ] 6.5 `slayer/memories/resolver.py` reads the scope: delete `_extended_models`, `_query_scoped` and the `query_models` threading through `resolve_entity` → `_resolve_reference` → `_resolve_dotted_against_model` → `_resolve_join_path`.
+- [ ] 6.6 Verify: 6.1, every `tests/test_dev2102_*.py`, and the existing model-reads, schema-drift and memory suites pass; queries without extensions keep their results in all three readers. After the push, reply on each round-3 thread with the commit and its test.
