@@ -181,7 +181,7 @@ class TestCliHandler:
     def test_cli_text(self, storage, capsys) -> None:
 
         args = argparse.Namespace(
-            storage=storage.base_dir, models_dir=None,
+            storage=storage.base_dir,
             items=["customers.name", "products.category"],
             data_source=None, format="text",
         )
@@ -192,7 +192,7 @@ class TestCliHandler:
     def test_cli_json(self, storage, capsys) -> None:
 
         args = argparse.Namespace(
-            storage=storage.base_dir, models_dir=None,
+            storage=storage.base_dir,
             items=["orders.status"], data_source="mydb", format="json",
         )
         _run_recommend_root_model(args)
@@ -281,7 +281,7 @@ class TestUnrelatedFlagSurfaces:
     @pytest.mark.parametrize("fmt", ["json", "text"])
     def test_cli(self, storage, capsys, fmt: str) -> None:
         args = argparse.Namespace(
-            storage=storage.base_dir, models_dir=None, items=UNRELATED_ITEMS, data_source=None, format=fmt,
+            storage=storage.base_dir, items=UNRELATED_ITEMS, data_source=None, format=fmt,
         )
         _run_recommend_root_model(args)
         out = capsys.readouterr().out
@@ -357,7 +357,7 @@ class TestRootHintSurfaces:
     def test_cli_feasible_hint_honored(self, storage, capsys) -> None:
 
         args = argparse.Namespace(
-            storage=storage.base_dir, models_dir=None,
+            storage=storage.base_dir,
             items=["customers.name"], data_source=None,
             format="json", root_hint="orders",
         )

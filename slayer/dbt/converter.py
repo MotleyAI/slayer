@@ -21,9 +21,6 @@ from collections import defaultdict
 from collections.abc import Callable
 from typing import Any, Literal, TypeVar
 
-import sqlalchemy as sa
-
-from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import (
@@ -55,7 +52,6 @@ from slayer.dbt.models import (
 from slayer.dbt.relations import RelationNames
 from slayer.dbt.sql_resolver import JINJA_RE, referenced_models, resolve_refs, strip_config
 from slayer.live_schema.ingestion import introspect_table_to_model
-from slayer.engine.query_engine import run_over_caller_engine
 from slayer.live_schema.schema_scope import requested_schema_ref
 from slayer.importers.aggregates import dialect_refusal
 from slayer.importers.column_types import (
@@ -79,7 +75,7 @@ from slayer.database.client import SqlClient
 # existing ``from slayer.dbt.converter import ConversionResult`` imports keep
 # working against the same class objects.
 from slayer.ingest_report import ConversionResult, ConversionWarning
-from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, dialect_for_sa_backend
+from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.render.parse import fold_source_identifiers, stored_identifier
 
 logger = logging.getLogger(__name__)
@@ -225,22 +221,13 @@ class DbtToSlayerConverter:
         self,
         project: DbtProject,
         data_source: str,
-        sa_engine: sa.Engine | None = None,
+        *,
         include_hidden_models: bool = False,
         target_dialect: str | None = None,
         offline_reason: str | None = None,
     ) -> None:
-        """Passing ``sa_engine`` is deprecated: ``convert()`` then collects its own metadata through it."""
-        if sa_engine is not None:
-            warn_deprecated(
-                "DbtToSlayerConverter(sa_engine=...) is deprecated; await "
-                "converter.collect_metadata(client=engine.client_for(datasource)) before convert(). "
-                "sa_engine works until SLayer 2.0.",
-                removal="2.0",
-            )
         self.project = project
         self.data_source = data_source
-        self.sa_engine = sa_engine
         self.include_hidden_models = include_hidden_models
         # Regular-model tables read by ``collect_metadata``: the model, or why it could not be read.
         self._introspected: dict[str, SlayerModel | str] | None = None
@@ -249,7 +236,6 @@ class DbtToSlayerConverter:
         self.target_dialect = target_dialect
         self._live = LiveDatasource(offline_reason=offline_reason, data_source=data_source,
                                     db_type=target_dialect, dialect=None)
-        self._collected = False
         # {dbt model: {column: declared data_type}}
         self._declared: dict[str, dict[str, str]] = {
             rm.name: {c.name: c.data_type for c in rm.columns if c.data_type} for rm in project.regular_models
@@ -271,10 +257,7 @@ class DbtToSlayerConverter:
             for rm in project.regular_models
             if rm.raw_code
         }
-        if target_dialect:
-            self._use_dialect(dialect_for_ds_type(target_dialect))
-        else:
-            self._use_dialect(dialect_for_sa_backend(sa_engine.dialect.name) if sa_engine is not None else None)
+        self._use_dialect(dialect_for_ds_type(target_dialect) if target_dialect else None)
         # {semantic model: (sql_table, sql)}, read once the project's SQL is folded.
         self._sources: dict[str, tuple[str | None, str | None]] = {}
         self._folded = False
@@ -310,14 +293,9 @@ class DbtToSlayerConverter:
                 )
         self._introspected = introspected
         await self._live.collect(client=client, convert=self._convert)
-        self._collected = True
 
     def convert(self) -> ConversionResult:
         """Full conversion pipeline (pure: the database is read by ``collect_metadata``)."""
-        if not self._collected and self.sa_engine is not None:
-            run_over_caller_engine(
-                self.sa_engine, data_source=self.data_source, work=lambda client: self.collect_metadata(client=client),
-            )
         return self._convert()
 
     def _reset(self) -> None:

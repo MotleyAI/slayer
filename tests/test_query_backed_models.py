@@ -520,12 +520,12 @@ class TestCacheRefreshOnExecute:
 
 
 class TestQueryBackedColumnTypes:
-    """``engine.get_column_types`` must derive its datasource from the
+    """``engine.get_result_column_types`` must derive its datasource from the
     expanded query-backed model, not from the (possibly stale or blank)
     stored ``data_source`` on the unexpanded record.
     """
 
-    async def test_get_column_types_uses_resolved_datasource(self) -> None:
+    async def test_get_result_column_types_uses_resolved_datasource(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         try:
             storage = YAMLStorage(base_dir=tmp.name)
@@ -570,12 +570,12 @@ class TestQueryBackedColumnTypes:
             # Should resolve datasource from the expanded model (ds_b), open
             # the right SQLite file, and successfully probe — ignoring the
             # stale ds_stale on the stored record.
-            types = await engine.get_column_types("qb")
+            types = await engine.get_result_column_types("qb")
             assert types, "expected non-empty column type map"
         finally:
             tmp.cleanup()
 
-    async def test_get_column_types_with_required_unbound_variable(self) -> None:
+    async def test_get_result_column_types_with_required_unbound_variable(self) -> None:
         """A stored query-backed model with an undefaulted ``{var}`` probes no types."""
         tmp = tempfile.TemporaryDirectory()
         try:
@@ -605,7 +605,7 @@ class TestQueryBackedColumnTypes:
             assert stored is not None
             with pytest.raises(ValueError, match="Undefined variable 'threshold'"):
                 await engine._expand_query_backed_model(model=stored)
-            assert await engine.get_column_types("qb_unbound") == {}
+            assert await engine.get_result_column_types("qb_unbound") == {}
         finally:
             tmp.cleanup()
 
@@ -688,7 +688,7 @@ class TestRequestVariableHygiene:
         """Editing a query-backed model so its final stage now resolves through
         a different datasource must update the persisted ``data_source`` even
         when the caller still passes the old one — otherwise
-        ``get_column_types()`` opens the wrong client.
+        ``get_result_column_types()`` opens the wrong client.
         """
         tmp = tempfile.TemporaryDirectory()
         try:

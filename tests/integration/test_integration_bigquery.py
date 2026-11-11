@@ -383,7 +383,7 @@ def bq_dev2120_storage(bq_dataset, tmp_path_factory):
     storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("bq_dev2120")))
     run_sync(storage.save_datasource(ds))
     run_sync(storage.save_model(lib_model(data_source=ds.name)))
-    for model in ingestion.ingest_datasource(datasource=ds, include_tables=["docs", "events"]):
+    for model in run_sync(_ingest(ds, include_tables=["docs", "events"])):
         run_sync(storage.save_model(model))
     return storage
 
@@ -463,7 +463,7 @@ async def test_mixed_numeric_lists(bq_lists) -> None:
 
 
 def test_repeated_field_ingested(bq_lists) -> None:
-    (model,) = ingestion.ingest_datasource(datasource=bq_lists[1], include_tables=["contractors"])
+    (model,) = run_sync(_ingest(bq_lists[1], include_tables=["contractors"]))
     skills = model.get_column("skills")
     assert skills is not None
     assert (skills.type, skills.element_type) == (DataType.ARRAY, DataType.TEXT)
@@ -494,7 +494,7 @@ def bq_amounts(bq_dataset, tmp_path_factory):
     ds = _ds_config(dataset_id)
     storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("bq_amounts")))
     run_sync(storage.save_datasource(ds))
-    for model in ingestion.ingest_datasource(datasource=ds, include_tables=["amounts"]):
+    for model in run_sync(_ingest(ds, include_tables=["amounts"])):
         run_sync(storage.save_model(model))
     return storage
 

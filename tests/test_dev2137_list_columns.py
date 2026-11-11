@@ -19,8 +19,7 @@ from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
 from slayer.core.models import Aggregation, Column, DatasourceConfig, SlayerModel
 from slayer.live_schema.ingestion import (
-    IntrospectedColumn, _inferred_elements, _retyped_list, ingest_datasource,
-    ingest_datasource_idempotent,
+    IntrospectedColumn, _inferred_elements, _retyped_list, ingest_datasource_idempotent,
 )
 from slayer.live_schema.schema_scope import SchemaRef
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -155,8 +154,12 @@ def _duckdb_file(*statements: str):
 class TestDuckDBIngestion:
     def test_lists_ingested_with_element_types(self) -> None:
         cols = ", ".join(f"{c} {t}" for c, (t, _) in DUCKDB_KINDS.items())
-        with _duckdb_file(f"CREATE TABLE kinds (id INTEGER, {cols})") as (ds, _tmp):
-            model = ingest_datasource(datasource=ds, include_tables=["kinds"])[0]
+        with _duckdb_file(f"CREATE TABLE kinds (id INTEGER, {cols})") as (ds, tmp):
+            engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=os.path.join(tmp, "store")))
+            try:
+                model = engine.ingest_sync(ds, include_tables=["kinds"])[0]
+            finally:
+                engine.close()
         for name, (db_type, element) in DUCKDB_KINDS.items():
             col = model.get_column(name)
             assert col is not None
@@ -333,7 +336,13 @@ async def _reingest(ds: DatasourceConfig, tmp: str, stored: SlayerModel) -> Slay
     storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
     await storage.save_datasource(ds)
     await storage.save_model(stored)
-    await ingest_datasource_idempotent(datasource=ds, storage=storage, include_tables=["contractors"])
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        await ingest_datasource_idempotent(datasource=ds, storage=storage, client=engine.client_for(ds),
+                                           include_tables=["contractors"])
+    finally:
+        await engine.aclose()
+        engine.close()
     loaded = await storage.get_model("contractors", data_source=ds.name)
     assert loaded is not None
     return loaded
@@ -434,8 +443,8 @@ class TestRendering:
     async def test_inspect_model_markdown(self, engine) -> None:
         model = await engine.storage.get_model("contractors", data_source="test")
         out = await render_model_inspection(model=model, storage=engine.storage, engine=engine, format="markdown",
-                                            sections=["columns"], compact=False)
-        for needle in ("ARRAY<TEXT>", "go", "sql", "contains", "contains_all", "skills.value"):
+                                            sections=["columns"])
+        for needle in ("ARRAY<TEXT>", "go", "sql", "contains", "contains_any", "contains_all", "skills.value"):
             assert needle in out, (needle, out)
 
     async def test_inspect_model_json(self, engine) -> None:

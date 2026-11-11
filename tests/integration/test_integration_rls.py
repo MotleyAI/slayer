@@ -263,20 +263,20 @@ async def test_explain_sql_contains_wraps(rls_storage):
     assert "organization_uuid = 'orgA'" in resp.sql
 
 
-# -- get_column_types under policy -------------------------------------------
+# -- get_result_column_types under policy ------------------------------------
 
 
-async def test_get_column_types_scoped_ok(rls_storage):
+async def test_get_result_column_types_scoped_ok(rls_storage):
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
-    types = await engine.get_column_types(model_name="orders", data_source="rls_sqlite")
+    types = await engine.get_result_column_types(model_name="orders", data_source="rls_sqlite")
     assert isinstance(types, dict)  # probe succeeds against the wrapped SQL
 
 
-async def test_get_column_types_blocking_policy_degrades(rls_storage):
+async def test_get_result_column_types_blocking_policy_degrades(rls_storage):
     """A blocking policy on a tenant-less model must not crash the type probe;
     it degrades to {} (the rewrite raises inside the existing try/except)."""
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
-    types = await engine.get_column_types(
+    types = await engine.get_result_column_types(
         model_name="exchange_rates", data_source="rls_sqlite"
     )
     assert types == {}
@@ -580,8 +580,8 @@ async def test_execute_runs_no_profile_probe(rls_join_storage, monkeypatch):
     assert probes == []
 
 
-async def test_get_column_types_runs_no_profile_probe(rls_join_storage, monkeypatch):
+async def test_get_result_column_types_runs_no_profile_probe(rls_join_storage, monkeypatch):
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
     probes = _record_profile_probes(monkeypatch)
-    await engine.get_column_types(model_name="orders", data_source="rls_sqlite")
+    await engine.get_result_column_types(model_name="orders", data_source="rls_sqlite")
     assert probes == []

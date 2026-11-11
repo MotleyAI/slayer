@@ -6,7 +6,9 @@ for ``search``. Codex#7 — symmetric default everywhere; CLI flips via
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
+import io
 import json
 import shutil
 import tempfile
@@ -22,6 +24,7 @@ from tests._cli_inprocess import run_cli_in_process
 from tests.search_helpers import seed_warehouse_models
 
 from slayer.api.server import SearchRequest, create_app
+from slayer.cli import _run_search_query
 from slayer.client.slayer_client import SlayerClient
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.base import StorageBackend, resolve_storage
@@ -151,11 +154,8 @@ async def test_slayer_client_local_search_compact_false(
 
 def test_cli_search_default_is_compact(yaml_storage: YAMLStorage) -> None:
     """Without --verbose, the JSON output shows description set and text empty."""
-    from slayer.cli import _run_search_query
-
     args = SimpleNamespace(
         storage=yaml_storage.base_dir,
-        models_dir=None,
         entities=["warehouse.orders.amount_paid"],
         query=None,
         question=None,
@@ -166,8 +166,6 @@ def test_cli_search_default_is_compact(yaml_storage: YAMLStorage) -> None:
         verbose=False,
     )
     # Capture stdout
-    import io
-    import contextlib
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         _run_search_query(args=args, storage=yaml_storage)
@@ -182,11 +180,8 @@ def test_cli_search_default_is_compact(yaml_storage: YAMLStorage) -> None:
 def test_cli_search_verbose_flag_opts_out_of_compact(
     yaml_storage: YAMLStorage,
 ) -> None:
-    from slayer.cli import _run_search_query
-
     args = SimpleNamespace(
         storage=yaml_storage.base_dir,
-        models_dir=None,
         entities=["warehouse.orders.amount_paid"],
         query=None,
         question=None,
@@ -196,8 +191,6 @@ def test_cli_search_verbose_flag_opts_out_of_compact(
         format="json",
         verbose=True,
     )
-    import io
-    import contextlib
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         _run_search_query(args=args, storage=yaml_storage)

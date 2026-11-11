@@ -17,7 +17,6 @@ from slayer.database import engine_factory
 from slayer.database.client import (
     ResultColumnType,
     SlayerSQLClient,
-    get_column_types_sync,
     get_result_column_types_sync,
 )
 from slayer.sql.dialects import reflection
@@ -200,31 +199,6 @@ class TestOpaqueAndUnrecognisedTypes:
         }
 
 
-class TestTheCategoryProbesKeepWorkingAndWarn:
-    """The 1.5.0 entry points return categories derived from the typed probe."""
-
-    def test_sync_entry_point(self, sqlite_ds: DatasourceConfig) -> None:
-        engine = engine_factory.get_engine(sqlite_ds)
-        with pytest.warns(FutureWarning, match="get_result_column_types"):
-            types = get_column_types_sync("SELECT id, name FROM t", engine=engine, db_type="sqlite")
-        assert types == {"id": "number", "name": "string"}
-
-    async def test_client_probe(self, duckdb_ds: DatasourceConfig) -> None:
-        client = SlayerSQLClient(datasource=duckdb_ds)
-        try:
-            with pytest.warns(FutureWarning, match="get_result_column_types"):
-                types = await client.get_column_types(
-                    "SELECT 1 AS i, 1.5::DOUBLE AS d, 'x' AS s, DATE '2024-01-01' AS dt, "
-                    "TIMESTAMP '2024-01-01 00:00:00' AS ts, TRUE AS b, '{}'::JSON AS j",
-                )
-        finally:
-            await client.aclose()
-            client.close()
-        assert types == {
-            "i": "number", "d": "number", "s": "string", "dt": "time", "ts": "time", "b": "boolean", "j": "string",
-        }
-
-
 @pytest.fixture
 async def engine(tmp_path: Path, sqlite_ds: DatasourceConfig) -> AsyncIterator[SlayerQueryEngine]:
     storage = YAMLStorage(base_dir=str(tmp_path / "models"))
@@ -249,8 +223,3 @@ class TestTheEngineProbe:
     async def test_typed(self, engine: SlayerQueryEngine) -> None:
         result = await engine.get_result_column_types("t")
         assert _types(result) == {"name": DataType.TEXT, "d": DataType.DOUBLE, "qty": DataType.INT}
-
-    async def test_categories_warn(self, engine: SlayerQueryEngine) -> None:
-        with pytest.warns(FutureWarning, match="get_result_column_types"):
-            types = await engine.get_column_types("t")
-        assert types == {"name": "string", "d": "number", "qty": "number"}

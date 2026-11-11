@@ -36,8 +36,9 @@ from slayer.core.models import (
 )
 from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery, TimeDimension
 from slayer.live_schema import ingestion
-from slayer.live_schema.ingestion import ingest_datasource, ingest_datasource_idempotent
-from slayer.engine.query_engine import SlayerQueryEngine, run_over_caller_engine
+from slayer.live_schema.ingestion import ingest_datasource_idempotent
+from slayer.live_schema.schema_drift import IdempotentIngestResult
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.importers.column_types import LiveDatasource, LiveSource
 from slayer.database import client, engine_factory
 from slayer.database.client import ResultColumnType
@@ -256,6 +257,16 @@ async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
     finally:
         await sql_client.aclose()
         sql_client.close()
+
+
+def _ingest_idempotent(*, datasource: DatasourceConfig, storage: YAMLStorage,
+                       **scope: Any) -> IdempotentIngestResult:
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        return engine.run_sync(ingest_datasource_idempotent(datasource=datasource, storage=storage,
+                                                            client=engine.client_for(datasource), **scope))
+    finally:
+        engine.close()
 
 
 @pytest.fixture
@@ -957,7 +968,7 @@ def sf_dev2120_storage(sf_transient_schema: str, sf_datasource: DatasourceConfig
         base = lib_model(data_source="sf_test")
         run_sync(storage.save_model(base.model_copy(update={
             "columns": [c.model_copy(update={"sql": c.name}) for c in base.columns]})))
-        for model in ingest_datasource(datasource=sf_datasource, include_tables=["docs"]):
+        for model in run_sync(_ingest(sf_datasource, include_tables=["docs"])):
             run_sync(storage.save_model(model))
         yield storage
     finally:
@@ -1026,7 +1037,7 @@ def sf_lists(_sf_list_tables, sf_datasource: DatasourceConfig, tmp_path):
 
 
 def _elements(datasource: DatasourceConfig, table: str) -> dict[str, tuple[DataType, DataType | None]]:
-    (model,) = ingest_datasource(datasource=datasource, include_tables=[table])
+    (model,) = run_sync(_ingest(datasource, include_tables=[table]))
     return {c.name: (c.type, c.element_type) for c in model.columns if c.name != "id"}
 
 
@@ -1068,7 +1079,7 @@ def test_structured_array_needs_no_inference_query(sf_lists, sf_datasource: Data
 ])
 def test_list_functions_on_a_structured_array(sf_lists, sf_datasource: DatasourceConfig, filters, kept) -> None:
     storage, _ = sf_lists
-    (model,) = ingest_datasource(datasource=sf_datasource, include_tables=["structured"])
+    (model,) = run_sync(_ingest(sf_datasource, include_tables=["structured"]))
     run_sync(storage.save_model(model))
     resp = run_sync(SlayerQueryEngine(storage=storage).execute(
         {"source_model": "structured", "dimensions": ["id"], "filters": filters}))
@@ -1079,10 +1090,10 @@ def test_reingest_reinfers_only_unknown_elements(sf_lists, sf_datasource: Dataso
     storage, cur = sf_lists
     cur.execute("CREATE OR REPLACE TABLE reingested CLONE inferred")  # a private copy: the seeded tables stay read-only
     try:
-        for model in ingest_datasource(datasource=sf_datasource, include_tables=["reingested"]):
+        for model in run_sync(_ingest(sf_datasource, include_tables=["reingested"])):
             run_sync(storage.save_model(model))
         cur.execute("INSERT INTO reingested SELECT 2, ARRAY_CONSTRUCT('x'), NULL, NULL, ARRAY_CONSTRUCT(7)")
-        run_sync(ingest_datasource_idempotent(datasource=sf_datasource, storage=storage, include_tables=["reingested"]))
+        _ingest_idempotent(datasource=sf_datasource, storage=storage, include_tables=["reingested"])
         model = run_sync(storage.get_model("reingested", data_source="sf_test"))
     finally:
         cur.execute("DROP TABLE IF EXISTS reingested")
@@ -1187,15 +1198,20 @@ def test_quoted_lowercase_table_ingests_types_and_queries(sf_datasource, sf_engi
     try:
         live = LiveDatasource(offline_reason=None, data_source="sf_test", db_type="snowflake", dialect="snowflake")
         sql_table = f'{sf_transient_schema}."lower_items"'
-        run_over_caller_engine(sf_engine, data_source="sf_test", work=lambda client: live.collect(
-            client=client, convert=lambda: live.source(sql_table=sql_table)))
+        caller = SlayerQueryEngine(storage=YAMLStorage(base_dir=str(tmp_path / "caller")),
+                                   client_factory=lambda ds: client.SlayerSQLClient(datasource=ds, sa_engine=sf_engine))
+        try:
+            caller.run_sync(live.collect(client=caller.client_for(sf_datasource),
+                                         convert=lambda: live.source(sql_table=sql_table)))
+        finally:
+            caller.close()
         source = live.source(sql_table=sql_table)
         assert isinstance(source, LiveSource)
         assert source.column("qty") == (DataType.INT, None)
         storage = YAMLStorage(base_dir=str(tmp_path))
         run_sync(storage.save_datasource(sf_datasource))
-        run_sync(ingest_datasource_idempotent(datasource=sf_datasource, storage=storage, schema=sf_transient_schema,
-                                              include_tables=["lower_items"]))
+        _ingest_idempotent(datasource=sf_datasource, storage=storage, schema=sf_transient_schema,
+                           include_tables=["lower_items"])
         model = run_sync(storage.get_model("lower_items"))
         assert model is not None
         assert model.sql_table == f'{sf_transient_schema}."lower_items"'

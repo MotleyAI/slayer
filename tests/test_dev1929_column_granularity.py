@@ -1,4 +1,4 @@
-"""DEV-1929: a model column carries a time-bucket ``granularity``, and a finer /
+"""A model column carries a time-bucket ``granularity``, and a finer /
 non-nesting time dimension over a bucketed model column — hand-set, query-backed
 cache, or sibling-stage stand-in — is the same typed re-bucketing error as over a
 stage column. Same or nesting-coarser still binds and executes.
@@ -590,8 +590,8 @@ class TestMCPSurfaces:
             server, _storage = await self._server(tmp)
             await _call(server, name="edit_model", arguments={
                 "model_name": "orders", "columns": [{"name": "created_at", "granularity": "month"}]})
-            out = await _call(server, name="inspect_model", arguments={
-                "model_name": "orders", "format": "json"})
+            out = await _call(server, name="inspect", arguments={
+                "entity_type": "model", "reference": "orders", "compact": False, "format": "json"})
             cols = {c["name"]: c for c in json.loads(out)["columns"]}
             assert cols["created_at"].get("granularity") == "month"
             assert "granularity" not in cols["note"]

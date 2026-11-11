@@ -22,7 +22,6 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.async_utils import run_sync
 from slayer.core.models import DatasourceConfig, ModelMeasure
-from slayer.live_schema.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.flight import _flight_sql_pb2 as fsql_pb
 from slayer.flight.handlers import FlightHandlers
@@ -127,7 +126,13 @@ async def build_store(base: Path, *, extra: Iterable[str] = ()) -> FacadeStore:
     ds = DatasourceConfig(name=DS, type="duckdb", database=db)
     storage = YAMLStorage(base_dir=str(base / "store"))
     await storage.save_datasource(ds)
-    for model in ingest_datasource(datasource=ds):
+    ingester = SlayerQueryEngine(storage=storage)
+    try:
+        models = await ingester.ingest(ds)
+    finally:
+        await ingester.aclose()
+        ingester.close()
+    for model in models:
         if model.name in SAVED_MEASURES:
             model = model.model_copy(update={"measures": SAVED_MEASURES[model.name]})
         await storage.save_model(model)

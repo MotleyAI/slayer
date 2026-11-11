@@ -492,7 +492,6 @@ class TestCliEntryPoint:
                 variables=None,
                 variables_json=None,
                 storage=d,
-                models_dir=None,
                 dry_run=True,
                 explain=False,
                 format="table",

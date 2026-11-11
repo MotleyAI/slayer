@@ -140,11 +140,11 @@ async def test_mcp_tool_calls_counted_once_each(store: str, started) -> None:
     async with create_connected_server_and_client_session(server) as session:
         await session.call_tool("list_datasources", {})
         await session.call_tool("list_datasources", {})
-        await session.call_tool("inspect_model", {"model_name": "no_such_model"})
+        await session.call_tool("inspect", {"entity_type": "model", "reference": "no_such_model", "compact": False})
     end_process()
     report = show()
     assert usage(report, "mcp:list_datasources") == {"ok": 2, "errors": {}}
-    assert total(usage(report, "mcp:inspect_model")) == 1
+    assert total(usage(report, "mcp:inspect")) == 1
 
 
 async def test_mcp_unlisted_exception_counted_as_other(

@@ -131,7 +131,7 @@ async def test_required_var_alongside_block_raises_and_names_it():
 
 
 async def test_dimension_query_over_block_model_resolves_types():
-    # Exercises get_column_types: blocks must collapse under the defaults probe.
+    # Exercises get_result_column_types: blocks must collapse under the defaults probe.
     engine, tmp = await _engine_with(_block_model())
     try:
         q = SlayerQuery(source_model="orders", dimensions=["region"])
@@ -189,7 +189,7 @@ async def test_bare_var_default_satisfies_required_at_runtime():
         tmp.cleanup()
 
 
-async def test_get_column_types_probes_scalar_and_date_and_list_contexts():
+async def test_get_result_column_types_probes_scalar_and_date_and_list_contexts():
     # The defaults probe must yield valid SQL across all optional-context shapes:
     # a scalar-cast block, a date-range block, and an IN-list block.
     model = SlayerModel(
@@ -209,7 +209,7 @@ async def test_get_column_types_probes_scalar_and_date_and_list_contexts():
     engine, tmp = await _engine_with(model)
     try:
         # All optional blocks collapse under the empty defaults probe -> valid SQL.
-        types = await engine.get_column_types("orders")
+        types = await engine.get_result_column_types("orders")
         assert isinstance(types, dict)  # degrades gracefully, never raises
     finally:
         tmp.cleanup()

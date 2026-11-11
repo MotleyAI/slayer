@@ -12,7 +12,6 @@ from sqlglot import exp
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.errors import ExplainUnsupportedError
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -181,15 +180,6 @@ def test_tsql_build_covar_2arg_covar_pop_uses_varp() -> None:
     out = d.build_covar_2arg(agg_name="covar_pop", col_expr=exp.column("amount"), other_expr=exp.column("quantity"))
     sql = out.sql(dialect="tsql").upper()
     assert "VARP" in sql
-
-
-# build_explain_sql — deprecated; SHOWPLAN is session state it cannot express
-
-
-def test_tsql_build_explain_sql_refuses() -> None:
-    dialect = TsqlDialect()
-    with pytest.warns(FutureWarning, match="explain_statements"), pytest.raises(ExplainUnsupportedError):
-        dialect.build_explain_sql("SELECT 1")
 
 
 # Outer wrap: T-SQL accepts WITH only as a statement prefix, so the chain's CTEs

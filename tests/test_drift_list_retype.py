@@ -19,7 +19,6 @@ from slayer.core.errors import SchemaDriftError
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.live_schema import ingestion
-from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
@@ -52,6 +51,7 @@ async def _env(model: SlayerModel) -> AsyncGenerator[tuple[SlayerQueryEngine, Da
         try:
             yield engine, ds
         finally:
+            await engine.aclose()
             engine.close()
             engine_factory.invalidate_engine(ds)
 
@@ -112,7 +112,7 @@ class TestReingest:
     async def test_re_ingest_re_types_in_place(self, stored: DataType) -> None:
         mine = Column(name="scores", type=stored, description="Points per game", label="Scores")
         async with _env(_players(mine)) as (engine, ds):
-            await ingest_datasource_idempotent(datasource=ds, storage=engine.storage, include_tables=["players"])
+            await engine.ingest_idempotent(ds, include_tables=["players"])
             loaded = await engine.storage.get_model("players", data_source="ds")
         assert loaded is not None
         scores = loaded.get_column("scores")
@@ -126,7 +126,7 @@ class TestReingest:
     ], ids=["granularity", "format"])
     async def test_re_ingest_drops_scalar_only_fields(self, mine: Column) -> None:
         async with _env(_players(mine)) as (engine, ds):
-            await ingest_datasource_idempotent(datasource=ds, storage=engine.storage, include_tables=["players"])
+            await engine.ingest_idempotent(ds, include_tables=["players"])
             loaded = await engine.storage.get_model("players", data_source="ds")
         assert loaded is not None
         scores = loaded.get_column("scores")
@@ -136,7 +136,7 @@ class TestReingest:
     async def test_re_ingest_keeps_only_count(self) -> None:
         mine = Column(name="scores", type=DataType.DOUBLE, allowed_aggregations=["sum", "avg", "count"])
         async with _env(_players(mine)) as (engine, ds):
-            await ingest_datasource_idempotent(datasource=ds, storage=engine.storage, include_tables=["players"])
+            await engine.ingest_idempotent(ds, include_tables=["players"])
             loaded = await engine.storage.get_model("players", data_source="ds")
         assert loaded is not None
         scores = loaded.get_column("scores")
@@ -146,7 +146,7 @@ class TestReingest:
     async def test_a_derived_column_named_like_a_live_list_untouched(self) -> None:
         derived = Column(name="scores", sql="CAST(id AS DOUBLE)", type=DataType.DOUBLE)
         async with _env(_players(derived)) as (engine, ds):
-            await ingest_datasource_idempotent(datasource=ds, storage=engine.storage, include_tables=["players"])
+            await engine.ingest_idempotent(ds, include_tables=["players"])
             loaded = await engine.storage.get_model("players", data_source="ds")
         assert loaded is not None
         scores = loaded.get_column("scores")
@@ -191,7 +191,7 @@ class TestSqlMode:
     async def test_re_ingest_skips_a_parameterized_model(self) -> None:
         sql = "SELECT id, scores FROM players WHERE id > {min_id}"
         async with _env(stale_sql_model(sql=sql, column="scores", data_source="ds")) as (engine, ds):
-            result = await ingest_datasource_idempotent(datasource=ds, storage=engine.storage, include_tables=["players"])
+            result = await engine.ingest_idempotent(ds, include_tables=["players"])
         assert [e for e in result.errors if e.model_name == MODEL] == []
 
     async def test_re_ingest_keeps_an_edit_made_meanwhile(self) -> None:
@@ -207,7 +207,7 @@ class TestSqlMode:
                 return result
 
             with patch.object(ingestion, "sql_result_types", side_effect=edited_meanwhile):
-                await ingest_datasource_idempotent(datasource=ds, storage=engine.storage, include_tables=["players"])
+                await engine.ingest_idempotent(ds, include_tables=["players"])
             loaded = await engine.storage.get_model(MODEL, data_source="ds")
         assert loaded is not None
         scores = loaded.get_column("scores")

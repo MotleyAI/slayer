@@ -24,8 +24,6 @@ from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._pg_helpers import pg_database
 
-pytestmark = pytest.mark.filterwarnings("ignore::FutureWarning")
-
 # Clean paths: an unclosed connection or transport fails the test.
 _NO_LEAKS = pytest.mark.filterwarnings(
     "error::ResourceWarning", "error::pytest.PytestUnraisableExceptionWarning",

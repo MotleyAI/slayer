@@ -22,7 +22,7 @@ from slayer.cube.models import CubeProject
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject
 from slayer.dbt.parser import parse_dbt_project
-from slayer.engine.query_engine import SlayerQueryEngine, run_over_caller_engine
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.importers.column_types import LiveDatasource, LiveSource
 from slayer.ingest_report import ConversionResult
 from slayer.osi.converter import OsiToSlayerConverter
@@ -30,7 +30,7 @@ from slayer.osi.models import OSIDocument
 from slayer.database.client import DelegatingSqlClient, ResultColumnType, SqlClient, TypeProbe
 from slayer.sql.dialects import SqliteDialect
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._dev2171_fixtures import column, typing_notes, write_yaml
+from tests._dev2171_fixtures import collect_over_engine, column, typing_notes, write_yaml
 from tests._engine_helpers import disposable_engine
 from tests._osi_helpers import ds, f, flat, rel
 
@@ -180,7 +180,7 @@ def _schemas(live: Live) -> None:
 def _cube(live: Live, *cubes: dict[str, Any]) -> tuple[dict[str, SlayerModel], list[str]]:
     project = CubeProject.model_validate({"cubes": list(cubes)})
     converter = CubeToSlayerConverter(project=project, data_source=DS)
-    run_over_caller_engine(live.engine, data_source=DS, work=lambda client: converter.collect_metadata(client=client))
+    collect_over_engine(collect=lambda client: converter.collect_metadata(client=client), engine=live.engine)
     result = converter.convert()
     return {m.name: m for m in result.models}, [i.message for i in result.report.issues]
 
@@ -188,14 +188,16 @@ def _cube(live: Live, *cubes: dict[str, Any]) -> tuple[dict[str, SlayerModel], l
 def _dbt(live: Live, semantic_models: list[dict[str, Any]],
          regular_models: Iterable[dict[str, Any]] = ()) -> tuple[dict[str, SlayerModel], list[str]]:
     project = DbtProject.model_validate({"semantic_models": semantic_models, "regular_models": list(regular_models)})
-    result = DbtToSlayerConverter(project=project, data_source=DS, sa_engine=live.engine,
-                                  target_dialect=live.engine.dialect.name).convert()
+    converter = DbtToSlayerConverter(project=project, data_source=DS, target_dialect=live.engine.dialect.name)
+    collect_over_engine(collect=lambda client: converter.collect_metadata(client=client), engine=live.engine)
+    result = converter.convert()
     return {m.name: m for m in result.models}, _messages(result)
 
 
 def _osi(live: Live, document: dict[str, Any]) -> tuple[dict[str, SlayerModel], list[str]]:
-    result = OsiToSlayerConverter(documents=[OSIDocument.model_validate(document)], data_source=DS,
-                                  sa_engine=live.engine).convert()
+    converter = OsiToSlayerConverter(documents=[OSIDocument.model_validate(document)], data_source=DS)
+    collect_over_engine(collect=lambda client: converter.collect_metadata(client=client), engine=live.engine)
+    result = converter.convert()
     return {m.name: m for m in result.models}, _messages(result)
 
 
@@ -415,8 +417,8 @@ class _Collected:
             if expr is not None and isinstance(found, LiveSource):
                 found.probe(expr)
 
-        run_over_caller_engine(self._live.engine, data_source=DS, work=lambda client: datasource.collect(
-            client=_ProbeRecorder(inner=client, probes=self.probes), convert=convert))
+        collect_over_engine(collect=lambda client: datasource.collect(
+            client=_ProbeRecorder(inner=client, probes=self.probes), convert=convert), engine=self._live.engine)
         return datasource.source(sql_table=self._sql_table, sql=self._sql)
 
     def probe(self, expr: str) -> tuple[DataType, DataType | None] | None:
@@ -543,8 +545,10 @@ def _dbt_files(live: Live, tmp_path: Path, *, quoting: dict[str, Any] | None, in
         "version": 2, "semantic_models": [{"name": "items", "model": "ref('OrderItems')",
                                            "dimensions": [{"name": "qty", "type": "categorical"}]}]}
     write_yaml(root / "models" / "schema.yml", schema)
-    result = DbtToSlayerConverter(project=parse_dbt_project(str(root)), data_source=DS, sa_engine=live.engine,
-                                  include_hidden_models=include_hidden, target_dialect="postgres").convert()
+    converter = DbtToSlayerConverter(project=parse_dbt_project(str(root)), data_source=DS,
+                                     include_hidden_models=include_hidden, target_dialect="postgres")
+    collect_over_engine(collect=lambda client: converter.collect_metadata(client=client), engine=live.engine)
+    result = converter.convert()
     return {m.name: m for m in result.models}
 
 

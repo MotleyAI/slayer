@@ -68,9 +68,9 @@ For a query-backed model the engine SHALL stamp each cached column produced by a
 - **WHEN** a query-backed model `yearly` is created over the query-backed model `monthly` with a `year` time dimension on `created_at`
 - **THEN** `yearly`'s cached `created_at` has granularity `year`, and a `day` time dimension over `yearly` is the typed re-bucketing error
 
-### Requirement: Model-editing surfaces round-trip the granularity
+### Requirement: Model-editing and inspection surfaces round-trip the granularity
 
-The MCP `create_model` and `edit_model` tools SHALL accept `granularity` on a column definition and document it among the column fields; `edit_model` SHALL preserve an existing granularity when a partial update omits it, clear it when the update passes `null`, and report the construction error when the update would put a granularity on a non-temporal column. `inspect_model`'s column summary SHALL show the granularity when one is set.
+The MCP `create_model` and `edit_model` tools SHALL accept `granularity` on a column definition and document it among the column fields; `edit_model` SHALL preserve an existing granularity when a partial update omits it, clear it when the update passes `null`, and report the construction error when the update would put a granularity on a non-temporal column. The column summary of `inspect` of a model SHALL show the granularity when one is set.
 
 #### Scenario: edit_model sets, preserves and clears a granularity
 
@@ -82,7 +82,7 @@ The MCP `create_model` and `edit_model` tools SHALL accept `granularity` on a co
 - **WHEN** `edit_model` upserts a `string` column with `granularity: "month"`
 - **THEN** the tool reports an invalid-column error naming the column, `month` and the type, and the model is not changed
 
-#### Scenario: inspect_model shows a set granularity
+#### Scenario: inspect shows a set granularity
 
-- **WHEN** a column with `granularity: month` is inspected
+- **WHEN** a column with `granularity: month` is inspected through `inspect` of its model
 - **THEN** its summary entry carries `granularity: month`, and a column without one carries no such entry

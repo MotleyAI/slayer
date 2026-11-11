@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from slayer.core.enums import DataType
 from slayer.core.errors import NameCollisionError, UnresolvedPlaceholderError
 from slayer.core.models import ModelMeasure
 from slayer.core.query import SlayerQuery
@@ -240,7 +241,7 @@ class TestSavedMeasures:
         await exec_engine.save_model(orders_model().model_copy(update={
             "measures": [ModelMeasure(name="amt_scaled", formula="sum(amount) * {k}")],
         }))
-        assert (await exec_engine.get_column_types("orders")).get("amount") == "number"
+        assert (await exec_engine.get_result_column_types("orders"))["amount"].type in (DataType.INT, DataType.DOUBLE)
 
 
 class TestErrors:

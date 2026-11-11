@@ -867,7 +867,6 @@ class TestCliMigrateTypes:
             command="storage",
             subcommand="migrate-types",
             storage=storage_with_v4_model["base"],
-            models_dir=None,
             dry_run=True,
             data_source=None,
         )
@@ -886,7 +885,6 @@ class TestCliMigrateTypes:
             command="storage",
             subcommand="migrate-types",
             storage=storage_with_v4_model["base"],
-            models_dir=None,
             dry_run=False,
             data_source=None,
         )

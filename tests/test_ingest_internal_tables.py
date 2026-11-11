@@ -877,7 +877,6 @@ def _args(workspace: Path, **overrides) -> SimpleNamespace:
         include_views=True,
         surface_internals=False,
         storage=str(workspace / "storage"),
-        models_dir=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -1014,7 +1013,6 @@ class TestDatasourcesCreateReporting:
             surface_internals=False,
             yes=True,
             storage=str(workspace / "storage"),
-            models_dir=None,
         )
         base.update(overrides)
         return SimpleNamespace(**base)
