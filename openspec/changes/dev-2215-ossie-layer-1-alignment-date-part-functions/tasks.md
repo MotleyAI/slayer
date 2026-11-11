@@ -57,4 +57,4 @@
 
 ## 10. Tracker follow-ups (after merge)
 
-- [ ] 10.1 Post comments: on DEV-1768 (granularity calls → TimeDimension rule now `date_trunc`), DEV-2098 (re-spell examples), DEV-2202 (exporter writes `DATE_TRUNC`), DEV-1731 (absorbed), DEV-1920 (the reader's legacy-span machinery is here; coordinate migration numbering), and DEV-2220 (release-note lines: the silent `month(x)` dimension change, `first`/`last` NULL keys, case rules, the `agg` reservation). Verify that each comment is posted.
+- [x] 10.1 Post comments: on DEV-1768 (granularity calls → TimeDimension rule now `date_trunc`), DEV-2098 (re-spell examples), DEV-2202 (exporter writes `DATE_TRUNC`), DEV-1731 (absorbed), DEV-1920 (the reader's legacy-span machinery is here; coordinate migration numbering), and DEV-2220 (release-note lines: the silent `month(x)` dimension change, `first`/`last` NULL keys, case rules, the `agg` reservation). Verify that each comment is posted.
