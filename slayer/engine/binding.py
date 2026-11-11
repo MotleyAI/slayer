@@ -939,7 +939,8 @@ def _resolve_dotted(
     parts = drop_root_qualifier(parts, root_spelling(scope), quoted=original_quoted)
     quoted = original_quoted[len(original_parts) - len(parts):]
     if alias_map:
-        for path, flags in dict.fromkeys(((parts, quoted), (original_parts, original_quoted))):
+        candidates = [(parts, quoted)] + ([(original_parts, original_quoted)] if parts != original_parts else [])
+        for path, flags in candidates:
             alias = match_path(parts=path, declared=alias_map, quoted=flags)
             if alias is not None:
                 return alias_map[alias]
