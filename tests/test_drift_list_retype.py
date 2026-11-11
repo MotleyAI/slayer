@@ -32,7 +32,9 @@ from tests._sql_mode_retype_fixtures import (
 )
 
 LIVE = ("CREATE TABLE players (id INTEGER, team VARCHAR, scores INTEGER[])",
-        "INSERT INTO players VALUES (1, 'A', [1, 2]), (2, 'B', [])")
+        "INSERT INTO players VALUES (1, 'A', [1, 2]), (2, 'B', [])",
+        "CREATE TABLE events (id INTEGER, seen TIMESTAMP[])",
+        "INSERT INTO events VALUES (1, ['2024-01-05 10:00:00'::TIMESTAMP]), (2, [])")
 
 
 @contextlib.asynccontextmanager
@@ -152,6 +154,35 @@ class TestReingest:
         scores = loaded.get_column("scores")
         assert scores is not None
         assert scores.type is DataType.DOUBLE
+
+    async def test_re_typing_field_effects_converge(self) -> None:
+        """Twice re-ingested: kept fields survive, scalar-only fields drop, the second run changes nothing."""
+        seen = Column(name="seen", type=DataType.TIMESTAMP, granularity="month",
+                      format=NumberFormat(type=NumberFormatType.INTEGER), description="Sightings",
+                      label="Seen", meta={"owner": "ops"}, hidden=True, sql="seen", unique=True,
+                      allowed_aggregations=["min", "max", "count"])
+        events = SlayerModel(name="events", sql_table="events", data_source="ds",
+                             columns=[Column(name="id", type=DataType.INT, primary_key=True), seen])
+        async with _env(events) as (engine, ds):
+            await engine.ingest_idempotent(ds, include_tables=["events"])
+            first = await engine.storage.get_model("events", data_source="ds")
+            await engine.ingest_idempotent(ds, include_tables=["events"])
+            second = await engine.storage.get_model("events", data_source="ds")
+        assert first is not None
+        assert second is not None
+        first_seen, key = first.get_column("seen"), first.get_column("id")
+        assert first_seen is not None
+        assert key is not None
+        assert (first_seen.type, first_seen.element_type) == (DataType.ARRAY, DataType.TIMESTAMP)
+        assert (first_seen.granularity, first_seen.format) == (None, None)
+        assert first_seen.allowed_aggregations == ["count"]
+        assert (first_seen.description, first_seen.label, first_seen.meta, first_seen.hidden) == (
+            "Sightings", "Seen", {"owner": "ops"}, True)
+        assert (first_seen.sql, first_seen.primary_key, first_seen.unique) == ("seen", False, True)
+        assert key.primary_key is True
+        second_seen = second.get_column("seen")
+        assert second_seen is not None
+        assert second_seen.model_dump() == first_seen.model_dump()
 
 
 _SQL_SHAPES = sql_shapes(table="players", column="scores", untypeable="list_reverse")

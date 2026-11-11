@@ -1,0 +1,306 @@
+{
+  "collect_pk": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [
+        "team"
+      ],
+      "measures": [
+        {
+          "formula": "collect(id)",
+          "name": "c"
+        }
+      ],
+      "source_model": "contractors"
+    },
+    "rows": [
+      {
+        "c": [
+          "1",
+          "2"
+        ],
+        "team": "A"
+      },
+      {
+        "c": [
+          "3",
+          "4",
+          "5"
+        ],
+        "team": "B"
+      }
+    ]
+  },
+  "contains_filter": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [
+        "name"
+      ],
+      "filters": [
+        "contains_any(skills, ['go', 'sql']) and not contains(skills, 'go')"
+      ],
+      "measures": [],
+      "source_model": "contractors"
+    },
+    "rows": [
+      {
+        "name": "Bob"
+      }
+    ]
+  },
+  "dev_skills_count": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [],
+      "measures": [
+        {
+          "formula": "count(skills)",
+          "name": "n"
+        }
+      ],
+      "source_model": "dev_skills"
+    },
+    "rows": [
+      {
+        "n": "4"
+      }
+    ]
+  },
+  "dev_skills_null": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [
+        "name"
+      ],
+      "filters": [
+        "skills IS NULL"
+      ],
+      "measures": [],
+      "source_model": "dev_skills"
+    },
+    "rows": [
+      {
+        "name": "Dee"
+      }
+    ]
+  },
+  "element_filter": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [
+        "name"
+      ],
+      "filters": [
+        "skills.value = 'sql'"
+      ],
+      "measures": [],
+      "source_model": "contractors"
+    },
+    "rows": [
+      {
+        "name": "Ann"
+      },
+      {
+        "name": "Bob"
+      }
+    ]
+  },
+  "go_teams": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [
+        "team"
+      ],
+      "measures": [
+        {
+          "formula": "count(*)",
+          "name": "n"
+        }
+      ],
+      "source_model": "go_teams"
+    },
+    "rows": [
+      {
+        "n": "1",
+        "team": "A"
+      },
+      {
+        "n": "1",
+        "team": "B"
+      }
+    ]
+  },
+  "memory:m_assignments": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [
+        "name"
+      ],
+      "measures": [
+        {
+          "formula": "collect(assignments.id)",
+          "name": "assignment_ids"
+        }
+      ],
+      "source_model": "contractors"
+    },
+    "rows": [
+      {
+        "assignment_ids": [
+          "1",
+          "2"
+        ],
+        "name": "Ann"
+      },
+      {
+        "assignment_ids": [
+          "3"
+        ],
+        "name": "Bob"
+      },
+      {
+        "assignment_ids": [
+          "4"
+        ],
+        "name": "Cid"
+      },
+      {
+        "assignment_ids": [
+          "5"
+        ],
+        "name": "Eve"
+      },
+      {
+        "assignment_ids": [],
+        "name": "Dee"
+      }
+    ]
+  },
+  "score_elements": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [
+        "team"
+      ],
+      "measures": [
+        {
+          "formula": "collect(scores.value)",
+          "name": "c"
+        },
+        {
+          "formula": "sum(scores.value)",
+          "name": "s"
+        }
+      ],
+      "source_model": "contractors"
+    },
+    "rows": [
+      {
+        "c": [
+          "1",
+          "3",
+          "9"
+        ],
+        "s": "13",
+        "team": "A"
+      },
+      {
+        "c": [
+          "5"
+        ],
+        "s": "5",
+        "team": "B"
+      }
+    ]
+  },
+  "stored_ids": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [
+        "team"
+      ],
+      "measures": [
+        "ids"
+      ],
+      "source_model": "contractors"
+    },
+    "rows": [
+      {
+        "ids": [
+          "1",
+          "2"
+        ],
+        "team": "A"
+      },
+      {
+        "ids": [
+          "3",
+          "4",
+          "5"
+        ],
+        "team": "B"
+      }
+    ]
+  },
+  "stored_skill_set": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [
+        "team"
+      ],
+      "measures": [
+        "skill_set"
+      ],
+      "source_model": "contractors"
+    },
+    "rows": [
+      {
+        "skill_set": [
+          "go",
+          "sql"
+        ],
+        "team": "A"
+      },
+      {
+        "skill_set": [
+          "go"
+        ],
+        "team": "B"
+      }
+    ]
+  },
+  "stored_with_skills": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [
+        "team"
+      ],
+      "measures": [
+        "with_skills"
+      ],
+      "source_model": "contractors"
+    },
+    "rows": [
+      {
+        "team": "A",
+        "with_skills": "2"
+      },
+      {
+        "team": "B",
+        "with_skills": "2"
+      }
+    ]
+  }
+}

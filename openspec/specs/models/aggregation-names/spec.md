@@ -23,6 +23,11 @@ A custom model aggregation SHALL be accepted when its name matches a Mode-B scal
 - **WHEN** a stored model `t` defines the aggregation `reverse` with formula `SUM({value})` and a query asks for `reverse(a)` and `t.reverse(a)`
 - **THEN** the model loads and both measures return the sum of `a`
 
+#### Scenario: Stored custom aggregation named like a list function answers
+
+- **WHEN** a model stored by the previous release defines the aggregation `contains` with formula `SUM({value})` and a query asks for `contains(a)`
+- **THEN** the model loads and the measure returns the sum of `a`
+
 #### Scenario: Another model keeps the library function
 
 - **WHEN** `orders` defines the aggregation `reverse` and a query on `orders` asks for the dimension `reverse(customers.name)` where `customers` does not define it
@@ -65,12 +70,17 @@ A custom model aggregation SHALL be accepted when its name matches a Mode-B scal
 
 ### Requirement: Shadowing a library function is announced every time
 
-Saving or loading a model that defines an aggregation shadowing a library function, and every query response in which a call resolved to such an aggregation instead of the library function, SHALL carry a structured warning naming the model, the aggregation and the shadowed function, both as a Python warning and on the response's warnings. This SHALL hold for executed, dry-run and EXPLAIN queries and for a response served from the result cache. A formula-backed definition of a built-in aggregation SHALL NOT carry this warning.
+Saving or loading a model that defines an aggregation shadowing a library function, and every query response in which a call resolved to such an aggregation instead of the library function, SHALL carry a structured warning naming the model, the aggregation and the shadowed function, both as a Python warning and on the response's warnings. This SHALL hold for executed, dry-run and EXPLAIN queries and for a response served from the result cache, over the Python API, REST and MCP. A formula-backed definition of a built-in aggregation SHALL NOT carry this warning.
 
 #### Scenario: Warning on every response
 
 - **WHEN** a model defining the aggregation `reverse` is saved, reloaded, and queried for `reverse(a)` twice with caching on
 - **THEN** the save, the load and both responses carry the shadow warning naming the model, `reverse` and the library function
+
+#### Scenario: Warning on dry run and over REST and MCP
+
+- **WHEN** the same query runs as a dry run, through the REST API and through the MCP `query` tool
+- **THEN** each response carries the shadow warning
 
 #### Scenario: No warning without a shadowing call
 

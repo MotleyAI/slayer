@@ -50,6 +50,11 @@ class TestCatalogs:
         table = next(t for t in schema.tables if t.name == "contractors")
         assert {m.name for m in table.metrics if m.name.startswith("skills_")} == {"skills_count", "skills_count_distinct"}
 
+    def test_a_sole_primary_key_offers_collect(self) -> None:
+        (schema,) = build_catalog(models_by_datasource={DS: [_model()]}).schemas
+        table = next(t for t in schema.tables if t.name == "contractors")
+        assert "id_collect" in {m.name for m in table.metrics}
+
     def test_grouped_catalog_keeps_list_models(self) -> None:
         catalog = build_catalog_grouped_by_schema(models_by_datasource={DS: [_model()]})
         tables = {t.name for s in catalog.schemas for t in s.tables}

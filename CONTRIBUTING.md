@@ -158,6 +158,7 @@ Publishing a GitHub release publishes to PyPI (`.github/workflows/publish.yml`),
 - Branch from `main`, and keep each PR focused on one feature or fix.
 - Include tests for new behaviour.
 - Update `docs/` when your change affects user-facing behaviour.
+- A PR that merges `1.x` forward must keep every `openspec/specs` requirement `1.x` added or changed, verbatim, or list it with a reason in `openspec/forward-merge-ledger.yaml`. CI checks this with `scripts/forward_merge_specs.py`.
 
 Before pushing, run:
 
