@@ -83,6 +83,14 @@ class OsiConversionError(Exception):
     """Raised when an OSI import set cannot be converted (e.g. duplicate names)."""
 
 
+def _repeated_names(names: list[str]) -> list[list[str]]:
+    """Groups of ``names`` equal up to case that occur more than once, each in declaration order."""
+    groups: dict[str, list[str]] = {}
+    for name in names:
+        groups.setdefault(name.casefold(), []).append(name)
+    return [g for g in groups.values() if len(g) > 1]
+
+
 # Unsafe in a model name, which becomes a YAML storage filename. ``__`` is allowed.
 _UNSAFE_MODEL_NAME_CHARS = (".", ":", "/", "\\", "\x00")
 
@@ -351,6 +359,7 @@ class OsiToSlayerConverter:
     def _convert(self) -> OsiConversionResult:
         self._reset()
         self._check_duplicate_dataset_names()
+        self._check_dataset_namespaces()
 
         for doc in self.documents:
             for ds in doc.datasets:
@@ -432,6 +441,20 @@ class OsiToSlayerConverter:
                 f"must be unique within a datasource."
             )
 
+    def _check_dataset_namespaces(self) -> None:
+        """A current-spec dataset's field and dataset-metric names are unique in any case (Ossie: unquoted names fold)."""
+        clashes = [
+            f"{ds.name!r}: {', '.join(repr(n) for n in group)}"
+            for doc in self.documents if not doc.legacy
+            for ds in doc.datasets
+            for group in _repeated_names([*(f.name for f in ds.fields or []), *(m.name for m in ds.metrics or [])])
+        ]
+        if clashes:
+            raise OsiConversionError(
+                "Within a dataset, field and dataset-metric names must be unique, and unquoted names match in any "
+                "case; repeated in " + "; ".join(clashes) + "."
+            )
+
     # ---- datasets -> models ----
 
     def _build_model(self, ds: OSIDataset, doc: OSIDocument) -> None:
@@ -504,13 +527,8 @@ class OsiToSlayerConverter:
         columns: list[Column] = []
         for field in ds.fields or []:
             col = self._field_column(field=field, ds=ds, model=model)
-            if col is None:
-                continue
-            if any(c.name == col.name for c in columns):
-                self._warn(f"Field {field.name!r} on {ds.name!r} is declared twice; keeping the first.",
-                           model_name=ds.name, category="duplicate_column")
-                continue
-            columns.append(col)
+            if col is not None:
+                columns.append(col)
         model.columns = columns
         self._apply_primary_key(model, ds)
         model.default_time_dimension = _first_time_dimension(model)
