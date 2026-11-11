@@ -75,7 +75,7 @@ def _chain_models(
             Column(name="geo", sql="geo", type=DataType.UNKNOWN),
         ],
         measures=[ModelMeasure(
-            name="aov", formula="amount:sum / *:count", type=DataType.DOUBLE
+            name="aov", formula="sum(amount) / count(*)", type=DataType.DOUBLE
         )],
     )
     customer_joins = (
@@ -145,7 +145,7 @@ async def _seeded_chain_engine(tmp_path) -> SlayerQueryEngine:
 def _q(source_model: str = "Invoice", **kw) -> SlayerQuery:
     base: dict = dict(
         source_model=source_model,
-        measures=[{"formula": "amount:sum", "name": "amt"}],
+        measures=[{"formula": "sum(amount)", "name": "amt"}],
     )
     base.update(kw)
     return SlayerQuery(**base)
@@ -200,7 +200,7 @@ async def _multi_engine(tmp_path, *, branches: int, safe: int) -> SlayerQueryEng
 
 def _root_q(**kw) -> SlayerQuery:
     base: dict = dict(
-        source_model="Root", measures=[{"formula": "amount:sum", "name": "amt"}]
+        source_model="Root", measures=[{"formula": "sum(amount)", "name": "amt"}]
     )
     base.update(kw)
     return SlayerQuery(**base)
@@ -424,7 +424,7 @@ class TestAdjacentParallelParity:
         target = SlayerModel(
             name="Target", sql_table="Target", data_source="test",
             columns=[_pk(), _t("grp"), _t("label"), _d("amount")],
-            measures=[ModelMeasure(name="aov", formula="amount:sum / *:count", type=DataType.DOUBLE)],
+            measures=[ModelMeasure(name="aov", formula="sum(amount) / count(*)", type=DataType.DOUBLE)],
         )
         root = SlayerModel(
             name="Root", sql_table="Root", data_source="test",
@@ -542,13 +542,13 @@ class TestUniformSurfaces:
         engine = await _chain_engine(tmp_path)
         short = _q(
             dimensions=["status"],
-            measures=[{"formula": "Consumer.amount:sum", "name": "s"},
-                      {"formula": "Consumer.*:count", "name": "c"}],
+            measures=[{"formula": "sum(Consumer.amount)", "name": "s"},
+                      {"formula": "count(Consumer.*)", "name": "c"}],
         )
         full = _q(
             dimensions=["status"],
-            measures=[{"formula": "Subscription.Customer.Consumer.amount:sum", "name": "s"},
-                      {"formula": "Subscription.Customer.Consumer.*:count", "name": "c"}],
+            measures=[{"formula": "sum(Subscription.Customer.Consumer.amount)", "name": "s"},
+                      {"formula": "count(Subscription.Customer.Consumer.*)", "name": "c"}],
         )
         await _assert_equiv(engine, short, full)
         # Both aggregates bind to the routed terminal, not the root — the SUM reads
@@ -588,12 +588,12 @@ class TestUniformSurfaces:
     async def test_short_form_main_time_dimension(self, tmp_path) -> None:
         engine = await _chain_engine(tmp_path)
         short = _q(
-            measures=[{"formula": "cumsum(amount:sum)", "name": "c"}],
+            measures=[{"formula": "cumsum(sum(amount))", "name": "c"}],
             time_dimensions=[{"dimension": "Consumer.signup_at", "granularity": "month"}],
             main_time_dimension="Consumer.signup_at",
         )
         full = _q(
-            measures=[{"formula": "cumsum(amount:sum)", "name": "c"}],
+            measures=[{"formula": "cumsum(sum(amount))", "name": "c"}],
             time_dimensions=[{
                 "dimension": "Subscription.Customer.Consumer.signup_at",
                 "granularity": "month",
@@ -617,15 +617,16 @@ class TestTypeAndOpaque:
         """A routed dimension's virtual column matches the full-path column, name
         and type alike (email is TEXT)."""
         engine = await _chain_engine(tmp_path)
-        short = await self._virtual_columns(engine, SlayerQuery(
-            source_model="Invoice", dimensions=["Consumer.email"],
-            measures=[{"formula": "*:count"}],
-        ))
-        full = await self._virtual_columns(engine, SlayerQuery(
-            source_model="Invoice",
-            dimensions=["Subscription.Customer.Consumer.email"],
-            measures=[{"formula": "*:count"}],
-        ))
+        short = await self._virtual_columns(engine, SlayerQuery.model_validate({
+            "source_model": "Invoice",
+            "dimensions": ["Consumer.email"],
+            "measures": [{"formula": "count(*)"}],
+        }))
+        full = await self._virtual_columns(engine, SlayerQuery.model_validate({
+            "source_model": "Invoice",
+            "dimensions": ["Subscription.Customer.Consumer.email"],
+            "measures": [{"formula": "count(*)"}],
+        }))
         assert short == full
         assert DataType.TEXT in short.values()
 
@@ -667,13 +668,14 @@ class TestSavedMeasureRouting:
 
     async def test_routed_short_form_round_trips_through_storage(self, tmp_path) -> None:
         engine = await _chain_engine(tmp_path)
-        qb = SlayerModel(name="qb", data_source="test", source_queries=[SlayerQuery(
-            source_model="Invoice", dimensions=["Consumer.name"],
-            measures=[{"formula": "*:count"}],
-        )])
+        qb = SlayerModel(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
+            "source_model": "Invoice",
+            "dimensions": ["Consumer.name"],
+            "measures": [{"formula": "count(*)"}],
+        })])
         await engine.save_model(qb)
         resp = await engine.execute(
-            query=SlayerQuery(source_model="qb", measures=[{"formula": "*:count"}]),
+            query=SlayerQuery.model_validate({"source_model": "qb", "measures": [{"formula": "count(*)"}]}),
             dry_run=True,
         )
         assert resp.sql is not None
@@ -681,7 +683,7 @@ class TestSavedMeasureRouting:
 
     async def test_rerooted_saved_measure_nested_routing_round_trips(self, tmp_path) -> None:
         """A re-rooted short-form saved measure (``Consumer.aov`` is itself a nested
-        ``amount:sum / *:count`` formula) persists and re-resolves on reload."""
+        ``sum(amount) / count(*)`` formula) persists and re-resolves on reload."""
         engine = await _chain_engine(tmp_path)
         qb = SlayerModel(name="qb", data_source="test", source_queries=[SlayerQuery(
             source_model="Invoice", dimensions=["status"],
@@ -689,7 +691,7 @@ class TestSavedMeasureRouting:
         )])
         await engine.save_model(qb)
         resp = await engine.execute(
-            query=SlayerQuery(source_model="qb", measures=[{"formula": "*:count"}]),
+            query=SlayerQuery.model_validate({"source_model": "qb", "measures": [{"formula": "count(*)"}]}),
             dry_run=True,
         )
         assert resp.sql is not None
@@ -722,15 +724,17 @@ class TestScoping:
         """A short form in a downstream stage (flat schema) is never routed past the stage
         boundary: it names a model no join path reaches from the stage, read only through aggregates."""
         engine = await _chain_engine(tmp_path)
-        inner = SlayerQuery(
-            name="s1", source_model="Invoice",
-            dimensions=["Subscription.Customer.Consumer.name"],
-            measures=[{"formula": "*:count"}],
-        )
-        outer = SlayerQuery(
-            source_model="s1", dimensions=["Consumer.email"],
-            measures=[{"formula": "*:count"}],
-        )
+        inner = SlayerQuery.model_validate({
+            "name": "s1",
+            "source_model": "Invoice",
+            "dimensions": ["Subscription.Customer.Consumer.name"],
+            "measures": [{"formula": "count(*)"}],
+        })
+        outer = SlayerQuery.model_validate({
+            "source_model": "s1",
+            "dimensions": ["Consumer.email"],
+            "measures": [{"formula": "count(*)"}],
+        })
         with pytest.raises(UnrelatedDatasetError):
             await engine.execute(query=[inner, outer], dry_run=True)
 
@@ -780,10 +784,11 @@ class TestNonRoutingUnchanged:
 
 class TestSchemaDriftRouting:
     def _qb(self) -> SlayerModel:
-        return SlayerModel(name="qb", data_source="test", source_queries=[SlayerQuery(
-            source_model="Invoice", dimensions=["Consumer.email"],
-            measures=[{"formula": "*:count"}],
-        )])
+        return SlayerModel(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
+            "source_model": "Invoice",
+            "dimensions": ["Consumer.email"],
+            "measures": [{"formula": "count(*)"}],
+        })])
 
     def _drops(self, models: list[SlayerModel]):
         edit = EditModelDelete(

@@ -94,12 +94,12 @@ PUSHED_FILTER = "customers.revenue > 0 or warehouses.code == 'X'"
 
 
 def _query(*, extra_filters: list | None = None) -> SlayerQuery:
-    return SlayerQuery(
-        source_model="orders",
-        dimensions=[{"formula": "status", "name": "status"}],
-        measures=[{"formula": "customers.revenue:sum"}],
-        filters=[PUSHED_FILTER, *(extra_filters or [])],
-    )
+    return SlayerQuery.model_validate({
+        "source_model": "orders",
+        "dimensions": [{"formula": "status", "name": "status"}],
+        "measures": [{"formula": "sum(customers.revenue)"}],
+        "filters": [PUSHED_FILTER, *(extra_filters or [])],
+    })
 
 
 _DDL = [
@@ -148,8 +148,8 @@ def _two_plan_query() -> SlayerQuery:
         source_model="orders",
         dimensions=[{"formula": "status", "name": "status"}],
         measures=[
-            {"formula": "customers.revenue:sum"},
-            {"formula": "shippers.cost:sum"},
+            {"formula": "sum(customers.revenue)"},
+            {"formula": "sum(shippers.cost)"},
         ],
         filters=["customers.revenue > 0 or shippers.cost > 0"],
     )
@@ -216,11 +216,11 @@ class TestExecuteEntryPoint:
 
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
-            clean = SlayerQuery(
-                source_model="orders",
-                dimensions=[{"formula": "status", "name": "status"}],
-                measures=[{"formula": "amount:sum", "name": "m0"}],
-            )
+            clean = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "dimensions": [{"formula": "status", "name": "status"}],
+                "measures": [{"formula": "sum(amount)", "name": "m0"}],
+            })
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 resp = await engine.execute(clean, dry_run=True)
@@ -266,19 +266,19 @@ class TestEmissionIsBoundaryNotRender:
     async def test_identical_text_at_different_locations_stays_two(self) -> None:
         """D8's identity is (location, text) — NOT text alone. Two stages each
         carrying the same filter text are two distinct user filters."""
-        inner = SlayerQuery(
-            name="s1",
-            source_model="orders",
-            dimensions=[{"formula": "status", "name": "status"}],
-            measures=[{"formula": "customers.revenue:sum"}],
-            filters=[PUSHED_FILTER],
-        )
-        outer = SlayerQuery(
-            source_model="orders",
-            dimensions=[{"formula": "status", "name": "status"}],
-            measures=[{"formula": "customers.revenue:sum"}],
-            filters=[PUSHED_FILTER],
-        )
+        inner = SlayerQuery.model_validate({
+            "name": "s1",
+            "source_model": "orders",
+            "dimensions": [{"formula": "status", "name": "status"}],
+            "measures": [{"formula": "sum(customers.revenue)"}],
+            "filters": [PUSHED_FILTER],
+        })
+        outer = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": [{"formula": "status", "name": "status"}],
+            "measures": [{"formula": "sum(customers.revenue)"}],
+            "filters": [PUSHED_FILTER],
+        })
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
             resp = await engine.execute([inner, outer], dry_run=True)
@@ -294,17 +294,15 @@ class TestEmissionIsBoundaryNotRender:
         entry's location must name the stage that pushed the filter, not
         whichever stage sits at the same input index."""
         # Input order [a, b, root]; topo order [b, a, root] — a reads from b.
-        stage_a = SlayerQuery(
-            name="a", source_model="b", measures=[{"formula": "*:count"}],
-        )
-        stage_b = SlayerQuery(
-            name="b",
-            source_model="orders",
-            dimensions=[{"formula": "status", "name": "status"}],
-            measures=[{"formula": "customers.revenue:sum"}],
-            filters=[PUSHED_FILTER],
-        )
-        root = SlayerQuery(source_model="a", measures=[{"formula": "*:count"}])
+        stage_a = SlayerQuery.model_validate({"name": "a", "source_model": "b", "measures": [{"formula": "count(*)"}]})
+        stage_b = SlayerQuery.model_validate({
+            "name": "b",
+            "source_model": "orders",
+            "dimensions": [{"formula": "status", "name": "status"}],
+            "measures": [{"formula": "sum(customers.revenue)"}],
+            "filters": [PUSHED_FILTER],
+        })
+        root = SlayerQuery.model_validate({"source_model": "a", "measures": [{"formula": "count(*)"}]})
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
             resp = await engine.execute(
@@ -394,12 +392,12 @@ class TestInternalFailuresRaise:
 
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
-            bad = SlayerQuery(
-                source_model="orders",
-                dimensions=[{"formula": "status", "name": "status"}],
-                measures=[{"formula": "customers.revenue:sum"}],
-                filters=["no_such_column == 'X'"],
-            )
+            bad = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "dimensions": [{"formula": "status", "name": "status"}],
+                "measures": [{"formula": "sum(customers.revenue)"}],
+                "filters": ["no_such_column == 'X'"],
+            })
             with pytest.raises(SlayerError):
                 await engine.execute(bad, dry_run=True)
 
@@ -459,7 +457,7 @@ class TestMcpEntryPoint:
                 "query": {
                     "source_model": "orders",
                     "dimensions": ["status"],
-                    "measures": [{"formula": "customers.revenue:sum"}],
+                    "measures": [{"formula": "sum(customers.revenue)"}],
                     "filters": [PUSHED_FILTER],
                 },
                 "dry_run": True,

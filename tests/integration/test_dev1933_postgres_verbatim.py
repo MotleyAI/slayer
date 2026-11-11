@@ -134,7 +134,7 @@ class TestPostgresVerbatimExecution:
                 )],
             ),
             dimensions=[ColumnRef(name="rx")],
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         result = await pg_env.execute(query=query)
         # No status matches the pattern, so REGEXP_REPLACE returns each unchanged.

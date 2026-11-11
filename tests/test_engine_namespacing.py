@@ -83,7 +83,7 @@ class TestSourceModelResolution:
         """Single ``orders`` across all datasources → bare ``source_model`` works."""
         engine, tmp = await _engine_with(_orders("db_a"), datasources=["db_a"])
         try:
-            q = SlayerQuery(source_model="orders", measures=[{"formula": "amount:sum"}])
+            q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
             resp = await engine.execute(q, dry_run=True)
             assert resp.sql is not None
             assert "amount" in resp.sql.lower()
@@ -98,10 +98,11 @@ class TestSourceModelResolution:
             datasources=["db_a", "db_b"],
         )
         try:
-            q = SlayerQuery(source_model="orders", measures=[{"formula": "amount:sum"}])
+            q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
             with pytest.raises(AmbiguousModelError) as exc:
                 await engine.execute(q, dry_run=True)
-            assert "db_a" in str(exc.value) and "db_b" in str(exc.value)
+            assert "db_a" in str(exc.value)
+            assert "db_b" in str(exc.value)
         finally:
             tmp.cleanup()
 
@@ -113,7 +114,7 @@ class TestSourceModelResolution:
         )
         try:
             await engine.storage.set_datasource_priority(["db_b", "db_a"])
-            q = SlayerQuery(source_model="orders", measures=[{"formula": "amount:sum"}])
+            q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
             resp = await engine.execute(q, dry_run=True)
             assert resp.sql is not None
             # db_b's table appears, not db_a's.
@@ -131,7 +132,7 @@ class TestSourceModelResolution:
         )
         try:
             await engine.storage.set_datasource_priority(["db_b"])
-            q = SlayerQuery(source_model="orders", measures=[{"formula": "amount:sum"}])
+            q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
             resp = await engine.execute(q, data_source="db_a", dry_run=True)
             assert resp.sql is not None
             assert "db_a.orders_t" in resp.sql
@@ -167,11 +168,11 @@ class TestJoinTargetResolution:
             datasources=["db_a", "db_b"],
         )
         try:
-            q = SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "amount:sum"}],
-                dimensions=["customers.region"],
-            )
+            q = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(amount)"}],
+                "dimensions": ["customers.region"],
+            })
             resp = await engine.execute(q, data_source="db_a", dry_run=True)
             assert resp.sql is not None
             # The db_a customers table is what got joined.
@@ -197,11 +198,11 @@ class TestJoinTargetResolution:
             datasources=["db_a", "db_b"],
         )
         try:
-            q = SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "amount:sum"}],
-                dimensions=["customers.region"],
-            )
+            q = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(amount)"}],
+                "dimensions": ["customers.region"],
+            })
             with pytest.raises((AmbiguousModelError, ValueError), match=r"customers"):
                 await engine.execute(q, data_source="db_a", dry_run=True)
         finally:
@@ -220,18 +221,18 @@ class TestRunByName:
         rev_a = SlayerModel(
             name="rev",
             data_source="db_a",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "amount:sum"}],
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(amount)"}],
+            })],
         )
         rev_b = SlayerModel(
             name="rev",
             data_source="db_b",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "amount:sum"}],
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(amount)"}],
+            })],
         )
         engine, tmp = await _engine_with(
             _orders("db_a"),
@@ -250,18 +251,18 @@ class TestRunByName:
         rev_a = SlayerModel(
             name="rev",
             data_source="db_a",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "amount:sum"}],
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(amount)"}],
+            })],
         )
         rev_b = SlayerModel(
             name="rev",
             data_source="db_b",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "amount:sum"}],
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(amount)"}],
+            })],
         )
         engine, tmp = await _engine_with(
             _orders("db_a", sql_table="db_a.orders_t"),
@@ -287,7 +288,7 @@ class TestRunByName:
 class TestCrossModelMeasureScoping:
     """Hop resolution inside cross-model measures must use the parent's
     ``data_source`` as the priority hint, exactly like the dimension path.
-    Without it, ``customers.revenue:sum`` against ``orders@db_a`` either
+    Without it, ``sum(customers.revenue)`` against ``orders@db_a`` either
     silently joins ``db_b.customers_t`` or raises ``AmbiguousModelError``
     when both ``customers@db_a`` and ``customers@db_b`` exist.
     """
@@ -309,10 +310,10 @@ class TestCrossModelMeasureScoping:
             datasources=["db_a", "db_b"],
         )
         try:
-            q = SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "customers.revenue:sum"}],
-            )
+            q = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(customers.revenue)"}],
+            })
             resp = await engine.execute(q, data_source="db_a", dry_run=True)
             assert resp.sql is not None
             assert "db_a.customers_t" in resp.sql
@@ -340,10 +341,10 @@ class TestCrossModelMeasureScoping:
             datasources=["db_a", "db_b"],
         )
         try:
-            q = SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "customers.revenue:sum"}],
-            )
+            q = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(customers.revenue)"}],
+            })
             with pytest.raises((AmbiguousModelError, ValueError), match=r"customers"):
                 await engine.execute(q, data_source="db_a", dry_run=True)
         finally:
@@ -367,8 +368,6 @@ class TestJoinTargetStrictWhenParentScoped:
         # We exercise the join-target resolver directly: it's called during
         # enrichment regardless of whether dimensions reference the joined
         # table, so a wrong choice here corrupts later phases.
-        from slayer.engine.query_engine import SlayerQueryEngine  # noqa: F401 (clarity)
-
         orders_a = _orders(
             "db_a",
             sql_table="db_a.orders_t",
@@ -391,11 +390,11 @@ class TestJoinTargetStrictWhenParentScoped:
             # The bare-name resolution gives db_b's customers (unique match).
             # The fix should make join_target resolution refuse to fall back
             # to that when the parent already declared a data_source.
-            q = SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "amount:sum"}],
-                dimensions=["customers.region"],
-            )
+            q = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(amount)"}],
+                "dimensions": ["customers.region"],
+            })
             with pytest.raises((AmbiguousModelError, ValueError), match=r"customers"):
                 await engine.execute(q, data_source="db_a", dry_run=True)
         finally:

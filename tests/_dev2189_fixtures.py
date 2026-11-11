@@ -99,7 +99,7 @@ def rls_models(*, data_source: str = "test") -> list[SlayerModel]:
 #: The query-backed model the ``query_backed`` shape reads (saved by the engine builders).
 QUERY_BACKED = SlayerModel.model_validate({
     "name": "spend", "data_source": "test",
-    "source_queries": [{"source_model": "orders", "dimensions": ["customer_id"], "measures": ["amount:sum"]}],
+    "source_queries": [{"source_model": "orders", "dimensions": ["customer_id"], "measures": ["sum(amount)"]}],
 })
 
 
@@ -244,15 +244,15 @@ def _q(body: dict[str, Any]) -> SlayerQuery:
 
 
 SHAPES: dict[str, Any] = {
-    "plain": _q({"source_model": "orders", "dimensions": ["status"], "measures": ["amount:sum"]}),
+    "plain": _q({"source_model": "orders", "dimensions": ["status"], "measures": ["sum(amount)"]}),
     "joined_dims": _q({"source_model": "orders", "dimensions": ["customers.name", "customers.regions.name"],
-                       "measures": ["amount:sum"]}),
+                       "measures": ["sum(amount)"]}),
     "multi_stage": [
-        {"name": "per_customer", "source_model": "orders", "dimensions": ["customer_id"], "measures": ["amount:sum"]},
-        {"source_model": "per_customer", "measures": [{"formula": "amount_sum:max", "name": "top"}]},
+        {"name": "per_customer", "source_model": "orders", "dimensions": ["customer_id"], "measures": ["sum(amount)"]},
+        {"source_model": "per_customer", "measures": [{"formula": "max(amount_sum)", "name": "top"}]},
     ],
-    "query_backed": _q({"source_model": "spend", "measures": [{"formula": "amount_sum:sum", "name": "total"}]}),
-    "sql_mode": _q({"source_model": "order_totals", "dimensions": ["customer_id"], "measures": ["total:sum"]}),
+    "query_backed": _q({"source_model": "spend", "measures": [{"formula": "sum(amount_sum)", "name": "total"}]}),
+    "sql_mode": _q({"source_model": "order_totals", "dimensions": ["customer_id"], "measures": ["sum(total)"]}),
     "semi_join": _q({"source_model": "customers", "dimensions": ["name"], "filters": ["orders.amount > 15"],
                      "measures": [{"formula": "count(*)", "name": "n"}]}),
     "list_unnest": _q({"source_model": "orders", "dimensions": ["tags.value"],
@@ -261,8 +261,8 @@ SHAPES: dict[str, Any] = {
                       "time_dimensions": [{"dimension": "time_spine.timestamp", "granularity": "month",
                                            "date_range": ["2025-01-01", "2025-03-31"]}]}),
     "cross_model": _q({"source_model": "orders", "dimensions": ["status"],
-                       "measures": [{"formula": "amount:sum / customers.id:count", "name": "r"}]}),
-    "paginated": _q({"source_model": "orders", "dimensions": ["status"], "measures": ["amount:sum"],
+                       "measures": [{"formula": "sum(amount) / count(customers.id)", "name": "r"}]}),
+    "paginated": _q({"source_model": "orders", "dimensions": ["status"], "measures": ["sum(amount)"],
                      "order": [{"column": "amount_sum", "direction": "desc"}], "limit": 1, "offset": 1}),
 }
 

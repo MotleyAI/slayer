@@ -29,26 +29,26 @@ def _q(**kw) -> SlayerQuery:
 
 def _cases() -> dict:
     band = {"expression": BAND35, "name": "band"}
-    cm_part = "customers.spend:sum(partition_by=customers.regions.name)"
+    cm_part = "sum(customers.spend, partition_by=customers.regions.name)"
     return {
         "filter/cross_model_partitioned": _q(
             dimensions=["customers.regions.name", "customers.tier"],
             filters=[f"{cm_part} > 100"],
-            measures=[ModelMeasure(formula="customers.spend:sum", name="sp")],
+            measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],
         ),
         "filter/computed_dim_mix_field": _q(
             dimensions=["region", "city", band],
             filters=["band == 1 or channel == 'app'"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ),
         "filter/computed_dim_mix_measure": _q(
             dimensions=["region", "city", band],
-            filters=["amount:sum(partition_by=city) > 45 or amount:sum > 55"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            filters=["sum(amount, partition_by=city) > 45 or sum(amount) > 55"],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ),
         "order/cross_model_partitioned": _q(
             dimensions=["customers.regions.name", "customers.tier"],
-            measures=[ModelMeasure(formula="customers.spend:sum", name="sp")],
+            measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],
             order=[{"column": cm_part, "direction": "desc"}],
         ),
     }

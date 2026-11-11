@@ -26,10 +26,10 @@ _MODEL_SETS = {
     "orders_wsum": customers_wsum_models,
 }
 _REGION_SUM = "sum(amount, partition_by=region)"
-_HEADLINE = ("customers.spend:weighted_avg("
+_HEADLINE = ("weighted_avg(customers.spend, "
              "weight=sum(amount, partition_by=customers.regions.name))")
 _MIXED_TWIN = "sum(customers.spend * sum(amount, partition_by=customers.regions.name))"
-_RANKED_TRANSFORM = ("customers.spend:weighted_avg("
+_RANKED_TRANSFORM = ("weighted_avg(customers.spend, "
                      "weight=rank(sum(amount, partition_by=customers.regions.name), direction='desc'))")
 _LOCAL_RANKED_TRANSFORM = f"weighted_avg(amount, weight=rank({_REGION_SUM}, direction='desc'))"
 

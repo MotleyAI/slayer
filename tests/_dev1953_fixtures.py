@@ -12,7 +12,7 @@ from tests._dev1847_fixtures import SPEND_BAND_EXPR, ModelMeasure, _SALES_ROWS_W
 
 UREG = {"expression": "upper(region)", "name": "ureg"}
 BAND = {"expression": SPEND_BAND_EXPR, "name": "spend_band"}
-AMOUNT = ModelMeasure(formula="amount:sum", name="a")
+AMOUNT = ModelMeasure(formula="sum(amount)", name="a")
 
 
 def cell_totals(key: Callable[[tuple], Tuple]) -> Dict[Tuple, Optional[float]]:

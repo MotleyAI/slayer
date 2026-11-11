@@ -102,8 +102,8 @@ def chain_models() -> list[SlayerModel]:
             Column(name="ordered_at", type=DataType.TEXT),
         ],
         measures=[
-            ModelMeasure(formula="amount:sum", name="revenue"),
-            ModelMeasure(formula="amount:avg", name="avg_amt"),
+            ModelMeasure(formula="sum(amount)", name="revenue"),
+            ModelMeasure(formula="avg(amount)", name="avg_amt"),
         ],
         joins=[
             ModelJoin(
@@ -285,7 +285,7 @@ def named_models() -> list[SlayerModel]:
             Column(name="name", type=DataType.TEXT),
             Column(name="score", type=DataType.INT),
         ],
-        measures=[ModelMeasure(formula="id:count", name="handled")],
+        measures=[ModelMeasure(formula="count(id)", name="handled")],
         aggregations=[Aggregation(name="score", formula="MAX({score})")],
     )
     tickets = SlayerModel(

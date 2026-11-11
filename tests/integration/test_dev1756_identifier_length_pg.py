@@ -154,17 +154,14 @@ class TestPostgresIdentifierLength:
 
     async def test_collapse_with_outer_wrap(self, chain_env: SlayerQueryEngine) -> None:
         """Two over-limit siblings + ORDER BY outer wrap; raised AmbiguousColumnError before the fix."""
-        query = SlayerQuery(
-            source_model="SandboxInvoiceV2",
-            dimensions=[
+        query = SlayerQuery.model_validate({"source_model": "SandboxInvoiceV2", "dimensions": [
                 ColumnRef(name=f"{DEEP}.name"),
                 ColumnRef(name=f"{DEEP}.email"),
                 ColumnRef(name="status"),
-            ],
-            measures=[{"formula": "totalAmount:sum"}, {"formula": "*:count"}],
-            order=[OrderItem(column="totalAmount:avg", direction="desc")],
-            limit=10,
-        )
+            ], "measures": [{"formula": "sum(totalAmount)"}, {"formula": "count(*)"}], "order": [OrderItem.model_validate({
+                "column": "avg(totalAmount)",
+                "direction": "desc",
+            })], "limit": 10})
         result = await chain_env.execute(query=query)
         # Pin the exact pairing; a wrong-column alias would still be "present with distinct values".
         got = {
@@ -179,14 +176,10 @@ class TestPostgresIdentifierLength:
 
     async def test_collapse_without_outer_wrap(self, chain_env: SlayerQueryEngine) -> None:
         """No outer wrap: the two siblings would silently collapse into one result key."""
-        query = SlayerQuery(
-            source_model="SandboxInvoiceV2",
-            dimensions=[
+        query = SlayerQuery.model_validate({"source_model": "SandboxInvoiceV2", "dimensions": [
                 ColumnRef(name=f"{DEEP}.name"),
                 ColumnRef(name=f"{DEEP}.email"),
-            ],
-            measures=[{"formula": "*:count"}],
-        )
+            ], "measures": [{"formula": "count(*)"}]})
         result = await chain_env.execute(query=query)
         assert result.data
         names = {row[LONG_NAME] for row in result.data}
@@ -196,11 +189,11 @@ class TestPostgresIdentifierLength:
 
     async def test_silent_loss_single_over_limit_alias(self, chain_env: SlayerQueryEngine) -> None:
         """One over-limit alias, no sibling: Postgres keys the row by the truncated name and it vanishes."""
-        query = SlayerQuery(
-            source_model="SandboxInvoiceV2",
-            dimensions=[ColumnRef(name=f"{DEEP}.email")],
-            measures=[{"formula": "totalAmount:sum"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "SandboxInvoiceV2",
+            "dimensions": [ColumnRef(name=f"{DEEP}.email")],
+            "measures": [{"formula": "sum(totalAmount)"}],
+        })
         result = await chain_env.execute(query=query)
         assert result.data
         for row in result.data:
@@ -211,33 +204,33 @@ class TestPostgresIdentifierLength:
 
     async def test_values_are_correct_not_merely_present(self, chain_env: SlayerQueryEngine) -> None:
         """Pin the aggregate; a wrong-column fitted alias would still be present."""
-        query = SlayerQuery(
-            source_model="SandboxInvoiceV2",
-            dimensions=[ColumnRef(name=f"{DEEP}.email")],
-            measures=[{"formula": "totalAmount:sum"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "SandboxInvoiceV2",
+            "dimensions": [ColumnRef(name=f"{DEEP}.email")],
+            "measures": [{"formula": "sum(totalAmount)"}],
+        })
         result = await chain_env.execute(query=query)
         totals = {row[LONG_EMAIL]: float(row["SandboxInvoiceV2.totalAmount_sum"]) for row in result.data}
         assert totals == {"ann@example.io": 150.0, "bob@example.io": 200.0}
 
     async def test_response_columns_are_canonical(self, chain_env: SlayerQueryEngine) -> None:
         """Response exposes canonical keys while the emitted SQL carries the fitted form."""
-        query = SlayerQuery(
-            source_model="SandboxInvoiceV2",
-            dimensions=[ColumnRef(name=f"{DEEP}.name"), ColumnRef(name=f"{DEEP}.email")],
-            measures=[{"formula": "*:count"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "SandboxInvoiceV2",
+            "dimensions": [ColumnRef(name=f"{DEEP}.name"), ColumnRef(name=f"{DEEP}.email")],
+            "measures": [{"formula": "count(*)"}],
+        })
         result = await chain_env.execute(query=query)
         assert set(result.data[0]) >= {LONG_NAME, LONG_EMAIL}
         assert LONG_EMAIL not in cast(str, result.sql)
 
     async def test_cached_execution_round_trip(self, chain_env: SlayerQueryEngine) -> None:
         """A cache hit returns canonical keys too, proving decode runs before storage."""
-        query = SlayerQuery(
-            source_model="SandboxInvoiceV2",
-            dimensions=[ColumnRef(name=f"{DEEP}.email")],
-            measures=[{"formula": "*:count"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "SandboxInvoiceV2",
+            "dimensions": [ColumnRef(name=f"{DEEP}.email")],
+            "measures": [{"formula": "count(*)"}],
+        })
         first = await chain_env.execute(query=query, cache=True)
         second = await chain_env.execute(query=query, cache=True)
         assert LONG_EMAIL in first.data[0]
@@ -246,11 +239,11 @@ class TestPostgresIdentifierLength:
 
     async def test_deep_cross_model_measure_executes(self, chain_env: SlayerQueryEngine) -> None:
         """Surface 3: the `_cm_` cross-model CTE name also crosses 63 bytes on this chain."""
-        query = SlayerQuery(
-            source_model="SandboxInvoiceV2",
-            dimensions=[ColumnRef(name="status")],
-            measures=[{"formula": f"{DEEP}.lifetimeValue:sum"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "SandboxInvoiceV2",
+            "dimensions": [ColumnRef(name="status")],
+            "measures": [{"formula": f"sum({DEEP}.lifetimeValue)"}],
+        })
         result = await chain_env.execute(query=query)
         assert "_cm_" in cast(str, result.sql), "no cross-model CTE generated; test is vacuous"
         for name in re.findall(r"\b_cm_\w+", cast(str, result.sql)):
@@ -261,17 +254,17 @@ class TestPostgresIdentifierLength:
 
     async def test_nested_query_backed_model_executes(self, chain_env: SlayerQueryEngine) -> None:
         """Surface 4: virtual-model short names as output aliases; mixed-case exercises case-folding."""
-        stage1 = SlayerQuery(
-            name="stage1",
-            source_model="SandboxInvoiceV2",
-            dimensions=[ColumnRef(name=f"{DEEP}.email")],
-            measures=[{"formula": "totalAmount:sum"}],
-        )
-        stage2 = SlayerQuery(
-            source_model="stage1",
-            dimensions=[ColumnRef(name="SandboxSubscription__SandboxCustomer__SandboxConsumer__email")],
-            measures=[{"formula": "totalAmount_sum:sum"}],
-        )
+        stage1 = SlayerQuery.model_validate({
+            "name": "stage1",
+            "source_model": "SandboxInvoiceV2",
+            "dimensions": [ColumnRef(name=f"{DEEP}.email")],
+            "measures": [{"formula": "sum(totalAmount)"}],
+        })
+        stage2 = SlayerQuery.model_validate({
+            "source_model": "stage1",
+            "dimensions": [ColumnRef(name="SandboxSubscription__SandboxCustomer__SandboxConsumer__email")],
+            "measures": [{"formula": "sum(totalAmount_sum)"}],
+        })
         result = await chain_env.execute(query=[stage1, stage2])
         assert result.data
         assert len(result.data) == 2

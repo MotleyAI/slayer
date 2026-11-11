@@ -20,15 +20,15 @@ async def test_nonfinal_stage_inferred_independently() -> None:
     """A named non-final stage omits source_model and is inferred (→ customers),
     then feeds the root — the whole DAG executes."""
     async for engine in make_chain_exec_engine("sqlite"):
-        s1 = SlayerQuery(
-            name="s1",
-            dimensions=["customers.region"],
-            measures=[{"formula": "orders.amount:sum", "name": "rev"}],
-        )
-        root = SlayerQuery(
-            source_model="s1",
-            measures=[{"formula": "rev:sum", "name": "total"}],
-        )
+        s1 = SlayerQuery.model_validate({
+            "name": "s1",
+            "dimensions": ["customers.region"],
+            "measures": [{"formula": "sum(orders.amount)", "name": "rev"}],
+        })
+        root = SlayerQuery.model_validate({
+            "source_model": "s1",
+            "measures": [{"formula": "sum(rev)", "name": "total"}],
+        })
         resp = await engine.execute([s1, root])
         assert resp.data  # executed end to end ⇒ s1's population was inferred
         # No break: the loop's next step resumes the generator so its finally (aclose + tempdir) runs at test scope.
@@ -37,12 +37,12 @@ async def test_nonfinal_stage_inferred_independently() -> None:
 async def test_sibling_anchored_stage_fails_closed_via_execute() -> None:
     """The final stage omits source_model and anchors a dim at sibling ``s1``."""
     engine = await make_inference_engine()
-    s1 = SlayerQuery(
-        name="s1",
-        source_model="orders",
-        dimensions=["status"],
-        measures=[{"formula": "amount:sum", "name": "rev"}],
-    )
+    s1 = SlayerQuery.model_validate({
+        "name": "s1",
+        "source_model": "orders",
+        "dimensions": ["status"],
+        "measures": [{"formula": "sum(amount)", "name": "rev"}],
+    })
     root = SlayerQuery(dimensions=["s1.status"])  # rootless, anchored at the sibling
     with pytest.raises(PopulationInferenceError) as ei:
         await engine.execute([s1, root])

@@ -266,12 +266,12 @@ def weighted_source_queries_model() -> SlayerModel:
             SlayerQuery(
                 name="cr_wtotals", source_model="sales",
                 dimensions=[ColumnRef(name="region"), ColumnRef(name="city")],
-                measures=[ModelMeasure(formula="amount:sum", name="ct"),
-                          ModelMeasure(formula="id:count", name="cc")]),
+                measures=[ModelMeasure(formula="sum(amount)", name="ct"),
+                          ModelMeasure(formula="count(id)", name="cc")]),
             SlayerQuery(
                 source_model="cr_wtotals",
                 dimensions=[ColumnRef(name="region")],
-                measures=[ModelMeasure(formula="ct:weighted_avg(weight=cc)",
+                measures=[ModelMeasure(formula="weighted_avg(ct, weight=cc)",
                                        name="w")]),
         ])
 

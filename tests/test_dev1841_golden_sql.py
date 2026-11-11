@@ -32,13 +32,13 @@ _MODEL_SETS = {
     "ext": dev1841_models,
 }
 
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
-NC = ModelMeasure(formula="customers.*:count", name="nc")
-POP = ModelMeasure(formula="customers.regions.pop:sum", name="pop")
-MED = ModelMeasure(formula="customers.spend:median", name="med")
-RENT = ModelMeasure(formula="stores.rent:sum", name="rent")
-GS = ModelMeasure(formula="customers.gold_spend:sum", name="gs")
-PART = ModelMeasure(formula="customers.spend:sum(partition_by=status)", name="cm")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+NC = ModelMeasure(formula="count(customers.*)", name="nc")
+POP = ModelMeasure(formula="sum(customers.regions.pop)", name="pop")
+MED = ModelMeasure(formula="median(customers.spend)", name="med")
+RENT = ModelMeasure(formula="sum(stores.rent)", name="rent")
+GS = ModelMeasure(formula="sum(customers.gold_spend)", name="gs")
+PART = ModelMeasure(formula="sum(customers.spend, partition_by=status)", name="cm")
 
 
 def _cases() -> dict:

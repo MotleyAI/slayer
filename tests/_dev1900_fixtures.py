@@ -247,8 +247,8 @@ def cust_q(**kw) -> SlayerQuery:
 # The fanning derived dimension, its cross-model / local metrics, and the two
 # re-aggregation shapes, spelled once.
 BAD_POP = "customers.regions.bad_pop"
-AMOUNT_SUM = ModelMeasure(formula="amount:sum", name="amt")
-SPEND_SUM = ModelMeasure(formula="customers.spend:sum", name="csp")
+AMOUNT_SUM = ModelMeasure(formula="sum(amount)", name="amt")
+SPEND_SUM = ModelMeasure(formula="sum(customers.spend)", name="csp")
 REAGG_GOOD = ModelMeasure(
     formula="weighted_avg(sum(amount, partition_by=customers.regions.id), "
             "weight=customers.regions.derived_pop)", name="ra")

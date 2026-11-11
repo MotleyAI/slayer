@@ -53,21 +53,30 @@ def _make_engine() -> SlayerQueryEngine:
 class TestSQLEmission:
     def test_column_compared_to_sql_cased_true(self):
         engine = _make_engine()
-        query = SlayerQuery(source_model="orders", measures=[{"formula": "*:count"}],
-                            filters=["is_active = true"])
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "filters": ["is_active = true"],
+        })
         sql = engine.execute_sync(query=query, dry_run=True).sql
         assert "TRUE" in sql.upper()
 
     def test_bare_false_in_disjunction(self):
         engine = _make_engine()
-        query = SlayerQuery(source_model="orders", measures=[{"formula": "*:count"}],
-                            filters=["status = 'food' or false"])
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "filters": ["status = 'food' or false"],
+        })
         sql = engine.execute_sync(query=query, dry_run=True).sql
         assert "FALSE" in sql.upper()
 
     def test_python_cased_literal_keeps_working(self):
         engine = _make_engine()
-        query = SlayerQuery(source_model="orders", measures=[{"formula": "*:count"}],
-                            filters=["is_active = True"])
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "filters": ["is_active = True"],
+        })
         sql = engine.execute_sync(query=query, dry_run=True).sql
         assert "TRUE" in sql.upper()

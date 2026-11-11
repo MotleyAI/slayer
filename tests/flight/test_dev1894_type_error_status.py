@@ -35,8 +35,8 @@ def _orders() -> SlayerModel:
             Column(name="created_at", type=DataType.TIMESTAMP),
         ],
         measures=[
-            ModelMeasure(name="bad_window", formula="amount:sum(window='90x')"),
-            ModelMeasure(name="no_axis", formula="sum(cumsum(amount:sum(partition_by=status)))"),
+            ModelMeasure(name="bad_window", formula="sum(amount, window='90x')"),
+            ModelMeasure(name="no_axis", formula="sum(cumsum(sum(amount, partition_by=status)))"),
         ],
     )
 

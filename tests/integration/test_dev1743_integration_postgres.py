@@ -7,9 +7,7 @@
 
 import uuid
 
-import psycopg
 import pytest
-from pytest_postgresql import factories
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
@@ -17,6 +15,11 @@ from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import owned_query_engine
+
+pytest.importorskip("pytest_postgresql")
+
+import psycopg  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
+from pytest_postgresql import factories  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
 
 postgresql_proc = factories.postgresql_proc(port=None)
 
@@ -99,7 +102,7 @@ class TestDunderModelLiveValues:
             result = await engine.execute(query=SlayerQuery.model_validate({
                 "source_model": "orders",
                 "dimensions": ["customer__region.label"],
-                "measures": [{"formula": "amount:sum"}],
+                "measures": [{"formula": "sum(amount)"}],
             }))
         by_label = {r["orders.customer__region.label"]: r["orders.amount_sum"]
                     for r in result.data}
@@ -177,7 +180,7 @@ class TestLongAliasCollisionLiveValues:
             result = await engine.execute(query=SlayerQuery.model_validate({
                 "source_model": "subscription_entity",
                 "dimensions": [north, south],
-                "measures": [{"formula": "amount:sum"}],
+                "measures": [{"formula": "sum(amount)"}],
             }))
         assert result.row_count == 1
         row = result.data[0]

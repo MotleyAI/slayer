@@ -107,7 +107,7 @@ class TestSqliteKeepsInferredCast:
         assert amount.db_type is not None
         assert "DECIMAL" in amount.db_type
 
-        query = {"source_model": "orders", "measures": ["amount:sum"]}
+        query = {"source_model": "orders", "measures": ["sum(amount)"]}
         storage = YAMLStorage(base_dir=str(tmp_path / "models"))
         async with owned_query_engine(storage=storage, datasources=[datasource]) as engine:
             await storage.save_model(model)

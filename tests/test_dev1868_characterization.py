@@ -51,13 +51,13 @@ class TestW1SubstrateIsComplete:
         filtered = await bypassed_engine.execute(q(
             dimensions=["customers.tier"],
             filters=[f"{LAST_TIER} > 100"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         assert [r[TIER] for r in filtered.data] == ["silver"]
         ordered = await bypassed_engine.execute(q(
             dimensions=["customers.tier"],
             filters=["customers.tier is not null"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
             order=[{"column": LAST_TIER, "direction": "desc"}],
         ))
         assert [r[TIER] for r in ordered.data] == ["silver", "gold", "bronze"]

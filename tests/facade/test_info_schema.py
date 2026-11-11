@@ -38,7 +38,7 @@ def _demo_catalog():
             Column(name="ordered_at", type=DataType.TIMESTAMP),
         ],
         measures=[
-            ModelMeasure(name="aov", formula="revenue:sum / *:count", type=DataType.DOUBLE),
+            ModelMeasure(name="aov", formula="sum(revenue) / count(*)", type=DataType.DOUBLE),
         ],
         joins=[ModelJoin(target_model="customers", join_pairs=[["id", "id"]])],
     )

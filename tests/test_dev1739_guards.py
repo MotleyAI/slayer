@@ -29,7 +29,7 @@ class TestGrainGuards:
     async def test_non_dimension_partition_key_raises(self) -> None:
         q = _q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:sum(partition_by=city)")],
+            measures=[ModelMeasure(formula="sum(amount, partition_by=city)")],
         )
         with pytest.raises(ValueError, match=r"partition_by.*not a query dimension") as ei:
             await gen(q)
@@ -43,7 +43,7 @@ class TestGrainGuards:
                 TimeDimension(dimension="ordered_at",
                               granularity=TimeGranularity.DAY),
             ],
-            measures=[ModelMeasure(formula="amount:sum(partition_by=ordered_at)")],
+            measures=[ModelMeasure(formula="sum(amount, partition_by=ordered_at)")],
         )
         with pytest.raises(ValueError, match=r"ambiguous"):
             await gen(q)
@@ -54,7 +54,7 @@ class TestGrainGuards:
         q = _q(
             dimensions=["region", "customers.tier"],
             measures=[
-                ModelMeasure(formula="customers.spend:sum(partition_by=region)"),
+                ModelMeasure(formula="sum(customers.spend, partition_by=region)"),
             ],
         )
         with pytest.raises(ValueError, match=r"partition_by") as ei:
@@ -73,7 +73,7 @@ class TestDeferredShapeGuards:
             dimensions=["region"],
             time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum(window='90d', partition_by=region)"),
+                ModelMeasure(formula="sum(amount, window='90d', partition_by=region)"),
             ],
         )
         assert "__regroup__" not in await gen(q)
@@ -85,7 +85,7 @@ class TestDeferredShapeGuards:
         # tests/test_dev1824_partitioned_execution.py); cross-model stays deferred.
         q = _q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula=f"amount:{agg}(partition_by=region)")],
+            measures=[ModelMeasure(formula=f"{agg}(amount, partition_by=region)")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -99,7 +99,7 @@ class TestDeferredShapeGuards:
             dimensions=["region"],
             time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="cumsum(amount:sum(partition_by=region))"),
+                ModelMeasure(formula="cumsum(sum(amount, partition_by=region))"),
             ],
         )
         assert "__regroup__" not in await gen(q)
@@ -110,20 +110,20 @@ class TestDeferredShapeGuards:
         # values: tests/test_dev1824_partitioned_execution.py::TestFilterOnPartitioned.)
         q = _q(
             dimensions=["region", "city"],
-            filters=["amount:sum(partition_by=region) > 50"],
-            measures=[ModelMeasure(formula="amount:sum")],
+            filters=["sum(amount, partition_by=region) > 50"],
+            measures=[ModelMeasure(formula="sum(amount)")],
         )
         assert "__regroup__" not in await gen(q)
 
 
 _NON_RANK_FORMULAS = {
-    "cumsum": "cumsum(amount:sum, partition_by=region)",
-    "lag": "lag(amount:sum, 1, partition_by=region)",
-    "lead": "lead(amount:sum, 1, partition_by=region)",
-    "time_shift": "time_shift(amount:sum, -1, partition_by=region)",
-    "change": "change(amount:sum, partition_by=region)",
-    "change_pct": "change_pct(amount:sum, partition_by=region)",
-    "consecutive_periods": "consecutive_periods(amount:sum > 20, partition_by=region)",
+    "cumsum": "cumsum(sum(amount), partition_by=region)",
+    "lag": "lag(sum(amount), 1, partition_by=region)",
+    "lead": "lead(sum(amount), 1, partition_by=region)",
+    "time_shift": "time_shift(sum(amount), -1, partition_by=region)",
+    "change": "change(sum(amount), partition_by=region)",
+    "change_pct": "change_pct(sum(amount), partition_by=region)",
+    "consecutive_periods": "consecutive_periods(sum(amount) > 20, partition_by=region)",
 }
 
 
@@ -142,7 +142,7 @@ class TestDriveByNonRankTransform:
     async def test_partition_by_still_accepted_on_rank(self) -> None:
         sql = await gen(_q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula="rank(amount:sum, partition_by=region, direction='desc')")],
+            measures=[ModelMeasure(formula="rank(sum(amount), partition_by=region, direction='desc')")],
         ))
         upper = sql.upper()
         assert "RANK()" in upper
@@ -253,8 +253,8 @@ class TestNamingCollision:
             source_model="t",
             dimensions=["region", "channel", "channel_region"],
             measures=[
-                ModelMeasure(formula="amount:sum(partition_by=[channel, region])"),
-                ModelMeasure(formula="amount:sum(partition_by=channel_region)"),
+                ModelMeasure(formula="sum(amount, partition_by=[channel, region])"),
+                ModelMeasure(formula="sum(amount, partition_by=channel_region)"),
             ],
         )
         with pytest.raises(ValueError):

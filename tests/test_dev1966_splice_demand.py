@@ -43,14 +43,14 @@ def _joined(model: SlayerModel, *targets: "tuple[str, List[List[str]]]") -> Slay
 
 
 STATUS_REV = _qb("status_rev", query(
-    source_model="orders", dimensions=["status"], measures=[m("amount:sum", "rev")]))
+    source_model="orders", dimensions=["status"], measures=[m("sum(amount)", "rev")]))
 READS_STATUS_REV = _qb("reads_status_rev", query(
     source_model="orders", dimensions=["status", "status_rev.rev"],
-    measures=[m("amount:sum", "a")]))
+    measures=[m("sum(amount)", "a")]))
 BROKEN = _qb("broken_qb", query(
-    source_model="orders", dimensions=["nope"], measures=[m("amount:sum", "a")]))
+    source_model="orders", dimensions=["nope"], measures=[m("sum(amount)", "a")]))
 BAD_SELF = _qb("bad_self", query(
-    source_model="orders", dimensions=["status"], measures=[m("nope:sum", "a")]))
+    source_model="orders", dimensions=["status"], measures=[m("sum(nope)", "a")]))
 
 
 def _orders_joining(*names: str) -> SlayerModel:
@@ -69,7 +69,7 @@ class TestReachIsNotReading:
         async with dev1966_engine(dialect, models=models) as e:
             resp = await e.execute(query(source_model="orders",
                                          dimensions=["status", "status_rev.rev"],
-                                         measures=[m("amount:sum", "a")]))
+                                         measures=[m("sum(amount)", "a")]))
         assert resp.columns == ["orders.status", "orders.status_rev.rev", "orders.a"]
         assert sorted_rows(resp.data) == sorted_rows([
             {"orders.status": s, "orders.status_rev.rev": v, "orders.a": v}
@@ -79,8 +79,8 @@ class TestReachIsNotReading:
         models = [orders_model(), _joined(customers_model(), ("broken_qb", [["id", "a"]])),
                   clients_model(), cust_rev_model(), BROKEN]
         async with dev1966_engine(dialect, models=models) as e:
-            resp = await e.execute(query(source_model="orders", measures=[m("amount:sum", "t")]))
-            dry = await e.execute(query(source_model="orders", measures=[m("amount:sum", "t")]),
+            resp = await e.execute(query(source_model="orders", measures=[m("sum(amount)", "t")]))
+            dry = await e.execute(query(source_model="orders", measures=[m("sum(amount)", "t")]),
                                   dry_run=True)
         assert resp.data == [{"orders.t": 145.0}]
         assert resp.warnings == []
@@ -94,7 +94,7 @@ class TestReachIsNotReading:
             with warnings.catch_warnings():
                 warnings.simplefilter("error")
                 resp = await e.execute(query(source_model="customers",
-                                             measures=[m("spend:sum", "t")]))
+                                             measures=[m("sum(spend)", "t")]))
         assert resp.data == [{"customers.t": 430.0}]
         assert resp.warnings == []
 
@@ -102,8 +102,8 @@ class TestReachIsNotReading:
 class TestStoredJoinReads:
     async def test_a_non_root_stage(self, dialect) -> None:
         s = query(name="s", source_model="clients", dimensions=["tier"],
-                  measures=[m("cust_rev.rev:sum", "r")])
-        root = query(source_model="s", dimensions=["tier"], measures=[m("r:sum", "t")])
+                  measures=[m("sum(cust_rev.rev)", "r")])
+        root = query(source_model="s", dimensions=["tier"], measures=[m("sum(r)", "t")])
         async with dev1966_engine(dialect) as e:
             resp = await e.execute([s, root])
         assert resp.columns == ["s.tier", "s.t"]
@@ -124,9 +124,9 @@ class TestStoredJoinReads:
                   clients_model(), cust_rev_model(), STATUS_REV, READS_STATUS_REV]
         async with dev1966_engine(dialect, models=models) as e:
             only_a = await e.execute(query(source_model="status_rev", dimensions=["status"],
-                                           measures=[m("rev:sum", "t")]))
+                                           measures=[m("sum(rev)", "t")]))
             b = await e.execute(query(source_model="reads_status_rev", dimensions=["status"],
-                                      measures=[m("status_rev__rev:max", "rr")]))
+                                      measures=[m("max(status_rev__rev)", "rr")]))
         assert rows_by(only_a.data, key="status_rev.status", value="status_rev.t") == AMOUNT_BY_STATUS
         assert rows_by(b.data, key="reads_status_rev.status",
                        value="reads_status_rev.rr") == AMOUNT_BY_STATUS
@@ -136,7 +136,7 @@ class TestFailedAttemptKeepsItsError:
     async def test_invalid_expression_survives_an_incident_in_flight_model(self) -> None:
         models = [_orders_joining("bad_self"), customers_model(), clients_model(),
                   cust_rev_model(), BAD_SELF]
-        consumer = query(source_model="bad_self", measures=[m("a:sum", "t")])
+        consumer = query(source_model="bad_self", measures=[m("sum(a)", "t")])
         async with dev1966_engine("sqlite", models=models) as e:
             with pytest.raises(ValueError) as exc:
                 await e.execute(consumer)
@@ -167,19 +167,19 @@ def _floored() -> SlayerModel:
 
 
 FLOORED_REV = _qb("floored_rev", query(
-    source_model="floored", dimensions=["customer_id"], measures=[m("amount:sum", "rev")]))
+    source_model="floored", dimensions=["customer_id"], measures=[m("sum(amount)", "rev")]))
 
 
 def _wrap(name: str, floor: int) -> SlayerModel:
     return SlayerModel(name=name, data_source="test", query_variables={"floor": floor},
                        source_queries=[query(source_model="floored_rev", dimensions=["customer_id"],
-                                             measures=[m("rev:sum", "r")])])
+                                             measures=[m("sum(rev)", "r")])])
 
 
 class TestModeAVariables:
     async def test_a_spliced_stage_source_sql_takes_the_consumer_variables(self, dialect) -> None:
         models = [orders_model(), customers_model(), _floored(), FLOORED_REV]
-        consumer = query(source_model="floored_rev", measures=[m("rev:sum", "t")])
+        consumer = query(source_model="floored_rev", measures=[m("sum(rev)", "t")])
         async with dev1966_engine(dialect, models=models) as e:
             default = await e.execute(consumer)
             floored = await e.execute(consumer, variables={"floor": 20})
@@ -187,17 +187,17 @@ class TestModeAVariables:
         assert floored.data == [{"floored_rev.t": 115.0}]
 
     async def test_a_user_stage_source_sql_takes_its_variables(self, dialect) -> None:
-        s = query(name="s", source_model="floored", measures=[m("amount:sum", "a")],
+        s = query(name="s", source_model="floored", measures=[m("sum(amount)", "a")],
                   variables={"floor": 30})
         async with dev1966_engine(dialect, models=[orders_model(), _floored()]) as e:
-            resp = await e.execute([s, query(source_model="s", measures=[m("a:sum", "t")])])
+            resp = await e.execute([s, query(source_model="s", measures=[m("sum(a)", "t")])])
         assert resp.data == [{"s.t": 70.0}]
 
     async def test_conflicting_mode_a_contexts_fail_closed(self) -> None:
         models = [orders_model(), customers_model(), _floored(), FLOORED_REV,
                   _wrap("wrap_a", 20), _wrap("wrap_b", 30)]
-        s1 = query(name="s1", source_model="wrap_a", dimensions=["customer_id"], measures=[m("r:sum", "a")])
-        s2 = query(name="s2", source_model="wrap_b", dimensions=["customer_id"], measures=[m("r:sum", "b")])
+        s1 = query(name="s1", source_model="wrap_a", dimensions=["customer_id"], measures=[m("sum(r)", "a")])
+        s2 = query(name="s2", source_model="wrap_b", dimensions=["customer_id"], measures=[m("sum(r)", "b")])
         root = query(source_model={"source_name": "s1", "joins": [
             {"target_model": "s2", "join_pairs": [["customer_id", "customer_id"]]}]},
             dimensions=["customer_id", "a", "s2.b"])
@@ -206,15 +206,15 @@ class TestModeAVariables:
                 await e.execute([s1, s2, root])
 
 
-CYC_A = _qb("cyc_a", query(source_model="cyc_b", measures=[m("amount:sum", "amount")]))
-CYC_B = _qb("cyc_b", query(source_model="cyc_a", measures=[m("amount:sum", "amount")]))
+CYC_A = _qb("cyc_a", query(source_model="cyc_b", measures=[m("sum(amount)", "amount")]))
+CYC_B = _qb("cyc_b", query(source_model="cyc_a", measures=[m("sum(amount)", "amount")]))
 
 
 class TestCyclesThroughStoredJoins:
     async def test_a_read_through_a_stored_join_raises_the_cycle(self) -> None:
         orders = _joined(orders_model(), ("cyc_a", [["id", "amount"]]))
         consumer = query(source_model="orders", dimensions=["status"],
-                         measures=[m("cyc_a.amount:sum", "t")])
+                         measures=[m("sum(cyc_a.amount)", "t")])
         async with dev1966_engine("sqlite", models=[orders, customers_model(), CYC_A, CYC_B]) as e:
             with pytest.raises(QueryBackedCycleError) as exc:
                 await e.execute(consumer)
@@ -223,5 +223,5 @@ class TestCyclesThroughStoredJoins:
     async def test_an_unread_cyclic_model_is_inert(self) -> None:
         orders = _joined(orders_model(), ("cyc_a", [["id", "amount"]]))
         async with dev1966_engine("sqlite", models=[orders, customers_model(), CYC_A, CYC_B]) as e:
-            resp = await e.execute(query(source_model="orders", measures=[m("amount:sum", "t")]))
+            resp = await e.execute(query(source_model="orders", measures=[m("sum(amount)", "t")]))
         assert resp.data == [{"orders.t": 145.0}]

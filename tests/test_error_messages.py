@@ -289,14 +289,14 @@ class TestMeasureNameCollidesWithColumnError:
 class TestCanonicalAliasShadowsColumnError:
     def test_basic(self):
         e = CanonicalAliasShadowsColumnError(
-            formula="status:count",
+            formula="count(status)",
             canonical="status_count",
             model="orders",
         )
         assert str(e) == (
             "CanonicalAliasShadowsColumnError: The canonical alias 'status_count' "
             "shadows a source column on model 'orders'.\n"
-            "  at measure 'status:count'"
+            "  at measure 'count(status)'"
         )
 
 
@@ -309,13 +309,13 @@ class TestNormalizationWarning:
     def test_carries_fields(self):
         nw = NormalizationWarning(
             rule_id="FUNC_STYLE_AGG",
-            original="sum(revenue)",
-            normalized="revenue:sum",
+            original="SUM(revenue)",
+            normalized="sum(revenue)",
             location="measures[0].formula",
         )
         assert nw.rule_id == "FUNC_STYLE_AGG"
-        assert nw.original == "sum(revenue)"
-        assert nw.normalized == "revenue:sum"
+        assert nw.original == "SUM(revenue)"
+        assert nw.normalized == "sum(revenue)"
         assert nw.location == "measures[0].formula"
         assert nw.rule_doc_url is None
 
@@ -334,8 +334,8 @@ class TestSlayerNormalizationWarning:
     def test_carries_payload(self):
         nw = NormalizationWarning(
             rule_id="FUNC_STYLE_AGG",
-            original="sum(revenue)",
-            normalized="revenue:sum",
+            original="SUM(revenue)",
+            normalized="sum(revenue)",
             location="measures[0].formula",
         )
         w = SlayerNormalizationWarning(nw)
@@ -344,20 +344,20 @@ class TestSlayerNormalizationWarning:
     def test_message_includes_rule_and_rewrite(self):
         nw = NormalizationWarning(
             rule_id="FUNC_STYLE_AGG",
-            original="sum(revenue)",
-            normalized="revenue:sum",
+            original="SUM(revenue)",
+            normalized="sum(revenue)",
             location="measures[0].formula",
         )
         s = str(SlayerNormalizationWarning(nw))
         assert "FUNC_STYLE_AGG" in s
+        assert "SUM(revenue)" in s
         assert "sum(revenue)" in s
-        assert "revenue:sum" in s
 
     def test_emittable_via_warnings_module(self):
         # The carrier is usable as the second arg to warnings.warn(...).
         nw = NormalizationWarning(
             rule_id="FUNC_STYLE_AGG",
-            original="sum(x)", normalized="x:sum", location="measures[0]",
+            original="SUM(x)", normalized="sum(x)", location="measures[0]",
         )
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")

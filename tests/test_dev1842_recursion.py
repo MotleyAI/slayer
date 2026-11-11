@@ -48,7 +48,7 @@ class TestNestedSavedMeasure:
         hand = await engine.execute(
             q(dimensions=["customers.tier"],
               measures=[{"formula":
-                         "(customers.spend:sum / customers.*:count) * 2",
+                         "(sum(customers.spend) / count(customers.*)) * 2",
                          "name": "x"}]),
         )
         assert _canon(dotted) == _canon(hand)
@@ -96,7 +96,7 @@ class TestDepthLimit:
             measures=[
                 ModelMeasure(name="d1", formula="d2"),
                 ModelMeasure(name="d2", formula="d3"),
-                ModelMeasure(name="d3", formula="amount:sum"),
+                ModelMeasure(name="d3", formula="sum(amount)"),
             ],
         )
         main = SlayerModel(
@@ -124,7 +124,7 @@ class TestDepthLimit:
             assert ei.value.limit == 1
 
     async def test_within_depth_limit_resolves(self):
-        # The same chain resolves to ``sub.amount:sum`` under the default cap.
+        # The same chain resolves to ``sum(sub.amount)`` under the default cap.
         dotted = await self._generate("sub.d1")
-        hand = await self._generate("sub.amount:sum")
+        hand = await self._generate("sum(sub.amount)")
         assert dotted == hand

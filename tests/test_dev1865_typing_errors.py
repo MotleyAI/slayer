@@ -21,8 +21,8 @@ class TestMixedGrainOr:
         # a query dimension) — neither scope holds the whole OR.
         query = q(
             dimensions=["region", "city"],
-            filters=["amount:sum(partition_by=region) > 50 or status == 'ok'"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            filters=["sum(amount, partition_by=region) > 50 or status == 'ok'"],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         with pytest.raises(PositionTypingError) as ei:
             await exec_engine.execute(query)
@@ -30,7 +30,7 @@ class TestMixedGrainOr:
         assert "field" in msg
         assert "measure" in msg
         assert "status" in msg
-        assert "partition" in msg or "amount:sum" in msg
+        assert "partition" in msg or "sum(amount)" in msg
 
 
 class TestRawRowsHaveNoMeasurePosition:
@@ -38,7 +38,7 @@ class TestRawRowsHaveNoMeasurePosition:
         query = q(
             dimensions=["status"],
             distinct_dimension_values=False,
-            filters=["amount:sum > 100"],
+            filters=["sum(amount) > 100"],
         )
         with pytest.raises(DistinctDimensionValuesError) as ei:
             await exec_engine.execute(query)
@@ -50,7 +50,7 @@ class TestRawRowsHaveNoMeasurePosition:
         query = q(
             dimensions=["status"],
             distinct_dimension_values=False,
-            order=[{"column": "amount:sum", "direction": "desc"}],
+            order=[{"column": "sum(amount)", "direction": "desc"}],
         )
         with pytest.raises(DistinctDimensionValuesError) as ei:
             await exec_engine.execute(query)

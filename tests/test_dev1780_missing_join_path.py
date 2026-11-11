@@ -95,7 +95,7 @@ async def _dry_sql(engine: SlayerQueryEngine, query: SlayerQuery) -> str:
 
 
 def _amount_query(**kw) -> dict:
-    return dict(source_model="Invoice", measures=[{"formula": "amount:sum", "name": "amt"}], **kw)
+    return dict(source_model="Invoice", measures=[{"formula": "sum(amount)", "name": "amt"}], **kw)
 
 
 # ===========================================================================
@@ -128,14 +128,14 @@ class TestValidPathBindsAllJoins:
     async def test_valid_time_dimension_full_path(self, tmp_path) -> None:
         """A full-path TIME dimension resolves and binds its join too."""
         engine = await _engine(tmp_path)
-        sql = await _dry_sql(engine, SlayerQuery(
-            source_model="Invoice",
-            measures=[{"formula": "amount:sum", "name": "amt"}],
-            time_dimensions=[{
+        sql = await _dry_sql(engine, SlayerQuery.model_validate({
+            "source_model": "Invoice",
+            "measures": [{"formula": "sum(amount)", "name": "amt"}],
+            "time_dimensions": [{
                 "dimension": "Subscription.Customer.Consumer.signup_at",
                 "granularity": "month",
             }],
-        ))
+        }))
         assert "AS Subscription__Customer__Consumer " in sql
         sqlglot.parse_one(sql, dialect="postgres")
 
@@ -197,14 +197,14 @@ class TestShortFormRoutingAndBrokenChains:
 
     async def test_broken_time_dimension_chain_rejects(self, tmp_path) -> None:
         engine = await _engine(tmp_path)
-        q = SlayerQuery(
-            source_model="Invoice",
-            measures=[{"formula": "amount:sum", "name": "amt"}],
-            time_dimensions=[{
+        q = SlayerQuery.model_validate({
+            "source_model": "Invoice",
+            "measures": [{"formula": "sum(amount)", "name": "amt"}],
+            "time_dimensions": [{
                 "dimension": "Customer.Consumer.signup_at",
                 "granularity": "month",
             }],
-        )
+        })
         with pytest.raises(UnresolvableDimensionJoinError):
             await _dry_sql(engine, q)
 
@@ -245,7 +245,7 @@ class TestDiagnosticsPreserved:
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery.model_validate({
             "source_model": "A",
-            "measures": [{"formula": "amount:sum", "name": "amt"}],
+            "measures": [{"formula": "sum(amount)", "name": "amt"}],
             "dimensions": ["to_b.to_a.amount"],
         })
         with pytest.raises(ValueError) as ei:
@@ -263,11 +263,11 @@ class TestInternalEnrichmentsUnaffected:
         still emit valid SQL — the re-rooted CTE carries a host-local dimension
         that never binds to a base-table join, and that is legal."""
         engine = await _engine(tmp_path)
-        sql = await _dry_sql(engine, SlayerQuery(
-            source_model="Invoice",
-            dimensions=["status"],
-            measures=[{"formula": "Subscription.Customer.Consumer.email:count", "name": "c"}],
-        ))
+        sql = await _dry_sql(engine, SlayerQuery.model_validate({
+            "source_model": "Invoice",
+            "dimensions": ["status"],
+            "measures": [{"formula": "count(Subscription.Customer.Consumer.email)", "name": "c"}],
+        }))
         sqlglot.parse_one(sql, dialect="postgres")
 
 
@@ -280,16 +280,17 @@ class TestDownstreamStageScope:
         """An outer-stage dotted ref names a model no join path reaches from the flat
         stage: ``UnrelatedDatasetError``; the inner stage's full-path dim resolves."""
         engine = await _engine(tmp_path)
-        inner = SlayerQuery(
-            name="s1", source_model="Invoice",
-            dimensions=["Subscription.Customer.Consumer.name"],
-            measures=[{"formula": "*:count"}],
-        )
-        outer = SlayerQuery(
-            source_model="s1",
-            dimensions=["Subscription.Customer.Consumer.email"],
-            measures=[{"formula": "*:count"}],
-        )
+        inner = SlayerQuery.model_validate({
+            "name": "s1",
+            "source_model": "Invoice",
+            "dimensions": ["Subscription.Customer.Consumer.name"],
+            "measures": [{"formula": "count(*)"}],
+        })
+        outer = SlayerQuery.model_validate({
+            "source_model": "s1",
+            "dimensions": ["Subscription.Customer.Consumer.email"],
+            "measures": [{"formula": "count(*)"}],
+        })
         with pytest.raises(UnrelatedDatasetError):
             await engine.execute(query=[inner, outer], dry_run=True)
 

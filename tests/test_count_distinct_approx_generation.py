@@ -1,7 +1,7 @@
 """DEV-1595: end-to-end ``count_distinct_approx`` aggregation.
 
 Covers enum membership / eligibility (incl. on primary-key columns) and the
-colon-form ``col:count_distinct_approx`` emission through the typed engine
+functional ``count_distinct_approx(col)`` emission through the typed engine
 pipeline, on a native-supporting dialect (DuckDB) and an exact-fallback
 dialect (Postgres).
 """
@@ -71,7 +71,7 @@ def test_allowed_on_primary_key_columns() -> None:
 async def test_duckdb_emits_native_approx() -> None:
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="customer_id:count_distinct_approx")],
+        measures=[ModelMeasure(formula="count_distinct_approx(customer_id)")],
     )
     sql = (await _generate("duckdb", query, _model())).lower()
     assert "approx_count_distinct(" in sql
@@ -80,7 +80,7 @@ async def test_duckdb_emits_native_approx() -> None:
 async def test_postgres_emits_exact_fallback() -> None:
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="customer_id:count_distinct_approx")],
+        measures=[ModelMeasure(formula="count_distinct_approx(customer_id)")],
     )
     sql = (await _generate("postgres", query, _model())).upper()
     assert "COUNT(DISTINCT" in sql
@@ -97,7 +97,7 @@ async def test_clickhouse_routes_to_native_uniq() -> None:
     override (not just that the override exists)."""
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="customer_id:count_distinct_approx")],
+        measures=[ModelMeasure(formula="count_distinct_approx(customer_id)")],
     )
     sql = (await _generate("clickhouse", query, _model())).lower()
     assert "uniq(" in sql
@@ -106,7 +106,7 @@ async def test_clickhouse_routes_to_native_uniq() -> None:
 async def test_approx_on_primary_key_column_generates() -> None:
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="id:count_distinct_approx")],
+        measures=[ModelMeasure(formula="count_distinct_approx(id)")],
     )
     # Must not raise an eligibility error on the PK column.
     sql = await _generate("duckdb", query, _model())
@@ -114,7 +114,7 @@ async def test_approx_on_primary_key_column_generates() -> None:
 
 
 async def test_alias_heals_to_count_distinct_approx_and_emits_native() -> None:
-    """DEV-1717 gap-fill: the colon-form aliases for ``count_distinct_approx``
+    """The aliases for ``count_distinct_approx``
     (``approx_count_distinct`` / ``countdistinctapprox`` — see
     ``slayer/core/enums.py`` ``AGGREGATION_ALIASES``) heal to the canonical
     name and dispatch through the same built-in generator branch, so a native
@@ -123,7 +123,7 @@ async def test_alias_heals_to_count_distinct_approx_and_emits_native() -> None:
     for alias in ("approx_count_distinct", "countdistinctapprox"):
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula=f"customer_id:{alias}")],
+            measures=[ModelMeasure(formula=f"{alias}(customer_id)")],
         )
         sql = (await _generate("duckdb", query, _model())).lower()
         assert "approx_count_distinct(" in sql, alias

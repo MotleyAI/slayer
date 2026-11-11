@@ -10,15 +10,21 @@ import argparse
 import asyncio
 import json
 import sys
+import tempfile
 import time
 import traceback
 from pathlib import Path
 
+import slayer
+from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.yaml_storage import YAMLStorage
+
 _DIR = Path(__file__).parent
 sys.path.insert(0, str(_DIR))
 
-import corpus  # noqa: E402
-from classify import encode_cell  # noqa: E402
+import corpus  # noqa: E402  # ALLOW(import-not-top): sibling module, resolves only after the sys.path insert
+from classify import encode_cell  # noqa: E402  # ALLOW(import-not-top): sibling module, resolves only after the sys.path insert
 
 MAX_ERROR_LEN = 2000
 
@@ -41,8 +47,6 @@ def _parse_args():
 
 
 def _guard(args) -> str:
-    import slayer
-
     version = getattr(slayer, "__version__", "unknown")
     location = str(Path(slayer.__file__).resolve())
     if args.expect_version and version != args.expect_version:
@@ -138,12 +142,6 @@ async def _run_timing(engine, entries: list[dict], repeats: int) -> dict:
 
 
 async def _main_async(args, version: str) -> dict:
-    import tempfile
-
-    from slayer.core.models import DatasourceConfig, SlayerModel
-    from slayer.engine.query_engine import SlayerQueryEngine
-    from slayer.storage.yaml_storage import YAMLStorage
-
     tmpdir = tempfile.mkdtemp(prefix=f"slayer-audit-{args.side}-")
     storage = YAMLStorage(base_dir=tmpdir)
     ds_kwargs = ({"connection_string": args.db} if "://" in args.db
@@ -155,7 +153,7 @@ async def _main_async(args, version: str) -> dict:
         await storage.save_model(SlayerModel(**model_dict))
 
     engine = SlayerQueryEngine(storage=storage)
-    await engine.execute(query={"source_model": "orders", "measures": ["*:count"]})
+    await engine.execute(query={"source_model": "orders", "measures": ["count(*)"]})
 
     entries = _select_entries(args)
     payload: dict = {

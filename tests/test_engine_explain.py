@@ -29,7 +29,7 @@ postgresql_proc = factories.postgresql_proc(port=None)
 
 _ORDERS_DDL = "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount DOUBLE PRECISION)"
 _ORDERS_ROWS = "INSERT INTO orders VALUES (1, 10.0), (2, 20.0)"
-_QUERY = {"source_model": "orders", "measures": [{"formula": "amount:sum", "name": "total"}]}
+_QUERY = {"source_model": "orders", "measures": [{"formula": "sum(amount)", "name": "total"}]}
 _PLAN = [{"StmtText": "plan", "NodeId": 1}]
 
 

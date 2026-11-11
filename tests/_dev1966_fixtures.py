@@ -127,13 +127,13 @@ def _qb(name: str, *stages: SlayerQuery, **kw: Any) -> SlayerModel:
 
 def rev_by_status_model() -> SlayerModel:
     return _qb("rev_by_status", query(
-        source_model="orders", dimensions=["status"], measures=[m("amount:sum", "rev")]))
+        source_model="orders", dimensions=["status"], measures=[m("sum(amount)", "rev")]))
 
 
 def status_share_model() -> SlayerModel:
     """Query-backed over the query-backed ``rev_by_status``."""
     return _qb("status_share", query(
-        source_model="rev_by_status", dimensions=["status"], measures=[m("rev:sum", "rr")]))
+        source_model="rev_by_status", dimensions=["status"], measures=[m("sum(rev)", "rr")]))
 
 
 def cust_rev_model() -> SlayerModel:
@@ -141,9 +141,9 @@ def cust_rev_model() -> SlayerModel:
     return _qb(
         "cust_rev",
         query(name="x", source_model="orders", dimensions=["customer_id", "status"],
-              measures=[m("amount:sum", "amt")]),
+              measures=[m("sum(amount)", "amt")]),
         query(source_model="x", dimensions=["customer_id"],
-              measures=[m("amt:sum", "rev"), m("amt:max", "top")]),
+              measures=[m("sum(amt)", "rev"), m("max(amt)", "top")]),
     )
 
 
@@ -152,8 +152,8 @@ def ok_rev_model() -> SlayerModel:
     return _qb(
         "ok_rev",
         query(name="x", source_model="orders", dimensions=["customer_id", "status"],
-              measures=[m("amount:sum", "amt")], filters=["status = 'ok'"]),
-        query(source_model="x", dimensions=["customer_id"], measures=[m("amt:sum", "ok_rev")]),
+              measures=[m("sum(amount)", "amt")], filters=["status = 'ok'"]),
+        query(source_model="x", dimensions=["customer_id"], measures=[m("sum(amt)", "ok_rev")]),
     )
 
 
@@ -162,9 +162,9 @@ def qb_shadow_model() -> SlayerModel:
     return _qb(
         "qb_shadow",
         query(name="customers", source_model="orders", dimensions=["status"],
-              measures=[m("amount:sum", "a")]),
+              measures=[m("sum(amount)", "a")]),
         query(source_model="orders", dimensions=["customers.tier"],
-              measures=[m("amount:sum", "amt")]),
+              measures=[m("sum(amount)", "amt")]),
     )
 
 
@@ -172,16 +172,16 @@ def monthly_model() -> SlayerModel:
     return _qb("monthly", query(
         source_model="orders", dimensions=["status"],
         time_dimensions=[{"dimension": "ordered_at", "granularity": "month"}],
-        measures=[m("amount:sum", "rev")]))
+        measures=[m("sum(amount)", "rev")]))
 
 
 def bcast_qb_model() -> SlayerModel:
-    """Private stage ``bstage`` broadcasts ``customers.spend:sum`` across ``status``."""
+    """Private stage ``bstage`` broadcasts ``sum(customers.spend)`` across ``status``."""
     return _qb(
         "bcast_qb",
         query(name="bstage", source_model="orders", dimensions=["status"],
-              measures=[m("amount:sum", "amt"), m("customers.spend:sum", "cs")]),
-        query(source_model="bstage", dimensions=["status"], measures=[m("amt:sum", "amt2")]),
+              measures=[m("sum(amount)", "amt"), m("sum(customers.spend)", "cs")]),
+        query(source_model="bstage", dimensions=["status"], measures=[m("sum(amt)", "amt2")]),
     )
 
 
@@ -192,10 +192,10 @@ def jt_qb_model() -> SlayerModel:
         query(name="a",
               source_model={"source_name": "customers",
                             "joins": [{"target_model": "b", "join_pairs": [["id", "customer_id"]]}]},
-              dimensions=["tier"], measures=[m("b.rev:sum", "ab")]),
+              dimensions=["tier"], measures=[m("sum(b.rev)", "ab")]),
         query(name="b", source_model="orders", dimensions=["customer_id"],
-              measures=[m("amount:sum", "rev")]),
-        query(source_model="a", dimensions=["tier"], measures=[m("ab:max", "v")]),
+              measures=[m("sum(amount)", "rev")]),
+        query(source_model="a", dimensions=["tier"], measures=[m("max(ab)", "v")]),
     )
 
 

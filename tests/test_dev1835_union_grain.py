@@ -56,7 +56,7 @@ class TestUnionGrainBroadcast:
         query = q(
             dimensions=["region", {"expression": UNION_WM_DIM, "name": "ur"}],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="amount:sum", name="m")],
+            measures=[ModelMeasure(formula="sum(amount)", name="m")],
         )
         resp = await engine.execute(query)
         got = {
@@ -81,7 +81,7 @@ class TestUnionGrainBroadcast:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", "city", {"expression": UNION_RK_DIM, "name": "ur"}],
-            measures=[ModelMeasure(formula="amount:sum", name="m")],
+            measures=[ModelMeasure(formula="sum(amount)", name="m")],
         )
         resp = await engine.execute(query)
         got = {
@@ -106,7 +106,7 @@ class TestUnionGrainBroadcast:
         _, engine = exec_backend
         query = q(
             dimensions=["region", {"expression": UNION_WM_DIM, "name": "ur"}],
-            measures=[ModelMeasure(formula="amount:sum", name="m")],
+            measures=[ModelMeasure(formula="sum(amount)", name="m")],
         )
         with pytest.raises(ValueError, match="could not resolve its time dimension"):
             await engine.execute(query)

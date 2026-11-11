@@ -8,13 +8,13 @@ so pytest skips collection here (like ``tests/_engine_helpers.py``).
 
 The three time_shift inner-aggregate shapes DEV-1750 distinguishes:
 
-* **(a) local inner** — ``time_shift(amount:sum, -1)`` with a *sibling*
+* **(a) local inner** — ``time_shift(sum(amount), -1)`` with a *sibling*
   cross-model measure. Guarded today only by association.
-* **(b) host-rooted inner** — ``time_shift(amount:wscaled_sum, -1)`` whose
+* **(b) host-rooted inner** — ``time_shift(wscaled_sum(amount), -1)`` whose
   default param crosses ``orders → customers → regions``. The crossing fragment
   isolates the aggregate host-rooted (``cte_root_model`` = host); the shifted CTE
   re-aggregates host-rooted with the fragment's join pulled in (Part 1).
-* **(c) target-grain inner** — ``time_shift(customers.spend:sum, -1)``.
+* **(c) target-grain inner** — ``time_shift(sum(customers.spend), -1)``.
   Target-rooted (``cte_root_model`` is None); host-rooted re-aggregation would
   multiply target rows, so it stays behind the narrowed guard.
 """
@@ -90,7 +90,7 @@ def line_items_model() -> SlayerModel:
 
 def orders_model() -> SlayerModel:
     """Host model. ``wscaled_sum`` is declared HERE with a default param crossing
-    two hops (``customers__regions.weight``), so ``amount:wscaled_sum`` is the
+    two hops (``customers__regions.weight``), so ``wscaled_sum(amount)`` is the
     host-rooted crossing-fragment aggregate (shape (b)). ``liscaled_sum`` crosses
     the 1:N ``line_items`` join for the sibling-protection fan-out proof."""
     return SlayerModel(
@@ -162,7 +162,7 @@ def shifted_cte_body(sql: str) -> str:
 
 def base_cte_body(sql: str) -> str:
     """Rendered body of the host ``_base`` CTE (the local-slot spine — where a
-    sibling ``amount:sum`` lives and the crossing re-aggregation must NOT)."""
+    sibling ``sum(amount)`` lives and the crossing re-aggregation must NOT)."""
     return _extract_cte_body(sql, r"_base")
 
 

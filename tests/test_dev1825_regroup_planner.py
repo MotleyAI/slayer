@@ -21,7 +21,7 @@ from slayer.engine.compile.regroup import (
 
 from tests._dev1740_fixtures import cm_cte_bodies, gen
 
-BAND = "CASE WHEN amount:sum(partition_by=city) > 5000 THEN 1 ELSE 0 END"
+BAND = "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END"
 
 
 def _q(**kw) -> SlayerQuery:
@@ -88,11 +88,11 @@ class TestPlaceholderRegistry:
 # --------------------------------------------------------------------------- #
 class TestMultiOutputProducer:
     async def test_two_aggregates_one_partition_set_share_one_cte(self) -> None:
-        band = ("CASE WHEN amount:sum(partition_by=city) > 5000 "
-                "AND amount:count(partition_by=city) > 1 THEN 1 ELSE 0 END")
+        band = ("CASE WHEN sum(amount, partition_by=city) > 5000 "
+                "AND count(amount, partition_by=city) > 1 THEN 1 ELSE 0 END")
         sql = await gen(_q(
             dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         assert _count_isolated_ctes(sql) == 1
 
@@ -101,10 +101,10 @@ class TestMultiOutputProducer:
             dimensions=[
                 "region",
                 {"expression": BAND, "name": "band_hi"},
-                {"expression": "CASE WHEN amount:count(partition_by=city) > 1 "
+                {"expression": "CASE WHEN count(amount, partition_by=city) > 1 "
                                "THEN 1 ELSE 0 END", "name": "band_n"},
             ],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         assert _count_isolated_ctes(sql) == 1
 
@@ -117,7 +117,7 @@ class TestFilterClassifier:
         sql = await gen(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
             filters=["not (band == 1)"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         assert "5000" not in cm_cte_bodies(sql)
 
@@ -126,7 +126,7 @@ class TestFilterClassifier:
         one-string form renders identically to the separate-filters form."""
         base_kwargs = dict(
             dimensions=["region", {"expression": BAND, "name": "band"}],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         anded = await gen(_q(
             filters=["band == 1 and status == 'ok'"], **base_kwargs,
@@ -142,7 +142,7 @@ class TestFilterClassifier:
         query = _q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
             filters=["band == 1 or status == 'ok'"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         sql = await gen(query)
         assert "status" in sql
@@ -151,7 +151,7 @@ class TestFilterClassifier:
         sql = await gen(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
             filters=["coalesce(city, 'x') != 'Lyon'"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         assert "Lyon" in cm_cte_bodies(sql)
 
@@ -162,7 +162,7 @@ class TestFilterClassifier:
         sql = await gen(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
             filters=["status == 'ok'"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         assert "status" in cm_cte_bodies(sql)
         assert "status" in _consumer_body(sql)
@@ -172,8 +172,8 @@ class TestFilterClassifier:
         # a HAVING on the final stage, never inside the producer.
         sql = await gen(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
-            filters=["amount:sum > 0"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            filters=["sum(amount) > 0"],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         assert "> 0" not in cm_cte_bodies(sql)
         assert "HAVING" in _consumer_body(sql).upper()
@@ -190,10 +190,10 @@ class TestDiscoveryGuards:
         q = _q(
             dimensions=[
                 "region",
-                {"expression": "CASE WHEN customers.spend:sum(partition_by=city) "
+                {"expression": "CASE WHEN sum(customers.spend, partition_by=city) "
                                "> 100 THEN 1 ELSE 0 END", "name": "band"},
             ],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         with pytest.raises(ValueError, match=r"attributable from customers"):
             await gen(q)
@@ -206,7 +206,7 @@ class TestDiscoveryGuards:
                              "type": "DOUBLE"}],
             }),
             dimensions=["region", {"expression": BAND, "name": "band"}],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         with pytest.raises(ValueError, match=r"__regroup__"):
             await gen(q)
@@ -219,7 +219,7 @@ class TestDiscoveryGuards:
                              "type": "DOUBLE"}],
             }),
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         sql = await gen(q)
         assert "SELECT" in sql

@@ -1,5 +1,5 @@
 """Multi-hop routed-filter path validation in the cross-model target-scope renderer.
-Two-hop aggregate (``customers_v2.regions.population:sum``) → CTE target ``regions``, so a filter path can end at the target or the intermediate hop; reachable filters route into the CTE, unreachable ones drop from the producer with a warning.
+Two-hop aggregate (``sum(customers_v2.regions.population)``) → CTE target ``regions``, so a filter path can end at the target or the intermediate hop; reachable filters route into the CTE, unreachable ones drop from the producer with a warning.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from tests._engine_helpers import _assert_valid_sql
 # Derived column on regions: its filter path ends AT the target ``regions``.
 _REGIONS_EXTRA = [Column(name="pop_x2", sql="population * 2", type=DataType.DOUBLE)]
 
-_TWO_HOP_AGG = ModelMeasure(formula="customers_v2.regions.population:sum")
+_TWO_HOP_AGG = ModelMeasure(formula="sum(customers_v2.regions.population)")
 
 
 class TestRoutedFilterPathE2E:

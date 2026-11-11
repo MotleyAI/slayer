@@ -41,7 +41,7 @@ from slayer.sql.generator import generate_from_planned as render_planned
 
 from tests._dev1800_fixtures import ModelMeasure, SlayerQuery, dev1800_models, signup_td
 
-CM = "customers.spend:sum"
+CM = "sum(customers.spend)"
 
 
 # --------------------------------------------------------------------------- #
@@ -109,27 +109,27 @@ def _transforms_read(key, by_key: dict) -> list:
 # measures, filter predicates and ORDER-BY keys, since every value the plan
 # carries (mask and order slots included) must be staged.
 _INVARIANT_QUERIES = [
-    dict(measures=[ModelMeasure(formula="amount:sum", name="a")]),
-    dict(measures=[ModelMeasure(formula="change(amount:sum)", name="c")]),
-    dict(measures=[ModelMeasure(formula="change(cumsum(amount:sum))", name="n")]),
+    dict(measures=[ModelMeasure(formula="sum(amount)", name="a")]),
+    dict(measures=[ModelMeasure(formula="change(sum(amount))", name="c")]),
+    dict(measures=[ModelMeasure(formula="change(cumsum(sum(amount)))", name="n")]),
     dict(measures=[ModelMeasure(formula=CM, name="s")]),
-    dict(measures=[ModelMeasure(formula=f"{CM} + amount:sum", name="c")]),
-    dict(measures=[ModelMeasure(formula=f"change({CM}) + amount:sum", name="c")]),
-    dict(measures=[ModelMeasure(formula="consecutive_periods(amount:sum > 0)", name="p")]),
+    dict(measures=[ModelMeasure(formula=f"{CM} + sum(amount)", name="c")]),
+    dict(measures=[ModelMeasure(formula=f"change({CM}) + sum(amount)", name="c")]),
+    dict(measures=[ModelMeasure(formula="consecutive_periods(sum(amount) > 0)", name="p")]),
     # filter predicate over a transform composite (a mask slot must be staged)
-    dict(measures=[ModelMeasure(formula="amount:sum", name="a")],
-         filters=[f"change({CM}) + amount:sum > 0"]),
+    dict(measures=[ModelMeasure(formula="sum(amount)", name="a")],
+         filters=[f"change({CM}) + sum(amount) > 0"]),
     # a row-typed and a measure-typed mask together
-    dict(measures=[ModelMeasure(formula="amount:sum", name="a")],
-         filters=["amount > 5", "amount:sum > 50"]),
+    dict(measures=[ModelMeasure(formula="sum(amount)", name="a")],
+         filters=["amount > 5", "sum(amount) > 50"]),
     # ORDER-BY key over a transform composite (an order slot must be staged)
-    dict(measures=[ModelMeasure(formula="amount:sum", name="a")],
-         order=[{"column": f"change({CM}) + amount:sum", "direction": "desc"}]),
+    dict(measures=[ModelMeasure(formula="sum(amount)", name="a")],
+         order=[{"column": f"change({CM}) + sum(amount)", "direction": "desc"}]),
     # the alternation class (D10): a transform over a composite over a transform,
     # beside the projected composite — the dev1859 stall shape
-    dict(measures=[ModelMeasure(formula="change(amount:sum)", name="ch")],
-         filters=["last(change(amount:sum)) < 0"]),
-    dict(measures=[ModelMeasure(formula="last(change(cumsum(amount:sum)))", name="t")]),
+    dict(measures=[ModelMeasure(formula="change(sum(amount))", name="ch")],
+         filters=["last(change(sum(amount))) < 0"]),
+    dict(measures=[ModelMeasure(formula="last(change(cumsum(sum(amount))))", name="t")]),
 ]
 
 
@@ -196,7 +196,7 @@ class TestStageOrderingInvariants:
     def test_composite_over_a_transform_is_one_level_above_it(self) -> None:
         """A composite is not a relation boundary (D10): it sits one level above
         the deepest transform it reads, never in a terminal stage of its own."""
-        pq = _plan(measures=[ModelMeasure(formula=f"change({CM}) + amount:sum", name="c")])
+        pq = _plan(measures=[ModelMeasure(formula=f"change({CM}) + sum(amount)", name="c")])
         by_key = {s.key: s for s in _all_slots(pq)}
         composites = [c for c in _composite_slots(pq) if _transforms_read(key=c.key, by_key=by_key)]
         assert composites
@@ -210,22 +210,22 @@ class TestStageOrderingInvariants:
 # --------------------------------------------------------------------------- #
 class TestConcreteStages:
     def test_local_aggregate_is_base(self) -> None:
-        pq = _plan(measures=[ModelMeasure(formula="amount:sum", name="a")], time_dimensions=[])
+        pq = _plan(measures=[ModelMeasure(formula="sum(amount)", name="a")], time_dimensions=[])
         [agg] = [s for s in pq.aggregate_slots if isinstance(s.key, AggregateKey)]
         assert agg.stage == Stage(kind=StageKind.BASE)
 
     def test_time_shift_inner_is_derived_level_one(self) -> None:
-        pq = _plan(measures=[ModelMeasure(formula="change(amount:sum)", name="c")])
+        pq = _plan(measures=[ModelMeasure(formula="change(sum(amount))", name="c")])
         [ts] = [s for s in _transform_slots(pq) if s.key.op == "time_shift"]
         assert ts.stage == Stage(kind=StageKind.DERIVED, level=1)
 
     def test_nested_transform_reaches_derived_level_two(self) -> None:
-        pq = _plan(measures=[ModelMeasure(formula="change(cumsum(amount:sum))", name="n")])
+        pq = _plan(measures=[ModelMeasure(formula="change(cumsum(sum(amount)))", name="n")])
         assert {s.stage.kind for s in _transform_slots(pq)} == {StageKind.DERIVED}
         assert {s.stage.level for s in _transform_slots(pq)} == {1, 2}
 
     def test_combined_attach_placeholder_is_producer(self) -> None:
-        pq = _plan(measures=[ModelMeasure(formula=f"{CM} + amount:sum", name="c")])
+        pq = _plan(measures=[ModelMeasure(formula=f"{CM} + sum(amount)", name="c")])
         [attach] = pq.regroup_attach_plans
         assert attach.attach_phase == "combined"
         placeholders = [
@@ -239,13 +239,13 @@ class TestConcreteStages:
     def test_composite_over_a_combined_placeholder_is_combined(self) -> None:
         """No transform operand → the combined-SELECT expression is COMBINED,
         strictly later than the PRODUCER placeholder it reads (D1 F5)."""
-        pq = _plan(measures=[ModelMeasure(formula=f"{CM} + amount:sum", name="c")])
+        pq = _plan(measures=[ModelMeasure(formula=f"{CM} + sum(amount)", name="c")])
         [comp] = [s for s in pq.aggregate_slots if isinstance(s.key, ArithmeticKey)]
         assert comp.stage == Stage(kind=StageKind.COMBINED)
 
     def test_computed_dimension_is_base(self) -> None:
         pq = _plan(dimensions=[{"expression": "amount * 2", "name": "amt2"}],
-                   measures=[ModelMeasure(formula="amount:sum", name="a")], time_dimensions=[])
+                   measures=[ModelMeasure(formula="sum(amount)", name="a")], time_dimensions=[])
         [dim] = [s for s in pq.row_slots if s.is_dimension and isinstance(s.key, ArithmeticKey)]
         assert dim.stage == Stage(kind=StageKind.BASE)
 
@@ -254,8 +254,8 @@ class TestConcreteStages:
 # Transparent-composite levels (D10/D11) — only transforms stratify.
 # --------------------------------------------------------------------------- #
 _LOCAL_STALL: dict = dict(
-    measures=[ModelMeasure(formula="change(amount:sum)", name="ch")],
-    filters=["last(change(amount:sum)) < 0"],
+    measures=[ModelMeasure(formula="change(sum(amount))", name="ch")],
+    filters=["last(change(sum(amount))) < 0"],
 )
 
 
@@ -286,18 +286,18 @@ class TestTransparentCompositeLevels:
         assert by_id[mask.slot_id].stage == Stage(kind=StageKind.DERIVED, level=3)
 
     def test_measure_only_last_over_change_is_level_two(self) -> None:
-        pq = _plan(measures=[ModelMeasure(formula="last(change(amount:sum))", name="t")])
+        pq = _plan(measures=[ModelMeasure(formula="last(change(sum(amount)))", name="t")])
         [last] = [s for s in _transform_slots(pq) if s.key.op == "last"]
         assert last.stage == Stage(kind=StageKind.DERIVED, level=2)
 
     def test_staging_is_a_function_of_the_term_alone(self) -> None:
         """The same term carries the same stage with and without ``change(x)``
         projected (interning parity)."""
-        without = _plan(measures=[ModelMeasure(formula="amount:sum", name="a")],
-                        filters=["last(change(amount:sum)) < 0"])
-        with_proj = _plan(measures=[ModelMeasure(formula="amount:sum", name="a"),
-                                    ModelMeasure(formula="change(amount:sum)", name="ch")],
-                          filters=["last(change(amount:sum)) < 0"])
+        without = _plan(measures=[ModelMeasure(formula="sum(amount)", name="a")],
+                        filters=["last(change(sum(amount))) < 0"])
+        with_proj = _plan(measures=[ModelMeasure(formula="sum(amount)", name="a"),
+                                    ModelMeasure(formula="change(sum(amount))", name="ch")],
+                          filters=["last(change(sum(amount))) < 0"])
         a = {s.key: s.stage for s in _all_slots(without)}
         b = {s.key: s.stage for s in _all_slots(with_proj)}
         shared = set(a) & set(b)
@@ -307,8 +307,8 @@ class TestTransparentCompositeLevels:
 
     def test_deeper_alternation_stages_one_level_per_transform(self) -> None:
         pq = _plan(measures=[
-            ModelMeasure(formula="change(cumsum(amount:sum))", name="ch"),
-            ModelMeasure(formula="last(change(cumsum(amount:sum)))", name="t"),
+            ModelMeasure(formula="change(cumsum(sum(amount)))", name="ch"),
+            ModelMeasure(formula="last(change(cumsum(sum(amount))))", name="t"),
         ])
         by_op = {s.key.op: s for s in _transform_slots(pq)}
         assert by_op["cumsum"].stage == Stage(kind=StageKind.DERIVED, level=1)
@@ -326,7 +326,7 @@ class TestTransparentCompositeLevels:
 # --------------------------------------------------------------------------- #
 class TestNeedsColumn:
     def test_hidden_operand_of_failing_composite_is_projected(self) -> None:
-        pq = _plan(measures=[ModelMeasure(formula=f"change({CM}) + amount:sum", name="c")])
+        pq = _plan(measures=[ModelMeasure(formula=f"change({CM}) + sum(amount)", name="c")])
         hidden_local = [
             s for s in pq.aggregate_slots
             if isinstance(s.key, AggregateKey) and s.hidden
@@ -342,23 +342,23 @@ class TestNeedsColumn:
             assert ph.needs_column is True
 
     def test_projected_measure_needs_a_column(self) -> None:
-        pq = _plan(measures=[ModelMeasure(formula="amount:sum", name="a")], time_dimensions=[])
+        pq = _plan(measures=[ModelMeasure(formula="sum(amount)", name="a")], time_dimensions=[])
         [agg] = [s for s in pq.aggregate_slots if isinstance(s.key, AggregateKey)]
         assert agg.needs_column is True
 
     def test_measure_mask_over_hidden_last_marks_the_chain(self) -> None:
         """A measure mask over a hidden ``last(change(x))`` marks ``last`` (mask
         dep) and its ``time_shift`` (read by a later level) as columns."""
-        pq = _plan(measures=[ModelMeasure(formula="amount:sum", name="a")],
-                   filters=["last(change(amount:sum)) < 0"])
+        pq = _plan(measures=[ModelMeasure(formula="sum(amount)", name="a")],
+                   filters=["last(change(sum(amount))) < 0"])
         [last] = [s for s in _transform_slots(pq) if s.key.op == "last"]
         [ts] = [s for s in _transform_slots(pq) if s.key.op == "time_shift"]
         assert last.needs_column is True
         assert ts.needs_column is True
 
     def test_derived_order_target_materialises_as_a_column(self) -> None:
-        pq = _plan(measures=[ModelMeasure(formula="amount:sum", name="a")],
-                   order=[{"column": f"change({CM}) + amount:sum", "direction": "desc"}])
+        pq = _plan(measures=[ModelMeasure(formula="sum(amount)", name="a")],
+                   order=[{"column": f"change({CM}) + sum(amount)", "direction": "desc"}])
         by_id = {s.id: s for s in _all_slots(pq)}
         targets = [by_id[e.slot_id] for e in pq.order]
         [comp] = [s for s in targets if isinstance(s.key, ArithmeticKey)]
@@ -372,12 +372,12 @@ class TestNeedsColumn:
 # --------------------------------------------------------------------------- #
 class TestSeriesRegime:
     def test_local_change_is_reaggregation(self) -> None:
-        pq = _plan(measures=[ModelMeasure(formula="change(amount:sum)", name="c")])
+        pq = _plan(measures=[ModelMeasure(formula="change(sum(amount))", name="c")])
         [ts] = [s for s in _transform_slots(pq) if s.key.op == "time_shift"]
         assert ts.series is False
 
     def test_predicate_uses_series(self) -> None:
-        pq = _plan(measures=[ModelMeasure(formula="consecutive_periods(amount:sum > 0)", name="p")])
+        pq = _plan(measures=[ModelMeasure(formula="consecutive_periods(sum(amount) > 0)", name="p")])
         [cp] = [s for s in _transform_slots(pq) if s.key.op == "consecutive_periods"]
         assert cp.series is True
 
@@ -467,7 +467,7 @@ class TestValidatorRejects:
 
 class TestGeneratorBelt:
     def test_belt_refuses_a_plan_unstaged_via_model_copy_bypass(self) -> None:
-        pq = _plan(measures=[ModelMeasure(formula="amount:sum", name="a")], time_dimensions=[])
+        pq = _plan(measures=[ModelMeasure(formula="sum(amount)", name="a")], time_dimensions=[])
         target = pq.aggregate_slots[0]
         bad = pq.model_copy(update={
             "aggregate_slots": [target.model_copy(update={"stage": None})]
@@ -500,7 +500,7 @@ class TestTraversalContract:
         assert list(_iter_slot_deps(arith)) == [agg]
 
     def test_time_trunc_is_the_slot_not_its_column(self) -> None:
-        pq = _plan(measures=[ModelMeasure(formula="amount:sum", name="a")])
+        pq = _plan(measures=[ModelMeasure(formula="sum(amount)", name="a")])
         tt_slots = [s for s in pq.row_slots if type(s.key).__name__ == "TimeTruncKey"]
         assert tt_slots
         for s in tt_slots:

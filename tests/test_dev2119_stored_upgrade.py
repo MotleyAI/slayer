@@ -28,7 +28,9 @@ from tests._stored_upgrade_fixtures import (
     seed_shop,
     stored_bytes,
 )
-from tests.test_upgrade_corpus_v0_10_2 import DATASOURCES, EXPECTED, MEMORY_PREFIX, _open_store, _run
+from tests._upgrade_corpus import MEMORY_PREFIX, open_store
+from tests._upgrade_corpus import run as run_recorded
+from tests.test_upgrade_corpus_v0_10_2 import CORPUS
 
 SIGNUP_OBJECT = {"name": "signed_up_at", "model": "customers"}
 SIGNUP_TEXT = "customers.signed_up_at"
@@ -175,7 +177,7 @@ def _stored_memory_td(*, backend: str, storage: Any, base: str, memory_id: str) 
 class TestReleasedCorpus:
     @pytest.mark.parametrize("backend", ["yaml", "sqlite"])
     async def test_every_time_dimension_loads_as_text_with_its_results(self, tmp_path, backend: str) -> None:
-        storage = _open_store(backend=backend, tmp=tmp_path, online=True)
+        storage = open_store(CORPUS, backend=backend, tmp=tmp_path, online=True)
         try:
             texts: list = []
             keys: list[str] = []
@@ -186,16 +188,16 @@ class TestReleasedCorpus:
                     if query.time_dimensions:
                         texts += [td["dimension"] for td in _dumped_tds(query)]
                         keys.append(name)
-            for mid in sorted(k.removeprefix(MEMORY_PREFIX) for k in EXPECTED if k.startswith(MEMORY_PREFIX)):
+            for mid in CORPUS.memory_ids:
                 mem = await storage.get_memory(mid)
                 if mem.query is not None and mem.query.time_dimensions:
                     texts += [td["dimension"] for td in _dumped_tds(mem.query)]
                     keys.append(f"{MEMORY_PREFIX}{mid}")
             assert texts == ["ordered_at"] * 7
             for key in keys:
-                assert await _run(storage, key) == EXPECTED[key]["rows"], key
+                assert await run_recorded(CORPUS, storage, key) == CORPUS.expected[key]["rows"], key
         finally:
-            for name in DATASOURCES:
+            for name in CORPUS.datasources:
                 ds_config = await storage.get_datasource(name)
                 if ds_config is not None:
                     engine_factory.invalidate_engine(ds_config)

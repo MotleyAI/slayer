@@ -389,7 +389,7 @@ class TestRenderContextApi:
             render_value_key(key=key, ctx=ctx)
 
     def test_cross_model_star_without_a_builder_fails_closed(self) -> None:
-        """``customers.*:count`` counts rows of the JOINED relation.
+        """``count(customers.*)`` counts rows of the JOINED relation.
 
         ``StarKey.path`` carries that hop, and routing it needs the join graph.
         Emitting a bare ``*`` would count HOST rows instead — a wrong number,
@@ -401,7 +401,7 @@ class TestRenderContextApi:
             render_value_key(key=key, ctx=ctx)
 
     def test_local_star_still_renders(self) -> None:
-        """The guard must not catch the ordinary local ``*:count``."""
+        """The guard must not catch the ordinary local ``count(*)``."""
         key = AggregateKey(source=StarKey(), agg="count")
         assert _sql(render_value_key(key=key, ctx=_composite_ctx())) == "COUNT(*)"
 
@@ -1070,7 +1070,7 @@ class TestMigratedCallSitesEndToEnd:
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="*:count")],
+                measures=[ModelMeasure(formula="count(*)")],
                 filters=["ifnull(disc, 0) > 1"],
             )
         )
@@ -1085,7 +1085,7 @@ class TestMigratedCallSitesEndToEnd:
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="ifnull(amount:sum, 0)", name="m")],
+                measures=[ModelMeasure(formula="ifnull(sum(amount), 0)", name="m")],
             )
         )
         by_status = {r["orders.status"]: r["orders.m"] for r in resp.data}
@@ -1099,7 +1099,7 @@ class TestMigratedCallSitesEndToEnd:
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
                 measures=[
-                    ModelMeasure(formula="amount:sum - qty:sum", name="d"),
+                    ModelMeasure(formula="sum(amount) - sum(qty)", name="d"),
                 ],
             )
         )
@@ -1116,7 +1116,7 @@ class TestMigratedCallSitesEndToEnd:
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="amount:sum_sq", name="ss")],
+                measures=[ModelMeasure(formula="sum_sq(amount)", name="ss")],
             )
         )
         by_status = {r["orders.status"]: r["orders.ss"] for r in resp.data}
@@ -1128,8 +1128,8 @@ class TestMigratedCallSitesEndToEnd:
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="qty:sum", name="q")],
-                filters=["qty:sum > 5"],
+                measures=[ModelMeasure(formula="sum(qty)", name="q")],
+                filters=["sum(qty) > 5"],
             )
         )
         assert [r["orders.status"] for r in resp.data] == ["new"]
@@ -1145,7 +1145,7 @@ class TestMigratedCallSitesEndToEnd:
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="amount:last", name="la")],
+                measures=[ModelMeasure(formula="last(amount)", name="la")],
             )
         )
         by_status = {r["orders.status"]: r["orders.la"] for r in resp.data}
@@ -1159,7 +1159,7 @@ class TestMigratedCallSitesEndToEnd:
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
                 measures=[
-                    ModelMeasure(formula="ifnull(amount:last, 0)", name="la"),
+                    ModelMeasure(formula="ifnull(last(amount), 0)", name="la"),
                 ],
             )
         )
@@ -1256,8 +1256,8 @@ class TestOuterWrapperAndShiftedCteFamilies:
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="gold_amount:sum", name="g")],
-                filters=["gold_amount:sum > 100"],
+                measures=[ModelMeasure(formula="sum(gold_amount)", name="g")],
+                filters=["sum(gold_amount) > 100"],
             )
         )
         assert [r["orders.status"] for r in resp.data] == ["new"]
@@ -1272,8 +1272,8 @@ class TestOuterWrapperAndShiftedCteFamilies:
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="gold_amount:sum", name="g")],
-                filters=["ifnull(gold_amount:sum, 0) > 100"],
+                measures=[ModelMeasure(formula="sum(gold_amount)", name="g")],
+                filters=["ifnull(sum(gold_amount), 0) > 100"],
             )
         )
         assert [r["orders.status"] for r in resp.data] == ["new"]
@@ -1298,8 +1298,8 @@ class TestOuterWrapperAndShiftedCteFamilies:
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="gold_amount:sum", name="g")],
-                filters=["ifnull(gold_amount:sum, 0) > 100"],
+                measures=[ModelMeasure(formula="sum(gold_amount)", name="g")],
+                filters=["ifnull(sum(gold_amount), 0) > 100"],
             ),
             dry_run=True,
         )
@@ -1325,9 +1325,9 @@ class TestOuterWrapperAndShiftedCteFamilies:
                     ),
                 ],
                 measures=[
-                    ModelMeasure(formula="amount:sum", name="amt"),
+                    ModelMeasure(formula="sum(amount)", name="amt"),
                     ModelMeasure(
-                        formula="time_shift(amount:sum, -1, 'month')",
+                        formula="time_shift(sum(amount), -1, 'month')",
                         name="prev",
                     ),
                 ],
@@ -1808,7 +1808,7 @@ class TestNewlyAdmittedScalars:
         resp = await e2e.execute(
             SlayerQuery(
                 source_model="orders",
-                measures=[ModelMeasure(formula="*:count", name="n")],
+                measures=[ModelMeasure(formula="count(*)", name="n")],
                 filters=[predicate],
             ),
         )
@@ -1885,7 +1885,7 @@ class TestArityIsRejectedAtBindTime:
         return SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="*:count", name="n")],
+            measures=[ModelMeasure(formula="count(*)", name="n")],
             filters=[predicate],
         )
 
@@ -1906,7 +1906,7 @@ class TestArityIsRejectedAtBindTime:
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="*:count", name="n")],
+                measures=[ModelMeasure(formula="count(*)", name="n")],
                 filters=["round(amount, 2) > 1"],
             ),
             dry_run=True,
@@ -2003,7 +2003,7 @@ class TestIifDirectRender:
         return SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="*:count", name="n")],
+            measures=[ModelMeasure(formula="count(*)", name="n")],
             filters=[predicate],
         )
 
@@ -2025,7 +2025,7 @@ class TestIifDirectRender:
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="*:count", name="n")],
+                measures=[ModelMeasure(formula="count(*)", name="n")],
                 filters=["status in ('new', 'missing')"],
             )
         )

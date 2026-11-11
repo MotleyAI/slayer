@@ -239,8 +239,7 @@ class TestExactHostQualifier:
             ],
         )
         sql = await _engine_generate(
-            query=SlayerQuery(source_model="orders",
-                              measures=[{"formula": "doubled:sum"}]),
+            query=SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(doubled)"}]}),
             model=host,
         )
         assert "amount" in sql

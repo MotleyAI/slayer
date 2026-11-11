@@ -35,9 +35,9 @@ class TestIneligiblePositions:
     """Each ineligible position must reject with a saved-measure-aware message."""
 
     async def test_aggregation_suffix_errors(self) -> None:
-        """``customers.aov:sum`` — a saved measure takes no aggregation; the
+        """``sum(customers.aov)`` — a saved measure takes no aggregation; the
         message mirrors the bare-name form and points at ``customers.aov``."""
-        query = q(measures=[{"formula": "customers.aov:sum", "name": "x"}])
+        query = q(measures=[{"formula": "sum(customers.aov)", "name": "x"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
         message = str(ei.value)
@@ -47,14 +47,14 @@ class TestIneligiblePositions:
 
     async def test_plain_dimension_entry_errors(self) -> None:
         query = q(dimensions=["customers.aov"],
-                  measures=[{"formula": "amount:sum", "name": "a"}])
+                  measures=[{"formula": "sum(amount)", "name": "a"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
         _assert_names_saved_measure(str(ei.value))
 
     async def test_unselected_filter_errors(self) -> None:
         query = q(dimensions=["customers.tier"],
-                  measures=[{"formula": "amount:sum", "name": "a"}],
+                  measures=[{"formula": "sum(amount)", "name": "a"}],
                   filters=["customers.aov > 100"])
         with pytest.raises(ValueError) as ei:
             await gen(query)
@@ -62,7 +62,7 @@ class TestIneligiblePositions:
 
     async def test_order_by_formula_errors(self) -> None:
         query = q(dimensions=["customers.tier"],
-                  measures=[{"formula": "amount:sum", "name": "a"}],
+                  measures=[{"formula": "sum(amount)", "name": "a"}],
                   order=[{"column": "customers.aov", "direction": "desc"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
@@ -70,7 +70,7 @@ class TestIneligiblePositions:
 
     async def test_partition_by_member_errors(self) -> None:
         query = q(dimensions=["customers.tier"],
-                  measures=[{"formula": "amount:sum(partition_by=customers.aov)",
+                  measures=[{"formula": "sum(amount, partition_by=customers.aov)",
                              "name": "a"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
@@ -80,7 +80,7 @@ class TestIneligiblePositions:
         """At least one ineligible-position error must say WHERE the reference is
         legal (measure formulas / computed dimensions)."""
         query = q(dimensions=["customers.aov"],
-                  measures=[{"formula": "amount:sum", "name": "a"}])
+                  measures=[{"formula": "sum(amount)", "name": "a"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
         low = str(ei.value).lower()

@@ -185,7 +185,7 @@ class TestPlanFilters:
         assert len(plan.filters) == 1
 
     def test_filter_only_interns_slot_worthy_keys(self):
-        # `amount:sum > 100`: only `amount:sum` is slot-worthy. The
+        # `sum(amount) > 100`: only `sum(amount)` is slot-worthy. The
         # ArithmeticKey root and the literal 100 must NOT create slots.
         planner = ProjectionPlanner()
         agg = _amount_sum()
@@ -213,7 +213,7 @@ class TestPlanFilters:
         assert plan.registry.find_by_key(_status()) is not None
 
     def test_order_arithmetic_slots_root_and_aggregate(self):
-        """``ORDER BY amount:sum + 1`` with no declared ``amount:sum``.
+        """``ORDER BY amount:sum + 1`` with no declared ``sum(amount)``.
 
         DEV-1733 INVERTED the second half of this contract. The planner still
         interns the inner aggregate as a hidden slot, and still never slots the
@@ -265,8 +265,8 @@ class TestDev1501CanonicalNameWithAggArgs:
     """
 
     def test_two_last_with_different_time_args_distinct_names(self):
-        """Two hidden ``revenue:last(created_at)`` and
-        ``revenue:last(updated_at)`` slots produce distinct ``declared_name``
+        """Two hidden ``last(revenue, created_at)`` and
+        ``last(revenue, updated_at)`` slots produce distinct ``declared_name``
         values — today both collide to ``revenue_last``.
         """
         k_cr = AggregateKey(
@@ -296,7 +296,8 @@ class TestDev1501CanonicalNameWithAggArgs:
         )
         sid_cr = plan.registry.find_by_key(k_cr)
         sid_up = plan.registry.find_by_key(k_up)
-        assert sid_cr is not None and sid_up is not None
+        assert sid_cr is not None
+        assert sid_up is not None
         slot_cr = plan.registry.get(sid_cr)
         slot_up = plan.registry.get(sid_up)
         assert slot_cr.declared_name != slot_up.declared_name, (
@@ -313,7 +314,7 @@ class TestDev1501CanonicalNameWithAggArgs:
         )
 
     def test_two_percentiles_with_different_kwargs_distinct_names(self):
-        """``revenue:percentile(p=0.5)`` vs ``revenue:percentile(p=0.95)``
+        """``percentile(revenue, p=0.5)`` vs ``percentile(revenue, p=0.95)``
         as hidden order/filter slots must produce distinct ``declared_name``
         values mirroring the cross-model parametric exception.
         """
@@ -344,7 +345,8 @@ class TestDev1501CanonicalNameWithAggArgs:
         )
         sid_p50 = plan.registry.find_by_key(k_p50)
         sid_p95 = plan.registry.find_by_key(k_p95)
-        assert sid_p50 is not None and sid_p95 is not None
+        assert sid_p50 is not None
+        assert sid_p95 is not None
         slot_p50 = plan.registry.get(sid_p50)
         slot_p95 = plan.registry.get(sid_p95)
         assert slot_p50.declared_name != slot_p95.declared_name, (

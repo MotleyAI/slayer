@@ -170,11 +170,11 @@ class TestExecution:
 
     def test_nested_source_queries_rejected(self) -> None:
         outer = {"name": "outer", "source_queries": [
-            {"source_model": "x", "dimensions": ["tier"], "measures": [{"formula": "total_spend:sum", "name": "s"}]}]}
+            {"source_model": "x", "dimensions": ["tier"], "measures": [{"formula": "sum(total_spend)", "name": "s"}]}]}
         with pytest.raises(ValueError, match=r"(?is)outer.*named stages?|named stages?.*outer"):
             SlayerQuery.model_validate({
                 "name": "n", "source_model": outer, "dimensions": ["tier"],
-                "measures": [{"formula": "s:sum", "name": "s3"}]})
+                "measures": [{"formula": "sum(s)", "name": "s3"}]})
 
 
 # --------------------------------------------------------------------------- #
@@ -216,8 +216,8 @@ def _bundle() -> ResolvedSourceBundle:
 
 def _q(name, source, **kw) -> SlayerQuery:
     kw.setdefault("dimensions", ["status"] if source == "orders" else [])
-    kw.setdefault("measures", [{"formula": "amount:sum", "name": "amt"}]
-                  if source == "orders" else [{"formula": "amt:sum", "name": "total"}])
+    kw.setdefault("measures", [{"formula": "sum(amount)", "name": "amt"}]
+                  if source == "orders" else [{"formula": "sum(amt)", "name": "total"}])
     return SlayerQuery(name=name, source_model=source, **kw)
 
 

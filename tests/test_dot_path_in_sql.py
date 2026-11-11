@@ -132,13 +132,13 @@ class TestModeASurfacesPreservedVerbatim:
             measures=[
                 ModelMeasure(
                     name="region_count",
-                    formula="customers.regions.name:count",
+                    formula="count(customers.regions.name)",
                 )
             ],
         )
         stored = await _save_and_reload(m)
         out_mm = next(x for x in stored.measures if x.name == "region_count")
-        assert out_mm.formula == "customers.regions.name:count"
+        assert out_mm.formula == "count(customers.regions.name)"
 
 
 class TestNormalizeQueryLeavesModeBText:

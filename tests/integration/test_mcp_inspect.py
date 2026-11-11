@@ -451,7 +451,7 @@ class TestStringAggregationRejection:
 
     The orders fixture has a string column `status` that auto-ingestion also
     exposes as a measure (one measure per non-ID column is the default).
-    Triggering ``status:sum`` / ``status:avg`` etc. should produce a clear
+    Triggering ``sum(status)`` / ``avg(status)`` etc. should produce a clear
     ValueError, not a database-level type error."""
 
     async def _run(self, env, formula: str) -> None:
@@ -464,13 +464,13 @@ class TestStringAggregationRejection:
     @pytest.mark.parametrize("agg", ["sum", "avg", "median"])
     async def test_numeric_only_aggregations_rejected_on_string(self, env, agg: str) -> None:
         with pytest.raises(ValueError, match="is not applicable to TEXT column"):
-            await self._run(env, f"status:{agg}")
+            await self._run(env, f"{agg}(status)")
 
     async def test_min_max_allowed_on_string(self, env) -> None:
         """min/max work on strings (alphabetical ordering) — should pass."""
         q = SlayerQuery.model_validate({
             "source_model": "orders",
-            "measures": [{"formula": "status:min"}, {"formula": "status:max"}],
+            "measures": [{"formula": "min(status)"}, {"formula": "max(status)"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data  # executed without error
@@ -479,7 +479,7 @@ class TestStringAggregationRejection:
         """count/count_distinct always work regardless of type."""
         q = SlayerQuery.model_validate({
             "source_model": "orders",
-            "measures": [{"formula": "status:count"}, {"formula": "status:count_distinct"}],
+            "measures": [{"formula": "count(status)"}, {"formula": "count_distinct(status)"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data
@@ -488,7 +488,7 @@ class TestStringAggregationRejection:
         """avg/sum on the numeric `amount` measure must still work."""
         q = SlayerQuery.model_validate({
             "source_model": "orders",
-            "measures": [{"formula": "amount:sum"}, {"formula": "amount:avg"}],
+            "measures": [{"formula": "sum(amount)"}, {"formula": "avg(amount)"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data
@@ -502,7 +502,7 @@ class TestPrimaryKeyAggregationRule:
         """`:sum` on a numeric primary-key column is rejected at enrichment."""
         q = SlayerQuery.model_validate({
             "source_model": "orders",
-            "measures": [{"formula": "id:sum"}],
+            "measures": [{"formula": "sum(id)"}],
         })
         with pytest.raises(ValueError, match="primary-key column"):
             await env["engine"].execute(query=q)
@@ -511,7 +511,7 @@ class TestPrimaryKeyAggregationRule:
         """`:count` on a primary-key column is always allowed."""
         q = SlayerQuery.model_validate({
             "source_model": "orders",
-            "measures": [{"formula": "id:count"}],
+            "measures": [{"formula": "count(id)"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data

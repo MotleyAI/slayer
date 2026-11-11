@@ -138,17 +138,17 @@ async def _new_sql(
 
 async def test_two_stage_local_aggregate_matches_legacy(harness):
     engine, storage, db_path = harness
-    stage1 = SlayerQuery(
-        name="stage1",
-        source_model="orders",
-        dimensions=["status"],
-        measures=[{"formula": "amount:sum"}],
-    )
-    root = SlayerQuery(
-        source_model="stage1",
-        dimensions=["status"],
-        measures=[{"formula": "amount_sum:max"}],
-    )
+    stage1 = SlayerQuery.model_validate({
+        "name": "stage1",
+        "source_model": "orders",
+        "dimensions": ["status"],
+        "measures": [{"formula": "sum(amount)"}],
+    })
+    root = SlayerQuery.model_validate({
+        "source_model": "stage1",
+        "dimensions": ["status"],
+        "measures": [{"formula": "max(amount_sum)"}],
+    })
     legacy = await engine.execute([stage1, root])
     new_sql = await _new_sql(storage=storage, stages=[stage1, root])
     new_rows = _run_sqlite(db_path=db_path, sql=new_sql)
@@ -163,23 +163,23 @@ async def test_two_stage_local_aggregate_matches_legacy(harness):
 
 async def test_three_stage_chain_matches_legacy(harness):
     engine, storage, db_path = harness
-    s1 = SlayerQuery(
-        name="s1",
-        source_model="orders",
-        dimensions=["status"],
-        measures=[{"formula": "amount:sum"}],
-    )
-    s2 = SlayerQuery(
-        name="s2",
-        source_model="s1",
-        dimensions=["status"],
-        measures=[{"formula": "amount_sum:max"}],
-    )
-    root = SlayerQuery(
-        source_model="s2",
-        dimensions=["status"],
-        measures=[{"formula": "amount_sum_max:min"}],
-    )
+    s1 = SlayerQuery.model_validate({
+        "name": "s1",
+        "source_model": "orders",
+        "dimensions": ["status"],
+        "measures": [{"formula": "sum(amount)"}],
+    })
+    s2 = SlayerQuery.model_validate({
+        "name": "s2",
+        "source_model": "s1",
+        "dimensions": ["status"],
+        "measures": [{"formula": "max(amount_sum)"}],
+    })
+    root = SlayerQuery.model_validate({
+        "source_model": "s2",
+        "dimensions": ["status"],
+        "measures": [{"formula": "min(amount_sum_max)"}],
+    })
     legacy = await engine.execute([s1, s2, root])
     new_sql = await _new_sql(storage=storage, stages=[s1, s2, root])
     new_rows = _run_sqlite(db_path=db_path, sql=new_sql)
@@ -193,17 +193,17 @@ async def test_cross_model_intermediate_stage_matches_legacy(harness):
     execute / match legacy rows.
     """
     engine, storage, db_path = harness
-    stage1 = SlayerQuery(
-        name="stage1",
-        source_model="orders",
-        dimensions=["status"],
-        measures=[{"formula": "customers.revenue:sum"}],
-    )
-    root = SlayerQuery(
-        source_model="stage1",
-        dimensions=["status"],
-        measures=[{"formula": "customers__revenue_sum:max"}],
-    )
+    stage1 = SlayerQuery.model_validate({
+        "name": "stage1",
+        "source_model": "orders",
+        "dimensions": ["status"],
+        "measures": [{"formula": "sum(customers.revenue)"}],
+    })
+    root = SlayerQuery.model_validate({
+        "source_model": "stage1",
+        "dimensions": ["status"],
+        "measures": [{"formula": "max(customers__revenue_sum)"}],
+    })
     legacy = await engine.execute([stage1, root])
     new_sql = await _new_sql(storage=storage, stages=[stage1, root])
     new_rows = _run_sqlite(db_path=db_path, sql=new_sql)
@@ -226,16 +226,16 @@ async def test_mixed_local_and_cross_model_intermediate_matches_legacy(harness):
         source_model="orders",
         dimensions=["status"],
         measures=[
-            {"formula": "amount:sum"},
-            {"formula": "customers.revenue:sum"},
+            {"formula": "sum(amount)"},
+            {"formula": "sum(customers.revenue)"},
         ],
     )
     root = SlayerQuery(
         source_model="stage1",
         dimensions=["status"],
         measures=[
-            {"formula": "amount_sum:max"},
-            {"formula": "customers__revenue_sum:max"},
+            {"formula": "max(amount_sum)"},
+            {"formula": "max(customers__revenue_sum)"},
         ],
     )
     legacy = await engine.execute([stage1, root])
@@ -253,17 +253,17 @@ async def test_mixed_local_and_cross_model_intermediate_matches_legacy(harness):
 
 async def test_dev1448_named_join_measure_alias(harness):
     _, storage, db_path = harness
-    stage1 = SlayerQuery(
-        name="stage1",
-        source_model="orders",
-        dimensions=["status"],
-        measures=[{"formula": "customers.revenue:sum", "name": "rev"}],
-    )
-    root = SlayerQuery(
-        source_model="stage1",
-        dimensions=["status"],
-        measures=[{"formula": "rev:max"}],
-    )
+    stage1 = SlayerQuery.model_validate({
+        "name": "stage1",
+        "source_model": "orders",
+        "dimensions": ["status"],
+        "measures": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+    })
+    root = SlayerQuery.model_validate({
+        "source_model": "stage1",
+        "dimensions": ["status"],
+        "measures": [{"formula": "max(rev)"}],
+    })
     bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
         query=root, storage=storage, named_queries={"stage1": stage1}
     )
@@ -272,7 +272,7 @@ async def test_dev1448_named_join_measure_alias(harness):
     s1_cols = [c.name for c in planned[0].stage_schema.columns]
     assert "rev" in s1_cols
     assert "customers__revenue_sum" not in s1_cols
-    # End-to-end: renders, executes, downstream ``rev:max`` resolves.
+    # End-to-end: renders, executes, downstream ``max(rev)`` resolves.
     new_sql = generate_planned_stages(planned, bundle=bundle, dialect="sqlite")
     new_rows = _run_sqlite(db_path=db_path, sql=new_sql)
     assert any("rev_max" in k for r in new_rows for k in r.keys()), new_sql
@@ -285,18 +285,18 @@ async def test_dev1448_named_join_measure_alias(harness):
 
 async def test_dev1449_flat_name_resolves(harness):
     _, storage, db_path = harness
-    stage1 = SlayerQuery(
-        name="stage1",
-        source_model="orders",
-        dimensions=["customers.region"],
-        measures=[{"formula": "amount:sum"}],
-    )
+    stage1 = SlayerQuery.model_validate({
+        "name": "stage1",
+        "source_model": "orders",
+        "dimensions": ["customers.region"],
+        "measures": [{"formula": "sum(amount)"}],
+    })
     # Downstream references the multi-hop dimension by its FLAT name.
-    root = SlayerQuery(
-        source_model="stage1",
-        dimensions=["customers__region"],
-        measures=[{"formula": "amount_sum:sum"}],
-    )
+    root = SlayerQuery.model_validate({
+        "source_model": "stage1",
+        "dimensions": ["customers__region"],
+        "measures": [{"formula": "sum(amount_sum)"}],
+    })
     bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
         query=root, storage=storage, named_queries={"stage1": stage1}
     )
@@ -308,18 +308,18 @@ async def test_dev1449_flat_name_resolves(harness):
 
 async def test_dev1449_dotted_form_raises(harness):
     _, storage, _ = harness
-    stage1 = SlayerQuery(
-        name="stage1",
-        source_model="orders",
-        dimensions=["customers.region"],
-        measures=[{"formula": "amount:sum"}],
-    )
+    stage1 = SlayerQuery.model_validate({
+        "name": "stage1",
+        "source_model": "orders",
+        "dimensions": ["customers.region"],
+        "measures": [{"formula": "sum(amount)"}],
+    })
     # The dotted form reads a model no join path reaches from the flat upstream stage.
-    root = SlayerQuery(
-        source_model="stage1",
-        dimensions=["customers.region"],
-        measures=[{"formula": "amount_sum:sum"}],
-    )
+    root = SlayerQuery.model_validate({
+        "source_model": "stage1",
+        "dimensions": ["customers.region"],
+        "measures": [{"formula": "sum(amount_sum)"}],
+    })
     bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
         query=root, storage=storage, named_queries={"stage1": stage1}
     )
@@ -338,17 +338,17 @@ async def test_dev1449_dotted_form_raises(harness):
 
 
 async def _two_stage_bundle_and_plan(storage):
-    stage1 = SlayerQuery(
-        name="stage1",
-        source_model="orders",
-        dimensions=["customers.region"],
-        measures=[{"formula": "amount:sum"}],
-    )
-    root = SlayerQuery(
-        source_model="stage1",
-        dimensions=["customers__region"],
-        measures=[{"formula": "amount_sum:sum"}],
-    )
+    stage1 = SlayerQuery.model_validate({
+        "name": "stage1",
+        "source_model": "orders",
+        "dimensions": ["customers.region"],
+        "measures": [{"formula": "sum(amount)"}],
+    })
+    root = SlayerQuery.model_validate({
+        "source_model": "stage1",
+        "dimensions": ["customers__region"],
+        "measures": [{"formula": "sum(amount_sum)"}],
+    })
     bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
         query=root, storage=storage, named_queries={"stage1": stage1}
     )
@@ -426,10 +426,10 @@ async def test_opaque_dim_grouped_in_downstream_stage_rejected(tmp_path):
         dimensions=["loc", "city"],
         distinct_dimension_values=False,
     )
-    root = SlayerQuery(
-        source_model="s1",
-        dimensions=["loc"],
-        measures=[{"formula": "city:count"}],
-    )
+    root = SlayerQuery.model_validate({
+        "source_model": "s1",
+        "dimensions": ["loc"],
+        "measures": [{"formula": "count(city)"}],
+    })
     with pytest.raises(ValueError, match="cannot be used as a dimension"):
         await _new_sql(storage=storage, stages=[stage1, root])

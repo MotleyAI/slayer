@@ -98,7 +98,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
         )
 
 
-CM = ModelMeasure(formula="policy_amount.policy_amount:sum", name="cm")
+CM = ModelMeasure(formula="sum(policy_amount.policy_amount)", name="cm")
 MONTH = [TimeDimension(dimension="created_at",
                        granularity=TimeGranularity.MONTH)]
 
@@ -122,7 +122,7 @@ class TestTimeTruncGrainReroots:
         resp = await engine.execute(SlayerQuery(
             source_model="policy", time_dimensions=list(MONTH),
             measures=[ModelMeasure(
-                formula="policy_amount.policy_amount:sum(window='20d')", name="w",
+                formula="sum(policy_amount.policy_amount, window='20d')", name="w",
             )],
         ))
         assert resp.sql is not None

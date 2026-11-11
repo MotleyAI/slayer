@@ -39,7 +39,7 @@ class TestNamedMeasureSQL:
         """Query with ``{formula: "aov"}`` produces the same SQL as
         ``{formula: "revenue:sum / *:count"}``.
         """
-        formula = "revenue:sum / *:count"
+        formula = "sum(revenue) / count(*)"
         with_saved = _orders_model(
             measures=[ModelMeasure(name="aov", formula=formula)]
         )
@@ -59,8 +59,8 @@ class TestNamedMeasureSQL:
         assert saved_sql == inline_sql
 
     async def test_in_transform(self) -> None:
-        """``cumsum(aov)`` matches ``cumsum(revenue:sum / *:count)``."""
-        formula = "revenue:sum / *:count"
+        """``cumsum(aov)`` matches ``cumsum(sum(revenue) / count(*))``."""
+        formula = "sum(revenue) / count(*)"
         with_saved = _orders_model(
             measures=[ModelMeasure(name="aov", formula=formula)]
         )
@@ -91,7 +91,7 @@ class TestNamedMeasureSQL:
 
     async def test_in_arithmetic(self) -> None:
         """``aov * 1.1`` matches inlined."""
-        formula = "revenue:sum"
+        formula = "sum(revenue)"
         with_saved = _orders_model(
             measures=[ModelMeasure(name="aov", formula=formula)]
         )
@@ -114,7 +114,7 @@ class TestNamedMeasureSQL:
         """``b → a → revenue:sum`` resolves transitively."""
         chained = _orders_model(
             measures=[
-                ModelMeasure(name="a", formula="revenue:sum"),
+                ModelMeasure(name="a", formula="sum(revenue)"),
                 ModelMeasure(name="b", formula="a"),
             ]
         )
@@ -124,10 +124,10 @@ class TestNamedMeasureSQL:
             source_model="orders",
             measures=[{"formula": "b", "name": "result"}],
         )
-        inline_query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "revenue:sum", "name": "result"}],
-        )
+        inline_query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(revenue)", "name": "result"}],
+        })
 
         chained_sql = await _generate(chained_query, chained)
         inline_sql = await _generate(inline_query, inline)
@@ -158,7 +158,7 @@ class TestNamedMeasureSQL:
         produces the existing helpful error.
         """
         model = _orders_model(
-            measures=[ModelMeasure(name="aov", formula="revenue:sum")]
+            measures=[ModelMeasure(name="aov", formula="sum(revenue)")]
         )
         query = SlayerQuery(
             source_model="orders",
@@ -172,7 +172,7 @@ class TestNamedMeasureSQL:
 
     async def test_near_miss_bare_name_suggests_the_saved_measure(self) -> None:
         model = _orders_model(
-            measures=[ModelMeasure(name="aov_net", formula="revenue:sum")]
+            measures=[ModelMeasure(name="aov_net", formula="sum(revenue)")]
         )
         query = SlayerQuery(
             source_model="orders",
@@ -184,12 +184,12 @@ class TestNamedMeasureSQL:
 
     async def test_aggregating_a_saved_measure_says_to_drop_the_suffix(self) -> None:
         model = _orders_model(
-            measures=[ModelMeasure(name="aov", formula="revenue:sum")]
+            measures=[ModelMeasure(name="aov", formula="sum(revenue)")]
         )
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "aov:sum", "name": "result"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(aov)", "name": "result"}],
+        })
 
         with pytest.raises(
             ValueError, match="is a saved measure.*takes no aggregation"
@@ -212,9 +212,9 @@ class TestNamedMeasureSQL:
         # Tested directly: the full pipeline rejects unnamed measures at model
         # re-validation, so they only reach the helper via a raw mutation.
         model = _orders_model(
-            measures=[ModelMeasure(name="aov", formula="revenue:sum")]
+            measures=[ModelMeasure(name="aov", formula="sum(revenue)")]
         )
-        model.measures.append(ModelMeasure(formula="revenue:avg"))
+        model.measures.append(ModelMeasure(formula="avg(revenue)"))
         assert (
             _name_suggestion(name="revenu", model=model)
             == "Did you mean 'revenue'?"
@@ -222,10 +222,10 @@ class TestNamedMeasureSQL:
 
     async def test_unknown_column_suggests_a_close_column(self) -> None:
         model = _orders_model()
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "revenu:sum", "name": "result"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(revenu)", "name": "result"}],
+        })
 
         with pytest.raises(ValueError, match="Did you mean 'revenue'"):
             await _generate(query, model)
@@ -238,10 +238,10 @@ class TestNamedMeasureSQL:
         enrichment-time guard.
         """
         model = _orders_model(
-            measures=[ModelMeasure(name="aov", formula="revenue:sum")]
+            measures=[ModelMeasure(name="aov", formula="sum(revenue)")]
         )
         # Bypass the model validator by appending after construction.
-        model.measures.append(ModelMeasure(name="aov", formula="revenue:avg"))
+        model.measures.append(ModelMeasure(name="aov", formula="avg(revenue)"))
 
         query = SlayerQuery(
             source_model="orders",
@@ -260,7 +260,7 @@ class TestBareNamedMeasureAliasing:
 
     async def test_select_alias_uses_measure_name(self) -> None:
         model = _orders_model(
-            measures=[ModelMeasure(name="rev_total", formula="revenue:sum")]
+            measures=[ModelMeasure(name="rev_total", formula="sum(revenue)")]
         )
         query = SlayerQuery(
             source_model="orders",
@@ -275,7 +275,7 @@ class TestBareNamedMeasureAliasing:
         """The original bug: SELECT aliased by formula, ORDER BY by name."""
         model = _orders_model(
             measures=[
-                ModelMeasure(name="companies_count", formula="revenue:count_distinct"),
+                ModelMeasure(name="companies_count", formula="count_distinct(revenue)"),
             ]
         )
         query = SlayerQuery(

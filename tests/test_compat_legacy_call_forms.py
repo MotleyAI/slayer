@@ -49,7 +49,7 @@ ORDERS_OSI = OSIDocument.model_validate({
                    {"name": "big", "expression": {"sql": "amount * 2"}}],
     }],
 })
-COUNT_ORDERS = {"source_model": "orders", "measures": [{"formula": "*:count", "name": "n"}]}
+COUNT_ORDERS = {"source_model": "orders", "measures": [{"formula": "count(*)", "name": "n"}]}
 
 
 

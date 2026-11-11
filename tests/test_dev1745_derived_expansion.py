@@ -173,41 +173,41 @@ class TestDerivedOfDerivedEmission:
         )
 
     async def test_dimension_on_derived_of_derived(self) -> None:
-        sql = await self._sql(SlayerQuery(
-            source_model="orders",
-            dimensions=[{"formula": "deep_pop", "name": "deep_pop"}],
-            measures=[{"formula": "amount:sum", "name": "m0"}],
-        ))
+        sql = await self._sql(SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": [{"formula": "deep_pop", "name": "deep_pop"}],
+            "measures": [{"formula": "sum(amount)", "name": "m0"}],
+        }))
         assert "pop_x2" not in sql, f"dangling derived reference:\n{sql}"
         assert "customers__regions.population" in sql
         # the join it crosses must still be present
         assert "JOIN regions" in sql
 
     async def test_measure_over_derived_of_derived(self) -> None:
-        sql = await self._sql(SlayerQuery(
-            source_model="orders",
-            dimensions=[{"formula": "status", "name": "status"}],
-            measures=[{"formula": "deep_pop:sum", "name": "m0"}],
-        ))
+        sql = await self._sql(SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": [{"formula": "status", "name": "status"}],
+            "measures": [{"formula": "sum(deep_pop)", "name": "m0"}],
+        }))
         assert "pop_x2" not in sql, f"dangling derived reference:\n{sql}"
         assert "customers__regions.population" in sql
 
     async def test_filter_on_derived_of_derived(self) -> None:
-        sql = await self._sql(SlayerQuery(
-            source_model="orders",
-            dimensions=[{"formula": "status", "name": "status"}],
-            measures=[{"formula": "amount:sum", "name": "m0"}],
-            filters=["deep_pop > 100"],
-        ))
+        sql = await self._sql(SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": [{"formula": "status", "name": "status"}],
+            "measures": [{"formula": "sum(amount)", "name": "m0"}],
+            "filters": ["deep_pop > 100"],
+        }))
         assert "pop_x2" not in sql, f"dangling derived reference:\n{sql}"
         assert "customers__regions.population" in sql
 
     async def test_local_derived_alias_dimension(self) -> None:
-        sql = await self._sql(SlayerQuery(
-            source_model="orders",
-            dimensions=[{"formula": "alias_local", "name": "alias_local"}],
-            measures=[{"formula": "amount:sum", "name": "m0"}],
-        ))
+        sql = await self._sql(SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": [{"formula": "alias_local", "name": "alias_local"}],
+            "measures": [{"formula": "sum(amount)", "name": "m0"}],
+        }))
         # 'doubled' is derived on orders; it must inline, not be referenced.
         # Today this emits a BARE, unqualified `doubled` — invalid on any DB.
         assert "doubled" not in sql, f"dangling derived reference:\n{sql}"
@@ -217,11 +217,11 @@ class TestDerivedOfDerivedEmission:
         """`status` exists on BOTH orders and regions. The derived
         `deep_live` (regions.is_live -> "status = 'live'") must resolve
         against REGIONS, not the root model."""
-        sql = await self._sql(SlayerQuery(
-            source_model="orders",
-            dimensions=[{"formula": "deep_live", "name": "deep_live"}],
-            measures=[{"formula": "amount:sum", "name": "m0"}],
-        ))
+        sql = await self._sql(SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": [{"formula": "deep_live", "name": "deep_live"}],
+            "measures": [{"formula": "sum(amount)", "name": "m0"}],
+        }))
         assert "customers__regions.status" in sql, (
             f"derived sql resolved against the wrong model:\n{sql}"
         )
@@ -236,11 +236,11 @@ class TestDerivedOfDerivedEmission:
 async def test_derived_of_derived_executes_on_duckdb() -> None:
     duckdb = pytest.importorskip("duckdb")
     sql = await _engine_generate(
-        query=SlayerQuery(
-            source_model="orders",
-            dimensions=[{"formula": "deep_pop", "name": "deep_pop"}],
-            measures=[{"formula": "amount:sum", "name": "m0"}],
-        ),
+        query=SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": [{"formula": "deep_pop", "name": "deep_pop"}],
+            "measures": [{"formula": "sum(amount)", "name": "m0"}],
+        }),
         model=_orders(), dialect="duckdb", validate=False,
         extra_models=[_customers(), _regions()],
     )

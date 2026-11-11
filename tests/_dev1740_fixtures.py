@@ -11,7 +11,7 @@ Model shape
 ``orders`` (host) carries the LOCAL dimensions ``region`` / ``city`` /
 ``channel`` plus ``amount`` / ``status`` / ``ordered_at``. The banding case
 groups by ``region`` and a computed ``band`` derived from each city's total
-(``amount:sum(partition_by=city)`` crossing 5000) — the aggregate lives at a
+(``sum(amount, partition_by=city)`` crossing 5000) — the aggregate lives at a
 FINER grain (city) than the query (region), which is why Part B2 needs
 DEV-1739's ``partition_by=`` and a post-aggregate regroup.
 ``orders → customers → regions`` gives the cross-model / extension-join shapes.
@@ -223,7 +223,7 @@ def two_stage_banding() -> list:
     stage1 = SlayerQuery(
         name="per_city", source_model="orders",
         dimensions=["city", "region"],
-        measures=[ModelMeasure(formula="amount:sum", name="city_total")],
+        measures=[ModelMeasure(formula="sum(amount)", name="city_total")],
     )
     stage2 = SlayerQuery(
         source_model=ModelExtension.model_validate({
@@ -235,7 +235,7 @@ def two_stage_banding() -> list:
             }],
         }),
         dimensions=["region", "band"],
-        measures=[ModelMeasure(formula="city_total:sum", name="band_total")],
+        measures=[ModelMeasure(formula="sum(city_total)", name="band_total")],
     )
     return [stage1, stage2]
 

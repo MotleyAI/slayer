@@ -212,7 +212,7 @@ def ungrained_wsum_row_by_region() -> Dict[str, Optional[float]]:
 
 
 def ungrained_wsum_assoc_by_status() -> Dict[str, float]:
-    """``customers.spend:wsum(weight=sum(amount))`` associate, by status — the
+    """``wsum(customers.spend, weight=sum(amount))`` associate, by status — the
     ungrained weight types at ``[status]`` (the cell's order-amount total),
     broadcast onto each distinct customer."""
     amt = amount_totals_by_status()

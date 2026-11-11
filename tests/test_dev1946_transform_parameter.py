@@ -91,7 +91,7 @@ from tests._dev1946_fixtures import (
     local_sales_global,
 )
 
-AMOUNT = ModelMeasure(formula="amount:sum", name="a")
+AMOUNT = ModelMeasure(formula="sum(amount)", name="a")
 
 
 def _m(formula: str) -> ModelMeasure:

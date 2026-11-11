@@ -375,7 +375,7 @@ class TestInlineScalarsAreNotReferences:
     visitor must recognise them as data, not reject them as an unknown kind."""
 
     def test_decimal_aggregate_kwarg_is_scalar(self) -> None:
-        """``price:percentile(p=0.9)`` normalises 0.9 to a Decimal and puts it
+        """``percentile(price, p=0.9)`` normalises 0.9 to a Decimal and puts it
         in AggregateKey.kwargs. Rejecting it took down planning for every
         filter over a parametric aggregate."""
         key = AggregateKey(
@@ -404,12 +404,12 @@ class TestInlineScalarsAreNotReferences:
         """End-to-end: the shape that crashed. A filter over a parametric
         aggregate must plan, not raise."""
         planned = plan_query(
-            query=SlayerQuery(
-                source_model="orders",
-                dimensions=[{"formula": "amount", "name": "amount"}],
-                measures=[{"formula": "amount:percentile(p=0.9)", "name": "p90"}],
-                filters=["amount:percentile(p=0.9) > 100"],
-            ),
+            query=SlayerQuery.model_validate({
+                "source_model": "orders",
+                "dimensions": [{"formula": "amount", "name": "amount"}],
+                "measures": [{"formula": "percentile(amount, p=0.9)", "name": "p90"}],
+                "filters": ["percentile(amount, p=0.9) > 100"],
+            }),
             bundle=_bundle(),
         )
         assert planned.masks
@@ -462,12 +462,12 @@ class TestCoordinateSystemInvariant:
             referenced_models=[host, _customers(), _regions(), _warehouses()],
         )
         planned = plan_query(
-            query=SlayerQuery(
-                source_model="orders",
-                dimensions=[{"formula": "amount", "name": "amount"}],
-                measures=[{"formula": "eu_amount:sum", "name": "eu"}],
-                filters=["eu_amount:sum > 100"],
-            ),
+            query=SlayerQuery.model_validate({
+                "source_model": "orders",
+                "dimensions": [{"formula": "amount", "name": "amount"}],
+                "measures": [{"formula": "sum(eu_amount)", "name": "eu"}],
+                "filters": ["sum(eu_amount) > 100"],
+            }),
             bundle=bundle,
         )
         # DEV-1838 D5: the filtered-local nests as a host-rooted regroup

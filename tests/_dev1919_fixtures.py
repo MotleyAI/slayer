@@ -28,35 +28,35 @@ from tests._dev1859_fixtures import _wavg, region_amount_totals
 
 MODES = ["broadcast", "associate", "error"]
 
-HEADLINE = ("customers.spend:weighted_avg("
+HEADLINE = ("weighted_avg(customers.spend, "
             "weight=sum(amount, partition_by=customers.regions.name))")
 MIXED = "sum(customers.spend * sum(amount, partition_by=customers.regions.name))"
-RECURSIVE = ("customers.spend:weighted_avg(weight=weighted_avg(amount, "
+RECURSIVE = ("weighted_avg(customers.spend, weight=weighted_avg(amount, "
              "weight=sum(customers.regions.pop, partition_by=customers.regions.name), "
              "partition_by=customers.regions.name))")
-RANKED = ("customers.spend:weighted_avg("
+RANKED = ("weighted_avg(customers.spend, "
           "weight=rank(sum(amount, partition_by=customers.regions.name), direction='desc'))")
-WINDOWED_PARAM = ("customers.spend:weighted_avg(window='1y', "
+WINDOWED_PARAM = ("weighted_avg(customers.spend, window='1y', "
                   "weight=sum(amount, partition_by=customers.regions.name))")
-WINDOWED_CUSTOM_PARAM = ("customers.spend:wsum(window='1y', "
+WINDOWED_CUSTOM_PARAM = ("wsum(customers.spend, window='1y', "
                          "weight=sum(amount, partition_by=customers.regions.name))")
 WINDOWED_CONSTITUENT = ("sum(customers.spend * sum(amount, "
                         "partition_by=customers.regions.name), window='1y')")
-CUMSUM_PARAM = ("customers.spend:weighted_avg(weight=cumsum(sum(amount, "
+CUMSUM_PARAM = ("weighted_avg(customers.spend, weight=cumsum(sum(amount, "
                 "partition_by=[customers.regions.name, ordered_at])))")
-UNPARSE_PARAM = ("customers.spend:weighted_avg(weight=sum("
+UNPARSE_PARAM = ("weighted_avg(customers.spend, weight=sum("
                  "customers.regions.unparseable, partition_by=customers.regions.name))")
 #: the parameter's own key crosses the fanning regions → region_events hop (dev1900 graph).
-OWN_FAN_BADPOP = ("amount:weighted_avg(weight=sum(customers.regions.pop, "
+OWN_FAN_BADPOP = ("weighted_avg(amount, weight=sum(customers.regions.pop, "
                   "partition_by=customers.regions.bad_pop))")
 #: a host-safe key, unattributable only from the parameter's cross-model home.
-OWN_FAN_STATUS = "amount:weighted_avg(weight=sum(customers.spend, partition_by=status))"
+OWN_FAN_STATUS = "weighted_avg(amount, weight=sum(customers.spend, partition_by=status))"
 #: the outer home (customers) does not determine the parameter's grain member.
-UNDETERMINED_PARAM = "customers.spend:weighted_avg(weight=sum(customers.spend, partition_by=status))"
+UNDETERMINED_PARAM = "weighted_avg(customers.spend, weight=sum(customers.spend, partition_by=status))"
 #: a positional value on a parameterless aggregation: refused at bind (D8).
-STRAY_POSITIONAL = "customers.spend:sum(sum(customers.spend, partition_by=status))"
-LAST_HOST = "customers.spend:last(ordered_at)"
-LAST_BADPOP = "customers.regions.bad_pop:last(ordered_at)"
+STRAY_POSITIONAL = "sum(customers.spend, sum(customers.spend, partition_by=status))"
+LAST_HOST = "last(customers.spend, ordered_at)"
+LAST_BADPOP = "last(customers.regions.bad_pop, ordered_at)"
 
 # customers: (id, region_id, plan_code, tier, spend, signup_at)
 _C_ID, _C_REGION, _C_TIER, _C_SPEND, _C_SIGNUP = 0, 1, 3, 4, 5
@@ -215,7 +215,7 @@ def windowed_custom_param_by_month() -> Dict[str, Optional[float]]:
 
 
 def local_wavg_status_assoc_by_status() -> Dict[str, Optional[float]]:
-    """``amount:weighted_avg(weight=sum(customers.spend, partition_by=status))`` under
+    """``weighted_avg(amount, weight=sum(customers.spend, partition_by=status))`` under
     associate — the weight is the cell's distinct-customer spend total, constant per
     cell, so each cell is its plain order-amount mean (82/7 ok, 85/3 new)."""
     per: Dict[str, list] = defaultdict(list)
