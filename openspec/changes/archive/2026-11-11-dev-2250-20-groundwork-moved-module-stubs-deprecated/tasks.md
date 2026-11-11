@@ -22,4 +22,4 @@
 ## 3. Gates
 
 - [x] 3.1 Full unit suite, `ruff check slayer/ tests/`, `basedpyright` (no new errors vs baseline), `la-arch-check`, `npx -y likec4@1.47.0 validate architecture`
-- [ ] 3.2 Archive gate: archive this change only after DEV-2231's archive is merged forward into this branch; then re-run `openspec validate dev-2250-20-groundwork-moved-module-stubs-deprecated --strict`
+- [x] 3.2 Archive gate: archive this change only after DEV-2231's archive is merged forward into this branch; then re-run `openspec validate dev-2250-20-groundwork-moved-module-stubs-deprecated --strict`
