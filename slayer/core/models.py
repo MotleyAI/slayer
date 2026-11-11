@@ -153,9 +153,7 @@ def physical_column_sql(*, sql: str | None, name: str) -> str:
 
 
 def check_element_type(*, name: str, data_type: DataType, element_type: DataType | None) -> None:
-    """``element_type`` is required on a list, rejected elsewhere, and never itself a list."""
-    if data_type is DataType.ARRAY and element_type is None:
-        raise ValueError(f"Column {name!r} is a list (type ARRAY) and needs an element_type.")
+    """``element_type`` is rejected off a list and is never itself a list (the model requires it on one)."""
     if data_type is not DataType.ARRAY and element_type is not None:
         raise ValueError(
             f"Column {name!r} declares element_type {element_type.value} but its type is {data_type.value}; "
@@ -188,7 +186,10 @@ class Column(BaseModel):
     )
     element_type: DataType | None = Field(
         default=None,
-        description="A list's element type: required with ARRAY, forbidden otherwise; any type but ARRAY.",
+        description=(
+            "A list's element type, any type but ARRAY; forbidden off ARRAY. Required on a table-backed "
+            "model's list; an sql-mode model's undeclared one is UNKNOWN."
+        ),
     )
     db_type: str | None = Field(
         default=None,
@@ -841,6 +842,17 @@ class SlayerModel(BaseModel):
                 f"separate model over the same table (or a view) and join to "
                 f"that."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_list_element_types(self) -> "SlayerModel":
+        """A list column needs an ``element_type``; an sql-mode model's undeclared one is ``UNKNOWN``."""
+        for c in self.columns:
+            if c.type is not DataType.ARRAY or c.element_type is not None:
+                continue
+            if not self.sql:
+                raise ValueError(f"Column {c.name!r} is a list (type ARRAY) and needs an element_type.")
+            c.element_type = DataType.UNKNOWN
         return self
 
     @model_validator(mode="after")

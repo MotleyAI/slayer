@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import warnings
 from collections.abc import Awaitable, Generator
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 
+from slayer.api.server import create_app
 from slayer.core.keys import SCALAR_SPELLINGS
 from slayer.core.models import SlayerModel
 from slayer.core.warnings import LibraryNameShadowWarning
 from slayer.engine.query_engine import SlayerResponse
+from slayer.mcp.server import create_mcp_server
 from tests._library_names_fixtures import agg, measure, memory_doc, saved_query_doc, stored_engine, t_doc
 from tests._stored_upgrade_fixtures import DS
 
@@ -155,3 +159,28 @@ class TestEverySpelling:
         async with stored_engine(models=[t_doc(aggregations=[_REVERSE])]) as engine:
             got = await _both(engine.execute(_query(formula)))
         assert got == ([("t", "reverse", written)],) * 2
+
+
+def _shadow_dicts(entries: list[dict[str, Any]]) -> list[tuple[str, str, str]]:
+    return [(w["model"], w["aggregation"], w["function"]) for w in entries if w.get("kind") == "library_name_shadow"]
+
+
+class TestEverySurface:
+    @pytest.mark.parametrize("dry_run", [False, True], ids=["executed", "dry-run"])
+    async def test_rest(self, dry_run: bool) -> None:
+        async with stored_engine(models=[t_doc(aggregations=[_REVERSE])]) as engine:
+            client = TestClient(create_app(storage=engine.storage))
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                resp = client.post("/query", json={**_query(), "dry_run": dry_run})
+        assert resp.status_code == 200, resp.text
+        assert _shadow_dicts(resp.json().get("warnings") or []) == _SHADOW
+
+    async def test_mcp(self) -> None:
+        async with stored_engine(models=[t_doc(aggregations=[_REVERSE])]) as engine:
+            server: Any = create_mcp_server(storage=engine.storage)  # call_tool's annotation omits its (blocks, dict) tuple
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                blocks, _ = await server.call_tool("query", {"query": _query(), "format": "json"})
+        payload = json.loads(blocks[0].text)
+        assert _shadow_dicts(payload["warnings"]) == _SHADOW

@@ -43,7 +43,7 @@ Tables with no FK references use their plain table name with no joins.
 
 SLayer introspects each table's column types and generates a model:
 
-- **One `Column`** per non-joined column on the source table — name, `type` inferred from the database (`TEXT` / `INT` / `DOUBLE` / `BOOLEAN` / `DATE` / `TIMESTAMP`, or `UNKNOWN` for a type SLayer can only store and display), `primary_key=True` for PKs. Whether each column is used as a group-by dimension or as an aggregation source is decided per query, except for a list column, which is never a group-by key and aggregates only with `count`.
+- **One `Column`** per non-joined column on the source table — name, `type` inferred from the database (`TEXT` / `INT` / `DOUBLE` / `BOOLEAN` / `DATE` / `TIMESTAMP`, or `UNKNOWN` for a type SLayer can only store and display), `primary_key=True` for PKs. Whether each column is used as a group-by dimension or as an aggregation source is decided per query, except for a list column, which is never a group-by key and aggregates only with `count` and `count_distinct`.
 - **List columns** become `type: ARRAY` with their `element_type`: Postgres `T[]`, BigQuery `REPEATED T` / `ARRAY<T>`, DuckDB `T[]` / `LIST`, ClickHouse `Array(T)` (`Nullable` / `LowCardinality` unwrapped), Trino `array(T)` and Snowflake `ARRAY(T)`; a nested list or a list of records gets `element_type: UNKNOWN`, and a Snowflake `ARRAY` without a declared element type has it inferred from the stored elements.
 - **`db_type`** keeps the raw database type where `type` loses information (`UNKNOWN`, exact `NUMERIC` / `DECIMAL`, JSON, zoned timestamps, lists); a native JSON column is read natively only when it is recorded, so a model written by hand without it reads the column as `TEXT`.
 - **Column and table comments** stored in the database become `Column.description` and `SlayerModel.description` (see [Comments and descriptions](#comments-and-descriptions) below).
@@ -52,7 +52,7 @@ SLayer introspects each table's column types and generates a model:
 - **A column literally named `count`** is renamed to `count_col` to avoid clashing with the always-available `count(*)`.
 - **No auto-generated `measures`** — `SlayerModel.measures` is the named-formula library and stays empty after ingestion. You can add named formulas later via the API/MCP if you want bare-name shortcuts (`{"formula": "aov"}`).
 - **`count(*)`** is always available without any model definition.
-- The `allowed_aggregations` whitelist is left at the default for the column's data type. A sole PK column is restricted to `count`/`count_distinct`/`count_distinct_approx`/`min`/`max` automatically.
+- The `allowed_aggregations` whitelist is left at the default for the column's data type. A sole PK column is restricted to `count`/`count_distinct`/`count_distinct_approx`/`min`/`max`/`collect` automatically.
 
 FK columns from referenced tables are excluded from the source model to avoid redundancy — they're reachable via the join graph as `customers.id` etc.
 
