@@ -17,7 +17,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
+from slayer.client.slayer_client import SlayerClient
 from slayer.core.models import SlayerModel
+from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.access_filtered import AccessFilteredStorage
 from slayer.storage.sqlite_conn import transaction
@@ -199,6 +201,26 @@ class TestMemorySave:
         assert any(mentions_strict_deprecation(w) for w in reply["warnings"])
         assert await self._stored_query_mode(store, reply["memory_id"]) == "error"
         assert not STRICT_WORD.search(stored_documents(store))
+
+    @pytest.mark.parametrize("remote", [False, True], ids=["local", "remote"])
+    async def test_client_prebuilt_query(self, store: AccessStore, remote: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+        with recorded():
+            query = SlayerQuery.model_validate(strict(PUB_COUNT))
+        if remote:
+            app = TestClient(create_app(storage=store.storage))
+
+            async def via_app(*, method: str, path: str, json: dict | None = None, params: dict | None = None) -> Any:  # NOSONAR(S7503) — matches the awaited transport
+                resp = app.request(method, path, json=json, params=params)
+                resp.raise_for_status()
+                return resp.json()
+
+            client = SlayerClient(url="http://testserver")
+            monkeypatch.setattr(client, "_request", via_app)
+        else:
+            client = SlayerClient(storage=store.storage)
+        reply = await client.save_memory(learning="Item count", linked_entities=query)
+        assert any(mentions_strict_deprecation(w) for w in reply.warnings)
+        assert await self._stored_query_mode(store, reply.memory_id) == "error"
 
     async def test_clean_query_adds_no_deprecation(self, store: AccessStore) -> None:
         reply = json.loads(await mcp_text(store.storage, "save_memory", learning="Item count", linked_entities=PUB_COUNT))

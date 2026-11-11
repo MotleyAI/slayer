@@ -373,13 +373,10 @@ class SlayerClient:
         to extract them from). ``id`` pins the canonical id; ``description`` is
         a ≤500-char preview surfaced by search/inspect."""
         if self._storage is not None:
-            response = await self._memory_service().save_memory(
-                learning=learning,
-                linked_entities=self._coerce_linked_entities(linked_entities),
-                id=id,
-                description=description,
+            # A prebuilt SlayerQuery goes through as is, so the service reports its input deprecations.
+            return await self._memory_service().save_memory(
+                learning=learning, linked_entities=linked_entities, id=id, description=description,
             )
-            return response
         body: dict[str, Any] = {
             "learning": learning,
             "linked_entities": self._coerce_linked_entities(linked_entities),
@@ -389,7 +386,11 @@ class SlayerClient:
         if description is not None:
             body["description"] = description
         result = await self._request(method="POST", path="/memories", json=body)
-        return SaveMemoryResponse.model_validate(result)
+        response = SaveMemoryResponse.model_validate(result)
+        if isinstance(linked_entities, SlayerQuery):
+            # The server only sees the converted form; the deprecations are the client's to report.
+            response.warnings.extend(p.human_message() for p in linked_entities.deprecated_inputs)
+        return response
 
     async def forget_memory(
         self, identifier: int | str
