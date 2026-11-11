@@ -1,5 +1,6 @@
 """Current-spec OSI documents: field visibility, keys, relationships and metric resolution."""
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +70,22 @@ async def test_flat_document_imports_end_to_end(db: Path) -> None:
     assert not [e for e in entries(result) if e.severity == "unconverted"]
     rows = await query(result=result, db=db, payload={"source_model": "orders", "measures": ["total_amount"]})
     assert float(rows[0]["orders.total_amount"]) == pytest.approx(22)
+
+
+@pytest.mark.parametrize("version", ["0.3.0.dev0", "0.2.0.dev0"])
+def test_flat_document_of_either_version_imports_the_same(
+    db: Path, tmp_path: Path, caplog: pytest.LogCaptureFixture, version: str
+) -> None:
+    path = write_yaml(tmp_path / "shop.yaml", {**_shop(metrics=[m("total_amount", "SUM(orders.amount)")]),
+                                               "version": version})
+    with caplog.at_level(logging.WARNING):
+        result = convert(db=db, docs=parse_osi_path(path))
+    models = by_name(result)
+    assert set(models) == {"orders", "customers"}
+    assert [(j.target_model, j.join_pairs) for j in models["orders"].joins] == [("customers", [["customer_id", "id"]])]
+    assert measure_home(result, "total_amount").name == "orders"
+    assert not result.unconverted_metrics
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING and "version" in r.getMessage().lower()]
 
 
 def test_semantic_model_custom_extensions_are_kept(db: Path) -> None:

@@ -53,13 +53,19 @@ def test_flat_document_fields() -> None:
         "custom_extensions": [{"vendor_name": "COMMON", "data": "{}"}],
     })
     assert doc.name == "shop"
-    assert doc.version == "0.2.0.dev0"
+    assert doc.version == "0.3.0.dev0"
     assert doc.description == "d"
     assert doc.ai_context == "ctx"
     assert [d.name for d in doc.datasets] == ["orders"]
     assert [x.name for x in doc.metrics or []] == ["total"]
     assert doc.custom_extensions is not None
     assert doc.legacy is False
+
+
+def test_absent_version_is_not_defaulted() -> None:
+    mapping = flat([ds("orders", fields=[f("amount")])])
+    del mapping["version"]
+    assert OSIDocument.model_validate(mapping).version is None
 
 
 def test_dataset_scoped_metrics_and_datatypes() -> None:

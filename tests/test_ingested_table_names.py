@@ -56,6 +56,7 @@ async def _qty(storage: YAMLStorage, model: str) -> list[Any]:
     try:
         rows = (await engine.execute({"source_model": model, "dimensions": ["qty"]})).data
     finally:
+        await engine.aclose()
         engine.close()
     return [r[f"{model}.qty"] for r in rows]
 
@@ -65,6 +66,7 @@ async def _drift(storage: YAMLStorage) -> list[Any]:
     try:
         return await engine.validate_models(data_source=DS)
     finally:
+        await engine.aclose()
         engine.close()
 
 

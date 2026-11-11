@@ -123,7 +123,7 @@ def rel(name: str, *, src: str, to: str, from_columns: list[str], to_columns: li
 def flat(datasets: list[dict[str, Any]], *, relationships: list[dict[str, Any]] | None = None,
          metrics: list[dict[str, Any]] | None = None, name: str = "shop") -> dict[str, Any]:
     """A current-spec (flat, single-model) document mapping."""
-    out: dict[str, Any] = {"version": "0.2.0.dev0", "name": name, "datasets": datasets}
+    out: dict[str, Any] = {"version": "0.3.0.dev0", "name": name, "datasets": datasets}
     if relationships is not None:
         out["relationships"] = relationships
     if metrics is not None:
