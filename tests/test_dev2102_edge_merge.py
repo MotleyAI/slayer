@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import AmbiguousJoinPathError, SlayerError
+from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError, SlayerError
+from slayer.core.models import ModelJoin
 from slayer.engine.query_engine import SlayerQueryEngine
 
 from tests._dev2102_fixtures import (
@@ -14,11 +15,14 @@ from tests._dev2102_fixtures import (
     DIALECTS,
     SHIPPING_PAIRS,
     by_key,
+    customers,
     ext,
     join,
     q,
+    regions,
     rows,
     shop,
+    with_models,
 )
 
 REGION_PAIRS = [["region_id", "id"]]
@@ -212,15 +216,24 @@ class TestNewEdges:
         assert rows(resp, "customers.name", "customers.regions.countries.name") == [
             ("Ann", "Norland"), ("Bob", "Southia"), ("Cid", None), ("Dee", None), ("Eve", None)]
 
-    async def test_cyclic_query_local_chain_resolves_by_names(self, dialect) -> None:
-        query = q(source_model="customers", dimensions=["name", "home_region.manager.name"], extensions=[
+    async def test_cyclic_query_local_chain_fails_like_a_stored_cycle(self, dialect) -> None:
+        dimensions = ["name", "home_region.manager.name"]
+        plain = q(source_model="customers", dimensions=dimensions)
+        local = q(source_model="customers", dimensions=dimensions, extensions=[
             ext("customers", joins=[join("regions", REGION_PAIRS, name="home_region")]),
             ext("regions", joins=[join("customers", [["manager_id", "id"]], name="manager")]),
         ])
+        stored = with_models(
+            customers(ModelJoin(target_model="regions", name="home_region", join_pairs=REGION_PAIRS)),
+            regions().model_copy(update={"joins": [
+                ModelJoin(target_model="customers", name="manager", join_pairs=[["manager_id", "id"]])]}),
+        )
         async with shop(dialect) as engine:
-            resp = await engine.execute(query)
-        assert rows(resp, "customers.name", "customers.home_region.manager.name") == [
-            ("Ann", "Bob"), ("Bob", "Ann"), ("Cid", None), ("Dee", None), ("Eve", None)]
+            with pytest.raises(CircularJoinPathError):
+                await engine.execute(local)
+        async with shop(dialect, stored) as engine:
+            with pytest.raises(CircularJoinPathError):
+                await engine.execute(plain)
 
     async def test_a_query_written_join_to_a_stage_wins_over_a_same_named_stored_edge(self, dialect) -> None:
         stage = q(name="customers", source_model="orders", dimensions=["customer_id"],

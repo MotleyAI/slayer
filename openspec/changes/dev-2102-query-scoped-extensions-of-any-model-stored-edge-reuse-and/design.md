@@ -59,7 +59,7 @@ Principles that bind the design:
 ## Risks / Trade-offs
 
 - [A LEFT declaration over a stored INNER edge still restricts when traversed (stored semantics win)] → Accepted (Q1); this is the stored edge's own meaning, as the facade already behaves today.
-- [On a fanning chain, a traversed query-INNER edge null-extends rather than drops non-matching intermediate rows; only population rows are restricted] → This is the issue's population definition. Covered by the fanning-path scenario.
+- [On a fanning chain, the restriction also narrows every aggregate read along that path to its matching rows (as the written filter does); aggregates off the path lose only the dropped population rows] → Accepted (user): the restriction is the written filter, as SQL's `INNER JOIN` without fan-out. Covered by the fanning-path scenario.
 - [Around 45 test files construct the legacy form and will emit `FutureWarning`] → They are respelled mechanically to `extensions` (no logic change). The legacy form keeps dedicated deprecation tests.
 - [Stored-dict walkers that run on every load may miss `extensions`] → Decision 16, plus migration tests over nested model and memory queries.
 - [DEV-2250 and DEV-2102 merge order] → Each issue records the second-merger's duty (decision 4).

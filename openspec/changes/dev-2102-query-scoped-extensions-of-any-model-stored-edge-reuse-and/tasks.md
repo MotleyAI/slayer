@@ -56,7 +56,7 @@
   - delete the query-backed measure rejection.
 
   Verify with tests 1.8 and 1.6 plus the existing multi-stage and query-backed suites.
-- [ ] 3.4 The INNER restriction: build the parsed filter node per INNER declaration, bind it through the ordinary reference binder, and feed it to the population and filter assembly. Errors name the declaration. Verify with test 1.7.
+- [x] 3.4 The INNER restriction: build the parsed filter node per INNER declaration, bind it through the ordinary reference binder, and feed it to the population and filter assembly. Errors name the declaration. Verify with test 1.7.
 - [x] 3.5 Reject extensions of `time_spine`; refuse at save the stored stages whose extensions are guaranteed to fail. Verify with test 1.8.
 
 ## 4. Consumers and surfaces

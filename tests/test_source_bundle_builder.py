@@ -17,6 +17,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.engine.extensions import apply_query_extensions
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.yaml_storage import YAMLStorage
 import slayer.engine.bundle_builder
@@ -158,7 +159,8 @@ class TestSourceModelShapes:
             joins=[],
         )
         query = SlayerQuery(source_model="orders", extensions=[ext])
-        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
+        built = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
+        _, bundle = apply_query_extensions(query=query, scope=None, bundle=built)
         assert bundle.source_model is not None
         assert bundle.source_model.name == "orders"
         col_names = {c.name for c in bundle.source_model.columns}
@@ -182,7 +184,8 @@ class TestSourceModelShapes:
                 "columns": [{"name": "discount", "type": "DOUBLE"}],
             }],
         })
-        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
+        built = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
+        _, bundle = apply_query_extensions(query=query, scope=None, bundle=built)
         assert bundle.source_model is not None
         assert bundle.source_model.name == "orders"
         assert "discount" in {c.name for c in bundle.source_model.columns}

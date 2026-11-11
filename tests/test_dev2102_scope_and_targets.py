@@ -214,8 +214,9 @@ class TestStageOrdering:
         stages = {
             "a": q(name="a", source_model="orders", dimensions=["customer_id"],
                    measures=[{"formula": "sum(amount)", "name": "spent"}]),
-            "c": q(name="c", source_model="customers", dimensions=["id", "tier"]),
-            "b": q(name="b", source_model="a", dimensions=["c.tier"], measures=[{"formula": "sum(spent)", "name": "t"}],
+            "c": q(name="c", source_model="customers", dimensions=["id"],
+                   measures=[{"formula": "max(tier)", "name": "top_tier"}]),
+            "b": q(name="b", source_model="a", dimensions=["c.top_tier"], measures=[{"formula": "sum(spent)", "name": "t"}],
                    extensions=[ext("a", joins=[join("c", [["customer_id", "id"]])])]),
         }
         root = q(source_model="b", measures=[{"formula": "sum(t)", "name": "total"}])

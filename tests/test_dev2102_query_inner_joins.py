@@ -114,7 +114,7 @@ class TestPaths:
                   dimensions=["name"], measures=[{"formula": "count(orders.id)", "name": "n"}])
         async with shop(dialect) as engine:
             resp = await engine.execute(query)
-        assert rows(resp, "customers.name", "customers.n") == [("Ann", 2), ("Bob", 1)]
+        assert rows(resp, "customers.name", "customers.n") == [("Ann", 1), ("Bob", 1)]
 
     async def test_multi_hop_chain_through_a_stored_left_hop(self, dialect) -> None:
         query = q(source_model="orders",

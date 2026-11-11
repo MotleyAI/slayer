@@ -106,7 +106,7 @@ Each INNER join declared by an extension of model `M` SHALL restrict the query o
 
 #### Scenario: INNER across a fanning path restricts by existence
 - **WHEN** a query rooted at `customers` extends `orders` with an INNER join to `vip_orders` and selects `customers.name` and `count(orders.id)`
-- **THEN** only customers having at least one order with a `vip_orders` match are returned, and `count(orders.id)` still counts every order of those customers
+- **THEN** only customers having at least one order with a `vip_orders` match are returned, and `count(orders.id)` counts those matching orders, each once
 
 #### Scenario: Multi-hop chain through a LEFT hop
 - **WHEN** rooted at `orders`, the query extends `customers` with an INNER join to `regions` while `orders → customers` is a stored LEFT edge
