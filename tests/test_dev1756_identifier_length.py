@@ -15,7 +15,7 @@ from sqlglot import exp
 
 import slayer.sql._identifier_fit as fitmod
 from slayer.core.enums import DataType
-from slayer.core.errors import IdentifierCollisionError
+from slayer.core.errors import IdentifierCollisionError, SlayerError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -166,7 +166,7 @@ def _chain_models(
     ]
 
 
-async def _build_engine(tmp_path, **kw) -> tuple[SlayerQueryEngine, SlayerModel]:
+async def _build_engine(tmp_path, *, validate: bool = True, **kw) -> tuple[SlayerQueryEngine, SlayerModel]:
     storage = YAMLStorage(base_dir=str(tmp_path))
     await storage.save_datasource(DatasourceConfig(
         name=DS, type="postgres", host="localhost", port=5432,
@@ -174,7 +174,7 @@ async def _build_engine(tmp_path, **kw) -> tuple[SlayerQueryEngine, SlayerModel]
     ))
     models = _chain_models(**kw)
     for m in models:
-        await storage.save_model(m)
+        await storage.save_model(m, _validate=validate)
     return SlayerQueryEngine(storage=storage), models[0]
 
 
@@ -852,15 +852,18 @@ class TestVirtualModelShorts:
         assert fitted in sources, f"wrapper does not reference the fitted alias\n{vm.sql}"
         assert LONG_EMAIL not in vm.sql
 
-    async def test_case_colliding_shorts_raise(self, tmp_path) -> None:
-        """``email`` and ``Email`` yield shorts differing only by case; must be caught."""
-        engine, _ = await _build_engine(tmp_path, case_colliding_columns=True)
+    async def test_case_colliding_result_names_are_refused(self, tmp_path) -> None:
+        """``email`` and ``Email`` (grandfathered) as two result names: refused before SQL generation."""
+        engine, _ = await _build_engine(tmp_path, validate=False, case_colliding_columns=True)
         query = SlayerQuery.model_validate({"source_model": "SandboxInvoiceV2", "dimensions": [
                 ColumnRef(name=f"{DEEP}.email"),
                 ColumnRef(name=f"{DEEP}.Email"),
             ], "measures": [{"formula": "count(*)"}]})
-        with pytest.raises(IdentifierCollisionError):
+        with pytest.raises(SlayerError) as exc:
             await engine._query_as_model(inner_query=query)
+        assert not isinstance(exc.value, IdentifierCollisionError), exc.value
+        assert "email" in str(exc.value)
+        assert "Email" in str(exc.value)
 
     async def test_two_dimensions_landing_on_one_short_raise(self, tmp_path) -> None:
         """Two dimensions whose shorts are exactly equal must be caught at the emission boundary."""

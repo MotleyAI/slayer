@@ -40,7 +40,7 @@ referenceable in filters, in order and from a downstream stage.
 
 #### Scenario: Colliding derived keys fail loudly
 - **WHEN** one query contains both `sum(amount - cost)` and `sum(amount + cost)`
-  without renames, or both `sum(iif(ordered_at == '2024-02', 1, 0))` and
+  without renames, or both `sum(iif(ordered_at = '2024-02', 1, 0))` and
   `sum(iif(ordered_at != '2024-02', 1, 0))`
 - **THEN** it fails with a duplicate-key error naming both expressions and advising a rename
 
@@ -65,12 +65,12 @@ referenceable in filters, in order and from a downstream stage.
 #### Scenario: Date comparison forms
 - **WHEN** a measure on `orders` is written with a date comparison inside `iif` or
   joined by `and` — `iif(ordered_at >= 'last month', 1, 0)`,
-  `iif(ordered_at == '2024-02', 1, 0)`, `iif(ordered_at != '2024-02', 1, 0)`,
-  `iif(month(ordered_at) >= '2024-02', 1, 0)`,
+  `iif(ordered_at = '2024-02', 1, 0)`, `iif(ordered_at != '2024-02', 1, 0)`,
+  `iif(date_trunc('month', ordered_at) >= '2024-02', 1, 0)`,
   `amount > 5 and ordered_at >= '2024-02-01'` — each summed
 - **THEN** the keys are `orders.iif_ordered_at_last_month_1_0_sum`,
-  `orders.iif_ordered_at_2024_02_1_0_sum` (for both `==` and `!=`),
-  `orders.iif_month_ordered_at_2024_02_1_0_sum` and
+  `orders.iif_ordered_at_2024_02_1_0_sum` (for both `=` and `!=`),
+  `orders.iif_date_trunc_month_ordered_at_2024_02_1_0_sum` and
   `orders.amount_5_and_ordered_at_2024_02_01_sum` — the relative point named by its
   text, never by the date it resolves to
 

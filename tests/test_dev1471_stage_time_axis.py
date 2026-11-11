@@ -231,7 +231,7 @@ async def test_order_by_stage_bucket(backend: str) -> None:
         "source_model": "s1",
         "time_dimensions": [TimeDimension(dimension="created_at", granularity=TG.MONTH)],
         "measures": [{"formula": "sum(rev)"}],
-        "order": [OrderItem.model_validate({"column": "month(created_at)", "direction": "desc"})],
+        "order": [OrderItem.model_validate({"column": "date_trunc('month', created_at)", "direction": "desc"})],
     })
     with tempfile.TemporaryDirectory() as tmp:
         resp = await _exec_outer(backend, tmp, outer)

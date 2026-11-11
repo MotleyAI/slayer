@@ -1,8 +1,4 @@
-"""DEV-1883 — the functional form is byte-identical downstream to explicit ``TimeDimension``.
-
-Spec: openspec/changes/dev-1883-support-functional-time-granularity-form-monthcol-in-query/
-specs/queries/time-dimensions (equivalence scenarios).
-"""
+"""The ``date_trunc`` form is byte-identical downstream to explicit ``TimeDimension`` (spec: queries/time-dimensions)."""
 import pytest
 
 from slayer.core.query import SlayerQuery
@@ -22,7 +18,7 @@ async def exec_engine(tmp_path):
 def _functional() -> SlayerQuery:
     return fx.q(
         source_model="orders",
-        dimensions=["month(created_at)"],
+        dimensions=["date_trunc('month', created_at)"],
         measures=[{"formula": "sum(amount)"}],
     )
 
@@ -54,7 +50,7 @@ class TestEquivalence:
     async def test_string_time_dimensions_entry_sql_identical(self, engine) -> None:
         string_form = fx.q(
             source_model="orders",
-            time_dimensions=["month(created_at)"],
+            time_dimensions=["date_trunc('month', created_at)"],
             measures=[{"formula": "sum(amount)"}],
         )
         functional = await engine.execute(string_form, dry_run=True)
@@ -68,7 +64,7 @@ class TestEquivalence:
         TD present, generates identical SQL from the functional form."""
         functional = await engine.execute(fx.q(
             source_model="orders",
-            dimensions=["month(created_at)", "year(customers.created_at)"],
+            dimensions=["date_trunc('month', created_at)", "date_trunc('year', customers.created_at)"],
             main_time_dimension="created_at",
             measures=[{"formula": "cumsum(sum(amount))", "name": "cs"}],
         ), dry_run=True)
@@ -86,7 +82,7 @@ class TestEquivalence:
     async def test_whole_periods_only_identical(self, engine) -> None:
         functional = await engine.execute(fx.q(
             source_model="orders",
-            dimensions=["month(created_at)"],
+            dimensions=["date_trunc('month', created_at)"],
             measures=[{"formula": "sum(amount)"}],
             whole_periods_only=True,
         ), dry_run=True)
@@ -101,7 +97,7 @@ class TestEquivalence:
     async def test_dotted_functional_execution(self, exec_engine) -> None:
         functional = await exec_engine.execute(fx.q(
             source_model="orders",
-            dimensions=["month(customers.created_at)"],
+            dimensions=["date_trunc('month', customers.created_at)"],
             measures=[{"formula": "sum(amount)"}],
         ))
         explicit = await exec_engine.execute(fx.q(

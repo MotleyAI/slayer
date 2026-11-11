@@ -4,6 +4,7 @@ upgraded to the functional spelling)."""
 from __future__ import annotations
 
 import logging
+import re
 import warnings
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -11,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from slayer.core.errors import NameCollisionError
+from slayer.core.errors import GranularityCallError, NameCollisionError
 from slayer.core.models import SlayerModel
 from slayer.core.query import ComputedDimension, SlayerQuery, computed_dimension_name
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -64,10 +65,10 @@ def _fresh(**fields: Any) -> SlayerQuery:
 
 class TestVersions:
     def test_versions_bumped(self) -> None:
-        assert CURRENT_VERSIONS["SlayerModel"] == 19
-        assert CURRENT_VERSIONS["SlayerQuery"] == 10
+        assert CURRENT_VERSIONS["SlayerModel"] == 20
+        assert CURRENT_VERSIONS["SlayerQuery"] == 11
         assert CURRENT_VERSIONS["DatasourceConfig"] == 3
-        assert CURRENT_VERSIONS["Memory"] == 8
+        assert CURRENT_VERSIONS["Memory"] == 9
 
 
 #: (stored measure formula, the formula it loads as).
@@ -184,10 +185,8 @@ class TestExecution:
         [dim] = by_fiscal.dimensions or []
         assert isinstance(dim, ComputedDimension)
         assert dim.expression == "fiscal_quarter(created_at)"
-        resp = await run(storage, by_fiscal)
-        assert resp.columns == ["orders.created_at", "orders.amount_sum"]
-        assert rows(resp) == rows(await run(storage, _fresh(measures=["sum(amount)"],
-                                                             dimensions=["fiscal_quarter(created_at)"])))
+        with pytest.raises(GranularityCallError, match=re.escape("date_trunc('fiscal_quarter', created_at)")):
+            await run(storage, by_fiscal)
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_saved_query_and_extension_execute(self, make_store: StoreFactory,  # noqa: F811
@@ -283,7 +282,8 @@ class TestGranularityRename:
         [stage] = model.source_queries or []
         memory = await storage.get_memory("m_left")
         assert memory.query is not None
-        fresh = SlayerQuery.model_validate({"source_model": "events", "dimensions": ["left_granularity(created_at)"],
+        fresh = SlayerQuery.model_validate({"source_model": "events",
+                                            "dimensions": ["date_trunc('left_granularity', created_at)"],
                                             "measures": [SUM]})
         expected = rows(await run(storage, fresh))
         for loaded in (stage, memory.query):

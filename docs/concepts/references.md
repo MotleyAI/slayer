@@ -34,8 +34,8 @@ SLayer has two distinct expression layers and the rules for what each one accept
 * Transform calls wrap aggregated refs: `cumsum(sum(revenue))`, `rank(sum(revenue), partition_by=region, direction='desc')`, `change(sum(customers.revenue))`, etc.
 * A `__` token in a name is matched by **exact name**, not split into a join walk — write a single-dot DSL path (`customers.region`) for a join. Only the reserved `__slayer_` prefix is rejected.
 * Strings are single-quoted with `''` for an embedded quote and a backslash is an ordinary character (`'O''Brien'`, `'C:\temp'`), while a double-quoted name is an identifier (`sum("order total")`, `customers."Region"`) with `""` for an embedded double quote; an unresolved double-quoted name gets a hint to single-quote a string.
-* Names are case-sensitive, bare or quoted, while keywords and function and aggregation names are not (`SUM(amount)` is `sum(amount)`).
-* Inside an aggregation or transform call, `name = value` after the first argument is a keyword argument (`first(x, a = b)` passes `a`), so a comparison there needs `==`; a keyword's value may itself be a single-`=` comparison (`weight=a = 1`), and a scalar function's arguments are always values (`iif(status = 'paid', 1, 0)`).
+* A bare name matches in any case and a double-quoted one exactly; when two declared names differ only in case, the exact spelling wins and any other spelling is an error naming both (`"Revenue"` / `"revenue"` pick one). Keywords and function, aggregation and transform names match in any case (`SUM(amount)` is `sum(amount)`), and `agg` is reserved: it is never a function or an aggregation name, though a column or measure may be named `agg`.
+* Inside an aggregation or transform call, `name = value` is a keyword argument when `name` is one of the call's parameters (`weighted_avg(amount, weight = qty)`, `time_shift(x, periods = -1)`) and a comparison otherwise (`sum(status = 'paid')` counts the paid rows); parenthesise or double-quote the left side to compare a column named like a parameter (`sum((weight = 1))`), and a scalar function's arguments are always values (`iif(status = 'paid', 1, 0)`).
 * A syntax error reports its column (`syntax error at column 12`), and a malformed `CASE` names the missing keyword (`THEN`, `END`).
 * `CAST(x AS type)` and `x::type` are the database's own cast of the type you write, while `TRY_CAST(x AS type)` yields NULL for an input it cannot convert, except that Postgres older than 16 (or of unknown version) gets a plain `CAST` and MariaDB and a MySQL server reporting a version before 8.0 refuse `TRY_CAST` to a number at plan time.
 * A cast's type follows its target's name — integer names INT, `DECIMAL` / `NUMERIC` / float names DOUBLE, character names TEXT, `BOOLEAN`, `DATE`, timestamp names TIMESTAMP, anything else UNKNOWN — and type parameters and chained casts are kept as written (`CAST(x AS DECIMAL(10,2))`, `x::INT::TEXT`), while a type the database cannot express (`MONEY` on DuckDB) is a plan-time `CastTypeError`.
@@ -133,7 +133,7 @@ Accepted at `SlayerQuery` construction:
 ```json
 {"source_model": "orders", "filters": ["sum(revenue) > 100"]}
 {"source_model": "orders", "filters": ["change(sum(revenue)) > 0"]}
-{"source_model": "orders", "filters": ["customers.region == 'EU'"]}
+{"source_model": "orders", "filters": ["customers.region = 'EU'"]}
 {"source_model": "orders", "filters": ["status = '{val}'"], "variables": {"val": "active"}}
 ```
 
@@ -232,7 +232,7 @@ Every library function, operator and pattern language means the same on SQLite, 
 * **Strings count characters, not bytes**; `left` / `right` with a negative count drop characters from the other end, `lpad` / `rpad` truncate, `split_part`'s index is a non-zero integer literal (negative from the end, `''` past it), `concat_ws` skips `NULL`s, `chr` / `ascii` speak Unicode code points; `div` truncates toward zero.
 * **`starts_with`, `ends_with`, `contains`, `strpos`, `replace` and `split_part`'s delimiter match literally**, case- and accent-sensitively whatever the column's collation, unlike `=` and `LIKE` ([string matching](#string-matching)).
 * **A version-gated function fails at plan time** when the server reports an older version: regex needs SQL Server 2025 and MySQL 8.0, `greatest` / `least` SQL Server 2022, `json_value` MySQL 8.0.21, numeric `TRY_CAST` MySQL 8.0; JSON reads and `TRY_CAST` return `NULL` on malformed input only on Postgres 16+.
-* **`date_trunc('month', x)` is the granularity call `month(x)`** in every position.
+* **`date_trunc('month', x)` is the one spelling of a time bucket**, in every position; `month(x)` is the month of year.
 
 ### Regular expressions
 
@@ -271,10 +271,10 @@ case-insensitively):
 | `date_part(part, ts)` | INT | `year`, `iso_year`, `quarter`, `month`, `week`, `day`, `day_of_week`, `day_of_year`, `hour`, `minute`, `second` |
 | `date_diff(unit, start, end)` | INT | `second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`, `quarter`, `year` |
 | `date_add(ts, n, unit)` | DATE or TIMESTAMP | same units as `date_diff` |
-| `date_trunc(unit, ts)` | the bucket start, as the granularity call `unit(ts)` | any granularity, the datasource's custom ones included |
+| `date_trunc(unit, ts)` | the bucket start | any granularity, the datasource's custom ones included |
 | `current_date()` / `now()` | DATE / TIMESTAMP | — |
 
-`extract(part from ts)` means `date_part('part', ts)`, and the aliases `isodow` / `day_of_week`, `doy` / `dayofyear` / `day_of_year`, `isoyear` / `iso_year`, `isoweek` / `iso_week` / `weekofyear` and `dayofmonth` / `day_of_month` work both as one-argument functions (`isodow(ts)`) and as parts, while `dow`, `dayofweek` and `weekday` are rejected because databases number weekdays differently.
+`extract(part from ts)` and `year(ts)`, `quarter(ts)`, `month(ts)`, `week(ts)` (the ISO week number), `day(ts)`, `hour(ts)`, `minute(ts)` and `second(ts)` mean `date_part('part', ts)`, and the aliases `isodow` / `day_of_week`, `doy` / `dayofyear` / `day_of_year`, `isoyear` / `iso_year`, `isoweek` / `iso_week` / `weekofyear` and `dayofmonth` / `day_of_month` work both as one-argument functions (`isodow(ts)`) and as parts, while `dow`, `dayofweek` and `weekday` are rejected because databases number weekdays differently.
 
 ```json
 {
@@ -317,8 +317,8 @@ case-insensitively):
 ## `NULL` inside an `in` list
 
 `NULL` is rejected inside an `in` / `not in` list. SQL compares it by
-three-valued logic, so `status in ('a', None)` never matches on the null, and
-`status not in ('a', None)` matches **no rows at all** — the filter silently
+three-valued logic, so `status in ('a', NULL)` never matches on the null, and
+`status not in ('a', NULL)` matches **no rows at all** — the filter silently
 returns an empty result instead of "everything except 'a'".
 
 Test for null separately:

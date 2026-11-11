@@ -6,7 +6,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Annotated, Literal, Optional, Union
+from typing import Annotated, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -307,6 +307,35 @@ class WholeListWarning(SlayerWarning):
                 f"elements; count_distinct({self.list}.value) counts distinct elements")
 
 
+class NameCollisionWarning(SlayerWarning):
+    """Stored model ``model`` holds ``names`` in one ``namespace``, differing only in case; each resolves only when
+    spelled exactly (or double-quoted)."""
+
+    kind: Literal["name_collision"] = "name_collision"
+    model: str
+    namespace: str
+    names: List[str]
+
+    def human_message(self) -> str:
+        return (f"model {self.model!r} declares {' and '.join(repr(n) for n in self.names)} in its {self.namespace}, "
+                f"differing only in case; spell one exactly or double-quote it, and rename one to remove the "
+                f"ambiguity")
+
+
+class DeprecatedSpellingWarning(SlayerWarning):
+    """A deprecated Mode-B ``spelling`` was read (``written``); ``canonical`` is its twin, removed in ``removal``."""
+
+    kind: Literal["deprecated_spelling"] = "deprecated_spelling"
+    spelling: str
+    written: str
+    canonical: str
+    removal: str = "3.0"
+
+    def human_message(self) -> str:
+        return (f"the {self.spelling} spelling `{self.written}` is deprecated and removed in SLayer {self.removal}; "
+                f"write `{self.canonical}`")
+
+
 # Discriminated union, not the bare base: a ``List[SlayerWarning]`` would validate
 # down to the base type and drop subclass fields. Keyed on ``kind``, each round-trips.
 AnySlayerWarning = Annotated[
@@ -325,6 +354,8 @@ AnySlayerWarning = Annotated[
         LibraryNameShadowWarning,
         BrokenDependentWarning,
         WholeListWarning,
+        DeprecatedSpellingWarning,
+        NameCollisionWarning,
     ],
     Field(discriminator="kind"),
 ]
@@ -427,3 +458,15 @@ class SlayerWholeListWarning(UserWarning):
 
     def __str__(self) -> str:
         return self.payload.human_message()
+
+
+class SlayerNameCollisionWarning(UserWarning):
+    """Carrier ``UserWarning`` for a ``NameCollisionWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: NameCollisionWarning) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+

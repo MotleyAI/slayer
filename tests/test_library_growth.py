@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from slayer.core.enums import ALL_TRANSFORMS, BUILTIN_AGGREGATIONS, GRANULARITY_NAMES, RESERVED_DATE_SYNTAX_NAMES
+from slayer.core.enums import (
+    ALL_TRANSFORMS,
+    BUILTIN_AGGREGATIONS,
+    GRANULARITY_NAMES,
+    RESERVED_DATE_SYNTAX_NAMES,
+    RESERVED_NAMES,
+)
 from slayer.core.keys import SCALAR_FUNCTIONS, SCALAR_SPELLINGS
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage import migrations
@@ -32,8 +38,9 @@ PINNED: dict[str, frozenset[str]] = {
         "strpos",
     }),
     "date_syntax": frozenset({
-        "day_of_month", "day_of_week", "day_of_year", "dayofmonth", "dayofyear", "doy", "extract", "iso_week",
-        "iso_year", "isodow", "isoweek", "isoyear", "weekofyear",
+        "day", "day_of_month", "day_of_week", "day_of_year", "dayofmonth", "dayofyear", "doy", "extract", "hour",
+        "iso_week", "iso_year", "isodow", "isoweek", "isoyear", "minute", "month", "quarter", "second", "week",
+        "weekofyear", "year",
     }),
     "transforms": frozenset({
         "change", "change_pct", "consecutive_periods", "cumsum", "dense_rank", "first", "lag", "last", "lead",
@@ -45,20 +52,21 @@ PINNED: dict[str, frozenset[str]] = {
         "first", "last", "max", "median", "min", "percentile", "stddev_pop", "stddev_samp", "sum", "var_pop",
         "var_samp", "weighted_avg",
     }),
+    "reserved": frozenset(),
 }
 
 #: A model's own definition shadows these, so a new name in them needs no migration.
 SHADOWABLE = frozenset({"functions", "spellings"})
 
 #: A newly reserved name outside ``SHADOWABLE`` → the ``(entity, source_version)`` migration that renames it in stores.
-MIGRATED: dict[str, tuple[str, int]] = {}
+MIGRATED: dict[str, tuple[str, int]] = {"agg": ("SlayerModel", 18)}
 
 
 def live_vocabularies() -> dict[str, frozenset[str]]:
     return {
         "functions": SCALAR_FUNCTIONS, "spellings": SCALAR_SPELLINGS, "date_syntax": RESERVED_DATE_SYNTAX_NAMES,
         "transforms": frozenset(ALL_TRANSFORMS), "granularities": frozenset(GRANULARITY_NAMES),
-        "aggregations": BUILTIN_AGGREGATIONS,
+        "aggregations": BUILTIN_AGGREGATIONS, "reserved": RESERVED_NAMES,
     }
 
 
@@ -84,6 +92,10 @@ class TestGuard:
     def test_every_vocabulary_is_pinned(self) -> None:
         assert set(live_vocabularies()) == set(PINNED)
 
+    def test_agg_is_reserved_and_migrated(self) -> None:
+        assert "agg" in live_vocabularies()["reserved"]
+        assert MIGRATED["agg"] in migrations._REGISTRY
+
     def test_an_unpinned_reservation_is_caught(self) -> None:
         live = {**live_vocabularies(), "transforms": ALL_TRANSFORMS | {"new_window"}}
         assert unpinned(live=live, pinned=PINNED, migrated=MIGRATED) == ["transforms:new_window"]
@@ -95,11 +107,11 @@ class TestGuard:
     def test_a_migrated_reservation_passes(self) -> None:
         live = {**live_vocabularies(), "transforms": ALL_TRANSFORMS | {"new_window"}}
         key = next(iter(migrations._REGISTRY))
-        assert unpinned(live=live, pinned=PINNED, migrated={"new_window": key}) == []
+        assert unpinned(live=live, pinned=PINNED, migrated={**MIGRATED, "new_window": key}) == []
 
     def test_an_unregistered_migration_does_not_count(self) -> None:
         live = {**live_vocabularies(), "transforms": ALL_TRANSFORMS | {"new_window"}}
-        assert unpinned(live=live, pinned=PINNED, migrated={"new_window": ("SlayerModel", 10_000)}) == [
+        assert unpinned(live=live, pinned=PINNED, migrated={**MIGRATED, "new_window": ("SlayerModel", 10_000)}) == [
             "transforms:new_window"]
 
 

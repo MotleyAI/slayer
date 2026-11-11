@@ -91,6 +91,7 @@ async def _build_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQuer
     await storage.save_datasource(
         DatasourceConfig(name="prod", type=dialect, database=db_path)
     )
+    # Unvalidated save: a grandfathered case collision a validated save would refuse.
     await storage.save_model(
         SlayerModel(
             name="customers",
@@ -104,7 +105,8 @@ async def _build_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQuer
                 Column(name="Rev", sql="revx", type=DataType.DOUBLE),
                 Column(name="rev", sql="revy", type=DataType.DOUBLE),
             ],
-        )
+        ),
+        _validate=False,
     )
     await storage.save_model(
         SlayerModel(
@@ -410,7 +412,7 @@ class TestAllocatorRouting:
     async def test_windowed_cte_names_use_the_shared_helper(
         self, tmp_path,
     ) -> None:
-        """Windowed producers render as ``_cm_`` CTEs through the shared allocator (Wm/wm)."""
+        """Windowed producers render as ``_cm_`` CTEs through the shared allocator."""
         engine = await _hostile_engine(
             column="revx2", base_dir=str(tmp_path),
         )
@@ -425,7 +427,7 @@ class TestAllocatorRouting:
                 ],
                 measures=[
                     ModelMeasure(formula="sum(amount, window='90d')", name="Wm"),
-                    ModelMeasure(formula="sum(amount, window='30d')", name="wm"),
+                    ModelMeasure(formula="sum(amount, window='30d')", name="wm2"),
                 ],
             ),
             dry_run=True,

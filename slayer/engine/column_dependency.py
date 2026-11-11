@@ -84,7 +84,7 @@ def definition_reads(
     for text in [*texts, *([column.filter] if column.filter else [])]:
         for quals, leaf in _fragment_refs(text) or []:
             target = resolve_ref_target(qualifiers=quals, source_model=host, models_by_name=reachable)
-            if target is not None and target.get_column(leaf) is not None:
+            if target is not None and target.get_column(leaf, quoted=True) is not None:
                 out.append((target.name, leaf))
     return out
 
@@ -122,7 +122,7 @@ def _sql_dependencies(
         )
         if target is None:
             continue
-        col = target.get_column(leaf)
+        col = target.get_column(leaf, quoted=True)
         if col is not None and col.needs_expansion:
             deps.append((target.name, col.name))
     return deps
@@ -144,7 +144,7 @@ def _filter_dependencies(
         )
         if target is None:
             continue  # a real join hop whose target is not loaded here — skip
-        col = target.get_column(leaf)
+        col = target.get_column(leaf, quoted=True)
         if col is None or not col.needs_expansion:
             continue
         if (
@@ -196,7 +196,7 @@ def _node_dependencies(
     host = reachable.get(model_name)
     if host is None:
         return []
-    col = host.get_column(col_name)
+    col = host.get_column(col_name, quoted=True)
     if col is None:
         return []
     return _column_dependencies(
@@ -256,7 +256,7 @@ def _detect_cycle_dfs(
 
 def _hop_path(*, quals, host: SlayerModel) -> tuple[str, ...]:
     """A reference's join-hop tokens with ``host``'s own name dropped; empty = host-local."""
-    return drop_root_hop(quals, host.spelling)
+    return drop_root_hop(quals, host.spelling, head_quoted=True)
 
 
 def _classify_hop_path(
@@ -537,7 +537,7 @@ def _references(
         owner, chain = resolved
         on_path = (*via, *(edge.target_model for edge in chain))
         yield owner, leaf, on_path
-        column = owner.get_column(leaf)
+        column = owner.get_column(leaf, quoted=True)
         if column is None or (owner.name, leaf) in seen:
             continue
         seen.add((owner.name, leaf))

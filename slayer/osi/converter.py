@@ -28,6 +28,7 @@ from slayer.core.errors import AmbiguousJoinPathError, UnsupportedServerFunction
 from slayer.core.syntax import parse_expr
 from slayer.core.join_walker import resolve_hop
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel, join_key_error
+from slayer.core.names import name_taken
 from slayer.core.query import SlayerQuery
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
 from slayer.engine.binding import bind_model_formula
@@ -80,6 +81,14 @@ Severity = Literal["unconverted", "dropped", "info"]
 
 class OsiConversionError(Exception):
     """Raised when an OSI import set cannot be converted (e.g. duplicate names)."""
+
+
+def _repeated_names(names: list[str]) -> list[list[str]]:
+    """Groups of ``names`` equal up to case that occur more than once, each in declaration order."""
+    groups: dict[str, list[str]] = {}
+    for name in names:
+        groups.setdefault(name.casefold(), []).append(name)
+    return [g for g in groups.values() if len(g) > 1]
 
 
 # Unsafe in a model name, which becomes a YAML storage filename. ``__`` is allowed.
@@ -350,6 +359,7 @@ class OsiToSlayerConverter:
     def _convert(self) -> OsiConversionResult:
         self._reset()
         self._check_duplicate_dataset_names()
+        self._check_dataset_namespaces()
 
         for doc in self.documents:
             for ds in doc.datasets:
@@ -431,6 +441,20 @@ class OsiToSlayerConverter:
                 f"must be unique within a datasource."
             )
 
+    def _check_dataset_namespaces(self) -> None:
+        """A current-spec dataset's field and dataset-metric names are unique in any case (Ossie: unquoted names fold)."""
+        clashes = [
+            f"{ds.name!r}: {', '.join(repr(n) for n in group)}"
+            for doc in self.documents if not doc.legacy
+            for ds in doc.datasets
+            for group in _repeated_names([*(f.name for f in ds.fields or []), *(m.name for m in ds.metrics or [])])
+        ]
+        if clashes:
+            raise OsiConversionError(
+                "Within a dataset, field and dataset-metric names must be unique, and unquoted names match in any "
+                "case; repeated in " + "; ".join(clashes) + "."
+            )
+
     # ---- datasets -> models ----
 
     def _build_model(self, ds: OSIDataset, doc: OSIDocument) -> None:
@@ -503,13 +527,8 @@ class OsiToSlayerConverter:
         columns: list[Column] = []
         for field in ds.fields or []:
             col = self._field_column(field=field, ds=ds, model=model)
-            if col is None:
-                continue
-            if any(c.name == col.name for c in columns):
-                self._warn(f"Field {field.name!r} on {ds.name!r} is declared twice; keeping the first.",
-                           model_name=ds.name, category="duplicate_column")
-                continue
-            columns.append(col)
+            if col is not None:
+                columns.append(col)
         model.columns = columns
         self._apply_primary_key(model, ds)
         model.default_time_dimension = _first_time_dimension(model)
@@ -1013,15 +1032,14 @@ class OsiToSlayerConverter:
 
     def _model_has_column(self, model_name: str, column: str) -> bool:
         model = self._models.get(model_name)
-        return model is not None and any(c.name == column for c in model.columns)
+        return model is not None and name_taken(column, (c.name for c in model.columns))
 
     def _model_has_name(self, model_name: str, name: str) -> bool:
         """Whether ``name`` is taken by a column or measure (one shared namespace)."""
         model = self._models.get(model_name)
         if model is None:
             return False
-        return (any(c.name == name for c in model.columns)
-                or any(m.name == name for m in model.measures))
+        return name_taken(name, [*(c.name for c in model.columns), *(m.name for m in model.measures if m.name)])
 
     def _missing_join_columns(self, rel: OSIRelationship) -> list[str]:
         """Qualified relationship key names that are not plain base columns of their model."""
@@ -1153,7 +1171,7 @@ class OsiToSlayerConverter:
 
         # Measures and columns share one namespace on the anchor model.
         anchor_model = self._models[anchor]
-        if any(m.name == metric.name for m in anchor_model.measures):
+        if name_taken(metric.name, (m.name for m in anchor_model.measures if m.name)):
             self._unconv(
                 f"Metric {metric.name!r} duplicates an existing measure on "
                 f"model {anchor!r}.",

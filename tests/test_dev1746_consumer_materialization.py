@@ -8,6 +8,8 @@ import re as _re
 from typing import List, Optional, Tuple
 
 import pytest
+import sqlglot
+from sqlglot import exp
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelMeasure
@@ -17,36 +19,47 @@ from slayer.sql.scope import ScopeFrame
 from tests._cross_model_chain import _gen
 from tests._engine_helpers import _extract_cte_body, _norm
 
-# Byte-parity baselines: swapping which materialiser mints ``_val_0`` must not change this SQL.
-CROSSING_GRAIN_CTE = _norm(
-    """
-    SELECT _val_0 AS "customers_v2.deep_pop",
-      CAST(MAX(CASE WHEN _ranked_rn = 1 THEN _val_1 END) AS DOUBLE PRECISION)
-        AS "customers_v2.lifetime_value_first"
-    FROM ( SELECT regions.population AS _val_0,
-      customers_v2.lifetime_value AS _val_1,
-      ROW_NUMBER() OVER (PARTITION BY regions.population
-        ORDER BY customers_v2.signup_at) AS _ranked_rn
-      FROM customers AS customers_v2
-      LEFT JOIN regions AS regions ON customers_v2.region_id = regions.id
-    ) AS _ranked_src GROUP BY _val_0
-    """
+# Byte-parity baselines: swapping which materialiser mints ``_val_<n>`` must not change these
+# fragments; the ranking window's ORDER BY is asserted structurally (NULL flag, then the key).
+_JOIN = (
+    "FROM customers AS customers_v2 "
+    "LEFT JOIN regions AS regions ON customers_v2.region_id = regions.id"
+)
+CROSSING_GRAIN_CTE = (
+    'SELECT _val_0 AS "customers_v2.deep_pop",',
+    'THEN _val_1 END) AS DOUBLE PRECISION) AS "customers_v2.lifetime_value_first"',
+    "FROM ( SELECT regions.population AS _val_0, customers_v2.lifetime_value AS _val_1,",
+    _JOIN,
+    ") AS _ranked_src GROUP BY _val_0",
 )
 
-CROSSING_VALUE_CTE = _norm(
-    """
-    SELECT _val_0 AS "customers_v2.status",
-      CAST(MAX(CASE WHEN _ranked_rn = 1 THEN _val_1 END) AS DOUBLE PRECISION)
-        AS "customers_v2.deep_weight_first"
-    FROM ( SELECT customers_v2.status AS _val_0,
-      regions.weight AS _val_1,
-      ROW_NUMBER() OVER (PARTITION BY customers_v2.status
-        ORDER BY customers_v2.signup_at) AS _ranked_rn
-      FROM customers AS customers_v2
-      LEFT JOIN regions AS regions ON customers_v2.region_id = regions.id
-    ) AS _ranked_src GROUP BY _val_0
-    """
+CROSSING_VALUE_CTE = (
+    'SELECT _val_0 AS "customers_v2.status",',
+    'THEN _val_1 END) AS DOUBLE PRECISION) AS "customers_v2.deep_weight_first"',
+    "FROM ( SELECT customers_v2.status AS _val_0, regions.weight AS _val_1,",
+    _JOIN,
+    ") AS _ranked_src GROUP BY _val_0",
 )
+
+
+def _assert_cte_shape(body: str, *, fragments: Tuple[str, ...], partition: str) -> None:
+    """``body`` holds every byte-parity fragment and ranks ``partition`` by a NULL-flagged ``signup_at``."""
+    for fragment in fragments:
+        assert fragment in body, f"{fragment!r} missing:\n{body}"
+    [window] = [
+        w for w in sqlglot.parse_one(body, dialect="postgres").find_all(exp.Window)
+        if isinstance(w.this, exp.RowNumber)
+    ]
+    assert [p.sql(dialect="postgres") for p in window.args["partition_by"]] == [partition], body
+    *flags, ordered = window.args["order"].expressions
+    assert ordered.this.sql(dialect="postgres") == "customers_v2.signup_at", body
+    assert not ordered.args.get("desc"), body
+    assert flags, f"the ranking does not order NULL keys last via a leading flag:\n{body}"
+    assert any(
+        isinstance(node.expression, exp.Null)
+        and node.this.sql(dialect="postgres") == "customers_v2.signup_at"
+        for node in flags[0].find_all(exp.Is)
+    ), f"the ranking does not order NULL keys last via a leading flag:\n{body}"
 
 
 def _crossing_grain_query() -> SlayerQuery:
@@ -190,20 +203,12 @@ class TestMigrationIsBytePreserving:
     async def test_crossing_grain_cte_is_unchanged(self) -> None:
         sql = await _gen(_crossing_grain_query(), dialect="postgres")
         body = _norm(_extract_cte_body(sql=sql, cte_name_pattern=r"_cm_\w+"))
-        assert body == CROSSING_GRAIN_CTE, (
-            "the crossing-grain CTE changed shape. The two materialisers dedup "
-            "on the same key (resolved SQL text), so the migration must be "
-            f"byte-preserving.\n\nactual:\n{body}\n\nexpected:\n"
-            f"{CROSSING_GRAIN_CTE}"
-        )
+        _assert_cte_shape(body, fragments=CROSSING_GRAIN_CTE, partition="regions.population")
 
     async def test_crossing_value_cte_is_unchanged(self) -> None:
         sql = await _gen(_crossing_value_query(), dialect="postgres")
         body = _norm(_extract_cte_body(sql=sql, cte_name_pattern=r"_cm_\w+"))
-        assert body == CROSSING_VALUE_CTE, (
-            f"the crossing-value CTE changed shape.\n\nactual:\n{body}\n\n"
-            f"expected:\n{CROSSING_VALUE_CTE}"
-        )
+        _assert_cte_shape(body, fragments=CROSSING_VALUE_CTE, partition="customers_v2.status")
 
 
 class TestDedupParity:

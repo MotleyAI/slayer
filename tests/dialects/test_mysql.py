@@ -266,7 +266,7 @@ def _monthly_orders_query() -> SlayerQuery:
         source_model="orders",
         time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
         measures=[ModelMeasure(formula="count(*)")],
-        order=[OrderItem.model_validate({"column": "month(created_at)"})],
+        order=[OrderItem.model_validate({"column": "date_trunc('month', created_at)"})],
     )
 
 

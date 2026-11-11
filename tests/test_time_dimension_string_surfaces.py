@@ -57,7 +57,7 @@ class TestMcpSurface:
     async def test_string_time_dimensions_entry_accepted(self, mcp_server) -> None:
         string_form = await _call(mcp_server, query={
             "source_model": "orders",
-            "time_dimensions": ["month(created_at)"],
+            "time_dimensions": ["date_trunc('month', created_at)"],
             "measures": [{"formula": "sum(amount)"}],
         }, format="json")
         explicit_form = await _call(
@@ -68,7 +68,7 @@ class TestMcpSurface:
     async def test_functional_dimensions_entry_accepted(self, mcp_server) -> None:
         out = await _call(mcp_server, query={
             "source_model": "orders",
-            "dimensions": ["month(created_at)"],
+            "dimensions": ["date_trunc('month', created_at)"],
             "measures": [{"formula": "sum(amount)"}],
         }, format="json")
         assert {
@@ -87,8 +87,8 @@ class TestMcpSurface:
                 f"dimensions docs must name granularity {gran!r}"
             )
         for arg in ("dimensions", "time_dimensions"):
-            assert "month(created_at)" in (props[arg].get("description") or ""), (
-                f"{arg} docs must show the functional gran(col) form"
+            assert "date_trunc('month', created_at)" in (props[arg].get("description") or ""), (
+                f"{arg} docs must show the date_trunc form"
             )
 
 
@@ -111,7 +111,7 @@ class TestStoredQuerySurface:
             "name": "monthly_rev", "data_source": "test",
             "source_queries": [{
                 "source_model": "orders",
-                "time_dimensions": ["month(created_at)"],
+                "time_dimensions": ["date_trunc('month', created_at)"],
                 "measures": [{"formula": "sum(amount)"}],
             }],
         })
@@ -127,7 +127,7 @@ class TestRestSurface:
     def test_string_time_dimensions_entry_accepted(self, rest_client) -> None:
         string_form = rest_client.post("/query", json={
             "source_model": "orders",
-            "time_dimensions": ["month(created_at)"],
+            "time_dimensions": ["date_trunc('month', created_at)"],
             "measures": [{"formula": "sum(amount)"}],
         })
         assert string_form.status_code == 200, string_form.text
@@ -138,7 +138,7 @@ class TestRestSurface:
     def test_query_request_annotation_accepts_strings(self) -> None:
         req = QueryRequest.model_validate({
             "source_model": "orders",
-            "time_dimensions": ["month(created_at)"],
+            "time_dimensions": ["date_trunc('month', created_at)"],
             "measures": [{"formula": "sum(amount)"}],
         })
         query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))

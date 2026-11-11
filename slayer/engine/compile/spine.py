@@ -13,7 +13,7 @@ from slayer.core.keys import (
     column_leaf, walk_value_keys,
 )
 from slayer.core.models import SlayerModel
-from slayer.core.refs import key_display
+from slayer.core.refs import bucket_remedy, key_display
 from slayer.core.time_bounds import is_frame_bound, strip_frame_bounds
 from slayer.core.time_points import add_units, floor_to
 from slayer.core.time_spine import TIME_SPINE_COLUMN, TIME_SPINE_MODEL, is_spine
@@ -132,7 +132,10 @@ def _checked_spine_time_dimensions(
     n_dims, n_tds = prebound.n_dims, prebound.n_time_dimensions
     for dm in prebound.declared_measures[:n_dims]:
         key = dm.bound.value_key
-        check_spine_plain_use(offender=dm.declared_name if _mentions(key, spine) else None, position="dimension")
+        check_spine_plain_use(
+            offender=dm.declared_name if _mentions(key, spine) else None, position="dimension",
+            remedy=bucket_remedy(key),
+        )
     for dm in prebound.declared_measures[n_dims + n_tds:]:
         key = dm.bound.value_key
         agg = _spine_aggregate(key, spine=spine, host=host, bundle=bundle)

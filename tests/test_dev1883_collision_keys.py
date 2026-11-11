@@ -1,8 +1,4 @@
-"""DEV-1883 — result keys for same-column time dimensions; dedupe and metadata conflicts.
-
-Spec: openspec/changes/dev-1883-support-functional-time-granularity-form-monthcol-in-query/
-specs/queries/time-dimensions (Result keys disambiguate same-column time dimensions).
-"""
+"""Result keys for same-column time dimensions; dedupe and metadata conflicts (spec: queries/time-dimensions)."""
 import pydantic
 import pytest
 
@@ -24,7 +20,7 @@ class TestGranularitySuffixedKeys:
     async def test_two_granularities_functional_execution(self, exec_engine) -> None:
         resp = await exec_engine.execute(fx.q(
             source_model="orders",
-            dimensions=["month(created_at)", "year(created_at)"],
+            dimensions=["date_trunc('month', created_at)", "date_trunc('year', created_at)"],
             measures=[{"formula": "sum(amount)"}],
         ))
         assert resp.columns == [
@@ -50,7 +46,7 @@ class TestGranularitySuffixedKeys:
         resp = await exec_engine.execute(fx.q(
             source_model="orders",
             dimensions=[
-                "month(customers.created_at)", "year(customers.created_at)",
+                "date_trunc('month', customers.created_at)", "date_trunc('year', customers.created_at)",
             ],
             measures=[{"formula": "sum(amount)"}],
         ))
@@ -89,7 +85,7 @@ class TestGranularitySuffixedKeys:
         resp = await exec_engine.execute(fx.q(
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "year"}],
-            dimensions=["month(created_at)"],
+            dimensions=["date_trunc('month', created_at)"],
             measures=[{"formula": "sum(amount)"}],
         ))
         assert set(resp.columns) == {
@@ -101,7 +97,7 @@ class TestGranularitySuffixedKeys:
     async def test_single_time_dimension_keeps_unsuffixed_key(self, exec_engine) -> None:
         resp = await exec_engine.execute(fx.q(
             source_model="orders",
-            dimensions=["month(created_at)"],
+            dimensions=["date_trunc('month', created_at)"],
             measures=[{"formula": "sum(amount)"}],
         ))
         assert resp.columns == ["orders.created_at", "orders.amount_sum"]
@@ -110,7 +106,7 @@ class TestGranularitySuffixedKeys:
         """Two TDs on different columns don't collide, so neither key is suffixed."""
         resp = await exec_engine.execute(fx.q(
             source_model="orders",
-            dimensions=["year(created_at)", "month(customers.created_at)"],
+            dimensions=["date_trunc('year', created_at)", "date_trunc('month', customers.created_at)"],
             measures=[{"formula": "sum(amount)"}],
         ))
         assert set(resp.columns) == {
@@ -125,7 +121,7 @@ class TestDuplicateTimeDimensions:
         q = fx.q(
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            dimensions=["month(created_at)"],
+            dimensions=["date_trunc('month', created_at)"],
             measures=[{"formula": "sum(amount)"}],
         )
         assert not q.dimensions, q.dimensions
@@ -136,7 +132,7 @@ class TestDuplicateTimeDimensions:
     def test_exact_duplicates_dedupe_within_dimensions(self) -> None:
         q = fx.q(
             source_model="orders",
-            dimensions=["month(created_at)", "month(created_at)"],
+            dimensions=["date_trunc('month', created_at)", "date_trunc('month', created_at)"],
             measures=[{"formula": "sum(amount)"}],
         )
         assert q.time_dimensions == [
@@ -172,7 +168,7 @@ class TestDuplicateTimeDimensions:
         resp = await exec_engine.execute(fx.q(
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            dimensions=["month(created_at)"],
+            dimensions=["date_trunc('month', created_at)"],
             measures=[{"formula": "sum(amount)"}],
         ))
         assert resp.columns == ["orders.created_at", "orders.amount_sum"]

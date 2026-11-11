@@ -29,6 +29,7 @@ ALIASES = {
     "isoweek": "week", "iso_week": "week", "weekofyear": "week",
     "dayofmonth": "day", "day_of_month": "day",
 }
+EXTRACTION_NAMES = ["year", "quarter", "month", "week", "day", "hour", "minute", "second"]
 AMBIGUOUS_WEEKDAYS = ("dow", "dayofweek", "weekday")
 BOTH_CONVENTIONS = ("date_part('day_of_week', x)", "date_part('day_of_week', x) % 7")
 SPELLINGS = {
@@ -94,9 +95,13 @@ class TestAliasParsesAsDatePart:
         with pytest.raises(ValueError, match="isodow"):
             parse_expr("isodow(created_at, unit='x')")
 
-    @pytest.mark.parametrize("bucket", ["week", "quarter", "month", "year", "day"])
-    def test_granularity_call_is_not_an_alias(self, bucket: str) -> None:
-        assert parse_expr(f"{bucket}(created_at)") != parse_expr(canonical(bucket))
+    @pytest.mark.parametrize("unit", EXTRACTION_NAMES)
+    def test_extraction_name_is_its_date_part(self, unit: str) -> None:
+        assert parse_expr(f"{unit}(created_at)") == parse_expr(canonical(unit))
+
+    @pytest.mark.parametrize("unit", EXTRACTION_NAMES)
+    def test_date_trunc_is_not_a_date_part(self, unit: str) -> None:
+        assert parse_expr(f"date_trunc('{unit}', created_at)") != parse_expr(canonical(unit))
 
 
 class TestExtractParsesAsDatePart:
@@ -251,10 +256,10 @@ class TestExecutedEquivalence:
         assert [r["orders._count"] for r in resp.data] in ([0], [])
 
     @pytest.mark.parametrize("bucket", ["week", "month"])
-    async def test_granularity_dimension_keeps_bucket_meaning(self, engine: SlayerQueryEngine, bucket: str) -> None:
+    async def test_date_trunc_dimension_keeps_bucket_meaning(self, engine: SlayerQueryEngine, bucket: str) -> None:
         await assert_equivalent(
             engine,
-            {"source_model": "orders", "dimensions": [f"{bucket}(created_at)"], "measures": ["count(*)"]},
+            {"source_model": "orders", "dimensions": [f"date_trunc('{bucket}', created_at)"], "measures": ["count(*)"]},
             {"source_model": "orders", "time_dimensions": [{"dimension": "created_at", "granularity": bucket}],
              "measures": ["count(*)"]},
         )

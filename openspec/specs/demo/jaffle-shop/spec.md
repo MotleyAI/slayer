@@ -45,7 +45,7 @@ models gain any joins, keys and curated metadata they lack while every user edit
 - **WHEN** stored demo models have no joins (ingested by an affected release) and the demo is set up
   again
 - **THEN** the models carry their FK joins and the README query
-  `{"source_model": "orders", "measures": ["sum(order_total)", "change_pct(sum(order_total))"], "dimensions": ["stores.name", "month(ordered_at)"]}`
+  `{"source_model": "orders", "measures": ["sum(order_total)", "change_pct(sum(order_total))"], "dimensions": ["stores.name", "date_trunc('month', ordered_at)"]}`
   returns rows
 
 #### Scenario: A user edit survives setup

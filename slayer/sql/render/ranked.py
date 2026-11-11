@@ -44,8 +44,10 @@ __all__ = [
     "RANKED_CTE_PREFIX",
     "RANKED_SOURCE_ALIAS",
     "RANK_COLUMN",
+    "RANK_KEY_COLUMN",
     "RankedGrainProjection",
     "build_rank_column",
+    "build_rank_key",
     "build_ranked_cte_select",
     "build_ranked_pick",
     "ranked_ordered",
@@ -60,6 +62,8 @@ RANKED_CTE_PREFIX = "_rk_"
 RANKED_SOURCE_ALIAS = "_ranked_src"
 #: The ``ROW_NUMBER`` column the outer SELECT picks rank 1 from.
 RANK_COLUMN = "_ranked_rn"
+#: The ranking key, carried out of the ranked scope so a NULL key is never picked.
+RANK_KEY_COLUMN = "_ranked_key"
 
 
 class RankedGrainProjection(BaseModel):
@@ -84,26 +88,39 @@ def build_rank_column(
     ranking_time: exp.Ordered,
     leading: Sequence[exp.Ordered] = (),
 ) -> Expression:
-    """``ROW_NUMBER() OVER (PARTITION BY <grain> ORDER BY <time>) AS _rk_rn``.
+    """``ROW_NUMBER() OVER (PARTITION BY <grain> ORDER BY <key is null>, <time>) AS _ranked_rn``.
 
     ``ranking_time`` arrives already ordered because the DIRECTION is the whole
-    difference between ``first`` and ``last``, and the null-ordering policy for a
-    window's internal frame is the dialect's own rather than SLayer's
-    nulls-last (an emulated ``CASE WHEN … IS NULL`` term inside the frame would
-    change which row ranks first).
+    difference between ``first`` and ``last``. The leading null flag ranks every
+    non-NULL key first in both directions, on every dialect.
     """
     window = exp.Window(
         this=exp.RowNumber(),
         partition_by=[p.copy() for p in partition_by],
-        order=exp.Order(expressions=[*(o.copy() for o in leading), ranking_time.copy()]),
+        order=exp.Order(expressions=[
+            _null_flag(ranking_time.this), *(o.copy() for o in leading), ranking_time.copy(),
+        ]),
     )
     return window.as_(RANK_COLUMN)
+
+
+def _null_flag(key: Expression) -> exp.Ordered:
+    return exp.Ordered(this=exp.Case(
+        ifs=[exp.If(this=exp.Is(this=key.copy(), expression=exp.Null()), true=exp.Literal.number(1))],
+        default=exp.Literal.number(0),
+    ))
+
+
+def build_rank_key(ranking_time: Expression) -> Expression:
+    """The ranking key projected out of the ranked scope."""
+    return exp.Alias(this=ranking_time.copy(), alias=exp.to_identifier(RANK_KEY_COLUMN))
 
 
 def build_ranked_pick(
     *, value_ref: Expression, input_type: Optional[DataType], dialect: SqlDialect,
 ) -> Expression:
-    """``MAX(CASE WHEN _rk_rn = 1 THEN <value> END)`` — un-cast, un-aliased.
+    """``MAX(CASE WHEN _ranked_rn = 1 AND _ranked_key IS NOT NULL THEN <value> END)`` — un-cast, un-aliased;
+    a cell whose keys are all NULL picks NULL.
 
     The declared-type CAST is applied by the caller, OUTSIDE this expression.
     Casting the input instead is a different expression with different overflow
@@ -111,9 +128,9 @@ def build_ranked_pick(
     searches the SQL for a type name.
     """
     ranked = exp.Case(ifs=[exp.If(
-        this=exp.EQ(
-            this=exp.column(RANK_COLUMN),
-            expression=exp.Literal.number("1"),
+        this=exp.and_(
+            exp.EQ(this=exp.column(RANK_COLUMN), expression=exp.Literal.number("1")),
+            exp.Not(this=exp.Is(this=exp.column(RANK_KEY_COLUMN), expression=exp.Null())),
         ),
         true=value_ref.copy(),
     )])

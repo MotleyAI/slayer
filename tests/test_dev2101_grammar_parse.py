@@ -9,8 +9,38 @@ from decimal import Decimal
 import pytest
 
 from slayer.core import syntax
+from slayer.core.enums import DataType
 from slayer.core.errors import IllegalWindowInFilterError
+from slayer.core.keys import AggregateKey, ColumnKey, Grain, TransformKey, ValueKey
+from slayer.core.models import Aggregation, AggregationParam, Column, SlayerModel
+from slayer.core.scope import ModelScope
 from slayer.core.syntax import AggCall, Cast, DottedRef, Literal, Ref, ScalarCall, TransformCall, parse_expr
+from slayer.engine.binding import bind_expr
+from slayer.ir.source_bundle import ResolvedSourceBundle
+
+
+def _orders() -> SlayerModel:
+    return SlayerModel(
+        name="orders", data_source="prod", sql_table="orders",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="amount", type=DataType.DOUBLE),
+            Column(name="price", type=DataType.DOUBLE),
+            Column(name="quantity", type=DataType.DOUBLE),
+            Column(name="region", type=DataType.TEXT),
+            Column(name="status", type=DataType.TEXT),
+        ],
+        aggregations=[Aggregation(
+            name="wsum", formula="SUM({value} * {weight})", params=[AggregationParam(name="weight", sql="1")],
+        )],
+    )
+
+
+def bound(text: str) -> ValueKey:
+    """``text`` bound over ``orders``: keyword-versus-comparison is decided here, not at parse."""
+    orders = _orders()
+    bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[])
+    return bind_expr(parse_expr(text), scope=ModelScope(source_model=orders), bundle=bundle).value_key
 
 
 def same(a: str, b: str) -> None:
@@ -34,7 +64,7 @@ class TestOneParser:
         assert not hasattr(syntax, "parse_filter_expr")
 
     def test_parse_is_cached(self) -> None:
-        assert hasattr(parse_expr, "cache_info")
+        assert hasattr(syntax._read, "cache_info")
         assert parse_expr("sum(amount) + 1") is parse_expr("sum(amount) + 1")
 
     @pytest.mark.parametrize("helper", [
@@ -159,19 +189,23 @@ class TestPrecedence:
 
 class TestKeywordArguments:
     def test_kwarg_in_aggregation(self) -> None:
-        parsed = parse_expr("percentile(amount, p=0.9)")
-        assert isinstance(parsed, AggCall)
-        assert dict(parsed.kwargs) == {"p": Literal(value=Decimal("0.9"))}
+        assert isinstance(parse_expr("percentile(amount, p=0.9)"), AggCall)
+        key = bound("percentile(amount, p=0.9)")
+        assert isinstance(key, AggregateKey)
+        assert dict(key.kwargs) == {"p": Decimal("0.9")}
 
     def test_kwarg_in_custom_aggregation(self) -> None:
-        parsed = parse_expr("wsum(price, weight = quantity)")
-        assert isinstance(parsed, AggCall)
-        assert dict(parsed.kwargs) == {"weight": Ref(name="quantity")}
+        assert isinstance(parse_expr("wsum(price, weight = quantity)"), AggCall)
+        key = bound("wsum(price, weight = quantity)")
+        assert isinstance(key, AggregateKey)
+        assert key.agg == "wsum"
+        assert dict(key.kwargs) == {"weight": ColumnKey(path=(), leaf="quantity")}
 
     def test_kwarg_in_transform(self) -> None:
-        parsed = parse_expr("rank(sum(amount), direction = 'desc')")
-        assert isinstance(parsed, TransformCall)
-        assert dict(parsed.kwargs)["direction"] == Literal(value="desc")
+        assert isinstance(parse_expr("rank(sum(amount), direction = 'desc')"), TransformCall)
+        key = bound("rank(sum(amount), direction = 'desc')")
+        assert isinstance(key, TransformKey)
+        assert dict(key.kwargs)["direction"] == "desc"
 
     def test_comparison_inside_scalar_call(self) -> None:
         parsed = parse_expr("sum(iif(status = 'paid', amount, 0))")
@@ -190,7 +224,7 @@ class TestKeywordArguments:
         assert parsed.input == parse_expr("sum(amount) == 10")
 
     def test_predicate_inside_aggregation_source(self) -> None:
-        same("sum(amount = 10)", "sum(amount == 10)")
+        assert bound("sum(amount = 10)") == bound("sum(amount == 10)")
 
 
 class TestCast:
@@ -284,10 +318,13 @@ class TestFilterClause:
         same("count(*) filter (where status = 'paid')", "count(*) FILTER (WHERE status = 'paid')")
 
     def test_filter_with_kwargs(self) -> None:
-        parsed = parse_expr("sum(amount, partition_by=region) FILTER (WHERE status = 'paid')")
+        text = "sum(amount, partition_by=region) FILTER (WHERE status = 'paid')"
+        parsed = parse_expr(text)
         assert isinstance(parsed, AggCall)
         assert parsed.filter is not None
-        assert dict(parsed.kwargs)["partition_by"] == Ref(name="region")
+        key = bound(text)
+        assert isinstance(key, AggregateKey)
+        assert key.partition_keys == Grain.of([ColumnKey(path=(), leaf="region")])
 
     def test_filtered_aggregation_in_arithmetic(self) -> None:
         parsed = parse_expr("sum(amount) FILTER (WHERE status = 'paid') / sum(amount)")

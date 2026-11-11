@@ -200,7 +200,7 @@ class TestEveryPosition:
     async def test_windowed_position(self, fan_engine, mode):
         await _assert_fails_naming_hop(fan_engine, orders_q(
             dimensions=["bad_amt"],
-            time_dimensions=["month(ordered_at)"],
+            time_dimensions=["date_trunc('month', ordered_at)"],
             measures=[ModelMeasure(
                 formula="sum(amount, window='90d', partition_by=bad_amt)", name="w")],
             to_many_handling=mode))
