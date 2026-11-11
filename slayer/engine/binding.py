@@ -835,7 +835,10 @@ def _reject_opaque_elements(
         raise UnknownReferenceError(
             name=".".join(parts), scope_kind="ModelScope",
             scope_summary=f"list column {column.name!r} holds opaque (UNKNOWN) elements, which have no element access",
-            suggestion="Declare the column's element_type, or use length() / IS NULL on the list.",
+            suggestion=(
+                "Declare the column's element_type to reach its elements; on the list itself, "
+                "count() counts non-NULL lists (not elements) and IS NULL tests for a missing list."
+            ),
         )
 
 

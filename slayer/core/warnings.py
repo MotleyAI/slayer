@@ -307,6 +307,18 @@ class WholeListWarning(SlayerWarning):
                 f"elements; count_distinct({self.list}.value) counts distinct elements")
 
 
+class DeprecatedInputWarning(SlayerWarning):
+    """The input form ``old`` was converted to ``new``; ``old`` stops being accepted in SLayer ``removal``."""
+
+    kind: Literal["deprecated_input"] = "deprecated_input"
+    old: str
+    new: str
+    removal: str
+
+    def human_message(self) -> str:
+        return f"{self.old} is deprecated and will be removed in SLayer {self.removal}; use {self.new} instead"
+
+
 # Discriminated union, not the bare base: a ``List[SlayerWarning]`` would validate
 # down to the base type and drop subclass fields. Keyed on ``kind``, each round-trips.
 AnySlayerWarning = Annotated[
@@ -325,6 +337,7 @@ AnySlayerWarning = Annotated[
         LibraryNameShadowWarning,
         BrokenDependentWarning,
         WholeListWarning,
+        DeprecatedInputWarning,
     ],
     Field(discriminator="kind"),
 ]

@@ -66,12 +66,13 @@ presence of a field:
 | `kind` | Meaning | Extra fields |
 | -- | -- | -- |
 | `normalization` | The input was rewritten to canonical form | `rule_id`, `original`, `normalized`, `location`, `rule_doc_url` (nullable) |
+| `deprecated_input` | A deprecated input form was converted to its replacement ([Upgrading to 2.0](../upgrading/2.0.md)) | `old`, `new`, `removal` |
 
 The body accepts the same fields as a `SlayerQuery`, plus `dry_run`, `explain`, and `variables`. Notable optional fields:
 
 - `whole_periods_only` (bool) — snap time bounds to bucket boundaries; see [Time](../concepts/time.md#whole_periods_only).
 - `distinct_dimension_values` (bool, default `true`) — set `false` to emit raw rows (no top-level `GROUP BY`); rejects any measure reference in `measures` / `filters` / `order`.
-- `to_many_handling` (str, default `"broadcast"`) — how an aggregate resolves query dimensions [unattributable from its root](../concepts/queries.md#cross-model-measures): `broadcast` (repeat the safe-grain value and warn), `associate` (per-cell value over the distinct associated entities), or `error` (refuse). Rejected on run-by-name bodies (`{"name": ...}`) — declare it on the stored query instead; the retired `strict` flag is rejected with this remedy.
+- `to_many_handling` (str, default `"broadcast"`) — how an aggregate resolves query dimensions [unattributable from its root](../concepts/queries.md#cross-model-measures): `broadcast` (repeat the safe-grain value and warn), `associate` (per-cell value over the distinct associated entities), or `error` (refuse). Rejected at the top level of run-by-name bodies (`{"name": ...}`) — put it in `refine` instead.
 
 Run-by-name bodies (`{"name": ...}`) run a query-backed model's stored query and allow only `name`, `variables`, `dry_run`, `explain` and `refine`; query clauses go inside `refine`, which merges them into the saved query's final stage ([Refining a saved query](../concepts/queries.md#refining-a-saved-query)).
 
@@ -119,6 +120,8 @@ curl -X POST http://localhost:5143/models \
     "query_variables": {"region": "US"}
   }'
 ```
+
+`POST /models` and `PUT /models/{name}` return `{"status": "created" | "updated", "name": ..., "warnings": [...]}`; `warnings` holds the same `kind`-tagged entries as a query response, here `deprecated_input` and `narrowed_access` (the saved model reads tagged models whose access tags do not cover its own: `data_source`, `model`, `narrowed_by`).
 
 A query-backed model's `columns` are generated at save, so supplying them returns 400.
 
