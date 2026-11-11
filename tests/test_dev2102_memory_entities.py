@@ -142,3 +142,105 @@ class TestExtensionJoinPaths:
         result = await extract_entities_from_query(_projecting("region_label", extension=extension), storage=storage)
         assert "mydb.regions.name" in result.canonical_forms
         assert "mydb.orders.region_label" not in result.canonical_forms
+
+
+#: ``buyer`` names a new query-local edge (non-stored pairs) or aliases the stored ``orders → customers`` edge.
+_NAMED_JOINS = {
+    "new_edge": ModelJoin(target_model="customers", name="buyer", join_pairs=[["ship_region_id", "region_id"]]),
+    "alias": ModelJoin(target_model="customers", name="buyer", join_pairs=[["customer_id", "id"]]),
+}
+
+
+_AGGREGATED_PATHS = [("count(buyer.name)", "mydb.customers.name"), ("count(buyer.*)", "mydb.customers")]
+
+
+def _assert_no_edge_token(forms: list[str]) -> None:
+    assert not any("buyer" in f for f in forms), forms
+
+
+class TestNamedExtensionJoins:
+    @pytest.mark.parametrize("path", ["buyer.name", "orders.buyer.name"])
+    @pytest.mark.parametrize("kind", sorted(_NAMED_JOINS))
+    async def test_named_join_records_stored_target(self, storage: StorageBackend, kind: str, path: str) -> None:
+        extension = ModelExtension(source_name="orders", joins=[_NAMED_JOINS[kind]])
+        result = await extract_entities_from_query(_projecting(path, extension=extension), storage=storage)
+        assert "mydb.customers.name" in result.canonical_forms
+        _assert_no_edge_token(result.canonical_forms)
+
+    @pytest.mark.parametrize("path", ["buyer.premium", "orders.buyer.premium"])
+    @pytest.mark.parametrize("kind", sorted(_NAMED_JOINS))
+    async def test_extension_column_through_named_join(self, storage: StorageBackend, kind: str, path: str) -> None:
+        q = SlayerQuery(
+            source_model="orders",
+            extensions=[
+                ModelExtension(source_name="orders", joins=[_NAMED_JOINS[kind]]),
+                ModelExtension(
+                    source_name="customers",
+                    columns=[Column(name="premium", sql="region_id + 1", type=DataType.DOUBLE)],
+                ),
+            ],
+            dimensions=[ColumnRef(name=path)], measures=[ModelMeasure(formula="count(*)")],
+        )
+        result = await extract_entities_from_query(q, storage=storage)
+        assert "mydb.customers.region_id" in result.canonical_forms
+        assert "mydb.customers.premium" not in result.canonical_forms
+        _assert_no_edge_token(result.canonical_forms)
+
+    @pytest.mark.parametrize(("formula", "entity"), _AGGREGATED_PATHS)
+    @pytest.mark.parametrize("kind", sorted(_NAMED_JOINS))
+    async def test_aggregated_named_join_path(
+        self, storage: StorageBackend, kind: str, formula: str, entity: str,
+    ) -> None:
+        q = SlayerQuery(
+            source_model="orders", extensions=[ModelExtension(source_name="orders", joins=[_NAMED_JOINS[kind]])],
+            measures=[ModelMeasure(formula=formula)],
+        )
+        result = await extract_entities_from_query(q, storage=storage)
+        assert entity in result.canonical_forms
+        _assert_no_edge_token(result.canonical_forms)
+
+
+@pytest_asyncio.fixture
+async def named_storage(storage: StorageBackend) -> StorageBackend:
+    """``orders``'s stored join to ``customers`` named ``buyer``; ``otherdb`` (first priority) also has ``regions``."""
+    orders = await storage.get_model("orders", data_source="mydb")
+    assert orders is not None
+    await storage.save_model(orders.model_copy(update={
+        "joins": [ModelJoin(target_model="customers", name="buyer", join_pairs=[["customer_id", "id"]])],
+    }))
+    await storage.save_datasource(DatasourceConfig(name="otherdb", type="postgres", host="y"))
+    await storage.save_model(SlayerModel(
+        name="regions", data_source="otherdb", sql_table="regions",
+        columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                 Column(name="name", sql="name", type=DataType.TEXT)],
+    ))
+    await storage.set_datasource_priority(["otherdb", "mydb"])
+    return storage
+
+
+class TestStoredNamedJoinsWithoutExtensions:
+    @pytest.mark.parametrize("path", ["buyer.name", "orders.buyer.name"])
+    async def test_named_join_records_stored_target(self, named_storage: StorageBackend, path: str) -> None:
+        q = SlayerQuery(
+            source_model="orders", dimensions=[ColumnRef(name=path)], measures=[ModelMeasure(formula="count(*)")],
+        )
+        result = await extract_entities_from_query(q, storage=named_storage)
+        assert "mydb.customers.name" in result.canonical_forms
+        _assert_no_edge_token(result.canonical_forms)
+
+    @pytest.mark.parametrize(("formula", "entity"), _AGGREGATED_PATHS)
+    async def test_aggregated_named_join_path(self, named_storage: StorageBackend, formula: str, entity: str) -> None:
+        q = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula=formula)])
+        result = await extract_entities_from_query(q, storage=named_storage)
+        assert entity in result.canonical_forms
+        _assert_no_edge_token(result.canonical_forms)
+
+    async def test_unrouted_model_resolves_to_priority_winner(self, named_storage: StorageBackend) -> None:
+        q = SlayerQuery(
+            source_model="orders", dimensions=[ColumnRef(name="regions.name")],
+            measures=[ModelMeasure(formula="count(*)")],
+        )
+        result = await extract_entities_from_query(q, storage=named_storage)
+        assert "otherdb.regions.name" in result.canonical_forms
+        assert "mydb.regions.name" not in result.canonical_forms
+

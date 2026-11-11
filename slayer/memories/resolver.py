@@ -35,6 +35,7 @@ from collections.abc import Iterable, Mapping
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import (
+    AmbiguousJoinPathError,
     AmbiguousModelError,
     ColonSpellingError,
     CircularJoinPathError,
@@ -512,6 +513,9 @@ class _ExtensionScope(BaseModel):
         field = await self._extension_field(source, host=host)
         if field is not None:
             return await self._field_reads(owner=field[0], name=field[1])
+        routed = await self._routed_form(source, agg=agg, host=host)
+        if routed is not None:
+            return [EntityResolution(canonical_forms=[routed])]
         if agg is not None:
             return [await _resolve_reference(
                 raw=f"{agg}({source})", prefix=source, agg=agg, storage=self.storage, source_model=host,
@@ -523,15 +527,45 @@ class _ExtensionScope(BaseModel):
         *prefix, leaf = source.split(".")
         if not any(leaf in m.query_local_names for m in self.extended.values()):
             return None
+        owner = await self._owner(prefix, host=host)
+        return (owner, leaf) if owner is not None and leaf in owner.query_local_names else None
+
+    async def _route(self, path: list[str], *, host: SlayerModel) -> SlayerModel | None:
+        """The model ``path`` reaches from ``host`` as edge tokens (name, alias or target); ``None`` off a route."""
+        try:
+            return await _resolve_join_path(
+                storage=self.storage, starting_model=host, path=path, query_models=self.extended)
+        except (EntityResolutionError, AmbiguousJoinPathError):
+            return None
+
+    async def _owner(self, prefix: list[str], *, host: SlayerModel) -> SlayerModel | None:
+        """The extended model ``prefix`` names: a route from ``host`` first, else a standalone reference."""
         if not prefix:
-            return (host, leaf) if leaf in host.query_local_names else None
+            return host
+        routed = await self._route(prefix, host=host)
+        if routed is not None:
+            return self.extended.get(f"{routed.data_source}.{routed.name}")
         try:
             owner_forms = (await resolve_entity(
                 ".".join(prefix), storage=self.storage, source_model=host, query_models=self.extended)).canonical_forms
         except EntityResolutionError:
             return None
-        owner = next((self.extended[f] for f in owner_forms if f in self.extended), None)
-        return (owner, leaf) if owner is not None and leaf in owner.query_local_names else None
+        return next((self.extended[f] for f in owner_forms if f in self.extended), None)
+
+    async def _routed_form(self, source: str, *, agg: str | None, host: SlayerModel) -> str | None:
+        """Canonical form of a dotted ``source`` whose head is an edge token from ``host``; ``None`` off a route."""
+        star = source.endswith(".*")
+        segments = source.removesuffix(".*").split(".")
+        if (star and agg != "count") or (not star and len(segments) < 2):
+            return None
+        if star:
+            routed = await self._route(segments, host=host)
+            return f"{routed.data_source}.{routed.name}" if routed is not None else None
+        try:
+            return await _resolve_dotted_against_model(
+                storage=self.storage, starting_model=host, rest=segments, query_models=self.extended)
+        except (EntityResolutionError, AmbiguousJoinPathError):
+            return None
 
     async def _field_reads(self, *, owner: SlayerModel, name: str) -> list[EntityResolution]:
         mark = (owner.data_source, owner.name, name)

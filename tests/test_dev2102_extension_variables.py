@@ -75,3 +75,21 @@ def test_a_path_through_an_extension_join_reads_its_downstream_models(
     models = [orders(), customers(), regions().model_copy(update={"joins": [to_countries]}), countries()]
     reads = models_read_by(q(**source, dimensions=dimensions, extensions=[extension]), models=models, data_source=DS)
     assert (DS, "countries") in reads
+
+
+_TO_CUSTOMERS = join("customers", [["customer_id", "id"]])
+
+
+@pytest.mark.parametrize(("dimensions", "extension"), [
+    (["customer_id"], ext("s", joins=[_TO_CUSTOMERS], measures=[{"name": "n", "formula": "count(customers.regions.id)"}])),
+    (["customer_id"], ext("s", joins=[_TO_CUSTOMERS],
+                          columns=[{"name": "region", "sql": "customers.regions.name", "type": "TEXT"}])),
+    (["customer_id", "customers.regions.name"], ext("s", joins=[_TO_CUSTOMERS])),
+], ids=["measure", "column", "query-reference"])
+@pytest.mark.parametrize("data_source", [DS, ""], ids=["datasource", "no-datasource"])
+def test_a_sibling_stage_extension_reads_through_its_joins(dimensions: list, extension: dict, data_source: str) -> None:
+    home = ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])
+    backed = SlayerModel(name="backed", data_source=data_source, source_queries=[
+        q(name="s", source_model="orders", dimensions=["customer_id"]),
+        q(source_model="s", dimensions=dimensions, extensions=[extension])])
+    assert (DS, "regions") in models_read_by(backed, models=[orders(), customers(home), regions()])

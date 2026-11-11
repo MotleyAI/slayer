@@ -131,6 +131,14 @@ def _prefix_onto_placeholder(
     return []
 
 
+def _stage_host(extension: ModelExtension, *, data_source: str) -> SlayerModel:
+    """A sibling stage as ``extension`` sees it: its query-local columns, measures and joins."""
+    return SlayerModel.model_construct(
+        name=extension.source_name, data_source=data_source, columns=list(extension.columns or []),
+        measures=list(extension.measures or []), joins=list(extension.joins or []),
+    )
+
+
 class _Reads:
     """Accumulates read identities over the stored ``models``."""
 
@@ -240,19 +248,46 @@ class _Reads:
         for query in queries:
             self._scope(query)
             self.extended_models(query, data_source=data_source)
+            stage_hosts = self._stage_hosts(query, named=named, data_source=data_source)
             try:
                 spec = follow_sibling_chain(spec=query.source_model, named_queries=named)
             except ValueError:
                 continue
             hosts = [self._extended(host, query=query) for host in self.source(spec, data_source=data_source)]
-            if source_name_if_sibling(spec=query.source_model, sibling_names=named) is not None:
-                continue  # fields name the sibling's flat columns
+            sibling = source_name_if_sibling(spec=query.source_model, sibling_names=named)
+            if sibling is not None:  # fields name the sibling's flat columns, or hop its extension's joins
+                hosts = stage_hosts.get(sibling, [])
             for parts in query_reference_parts(query):
                 for host in hosts:
                     self.ref(parts, host=host)
-                if not hosts:
+                if not hosts and sibling is None:
                     self.unhosted_ref(parts, data_source=data_source)
         self._scoped = {}
+
+    def _stage_hosts(
+        self, query: SlayerQuery, *, named: dict[str, SlayerQuery], data_source: str | None,
+    ) -> dict[str, list[SlayerModel]]:
+        """Per sibling stage ``query`` extends: a host of just that extension, per datasource, its definitions read."""
+        out: dict[str, list[SlayerModel]] = {}
+        for extension in query.extensions or []:
+            if extension.source_name not in named:
+                continue
+            spaces = [data_source] if data_source is not None else self._stage_data_sources(
+                extension.source_name, named=named)
+            out[extension.source_name] = [_stage_host(extension, data_source=ds) for ds in spaces]
+            for host in out[extension.source_name]:
+                self.extension_definitions(extension, host=host)
+        return out
+
+    def _stage_data_sources(self, name: str, *, named: dict[str, SlayerQuery]) -> list[str]:
+        """The datasources sibling stage ``name``'s base source may resolve to."""
+        try:
+            spec = follow_sibling_chain(spec=name, named_queries=named)
+        except ValueError:
+            return []
+        if isinstance(spec, SlayerModel):
+            return [spec.data_source]
+        return sorted({m.data_source for m in self.holders(spec, data_source=None)}) if isinstance(spec, str) else []
 
     def _scope(self, query: SlayerQuery) -> None:
         """Walk ``query`` over its own join graph: each datasource's models as its extensions extend them."""
