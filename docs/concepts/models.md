@@ -77,7 +77,7 @@ A column is the unit of structure on the model. The same column entry can serve 
 | `label` | string | No | — | Display name; propagates into query result metadata |
 | `sql` | string | No | (bare column name) | SQL expression — defaults to the column's name |
 | `type` | string | No | `TEXT` | `TEXT`, `INT`, `DOUBLE`, `BOOLEAN`, `DATE`, `TIMESTAMP`, `UNKNOWN`, `ARRAY` |
-| `element_type` | string | With `ARRAY` on a table-backed model | `UNKNOWN` on an `sql`-mode model's `ARRAY` | A list's element type (`TEXT`, `INT`, `DOUBLE`, `BOOLEAN`, `DATE`, `TIMESTAMP`, or `UNKNOWN` for nested lists and records, which support only `length` and NULL tests); rejected on any other type |
+| `element_type` | string | With `ARRAY` on a table-backed model | `UNKNOWN` on an `sql`-mode model's `ARRAY` | A list's element type (`TEXT`, `INT`, `DOUBLE`, `BOOLEAN`, `DATE`, `TIMESTAMP`, or `UNKNOWN` for nested lists and records, which support only NULL tests and `count`); rejected on any other type |
 | `db_type` | string | No | — | The raw database type, recorded by ingestion where `type` loses information: `UNKNOWN`, exact `NUMERIC` / `DECIMAL`, JSON, zoned timestamps and lists |
 | `primary_key` | bool | No | `false` | A model's sole primary key is an identifier, restricted to counting, `min` / `max` and `collect`; members of a composite key are ordinary columns |
 | `unique` | bool | No | `false` | Single-column uniqueness (non-PK). A sole `primary_key` implies unique; a composite-key member does not. Auto-set from `UNIQUE` constraints / unique indexes; used to infer one-to-one joins |

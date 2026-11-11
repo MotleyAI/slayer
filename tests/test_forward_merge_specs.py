@@ -18,7 +18,7 @@ FOO = "openspec/specs/models/foo/spec.md"
 BAR = "openspec/specs/models/bar/spec.md"
 OTHER = "openspec/specs/models/other/spec.md"
 GIT_ENV = {
-    **os.environ,
+    **{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
     "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_CONFIG_GLOBAL": os.devnull,
     "GIT_AUTHOR_NAME": "Test",
