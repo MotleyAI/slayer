@@ -1564,32 +1564,6 @@
                 }
             }
         ],
-        "./slayer/osi/converter.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 40,
-                    "endColumn": 48,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 54,
-                    "endColumn": 66,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 48,
-                    "endColumn": 52,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./slayer/pg_facade/connection.py": [
             {
                 "code": "reportArgumentType",
@@ -19070,16 +19044,6 @@
                 "range": {
                     "startColumn": 22,
                     "endColumn": 33,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./tests/test_ingestion_name_sanitize.py": [
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 32,
                     "lineCount": 1
                 }
             }

@@ -1,6 +1,6 @@
 # Importing OSI (Open Semantic Interchange) Configs
 
-SLayer can import [Ossie / Open Semantic Interchange](https://github.com/open-semantic-interchange/OSI) (OSI) semantic-model documents and convert them into SLayer models. OSI is a vendor-neutral YAML/JSON standard for datasets, relationships, and metrics.
+SLayer can import [Ossie / Open Semantic Interchange](https://github.com/apache/ossie) (OSI) semantic-model documents and convert them into SLayer models. OSI is a vendor-neutral YAML/JSON standard for datasets, relationships, and metrics.
 
 ## Quick Start
 
@@ -12,9 +12,9 @@ This reads every `.yaml`/`.yml`/`.json` file in the path (a single file or a dir
 
 ## Document Shapes
 
-A current-spec document holds one semantic model at its root (`version`, `name`, `datasets`, and optionally `description`, `ai_context`, `relationships`, `metrics`, `custom_extensions`). An older document wrapping its models in `semantic_model` (an array or a single object) still imports, each wrapped model as its own semantic model. A file that mixes both shapes, holds neither, or has an empty `semantic_model` is skipped with a warning; the other files still import.
+A current-spec document holds one semantic model at its root (`version`, `name`, `datasets`, and optionally `description`, `ai_context`, `relationships`, `metrics`, `custom_extensions`). An older document wrapping its models in `semantic_model` (an array or a single object) still imports, each wrapped model as its own semantic model. A file that mixes both shapes, holds neither (such as an Ossie ontology or ontology-mapping document), has an empty `semantic_model`, or wraps its models while declaring `0.3.0.dev0` (whose documents are flat only) is skipped with a warning; the other files still import.
 
-Spec versions `1.0`, `0.1.0`, `0.1.1` and `0.2.0.dev0` parse silently; an unknown version is warned about but still parsed.
+Spec versions `1.0`, `0.1.0`, `0.1.1`, `0.2.0.dev0` and `0.3.0.dev0` parse silently; an unknown version is warned about but still parsed.
 
 ## What Gets Converted
 
@@ -34,7 +34,7 @@ A `SLAYER` custom extension written by [`slayer export-osi`](osi_export.md) rest
 
 ### Fields
 
-A current-spec model exposes **exactly its declared fields**: a field renaming a source column (`order_id: o_orderkey`) hides `o_orderkey`, and source columns no field declares are not on the model. Field expressions may still read any source column, and every column they read must exist in the live source. A dataset with no fields imports with no visible columns and a warning. Older wrapped documents keep every introspected column and overlay their fields on top. A field reading a source column whose name another field holds, or transforming the source column of its own name (`status: UPPER(status)`), is dropped with a report (an older wrapped document keeps the source column).
+A current-spec model exposes **exactly its declared fields**: a field renaming a source column (`order_id: o_orderkey`) hides `o_orderkey`, and source columns no field declares are not on the model. Field expressions may still read any source column, and every column they read must exist in the live source. A dataset with no fields imports with no visible columns and a warning. Older wrapped documents keep every introspected column and overlay their fields on top. When a dataset's query source outputs a label more than once (`SELECT o.id, c.id, …`), every field reading that label is dropped with a report as ambiguous. A field reading a source column whose name another field holds, or transforming the source column of its own name (`status: UPPER(status)`), is dropped with a report (an older wrapped document keeps the source column).
 
 A column's type is the type the database reports; a field's declared `datatype` is used only when the database cannot report one, then the type of a source column the field shares its name with (DOUBLE when none exists), and a disagreement adds an informational report entry. This deviates from the spec's consumer guidance on purpose, since `Column.type` drives SQL casts against the real database. The declared value is kept in `meta["osi_datatype"]`.
 
@@ -69,7 +69,7 @@ An OSI metric holds a raw SQL aggregation, which SLayer converts into a formula:
 
 `SUM`/`AVG`/`MIN`/`MAX` over `DISTINCT`, any aggregate but `COUNT(x)` over a list field (`MAX(tags)`, `COUNT(DISTINCT tags)`), window functions, and a `CASE` outside any aggregate are reported as unconverted.
 
-A **dataset-scoped** metric references its own dataset's fields unqualified (`SUM(amount)`). A **model-scoped** metric references fields as `dataset.field` (`SUM(orders.amount) / COUNT(DISTINCT customers.id)`) and is attached to an **anchor** model: among the models that reach every referenced dataset over the relationship joins, preferably one that never crosses a join in its fan-out direction (usually the fact table), then the fewest total hops, a referenced dataset, and the smallest name; an operand reading several datasets must reach them all over to-one joins. Unquoted names match declared fields case-insensitively, quoted names exactly, and a name matching several fields is reported as ambiguous. Older wrapped documents may also reference columns unqualified when exactly one dataset has them. A metric's `datatype` is kept in `meta["osi_datatype"]` and never changes the result type.
+A **dataset-scoped** metric references its own dataset's fields unqualified (`SUM(amount)`). A **model-scoped** metric references fields as `dataset.field` (`SUM(orders.amount) / COUNT(DISTINCT customers.id)`) and is attached to an **anchor** model: among the models that reach every referenced dataset over the relationship joins, preferably one that never crosses a join in its fan-out direction (usually the fact table), then the fewest total hops, a referenced dataset, and the smallest name; an operand reading several datasets must reach them all over to-one joins. A dataset-scoped metric reads a column of its own source directly as `source.column` (`SUM(source.quantity)`, `source` matched case-insensitively): it reads a field passing that column through unchanged, else a hidden helper column, and is reported as unconverted when a field named `source` exists, the column is missing or ambiguous, or a field holding its name does not read it unchanged; older wrapped documents and model-scoped metrics do not read `source.column`. Unquoted names match declared fields case-insensitively, quoted names exactly, and a name matching several fields is reported as ambiguous. Older wrapped documents may also reference columns unqualified when exactly one dataset has them. A metric's `datatype` is kept in `meta["osi_datatype"]` and never changes the result type.
 
 ## Dialect Selection
 

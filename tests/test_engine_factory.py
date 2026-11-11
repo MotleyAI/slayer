@@ -30,6 +30,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.pool import QueuePool
 
 from slayer.core.models import DatasourceConfig
 from slayer.live_schema import schema_drift
@@ -824,20 +825,26 @@ def _in_worker(fn):
     return box.get("value")
 
 
-class TestInMemorySqliteBuilder:
-    """The factory's single StaticPool builder for in-memory SQLite."""
+def _assert_one_slot_pool(engine: sa.Engine) -> None:
+    pool = engine.pool
+    assert isinstance(pool, QueuePool), pool
+    assert (pool.size(), pool._max_overflow) == (1, 0)
 
-    def test_builder_uses_static_pool(self) -> None:
+
+class TestInMemorySqliteBuilder:
+    """The factory's single in-memory SQLite builder."""
+
+    def test_builder_uses_one_slot_pool(self) -> None:
         engine = engine_factory.build_in_memory_sqlite_engine("sqlite:///:memory:")
         try:
-            assert type(engine.pool).__name__ == "StaticPool"
+            _assert_one_slot_pool(engine)
         finally:
             engine.dispose()
 
     def test_builder_normalizes_bare_memory(self) -> None:
         engine = engine_factory.build_in_memory_sqlite_engine(":memory:")
         try:
-            assert type(engine.pool).__name__ == "StaticPool"
+            _assert_one_slot_pool(engine)
         finally:
             engine.dispose()
 
@@ -864,6 +871,18 @@ class TestInMemorySqliteBuilder:
                     return conn.exec_driver_sql("SELECT v FROM t").scalar()
 
             assert _in_worker(read_v) == 42, "worker thread must see the same in-memory db"
+        finally:
+            engine.dispose()
+
+    def test_an_invalidated_connection_comes_back_as_a_fresh_db(self) -> None:
+        engine = engine_factory.build_in_memory_sqlite_engine(":memory:")
+        try:
+            with engine.connect() as conn:
+                conn.exec_driver_sql("CREATE TABLE t (v INTEGER)")
+                conn.commit()
+                conn.invalidate()
+            with engine.connect() as conn:
+                assert conn.exec_driver_sql("SELECT count(*) FROM sqlite_master WHERE name = 't'").scalar() == 0
         finally:
             engine.dispose()
 
