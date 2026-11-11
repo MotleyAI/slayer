@@ -48,7 +48,7 @@ planning: `PYTHONTRACEMALLOC=25 poetry run pytest <module> tests/test_dev2210_jo
       `test_dev2101_postgres`, `test_postgres_statement_timeout`, `test_dev2172_postgres`,
       `test_dev1933_postgres_verbatim`, `test_dev2015_postgres`, and any other the law flags locally. Verify: the
       CI integration invocation (CLAUDE.md) passes locally.
-- [ ] 4.4 MySQL / ClickHouse / SQL Server / Trino integration modules the law flags in their path-gated CI
+- [x] 4.4 MySQL / ClickHouse / SQL Server / Trino integration modules the law flags in their path-gated CI
       workflows. Verify: all four workflows green on the PR.
 
 ## 5. Verification
