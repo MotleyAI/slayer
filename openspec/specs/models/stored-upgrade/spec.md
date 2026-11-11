@@ -7,7 +7,7 @@ Guarantees that a store written by any released SLayer version still loads, re-s
 
 ### Requirement: A released store opens with its release's results
 
-A store written by SLayer 0.10.2 SHALL load completely when opened by the current version, both with its datasource present and with the datasource entry absent. The store SHALL hold every model and memory shape that release could write: ingested models, a Cube import whose foreign key is not a dimension, a multi-stage query-backed model ordering by `rank(...)`, an aggregation reading a quoted parameter, legacy time literals, and a memory with a query. With the datasource present, every model SHALL re-save and the datasource SHALL re-ingest. Every query the release could run SHALL return the rows the release returned.
+A store written by SLayer 0.10.2, and a store written by SLayer 1.8.2, SHALL each load completely when opened by the current version, both with its datasource present and with the datasource entry absent. The 0.10.2 store SHALL hold every model and memory shape that release could write: ingested models, a Cube import whose foreign key is not a dimension, a multi-stage query-backed model ordering by `rank(...)`, an aggregation reading a quoted parameter, legacy time literals, and a memory with a query. The 1.8.2 store SHALL hold the list-column shapes that release could write: ingested native list columns, an `sql`-mode list column whose undeclared `element_type` 1.8.2 stored as `UNKNOWN`, a sole primary key allowing `collect`, stored measures and a query-backed model using `collect`, the list functions and list elements, and a memory with such a query. With the datasource present, every model SHALL re-save and the datasource SHALL re-ingest. Every query the release could run SHALL return the rows the release returned.
 
 #### Scenario: The 0.10.2 corpus opens with its datasource present
 
@@ -15,6 +15,16 @@ A store written by SLayer 0.10.2 SHALL load completely when opened by the curren
 - **THEN** every model and memory loads, every model re-saves, the datasource re-ingests, and every recorded query returns the rows recorded from 0.10.2
 
 #### Scenario: The 0.10.2 corpus opens offline
+
+- **WHEN** the same store is opened with its datasource entry removed
+- **THEN** every model and memory loads, without any connection being attempted
+
+#### Scenario: The 1.8.2 corpus opens with its datasource present
+
+- **WHEN** the committed store written by `motley-slayer==1.8.2`, on both the YAML and the SQLite store, is opened with its DuckDB datasource present
+- **THEN** every model and memory loads, every model re-saves, the datasource re-ingests, and every recorded query returns the rows recorded from 1.8.2
+
+#### Scenario: The 1.8.2 corpus opens offline
 
 - **WHEN** the same store is opened with its datasource entry removed
 - **THEN** every model and memory loads, without any connection being attempted
@@ -239,7 +249,7 @@ Every name the Mode-B library reserves — scalar and list functions, function s
 
 ### Requirement: Stored granularities colliding with a library name are renamed
 
-On every load, whatever the document's version, a stored datasource custom granularity whose name case-insensitively matches any reserved library name SHALL be renamed to `<name>_granularity`, or `<name>_granularity_<n>` with the smallest `n` ≥ 2 that is free, and every reference to it in that datasource's stored models, saved queries, query-backed models and memories SHALL be rewritten to the new name in every position a granularity name is accepted. Each rename SHALL be logged as a warning naming the datasource and both names. The rename SHALL be a function of the stored datasource alone, and dependent documents SHALL be persisted before the datasource, so a load interrupted at any point completes on the next load. A client saving a custom granularity with a reserved name SHALL still be refused.
+On every load, whatever the document's version, a stored datasource custom granularity whose name case-insensitively matches any reserved library name SHALL be renamed to `<name>_granularity`, or `<name>_granularity_<n>` with the smallest `n` ≥ 2 that is free, and every reference to it in that datasource's stored models, saved queries, query-backed models and memories SHALL be rewritten to the new name in every position a granularity name is accepted. Each rename SHALL be logged as a warning naming the datasource and both names. The rename SHALL be a function of the stored datasource alone, and dependent documents SHALL be persisted before the datasource, so a load interrupted at any point completes on the next load. This SHALL hold on both the YAML and the SQLite store. A client saving a custom granularity with a reserved name SHALL still be refused.
 
 #### Scenario: Granularity named left
 
@@ -260,6 +270,11 @@ On every load, whatever the document's version, a stored datasource custom granu
 
 - **WHEN** a load is interrupted after some dependent documents were persisted with the new name and before the datasource was
 - **THEN** the next load renames the datasource's granularity to the same name and rewrites the remaining documents, leaving one consistent store
+
+#### Scenario: A rename converges
+
+- **WHEN** a store whose granularity `contains` was renamed is loaded again, on the YAML and on the SQLite store
+- **THEN** no document changes and no rename warning is logged
 
 #### Scenario: A granularity colliding with a later library addition
 
