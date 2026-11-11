@@ -23,6 +23,7 @@ from typing import Any, Literal, TypeVar
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
+from slayer.core.names import name_taken
 from slayer.core.models import (
     Column,
     ModelJoin,
@@ -154,7 +155,7 @@ def _key_column(*, expr: str, cols: list[Column]) -> Column | None:
 def _free_key_name(*, expr: str, cols: list[Column], taken: set) -> str | None:
     """The name for a new column reading entity ``expr``, unless non-bare or already taken."""
     phys = _entity_column(expr)
-    return phys if phys and phys not in taken and all(c.name != phys for c in cols) else None
+    return phys if phys and not name_taken(phys, [*taken, *(c.name for c in cols)]) else None
 
 
 def _aggregated_column(formula: str) -> tuple[str, str] | None:
@@ -197,7 +198,7 @@ def _convert_dimension(dim: DbtDimension) -> Column:
 def _alloc_column_name(base: str, *, taken: set[str]) -> str:
     """``base`` suffixed with ``_col`` until free of ``taken``, then claimed."""
     name = base
-    while name in taken:
+    while name_taken(name, taken):
         name = f"{name}_col"
     taken.add(name)
     return name
@@ -532,9 +533,8 @@ class DbtToSlayerConverter:
         SLayer columns and measures share a namespace per model.
         """
         # Q-G: hard-fail on dim/measure name collisions before doing any work.
-        dim_names = {d.name for d in sm.dimensions}
-        measure_names = {m.name for m in sm.measures}
-        collisions = sorted(dim_names & measure_names)
+        measure_names = [m.name for m in sm.measures]
+        collisions = sorted(d.name for d in sm.dimensions if name_taken(d.name, measure_names))
         if collisions:
             raise DbtConversionError(
                 f"Semantic model '{sm.name}': dimension and measure share name(s) "
@@ -1072,7 +1072,7 @@ class DbtToSlayerConverter:
         Emits a collision warning when it does."""
         existing_names = {c.name for c in slayer_model.columns}
         existing_names.update(m.name for m in slayer_model.measures if m.name is not None)
-        if name in existing_names:
+        if name_taken(name, existing_names):
             self._warnings.append(ConversionWarning(
                 model_name=slayer_model.name,
                 metric_name=name,
@@ -1863,7 +1863,7 @@ class DbtToSlayerConverter:
         used = {c.name for c in slayer_model.columns}
         used |= {m.name for m in slayer_model.measures if m.name}
         name = base
-        while name in used:
+        while name_taken(name, used):
             name = f"{name}_col"
         return name
 

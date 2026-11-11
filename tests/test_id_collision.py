@@ -77,8 +77,9 @@ class TestHelpers:
 class TestDatasourceCollision:
     async def test_case_variant_rejected(self, storage: YAMLStorage) -> None:
         await storage.save_datasource(_ds("db", host="first"))
+        ds = _ds("DB", host="second")
         with pytest.raises(IdCollisionError) as exc_info:
-            await storage.save_datasource(_ds("DB", host="second"))
+            await storage.save_datasource(ds)
         assert exc_info.value.kind == "datasource"
         assert exc_info.value.new_id == "DB"
         assert exc_info.value.existing_id == "db"
@@ -96,8 +97,9 @@ class TestDatasourceCollision:
     ) -> None:
         # Models under an orphan datasource reserve its name.
         await storage.save_model(_model("orders", data_source="db"))
+        ds = _ds("DB")
         with pytest.raises(IdCollisionError):
-            await storage.save_datasource(_ds("DB"))
+            await storage.save_datasource(ds)
         await storage.save_datasource(_ds("db"))
 
 
@@ -111,8 +113,9 @@ class TestModelCollision:
         self, storage: YAMLStorage,
     ) -> None:
         await storage.save_model(_model("orders", table="first"))
+        model = _model("Orders", table="second")
         with pytest.raises(IdCollisionError) as exc_info:
-            await storage.save_model(_model("Orders", table="second"))
+            await storage.save_model(model)
         assert exc_info.value.kind == "model"
         assert exc_info.value.new_id == "Orders"
         assert exc_info.value.existing_id == "orders"
@@ -138,16 +141,18 @@ class TestModelCollision:
         self, storage: YAMLStorage,
     ) -> None:
         await storage.save_datasource(_ds("db"))
+        model = _model("orders", data_source="DB")
         with pytest.raises(IdCollisionError) as exc_info:
-            await storage.save_model(_model("orders", data_source="DB"))
+            await storage.save_model(model)
         assert exc_info.value.kind == "datasource"
 
     async def test_data_source_vs_other_models_rejected(
         self, storage: YAMLStorage,
     ) -> None:
         await storage.save_model(_model("orders", data_source="db"))
+        model = _model("customers", data_source="DB")
         with pytest.raises(IdCollisionError):
-            await storage.save_model(_model("customers", data_source="DB"))
+            await storage.save_model(model)
 
     async def test_validate_false_bypasses(self, storage: YAMLStorage) -> None:
         # The migration write-back path must stay able to persist legacy data.
@@ -197,7 +202,7 @@ class TestSqliteAllowsCaseVariants:
 
     async def test_models(self, sqlite_storage: SQLiteStorage) -> None:
         await sqlite_storage.save_model(_model("orders", table="lower"))
-        await sqlite_storage.save_model(_model("Orders", table="upper"))
+        await sqlite_storage.save_model(_model("Orders", table="upper"), _validate=False)
         low = await sqlite_storage.get_model("orders", data_source="db")
         up = await sqlite_storage.get_model("Orders", data_source="db")
         assert low.sql_table == "lower"
@@ -217,7 +222,7 @@ class TestSqliteAllowsCaseVariants:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = resolve_storage(os.path.join(tmpdir, "test.db"))
             await storage.save_model(_model("orders"))
-            await storage.save_model(_model("Orders"))
+            await storage.save_model(_model("Orders"), _validate=False)
 
 
 # ---------------------------------------------------------------------------
@@ -230,11 +235,13 @@ class TestFactoryStorage:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = resolve_storage(tmpdir)
             await storage.save_datasource(_ds("db"))
+            ds = _ds("DB")
             with pytest.raises(IdCollisionError):
-                await storage.save_datasource(_ds("DB"))
+                await storage.save_datasource(ds)
             await storage.save_model(_model("orders"))
+            model = _model("Orders")
             with pytest.raises(IdCollisionError):
-                await storage.save_model(_model("Orders"))
+                await storage.save_model(model)
             await storage.save_memory(
                 id="X", learning="a", entities=["mydb.orders"],
             )

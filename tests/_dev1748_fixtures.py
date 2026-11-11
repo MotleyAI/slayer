@@ -13,9 +13,8 @@ built around one thing a wrong implementation would get wrong:
 * ``tie`` — two rows sharing a timestamp with different values. ``ROW_NUMBER``
   breaks that tie arbitrarily, so this group is asserted by MEMBERSHIP and
   documented as nondeterministic (§5.8: no false parity).
-* ``nulltime`` — a NULL ranking timestamp competing with a real one. Which row
-  wins depends on the dialect's NULL ordering, so the expectation is recorded
-  per engine rather than assumed portable.
+* ``nulltime`` — a NULL ranking timestamp competing with a real one. A NULL key
+  is never picked, so the dated row wins both ``first`` and ``last``.
 * ``nullval`` — the winning row's VALUE is NULL. ``last`` must be NULL, not the
   largest non-NULL value in the group; this is what separates
   ``MAX(CASE WHEN rn = 1 THEN v END)`` from ``MAX(v)``.

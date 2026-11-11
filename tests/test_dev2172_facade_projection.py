@@ -71,19 +71,19 @@ WIRES = {"pg": _pg, "flight": _flight}
 # Raw or grouped: the translator's classification
 # --------------------------------------------------------------------------- #
 TRUNC = "DATE_TRUNC('month', ordered_at)"
-#: ``month(col)`` parses only without the Postgres dialect (which reads it as ``EXTRACT``).
-BOTH, FLIGHT_ONLY = (None, "postgres"), (None,)
-RAW = [
+#: ``month(col)`` is an integer extraction, raw or grouped by the same rule as a time grain.
+BOTH: tuple[str | None, ...] = (None, "postgres")
+RAW: list[tuple[str, tuple[str | None, ...]]] = [
     ("SELECT status FROM orders", BOTH),
     ("SELECT status, ordered_at FROM orders WHERE status = 'paid'", BOTH),
     ("SELECT status FROM orders ORDER BY status LIMIT 3 OFFSET 2", BOTH),
     (f"SELECT {TRUNC} FROM orders", BOTH),
     (f"SELECT {TRUNC} AS m FROM orders ORDER BY m", BOTH),
-    ("SELECT month(ordered_at) FROM orders", FLIGHT_ONLY),
-    ("SELECT month(ordered_at) AS m FROM orders ORDER BY m", FLIGHT_ONLY),
+    ("SELECT month(ordered_at) FROM orders", BOTH),
+    ("SELECT month(ordered_at) AS m FROM orders ORDER BY m", BOTH),
     ("SELECT name, skills FROM contractors", BOTH),
 ]
-GROUPED = [
+GROUPED: list[tuple[str, tuple[str | None, ...]]] = [
     ("SELECT DISTINCT status FROM orders", BOTH),
     ("SELECT status FROM orders GROUP BY status", BOTH),
     ("SELECT status FROM orders GROUP BY status HAVING COUNT(*) > 2", BOTH),
@@ -93,7 +93,7 @@ GROUPED = [
     ("SELECT status FROM orders WHERE revenue_sum > 150", BOTH),
     (f"SELECT DISTINCT {TRUNC} FROM orders", BOTH),
     (f"SELECT {TRUNC} FROM orders GROUP BY {TRUNC}", BOTH),
-    ("SELECT DISTINCT month(ordered_at) FROM orders", FLIGHT_ONLY),
+    ("SELECT DISTINCT month(ordered_at) FROM orders", BOTH),
 ]
 
 
@@ -118,8 +118,8 @@ def test_grouping_forms_stay_grouped(catalog: FacadeCatalog, sql: str, dialect: 
 # --------------------------------------------------------------------------- #
 # Executed over both wires
 # --------------------------------------------------------------------------- #
-#: ``(wire, grain)``: ``month(col)`` only over Flight (the Postgres dialect reads it as ``EXTRACT``).
-GRAINS = [("pg", TRUNC), ("flight", TRUNC), ("flight", "month(ordered_at)")]
+#: ``(wire, grain)``.
+GRAINS = [("pg", TRUNC), ("flight", TRUNC)]
 
 
 @pytest.mark.parametrize(("wire", "grain"), GRAINS)

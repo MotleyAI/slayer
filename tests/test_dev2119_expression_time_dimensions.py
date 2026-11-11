@@ -179,7 +179,7 @@ class TestTimePositions:
         assert by_bucket(resp, KEY, "orders.w") == FEB_APR_WINDOW
         assert by_bucket(resp, KEY, "orders.c") == FEB_APR_CHANGE
 
-    @pytest.mark.parametrize("bound", [f"{EFF} >= '2025-02'", f"month({EFF}) >= '2025-02-01'"])
+    @pytest.mark.parametrize("bound", [f"{EFF} >= '2025-02'", f"date_trunc('month', {EFF}) >= '2025-02-01'"])
     async def test_filter_on_the_expression_is_a_frame_bound(self, engine, bound: str) -> None:
         resp = await engine.execute(q(time_dimensions=[td(EFF)], filters=[bound],
                                       measures=[m("sum(amount, window='3m')", "w")]))
@@ -285,7 +285,7 @@ class TestNamesAndKeys:
                        ("US", "2025-02"): 50.0, ("US", "2025-03"): 100.0}
 
     async def test_two_granularities_of_one_expression(self, engine) -> None:
-        resp = await engine.execute(_count(dimensions=[f"month({EFF})", f"year({EFF})"]))
+        resp = await engine.execute(_count(dimensions=[f"date_trunc('month', {EFF})", f"date_trunc('year', {EFF})"]))
         assert set(resp.columns) == {f"{KEY}.month", f"{KEY}.year", "orders.v"}
         got = {(bucket(r[f"{KEY}.month"]), bucket(r[f"{KEY}.year"], width=4)): num(r["orders.v"]) for r in resp.data}
         assert got == {(k, "2025"): v for k, v in EFF_MONTH_COUNT.items()}
@@ -305,7 +305,7 @@ class TestNamesAndKeys:
 
     async def test_main_time_dimension_by_expression_name(self, engine) -> None:
         resp = await engine.execute(q(
-            dimensions=["month(created_at)"], time_dimensions=[td(EFF, name="effective_at")],
+            dimensions=["date_trunc('month', created_at)"], time_dimensions=[td(EFF, name="effective_at")],
             main_time_dimension="effective_at", measures=[m("cumsum(count(*))")],
         ))
         got = {(bucket(r["orders.created_at"]), bucket(r["orders.effective_at"])): num(r["orders.v"])
@@ -317,17 +317,17 @@ class TestNamesAndKeys:
 class TestOrderKey:
     async def test_order_by_a_projected_expression_bucket(self, engine) -> None:
         resp = await engine.execute(_count(
-            dimensions=[f"month({EFF})"], order=[{"column": f"month({EFF})", "direction": "desc"}],
+            dimensions=[f"date_trunc('month', {EFF})"], order=[{"column": f"date_trunc('month', {EFF})", "direction": "desc"}],
         ))
         assert [bucket(r[KEY]) for r in resp.data] == ["2025-04", "2025-03", "2025-02", "2025-01"]
 
     async def test_order_by_an_unprojected_granularity_names_the_remedy(self, engine) -> None:
-        query = _count(dimensions=[f"year({EFF})"], order=[{"column": f"month({EFF})"}])
+        query = _count(dimensions=[f"date_trunc('year', {EFF})"], order=[{"column": f"date_trunc('month', {EFF})"}])
         msg = str(await _plan_fails(engine, query, GranularityCallError))
         assert "month" in msg
 
     async def test_functional_dimension_equals_explicit_form(self, engine) -> None:
-        functional = await engine.execute(_count(dimensions=[f"month({EFF})"]))
+        functional = await engine.execute(_count(dimensions=[f"date_trunc('month', {EFF})"]))
         explicit = await engine.execute(_count(time_dimensions=[td(EFF)]))
         assert functional.sql == explicit.sql
         assert sorted(functional.data, key=repr) == sorted(explicit.data, key=repr)

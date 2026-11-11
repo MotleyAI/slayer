@@ -125,6 +125,7 @@ from slayer.sql.render.ranked import (
     RANKED_SOURCE_ALIAS,
     RankedGrainProjection,
     build_rank_column,
+    build_rank_key,
     build_ranked_cte_select,
     build_ranked_pick,
     ranked_ordered,
@@ -2572,6 +2573,7 @@ class SQLGenerator:
                 rank_inner = rank_inner.select(
                     _base_col(ga).as_(exp.to_identifier(ga, quoted=True)))
             rank_inner = rank_inner.select(_src_col("_w_value").as_("_w_value"))
+            rank_inner = rank_inner.select(build_rank_key(_src_col("_w_rank")))
             rank_inner = rank_inner.select(build_rank_column(
                 partition_by=[_base_col(ga) for ga in grain_aliases],
                 ranking_time=ranked_ordered(
@@ -2886,6 +2888,7 @@ class SQLGenerator:
         inner = exp.Select()
         # A named projection list, never <relation>.*: the projection boundary keeps the rank column's name private.
         ranked_scope.apply_materializations(inner)
+        inner = inner.select(build_rank_key(ranking_time))
         inner = inner.select(build_rank_column(
             partition_by=partition_by,
             ranking_time=ranked_ordered(

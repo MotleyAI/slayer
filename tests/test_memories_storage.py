@@ -27,6 +27,7 @@ from slayer.core.models import ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
+from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
@@ -69,7 +70,7 @@ class TestMemoryCRUD:
         assert memory.learning.startswith("orders.is_returned")
         assert memory.entities == ["mydb.orders.is_returned"]
         assert memory.query is None
-        assert memory.version == 8
+        assert memory.version == CURRENT_VERSIONS["Memory"]
         assert memory.created_at is not None
 
     async def test_save_with_query_persists_query(

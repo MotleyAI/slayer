@@ -1,4 +1,4 @@
-"""SlayerModel v19 / SlayerQuery v10: a stored ``to_many_handling: "broadcast"`` was the saved default, so it
+"""SlayerModel v20 / SlayerQuery v11: a stored ``to_many_handling: "broadcast"`` was the saved default, so it
 loads omitted (the association default). Stored-only."""
 
 from typing import Any
@@ -6,7 +6,7 @@ from typing import Any
 from slayer.storage.migrations import register_migration, stamp_stored
 
 #: The SlayerQuery version whose saves wrote the broadcast default.
-_BROADCAST_DEFAULT_VERSION = 10
+_BROADCAST_DEFAULT_VERSION = 11
 
 
 def _stamp_stage(stage: Any) -> Any:
@@ -31,5 +31,5 @@ def drop_stored_broadcast(data: dict) -> dict:
     return data
 
 
-register_migration(entity="SlayerModel", source_version=19, stored_only=True)(stamp_model_stages)
-register_migration(entity="SlayerQuery", source_version=10, stored_only=True)(drop_stored_broadcast)
+register_migration(entity="SlayerModel", source_version=20, stored_only=True)(stamp_model_stages)
+register_migration(entity="SlayerQuery", source_version=11, stored_only=True)(drop_stored_broadcast)

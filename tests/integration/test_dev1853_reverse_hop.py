@@ -1,4 +1,4 @@
-"""DEV-1853 — tier-1 integration coverage of a reverse-hop query.
+"""Tier-1 integration coverage of a reverse-hop query.
 
 Customers-rooted query over the only stored edge orders → customers, on
 SQLite, DuckDB, and Postgres.
@@ -25,6 +25,7 @@ from tests._dev1853_fixtures import (
     chain_models,
     rows_set,
 )
+from tests._pg_helpers import client_datasource, pg_query_engine
 
 _HAS_PG = importlib.util.find_spec("pytest_postgresql") is not None
 if _HAS_PG:
@@ -91,13 +92,7 @@ async def test_reverse_hop_postgres(postgresql, tmp_path) -> None:
     cur.executemany("INSERT INTO orders VALUES (%s,%s,%s,%s,%s)",
                     _CHAIN_ORDERS_ROWS)
     postgresql.commit()
-    info = postgresql.info
-    storage = YAMLStorage(base_dir=str(tmp_path / "store"))
-    await storage.save_datasource(DatasourceConfig(
-        name="test", type="postgres", host=info.host, port=info.port,
-        database=info.dbname, username=info.user, password=""))
-    for model in chain_models():
-        await storage.save_model(model)
-    engine = SlayerQueryEngine(storage=storage)
-    resp = await engine.execute(_REVERSE_QUERY)
+    async with pg_query_engine(client_datasource(postgresql.info, name="test"), base_dir=str(tmp_path / "store"),
+                               models=chain_models()) as engine:
+        resp = await engine.execute(_REVERSE_QUERY)
     assert rows_set(resp, *_KEYS) == CHAIN_REVERSE_DIMS_LEFT

@@ -41,6 +41,7 @@ Each entry in `dimensions` is either a bare string (the canonical short form for
 |-------|------|-------------|
 | `name` | string | Column name. Supports dotted paths for joined models. |
 | `label` | string | Optional human-readable display name |
+| `quoted` | list[bool] | Optional, one flag per path segment: a flagged segment matches its declared name exactly. A double-quoted string (`"\"Revenue\""`, `orders."status"`) is read as this column reference, named like its unquoted spelling. |
 
 ### Expression dimensions
 
@@ -92,7 +93,7 @@ measures like `avg` / `count_distinct` reconcile correctly, and a `NULL`
 partition value keeps its own group). The `partition_by` grain may be any
 groupable key: a query dimension, a finer local column (`city`), a joined path
 (`customers.region_id`), a time bucket, or `[]` for the grand total. A base-row
-filter (`status == 'ok'`) also constrains the partition aggregate; a filter on
+filter (`status = 'ok'`) also constrains the partition aggregate; a filter on
 the computed dimension name (`band == 1`) applies after regrouping.
 
 A dimension expression may band a windowed partitioned aggregate
@@ -174,7 +175,7 @@ Emits roughly `SELECT orders.status, orders.amount FROM orders WHERE orders.amou
 
 A time dimension with a required granularity and an optional date range. Supports an optional `label` for human-readable output. To use a time column without truncation, add it as a regular dimension instead. The column may also be given under the key `column` as an alias of `dimension`; the object always serializes with `dimension` as a string, and the legacy object form `{"name": "created_at", "model": "orders"}` is read as `orders.created_at`.
 
-`dimension` may be any row-level expression typed DATE or TIMESTAMP (`"coalesce(shipped_at, created_at)"`, `"CAST(created_txt AS DATE)"`, also as `month(coalesce(shipped_at, created_at))`), and an optional `name` sets its result key and lets `main_time_dimension` and `partition_by=` refer to it (an unnamed expression is named like a computed dimension). Names are unique across a query's dimensions and time dimensions. A named time dimension's key never carries a granularity suffix; unnamed time dimensions sharing one source at different granularities get one each (`orders.created_at.month`, `orders.created_at.year`).
+`dimension` may be any row-level expression typed DATE or TIMESTAMP (`"coalesce(shipped_at, created_at)"`, `"CAST(created_txt AS DATE)"`, also as `date_trunc('month', coalesce(shipped_at, created_at))`), and an optional `name` sets its result key and lets `main_time_dimension` and `partition_by=` refer to it (an unnamed expression is named like a computed dimension). Names are unique across a query's dimensions and time dimensions. A named time dimension's key never carries a granularity suffix; unnamed time dimensions sharing one source at different granularities get one each (`orders.created_at.month`, `orders.created_at.year`).
 
 ```json
 {
@@ -187,7 +188,7 @@ A time dimension with a required granularity and an optional date range. Support
 
 **Granularities**: `second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`, `quarter`, `year`
 
-A `dimensions` or `time_dimensions` entry may also be written functionally as the string `gran(col)` (e.g. `"month(created_at)"`) — equivalent to a `TimeDimension` with that dimension and granularity (use the dict form above to add `date_range` or `label`), and usable as an `order` key too, where it must match a projected time dimension on the same expression at that granularity or the query fails.
+A `dimensions` or `time_dimensions` entry may also be written as the string `date_trunc('<unit>', expr)` (e.g. `"date_trunc('month', created_at)"`) — equivalent to a `TimeDimension` with that dimension and granularity (use the dict form above to add `date_range` or `label`), and usable as an `order` key too, where it must match a projected time dimension on the same expression at that granularity or the query fails. A `time_dimensions` string in any other form is an error naming its `date_trunc` spelling.
 
 A downstream stage of a multi-stage query may declare a time dimension on any DATE/TIMESTAMP column of its upstream stage — re-bucketing a column the upstream already truncated only at the same or a nesting-coarser granularity (e.g. `month` → `year`). The same rule applies to a model column that carries a `granularity` (a query-backed model's bucketed cache column, or a hand-set one): a finer or non-nesting time dimension over it is the same typed error, judged for every bucketed column an expression time dimension reads (`CAST(month_col AS DATE)` at `day` fails).
 
@@ -333,7 +334,7 @@ values (strings, numbers, or booleans) — references and expressions on the
 RHS are not supported. Both `(...)` and `[...]` syntax are accepted.
 
 A string compared with a DATE / TIMESTAMP expression is a [time point](time.md#time-points):
-`"created_at >= 'last month'"`, `"created_at in '2025-Q1'"` and `"month(created_at) = '2025-03'"`
+`"created_at >= 'last month'"`, `"created_at in '2025-Q1'"` and `"date_trunc('month', created_at) = '2025-03'"`
 all work, and a date-only string means the whole day.
 
 ### Boolean Logic
@@ -578,7 +579,7 @@ await engine.execute("monthly_revenue", refine={"order": [{"column": "revenue", 
 
 For a multi-stage saved query only the final stage is refined, so it can use only what the earlier stages project: refining `[{"name": "per_customer", ...}, {"source_model": "per_customer", "measures": [{"formula": "avg(revenue)", "name": "avg_revenue"}]}]` with `{"dimensions": ["region"]}` averages per region, provided `per_customer` projects `region`.
 
-Adding a second granularity of a saved time column (`{"time_dimensions": ["year(ordered_at)"]}` on a monthly query) renames the saved key `orders.ordered_at` to `orders.ordered_at.month`, as in any query with two granularities. A saved query's population is fixed when it is saved (see [Population](#population)), so a refinement never changes it.
+Adding a second granularity of a saved time column (`{"time_dimensions": ["date_trunc('year', ordered_at)"]}` on a monthly query) renames the saved key `orders.ordered_at` to `orders.ordered_at.month`, as in any query with two granularities. A saved query's population is fixed when it is saved (see [Population](#population)), so a refinement never changes it.
 
 ---
 
@@ -744,7 +745,7 @@ partition in its suffix (`orders.revenue_sum_partition_by_region`,
 `orders.revenue_sum_partition_by` for the grand total) — name the measure to
 control the key.
 
-A `partition_by` element may also be a time bucket the query groups by, so with time dimension `ordered_at` at month, `partition_by=[month(ordered_at)]` means `partition_by=[ordered_at]`.
+A `partition_by` element may also be a time bucket the query groups by, so with time dimension `ordered_at` at month, `partition_by=[date_trunc('month', ordered_at)]` means `partition_by=[ordered_at]`.
 
 ### Cross-model measures
 

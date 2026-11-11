@@ -48,7 +48,7 @@ EXPECTED_EDGES = {
 README_QUERY = {
     "source_model": "orders",
     "measures": ["sum(order_total)", "change_pct(sum(order_total))"],
-    "dimensions": ["stores.name", "month(ordered_at)"],
+    "dimensions": ["stores.name", "date_trunc('month', ordered_at)"],
 }
 
 # The bundled schema as shipped in 1.4.1: money stored as DOUBLE.
@@ -288,7 +288,7 @@ class TestDemoMoneyIsExact:
         rows = _run(storage, {
             "source_model": "orders",
             "measures": ["sum(order_total)"],
-            "dimensions": ["stores.name", "month(ordered_at)"],
+            "dimensions": ["stores.name", "date_trunc('month', ordered_at)"],
         })
         assert rows
         value_key = next(k for k in rows[0] if "order_total" in k)

@@ -177,7 +177,7 @@ def test_prepared_statement_time_grain(flight_demo_server: tuple[str, int]) -> N
     host, port = flight_demo_server
     client = _client(host=host, port=port)
     sql = (
-        "SELECT month(ordered_at) AS m, row_count FROM orders "
+        "SELECT DATE_TRUNC('month', ordered_at) AS m, row_count FROM orders "
         "WHERE ordered_at BETWEEN '2024-01-01' AND '2024-12-31' "
         "ORDER BY m"
     )
@@ -303,8 +303,9 @@ def test_auth_negative_wrong_token(
     host, port, _token = flight_demo_server_with_token
     client = _client(host=host, port=port)
     descriptor = _descriptor_for(fsql_pb.CommandGetCatalogs(), "CommandGetCatalogs")
+    options = _bearer_options("wrong")
     with pytest.raises(fl.FlightUnauthenticatedError):
-        client.get_flight_info(descriptor, options=_bearer_options("wrong"))
+        client.get_flight_info(descriptor, options=options)
 
 
 # ----- concurrency -----------------------------------------------------------

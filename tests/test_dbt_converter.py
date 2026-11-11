@@ -12,7 +12,7 @@ from slayer.cli import _run_import_dbt
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormatType
 from slayer.core.join_walker import edges_between
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.dbt import converter as converter_module
 from slayer.dbt.converter import DbtConversionError, DbtToSlayerConverter
@@ -351,6 +351,27 @@ class TestMeasureConsolidation:
         measures_by_name = {m.name: m for m in orders.measures}
         assert measures_by_name["revenue"].formula == "sum(amount)"
         assert measures_by_name["quantity"].formula == "sum(qty)"
+
+    def test_a_column_named_like_a_measure_in_another_case_is_renamed(self) -> None:
+        """Columns and measures share one case-insensitive namespace, so ``Premium`` beside ``premium`` is renamed."""
+        project = DbtProject(semantic_models=[
+            DbtSemanticModel(
+                name="fire_claim",
+                model="fire_claim",
+                entities=[DbtEntity(name="policy", type="primary", expr="PolicyNo")],
+                measures=[DbtMeasure(name="premium", agg="sum", expr="Premium")],
+            ),
+        ])
+        fire_claim = DbtToSlayerConverter(project=project, data_source="test", target_dialect="duckdb").convert().models[0]
+        column = next(c for c in fire_claim.columns if c.sql == "Premium")
+        assert column.name == "Premium_col"
+        assert [m.formula for m in fire_claim.measures if m.name == "premium"] == ["sum(Premium_col)"]
+
+    def test_a_filtered_metric_column_avoids_a_name_in_another_case(self) -> None:
+        model = SlayerModel(name="m", sql_table="m", data_source="test",
+                            columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+                            measures=[ModelMeasure(name="premium_filtered", formula="count(*)")])
+        assert DbtToSlayerConverter._alloc_column_name(model, "Premium_filtered") == "Premium_filtered_col"
 
     def test_primary_entity_does_not_duplicate_pk_column(self) -> None:
         """When primary_entity resolves to the same column the entity loop already

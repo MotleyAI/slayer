@@ -26,14 +26,14 @@ def _query(**kw: Any) -> SlayerQuery:
 
 
 class TestConstruction:
-    @pytest.mark.parametrize("entry", [td(SHIFTED), f"month({SHIFTED})"], ids=["object", "functional"])
+    @pytest.mark.parametrize("entry", [td(SHIFTED), f"date_trunc('month', {SHIFTED})"], ids=["object", "functional"])
     def test_literal_placeholder_accepted(self, entry: Any) -> None:
         query = _query(time_dimensions=[entry])
         assert query.time_dimensions is not None
         assert query.time_dimensions[0].dimension == SHIFTED
 
     def test_functional_form_in_dimensions_moves_to_time_dimensions(self) -> None:
-        query = _query(dimensions=[f"month({SHIFTED})"])
+        query = _query(dimensions=[f"date_trunc('month', {SHIFTED})"])
         assert query.dimensions is None
         assert query.time_dimensions is not None
         assert query.time_dimensions[0].dimension == SHIFTED
@@ -68,7 +68,7 @@ class TestExecution:
 class TestTemplateIdentity:
     async def test_custom_granularity_call_names_from_its_template(self) -> None:
         async with engine_for("duckdb", datasource_fields=DS_GRANULARITIES) as engine:
-            keys = {days: (await engine.execute(_query(dimensions=[f"fiscal_year({SHIFTED})"],
+            keys = {days: (await engine.execute(_query(dimensions=[f"date_trunc('fiscal_year', {SHIFTED})"],
                                                        variables={"days": days}))).columns
                     for days in (0, 30)}
         assert KEY in keys[0]

@@ -86,9 +86,9 @@ class TestStoredOnlyGate:
         assert out["version"] == 3
 
     def test_current_versions(self):
-        assert mig.CURRENT_VERSIONS["SlayerModel"] == 20
-        assert mig.CURRENT_VERSIONS["SlayerQuery"] == 11
-        assert mig.CURRENT_VERSIONS["Memory"] == 8
+        assert mig.CURRENT_VERSIONS["SlayerModel"] == 21
+        assert mig.CURRENT_VERSIONS["SlayerQuery"] == 12
+        assert mig.CURRENT_VERSIONS["Memory"] == 9
         for key in (("SlayerModel", 12), ("SlayerQuery", 4), ("Memory", 2)):
             assert key in mig._REGISTRY
 
@@ -126,7 +126,7 @@ class TestRewrite:
         "rank(sum(amount), direction='asc')",
         "rank(sum(amount), direction = 'DESC')",
         "dense_rank(sum(amount), partition_by=region, direction='ascending')",
-        "iif(region == 'rank(x)', 1, 0)",
+        "iif(region = 'rank(x)', 1, 0)",
         "customers.rank(amount)",
         "ntile(sum(amount), n=4)",
         "percent_rank(sum(amount))",
@@ -135,6 +135,9 @@ class TestRewrite:
     ])
     def test_untouched(self, formula):
         assert _migrated_formula(formula) == formula
+
+    def test_rank_inside_a_string_is_untouched_while_double_equals_is_canonicalised(self):
+        assert _migrated_formula("iif(region == 'rank(x)', 1, 0)") == "iif(region = 'rank(x)', 1, 0)"
 
     @pytest.mark.parametrize("formula", ["rank(sum(amount)", "rank(sum(amount), 'oops)"])
     def test_untokenisable_formula_loads_byte_identical(self, formula):

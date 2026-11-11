@@ -79,7 +79,7 @@ A time dimension's `date_range` bounds SHALL substitute `{var}` and SHALL then b
 
 #### Scenario: Literal placeholder in a time-dimension expression
 
-- **WHEN** a time dimension is `month(coalesce(shipped_at, created_at + INTERVAL '{days}' DAY))` with `variables={"days": 30}`
+- **WHEN** a time dimension is `date_trunc('month', coalesce(shipped_at, created_at + INTERVAL '{days}' DAY))` with `variables={"days": 30}`
 - **THEN** rows with a NULL `shipped_at` are bucketed by `created_at` 30 days later, by executed values on SQLite and DuckDB, and its result key is derived from the template, not the value
 
 ### Requirement: Result names come from the template

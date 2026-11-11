@@ -15,7 +15,6 @@ from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.live_schema import ingestion
 from slayer.engine.key_metadata import measure_key_preserves_native_type
-from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.postgres import describe_pg_cursor_column
@@ -26,7 +25,7 @@ from slayer.sql.dialects.reflection import (
     is_exact_numeric_db_type,
 )
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._engine_helpers import _engine_generate
+from tests._engine_helpers import _engine_generate, owned_query_engine
 from tests._pg_helpers import pg_database
 
 postgresql_proc = factories.postgresql_proc(port=None)
@@ -164,17 +163,12 @@ class TestExecutedPostgres:
     async def test_sum_and_derived_column_are_exact(self, tmp_path: Any, postgresql_proc: Any) -> None:
         with pg_database(postgresql_proc, statements=_LEDGER, name="money_exec") as datasource:
             storage = YAMLStorage(base_dir=str(tmp_path / "models"))
-            await storage.save_datasource(datasource)
-            await storage.save_model(_ledger(data_source=datasource.name))
-            engine = SlayerQueryEngine(storage=storage)
-            try:
+            async with owned_query_engine(storage=storage, datasources=[datasource]) as engine:
+                await storage.save_model(_ledger(data_source=datasource.name))
                 sum_sql = (await engine.execute(query=_SUM_QUERY, dry_run=True)).sql
                 doubled_sql = (await engine.execute(query=_DOUBLED_QUERY, dry_run=True)).sql
                 total = await engine.execute(query=_SUM_QUERY)
                 doubled = await engine.execute(query=_DOUBLED_QUERY)
-            finally:
-                await engine.aclose()
-                engine.close()
         assert sum_sql is not None
         assert "CAST(" not in sum_sql.upper(), sum_sql
         assert doubled_sql is not None

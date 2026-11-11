@@ -510,7 +510,7 @@ class TestNoCountableRows:
         {"distinct_dimension_values": False, "measures": []},
         {"dimensions": [{"expression": "date_part('month', time_spine.timestamp)", "name": "mo"}],
          "measures": TWO_FACTS},
-        {"order": [{"column": "day(time_spine.timestamp)"}], "measures": TWO_FACTS},
+        {"order": [{"column": "date_trunc('day', time_spine.timestamp)"}], "measures": TWO_FACTS},
     ], ids=["plain-dimension", "raw-rows", "computed-dimension-operand", "unprojected-order-key"])
     async def test_spine_column_only_as_a_bucketed_time_dimension(self, engine, extra) -> None:
         extra = dict(extra)  # the parametrized dict is shared across backends

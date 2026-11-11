@@ -3,11 +3,11 @@
 Spec: aggregations/boolean-inputs.
 """
 
+from collections.abc import AsyncIterator
+
 import pytest
 
-from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2046_fixtures import (
     FLAG_BY_REGION,
     FLAG_TOTALS,
@@ -21,6 +21,7 @@ from tests._dev2046_fixtures import (
     orders_q,
     seed_statements,
 )
+from tests._pg_helpers import client_datasource, pg_query_engine
 
 pytest.importorskip("pytest_postgresql")
 
@@ -31,20 +32,14 @@ postgresql = factories.postgresql("postgresql_proc")
 
 
 @pytest.fixture
-async def pg_engine(postgresql, tmp_path) -> SlayerQueryEngine:
+async def pg_engine(postgresql, tmp_path) -> AsyncIterator[SlayerQueryEngine]:
     cur = postgresql.cursor()
     for stmt in seed_statements("postgres"):
         cur.execute(stmt)
     postgresql.commit()
-    storage = YAMLStorage(base_dir=str(tmp_path))
-    info = postgresql.info
-    await storage.save_datasource(DatasourceConfig(
-        name="pg", type="postgres", host=info.host, port=info.port,
-        database=info.dbname, username=info.user, password="",
-    ))
-    for model in dev2046_models(data_source="pg"):
-        await storage.save_model(model)
-    return SlayerQueryEngine(storage=storage)
+    async with pg_query_engine(client_datasource(postgresql.info), base_dir=str(tmp_path),
+                               models=dev2046_models(data_source="pg")) as engine:
+        yield engine
 
 
 def _num(value):

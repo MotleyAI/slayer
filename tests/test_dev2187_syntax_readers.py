@@ -24,14 +24,14 @@ from slayer.core.syntax import (
     (("reorders", "status"), ("reorders", "status")),
 ])
 def test_drop_root_qualifier(parts: tuple[str, ...], expected: tuple[str, ...]) -> None:
-    assert tuple(drop_root_qualifier(parts, "orders")) == expected
+    assert tuple(drop_root_qualifier(parts, "orders", quoted=())) == expected
 
 
 @pytest.mark.parametrize(("text", "expected"), [
     ("sum(orders.amount)", "sum(amount)"),
     ("orders.customers.score + 1", "customers.score + 1"),
     ("count(orders.*)", "count(*)"),
-    ("month(orders.created_at)", "month(created_at)"),
+    ("date_trunc('month', orders.created_at)", "date_trunc('month', created_at)"),
     ("note = 'orders.x'", "note = 'orders.x'"),
     ('"orders.x" = 1', '"orders.x" = 1'),
     ("count(customers.orders.id)", "count(customers.orders.id)"),

@@ -18,8 +18,8 @@ LAST_3_MONTHS = [
     {"filters": ["ts >= '2026-06' and ts < '2026-09'"]},
     {"filters": ["ts >= '2026-06-01' and ts < '2026-09-01'"]},
     {"filters": ["ts >= '2026-06-01 00:00:00' and ts < '2026-09-01 00:00:00'"]},
-    {"filters": ["month(ts) >= '2026-06' and month(ts) < '2026-09'"]},
-    {"filters": ["month(ts) in 'last 3 months'"]},
+    {"filters": ["date_trunc('month', ts) >= '2026-06' and date_trunc('month', ts) < '2026-09'"]},
+    {"filters": ["date_trunc('month', ts) in 'last 3 months'"]},
     {"date_range": "last 3 months"},
     {"date_range": ["last 3 months"]},
     {"date_range": ["2026-06", "2026-08"]},
@@ -50,7 +50,7 @@ class TestTrailingWindow:
 
 class TestTimeShift:
     @pytest.mark.parametrize("spelling", [
-        {"filters": ["month(ts) >= '2025-01'"]},
+        {"filters": ["date_trunc('month', ts) >= '2025-01'"]},
         {"filters": ["ts >= '2025'"]},
         {"filters": ["ts > '2024-12'"]},
         {"filters": ["ts >= '2025-01-01'"]},

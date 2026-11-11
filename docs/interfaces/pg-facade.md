@@ -130,7 +130,7 @@ the query surface is identical:
   `MIN`/`MAX`, `COUNT(*)`, `COUNT(col)`, `COUNT(DISTINCT col)` — which map to the
   matching metric. (Aggregating over a *saved measure* or a non-column expression is not
   supported yet; project the saved measure by name instead.)
-* Wrap a time dimension in a grain: `date_trunc('month', ordered_at)` or `month(ordered_at)`.
+* Wrap a time dimension in a grain: `date_trunc('month', ordered_at)`; `month(ordered_at)`, `EXTRACT(MONTH FROM ordered_at)` and `date_part('month', ordered_at)` project the month of year.
 * `WHERE`, `GROUP BY`, `ORDER BY`, `LIMIT` / `OFFSET`.
 * A projection with no aggregate, metric, `GROUP BY`, `HAVING` or `DISTINCT` (and no metric in `WHERE`)
   returns one row per record, as in SQL; `DISTINCT` or `GROUP BY` returns one row per distinct combination.

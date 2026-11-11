@@ -9,7 +9,7 @@ Defines how `partition_by=` aggregations (measures computed at an explicitly dec
 An aggregation SHALL accept `partition_by=` and `window=` together. The value is the rolling-window aggregate computed at the partition grain, evaluated per time bucket of the query's active time dimension, attached to every query row of the partition.
 
 #### Scenario: Rolling total at a coarser grain
-- WHEN a query selects dimensions `[region, city, month(ordered_at)]` and the measure `sum(revenue, partition_by=region, window='90d')`
+- WHEN a query selects dimensions `[region, city, date_trunc('month', ordered_at)]` and the measure `sum(revenue, partition_by=region, window='90d')`
 - THEN every row carries the trailing-90-day region-wide revenue total as of that row's month, identical across cities of the same region and month, and adding the measure changes neither the row count nor any other column's values
 
 #### Scenario: Requires a resolvable time dimension
@@ -31,7 +31,7 @@ An aggregation SHALL accept `partition_by=` and `window=` together. The value is
 A transform SHALL accept a partitioned aggregate as its input when used as a measure — rank-family transforms and temporal transforms (`time_shift`, `change`, `change_pct`, `lag`, `lead`, `cumsum`, `consecutive_periods`) alike. The transform evaluates at its operand grain — the attached aggregate's `partition_by=`, else the query grain (Axiom 11.1) — and the measure consumer broadcasts the result onto the query grain (Axiom 11.4); it MUST never fail with an internal error.
 
 #### Scenario: Running total of partition-grain values
-- WHEN a query selects dimensions `[region, city, month(ordered_at)]` and the measure `cumsum(sum(revenue, partition_by=[region, ordered_at]))`
+- WHEN a query selects dimensions `[region, city, date_trunc('month', ordered_at)]` and the measure `cumsum(sum(revenue, partition_by=[region, ordered_at]))`
 - THEN each row's value is the cumulative sum across months, within the row's non-time dimensions, of the attached region-month totals, verified by executed values
 
 #### Scenario: Ranking result rows by an attached total
@@ -1153,7 +1153,7 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 A rank-family transform's own `partition_by=` SHALL bind exactly as an aggregation's
 `partition_by=` does: each element — singly or in a list — is a column reference, a
 dotted joined-model reference, the name of a computed dimension declared in the
-query, which resolves to that dimension's value, or a granularity call `gran(col)`
+query, which resolves to that dimension's value, or a granularity call `date_trunc('<gran>', col)`
 (built-in or custom granularity, `col` local, joined or a stage column) equal to one
 of the query's time dimensions — that column at that granularity — which resolves to
 that time dimension's bucket; the same binding applies in the measure,
@@ -1213,11 +1213,11 @@ Values below are on the sales graph with `ureg` declared as the computed dimensi
 - **THEN** the key binds to the dimension's value and planning fails with a planner error, never an unknown-reference error (target behaviour, DEV-1960: both execute like `sum(amount, partition_by=spend_band)`)
 
 #### Scenario: Granularity call on a projected time dimension
-- **WHEN** a query over `[region]` with time dimension `ordered_at` at month selects `sum(amount, partition_by=[month(ordered_at)])` and `rank(sum(amount), partition_by=[month(ordered_at)], direction='desc')`
+- **WHEN** a query over `[region]` with time dimension `ordered_at` at month selects `sum(amount, partition_by=[date_trunc('month', ordered_at)])` and `rank(sum(amount), partition_by=[date_trunc('month', ordered_at)], direction='desc')`
 - **THEN** its columns, rows and SQL equal those of the same query with `partition_by=[ordered_at]`
 
 #### Scenario: Granularity call picks one of several time dimensions
-- **WHEN** a query has time dimensions `ordered_at` at month and at year and selects `sum(amount, partition_by=[month(ordered_at)])`
+- **WHEN** a query has time dimensions `ordered_at` at month and at year and selects `sum(amount, partition_by=[date_trunc('month', ordered_at)])`
 - **THEN** the partition is the month bucket, while `partition_by=[ordered_at]` in the same query stays ambiguous
 
 #### Scenario: Granularity call on a joined, custom or stage time column
@@ -1225,8 +1225,8 @@ Values below are on the sales graph with `ureg` declared as the computed dimensi
 - **THEN** it equals the same query partitioned by that time dimension's column
 
 #### Scenario: Granularity call matching no time dimension
-- **WHEN** a query with time dimension `ordered_at` at month selects `sum(amount, partition_by=[week(ordered_at)])`
-- **THEN** binding fails with a partition-key error naming `week(ordered_at)` and suggesting adding it to `time_dimensions`
+- **WHEN** a query with time dimension `ordered_at` at month selects `sum(amount, partition_by=[date_trunc('week', ordered_at)])`
+- **THEN** binding fails with a partition-key error naming `date_trunc('week', ordered_at)` and suggesting adding it to `time_dimensions`
 
 ### Requirement: Re-aggregation over ranked and windowed operands
 A partitioned or bare `first`/`last` aggregation and a windowed aggregation SHALL be legal re-aggregation operands and compute like any other operand, per `queries/semantics` › Second-order aggregation over attached values: each ranked operand picks the value at the earliest/latest ranking timestamp per operand cell — honouring an explicit ranking column, else the model's resolved default — and each windowed operand evaluates its trailing window per operand cell, before the outer aggregation consumes the cells. This SHALL hold for every outer aggregation of the plain scalar family, for operands combining several ranked, windowed and plain constituents (each keeping its own ranking key or window), for local and cross-model operands, with or without a query time dimension, in every consumer position (measure, measure-typed filter, order key, arithmetic, transform input, computed dimension with an explicit outer grain, aggregation parameter, nested re-aggregation), and under every `to_many_handling` mode with the usual attributability rules. A ranked or windowed operand SHALL never fail with an internal error; a shape outside this requirement fails with a typed error.

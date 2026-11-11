@@ -457,8 +457,8 @@ async def test_granularity_calls_bucket_like_a_time_dimension(engine: SlayerQuer
         "2024-10": 1, "2024-11": 1, "2024-12": 1,
         "2025-01": 2, "2025-02": 1, "2025-03": 1, "2025-04": 1, "2025-06": 3,
     }
-    assert await monthly({"dimensions": ["month(order_date)"]}) == expected
-    assert await monthly({"time_dimensions": ["month(order_date)"]}) == expected
+    assert await monthly({"dimensions": ["date_trunc('month', order_date)"]}) == expected
+    assert await monthly({"time_dimensions": ["date_trunc('month', order_date)"]}) == expected
     assert await monthly({"time_dimensions": _MONTHLY}) == expected
 
 

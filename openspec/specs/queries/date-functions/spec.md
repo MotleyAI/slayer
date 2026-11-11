@@ -16,7 +16,9 @@ The Mode-B scalar allowlist SHALL include `date_part(part, ts)`, `date_diff(unit
 every Mode-B position (measure formulas, filters, expression dimensions, order keys). Each SHALL
 take exactly its listed number of arguments (`current_date` / `now` take none); a call with any
 other argument count, or with keyword arguments, SHALL be rejected naming the function. The
-functional time-bucket form `gran(col)` (e.g. `month(created_at)`) SHALL keep its bucket meaning.
+one-argument calls `year(x)`, `quarter(x)`, `month(x)`, `week(x)`, `day(x)`, `hour(x)`, `minute(x)`
+and `second(x)` SHALL be extraction (› Date-part aliases mean their date_part); a time bucket SHALL
+be written `date_trunc(unit, x)` (› date_trunc is the granularity call).
 
 #### Scenario: Extraction as an expression dimension
 - **WHEN** a query `{"source_model": "orders", "dimensions": [{"expression": "date_part('day_of_week', created_at)", "name": "dow"}], "measures": [{"formula": "count(*)"}]}` executes
@@ -39,8 +41,12 @@ functional time-bucket form `gran(col)` (e.g. `month(created_at)`) SHALL keep it
 - **THEN** both bind and execute; `now(1)` is rejected for its argument count
 
 #### Scenario: Bucket form unchanged
-- **WHEN** a query lists `"month(created_at)"` in `dimensions`
+- **WHEN** a query lists `"date_trunc('month', created_at)"` in `dimensions`
 - **THEN** it is still the month time bucket, not a month number
+
+#### Scenario: Month call is month of year
+- **WHEN** a query lists `"month(created_at)"` in `dimensions` with measure `count(*)`
+- **THEN** it groups by the month number 1–12 (rows of every year's March share one group), not by month bucket
 
 ### Requirement: Unit and part arguments are closed string literals
 The `part` argument of `date_part` and the `unit` argument of `date_diff` / `date_add` SHALL be a
@@ -347,6 +353,8 @@ A model custom aggregation or custom granularity named `date_part`, `date_diff`,
 Each of the following spellings SHALL be accepted, case-insensitively, as an exact equivalent of
 `date_part` with the listed canonical part — same value, same result key, same SQL — in every
 Mode-B position:
+- `year` → `year`; `quarter` → `quarter`; `month` → `month`; `week` → `week`; `day` → `day`;
+  `hour` → `hour`; `minute` → `minute`; `second` → `second`;
 - `isodow`, `day_of_week` → `day_of_week`;
 - `doy`, `dayofyear`, `day_of_year` → `day_of_year`;
 - `isoyear`, `iso_year` → `iso_year`;
@@ -355,9 +363,8 @@ Mode-B position:
 
 Each alias SHALL be accepted as a one-argument function `<alias>(x)` and as the part argument
 `date_part('<alias>', x)`. An alias function call with any other argument count, or with keyword
-arguments, SHALL be rejected naming the function. The granularity names (`second`, `minute`, `hour`,
-`day`, `week`, `week_sunday`, `month`, `quarter`, `year`) SHALL keep their time-bucket meaning as
-functions; they are not aliases.
+arguments, SHALL be rejected naming the function. In a `dimensions` entry an alias call SHALL be an
+ordinary expression dimension of type INT, with no warning.
 
 #### Scenario: Alias function as a dimension
 - **WHEN** a query on `orders` has the expression dimension `isodow(created_at)` named `dow` and measures `count(*)`
@@ -376,8 +383,16 @@ functions; they are not aliases.
 - **THEN** the query is rejected with an error naming `isodow` and its argument count
 
 #### Scenario: Granularity call keeps its bucket meaning
-- **WHEN** a query lists `"week(created_at)"` in `dimensions`
-- **THEN** it is the week time bucket, not a week number
+- **WHEN** a query lists `"date_trunc('week', created_at)"` in `dimensions`, and another lists `"week(created_at)"`
+- **THEN** the first is the week time bucket and the second is the ISO week number
+
+#### Scenario: Extraction names equal their date_part twin
+- **WHEN** `year(x)`, `quarter(x)`, `month(x)`, `week(x)`, `day(x)`, `hour(x)`, `minute(x)` and `second(x)` are each projected as a dimension and compared with `date_part('<part>', x)`, on SQLite, DuckDB and Postgres
+- **THEN** each has the twin's result key, SQL and values; for `created_at` 2024-12-30 10:15:42 they are 2024, 4, 12, 1, 30, 10, 15 and 42
+
+#### Scenario: Week is the ISO week number
+- **WHEN** a filter uses `week(created_at) = 1`
+- **THEN** it keeps exactly the rows `date_part('week', created_at) = 1` keeps, including 2024-12-30
 
 ### Requirement: extract is the SQL spelling of date_part
 `extract(<part> from x)` SHALL mean exactly `date_part('<part>', x)` — same value, same result key,
@@ -443,19 +458,55 @@ result-cache bypass.
 
 ### Requirement: date_trunc is the granularity call
 
-`date_trunc(unit, x)` SHALL mean the granularity call `<unit>(x)` — the same bucket, type and behaviour in every position: a row value in filters, aggregation sources, computed dimensions and arithmetic, and a time dimension in a `dimensions` / `time_dimensions` entry or an `order` key. `unit` SHALL be a string literal naming a built-in granularity (`second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`, `quarter`, `year`), matched case-insensitively; anything else SHALL be rejected with the granularity call's error. `date_trunc` SHALL be reserved like the other date function names.
+`date_trunc(unit, x)` SHALL be the only Mode-B spelling of a time bucket, with the same bucket, type and behaviour in every position: a row value in filters, aggregation sources, computed dimensions and arithmetic, and a time dimension in a `dimensions` / `time_dimensions` entry or an `order` key. `unit` SHALL be a string literal, matched case-insensitively, naming a built-in granularity (`second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`, `quarter`, `year`) or a custom granularity defined on the query's datasource (`queries/custom-granularities`); anything else SHALL be rejected with the unknown-granularity error listing the built-in and the datasource's granularities. A unit SHALL never be resolved as a function or aggregation name, so a model aggregation named like a custom granularity never changes what `date_trunc` means. `date_trunc` SHALL be reserved like the other date function names.
 
 #### Scenario: Row value
 
 - **WHEN** a filter is `date_trunc('month', created_at) = '2025-03'`
-- **THEN** it keeps the same rows as `month(created_at) = '2025-03'`
+- **THEN** it keeps exactly the rows whose `created_at` falls in March 2025
 
 #### Scenario: Time dimension
 
 - **WHEN** a query's `dimensions` entry is `"date_trunc('month', created_at)"`
-- **THEN** it is the time dimension `month(created_at)`, with the same result key and SQL
+- **THEN** it is the month time dimension on `created_at`, with result key `orders.created_at`
 
 #### Scenario: Unknown unit
 
 - **WHEN** a dimension is `date_trunc('fortnight', created_at)`
-- **THEN** the query fails with the granularity call's unknown-granularity error
+- **THEN** the query fails with the unknown-granularity error
+
+#### Scenario: Sunday weeks and custom units
+
+- **WHEN** a datasource defines `fiscal_year` and a query has dimensions `date_trunc('week_sunday', created_at)` and `date_trunc('FISCAL_YEAR', order_date)`
+- **THEN** they are the `week_sunday` and `fiscal_year` time dimensions
+
+#### Scenario: Unit never captured by an aggregation
+
+- **WHEN** a datasource defines the granularity `fiscal_year`, the model also defines a custom aggregation `fiscal_year`, and a query has dimension `date_trunc('fiscal_year', order_date)` and measure `fiscal_year(amount)`
+- **THEN** the dimension buckets by the fiscal year and the measure is the model's aggregation
+
+### Requirement: Granularity names have no call form
+A call `g(x)` whose callee `g` is `week_sunday` or a custom granularity of the query's datasource, and which resolves to no aggregation, SHALL fail in every position with a typed error whose remedy is `date_trunc('<g>', x)`, spelled with the call's own argument.
+
+#### Scenario: Sunday-week call
+- **WHEN** a query lists `"week_sunday(created_at)"` in `dimensions`
+- **THEN** it fails with the typed error suggesting `date_trunc('week_sunday', created_at)`
+
+#### Scenario: Custom granularity call
+- **WHEN** a datasource defines `fiscal_year` and a filter uses `fiscal_year(order_date) = '2024'`
+- **THEN** the query fails with the typed error suggesting `date_trunc('fiscal_year', order_date)`
+
+### Requirement: Extraction compared with a date-shaped literal is refused
+A comparison (`=`, `<>`, `!=`, `<`, `<=`, `>`, `>=`, a `BETWEEN` bound or an `IN` list element) between a `date_part` value, whatever its spelling, and a date-shaped string literal SHALL fail before SQL is generated with a typed error naming the literal and the `date_trunc('<part>', x)` remedy. A date-shaped literal SHALL be an instant, a period literal other than a bare year (`YYYY-Qn`, `YYYY-MM`, `YYYY-Www`, `YYYY-MM-DD`), or a relative token, as defined by `queries/time-points`. A bare-year string and a numeric string SHALL keep comparing as numbers.
+
+#### Scenario: Month compared with a month literal
+- **WHEN** a filter is `month(created_at) = '2025-03'`
+- **THEN** the query fails with the typed error naming `'2025-03'` and suggesting `date_trunc('month', created_at) = '2025-03'`
+
+#### Scenario: Relative token and BETWEEN
+- **WHEN** filters are `date_part('year', created_at) = 'this year'` and `month(created_at) BETWEEN '2025-01' AND '2025-03'`
+- **THEN** each fails with the same typed error
+
+#### Scenario: Numeric strings stay legal
+- **WHEN** filters are `year(created_at) = '2025'` and `month(created_at) IN ('03', '04')`
+- **THEN** both bind, keeping the 2025 rows and the March and April rows of every year respectively

@@ -25,39 +25,39 @@ def _by_id(resp: SlayerResponse, name: str) -> dict[int, float | None]:
 
 class TestExpressionArgument:
     async def test_in_a_filter(self, engine) -> None:
-        resp = await engine.execute(q(dimensions=["id"], filters=[f"month({EFF}) >= '2025-02-15'"]))
+        resp = await engine.execute(q(dimensions=["id"], filters=[f"date_trunc('month', {EFF}) >= '2025-02-15'"]))
         assert _ids(resp) == {4, 5, 6}
 
     async def test_compared_with_another_granularity_call(self, engine) -> None:
-        resp = await engine.execute(q(dimensions=["id"], filters=[f"month({EFF}) = month(created_at)"]))
+        resp = await engine.execute(q(dimensions=["id"], filters=[f"date_trunc('month', {EFF}) = date_trunc('month', created_at)"]))
         assert _ids(resp) == {1, 3}
 
     async def test_in_a_computed_dimension_over_a_cast(self, engine) -> None:
         resp = await engine.execute(q(
-            dimensions=[{"expression": "year(CAST(created_txt AS DATE))", "name": "y"}], measures=[m("count(*)")],
+            dimensions=[{"expression": "date_trunc('year', CAST(created_txt AS DATE))", "name": "y"}], measures=[m("count(*)")],
         ))
         assert {str(r["orders.y"])[:4]: num(r["orders.v"]) for r in resp.data} == {"2024": 1, "2025": 5}
 
     async def test_in_an_aggregation_source(self, engine) -> None:
-        resp = await engine.execute(q(measures=[m(f"count_distinct(month({EFF}))")]))
+        resp = await engine.execute(q(measures=[m(f"count_distinct(date_trunc('month', {EFF}))")]))
         assert [num(r["orders.v"]) for r in resp.data] == [4]
 
     async def test_in_arithmetic(self, engine) -> None:
         resp = await engine.execute(q(dimensions=[
-            "id", {"expression": f"date_diff('day', month({EFF}), {EFF})", "name": "d"},
+            "id", {"expression": f"date_diff('day', date_trunc('month', {EFF}), {EFF})", "name": "d"},
         ]))
         assert _by_id(resp, "d") == {1: 6, 2: 1, 3: 9, 4: 2, 5: 0, 6: 19}
 
 
 class TestNonTemporalArgument:
     async def test_in_a_filter_names_the_operand(self, engine) -> None:
-        query = q(dimensions=["id"], filters=["month(upper(status)) >= '2025-01-01'"])
+        query = q(dimensions=["id"], filters=["date_trunc('month', upper(status)) >= '2025-01-01'"])
         with pytest.raises(DateOperandTypeError) as ei:
             await engine.execute(query, dry_run=True)
         assert "upper(status)" in str(ei.value)
 
     async def test_as_a_dimension_is_a_time_dimension_type_error(self, engine) -> None:
-        query = q(dimensions=["month(upper(status))"], measures=[m("count(*)")])
+        query = q(dimensions=["date_trunc('month', upper(status))"], measures=[m("count(*)")])
         with pytest.raises(TimeDimensionColumnError) as ei:
             await engine.execute(query, dry_run=True)
         assert "TEXT" in str(ei.value).upper()

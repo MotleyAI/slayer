@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Callable, Optional, Tuple
 
 from slayer.core.enums import (
+    BUILTIN_AGGREGATIONS,
     AggregationValueClass,
     DataType,
     classify_aggregation,
@@ -64,14 +65,16 @@ def aggregation_result_type(
     *, measure_name: Optional[str], aggregation: str, source_type: Optional[DataType],
 ) -> Tuple[Optional[DataType], Optional[DataType]]:
     """``(type, element type)`` via ``classify_aggregation``: COUNT → INT, the float classes → DOUBLE,
-    PRESERVING → ``source_type``, LIST → a list of ``source_type``."""
+    PRESERVING → ``source_type`` (unknown for a custom aggregation over a boolean, which reads it raw), LIST → a list
+    of ``source_type``."""
     cls = classify_aggregation(measure_name=measure_name, aggregation=aggregation, source_type=source_type)
     if cls is AggregationValueClass.COUNT:
         return DataType.INT, None
     if cls is AggregationValueClass.LIST:
         return DataType.ARRAY, source_type or DataType.UNKNOWN
     if cls is AggregationValueClass.PRESERVING:
-        return source_type, None
+        custom_over_boolean = source_type is DataType.BOOLEAN and aggregation not in BUILTIN_AGGREGATIONS
+        return (None if custom_over_boolean else source_type), None
     return DataType.DOUBLE, None
 
 

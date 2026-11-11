@@ -418,7 +418,7 @@ async def test_dev2120_zoned_timestamp_column(bq_dev2120_storage) -> None:
         assert got == {1: datetime(2024, 3, 1, 10, 0), 2: datetime(2025, 6, 2, 23, 30)}, (column, resp.sql)
         resp = await engine.execute(SlayerQuery.model_validate({
             "source_model": "events",
-            "dimensions": ["id", column, {"expression": f"month({column})", "name": "bucket"}],
+            "dimensions": ["id", column, {"expression": f"date_trunc('month', {column})", "name": "bucket"}],
         }))
         rows = {int(r["events.id"]): (r[f"events.{column}"], r["events.bucket"]) for r in resp.data}
         assert rows == {1: (datetime(2024, 2, 29, 10, 0), datetime(2024, 2, 1)),

@@ -28,7 +28,7 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._engine_helpers import seeded_exec_engine
+from tests._engine_helpers import owned_query_engine, seeded_exec_engine
 from tests._pg_helpers import pg_database
 
 _CUSTOMERS = [(1, "EAST", 10.0), (2, "EAST", 20.0), (3, "WEST", 30.0), (4, "NORTH", 40.0)]
@@ -123,14 +123,10 @@ async def ossie_engine(
         info = request.getfixturevalue("postgresql_proc")
         with pg_database(info, statements=stmts, name="test") as ds:
             storage = YAMLStorage(base_dir=str(request.getfixturevalue("tmp_path") / "store"))
-            await storage.save_datasource(ds)
-            for model in models:
-                await storage.save_model(model, _validate=False)
-            engine = SlayerQueryEngine(storage=storage)
-            try:
+            async with owned_query_engine(storage=storage, datasources=[ds]) as engine:
+                for model in models:
+                    await storage.save_model(model, _validate=False)
                 yield engine
-            finally:
-                engine.close()
         return
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
