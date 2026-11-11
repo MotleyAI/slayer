@@ -19,11 +19,12 @@ from slayer.core.errors import UnknownReferenceError
 from slayer.core.join_walker import walk, walk_cancelling
 from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, StarKey, TimeTruncKey
 from slayer.core.models import ModelJoin, SlayerModel
-from slayer.core.query import TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.core.scope import ModelScope
 from slayer.engine import bind_inputs, param_binding
 from slayer.live_schema import schema_drift
 from slayer.engine.binding import bind_expr, bind_time_dimension
+from slayer.engine.extensions import QueryScope, query_scopes
 from slayer.engine.cardinality.join_safety import attributable_from_root, reroot_from_root
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.core.syntax import parse_expr
@@ -492,23 +493,26 @@ class TestCanonicalSpellingsUnchanged:
             await engine.execute(query)
 
 
+
+def _stage_scope(stage: SlayerQuery, models_by_name: dict) -> QueryScope:
+    return query_scopes([stage], models_by_ds={"ds": models_by_name}, data_source="ds")[0][0]
+
+
 class TestSchemaDriftAttribution:
     @pytest.mark.parametrize("ref", [
         "customers.regions.rname", "customers.hr.rname", "regions.rname"])
     def test_every_spelling_attributes_to_regions(self, ref) -> None:
         M = _mbn()
-        graph = schema_drift._build_stage_graph(  # noqa: SLF001
-            stage=orders_q(), stage_source_name="orders", models_by_name=M)
+        graph = _stage_scope(orders_q(), M)
         assert schema_drift._attribute_ref_to_base(  # noqa: SLF001
-            ref=ref, base_name="regions", graph=graph) == "rname"
+            ref=ref, base_name="regions", scope=graph) == "rname"
 
     @pytest.mark.parametrize("ref", ["customers.regions.rname", "regions.rname"])
     def test_ambiguous_attributes_to_nothing(self, ref) -> None:
         M = _mbn(_parallel_models())
-        graph = schema_drift._build_stage_graph(  # noqa: SLF001
-            stage=orders_q(), stage_source_name="orders", models_by_name=M)
+        graph = _stage_scope(orders_q(), M)
         assert schema_drift._attribute_ref_to_base(  # noqa: SLF001
-            ref=ref, base_name="regions", graph=graph) is None
+            ref=ref, base_name="regions", scope=graph) is None
 
 
 class TestDeterminationRouteOnCanonicalPaths:

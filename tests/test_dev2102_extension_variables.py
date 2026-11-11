@@ -93,3 +93,38 @@ def test_a_sibling_stage_extension_reads_through_its_joins(dimensions: list, ext
         q(name="s", source_model="orders", dimensions=["customer_id"]),
         q(source_model="s", dimensions=dimensions, extensions=[extension])])
     assert (DS, "regions") in models_read_by(backed, models=[orders(), customers(home), regions()])
+
+
+@pytest.mark.parametrize("column", ["name", "label"], ids=["stored-column-name", "fresh-name"])
+def test_a_sibling_stage_shadows_a_same_named_stored_model(column: str) -> None:
+    backed = SlayerModel(name="backed", data_source=DS, source_queries=[
+        q(name="customers", source_model="orders", dimensions=["customer_id"]),
+        q(source_model="customers", dimensions=[column], extensions=[
+            ext("customers", columns=[{"name": column, "sql": "customer_id * 10", "type": "INT"}])])])
+    assert models_read_by(backed, models=[orders(), customers(), regions()]) == {(DS, "orders")}
+
+
+def test_a_path_through_chained_sibling_stages_reads_its_downstream_models() -> None:
+    home = ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])
+    backed = SlayerModel(name="backed", data_source=DS, source_queries=[
+        q(name="s2", source_model="orders", dimensions=["customer_id"]),
+        q(name="s1", source_model="orders", dimensions=["customer_id"]),
+        q(source_model="s1", dimensions=["customer_id", "s2.customers.regions.name"], extensions=[
+            ext("s1", joins=[join("s2", [["customer_id", "customer_id"]])]), ext("s2", joins=[_TO_CUSTOMERS])])])
+    assert (DS, "regions") in models_read_by(backed, models=[orders(), customers(home), regions()])
+
+
+def test_a_short_form_reference_reads_the_models_on_its_route() -> None:
+    home = ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])
+    query = q(source_model="orders", dimensions=["regions.name"])
+    reads = models_read_by(query, models=[orders(), customers(home), regions()], data_source=DS)
+    assert {(DS, "customers"), (DS, "regions")} <= reads
+
+
+def test_a_rootless_sibling_stage_extension_reads_through_its_joins() -> None:
+    home = ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])
+    backed = SlayerModel(name="backed", data_source="", source_queries=[
+        q(name="s", dimensions=["orders.customer_id"]),
+        q(source_model="s", dimensions=["customer_id", "customers.regions.name"],
+          extensions=[ext("s", joins=[_TO_CUSTOMERS])])])
+    assert (DS, "regions") in models_read_by(backed, models=[orders(), customers(home), regions()])

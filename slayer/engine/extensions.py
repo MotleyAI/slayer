@@ -1,23 +1,50 @@
-"""Query-scoped extensions: one overlay step per stage over the models it reads."""
+"""Query-scoped extensions: one overlay step per stage over the models it reads, and the static scope its readers share."""
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from typing import Dict, FrozenSet, List, Literal, Optional, Tuple
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import JoinType
-from slayer.core.errors import ModelNotFoundError, QueryExtensionError, TimeSpineError
+from slayer.core.errors import (
+    AmbiguousJoinPathError,
+    CircularJoinPathError,
+    ModelNotFoundError,
+    QueryExtensionError,
+    TimeSpineError,
+)
 from slayer.core.join_edges import EdgeMerge
-from slayer.core.models import ModelJoin, SlayerModel
-from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.core.join_walker import OrientedJoin, resolve_hop, walk
+from slayer.core.models import Column, SlayerModel
+from slayer.core.query import ComputedDimension, ModelExtension, SlayerQuery, extension_model_names
 from slayer.core.scope import ModelScope, StageSchema
+from slayer.core.syntax import drop_root_hop, drop_root_qualifier, text_paths
 from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine
-from slayer.ir.source_bundle import InnerRestriction, ResolvedSourceBundle, overlay_columns_and_measures
+from slayer.engine.population import dimension_routing
+from slayer.ir.source_bundle import (
+    InnerRestriction,
+    ResolvedSourceBundle,
+    follow_sibling_chain,
+    overlay_columns_and_measures,
+)
 
 __all__ = [
+    "FieldKind",
+    "QueryScope",
     "apply_query_extensions",
+    "declaring_model_path",
     "extension_of",
+    "query_field_texts",
+    "query_reference_parts",
+    "query_scopes",
+    "resolve_path",
     "with_own_extension",
 ]
+
+FieldKind = Literal["ref", "formula", "filter"]
+_Lookup = Callable[[str, Dict[str, SlayerModel]], Optional[SlayerModel]]
 
 
 def extension_of(query: SlayerQuery, name: str) -> Optional[ModelExtension]:
@@ -31,13 +58,227 @@ def with_own_extension(model: Optional[SlayerModel], query: SlayerQuery) -> Opti
     return overlay_columns_and_measures(model, extension) if model is not None and extension is not None else model
 
 
-def _universe(bundle: ResolvedSourceBundle) -> Dict[str, SlayerModel]:
-    out: Dict[str, SlayerModel] = {}
-    if bundle.source_model is not None:
-        out[bundle.source_model.name] = bundle.source_model
-    for model in bundle.referenced_models:
-        out.setdefault(model.name, model)
+def query_field_texts(query: SlayerQuery) -> Iterator[Tuple[FieldKind, str]]:
+    """Every reference-bearing text of ``query`` — dimensions, time dimensions, measures, filters, order — and its kind."""
+    for dim in query.dimensions or []:
+        yield ("formula", dim.expression) if isinstance(dim, ComputedDimension) else ("ref", dim.full_name)
+    for td in query.time_dimensions or []:
+        yield "formula", td.dimension
+    for measure in query.measures or []:
+        if measure.formula:
+            yield "formula", measure.formula
+    for f in query.filters or []:
+        yield "filter", f
+    for item in query.order or []:
+        yield ("formula", item.raw_formula) if item.raw_formula else ("ref", item.column.full_name)
+
+
+def query_reference_parts(query: SlayerQuery) -> List[Tuple[str, ...]]:
+    """The dotted parts of every reference ``query_field_texts`` yields, aggregation arguments included."""
+    out: List[Tuple[str, ...]] = []
+    for kind, text in query_field_texts(query):
+        out.extend([tuple(text.split("."))] if kind == "ref" else text_paths(text, root=None))
     return out
+
+
+def extend_models(
+    query: SlayerQuery, models: Mapping[str, SlayerModel], *, lookup: _Lookup,
+    on_conflict: Callable[[ValueError], None], where: Optional[str] = None,
+    reserved_names: Sequence[str] = (), stored_edge_names: Optional[Sequence[str]] = None,
+) -> Tuple[Dict[str, SlayerModel], List[InnerRestriction]]:
+    """``models`` as ``query`` extends them, and its INNER joins' population filters.
+
+    ``lookup`` resolves a model an extension names (``None`` skips it); ``on_conflict`` sees each conflicting join.
+    """
+    out = dict(models)
+    for extension in query.extensions or []:
+        model = lookup(extension.source_name, out)
+        if model is not None:
+            out[model.name] = overlay_columns_and_measures(model, extension)
+    merge = EdgeMerge(models=out, reserved_names=reserved_names, stored_edge_names=stored_edge_names)
+    restrictions: List[InnerRestriction] = []
+    for extension in query.extensions or []:
+        for join in extension.joins or [] if extension.source_name in merge.models else []:
+            if join.target_model not in merge.models and lookup(join.target_model, merge.models) is None:
+                continue
+            try:
+                merged = merge.add(declaring=extension.source_name, join=join)
+            except ValueError as exc:  # QueryExtensionError included
+                on_conflict(exc)
+                continue
+            if join.join_type is JoinType.INNER:
+                source, target = merge.models[extension.source_name], merge.models[join.target_model]
+                restrictions.append(InnerRestriction(
+                    model=source.spelling, token=merged.token, key=merged.edge.join_pairs[0][1],
+                    label=f"INNER join from {source.spelling!r} to {target.spelling!r}" + (f" in {where}" if where else ""),
+                ))
+    return merge.models, restrictions
+
+
+def declaring_model_path(
+    restriction: InnerRestriction, *, host: Optional[SlayerModel], models_by_name: Dict[str, SlayerModel],
+) -> Tuple[str, ...]:
+    """The population's path to ``restriction.model``: as spelled when root or adjacent, else short-form routed."""
+    spelled = (restriction.model,)
+    if host is None or not drop_root_qualifier((*spelled, restriction.key), host.spelling)[:-1]:
+        return spelled
+    models_by_name = {**models_by_name, host.name: models_by_name.get(host.name, host)}
+    try:
+        if resolve_hop(current=host, token=restriction.model, models_by_name=models_by_name) is not None:
+            return spelled
+    except AmbiguousJoinPathError:
+        return spelled
+    return tuple(dimension_routing.route_dotted_target(
+        root=host, target_model=restriction.model, leaf=restriction.token, models_by_name=models_by_name,
+    ))
+
+
+def resolve_path(
+    hops: Sequence[str], *, root: SlayerModel, models_by_name: Dict[str, SlayerModel],
+) -> Optional[Tuple[Tuple[str, ...], List[OrientedJoin]]]:
+    """``hops`` from ``root`` as the binder resolves them — its own qualifier dropped, walked, a lone unmatched hop
+    short-form routed — with the edges walked; ``None`` when unresolvable or ambiguous."""
+    hops = drop_root_hop(hops, root.spelling)
+    try:
+        chain = walk(root=root, path=hops, models_by_name=models_by_name)
+        if chain is None and len(hops) == 1 and resolve_hop(
+                current=root, token=hops[0], models_by_name=models_by_name) is None:
+            route = dimension_routing.short_form_route_or_none(
+                root=root, target_model=hops[0], models_by_name=models_by_name)
+            hops = tuple(route or ())
+            chain = walk(root=root, path=hops, models_by_name=models_by_name) if route else None
+    except (AmbiguousJoinPathError, CircularJoinPathError):
+        return None
+    return (hops, chain) if chain is not None else None
+
+
+class QueryScope(BaseModel):
+    """One query object's models as the engine resolves them, for the static readers (decision 18).
+
+    Built with ``model_construct``: its models are already validated, and a sibling stage's host has no source.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    data_source: str
+    # The query's source as bound; ``None`` when inferred.
+    host: Optional[SlayerModel] = None
+    # The stored or inline model a sibling stage's chain ends on, by sibling name; ``""`` keys the host's own chain.
+    bases: Dict[str, Optional[str]] = Field(default_factory=dict)
+    models: Dict[str, SlayerModel] = Field(default_factory=dict)
+    # Each INNER extension join's population filter reference from the host: hops, edge token, target key.
+    inner_refs: Tuple[Tuple[str, ...], ...] = ()
+
+    @property
+    def siblings(self) -> FrozenSet[str]:
+        return frozenset(n for n in self.bases if n)
+
+    @property
+    def base(self) -> Optional[str]:
+        return self.bases.get("")
+
+    def resolve(self, hops: Sequence[str], *, root: Optional[SlayerModel] = None):
+        """``resolve_path`` over this scope, from ``root`` (default: the host)."""
+        start = root if root is not None else self.host
+        return None if start is None else resolve_path(hops, root=start, models_by_name=self.models)
+
+
+def query_scopes(
+    queries: Sequence[SlayerQuery], *, models_by_ds: Mapping[str, Mapping[str, SlayerModel]],
+    data_source: Optional[str],
+) -> List[List[QueryScope]]:
+    """Per query of a query list (the root last), its scope in each datasource it may read (lenient: conflicts skip)."""
+    named = {q.name: q for q in queries[:-1] if q.name}
+    return [
+        [_scope(query, data_source=ds, named=named, stored=models_by_ds.get(ds, {}))
+         for ds in _data_sources(query, named=named, models_by_ds=models_by_ds, data_source=data_source)]
+        for query in queries
+    ]
+
+
+def _chain_base(spec, *, named: Mapping[str, SlayerQuery]) -> Tuple[bool, Optional[str], Optional[SlayerModel]]:
+    """``(resolved, base name, inline base)`` of a sibling chain; a cycle does not resolve."""
+    try:
+        base = follow_sibling_chain(spec=spec, named_queries=dict(named))
+    except ValueError:
+        return False, None, None
+    if isinstance(base, SlayerModel):
+        return True, base.name, base
+    return True, base, None
+
+
+def _chain(query: SlayerQuery, *, named: Mapping[str, SlayerQuery]) -> Iterator[SlayerQuery]:
+    """``query`` and the sibling stages its source chain passes through."""
+    seen: set = set()
+    current: Optional[SlayerQuery] = query
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        spec = current.source_model
+        current = named.get(spec) if isinstance(spec, str) else None
+
+
+def _data_sources(
+    query: SlayerQuery, *, named: Mapping[str, SlayerQuery], models_by_ds: Mapping[str, Mapping[str, SlayerModel]],
+    data_source: Optional[str],
+) -> List[str]:
+    """The datasources ``query`` may read: ``data_source`` when it holds a model the query's chain names, else every
+    datasource that does."""
+    resolved, base, inline = _chain_base(query.source_model, named=named)
+    if not resolved:
+        return [data_source] if data_source is not None else []
+    if inline is not None:
+        return [inline.data_source or data_source or ""]
+    names = {base} if base is not None else {
+        n for q in _chain(query, named=named)
+        for n in [*extension_model_names(q), *(p[0] for p in query_reference_parts(q) if len(p) > 1)]
+    }
+    if data_source is not None and (not names or names & models_by_ds.get(data_source, {}).keys()):
+        return [data_source]
+    holders = sorted(ds for ds, models in models_by_ds.items() if names & models.keys())
+    return holders or ([data_source] if data_source is not None else [])
+
+
+def _scope(
+    query: SlayerQuery, *, data_source: str, named: Mapping[str, SlayerQuery], stored: Mapping[str, SlayerModel],
+) -> QueryScope:
+    siblings = [n for n in named if n != query.name]
+    models: Dict[str, SlayerModel] = {
+        **stored, **{n: _sibling_host(n, query=query, data_source=data_source) for n in siblings}}
+    spec = query.source_model
+    resolved, base, _ = _chain_base(spec, named=named)
+    if isinstance(spec, SlayerModel):
+        models[spec.name] = spec
+    host_name = spec.name if isinstance(spec, SlayerModel) else spec if resolved else None
+    models, restrictions = extend_models(
+        query, models, lookup=lambda name, universe: universe.get(name), on_conflict=lambda _exc: None)
+    host = models.get(host_name) if host_name is not None else None
+    bases = {"": base if resolved else None, **{n: _chain_base(n, named=named)[1] for n in siblings}}
+    return QueryScope.model_construct(
+        data_source=data_source, host=host, bases=bases, models=models,
+        inner_refs=tuple(r for r in (_inner_ref(x, host=host, models=models) for x in restrictions) if r is not None),
+    )
+
+
+def _sibling_host(name: str, *, query: SlayerQuery, data_source: str) -> SlayerModel:
+    """Sibling stage ``name`` as ``query`` reads it: the output fields its extension joins name, on either side."""
+    keys = [
+        pair[0 if e.source_name == name else 1]
+        for e in query.extensions or [] for j in e.joins or [] if name in (e.source_name, j.target_model)
+        for pair in j.join_pairs
+    ]
+    return SlayerModel.model_construct(
+        name=name, data_source=data_source, columns=[Column(name=k) for k in dict.fromkeys(keys)])
+
+
+def _inner_ref(
+    restriction: InnerRestriction, *, host: Optional[SlayerModel], models: Dict[str, SlayerModel],
+) -> Optional[Tuple[str, ...]]:
+    try:
+        path = declaring_model_path(restriction, host=host, models_by_name=models)
+    except ValueError:  # an unreachable or ambiguous declaring model fails the engine, not the static reader
+        return None
+    return (*drop_root_hop(path, host.spelling if host is not None else None), restriction.token, restriction.key)
 
 
 def _extended(
@@ -57,12 +298,12 @@ def _extended(
     raise ModelNotFoundError(name, context=f"An extension of {where}" if where else None)
 
 
-def _reserved_names(models: Dict[str, SlayerModel], bundle: ResolvedSourceBundle) -> set:
-    return {
+def _reserved_names(models: Dict[str, SlayerModel], bundle: ResolvedSourceBundle) -> List[str]:
+    return [
         *bundle.datasource_model_names, *(m.name for m in models.values() if m.explicit_spelling is None),
         *(m.explicit_spelling for m in models.values() if m.explicit_spelling is not None),
         *(d.name for d in bundle.stage_displays.values()),
-    }
+    ]
 
 
 def apply_query_extensions(
@@ -74,19 +315,22 @@ def apply_query_extensions(
         return scope, bundle
     display = bundle.stage_displays.get(query.name) if query.name else None
     where = display.label if display is not None else None
-    models = _universe(bundle)
-    for extension in query.extensions:
-        model = _extended(extension.source_name, models=models, bundle=bundle, where=where)
-        models[model.name] = overlay_columns_and_measures(model, extension)
-    merge = EdgeMerge(
-        models=models, reserved_names=_reserved_names(models, bundle),
-        stored_edge_names={
+    universe = _universe(bundle)
+
+    def conflict(exc: ValueError) -> None:
+        if isinstance(exc, QueryExtensionError):
+            raise QueryExtensionError(f"{where}: {exc}" if where else str(exc)) from exc
+        raise exc
+
+    models, restrictions = extend_models(
+        query, universe, where=where, on_conflict=conflict,
+        lookup=lambda name, models: _extended(name, models=models, bundle=bundle, where=where),
+        reserved_names=_reserved_names(universe, bundle),
+        stored_edge_names=[
             *bundle.datasource_edge_names,
-            *(j.name for m in models.values() for j in m.joins if j.name and not j.query_local),
-        },
+            *(j.name for m in universe.values() for j in m.joins if j.name and not j.query_local),
+        ],
     )
-    restrictions = _merge_joins(query=query, merge=merge, bundle=bundle, where=where)
-    models = merge.models
     source = models[bundle.source_model.name] if bundle.source_model is not None else None
     bundle = bundle.model_copy(update={
         "source_model": source,
@@ -96,35 +340,13 @@ def apply_query_extensions(
     return _extended_scope(scope, query=query, models=models, source=source), bundle
 
 
-def _merge_joins(
-    *, query: SlayerQuery, merge: EdgeMerge, bundle: ResolvedSourceBundle, where: Optional[str],
-) -> List[InnerRestriction]:
-    """Merge every extension join into ``merge``; the INNER ones' population filters."""
-    restrictions = [
-        _merge_join(declaring=extension.source_name, join=join, merge=merge, bundle=bundle, where=where)
-        for extension in query.extensions or [] for join in extension.joins or []
-    ]
-    return [r for r in restrictions if r is not None]
-
-
-def _merge_join(
-    *, declaring: str, join: ModelJoin, merge: EdgeMerge, bundle: ResolvedSourceBundle, where: Optional[str],
-) -> Optional[InnerRestriction]:
-    """Merge one extension join into ``merge``; its population filter when INNER."""
-    if join.target_model not in merge.models:
-        _extended(join.target_model, models=merge.models, bundle=bundle, where=where)
-    try:
-        merged = merge.add(declaring=declaring, join=join)
-    except QueryExtensionError as exc:
-        raise QueryExtensionError(f"{where}: {exc}" if where else str(exc)) from exc
-    if join.join_type is not JoinType.INNER:
-        return None
-    source = merge.models[declaring]
-    target = merge.models[join.target_model]
-    return InnerRestriction(
-        model=source.spelling, token=merged.token, key=merged.edge.join_pairs[0][1],
-        label=f"INNER join from {source.spelling!r} to {target.spelling!r}" + (f" in {where}" if where else ""),
-    )
+def _universe(bundle: ResolvedSourceBundle) -> Dict[str, SlayerModel]:
+    out: Dict[str, SlayerModel] = {}
+    if bundle.source_model is not None:
+        out[bundle.source_model.name] = bundle.source_model
+    for model in bundle.referenced_models:
+        out.setdefault(model.name, model)
+    return out
 
 
 def _extended_scope(

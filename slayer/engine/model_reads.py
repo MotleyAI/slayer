@@ -2,23 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
-from typing import Literal
-
+from collections.abc import Sequence
 
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
 from slayer.core.join_walker import OrientedJoin, walk
 from slayer.core.models import SlayerModel
-from slayer.core.query import ComputedDimension, ModelExtension, SlayerQuery, SourceSpec, extension_model_names
+from slayer.core.query import SlayerQuery, extension_model_names
+from slayer.core.syntax import drop_root_hop, text_paths
+from slayer.engine.extensions import QueryScope, extension_of, query_reference_parts, query_scopes
 from slayer.engine.param_binding import default_reference_sites
 from slayer.engine.reference_closure import parse_fragment_any_dialect
-from slayer.core.syntax import drop_root_hop, text_paths
-from slayer.ir.source_bundle import (
-    follow_sibling_chain,
-    models_as_extended,
-    overlay_columns_and_measures,
-    source_name_if_sibling,
-)
 from slayer.sql.column_expansion import is_trivial_base, reference_sites, root_scope_column_ids
 
 Identity = tuple[str, str]
@@ -40,8 +33,9 @@ def models_read_closure(query: SlayerQuery, *, host: SlayerModel, models: Sequen
     """``host`` and every model ``query``, rooted at ``host``, reads — directly or through what it reads."""
     reads = _Reads(models)
     reads.model(host)
+    scope = reads.stored_scope(host)
     for parts in query_reference_parts(query):
-        reads.ref(parts, host=host)
+        reads.ref(parts, host=host, scope=scope)
     by_id = {(m.data_source, m.name): m for m in models}
     pending, seen = list(reads.out), set()
     while pending:
@@ -90,53 +84,19 @@ def _closure(start: Identity, *, reads: dict[Identity, frozenset[Identity]]) -> 
     return seen
 
 
-FieldKind = Literal["ref", "formula", "filter"]
-
-
-def query_field_texts(query: SlayerQuery) -> Iterator[tuple[FieldKind, str]]:
-    """Every reference-bearing text of ``query`` — dimensions, time dimensions, measures, filters, order — and its kind."""
-    yield from _dimension_texts(query)
-    for measure in query.measures or []:
-        if measure.formula:
-            yield "formula", measure.formula
-    for f in query.filters or []:
-        yield "filter", f
-    for item in query.order or []:
-        yield ("formula", item.raw_formula) if item.raw_formula else ("ref", item.column.full_name)
-
-
-def _dimension_texts(query: SlayerQuery) -> Iterator[tuple[FieldKind, str]]:
-    for dim in query.dimensions or []:
-        yield ("formula", dim.expression) if isinstance(dim, ComputedDimension) else ("ref", dim.full_name)
-    for td in query.time_dimensions or []:
-        yield "formula", td.dimension
-
-
-def query_reference_parts(query: SlayerQuery) -> list[tuple[str, ...]]:
-    """The dotted parts of every reference ``query_field_texts`` yields, aggregation arguments included."""
-    out: list[tuple[str, ...]] = []
-    for kind, text in query_field_texts(query):
-        out.extend([tuple(text.split("."))] if kind == "ref" else text_paths(text, root=None))
-    return out
-
-
 def _prefix_onto_placeholder(
     hops: tuple[str, ...], *, host: SlayerModel, peers: dict[str, SlayerModel],
 ) -> list[OrientedJoin]:
     """The longest walkable prefix of ``hops`` when it ends on a placeholder, else ``[]``."""
+    hops = drop_root_hop(hops, host.spelling)
     for end in range(len(hops) - 1, 0, -1):
-        prefix = walk(root=host, path=hops[:end], models_by_name=peers)
+        try:
+            prefix = walk(root=host, path=hops[:end], models_by_name=peers)
+        except (AmbiguousJoinPathError, CircularJoinPathError):
+            return []
         if prefix is not None:
             return prefix if prefix and _is_placeholder(peers[prefix[-1].target_model]) else []
     return []
-
-
-def _stage_host(extension: ModelExtension, *, data_source: str) -> SlayerModel:
-    """A sibling stage as ``extension`` sees it: its query-local columns, measures and joins."""
-    return SlayerModel.model_construct(
-        name=extension.source_name, data_source=data_source, columns=list(extension.columns or []),
-        measures=list(extension.measures or []), joins=list(extension.joins or []),
-    )
 
 
 class _Reads:
@@ -150,53 +110,48 @@ class _Reads:
         # Keyed by host object, not name: two stages' overlays of one model may define a field differently.
         self._seen: set[tuple[int, str]] = set()
         self._hosts: list[SlayerModel] = []  # keeps each visited host alive, so its id is never reused
-        self._scoped: dict[str, dict[str, SlayerModel]] = {}  # per datasource: the models as the current query extends them
 
-    def holders(self, name: str, *, data_source: str | None) -> list[SlayerModel]:
-        """The stored model ``name`` in ``data_source`` if there is one, else every datasource's model of that name."""
-        if data_source is not None and name in self.by_ds.get(data_source, {}):
-            return [self.by_ds[data_source][name]]
-        return [peers[name] for peers in self.by_ds.values() if name in peers]
+    def stored_scope(self, model: SlayerModel) -> QueryScope:
+        """The scope a stored definition of ``model`` reads in: its datasource's models."""
+        return QueryScope.model_construct(data_source=model.data_source, host=model, models={
+            **self.by_ds.get(model.data_source, {}), model.name: model})
 
-    def peers(self, host: SlayerModel) -> dict[str, SlayerModel]:
-        return {**self.by_ds.get(host.data_source, {}), **self._scoped.get(host.data_source, {}), host.name: host}
-
-    def read(self, model: SlayerModel) -> None:
-        if model.name in self.by_ds.get(model.data_source, {}):
-            self.out.add((model.data_source, model.name))
+    def read(self, name: str, *, scope: QueryScope) -> None:
+        if name not in scope.siblings and name in self.by_ds.get(scope.data_source, {}):
+            self.out.add((scope.data_source, name))
 
     def model(self, model: SlayerModel) -> None:
         if model.source_queries:
             self.stages(list(model.source_queries), data_source=model.data_source or None)
-        self.definitions(model)
+        self.definitions(model, scope=self.stored_scope(model))
 
-    def definitions(self, model: SlayerModel) -> None:
+    def definitions(self, model: SlayerModel, *, scope: QueryScope) -> None:
         for column in model.columns:
-            self.column(host=model, name=column.name)
+            self.column(host=model, name=column.name, scope=scope)
         for sql in model.filters:
-            self.fragment(sql, host=model)
+            self.fragment(sql, host=model, scope=scope)
         for agg in model.aggregations:
             for quals, leaf in default_reference_sites(agg):
-                self.ref((*quals, leaf), host=model)
+                self.ref((*quals, leaf), host=model, scope=scope)
         for measure in model.measures:
             if measure.name:
-                self.measure(host=model, name=measure.name)
+                self.measure(host=model, name=measure.name, scope=scope)
 
-    def column(self, *, host: SlayerModel, name: str) -> None:
+    def column(self, *, host: SlayerModel, name: str, scope: QueryScope) -> None:
         col = host.get_column(name)
         if col is None or not self._first_visit(host, f"column:{name}"):
             return
         if col.sql is not None and not is_trivial_base(column=col):
-            self.fragment(col.sql, host=host)
+            self.fragment(col.sql, host=host, scope=scope)
         if col.filter:
-            self.fragment(col.filter, host=host)
+            self.fragment(col.filter, host=host, scope=scope)
 
-    def measure(self, *, host: SlayerModel, name: str) -> None:
+    def measure(self, *, host: SlayerModel, name: str, scope: QueryScope) -> None:
         measure = host.get_measure(name)
         if measure is None or not measure.formula or not self._first_visit(host, f"measure:{name}"):
             return
         for parts in text_paths(measure.formula, root=None):
-            self.ref(parts, host=host)
+            self.ref(parts, host=host, scope=scope)
 
     def _first_visit(self, host: SlayerModel, key: str) -> bool:
         mark = (id(host), key)
@@ -206,144 +161,76 @@ class _Reads:
         self._hosts.append(host)
         return True
 
-    def fragment(self, sql: str, *, host: SlayerModel) -> None:
+    def fragment(self, sql: str, *, host: SlayerModel, scope: QueryScope) -> None:
         parsed = parse_fragment_any_dialect(sql)
         if parsed is None:
             return
         for _node, quals, leaf in reference_sites(parsed, root_scope_column_ids(parsed=parsed)):
-            self.ref((*quals, leaf), host=host)
+            self.ref((*quals, leaf), host=host, scope=scope)
 
-    def path(self, hops: Sequence[str], *, host: SlayerModel) -> SlayerModel | None:
+    def path(self, hops: Sequence[str], *, host: SlayerModel, scope: QueryScope) -> SlayerModel | None:
         """The model ``hops`` lands on from ``host``, recording each hop; ``None`` when unresolvable."""
-        hops = drop_root_hop(hops, host.spelling)
-        if not hops:
+        if not drop_root_hop(hops, host.spelling):
             return host
-        peers = self.peers(host)
-        try:
-            chain = walk(root=host, path=hops, models_by_name=peers)
-            if chain is None:
-                self._record(_prefix_onto_placeholder(hops, host=host, peers=peers), host=host)
-                return None
-        except (AmbiguousJoinPathError, CircularJoinPathError):
+        peers = {**scope.models, host.name: host}
+        resolved = scope.resolve(hops, root=host)
+        if resolved is None:
+            self._record(_prefix_onto_placeholder(tuple(hops), host=host, peers=peers), scope=scope)
             return None
+        chain = resolved[1]
         if not chain:
             return None
-        self._record(chain, host=host)
+        self._record(chain, scope=scope)
         return peers.get(chain[-1].target_model)
 
-    def _record(self, chain: Sequence[OrientedJoin], *, host: SlayerModel) -> None:
+    def _record(self, chain: Sequence[OrientedJoin], *, scope: QueryScope) -> None:
         for edge in chain:
-            self.out.add((host.data_source, edge.target_model))
+            self.read(edge.target_model, scope=scope)
 
-    def ref(self, parts: Sequence[str], *, host: SlayerModel) -> None:
+    def ref(self, parts: Sequence[str], *, host: SlayerModel, scope: QueryScope) -> None:
         """A reference rooted at ``host``: its hops, then the definition of a derived column or saved measure it names."""
-        terminal = self.path(tuple(parts[:-1]), host=host)
+        terminal = self.path(tuple(parts[:-1]), host=host, scope=scope)
         if terminal is None:
             return
-        self.column(host=terminal, name=parts[-1])
-        self.measure(host=terminal, name=parts[-1])
+        self.column(host=terminal, name=parts[-1], scope=scope)
+        self.measure(host=terminal, name=parts[-1], scope=scope)
 
     def stages(self, queries: list[SlayerQuery], *, data_source: str | None) -> None:
-        named = {q.name: q for q in queries[:-1] if q.name}
-        for query in queries:
-            self._scope(query)
-            self.extended_models(query, data_source=data_source)
-            stage_hosts = self._stage_hosts(query, named=named, data_source=data_source)
-            try:
-                spec = follow_sibling_chain(spec=query.source_model, named_queries=named)
-            except ValueError:
-                continue
-            hosts = [self._extended(host, query=query) for host in self.source(spec, data_source=data_source)]
-            sibling = source_name_if_sibling(spec=query.source_model, sibling_names=named)
-            if sibling is not None:  # fields name the sibling's flat columns, or hop its extension's joins
-                hosts = stage_hosts.get(sibling, [])
-            for parts in query_reference_parts(query):
-                for host in hosts:
-                    self.ref(parts, host=host)
-                if not hosts and sibling is None:
-                    self.unhosted_ref(parts, data_source=data_source)
-        self._scoped = {}
+        scopes = query_scopes(queries, models_by_ds=self.by_ds, data_source=data_source)
+        for query, query_scopes_ in zip(queries, scopes):
+            for scope in query_scopes_:
+                self.stage(query, scope=scope)
 
-    def _stage_hosts(
-        self, query: SlayerQuery, *, named: dict[str, SlayerQuery], data_source: str | None,
-    ) -> dict[str, list[SlayerModel]]:
-        """Per sibling stage ``query`` extends: a host of just that extension, per datasource, its definitions read."""
-        out: dict[str, list[SlayerModel]] = {}
-        for extension in query.extensions or []:
-            if extension.source_name not in named:
-                continue
-            spaces = [data_source] if data_source is not None else self._stage_data_sources(
-                extension.source_name, named=named)
-            out[extension.source_name] = [_stage_host(extension, data_source=ds) for ds in spaces]
-            for host in out[extension.source_name]:
-                self.extension_definitions(extension, host=host)
-        return out
-
-    def _stage_data_sources(self, name: str, *, named: dict[str, SlayerQuery]) -> list[str]:
-        """The datasources sibling stage ``name``'s base source may resolve to."""
-        try:
-            spec = follow_sibling_chain(spec=name, named_queries=named)
-        except ValueError:
-            return []
-        if isinstance(spec, SlayerModel):
-            return [spec.data_source]
-        return sorted({m.data_source for m in self.holders(spec, data_source=None)}) if isinstance(spec, str) else []
-
-    def _scope(self, query: SlayerQuery) -> None:
-        """Walk ``query`` over its own join graph: each datasource's models as its extensions extend them."""
-        names = {e.source_name for e in query.extensions or []}
-        self._scoped = {ds: models_as_extended(query, peers) for ds, peers in self.by_ds.items() if names & peers.keys()}
-
-    def _scoped_model(self, model: SlayerModel, extension: ModelExtension) -> SlayerModel:
-        scoped = self._scoped.get(model.data_source, {}).get(model.name)
-        return scoped if scoped is not None else overlay_columns_and_measures(model, extension)
-
-    def extended_models(self, query: SlayerQuery, *, data_source: str | None) -> None:
-        """The models ``query``'s extensions name, and what each extension's own columns and measures read."""
-        for name in extension_model_names(query):
-            for model in self.holders(name, data_source=data_source):
-                self.read(model)
-        for extension in query.extensions or []:
-            for model in self.holders(extension.source_name, data_source=data_source):
-                self.extension_definitions(extension, host=self._scoped_model(model, extension))
-
-    def extension_definitions(self, extension: ModelExtension, *, host: SlayerModel) -> None:
-        for column in extension.columns or []:
-            self.column(host=host, name=column.name)
-        for measure in extension.measures or []:
-            if measure.name:
-                self.measure(host=host, name=measure.name)
-
-    def source(self, spec: SourceSpec | None, *, data_source: str | None) -> list[SlayerModel]:
-        """The hosts a stage source may resolve to (every holder of an ambiguous name), recording what they read."""
+    def stage(self, query: SlayerQuery, *, scope: QueryScope) -> None:
+        """What one query object reads in ``scope``: its source, the models its extensions name, what their own
+        definitions read, every reference, and each INNER join's population filter."""
+        spec = query.source_model
         if isinstance(spec, str):
-            models = self.holders(spec, data_source=data_source)
-            for model in models:
-                self.read(model)
-            return models
-        if isinstance(spec, SlayerModel):
-            self.written_joins(spec, data_source=spec.data_source or data_source)
-            self.definitions(spec)
-            return [spec]
-        return []
+            self.read(spec, scope=scope)
+        elif isinstance(spec, SlayerModel):
+            for join in spec.joins:
+                self.read(join.target_model, scope=scope)
+        for name in extension_model_names(query):
+            self.read(name, scope=scope)
+        host = scope.host
+        if host is not None and (isinstance(spec, SlayerModel) or extension_of(query, host.name) is not None):
+            self.definitions(host, scope=scope)
+        for extension in query.extensions or []:
+            extended = scope.models.get(extension.source_name)
+            if extended is None:
+                continue
+            for field in [*(extension.columns or []), *(extension.measures or [])]:
+                if field.name:
+                    self.column(host=extended, name=field.name, scope=scope)
+                    self.measure(host=extended, name=field.name, scope=scope)
+        for parts in [*query_reference_parts(query), *scope.inner_refs]:
+            if host is not None:
+                self.ref(parts, host=host, scope=scope)
+            else:
+                self.unhosted_ref(parts, scope=scope)
 
-    def _extended(self, host: SlayerModel, *, query: SlayerQuery) -> SlayerModel:
-        """``host`` with the columns and measures ``query`` extends it with, their definitions read."""
-        extension = next((e for e in query.extensions or [] if e.source_name == host.name), None)
-        if extension is None:
-            return host
-        extended = self._scoped_model(host, extension)
-        self.definitions(extended)
-        return extended
-
-    def written_joins(self, spec: SlayerModel, *, data_source: str | None) -> None:
-        for join in spec.joins:
-            for target in self.holders(join.target_model, data_source=data_source):
-                self.read(target)
-
-    def unhosted_ref(self, parts: tuple[str, ...], *, data_source: str | None) -> None:
-        if len(parts) < 2:
-            return
-        for root in self.holders(parts[0], data_source=data_source):
-            self.read(root)
-            self.ref(parts[1:], host=self._scoped.get(root.data_source, {}).get(root.name, root))
+    def unhosted_ref(self, parts: tuple[str, ...], *, scope: QueryScope) -> None:
+        root = scope.models.get(parts[0]) if len(parts) > 1 else None
+        if root is not None:
+            self.read(root.name, scope=scope)
+            self.ref(parts[1:], host=root, scope=scope)

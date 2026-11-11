@@ -67,6 +67,7 @@ from slayer.core.scope import (
     stale_spelling_position,
 )
 from slayer.engine.population import dimension_routing
+from slayer.engine.extensions import declaring_model_path
 from slayer.engine.binding import bind_expr, bind_filter, bind_time_dimension, spelled_aggregate_key
 from slayer.engine.elaborate_env import (
     check_computed_dim_name_collision,
@@ -330,7 +331,7 @@ def _bind_inner_restriction(
         host = host.with_unrelated(frozenset())
         scope, bundle = ModelScope(source_model=host), bundle.model_copy(update={"source_model": host})
     try:
-        path = _declaring_model_path(restriction, host=host, bundle=bundle)
+        path = declaring_model_path(restriction, host=host, models_by_name=bundle.models_by_name)
         node = Cmp(
             op="is not", left=DottedRef(parts=(*path, restriction.token, restriction.key), quoted=False),
             right=Literal(value=None), single_eq=False,
@@ -346,25 +347,6 @@ def _bind_inner_restriction(
             f"The {restriction.label} restricts the population, but no join path reaches "
             f"{restriction.model!r} from it."
         ) from exc
-
-
-def _declaring_model_path(
-    restriction: InnerRestriction, *, host: Optional[SlayerModel], bundle: ResolvedSourceBundle,
-) -> Tuple[str, ...]:
-    """The population's path to ``restriction.model``: as spelled when root or adjacent, else short-form routed."""
-    spelled = (restriction.model,)
-    if host is None or not drop_root_qualifier((*spelled, restriction.key), host.spelling)[:-1]:
-        return spelled
-    models_by_name = bundle.models_by_name
-    models_by_name.setdefault(host.name, host)
-    try:
-        if resolve_hop(current=host, token=restriction.model, models_by_name=models_by_name) is not None:
-            return spelled
-    except AmbiguousJoinPathError:
-        return spelled
-    return tuple(dimension_routing.route_dotted_target(
-        root=host, target_model=restriction.model, leaf=restriction.token, models_by_name=models_by_name,
-    ))
 
 
 def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages are strictly sequential and share the growing `declared_measures` / `bound_filters` / `order_specs` triple: parse+bind, time-key attachment, sugar lowering, rank-partition validation. Splitting them would thread the same three lists through four signatures without removing a branch.

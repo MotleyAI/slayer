@@ -25,9 +25,10 @@ from __future__ import annotations
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.core.join_search import reachable
+from slayer.engine.extensions import QueryScope, query_scopes
 from slayer.live_schema.schema_drift import (
     _attribute_ref_to_base,
-    _build_stage_graph,
     _filter_refs_dsl,
     _measure_formula_refs,
     _ref_edges,
@@ -52,6 +53,10 @@ def _ext_models() -> dict[str, SlayerModel]:
         Column(name="name", type=DataType.TEXT)])
     return {"orders": orders, "customers": customers}
 
+def _stage_scope(stage: SlayerQuery, models_by_name: dict) -> QueryScope:
+    return query_scopes([stage], models_by_ds={"ds": models_by_name}, data_source="ds")[0][0]
+
+
 
 class TestStageGraphBidirectional:
     """DEV-1853: the cascade graph and attribution traverse either direction."""
@@ -72,13 +77,11 @@ class TestStageGraphBidirectional:
             columns=[Column(name="id", type=DataType.INT, primary_key=True)],
         )
         models = {"orders": orders, "customers": customers}
-        graph = _build_stage_graph(
-            stage=SlayerQuery(source_model="customers"),
-            stage_source_name="customers", models_by_name=models,
-        )
-        assert "orders" in graph.reachable
+        graph = _stage_scope(SlayerQuery(source_model="customers"), models)
+        assert graph.host is not None
+        assert "orders" in reachable(root=graph.host, models_by_name=graph.models)
         assert _attribute_ref_to_base(
-            ref="orders.amount", base_name="orders", graph=graph,
+            ref="orders.amount", base_name="orders", scope=graph,
         ) == "amount"
 
     def test_named_extension_hop_attributes_by_name(self) -> None:
@@ -86,11 +89,9 @@ class TestStageGraphBidirectional:
             ModelJoin(target_model="customers",
                       join_pairs=[["customer_id", "id"]], name="buyer"),
         ])])
-        graph = _build_stage_graph(
-            stage=stage, stage_source_name="orders", models_by_name=_ext_models(),
-        )
+        graph = _stage_scope(stage, _ext_models())
         assert _attribute_ref_to_base(
-            ref="buyer.name", base_name="customers", graph=graph,
+            ref="buyer.name", base_name="customers", scope=graph,
         ) == "name"
 
     def test_parallel_extension_targets_unaddressable_by_bare_name(self) -> None:
@@ -100,29 +101,24 @@ class TestStageGraphBidirectional:
             ModelJoin(target_model="customers",
                       join_pairs=[["s_id", "id"]], name="seller"),
         ])])
-        graph = _build_stage_graph(
-            stage=stage, stage_source_name="orders", models_by_name=_ext_models(),
-        )
+        graph = _stage_scope(stage, _ext_models())
         assert _attribute_ref_to_base(
-            ref="seller.name", base_name="customers", graph=graph,
+            ref="seller.name", base_name="customers", scope=graph,
         ) == "name"
         # The bare target token is ambiguous across the pair — no attribution.
         assert _attribute_ref_to_base(
-            ref="customers.name", base_name="customers", graph=graph,
+            ref="customers.name", base_name="customers", scope=graph,
         ) is None
 
     def test_extension_repeating_a_stored_join_is_that_stored_edge(self) -> None:
         join = ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])
         models = _ext_models()
         models["orders"] = models["orders"].model_copy(update={"joins": [join]})
-        graph = _build_stage_graph(
-            stage=SlayerQuery(source_model="orders", extensions=[ModelExtension(source_name="orders", joins=[join])]),
-            stage_source_name="orders", models_by_name=models,
-        )
+        graph = _stage_scope(SlayerQuery(source_model="orders", extensions=[ModelExtension(source_name="orders", joins=[join])]), models)
         assert _attribute_ref_to_base(
-            ref="customers.name", base_name="customers", graph=graph,
+            ref="customers.name", base_name="customers", scope=graph,
         ) == "name"
-        assert [e.target_model for e in _ref_edges(ref="customers.name", graph=graph)] == ["customers"]
+        assert [e.target_model for e in _ref_edges(ref="customers.name", scope=graph)] == ["customers"]
 
 
 class TestWalkParsedRefs:

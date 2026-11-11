@@ -117,6 +117,14 @@ class TestExtensionDefinitionJoinPaths:
         qb = _qb(extension=ext, measures=[{"formula": "buyers"}])
         assert _whole_dropped(qb=qb, model=_orders(), column="buyer_ref") == {"qb"}
 
+    def test_sibling_stage_extension_column_through_extension_join(self) -> None:
+        ext = ModelExtension(source_name="s", joins=_BUYER.joins, columns=[_UPPER_BUYER])
+        qb = SlayerModel(name="qb", data_source="ds", source_queries=[
+            SlayerQuery.model_validate({"name": "s", "source_model": "orders", "dimensions": ["buyer_ref"]}),
+            SlayerQuery.model_validate({"source_model": "s", "extensions": [ext], "dimensions": ["buyer_name"]}),
+        ])
+        assert _whole_dropped(qb=qb, model=_customers(), column="name") == {"qb"}
+
     def test_extension_column_through_join_unused_by_the_stage(self) -> None:
         ext = _BUYER.model_copy(update={"columns": [_UPPER_BUYER]})
         qb = _qb(extension=ext, dimensions=["status"], measures=[{"formula": "count(*)"}])
