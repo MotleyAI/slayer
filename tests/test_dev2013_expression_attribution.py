@@ -94,7 +94,7 @@ CASE_CELLS = {
     ("South", "o"): 100.0, ("East", "o"): 60.0, ("Gap", "o"): 10.0, ("Void", "o"): None,
 }
 SINGLE_ALPHA = {(False,): 58.0, (True,): 35.0, (None,): 12.0}
-P_REGION = "amount:sum(partition_by=region)"
+P_REGION = "sum(amount, partition_by=region)"
 IIF_P_CELLS = {
     ("North", 90.0): 30.0, ("North", 0.0): 60.0, ("South", 140.0): 40.0,
     ("South", 0.0): 100.0, ("East", 0.0): 60.0, ("Gap", 0.0): 10.0, ("Void", 0.0): None,
@@ -300,7 +300,7 @@ class TestAttachedParameterGrain:
         resp = await variant_engine.execute(chain_q(
             dimensions=[_dim("customers.region_id * 10", "rid10")],
             measures=[ModelMeasure(
-                formula=f"customers.region_id:wsum(weight=sum(amount, partition_by={grain}))",
+                formula=f"wsum(customers.region_id, weight=sum(amount, partition_by={grain}))",
                 name="w")]))
         _assert_cells(
             _cells(resp, ["corders.rid10"], "corders.w", norm=[int]), RID10_WSUM)
@@ -349,7 +349,7 @@ class TestNegativeControls:
 
     async def test_adding_the_reaggregation_is_cardinality_neutral(self, exec_engine):
         dims = ["region", _dim("city == 'Alpha'", "is_alpha")]
-        tot = ModelMeasure(formula="amount:sum", name="tot")
+        tot = ModelMeasure(formula="sum(amount)", name="tot")
         base = await exec_engine.execute(sales_q(dimensions=dims, measures=[tot]))
         both = await exec_engine.execute(sales_q(
             dimensions=dims, measures=[tot, reagg("avg", INNER_CR, name="acr")]))

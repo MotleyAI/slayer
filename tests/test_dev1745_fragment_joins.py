@@ -147,15 +147,15 @@ class TestOnlySubstitutedKwargsAreSql:
         return dict(key.kwargs)
 
     def test_reserved_marker_kwarg_is_not_parsed_as_sql(self) -> None:
-        kwargs = self._kwargs("customers.spend:wscaled_sum(window='90d')")
+        kwargs = self._kwargs("wscaled_sum(customers.spend, window='90d')")
         assert kwargs["window"] == "90d"
         assert kwargs["w"] == ColumnKey(path=("customers", "regions"), leaf="weight")
 
     def test_marker_that_is_not_parseable_sql_is_still_skipped(self) -> None:
-        assert self._kwargs("customers.spend:wscaled_sum(window='%Y-%m')")["window"] == "%Y-%m"
+        assert self._kwargs("wscaled_sum(customers.spend, window='%Y-%m')")["window"] == "%Y-%m"
 
     def test_a_substituted_kwarg_is_still_bound(self) -> None:
-        assert self._kwargs("customers.spend:wscaled_sum(w='customers.regions.weight')") == {
+        assert self._kwargs("wscaled_sum(customers.spend, w='customers.regions.weight')") == {
             "w": ColumnKey(path=("customers", "regions"), leaf="weight")}
 
 
@@ -188,7 +188,7 @@ class TestCrossModelFragmentJoins:
                 source_model="orders",
                 dimensions=[{"formula": "status", "name": "status"}],
                 measures=[{
-                    "formula": "customers.spend:wscaled_sum", "name": "m0",
+                    "formula": "wscaled_sum(customers.spend)", "name": "m0",
                 }],
             ),
             model=_orders(),
@@ -210,8 +210,8 @@ class TestCrossModelFragmentJoins:
                 source_model="orders",
                 dimensions=[{"formula": "status", "name": "status"}],
                 measures=[
-                    {"formula": "customers.spend:wscaled_sum", "name": "m0"},
-                    {"formula": "amount:sum", "name": "m1"},
+                    {"formula": "wscaled_sum(customers.spend)", "name": "m0"},
+                    {"formula": "sum(amount)", "name": "m1"},
                 ],
             ),
             model=_orders(),
@@ -232,11 +232,11 @@ class TestHostPathFragmentJoinsStillWork:
 
     async def test_host_rooted_fragment_join_registered(self) -> None:
         sql = await _sql(
-            SlayerQuery(
-                source_model="orders",
-                dimensions=[{"formula": "status", "name": "status"}],
-                measures=[{"formula": "amount:wscaled_sum", "name": "m0"}],
-            ),
+            SlayerQuery.model_validate({
+                "source_model": "orders",
+                "dimensions": [{"formula": "status", "name": "status"}],
+                "measures": [{"formula": "wscaled_sum(amount)", "name": "m0"}],
+            }),
             model=_orders_local_agg(),
         )
         assert "customers__regions.weight" in sql, sql
@@ -248,7 +248,7 @@ class TestHostPathFragmentJoinsStillWork:
                 source_model="orders",
                 dimensions=[{"formula": "status", "name": "status"}],
                 measures=[{
-                    "formula": "amount:wscaled_sum(w='customers.regions.weight')",
+                    "formula": "wscaled_sum(amount, w='customers.regions.weight')",
                     "name": "m0",
                 }],
             ),
@@ -262,11 +262,11 @@ class TestHostPathFragmentJoinsStillWork:
 async def test_cross_model_fragment_executes_on_duckdb() -> None:
     """A missing join is not a cosmetic difference — the SQL does not bind."""
     sql = await _sql(
-        SlayerQuery(
-            source_model="orders",
-            dimensions=[{"formula": "status", "name": "status"}],
-            measures=[{"formula": "customers.spend:wscaled_sum", "name": "m0"}],
-        ),
+        SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": [{"formula": "status", "name": "status"}],
+            "measures": [{"formula": "wscaled_sum(customers.spend)", "name": "m0"}],
+        }),
         model=_orders(), dialect="duckdb",
     )
     with duckdb.connect() as con:

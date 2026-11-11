@@ -140,7 +140,7 @@ async def _build_engine(tmp_path, *, cache_config=None, ds_name="ds", storage_su
 
 
 def _sum_query() -> SlayerQuery:
-    return SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="amount:sum")])
+    return SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="sum(amount)")])
 
 
 def _mutate(db_path, sql: str) -> None:
@@ -708,7 +708,7 @@ class TestMultiStageAndByName:
             distinct_dimension_values=False,
         )
         outer = SlayerQuery(
-            source_model="raw", measures=[ModelMeasure(formula="amount:sum")]
+            source_model="raw", measures=[ModelMeasure(formula="sum(amount)")]
         )
         r1 = await engine.execute([inner, outer], cache=True)
         assert engine.cache_size == 1
@@ -725,7 +725,7 @@ class TestMultiStageAndByName:
         await engine.create_model_from_query(
             query=SlayerQuery(
                 source_model="orders",
-                measures=[ModelMeasure(formula="amount:sum")],
+                measures=[ModelMeasure(formula="sum(amount)")],
                 dimensions=[ColumnRef(name="status")],
             ),
             name="orders_by_status",
@@ -745,7 +745,7 @@ class TestMultiStageAndByName:
         await engine.create_model_from_query(
             query=SlayerQuery(
                 source_model="orders",
-                measures=[ModelMeasure(formula="amount:sum")],
+                measures=[ModelMeasure(formula="sum(amount)")],
                 dimensions=[ColumnRef(name="status")],
             ),
             name="obs",
@@ -760,7 +760,7 @@ class TestMultiStageAndByName:
                 source_queries=[
                     SlayerQuery(
                         source_model="orders",
-                        measures=[ModelMeasure(formula="amount:sum")],
+                        measures=[ModelMeasure(formula="sum(amount)")],
                         dimensions=[ColumnRef(name="status")],
                         filters=["status != 'pending'"],
                     )
@@ -785,7 +785,7 @@ class TestRefinedByName:
         await engine.create_model_from_query(
             query=SlayerQuery(
                 source_model="orders",
-                measures=[ModelMeasure(formula="amount:sum")],
+                measures=[ModelMeasure(formula="sum(amount)")],
                 dimensions=[ColumnRef(name="status")],
             ),
             name="obs",
@@ -845,7 +845,7 @@ class TestEvictAndManagement:
         q1 = _sum_query()
         q2 = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
             dimensions=[ColumnRef(name="status")],
         )
         await engine.execute(q1, cache=True)

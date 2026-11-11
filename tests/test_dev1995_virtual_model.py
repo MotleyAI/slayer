@@ -65,7 +65,7 @@ def _cross(prefix: str = "") -> list:
             {"formula": f"count({prefix}orders.id)", "name": "n"}]
 
 
-LOCAL = [{"formula": "amount:sum", "name": "s"}, {"formula": "id:count", "name": "n"}]
+LOCAL = [{"formula": "sum(amount)", "name": "s"}, {"formula": "count(id)", "name": "n"}]
 
 
 def _assert_cells(actual: dict, expected: dict) -> None:
@@ -156,8 +156,8 @@ class TestParityWithMaterialisedAggregate:
         _assert_cells(n, case["source"][1])
 
 
-SPEND = {"formula": "customers.spend:sum", "name": "c"}
-AMOUNT = {"formula": "amount:sum", "name": "a"}
+SPEND = {"formula": "sum(customers.spend)", "name": "c"}
+AMOUNT = {"formula": "sum(amount)", "name": "a"}
 
 
 def _orders_assoc(**kw) -> dict:
@@ -167,8 +167,7 @@ def _orders_assoc(**kw) -> dict:
 
 class TestSpellingInvariantAssociation:
     @pytest.mark.parametrize("formula", [
-        "customers.spend:sum",
-        "customers.spend:sum(partition_by=status)",
+        "sum(customers.spend)",
         "sum(customers.spend, partition_by=status)",
     ])
     async def test_orders_rooted_null_cell_holds_the_orderless_customer(
@@ -182,7 +181,7 @@ class TestSpellingInvariantAssociation:
         resp = await null_engine.execute(q({
             "source_model": "customers", "to_many_handling": "associate",
             "dimensions": ["orders.status"],
-            "measures": [{"formula": "spend:sum", "name": "c"}]}))
+            "measures": [{"formula": "sum(spend)", "name": "c"}]}))
         _assert_cells(cells(resp, "customers.orders.status", "customers.c"),
                       SPEND_BY_STATUS)
 
@@ -190,14 +189,14 @@ class TestSpellingInvariantAssociation:
         """Only the NULL cell (155) lies in (120, 200)."""
         resp = await null_engine.execute(q(_orders_assoc(
             measures=[AMOUNT],
-            filters=["customers.spend:sum > 120", "customers.spend:sum < 200"])))
+            filters=["sum(customers.spend) > 120", "sum(customers.spend) < 200"])))
         assert [r["orders.status"] for r in resp.data] == [None]
 
     async def test_order_only_reads_the_same_null_cell(self, null_engine):
         """|spend − 200|: NULL 45, new 90, ok 220."""
         resp = await null_engine.execute(q(_orders_assoc(
             measures=[AMOUNT],
-            order=[{"column": "abs(customers.spend:sum - 200)", "direction": "asc"}])))
+            order=[{"column": "abs(sum(customers.spend) - 200)", "direction": "asc"}])))
         assert [r["orders.status"] for r in resp.data] == ORDER_KEY_STATUS_ORDER
 
 

@@ -18,7 +18,7 @@ def _q(**kw) -> SlayerQuery:
     return SlayerQuery(**kw)
 
 
-BAND = "CASE WHEN amount:sum(partition_by=city) > 5000 THEN 1 ELSE 0 END"
+BAND = "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END"
 
 
 def _count_isolated_ctes(sql: str) -> int:
@@ -31,7 +31,7 @@ class TestFilterRoutingAcrossStageBoundary:
         sql = await gen(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
             filters=["band == 1", "status == 'ok'"],
-            measures=[ModelMeasure(formula="amount:sum", name="band_total")],
+            measures=[ModelMeasure(formula="sum(amount)", name="band_total")],
         ))
         cte = cm_cte_bodies(sql)
         # The base-row predicate reaches the partition CTE (DEV-1739 rule)...
@@ -43,21 +43,21 @@ class TestFilterRoutingAcrossStageBoundary:
 
 class TestOneStagePerDistinctPartitionSet:
     async def test_two_distinct_sets_emit_two_ctes(self) -> None:
-        band = ("CASE WHEN amount:sum(partition_by=city) > 5000 "
-                "AND amount:sum(partition_by=region) > 10000 THEN 1 ELSE 0 END")
+        band = ("CASE WHEN sum(amount, partition_by=city) > 5000 "
+                "AND sum(amount, partition_by=region) > 10000 THEN 1 ELSE 0 END")
         sql = await gen(_q(
             dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         assert _count_isolated_ctes(sql) == 2
 
     async def test_repeated_aggregate_dedups_to_one_cte(self) -> None:
         # The same partitioned aggregate referenced twice must intern to ONE
         # synthesized stage (dedup by AggregateKey identity).
-        band = ("CASE WHEN amount:sum(partition_by=city) > 5000 "
-                "THEN amount:sum(partition_by=city) ELSE 0 END")
+        band = ("CASE WHEN sum(amount, partition_by=city) > 5000 "
+                "THEN sum(amount, partition_by=city) ELSE 0 END")
         sql = await gen(_q(
             dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         assert _count_isolated_ctes(sql) == 1

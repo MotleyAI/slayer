@@ -29,11 +29,11 @@ def _query(date_range) -> SlayerQuery:
     td: dict = {"dimension": "created_at", "granularity": "month"}
     if date_range is not None:
         td["date_range"] = date_range
-    return SlayerQuery(
-        source_model="orders",
-        time_dimensions=[td],
-        measures=[{"formula": "amount:sum", "name": "m0"}],
-    )
+    return SlayerQuery.model_validate({
+        "source_model": "orders",
+        "time_dimensions": [td],
+        "measures": [{"formula": "sum(amount)", "name": "m0"}],
+    })
 
 
 def _warnings_for(date_range) -> list:
@@ -72,7 +72,7 @@ class TestNoDateRangeWarning:
     def test_a_genuine_rewrite_rule_still_says_rewrote(self) -> None:
         w = NormalizationWarning(
             rule_id="FUNC_STYLE_AGG", original="count(*)",
-            normalized="*:count", location="measures[0].formula",
+            normalized="count(*)", location="measures[0].formula",
         )
         assert w.rewritten is True
         assert "rewrote" in w.human_message().lower()

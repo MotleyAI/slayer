@@ -25,7 +25,7 @@ from tests._engine_helpers import build_exec_engine
 _ASSOCIATE_BODY = {
     "source_model": "orders",
     "dimensions": ["status"],
-    "measures": [{"formula": "customers.spend:sum", "name": "cm"}],
+    "measures": [{"formula": "sum(customers.spend)", "name": "cm"}],
     "to_many_handling": "associate",
 }
 
@@ -59,7 +59,7 @@ class TestRestSurface:
     async def test_strict_rejected(self, storage) -> None:
         """Scenario: strict input is rejected on the REST surface."""
         client = TestClient(create_app(storage=storage))
-        body = {"source_model": "orders", "measures": [{"formula": "*:count"}],
+        body = {"source_model": "orders", "measures": [{"formula": "count(*)"}],
                 "strict": True}
         resp = client.post("/query", json=body)
         assert resp.status_code != 200
@@ -71,7 +71,7 @@ class TestRestSurface:
         (400), not a 500."""
         client = TestClient(create_app(storage=storage))
         body = {"source_model": "orders", "dimensions": ["status"],
-                "measures": [{"formula": "customers.spend:weighted_avg("
+                "measures": [{"formula": "weighted_avg(customers.spend, "
                               "weight=sum(amount, partition_by=status))"}],
                 "to_many_handling": "associate"}
         resp = client.post("/query", json=body)
@@ -95,5 +95,5 @@ class TestMcpSurface:
         with pytest.raises((ToolError, ValueError)):
             await server.call_tool(name="query", arguments={"query": {
                 "source_model": "orders",
-                "measures": [{"formula": "*:count"}],
+                "measures": [{"formula": "count(*)"}],
                 "strict": True}})

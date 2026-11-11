@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import shutil
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -74,7 +74,7 @@ def open_store(corpus: Corpus, *, backend: str, tmp: Path, online: bool) -> Stor
 
 
 @contextlib.asynccontextmanager
-async def online(corpus: Corpus, *, backend: str, tmp: Path) -> AsyncIterator[StorageBackend]:
+async def online(corpus: Corpus, *, backend: str, tmp: Path) -> AsyncGenerator[StorageBackend, None]:
     """The store with its datasources pointed at data copies; every datasource's engine is disposed on exit."""
     storage = open_store(corpus, backend=backend, tmp=tmp, online=True)
     try:
@@ -121,8 +121,8 @@ def rows(resp, *, ordered: bool) -> list[dict]:
     return out if ordered else sorted(out, key=lambda r: json.dumps(r, sort_keys=True))
 
 
-async def run(corpus: Corpus, storage: StorageBackend, key: str) -> list[dict]:
-    """The recorded query ``key`` (a memory's stored query for ``memory:<id>``) as normalised rows."""
+async def execute(corpus: Corpus, storage: StorageBackend, key: str) -> Any:
+    """The response to the recorded query ``key`` (a memory's stored query for ``memory:<id>``)."""
     spec = corpus.expected[key]
     if key.startswith(MEMORY_PREFIX):
         query = (await storage.get_memory(key.removeprefix(MEMORY_PREFIX))).query
@@ -134,7 +134,12 @@ async def run(corpus: Corpus, storage: StorageBackend, key: str) -> list[dict]:
         resp = await engine.execute(query, data_source=spec["data_source"])
     finally:
         await engine.aclose()
-    return rows(resp, ordered=spec["ordered"])
+    return resp
+
+
+async def run(corpus: Corpus, storage: StorageBackend, key: str) -> list[dict]:
+    """The recorded query ``key`` as normalised rows."""
+    return rows(await execute(corpus, storage, key), ordered=corpus.expected[key]["ordered"])
 
 
 async def reingest(corpus: Corpus, storage: StorageBackend, data_source: str) -> None:
@@ -170,7 +175,7 @@ class OnlineChecks:
     corpus: ClassVar[Corpus]
 
     @pytest.fixture(params=["yaml", "sqlite"])
-    async def online_store(self, request, tmp_path) -> AsyncIterator[StorageBackend]:
+    async def online_store(self, request, tmp_path) -> AsyncGenerator[StorageBackend, None]:
         async with online(self.corpus, backend=request.param, tmp=tmp_path) as storage:
             yield storage
 
@@ -181,6 +186,10 @@ class OnlineChecks:
 
     async def test_recorded_query_returns_the_release_rows(self, online_store, key):
         assert await run(self.corpus, online_store, key) == self.corpus.expected[key]["rows"]
+
+    async def test_recorded_query_returns_the_release_keys(self, online_store, key):
+        resp = await execute(self.corpus, online_store, key)
+        assert sorted(c.rsplit(".", 1)[-1] for c in resp.columns) == sorted(self.corpus.expected[key]["rows"][0])
 
     async def test_every_model_resaves(self, online_store):
         models, _ = await load_all(self.corpus, online_store)

@@ -549,18 +549,18 @@ class TestDateRangeFilter:
         # A user-supplied filter and the auto-generated date_range filter
         # both appear, both row-phase. DEV-1450 stage 7b.9 enforces
         # legacy WHERE order: date_range first, user filter second.
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:sum"}],
-            filters=["amount > 0"],
-            time_dimensions=[
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)"}],
+            "filters": ["amount > 0"],
+            "time_dimensions": [
                 TimeDimension(
                     dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-01-01", "2024-03-01"],
                 ),
             ],
-        )
+        })
         planned = plan_query(query=q, bundle=_bundle_local())
         row_filters = [
             f for f in _plan_filters(planned) if f.phase == Phase.ROW

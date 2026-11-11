@@ -1,7 +1,7 @@
 """Positional aggregation parameters fold onto declared parameter order
 (spec: aggregations/functional-form — "Positional parameters fold onto
 declared parameter order"). ``percentile(x, 0.9)`` ≡ ``p=0.9`` for built-in,
-custom, colon, and re-aggregation-outer spellings; duplicates and excess
+custom, and re-aggregation-outer spellings; duplicates and excess
 positionals fail closed; first/last ranking columns are untouched."""
 
 from __future__ import annotations
@@ -36,11 +36,6 @@ class TestPositionalEqualsNamed:
         named = await _rows(exec_engine, "percentile(amount, p=0.9)")
         assert pos == named  # identical values AND result keys
 
-    async def test_percentile_colon(self, exec_engine):
-        pos = await _rows(exec_engine, "amount:percentile(0.9)")
-        named = await _rows(exec_engine, "amount:percentile(p=0.9)")
-        assert pos == named
-
     async def test_custom_aggregation_declared_order(self, exec_engine):
         pos = await _rows(exec_engine, "wavg(amount, id)")
         named = await _rows(exec_engine, "wavg(amount, weight=id)")
@@ -73,7 +68,7 @@ class TestPositionalErrors:
 
     async def test_parameterless_aggregation_rejects_positional_aggregate(self, exec_engine):
         with pytest.raises(ValueError, match="takes no parameters"):
-            await _rows(exec_engine, "amount:sum(sum(amount, partition_by=region))")
+            await _rows(exec_engine, "sum(amount, sum(amount, partition_by=region))")
 
     async def test_ranked_rejects_aggregate_ranking_key(self, exec_engine):
         with pytest.raises(ValueError, match="ranks by a column"):

@@ -57,7 +57,7 @@ class TestCompositeMeasureLift:
             dimensions=["region", "city"],
             measures=[
                 ModelMeasure(formula=MEASURE_DIFF, name="d"),
-                ModelMeasure(formula="amount:sum", name="s"),
+                ModelMeasure(formula="sum(amount)", name="s"),
             ],
         )
         resp = await engine.execute(query)
@@ -91,8 +91,8 @@ class TestCompositeMeasureLift:
         query = q(
             dimensions=["region", "city"],
             measures=[ModelMeasure(
-                formula="amount:sum(partition_by=region) - "
-                        "amount:sum(partition_by=[])",
+                formula="sum(amount, partition_by=region) - "
+                        "sum(amount, partition_by=[])",
                 name="d",
             )],
         )
@@ -143,7 +143,7 @@ class TestConformingSurfaces:
         query = q(
             dimensions=["region", "city"],
             measures=[ModelMeasure(
-                formula="amount:sum - amount:sum(partition_by=region)", name="d",
+                formula="sum(amount) - sum(amount, partition_by=region)", name="d",
             )],
         )
         resp = await engine.execute(query)
@@ -164,7 +164,7 @@ class TestConformingSurfaces:
             dimensions=["region", "city"],
             measures=[
                 ModelMeasure(formula=MIXED_RANK, name="r"),
-                ModelMeasure(formula="amount:sum", name="s"),
+                ModelMeasure(formula="sum(amount)", name="s"),
             ],
         )
         resp = await engine.execute(query)
@@ -175,7 +175,7 @@ class TestConformingSurfaces:
 
         solo = await engine.execute(q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         solo_by = rows_by(solo, "orders.region", "orders.city")
         assert set(solo_by) == set(by)
@@ -189,12 +189,12 @@ class TestConformingSurfaces:
         dialect, engine = exec_backend
         unfiltered = rows_by(await engine.execute(q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )), "orders.region", "orders.city")
         query = q(
             dimensions=["region", "city"],
             filters=[f"{MEASURE_DIFF} > 0"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region", "orders.city")
@@ -211,7 +211,7 @@ class TestConformingSurfaces:
         # the unfiltered run. Needs D10, so this variant is TDD, not locking.
         _, engine = exec_backend
         measures = [
-            ModelMeasure(formula="amount:sum", name="s"),
+            ModelMeasure(formula="sum(amount)", name="s"),
             ModelMeasure(formula=MEASURE_DIFF, name="d"),
         ]
         unfiltered = rows_by(await engine.execute(q(

@@ -15,17 +15,17 @@ import uuid
 
 import pytest
 
-pytest.importorskip("pytest_postgresql")
-
-import psycopg
-from pytest_postgresql import factories
-
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.async_utils import run_sync
+
+pytest.importorskip("pytest_postgresql")
+
+import psycopg  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
+from pytest_postgresql import factories  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
 
 postgresql_proc = factories.postgresql_proc(port=None)
 
@@ -105,11 +105,11 @@ def _dunder_storage(postgresql_proc, tmp_path_factory):
 class TestDunderModelLiveValues:
     async def test_per_label_sums(self, _dunder_storage) -> None:
         engine = SlayerQueryEngine(storage=_dunder_storage)
-        result = await engine.execute(query=SlayerQuery(
-            source_model="orders",
-            dimensions=["customer__region.label"],
-            measures=[{"formula": "amount:sum"}],
-        ))
+        result = await engine.execute(query=SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": ["customer__region.label"],
+            "measures": [{"formula": "sum(amount)"}],
+        }))
         by_label = {r["orders.customer__region.label"]: r["orders.amount_sum"]
                     for r in result.data}
         assert by_label == {"North": 15, "South": 20}
@@ -183,11 +183,11 @@ class TestLongAliasCollisionLiveValues:
                  "household_entity_record_north.tag")
         south = ("customer_entity_record.consumer_entity_record."
                  "household_entity_record_south.tag")
-        result = await engine.execute(query=SlayerQuery(
-            source_model="subscription_entity",
-            dimensions=[north, south],
-            measures=[{"formula": "amount:sum"}],
-        ))
+        result = await engine.execute(query=SlayerQuery.model_validate({
+            "source_model": "subscription_entity",
+            "dimensions": [north, south],
+            "measures": [{"formula": "sum(amount)"}],
+        }))
         assert result.row_count == 1
         row = result.data[0]
         # The two long paths must read their OWN leaf, not a truncation-merged one.

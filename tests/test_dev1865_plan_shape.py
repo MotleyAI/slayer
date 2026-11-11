@@ -17,7 +17,7 @@ from tests._dev1840_fixtures import bundle as _dev1840_bundle
 from tests._dev1840_fixtures import q as _dev1840_q
 from tests._dev1865_fixtures import ModelMeasure, plan, q
 
-_DEV1840_CM = _CM(formula="customers.spend:sum", name="cm")
+_DEV1840_CM = _CM(formula="sum(customers.spend)", name="cm")
 
 
 def _dev1840_attach(planned, root):
@@ -42,8 +42,8 @@ class TestMaskEntries:
     def test_planned_query_exposes_typed_masks_per_conjunct(self) -> None:
         planned = plan(q(
             dimensions=["region"],
-            filters=["amount:sum > 100", "status = 'ok'"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            filters=["sum(amount) > 100", "status = 'ok'"],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         assert hasattr(planned, "masks"), "PlannedQuery must carry typed mask entries"
         masks = planned.masks
@@ -58,8 +58,8 @@ class TestMaskEntries:
     def test_mask_slots_are_hidden(self) -> None:
         planned = plan(q(
             dimensions=["region"],
-            filters=["amount:sum > 100", "status = 'ok'"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            filters=["sum(amount) > 100", "status = 'ok'"],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         assert hasattr(planned, "masks")
         slots = _slots_by_id(planned)
@@ -71,8 +71,8 @@ class TestMaskEntries:
     def test_mask_slot_ids_are_stable_across_planning(self) -> None:
         query = q(
             dimensions=["region"],
-            filters=["amount:sum > 100", "status = 'ok'"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            filters=["sum(amount) > 100", "status = 'ok'"],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         first, second = plan(query), plan(query)
         assert hasattr(first, "masks")
@@ -82,7 +82,7 @@ class TestMaskEntries:
         planned = plan(q(
             dimensions=["region"],
             filters=["status = 'ok'"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         assert hasattr(planned, "masks")
         (mask,) = planned.masks

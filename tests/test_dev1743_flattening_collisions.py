@@ -26,6 +26,7 @@ import tempfile
 
 import pytest
 
+import slayer.engine.query_engine as qe
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Column,
@@ -140,8 +141,8 @@ class TestSameNameCollisionGuardLive:
         query = SlayerQuery(
             source_model="orders",
             measures=[
-                {"formula": "cumsum(amount:sum)", "name": "dup"},
-                {"formula": "cumsum(amount:sum)", "name": "dup"},
+                {"formula": "cumsum(sum(amount))", "name": "dup"},
+                {"formula": "cumsum(sum(amount))", "name": "dup"},
             ],
             time_dimensions=[
                 {"dimension": {"name": "created_at"}, "granularity": "month"},
@@ -192,8 +193,6 @@ class TestQueryBackedFlattenMessage:
         if the check fires first the collision error propagates, if the wrapper
         is reached first we'd see the sentinel instead — proving the ordering.
         """
-        import slayer.engine.query_engine as qe
-
         def _sentinel(*a, **k):
             raise RuntimeError("WRAPPER_REACHED_BEFORE_COLLISION_CHECK")
 
@@ -242,14 +241,10 @@ class TestComputedDimFlattenCollision:
         """FAIL-FIRST: a computed dim explicitly named ``customers__region`` and a
         joined dim ``customers.region`` both flatten to ``customers__region`` and
         must raise the clear D5 message, not a generic duplicate-name error."""
-        query = SlayerQuery(
-            source_model="hostm",
-            dimensions=[
+        query = SlayerQuery.model_validate({"source_model": "hostm", "dimensions": [
                 "customers.region",
                 {"expression": "amount", "name": "customers__region"},
-            ],
-            measures=[{"formula": "amount:sum"}],
-        )
+            ], "measures": [{"formula": "sum(amount)"}]})
         host = self._host()
         extras = [_customers()]
         with pytest.raises(ValueError, match=r"flatten to the same downstream name"):

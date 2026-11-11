@@ -8,12 +8,12 @@ explicit-ranking-column cases.
 
 Oracle derivations (from the DEV-1739 rows; row list in ``_dev1824_fixtures``)
 ------------------------------------------------------------------------------
-CITY_WM        bare ``amount:sum(window='1y')`` at (region, city, month): the
+CITY_WM        bare ``sum(amount, window='1y')`` at (region, city, month): the
                window spans the whole dataset, so each bucket carries the
                running (region, city) total: (N,CityA,Jan)=30 (N,CityB,Feb)=40
                (N,NULL,Feb)=30 (S,CityC,Jan)=25 (S,CityC,Mar)=25+25=50
                (NULL,CityD,Mar)=60.
-CITY_LAST_RC   bare ``amount:last`` at (region, city) — value of the latest
+CITY_LAST_RC   bare ``last(amount)`` at (region, city) — value of the latest
                ``ordered_at`` row per group: (N,CityA)=20 (row 2, Jan 20)
                (N,CityB)=40 (N,NULL)=30 (S,CityC)=25 (row 6) (NULL,CityD)=60.
 CITY_MONTH_LAST  the same at (region, city, month): (N,CityA,Jan)=20 others as
@@ -21,13 +21,13 @@ CITY_MONTH_LAST  the same at (region, city, month): (N,CityA,Jan)=20 others as
 WM_X / RK_X    the bare-windowed / bare-last oracle per matrix dimension
                family (grain = every projected slot; wm '1y' ≡ running total
                within the non-time dims, so WM_X mirrors the cumsum series).
-OK_W90         ``ok_amount:sum(window='90d')`` at (region, month) — row 6
+OK_W90         ``sum(ok_amount, window='90d')`` at (region, month) — row 6
                (hold) drops, so (S,Mar)=25 (vs 50 unfiltered): (N,Jan)=30
                (N,Feb)=100 (S,Jan)=25 (S,Mar)=25 (NULL,Mar)=60.
-OK_LAST        ``ok_amount:last`` by region — the MASKED value at the newest row
+OK_LAST        ``last(ok_amount)`` by region — the MASKED value at the newest row
                (DEV-1832: Column.filter masks, it does not restrict the ranking):
                N=30 (newest N row is ok), S=NULL (S's newest row #6 is 'hold' →
-               masked to NULL), NULL-region=60. The all-NULL ``nomatch:last`` is
+               masked to NULL), NULL-region=60. The all-NULL ``last(nomatch)`` is
                the discriminating twin.
 CUMSUM_OVER_W90  cumsum of TRAILING_90D_REGION months within region:
                N: 30, 130 · S: 25, 75 · NULL: 60.
@@ -119,7 +119,7 @@ CITY_MONTH_LAST = {
     ("South", "CityC", "2024-03"): 25.0, (None, "CityD", "2024-03"): 60.0,
 }
 
-#: Bare ``amount:sum(window='1y')`` per matrix dimension family, keyed like
+#: Bare ``sum(amount, window='1y')`` per matrix dimension family, keyed like
 #: ``GROUP_M_MONTH[family]``. '1y' spans the dataset, so each entry is the
 #: running total within the family's non-time dims.
 WM_X = {
@@ -154,7 +154,7 @@ WM_X = {
     },
 }
 
-#: Bare ``amount:last`` per matrix dimension family (timeless), keyed like
+#: Bare ``last(amount)`` per matrix dimension family (timeless), keyed like
 #: ``GROUP_M[family]`` — the value of the group's latest ``ordered_at`` row.
 RK_X = {
     "col": {("North",): 30.0, ("South",): 25.0, (None,): 60.0},
@@ -203,11 +203,11 @@ CHANGE_PCT_OVER_LAST = {("North", "2024-02"): 0.5}
 # Union-grain (DEV-1839 lift, task 3.7) oracles.
 # --------------------------------------------------------------------------- #
 UNION_WM_DIM = (
-    "rank(amount:sum(window='90d', partition_by=region) - "
-    "amount:sum(partition_by=region), direction='desc')"
+    "rank(sum(amount, window='90d', partition_by=region) - "
+    "sum(amount, partition_by=region), direction='desc')"
 )
 UNION_RK_DIM = (
-    "rank(amount:last(partition_by=region) - amount:sum(partition_by=city), direction='desc')"
+    "rank(last(amount, partition_by=region) - sum(amount, partition_by=city), direction='desc')"
 )
 UNION_WM_RANK = {
     ("North", "2024-01"): 5, ("North", "2024-02"): 1,
@@ -218,7 +218,7 @@ UNION_RK_RANK = {
     ("South", "CityC"): 5, (None, "CityD"): 1,
 }
 
-#: (region, month) keys ordered by the hidden ``amount:sum(window='90d')`` desc.
+#: (region, month) keys ordered by the hidden ``sum(amount, window='90d')`` desc.
 ORDER_BY_W90_DESC = [
     ("North", "2024-02"), (None, "2024-03"), ("South", "2024-03"),
     ("North", "2024-01"), ("South", "2024-01"),

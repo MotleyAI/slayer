@@ -230,7 +230,7 @@ class TestGatesSkipProbe:
         )
         model = SlayerModel(
             name="qb",
-            source_queries=[SlayerQuery(source_model="orders", measures=["*:count"])],
+            source_queries=[SlayerQuery.model_validate({"source_model": "orders", "measures": ["count(*)"]})],
             data_source=_DS,
         )
         await engine.validate_sql_model_source(model)  # must not raise

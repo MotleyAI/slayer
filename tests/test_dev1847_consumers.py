@@ -28,8 +28,8 @@ from tests._dev1847_fixtures import (
     sales_q,
 )
 
-COMPOSITE = ("q_amount:sum(partition_by=[city, region]) + "
-             "amount:sum(partition_by=region)")
+COMPOSITE = ("sum(q_amount, partition_by=[city, region]) + "
+             "sum(amount, partition_by=region)")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -73,7 +73,7 @@ class TestArithmeticAndOrderConsumers:
         when not selected — rows come back in its descending order."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:sum", name="tot")],
+            measures=[ModelMeasure(formula="sum(amount)", name="tot")],
             order=[{"column": f"avg({INNER_CR})", "direction": "desc"}]))
         order = [r["sales.region"] for r in resp.data]
         # South(70) > East(60) > North(45) > Gap(10); Void(NULL) placement free.
@@ -191,7 +191,7 @@ class TestComputedDimensionConsumer:
                   "name": "rlevel"}
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", rlevel],
-            measures=[ModelMeasure(formula="amount:sum", name="tot")]))
+            measures=[ModelMeasure(formula="sum(amount)", name="tot")]))
         by = rows_by(resp, "sales.region", "sales.rlevel")
         expected = {
             region: "high" if avg is not None and avg > 50 else "low"

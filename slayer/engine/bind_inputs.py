@@ -54,7 +54,7 @@ from slayer.core.query import (
     granularity_call_argument,
     granularity_call_parts,
 )
-from slayer.core.refs import dotted_key_display
+from slayer.core.refs import auto_name_from_expression, dotted_key_display
 from slayer.core.time_bounds import is_frame_bound
 from slayer.core.time_points import floor_to
 from slayer.core.scope import (
@@ -122,7 +122,6 @@ from slayer.core.syntax import (
     ParsedExpr,
     Ref,
     TransformCall,
-    canonical_measure_text,
     drop_root_qualifier,
     parse_bound_expr,
     parse_expr,
@@ -1275,8 +1274,8 @@ def _canonical_alias_for_formula(
     root: Optional[str] = None,
 ) -> str:
     """Canonical public alias for a measure formula: ``canonical_aggregate_alias`` for an unfiltered
-    AggregateKey root, else :func:`formula_text_alias` of the canonical text of ``parsed`` with its
-    ``root`` qualifier dropped (so every spelling of one formula derives one alias)."""
+    AggregateKey root, else :func:`formula_text_alias` of ``parsed`` with its ``root`` qualifier dropped (so every
+    spelling of one formula derives one alias)."""
     filtered = parsed is not None and any(
         isinstance(n, AggCall) and n.filter is not None for n in walk_parsed(parsed))
     if bound is not None and isinstance(bound.value_key, AggregateKey) and not filtered:
@@ -1287,7 +1286,9 @@ def _canonical_alias_for_formula(
         if alias is not None:
             return alias
         # None means the source exposes no leaf/column name; use the text-shape path.
-    return formula_text_alias(canonical_measure_text(root_relative(parsed, root)) if parsed is not None else formula.strip())
+    if parsed is None:
+        return auto_name_from_expression(formula.strip())
+    return formula_text_alias(root_relative(parsed, root))
 
 
 def _resolve_shift_units(key: ValueKey, *, bundle: ResolvedSourceBundle) -> ValueKey:

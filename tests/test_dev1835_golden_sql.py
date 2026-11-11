@@ -35,7 +35,7 @@ ALLOWED_DELTAS: dict[str, str] = {}
 
 BAND = {"expression": BAND35, "name": "band"}
 RBAND = {
-    "expression": "CASE WHEN amount:sum(partition_by=region) > 55 THEN 1 ELSE 0 END",
+    "expression": "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END",
     "name": "rband",
 }
 
@@ -45,35 +45,35 @@ def _cases() -> dict:
         "mig/bare_wm": q(
             dimensions=["region"], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
-                ModelMeasure(formula="amount:sum(window='90d')", name="w"),
+                ModelMeasure(formula="sum(amount)", name="m"),
+                ModelMeasure(formula="sum(amount, window='90d')", name="w"),
             ],
         ),
         "mig/bare_rk": q(
             dimensions=["region"],
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
-                ModelMeasure(formula="amount:last", name="l"),
+                ModelMeasure(formula="sum(amount)", name="m"),
+                ModelMeasure(formula="last(amount)", name="l"),
             ],
         ),
         "lift/band_x_wm": q(
             dimensions=["region", BAND], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
-                ModelMeasure(formula="amount:sum(window='1y')", name="w"),
+                ModelMeasure(formula="sum(amount)", name="m"),
+                ModelMeasure(formula="sum(amount, window='1y')", name="w"),
             ],
         ),
         "lift/cumsum_over_bare_wm": q(
             dimensions=["region"], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="cumsum(amount:sum(window='90d'))", name="x"),
+                ModelMeasure(formula="cumsum(sum(amount, window='90d'))", name="x"),
             ],
         ),
         "dedup/dual_role": q(
             dimensions=["region", RBAND],
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
-                ModelMeasure(formula="amount:sum(partition_by=region)", name="rt"),
+                ModelMeasure(formula="sum(amount)", name="m"),
+                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
             ],
         ),
     }

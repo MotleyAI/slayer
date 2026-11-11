@@ -40,9 +40,9 @@ class TestConditionalMeasureOverAggregate:
         resp = await exec_engine.execute(_q(
             dimensions=["region"],
             measures=[
-                ModelMeasure(formula="amount:sum", name="rev"),
+                ModelMeasure(formula="sum(amount)", name="rev"),
                 ModelMeasure(
-                    formula="CASE WHEN amount:sum >= 10000 THEN 1 ELSE 0 END",
+                    formula="CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END",
                     name="big",
                 ),
             ],
@@ -59,8 +59,8 @@ class TestConditionalMeasureOverAggregate:
             measures=[
                 ModelMeasure(
                     formula=(
-                        "CASE WHEN amount:sum >= 14000 THEN 2 "
-                        "WHEN amount:sum >= 8000 THEN 1 ELSE 0 END"
+                        "CASE WHEN sum(amount) >= 14000 THEN 2 "
+                        "WHEN sum(amount) >= 8000 THEN 1 ELSE 0 END"
                     ),
                     name="tier",
                 ),
@@ -74,7 +74,7 @@ class TestConditionalMeasureOverAggregate:
         resp = await exec_engine.execute(_q(
             dimensions=["region"],
             measures=[
-                ModelMeasure(formula="iif(amount:sum >= 10000, 1, 0)", name="big"),
+                ModelMeasure(formula="iif(sum(amount) >= 10000, 1, 0)", name="big"),
             ],
         ))
         by = rows_by(resp, "orders.region")
@@ -86,8 +86,8 @@ class TestConditionalInFilter:
     async def test_case_predicate_removes_a_group(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region"],
-            filters=["CASE WHEN amount:sum >= 10000 THEN 1 ELSE 0 END == 1"],
-            measures=[ModelMeasure(formula="amount:sum", name="rev")],
+            filters=["CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END == 1"],
+            measures=[ModelMeasure(formula="sum(amount)", name="rev")],
         ))
         regions = {r["orders.region"] for r in resp.data}
         assert regions == {"EU"}
@@ -99,9 +99,9 @@ class TestNullBranchKeepsValue:
         resp = await exec_engine.execute(_q(
             dimensions=["region"],
             measures=[
-                ModelMeasure(formula="amount:sum", name="rev"),
+                ModelMeasure(formula="sum(amount)", name="rev"),
                 ModelMeasure(
-                    formula="CASE WHEN amount:sum >= 10000 THEN 1 END", name="big",
+                    formula="CASE WHEN sum(amount) >= 10000 THEN 1 END", name="big",
                 ),
             ],
         ))
@@ -118,7 +118,7 @@ class TestBranchTypingThroughPlanning:
             dimensions=["region"],
             measures=[
                 ModelMeasure(
-                    formula="CASE WHEN amount:sum >= 100 THEN 'big' ELSE 0 END",
+                    formula="CASE WHEN sum(amount) >= 100 THEN 'big' ELSE 0 END",
                     name="bad",
                 ),
             ],
@@ -135,7 +135,7 @@ class TestBranchTypingThroughPlanning:
             dimensions=["region"],
             measures=[
                 ModelMeasure(
-                    formula="CASE WHEN amount:sum >= 10000 THEN 1 ELSE 0.5 END",
+                    formula="CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0.5 END",
                     name="w",
                 ),
             ],
@@ -151,8 +151,8 @@ class TestOrderByCaseComposite:
         # slot and sort correctly. EU total 17000 > 12000 → 0 (first); US → 1.
         resp = await exec_engine.execute(_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:sum", name="rev")],
-            order=[{"column": "CASE WHEN amount:sum > 12000 THEN 0 ELSE 1 END",
+            measures=[ModelMeasure(formula="sum(amount)", name="rev")],
+            order=[{"column": "CASE WHEN sum(amount) > 12000 THEN 0 ELSE 1 END",
                     "direction": "asc"}],
         ))
         regions = [r["orders.region"] for r in resp.data]
@@ -167,7 +167,7 @@ class TestConditionalOverCrossModelAggregate:
             dimensions=["customers.tier"],
             measures=[
                 ModelMeasure(
-                    formula="CASE WHEN customers.spend:sum > 300 THEN 1 ELSE 0 END",
+                    formula="CASE WHEN sum(customers.spend) > 300 THEN 1 ELSE 0 END",
                     name="b",
                 ),
             ],
@@ -184,7 +184,7 @@ class TestConditionalNestedInScalarCall:
             dimensions=["region"],
             measures=[
                 ModelMeasure(
-                    formula="coalesce(iif(amount:sum >= 10000, 1, 0), -1)",
+                    formula="coalesce(iif(sum(amount) >= 10000, 1, 0), -1)",
                     name="c",
                 ),
             ],
@@ -202,7 +202,7 @@ class TestCaseInModelFormula:
             source_model=ModelExtension.model_validate({
                 "source_name": "orders",
                 "measures": [{
-                    "formula": "CASE WHEN amount:sum >= 10000 THEN 1 ELSE 0 END",
+                    "formula": "CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END",
                     "name": "big",
                 }],
             }),
@@ -219,7 +219,7 @@ class TestIifWrongArityAtBind:
         # Arity is enforced by the generic scalar path at bind time (3, 3).
         q = _q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="iif(amount:sum >= 10000, 1)", name="b")],
+            measures=[ModelMeasure(formula="iif(sum(amount) >= 10000, 1)", name="b")],
         )
         with pytest.raises(ValueError, match=r"iif"):
             await gen(q)
@@ -232,7 +232,7 @@ class TestConditionalFilterPullsJoin:
         resp = await exec_engine.execute(_q(
             dimensions=["region"],
             filters=["CASE WHEN customers.tier = 'gold' THEN 1 ELSE 0 END == 1"],
-            measures=[ModelMeasure(formula="amount:sum", name="rev")],
+            measures=[ModelMeasure(formula="sum(amount)", name="rev")],
         ))
         by = rows_by(resp, "orders.region")
         assert set(by) == {("EU",)}
@@ -248,7 +248,7 @@ class TestConditionalOverTransform:
             time_dimensions=month_td(),
             measures=[
                 ModelMeasure(
-                    formula="CASE WHEN change(amount:sum) > 0 THEN 1 ELSE 0 END",
+                    formula="CASE WHEN change(sum(amount)) > 0 THEN 1 ELSE 0 END",
                     name="up",
                 ),
             ],
@@ -269,8 +269,8 @@ class TestChangeOverComputedDimension:
                          "name": "band"}],
             time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum", name="rev"),
-                ModelMeasure(formula="change(amount:sum)", name="chg"),
+                ModelMeasure(formula="sum(amount)", name="rev"),
+                ModelMeasure(formula="change(sum(amount))", name="chg"),
             ],
         ))
         by = {(int(r["orders.band"]), month_key(r["orders.ordered_at"])): r
@@ -296,7 +296,7 @@ class TestCaseInColumnSql:
                 }],
             }),
             dimensions=["row_band"],
-            measures=[ModelMeasure(formula="amount:sum", name="rev")],
+            measures=[ModelMeasure(formula="sum(amount)", name="rev")],
         ))
         by = {int(r["orders.row_band"]): float(r["orders.rev"]) for r in resp.data}
         assert by == {0: pytest.approx(19000.0), 1: pytest.approx(6000.0)}

@@ -37,7 +37,7 @@ WORKING_PREFIX = "lift/"
 
 
 def _cases() -> dict:
-    s = ModelMeasure(formula="amount:sum", name="s")
+    s = ModelMeasure(formula="sum(amount)", name="s")
     return {
         "lift/dim_mixed_rank": q(
             dimensions=["region", "city", {"expression": MIXED_RANK, "name": "rr"}],
@@ -86,8 +86,8 @@ def _cases() -> dict:
         "lift/dim_mixed_windowed": q(
             dimensions=[
                 "region", "city",
-                {"expression": "rank(amount:sum(window='90d', partition_by=region)"
-                               " - amount:sum(partition_by=city), direction='desc')", "name": "x"},
+                {"expression": "rank(sum(amount, window='90d', partition_by=region)"
+                               " - sum(amount, partition_by=city), direction='desc')", "name": "x"},
             ],
             time_dimensions=month_td(),
             measures=[s],
@@ -95,15 +95,15 @@ def _cases() -> dict:
         "lift/dim_mixed_first_last": q(
             dimensions=[
                 "region", "city",
-                {"expression": "rank(amount:last(partition_by=region) - "
-                               "amount:sum(partition_by=city), direction='desc')", "name": "x"},
+                {"expression": "rank(last(amount, partition_by=region) - "
+                               "sum(amount, partition_by=city), direction='desc')", "name": "x"},
             ],
             measures=[s],
         ),
         "guard/dim_temporal_axis_missing": q(
             dimensions=[
                 "region", "city",
-                {"expression": "cumsum(amount:sum(partition_by=[region, city]))",
+                {"expression": "cumsum(sum(amount, partition_by=[region, city]))",
                  "name": "cs"},
             ],
             time_dimensions=month_td(),
@@ -112,8 +112,8 @@ def _cases() -> dict:
         "guard/dim_kwarg_outside_union": q(
             dimensions=[
                 "region", "city",
-                {"expression": "rank(amount:sum(partition_by=region) - "
-                               "amount:sum(partition_by=city), "
+                {"expression": "rank(sum(amount, partition_by=region) - "
+                               "sum(amount, partition_by=city), "
                                "partition_by=channel, direction='desc')", "name": "x"},
             ],
             measures=[s],

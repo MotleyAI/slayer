@@ -26,9 +26,9 @@ from tests._dev1832_fixtures import (
     monthly_q,
 )
 
-SHARE = "amount:sum / amount:sum(partition_by=[ordered_at])"
-REGION_SHARE = "amount:sum / amount:sum(partition_by=[region])"
-SERIES = "time_shift(cumsum(amount:sum), -1)"
+SHARE = "sum(amount) / sum(amount, partition_by=[ordered_at])"
+REGION_SHARE = "sum(amount) / sum(amount, partition_by=[region])"
+SERIES = "time_shift(cumsum(sum(amount)), -1)"
 
 
 def _bundle(root_name: str = "monthly") -> ResolvedSourceBundle:
@@ -97,7 +97,7 @@ class TestShiftedAttachShape:
             "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"},
                                 {"dimension": "customers.signup_at", "granularity": "month"}],
             "main_time_dimension": "ordered_at",
-            "measures": [{"formula": "time_shift(amount:sum / 2, -1)", "name": "t"}]}),
+            "measures": [{"formula": "time_shift(sum(amount) / 2, -1)", "name": "t"}]}),
             bundle=_bundle("orders"))
         [attach] = _shifted(pq)
         grain = {s.key for s in pq.row_slots if not s.hidden}

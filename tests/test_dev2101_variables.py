@@ -101,9 +101,8 @@ class TestStructureIsNeverInjected:
         {"measures": ["{f}(amount)"], "variables": {"f": "sum"}},
         {"dimensions": ["customers.{c}"], "variables": {"c": "name"}},
         {"measures": ["sum(amount, partition_by={x})"], "dimensions": ["region"], "variables": {"x": "region"}},
-        {"measures": ["{col}:sum"], "variables": {"col": "amount"}},
         {"measures": ["sum(amount, {k}=1)"], "variables": {"k": "partition_by"}},
-    ], ids=["function", "path-segment", "reference-kwarg", "colon-source", "kwarg-name"])
+    ], ids=["function", "path-segment", "reference-kwarg", "kwarg-name"])
     async def test_non_literal_positions_rejected(self, engine: SlayerQueryEngine, kw: dict) -> None:
         await _rejected(engine, "literal values", **kw)
 

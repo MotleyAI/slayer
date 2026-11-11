@@ -59,7 +59,7 @@ class TestFailClosed:
 
     async def test_empty_determination_set_has_dedicated_error(self, storage) -> None:
         """Only measures, no dims/field-filters ⇒ nothing to infer from."""
-        query = SlayerQuery(measures=[{"formula": "orders.amount:sum", "name": "rev"}])
+        query = SlayerQuery.model_validate({"measures": [{"formula": "sum(orders.amount)", "name": "rev"}]})
         with pytest.raises(PopulationInferenceError) as ei:
             await infer_population(query=query, storage=storage, data_source=DS_CHAIN)
         err = ei.value
@@ -119,7 +119,7 @@ class TestFailClosed:
     async def test_measure_only_without_datasource_is_empty_determination(self, storage) -> None:
         """A measures-only query has nothing to infer from — even with no
         data_source it is EMPTY_DETERMINATION, never a datasource error."""
-        query = SlayerQuery(measures=[{"formula": "orders.amount:sum", "name": "rev"}])
+        query = SlayerQuery.model_validate({"measures": [{"formula": "sum(orders.amount)", "name": "rev"}]})
         with pytest.raises(PopulationInferenceError) as ei:
             await infer_population(query=query, storage=storage)
         assert ei.value.reason is PopulationErrorReason.EMPTY_DETERMINATION
@@ -128,7 +128,7 @@ class TestFailClosed:
         self, storage
     ) -> None:
         """Aggregate-only filter, no dims, no data_source ⇒ EMPTY_DETERMINATION, not NO_DATASOURCE."""
-        query = SlayerQuery(filters=["orders.amount:sum > 100"])
+        query = SlayerQuery(filters=["sum(orders.amount) > 100"])
         with pytest.raises(PopulationInferenceError) as ei:
             await infer_population(query=query, storage=storage)
         assert ei.value.reason is PopulationErrorReason.EMPTY_DETERMINATION
@@ -137,10 +137,10 @@ class TestFailClosed:
         """A measure whose anchor matches a sibling stage name must not trigger
         SIBLING_STAGE — measures never anchor inference."""
         choice = await infer_population(
-            query=SlayerQuery(
-                dimensions=["customers.region"],
-                measures=[{"formula": "s1.total:sum", "name": "t"}],
-            ),
+            query=SlayerQuery.model_validate({
+                "dimensions": ["customers.region"],
+                "measures": [{"formula": "sum(s1.total)", "name": "t"}],
+            }),
             storage=storage,
             sibling_stage_names={"s1"},
         )

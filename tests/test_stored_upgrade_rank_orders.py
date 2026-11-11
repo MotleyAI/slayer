@@ -26,6 +26,9 @@ from tests._stored_upgrade_fixtures import (
 
 STAGE_RANK = "rank(rev:sum)"
 MEMORY_RANK = "rank(amount:sum)"
+#: The stored ranks as they load: descending, in the functional spelling.
+STAGE_RANK_LOADED = "rank(sum(rev), direction='desc')"
+MEMORY_RANK_LOADED = "rank(sum(amount), direction='desc')"
 TOP_QUERY = {"source_model": "top_status", "dimensions": ["status"], "measures": ["sum(total)"]}
 
 
@@ -52,10 +55,6 @@ def _memory_query(*, version: int | None = 4) -> dict:
     return q
 
 
-def _filled(raw: str) -> str:
-    return raw[:-1] + ", direction='desc')"
-
-
 @pytest.fixture
 def shop_ds(tmp_path):
     db = str(tmp_path / "shop.duckdb")
@@ -68,9 +67,9 @@ def shop_ds(tmp_path):
 
 
 def test_current_versions():
-    assert mig.CURRENT_VERSIONS["SlayerModel"] == 18
-    assert mig.CURRENT_VERSIONS["SlayerQuery"] == 9
-    assert mig.CURRENT_VERSIONS["Memory"] == 7
+    assert mig.CURRENT_VERSIONS["SlayerModel"] == 19
+    assert mig.CURRENT_VERSIONS["SlayerQuery"] == 10
+    assert mig.CURRENT_VERSIONS["Memory"] == 8
     for key in (("SlayerModel", 13), ("SlayerQuery", 5), ("Memory", 3)):
         assert key in mig._REGISTRY
         assert key in mig._STORED_ONLY
@@ -84,7 +83,7 @@ async def test_0_10_2_stage_ordering_by_rank_executes_descending(tmp_path, shop_
     model = await storage.get_model("top_status", data_source=DS)
     assert model is not None
     [order] = (model.source_queries or [])[-1].order or []
-    assert order.raw_formula == _filled(STAGE_RANK)
+    assert order.raw_formula == STAGE_RANK_LOADED
     resp = await run(storage, TOP_QUERY)
     assert list(by_dimension(resp, dim_suffix="status")) == [TOP_STATUS_DESC]
 
@@ -98,7 +97,7 @@ async def test_0_10_2_memory_ordering_by_rank_executes_descending(tmp_path, shop
     mem = await storage.get_memory("m1")
     assert mem.query is not None
     [order] = mem.query.order or []
-    assert order.raw_formula == _filled(MEMORY_RANK)
+    assert order.raw_formula == MEMORY_RANK_LOADED
     resp = await run(storage, mem.query)
     assert list(by_dimension(resp, dim_suffix="status")) == [TOP_STATUS_DESC]
 
@@ -115,7 +114,7 @@ async def test_v13_model_with_unrewritten_raw_formula_is_repaired(tmp_path, shop
     final = (model.source_queries or [])[-1]
     assert final.version == mig.CURRENT_VERSIONS["SlayerQuery"]
     [order] = final.order or []
-    assert order.raw_formula == _filled(STAGE_RANK)
+    assert order.raw_formula == STAGE_RANK_LOADED
     doc = await raw_doc(storage, "top_status")
     assert doc["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
     resp = await run(storage, TOP_QUERY)
@@ -133,7 +132,7 @@ async def test_v3_memory_with_unrewritten_raw_formula_is_repaired(tmp_path, shop
     assert mem.query is not None
     assert mem.query.version == mig.CURRENT_VERSIONS["SlayerQuery"]
     [order] = mem.query.order or []
-    assert order.raw_formula == _filled(MEMORY_RANK)
+    assert order.raw_formula == MEMORY_RANK_LOADED
 
 
 def test_fresh_query_order_is_not_rewritten():

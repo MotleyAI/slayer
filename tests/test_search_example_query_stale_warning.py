@@ -28,7 +28,7 @@ class TestExampleQueryStaleWarning:
         # then remove the referenced column so the query is now stale.
         attached = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
         )
         seed = await storage.save_memory(
             learning="paid revenue",
@@ -59,7 +59,7 @@ class TestExampleQueryStaleWarning:
         eq = next(e for e in example_queries if e.id == str(seed.id))
         assert eq.query.source_model == "orders"
         assert eq.query.measures is not None
-        assert eq.query.measures[0].formula == "amount:sum"
+        assert eq.query.measures[0].formula == "sum(amount)"
         # And a warning naming the memory must be present.
         memory_warnings = [
             w for w in resp.warnings if "memory:" in w and "stale" in w.lower()

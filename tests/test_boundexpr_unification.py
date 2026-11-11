@@ -74,10 +74,7 @@ class TestTypeUnification:
 
 class TestValueSlotExpressionPopulated:
     def test_measure_slot_carries_expression(self) -> None:
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:sum"}],
-        )
+        q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
         planned = plan_query(query=q, bundle=_bundle())
         assert len(planned.aggregate_slots) == 1
         slot = planned.aggregate_slots[0]
@@ -87,11 +84,11 @@ class TestValueSlotExpressionPopulated:
         assert slot.expression.value_key == slot.key
 
     def test_dimension_slot_carries_expression(self) -> None:
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:sum"}],
-            dimensions=["status"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)"}],
+            "dimensions": ["status"],
+        })
         planned = plan_query(query=q, bundle=_bundle())
         row_slot = next(
             s for s in planned.row_slots
@@ -103,11 +100,11 @@ class TestValueSlotExpressionPopulated:
     def test_hidden_dep_slot_carries_expression(self) -> None:
         # Hidden slots (filter dep) also get expression populated so
         # the generator can render them without re-binding.
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:sum"}],
-            filters=["amount > 0"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)"}],
+            "filters": ["amount > 0"],
+        })
         planned = plan_query(query=q, bundle=_bundle())
         # The 'amount' ColumnKey is now a hidden slot dep.
         hidden_slots = [
@@ -141,11 +138,11 @@ class TestMaskExpressionPopulated:
     def test_user_filter_compiles_to_a_mask_slot(self) -> None:
         # DEV-1865: every filter conjunct compiles to a hidden slot whose
         # key IS the binder-produced predicate (not just date_range filters).
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:sum"}],
-            filters=["amount > 0"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)"}],
+            "filters": ["amount > 0"],
+        })
         planned = plan_query(query=q, bundle=_bundle())
         assert len(planned.masks) == 1
         assert _sole_mask_key(planned) is not None
@@ -154,11 +151,11 @@ class TestMaskExpressionPopulated:
         # The mask slot carries the SAME value_key identity the binder
         # produced. Comparing equality is enough — value_key is frozen,
         # so structural equality implies equivalence.
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:sum"}],
-            filters=["amount > 0"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)"}],
+            "filters": ["amount > 0"],
+        })
         planned = plan_query(query=q, bundle=_bundle())
         key = _sole_mask_key(planned)
         # Should be an ArithmeticKey wrapping ColumnKey(amount) and a
@@ -169,11 +166,11 @@ class TestMaskExpressionPopulated:
     def test_measure_mask_carries_the_aggregate(self) -> None:
         # An aggregate-bearing (measure-typed) mask carries the
         # expression too.
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:sum"}],
-            filters=["amount:sum > 100"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)"}],
+            "filters": ["sum(amount) > 100"],
+        })
         planned = plan_query(query=q, bundle=_bundle())
         key = _sole_mask_key(planned)
         # Walking the value_key reveals the AggregateKey leaf.

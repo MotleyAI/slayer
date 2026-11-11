@@ -22,7 +22,7 @@ Two things are asserted that SQL-shape alone cannot establish:
   constant. Executed row order proves it did not.
 * **Containment.** ``order_tags`` is 1:N against ``orders`` (order 1 carries
   three tags). If the sort key's join were pulled into the host base, the
-  sibling ``amount:sum`` would multiply. Executed values prove it did not, and
+  sibling ``sum(amount)`` would multiply. Executed values prove it did not, and
   the base's own JOIN list proves why.
 
 D10: the wrap is DIRECTION-AWARE — ``MIN`` on ASC, ``MAX`` on DESC — replacing
@@ -63,7 +63,7 @@ from tests._dev1747_fixtures import (
 )
 from tests._engine_helpers import _engine_generate
 
-_MEASURE = [{"formula": "amount:sum", "name": "rev"}]
+_MEASURE = [{"formula": "sum(amount)", "name": "rev"}]
 
 
 def _wrap_functions(sql: str, column: str, *, dialect: str = "postgres") -> list[str]:
@@ -239,7 +239,7 @@ class TestDirectionAwareWrap:
 # ---------------------------------------------------------------------------
 class TestFanoutContainment:
     """``order_tags`` is 1:N — order 1 carries three tags. Ordering by a tag
-    name must not multiply the sibling ``amount:sum``."""
+    name must not multiply the sibling ``sum(amount)``."""
 
     def _tag_ordered(self, direction: str = "asc") -> SlayerQuery:
         return _grouped_order_query(

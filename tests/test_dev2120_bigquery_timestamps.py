@@ -101,8 +101,12 @@ class TestZonedColumnReadsNaive:
         assert fragment in await _sql(expr, zoned=True)
 
     async def test_time_dimension_bucket_and_date_range(self) -> None:
-        query = SlayerQuery.model_validate({"source_model": "lib", "measures": [{"formula": "*:count"}], "time_dimensions": [
-            {"dimension": "ts", "granularity": "month", "date_range": ["2024-01-01", "2024-03-31"]}]})
+        query = SlayerQuery.model_validate({
+            "source_model": "lib",
+            "measures": [{"formula": "count(*)"}],
+            "time_dimensions": [
+            {"dimension": "ts", "granularity": "month", "date_range": ["2024-01-01", "2024-03-31"]}],
+        })
         sql = " ".join((await _engine_generate(query=query, model=_zoned_lib(), dialect="bigquery")).upper().split())
         assert "DATE_TRUNC(CAST(LIB.TS AS DATETIME), MONTH)" in sql, sql
         assert "LIB.TS >= '2024-01-01 00:00:00'" in sql, sql
@@ -127,8 +131,11 @@ class TestZonedColumnReadsNaive:
 
     @pytest.mark.parametrize("agg", ["first", "last"])
     async def test_ranked_pick_reads_naive(self, agg: str) -> None:
-        query = SlayerQuery.model_validate({"source_model": "lib", "measures": [{"formula": f"{agg}(ts)", "name": "agg_v"}],
-                                            "time_dimensions": [{"dimension": "ts", "granularity": "month"}]})
+        query = SlayerQuery.model_validate({
+            "source_model": "lib",
+            "measures": [{"formula": f"{agg}(ts)", "name": "agg_v"}],
+            "time_dimensions": [{"dimension": "ts", "granularity": "month"}],
+        })
         sql = " ".join((await _engine_generate(query=query, model=_zoned_lib(), dialect="bigquery")).upper().split())
         assert "CAST(LIB.TS AS DATETIME) AS _VAL_1" in sql, sql
 
@@ -136,7 +143,7 @@ class TestZonedColumnReadsNaive:
         base = _zoned_lib()
         model = base.model_copy(update={"columns": [*base.columns, Column(
             name="ts_shifted", sql="TIMESTAMP_ADD(ts, INTERVAL 1 HOUR)", type=DataType.TIMESTAMP, db_type="TIMESTAMP")]})
-        query = SlayerQuery.model_validate({"source_model": "lib", "measures": [{"formula": "*:count"}],
+        query = SlayerQuery.model_validate({"source_model": "lib", "measures": [{"formula": "count(*)"}],
                                             "time_dimensions": [{"dimension": "ts_shifted", "granularity": "month"}]})
         sql = " ".join((await _engine_generate(query=query, model=model, dialect="bigquery")).upper().split())
         assert "DATE_TRUNC(CAST(TIMESTAMP_ADD(LIB.TS, INTERVAL '1' HOUR) AS DATETIME), MONTH)" in sql, sql

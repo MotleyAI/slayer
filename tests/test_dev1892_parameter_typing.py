@@ -77,7 +77,7 @@ class TestAssociationColumnParameter:
         resp = await assoc_engine.execute(assoc_q(
             dimensions=["status"],
             measures=[ModelMeasure(
-                formula="customers.spend:weighted_avg(weight=customers.spend)",
+                formula="weighted_avg(customers.spend, weight=customers.spend)",
                 name="w")]))
         by = status_key(resp)
         assert set(by) == {("ok",), ("new",)}  # grain unchanged
@@ -90,9 +90,9 @@ class TestAssociationColumnParameter:
         """Requirement: a positional parameter folds onto the declared name —
         weighted_avg(spend) equals weighted_avg(weight=spend)."""
         kw = ModelMeasure(
-            formula="customers.spend:weighted_avg(weight=customers.spend)", name="w")
+            formula="weighted_avg(customers.spend, weight=customers.spend)", name="w")
         pos = ModelMeasure(
-            formula="customers.spend:weighted_avg(customers.spend)", name="w")
+            formula="weighted_avg(customers.spend, customers.spend)", name="w")
         kw_by = status_key(await assoc_engine.execute(
             assoc_q(dimensions=["status"], measures=[kw])))
         pos_by = status_key(await assoc_engine.execute(
@@ -108,7 +108,7 @@ class TestAssociationColumnParameter:
         resp = await assoc_engine.execute(assoc_q(
             dimensions=["status"],
             measures=[ModelMeasure(
-                formula="customers.spend:weighted_avg(weight=customers.regions.pop)",
+                formula="weighted_avg(customers.spend, weight=customers.regions.pop)",
                 name="w")]))
         by = status_key(resp)
         for status, expected in ASSOC_WAVG_POP_BY_STATUS.items():
@@ -120,11 +120,11 @@ class TestAssociationColumnParameter:
         explicitly (``wsum(weight=customers.spend)``)."""
         default = await assoc_coldef_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.spend:wsum", name="w")]))
+            measures=[ModelMeasure(formula="wsum(customers.spend)", name="w")]))
         explicit = await assoc_coldef_engine.execute(assoc_q(
             dimensions=["status"],
             measures=[ModelMeasure(
-                formula="customers.spend:wsum(weight=customers.spend)", name="w")]))
+                formula="wsum(customers.spend, weight=customers.spend)", name="w")]))
         by, ex = status_key(default), status_key(explicit)
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
             assert float(by[(status,)]["orders.w"]) == pytest.approx(expected)
@@ -137,7 +137,7 @@ class TestAssociationColumnParameter:
         resp = await assoc_engine.execute(assoc_q(
             dimensions=["status"],
             measures=[ModelMeasure(
-                formula="customers.spend:percentile(p=0.5)", name="p")]))
+                formula="percentile(customers.spend, p=0.5)", name="p")]))
         by = status_key(resp)
         bounds = {"ok": (30.0, 150.0), "new": (40.0, 150.0)}
         for status, (lo, hi) in bounds.items():
@@ -148,12 +148,12 @@ class TestAssociationColumnParameter:
         neither the row set nor the sibling plain measure."""
         base = await assoc_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="amount:sum", name="m")]))
+            measures=[ModelMeasure(formula="sum(amount)", name="m")]))
         withw = await assoc_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="amount:sum", name="m"),
+            measures=[ModelMeasure(formula="sum(amount)", name="m"),
                       ModelMeasure(
-                          formula="customers.spend:weighted_avg(weight=customers.spend)",
+                          formula="weighted_avg(customers.spend, weight=customers.spend)",
                           name="w")]))
         a, b = status_key(base), status_key(withw)
         assert set(a) == set(b)
@@ -274,10 +274,10 @@ class TestWeightedValueAsConsumer:
         sibling equals its unfiltered value."""
         full = await reagg_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:sum", name="tot")]))
+            measures=[ModelMeasure(formula="sum(amount)", name="tot")]))
         pruned = await reagg_engine.execute(sales_q(
             dimensions=["region"], filters=[f"{_WAVG_REAGG} > 50"],
-            measures=[ModelMeasure(formula="amount:sum", name="tot")]))
+            measures=[ModelMeasure(formula="sum(amount)", name="tot")]))
         kept = {k[0] for k in region_key(pruned)}
         assert kept == {"South", "East"}
         full_tot = _region_vals(full, "sales.tot")
@@ -292,6 +292,6 @@ class TestAssociateModeNoSpuriousWarnings:
         resp = await assoc_engine.execute(assoc_q(
             dimensions=["customers.tier"],
             measures=[ModelMeasure(
-                formula="customers.spend:weighted_avg(weight=customers.spend)",
+                formula="weighted_avg(customers.spend, weight=customers.spend)",
                 name="w")]))
         assert associated_warnings(resp) == []

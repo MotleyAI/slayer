@@ -296,7 +296,7 @@ class TestEndToEndBinding:
                 SlayerQuery(
                     source_model="orders",
                     dimensions=[ColumnRef(name="status")],
-                    measures=[ModelMeasure(formula="*:count", name="n")],
+                    measures=[ModelMeasure(formula="count(*)", name="n")],
                     filters=[predicate],
                 ),
                 dry_run=True,
@@ -309,7 +309,7 @@ class TestEndToEndBinding:
         resp = await engine.execute(
             SlayerQuery(
                 source_model="orders",
-                measures=[ModelMeasure(formula="*:count", name="n")],
+                measures=[ModelMeasure(formula="count(*)", name="n")],
                 filters=["mod(amount + qty, 3) == 0"],
             )
         )
@@ -328,7 +328,7 @@ class TestEndToEndBinding:
     ) -> None:
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="*:count", name="n")],
+            measures=[ModelMeasure(formula="count(*)", name="n")],
             filters=[predicate],
         )
         with pytest.raises(ValueError, match=func):
@@ -351,9 +351,9 @@ class TestGreatestLeastNullSemanticsSqlite:
         return {int(r["orders.id"]): r["orders.g"] for r in resp.data}
 
     async def test_greatest_ignores_null(self, engine) -> None:
-        got = await self._values(engine, "greatest(amount:max, disc:max)")
+        got = await self._values(engine, "greatest(max(amount), max(disc))")
         assert got == {1: 10.0, 2: 20.0, 3: 30.0, 4: None}
 
     async def test_least_ignores_null(self, engine) -> None:
-        got = await self._values(engine, "least(amount:max, disc:max)")
+        got = await self._values(engine, "least(max(amount), max(disc))")
         assert got == {1: 10.0, 2: 5.0, 3: 30.0, 4: None}

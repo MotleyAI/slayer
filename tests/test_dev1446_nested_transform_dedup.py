@@ -2,7 +2,7 @@
 
 DEV-1446: a transform-wrapped aggregate ref of a renamed measure dedupes onto
 the declared slot. With ``{"formula": "amount:sum", "name": "revenue"}`` and a
-filter ``change(amount:sum) > 0``, the inner ``amount:sum`` and the declared
+filter ``change(sum(amount)) > 0``, the inner ``sum(amount)`` and the declared
 ``revenue`` measure intern to ONE ``AggregateKey(amount, sum)`` slot (P2). The
 base CTE computes ``SUM(amount)`` once; the ``change`` desugaring reuses that
 slot's alias rather than minting a second ``amount_sum`` column.
@@ -95,17 +95,12 @@ def _cte_body(sql: str, name: str) -> str:
 def _query() -> SlayerQuery:
     # Monthly SUM(amount): Jan=17, Feb=8, Mar=9. change = current - prior:
     # Jan -> NULL, Feb -> -9, Mar -> +1. Only March passes ``change > 0``.
-    return SlayerQuery(
-        source_model="orders",
-        time_dimensions=[
+    return SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [
             TimeDimension(
                 dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )
-        ],
-        measures=[{"formula": "amount:sum", "name": "revenue"}],
-        filters=["change(amount:sum) > 0"],
-    )
+        ], "measures": [{"formula": "sum(amount)", "name": "revenue"}], "filters": ["change(sum(amount)) > 0"]})
 
 
 async def test_dev1446_change_filter_keeps_correct_rows(engine):
@@ -118,7 +113,7 @@ async def test_dev1446_change_filter_keeps_correct_rows(engine):
 
 
 async def test_dev1446_aggregate_interned_to_one_slot(engine):
-    """The inner ``amount:sum`` inside ``change(...)`` dedupes onto the
+    """The inner ``sum(amount)`` inside ``change(...)`` dedupes onto the
     declared ``revenue`` slot — no separate ``amount_sum`` column is minted,
     and the ``change`` arithmetic in the filter is computed against the
     renamed slot's alias (``orders.revenue``).

@@ -168,7 +168,7 @@ def test_local_metrics_keeps_saved_model_measures() -> None:
         measures=[
             ModelMeasure(
                 name="aov",
-                formula="revenue:sum / *:count",
+                formula="sum(revenue) / count(*)",
                 type=DataType.DOUBLE,
             ),
         ],

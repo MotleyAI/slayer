@@ -361,7 +361,6 @@ QUERY_POSITIONS: dict[str, Callable[[str], dict]] = {
     "time-dimension-call": lambda g: {"time_dimensions": [f"{g}(created_at)"], "measures": [SUM]},
     "dimension-call": lambda g: {"dimensions": [f"{g}(created_at)"], "measures": [SUM]},
     "computed-dimension": lambda g: {"dimensions": [{"expression": f"{g}(created_at)", "name": "b"}], "measures": [SUM]},
-    "colon-dimension": lambda g: {"dimensions": [f"created_at:{g}"], "measures": [SUM]},
     "measure": lambda g: {"measures": [{"formula": f"count_distinct({g}(created_at))", "name": "n"}]},
     "measure-filter-clause": lambda g: {
         "measures": [{"formula": f"sum(amount) FILTER (WHERE {g}(created_at) = '2025-02-15')", "name": "f"}]},
