@@ -193,7 +193,15 @@ def hoist_root_extension(data: dict) -> dict:
     source = data.get("source_model")
     if not isinstance(source, dict) or not is_legacy_root_extension(source):
         return data
-    return {**data, "source_model": source["source_name"], "extensions": [source, *(data.get("extensions") or [])]}
+    return with_root_extension(data, extension=source, base=source["source_name"])
+
+
+def with_root_extension(data: dict, *, extension: Any, base: Any) -> dict:
+    """``data`` sourced from ``base`` with ``extension`` first in its extensions; a non-list ``extensions`` is left to validation."""
+    extensions = data.get("extensions")
+    if extensions is not None and not isinstance(extensions, list):
+        return data
+    return {**data, "source_model": base, "extensions": [extension, *(extensions or [])]}
 
 
 register_migration(entity="SlayerQuery", source_version=10, stored_only=True)(hoist_root_extension)

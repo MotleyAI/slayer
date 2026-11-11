@@ -72,8 +72,7 @@ from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.dialects.reflection import ResultColumnType
 from slayer.database.engine_factory import ClientCacheKey, client_cache_key
 from slayer.sql.naming import render_table_name
-from slayer.core.join_edges import EdgeMerge
-from slayer.ir.source_bundle import overlay_columns_and_measures
+from slayer.ir.source_bundle import models_as_extended
 
 logger = logging.getLogger(__name__)
 
@@ -852,33 +851,15 @@ def _resolve_stage_source_to_base(
 
 class _StageGraph(BaseModel):
     """Resolved join-graph context for a query-backed stage: source name, its extension-augmented
-    model, the query-local joins its extensions add, and every model reachable via the in-DS graph."""
+    model, and every model reachable via the in-DS graph."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     stage_source_name: str | None = None
     # The stage source as the runtime binds it: the stored model with the stage's extensions.
     source: SlayerModel | None = None
-    # ``(declaring model, join)`` for each query-local edge.
-    extension_joins: list[tuple[str, ModelJoin]] = Field(default_factory=list)
     reachable: set[str] = Field(default_factory=set)
     models_by_name: dict[str, SlayerModel] = Field(default_factory=dict)
-
-
-def _with_stage_extensions(stage: SlayerQuery, models_by_name: dict[str, SlayerModel]) -> dict[str, SlayerModel]:
-    """``models_by_name`` as ``stage`` reads them: its extensions overlaid and merged (conflicts skipped)."""
-    models = dict(models_by_name)
-    for extension in stage.extensions or []:
-        if extension.source_name in models:
-            models[extension.source_name] = overlay_columns_and_measures(models[extension.source_name], extension)
-    merge = EdgeMerge(models=models)
-    for extension in stage.extensions or []:
-        for join in extension.joins or [] if extension.source_name in models else []:
-            try:
-                merge.add(declaring=extension.source_name, join=join)
-            except ValueError:  # QueryExtensionError included
-                continue
-    return merge.models
 
 
 def _build_stage_graph(
@@ -889,7 +870,7 @@ def _build_stage_graph(
 ) -> _StageGraph:
     """Build a ``_StageGraph`` for one stage; ``stage_source_name`` None for inline sources."""
     targets = _stage_join_targets(stage)
-    models = _with_stage_extensions(stage, models_by_name)
+    models = models_as_extended(stage, models_by_name)
     source = models.get(stage_source_name) if stage_source_name else None
     roots = [source] if source is not None else [models[t] for t in sorted(targets) if t in models]
     found: set[str] = {stage_source_name} if stage_source_name else set()
@@ -899,7 +880,6 @@ def _build_stage_graph(
     return _StageGraph(
         stage_source_name=stage_source_name,
         source=source,
-        extension_joins=[(m.name, j) for m in models.values() for j in m.joins if j.query_local],
         reachable=found,
         models_by_name=models,
     )
@@ -961,8 +941,8 @@ def _route_short_form_terminal(*, target: str, graph: _StageGraph) -> str | None
 
 
 def _walk_stage_chain(*, path: list[str], graph: _StageGraph) -> tuple[str, list[OrientedJoin]] | None:
-    """Terminal model of ``path`` spelled from the extension-augmented stage source and the stored
-    edges it walks (extension joins excluded), or ``None``."""
+    """Terminal model of ``path`` spelled from the extension-augmented stage source and the edges it
+    walks, or ``None``."""
     if graph.source is None:
         return None
     try:
@@ -971,14 +951,11 @@ def _walk_stage_chain(*, path: list[str], graph: _StageGraph) -> tuple[str, list
         return None
     if chain is None:
         return None
-    extension = [(declaring, JoinEdgeRef.of(j)) for declaring, j in graph.extension_joins]
-    stored = [e for e in chain if not any(e.declaring_model == declaring and r.matches_hop(e)
-                                          for declaring, r in extension)]
-    return (chain[-1].target_model if chain else graph.source.name), stored
+    return (chain[-1].target_model if chain else graph.source.name), chain
 
 
-def _ref_stored_edges(*, ref: str, graph: _StageGraph) -> list[OrientedJoin]:
-    """The stored edges ``ref``'s path walks, a short-form ref along its route."""
+def _ref_edges(*, ref: str, graph: _StageGraph) -> list[OrientedJoin]:
+    """The edges ``ref``'s path walks over the stage graph (query-local included), a short-form ref along its route."""
     path = _hop_path(ref=ref, graph=graph)
     if not path:
         return []
@@ -1025,13 +1002,11 @@ def _check_stage_against_base(
     stage: SlayerQuery,
     base_name: str,
     graph: _StageGraph,
-    dropped_cols: dict[str, set[str]],
-    pk_per_model: dict[str, set[str]],
+    state: _CascadeState,
 ) -> set[str]:
-    """Dropped column names on ``base_name`` this stage references (PKs excluded — rule 7)."""
-    cascadable = dropped_cols.get(base_name, set()) - pk_per_model.get(
-        base_name, set()
-    )
+    """Dropped column (PKs excluded — rule 7) and extension-measure names on ``base_name`` this stage references."""
+    own_measures = {m.name for e in stage.extensions or [] if e.source_name == base_name for m in e.measures or []}
+    cascadable = state.cascadable(base_name) | (state.dropped_measures.get(base_name, set()) & own_measures)
     if not cascadable:
         return set()
     return _stage_referenced_columns_for_base(
@@ -1051,7 +1026,7 @@ def _stage_uses_dropped_join(
     if not dropped or base_name not in graph.reachable:
         return None
     for ref in _stage_refs(stage):
-        for edge in _ref_stored_edges(ref=ref, graph=graph):
+        for edge in _ref_edges(ref=ref, graph=graph):
             hit = next((d for d in dropped if edge.declaring_model == base_name and d.matches_hop(edge)), None)
             if hit is not None:
                 return hit.name or hit.target_model
@@ -1065,9 +1040,7 @@ def _check_stage_for_whole_drop(
     qb_name: str,
     graph: _StageGraph,
     whole_dropped_models: set[str],
-    dropped_cols: dict[str, set[str]],
-    dropped_joins: _DroppedJoins,
-    pk_per_model: dict[str, set[str]],
+    state: _CascadeState,
     candidate_base_names: set[str],
 ) -> DeleteReason | None:
     """First whole-drop trigger for one stage of a query-backed model, or None."""
@@ -1093,7 +1066,7 @@ def _check_stage_for_whole_drop(
             stage=stage,
             base_name=candidate,
             graph=graph,
-            dropped_joins=dropped_joins,
+            dropped_joins=state.dropped_joins,
         )
         if broken_target is not None:
             return DeleteReason(
@@ -1103,13 +1076,7 @@ def _check_stage_for_whole_drop(
                     f"via {candidate!r} but that join has been dropped"
                 ),
             )
-        hits = _check_stage_against_base(
-            stage=stage,
-            base_name=candidate,
-            graph=graph,
-            dropped_cols=dropped_cols,
-            pk_per_model=pk_per_model,
-        )
+        hits = _check_stage_against_base(stage=stage, base_name=candidate, graph=graph, state=state)
         if hits:
             return DeleteReason(
                 target=f"model:{qb_name}",
@@ -1121,22 +1088,37 @@ def _check_stage_for_whole_drop(
     return None
 
 
+def _stage_cascade_state(*, stage: SlayerQuery, graph: _StageGraph, state: _CascadeState) -> _CascadeState:
+    """``state`` as ``stage`` reads it: the drops cascaded through its extensions' definitions too."""
+    if not stage.extensions:
+        return state
+    local = _CascadeState(
+        models_by_name=graph.models_by_name,
+        edit_entries={},
+        whole_entries={},
+        dropped_cols={name: set(cols) for name, cols in state.dropped_cols.items()},
+        dropped_measures={name: set(measures) for name, measures in state.dropped_measures.items()},
+        dropped_joins={name: list(refs) for name, refs in state.dropped_joins.items()},
+        pk_per_model=state.pk_per_model,
+    )
+    extended = [graph.models_by_name[e.source_name] for e in stage.extensions if e.source_name in graph.models_by_name]
+    changed = True
+    while changed:
+        changed = False
+        for model in extended:
+            changed = _cascade_model(model=model, state=local) or changed
+    return local
+
+
 def _query_backed_should_whole_drop(
     *,
     qb_model: SlayerModel,
-    dropped_cols: dict[str, set[str]],
-    dropped_joins: _DroppedJoins,
+    state: _CascadeState,
     whole_dropped_models: set[str],
-    pk_per_model: dict[str, set[str]],
-    candidate_base_names: set[str] | None = None,
-    models_by_name: dict[str, SlayerModel] | None = None,
+    candidate_base_names: set[str],
 ) -> DeleteReason | None:
-    """DeleteReason when a query-backed model should be whole-dropped by cascade from base drift, else None; ``candidate_base_names``/``models_by_name`` default empty for legacy callers."""
-    if not qb_model.source_queries:
-        return None
-    stages = list(qb_model.source_queries)
-    models_by_name = models_by_name or {}
-
+    """DeleteReason when a query-backed model should be whole-dropped by cascade from base drift, else None."""
+    stages = list(qb_model.source_queries or [])
     for i, stage in enumerate(stages):
         prior_by_name: dict[str, SlayerQuery] = {}
         for s in stages[:i]:
@@ -1152,7 +1134,7 @@ def _query_backed_should_whole_drop(
         graph = _build_stage_graph(
             stage=stage,
             stage_source_name=base_name,
-            models_by_name=models_by_name,
+            models_by_name=state.models_by_name,
         )
         reason = _check_stage_for_whole_drop(
             stage=stage,
@@ -1160,10 +1142,8 @@ def _query_backed_should_whole_drop(
             qb_name=qb_model.name,
             graph=graph,
             whole_dropped_models=whole_dropped_models,
-            dropped_cols=dropped_cols,
-            dropped_joins=dropped_joins,
-            pk_per_model=pk_per_model,
-            candidate_base_names=candidate_base_names or {base_name},
+            state=_stage_cascade_state(stage=stage, graph=graph, state=state),
+            candidate_base_names=candidate_base_names,
         )
         if reason is not None:
             return reason
@@ -1233,25 +1213,32 @@ def _column_ref_targets_dropped(
 def _first_dropped_sql_column_ref(
     *, col: Column, model: SlayerModel, state: _CascadeState
 ) -> tuple[SlayerModel, str] | None:
-    """``(target_model, ref_col)`` for the first ref in ``col.sql`` resolving to a dropped column, else None."""
-    if col.sql is None or is_base_column_sql(col.sql):
-        return None
-    for table_alias, ref_col in _extract_column_refs_from_sql(col.sql):
-        is_dropped, target = _column_ref_targets_dropped(
-            table_alias=table_alias,
-            ref_col=ref_col,
-            model=model,
-            state=state,
-        )
-        if is_dropped and target is not None:
-            return target, ref_col
+    """``(target_model, ref_col)`` for the first ref in ``col``'s derived sql or filter resolving to a dropped column,
+    else None."""
+    for sql in _column_definition_sqls(col):
+        for table_alias, ref_col in _extract_column_refs_from_sql(sql):
+            is_dropped, target = _column_ref_targets_dropped(
+                table_alias=table_alias,
+                ref_col=ref_col,
+                model=model,
+                state=state,
+            )
+            if is_dropped and target is not None:
+                return target, ref_col
     return None
+
+
+def _column_definition_sqls(col: Column) -> list[str]:
+    """The SQL ``col``'s definition reads: its derived sql, then its filter."""
+    derived = None if col.sql is None or is_base_column_sql(col.sql) else col.sql
+    return [s for s in (derived, col.filter) if s is not None]
 
 
 def _cascade_derived_columns(
     *, model: SlayerModel, state: _CascadeState
 ) -> bool:
-    """Rules 1 + 5: derived ``Column.sql`` referencing dropped columns (same model or via joins)."""
+    """Rules 1 + 5: derived ``Column.sql`` or ``Column.filter`` referencing dropped columns (same model or via
+    joins)."""
     changed = False
     dropped_set = state.dropped_cols.get(model.name, set())
     for col in model.columns:
@@ -1267,7 +1254,7 @@ def _cascade_derived_columns(
             dropped_cols=state.dropped_cols,
             model=model,
             column_name=col.name,
-            reason=f"Derived sql {col.sql!r} references dropped column {ref_label}",
+            reason=f"Derived sql {' / '.join(_column_definition_sqls(col))!r} references dropped column {ref_label}",
         ):
             changed = True
     return changed
@@ -1401,6 +1388,14 @@ def _cascade_filters(*, model: SlayerModel, state: _CascadeState) -> bool:
     return changed
 
 
+def _cascade_model(*, model: SlayerModel, state: _CascadeState) -> bool:
+    """Rules 1-5 on one model's columns, measures, joins and filters; True if anything new was added."""
+    changed = _cascade_derived_columns(model=model, state=state)
+    changed = _cascade_measures(model=model, state=state) or changed
+    changed = _cascade_joins(model=model, state=state) or changed
+    return _cascade_filters(model=model, state=state) or changed
+
+
 def _cascade_query_backed(
     *, models: list[SlayerModel], state: _CascadeState
 ) -> bool:
@@ -1414,12 +1409,9 @@ def _cascade_query_backed(
             continue
         reason = _query_backed_should_whole_drop(
             qb_model=model,
-            dropped_cols=state.dropped_cols,
-            dropped_joins=state.dropped_joins,
+            state=state,
             whole_dropped_models=whole_dropped_names,
-            pk_per_model=state.pk_per_model,
             candidate_base_names=candidate_base_names,
-            models_by_name=state.models_by_name,
         )
         if reason is None:
             continue
@@ -1458,15 +1450,7 @@ def _cascade_one_pass(
 
     changed = False
     for model in models:
-        if model.name in whole_entries:
-            continue
-        if _cascade_derived_columns(model=model, state=state):
-            changed = True
-        if _cascade_measures(model=model, state=state):
-            changed = True
-        if _cascade_joins(model=model, state=state):
-            changed = True
-        if _cascade_filters(model=model, state=state):
+        if model.name not in whole_entries and _cascade_model(model=model, state=state):
             changed = True
 
     if _cascade_query_backed(models=models, state=state):

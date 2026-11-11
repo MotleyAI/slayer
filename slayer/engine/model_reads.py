@@ -9,11 +9,16 @@ from typing import Literal
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
 from slayer.core.join_walker import OrientedJoin, walk
 from slayer.core.models import SlayerModel
-from slayer.core.query import ComputedDimension, SlayerQuery, SourceSpec, extension_model_names
+from slayer.core.query import ComputedDimension, ModelExtension, SlayerQuery, SourceSpec, extension_model_names
 from slayer.engine.param_binding import default_reference_sites
 from slayer.engine.reference_closure import parse_fragment_any_dialect
 from slayer.core.syntax import drop_root_hop, text_paths
-from slayer.ir.source_bundle import follow_sibling_chain, overlay_columns_and_measures, source_name_if_sibling
+from slayer.ir.source_bundle import (
+    follow_sibling_chain,
+    models_as_extended,
+    overlay_columns_and_measures,
+    source_name_if_sibling,
+)
 from slayer.sql.column_expansion import is_trivial_base, reference_sites, root_scope_column_ids
 
 Identity = tuple[str, str]
@@ -137,6 +142,7 @@ class _Reads:
         # Keyed by host object, not name: two stages' overlays of one model may define a field differently.
         self._seen: set[tuple[int, str]] = set()
         self._hosts: list[SlayerModel] = []  # keeps each visited host alive, so its id is never reused
+        self._scoped: dict[str, dict[str, SlayerModel]] = {}  # per datasource: the models as the current query extends them
 
     def holders(self, name: str, *, data_source: str | None) -> list[SlayerModel]:
         """The stored model ``name`` in ``data_source`` if there is one, else every datasource's model of that name."""
@@ -145,7 +151,7 @@ class _Reads:
         return [peers[name] for peers in self.by_ds.values() if name in peers]
 
     def peers(self, host: SlayerModel) -> dict[str, SlayerModel]:
-        return {**self.by_ds.get(host.data_source, {}), host.name: host}
+        return {**self.by_ds.get(host.data_source, {}), **self._scoped.get(host.data_source, {}), host.name: host}
 
     def read(self, model: SlayerModel) -> None:
         if model.name in self.by_ds.get(model.data_source, {}):
@@ -232,6 +238,7 @@ class _Reads:
     def stages(self, queries: list[SlayerQuery], *, data_source: str | None) -> None:
         named = {q.name: q for q in queries[:-1] if q.name}
         for query in queries:
+            self._scope(query)
             self.extended_models(query, data_source=data_source)
             try:
                 spec = follow_sibling_chain(spec=query.source_model, named_queries=named)
@@ -245,11 +252,32 @@ class _Reads:
                     self.ref(parts, host=host)
                 if not hosts:
                     self.unhosted_ref(parts, data_source=data_source)
+        self._scoped = {}
+
+    def _scope(self, query: SlayerQuery) -> None:
+        """Walk ``query`` over its own join graph: each datasource's models as its extensions extend them."""
+        names = {e.source_name for e in query.extensions or []}
+        self._scoped = {ds: models_as_extended(query, peers) for ds, peers in self.by_ds.items() if names & peers.keys()}
+
+    def _scoped_model(self, model: SlayerModel, extension: ModelExtension) -> SlayerModel:
+        scoped = self._scoped.get(model.data_source, {}).get(model.name)
+        return scoped if scoped is not None else overlay_columns_and_measures(model, extension)
 
     def extended_models(self, query: SlayerQuery, *, data_source: str | None) -> None:
+        """The models ``query``'s extensions name, and what each extension's own columns and measures read."""
         for name in extension_model_names(query):
             for model in self.holders(name, data_source=data_source):
                 self.read(model)
+        for extension in query.extensions or []:
+            for model in self.holders(extension.source_name, data_source=data_source):
+                self.extension_definitions(extension, host=self._scoped_model(model, extension))
+
+    def extension_definitions(self, extension: ModelExtension, *, host: SlayerModel) -> None:
+        for column in extension.columns or []:
+            self.column(host=host, name=column.name)
+        for measure in extension.measures or []:
+            if measure.name:
+                self.measure(host=host, name=measure.name)
 
     def source(self, spec: SourceSpec | None, *, data_source: str | None) -> list[SlayerModel]:
         """The hosts a stage source may resolve to (every holder of an ambiguous name), recording what they read."""
@@ -269,7 +297,7 @@ class _Reads:
         extension = next((e for e in query.extensions or [] if e.source_name == host.name), None)
         if extension is None:
             return host
-        extended = overlay_columns_and_measures(host, extension)
+        extended = self._scoped_model(host, extension)
         self.definitions(extended)
         return extended
 
@@ -283,4 +311,4 @@ class _Reads:
             return
         for root in self.holders(parts[0], data_source=data_source):
             self.read(root)
-            self.ref(parts[1:], host=root)
+            self.ref(parts[1:], host=self._scoped.get(root.data_source, {}).get(root.name, root))

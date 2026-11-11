@@ -63,6 +63,7 @@ from slayer.storage.migrations import (
     in_stored_document,
     is_legacy_root_extension,
     migrate as _migrate_schema,
+    with_root_extension,
 )
 
 #: The SlayerQuery version whose migration retired ``strict``.
@@ -512,6 +513,19 @@ def extract_variable_refs(text: str) -> tuple[set[str], set[str]]:
                 continue
             if match.group(1):
                 target.add(match.group(1))
+    return bare, blocked
+
+
+def extension_variable_refs(query: "SlayerQuery") -> tuple[set[str], set[str]]:
+    """``(bare_names, blocked_names)`` of ``query``'s extensions: column SQL and filters, and measure formulas."""
+    bare: set[str] = set()
+    blocked: set[str] = set()
+    for extension in query.extensions or []:
+        for text in (t for c in extension.columns or [] for t in (c.sql, c.filter) if t):
+            text_bare, text_blocked = extract_variable_refs(text)
+            bare |= text_bare
+            blocked |= text_blocked
+        bare |= {name for m in extension.measures or [] for name in variable_names(m.formula)}
     return bare, blocked
 
 
@@ -1077,7 +1091,7 @@ def convert_legacy_root_extension(data: dict) -> dict:
     """Fresh input's legacy root extension, moved into ``extensions`` with a deprecation warning."""
     source = data.get("source_model")
     if isinstance(source, ModelExtension):
-        data = {**data, "source_model": source.source_name, "extensions": [source, *(data.get("extensions") or [])]}
+        data = with_root_extension(data, extension=source, base=source.source_name)
     elif "version" not in data and is_legacy_root_extension(source):
         data = hoist_root_extension(data)
     else:
@@ -1089,6 +1103,12 @@ def convert_legacy_root_extension(data: dict) -> dict:
             removal="3.0", stacklevel=4,
         )
     return data
+
+
+def prepare_query_input(data: dict) -> dict:
+    """``data`` in the shape ``SlayerQuery``'s typed fields read: a legacy root extension converted, a versioned payload migrated."""
+    data = convert_legacy_root_extension(data)
+    return _migrate_schema(entity="SlayerQuery", data=data) if "version" in data else data
 
 
 def _reject_inline_query_backed(value: Any) -> Any:

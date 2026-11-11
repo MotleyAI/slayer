@@ -124,6 +124,14 @@ class TestPaths:
             resp = await engine.execute(query)
         assert values(resp, "orders.id") == ORDERS_WITH_REGIONED_CUSTOMER
 
+    async def test_declaring_model_two_hops_from_the_root(self, dialect) -> None:
+        query = q(source_model="orders", dimensions=["id"], measures=[{"formula": "count(*)", "name": "n"}],
+                  extensions=[ext("customers", joins=[join("regions", REGION_PAIRS, join_type="left")]),
+                              ext("regions", joins=[join("countries", [["country_id", "id"]], join_type="inner")])])
+        async with shop(dialect) as engine:
+            resp = await engine.execute(query)
+        assert rows(resp, "orders.id", "orders.n") == [(1, 1), (2, 1), (3, 1)]
+
     async def test_adding_a_measure_never_changes_the_rows(self, dialect) -> None:
         extensions = [ext("customers", joins=[join("regions", REGION_PAIRS, join_type="inner")])]
         base = {"source_model": "orders", "extensions": extensions, "dimensions": ["status"]}

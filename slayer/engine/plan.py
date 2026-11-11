@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from slayer.core.errors import QueryBackedCycleError
 from slayer.core.join_walker import observe_traversals
 from slayer.core.models import SlayerModel
-from slayer.core.query import SlayerQuery, extension_model_names, extract_placeholder_names
+from slayer.core.query import SlayerQuery, extension_model_names, extension_variable_refs, extract_placeholder_names
 from slayer.core.syntax import text_paths
 from slayer.core.time_spine import is_spine_query, query_host
 from slayer.core.scope import (
@@ -416,7 +416,7 @@ class _StagePlanner:
         self.state.displays.update(displays)
         record = _Splice(
             model=name, context=context, identities=[q.name for q in stages if q.name],
-            footprint=set().union(*(extract_placeholder_names(q) for q in stages)),
+            footprint=set().union(*(extract_placeholder_names(q).union(*extension_variable_refs(q)) for q in stages)),
         )
         self.state.spliced[name] = record
         own = {q.name for q in stages if q.name}

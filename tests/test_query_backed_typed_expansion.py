@@ -119,24 +119,24 @@ class TestStoredSourceQueriesTopoSort:
             source_queries=[
                 # Out-of-order: ``main`` references ``kpi`` via
                 # joins.target_model but appears FIRST.
-                SlayerQuery(
-                    name="main",
-                    source_model="orders",
-                    extensions=[ModelExtension.model_validate({
+                SlayerQuery.model_validate({
+                    "name": "main",
+                    "source_model": "orders",
+                    "extensions": [ModelExtension.model_validate({
                         "source_name": "orders",
                         # The reverse hop is traversable, so the pair names kpi's
                         # real exported column ("id"; "kpi_id" is only a label).
                         "joins": [{"target_model": "kpi", "join_pairs": [["id", "id"]]}],
                     })],
-                    dimensions=["status"],
-                    measures=[{"formula": "sum(kpi._count)"}],
-                ),
-                SlayerQuery(
-                    name="kpi",
-                    source_model="orders",
-                    measures=[{"formula": "count(*)"}],
-                    dimensions=[{"name": "id", "label": "kpi_id"}],  # type: ignore[list-item]
-                ),
+                    "dimensions": ["status"],
+                    "measures": [{"formula": "sum(kpi._count)"}],
+                }),
+                SlayerQuery.model_validate({
+                    "name": "kpi",
+                    "source_model": "orders",
+                    "measures": [{"formula": "count(*)"}],
+                    "dimensions": [{"name": "id", "label": "kpi_id"}],
+                }),
                 SlayerQuery(source_model="main"),
             ],
         )
@@ -158,24 +158,24 @@ class TestStoredSourceQueriesTopoSort:
             data_source="ds",
             source_queries=[
                 # main references kpi (forward ref under legacy strict order)
-                SlayerQuery(
-                    name="main",
-                    source_model="orders",
-                    extensions=[ModelExtension.model_validate({
+                SlayerQuery.model_validate({
+                    "name": "main",
+                    "source_model": "orders",
+                    "extensions": [ModelExtension.model_validate({
                         "source_name": "orders",
                         # The reverse hop is traversable, so the pair names kpi's
                         # real exported column ("id"; "kpi_id" is only a label).
                         "joins": [{"target_model": "kpi", "join_pairs": [["id", "id"]]}],
                     })],
-                    dimensions=["status"],
-                    measures=[{"formula": "sum(kpi._count)"}],
-                ),
-                SlayerQuery(
-                    name="kpi",
-                    source_model="orders",
-                    measures=[{"formula": "count(*)"}],
-                    dimensions=[ {"name": "id", "label": "kpi_id"} ],  # type: ignore[list-item]
-                ),
+                    "dimensions": ["status"],
+                    "measures": [{"formula": "sum(kpi._count)"}],
+                }),
+                SlayerQuery.model_validate({
+                    "name": "kpi",
+                    "source_model": "orders",
+                    "measures": [{"formula": "count(*)"}],
+                    "dimensions": [ {"name": "id", "label": "kpi_id"} ],
+                }),
                 SlayerQuery(source_model="main"),
             ],
         )
@@ -728,18 +728,18 @@ class TestNestedQueryBackedSavePath:
         qb_a = SlayerModel(
             name="qb_a_orders_with_kpi",
             data_source="ds",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                extensions=[ModelExtension.model_validate({
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "extensions": [ModelExtension.model_validate({
                     "source_name": "orders",
                     "joins": [{
                         "target_model": "qb_b_customers_kpi",
                         "join_pairs": [["region", "region"]],
                     }],
                 })],
-                dimensions=["status"],
-                measures=[{"formula": "sum(qb_b_customers_kpi._count)"}],
-            )],
+                "dimensions": ["status"],
+                "measures": [{"formula": "sum(qb_b_customers_kpi._count)"}],
+            })],
         )
         engine, tmp = await _engine(_customers_model(), qb_b)
         try:
@@ -910,18 +910,18 @@ class TestNestedQueryBackedExpansion:
             # Save another query-backed model that references the first
             # as a join target AND references a column on it so the
             # planner doesn't drop the join as unused.
-            outer = SlayerQuery(
-                source_model="orders",
-                extensions=[ModelExtension.model_validate({
+            outer = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "extensions": [ModelExtension.model_validate({
                     "source_name": "orders",
                     "joins": [{
                         "target_model": "customers_kpi",
                         "join_pairs": [["region", "region"]],
                     }],
                 })],
-                measures=[{"formula": "sum(customers_kpi._count)"}],
-                dimensions=["status"],
-            )
+                "measures": [{"formula": "sum(customers_kpi._count)"}],
+                "dimensions": ["status"],
+            })
             resp = await engine.execute(outer, dry_run=True)
             assert resp.sql is not None
             # Both backing tables must appear in the rendered SQL.
@@ -947,15 +947,15 @@ class TestNestedQueryBackedExpansion:
         engine, tmp = await _engine(qb)
         try:
             # Apply an overlay that adds an extra dimension column.
-            q = SlayerQuery(
-                source_model="qb_base",
-                extensions=[ModelExtension(
+            q = SlayerQuery.model_validate({
+                "source_model": "qb_base",
+                "extensions": [ModelExtension(
                     source_name="qb_base",
                     columns=[Column(name="extra", sql="'lit'", type=DataType.TEXT)],
                 )],
-                dimensions=["extra", "status"],
-                measures=[{"formula": "sum(amount_sum)"}],
-            )
+                "dimensions": ["extra", "status"],
+                "measures": [{"formula": "sum(amount_sum)"}],
+            })
             resp = await engine.execute(q, dry_run=True)
             assert resp.sql is not None
             # The overlay column appears in the outer projection.

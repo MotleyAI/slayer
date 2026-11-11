@@ -325,15 +325,16 @@ def _bind_inner_restriction(
     restriction: InnerRestriction, *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
 ) -> BoundFilter:
     """``restriction`` bound exactly as its filter written in the query; a product read never reaches it."""
-    node = Cmp(
-        op="is not", left=DottedRef(parts=(restriction.model, restriction.token, restriction.key), quoted=False),
-        right=Literal(value=None), single_eq=False,
-    )
     host = scope.source_model if isinstance(scope, ModelScope) else None
     if host is not None and host.unrelated_datasets:
         host = host.with_unrelated(frozenset())
         scope, bundle = ModelScope(source_model=host), bundle.model_copy(update={"source_model": host})
     try:
+        path = _declaring_model_path(restriction, host=host, bundle=bundle)
+        node = Cmp(
+            op="is not", left=DottedRef(parts=(*path, restriction.token, restriction.key), quoted=False),
+            right=Literal(value=None), single_eq=False,
+        )
         return bind_filter(parsed=node, scope=scope, bundle=bundle)
     except AmbiguousJoinPathError as exc:
         raise AmbiguousJoinPathError(
@@ -345,6 +346,25 @@ def _bind_inner_restriction(
             f"The {restriction.label} restricts the population, but no join path reaches "
             f"{restriction.model!r} from it."
         ) from exc
+
+
+def _declaring_model_path(
+    restriction: InnerRestriction, *, host: Optional[SlayerModel], bundle: ResolvedSourceBundle,
+) -> Tuple[str, ...]:
+    """The population's path to ``restriction.model``: as spelled when root or adjacent, else short-form routed."""
+    spelled = (restriction.model,)
+    if host is None or not drop_root_qualifier((*spelled, restriction.key), host.spelling)[:-1]:
+        return spelled
+    models_by_name = bundle.models_by_name
+    models_by_name.setdefault(host.name, host)
+    try:
+        if resolve_hop(current=host, token=restriction.model, models_by_name=models_by_name) is not None:
+            return spelled
+    except AmbiguousJoinPathError:
+        return spelled
+    return tuple(dimension_routing.route_dotted_target(
+        root=host, target_model=restriction.model, leaf=restriction.token, models_by_name=models_by_name,
+    ))
 
 
 def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages are strictly sequential and share the growing `declared_measures` / `bound_filters` / `order_specs` triple: parse+bind, time-key attachment, sugar lowering, rank-partition validation. Splitting them would thread the same three lists through four signatures without removing a branch.

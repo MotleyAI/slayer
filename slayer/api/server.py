@@ -29,7 +29,7 @@ from slayer.core.query import (
     SlayerQuery,
     SourceSpec,
     check_unique_extensions,
-    convert_legacy_root_extension,
+    prepare_query_input,
 )
 from slayer.async_utils import run_sync
 from slayer.live_schema import ingestion as engine_ingestion
@@ -87,8 +87,8 @@ class QueryRequest(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _convert_legacy_extension(cls, data: Any) -> Any:
-        return convert_legacy_root_extension(data) if isinstance(data, dict) else data
+    def _prepare_query_input(cls, data: Any) -> Any:
+        return prepare_query_input(data) if isinstance(data, dict) else data
 
     @model_validator(mode="after")
     def _one_extension_per_model(self) -> "QueryRequest":

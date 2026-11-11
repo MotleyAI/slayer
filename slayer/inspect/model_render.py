@@ -19,6 +19,7 @@ from slayer.core.models import Column, SlayerModel, column_type_text, is_identif
 from slayer.core.query import (
     SlayerQuery,
     extract_model_variables,
+    extension_variable_refs,
     extract_placeholder_names,
 )
 from slayer.live_schema.ingestion import _friendly_db_error
@@ -324,7 +325,7 @@ def _build_backing_query_info(model: SlayerModel) -> dict | None:
     # Required = no default in model.query_variables nor in the stage's own variables.
     defaulted: set = set(model.query_variables.keys())
     for q in model.source_queries:
-        all_placeholders |= extract_placeholder_names(q)
+        all_placeholders |= extract_placeholder_names(q) | extension_variable_refs(q)[0]
         if q.variables:
             defaulted |= set(q.variables.keys())
         stage_dicts.append(q.model_dump(mode="json", exclude_none=True))

@@ -137,6 +137,22 @@ class ResolvedSourceBundle(BaseModel):
         return with_list_children(out)
 
 
+def models_as_extended(query: SlayerQuery, models_by_name: dict[str, SlayerModel]) -> dict[str, SlayerModel]:
+    """``models_by_name`` as ``query`` reads them: its extensions overlaid and their joins merged (conflicts skipped)."""
+    models = dict(models_by_name)
+    for extension in query.extensions or []:
+        if extension.source_name in models:
+            models[extension.source_name] = overlay_columns_and_measures(models[extension.source_name], extension)
+    merge = EdgeMerge(models=models)
+    for extension in query.extensions or []:
+        for join in extension.joins or [] if extension.source_name in models else []:
+            try:
+                merge.add(declaring=extension.source_name, join=join)
+            except ValueError:  # QueryExtensionError included
+                continue
+    return merge.models
+
+
 def overlay_columns_and_measures(base: SlayerModel, ext: ModelExtension) -> SlayerModel:
     """``base`` with ``ext``'s columns and measures, marked query-local."""
     columns, measures = list(ext.columns or []), list(ext.measures or [])

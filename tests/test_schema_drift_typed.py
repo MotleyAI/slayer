@@ -30,7 +30,7 @@ from slayer.live_schema.schema_drift import (
     _build_stage_graph,
     _filter_refs_dsl,
     _measure_formula_refs,
-    _ref_stored_edges,
+    _ref_edges,
 )
 from slayer.core.syntax import (
     AggCall,
@@ -122,7 +122,7 @@ class TestStageGraphBidirectional:
         assert _attribute_ref_to_base(
             ref="customers.name", base_name="customers", graph=graph,
         ) == "name"
-        assert [e.target_model for e in _ref_stored_edges(ref="customers.name", graph=graph)] == ["customers"]
+        assert [e.target_model for e in _ref_edges(ref="customers.name", graph=graph)] == ["customers"]
 
 
 class TestWalkParsedRefs:

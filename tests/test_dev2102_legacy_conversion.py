@@ -73,6 +73,15 @@ class TestFreshInputConverts:
         assert memory.query is not None
         assert memory.query.source_model == "orders"
 
+    @pytest.mark.parametrize("extensions", [1, 0, "", {}], ids=["one", "zero", "empty-string", "empty-object"])
+    @pytest.mark.parametrize("version", [None, 9], ids=["fresh", "stored"])
+    def test_an_invalid_extensions_container_fails_validation(
+        self, recorded, extensions: object, version: int | None,
+    ) -> None:
+        data = {"source_model": LEGACY, "extensions": extensions, **({"version": version} if version else {})}
+        with pytest.raises(ValidationError):
+            SlayerQuery.model_validate(data)
+
     def test_legacy_form_next_to_an_extension_of_another_model(self) -> None:
         with pytest.warns(FutureWarning):
             q = SlayerQuery.model_validate({"source_model": LEGACY, "extensions": [{"source_name": "customers"}]})

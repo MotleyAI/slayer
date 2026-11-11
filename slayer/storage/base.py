@@ -181,6 +181,14 @@ def _stored_type(*, key: Any, columns: Any) -> str | None:
         return None
 
 
+def _extended(*, key: str, model: dict, extensions: list[dict]) -> list:
+    """``model[key]`` plus the ``key`` entries of each of ``extensions`` that extends ``model``."""
+    own = model.get(key)
+    added = [x for e in extensions if e.get("source_name") == model.get("name") and isinstance(e.get(key), list)
+             for x in e[key]]
+    return [*(own if isinstance(own, list) else []), *added]
+
+
 def _key_pairs(join: Any) -> list[tuple[Any, Any]]:
     pairs = join.get("join_pairs") if isinstance(join, dict) else None
     return [(p[0], p[1]) for p in pairs if isinstance(p, list) and len(p) == 2] if isinstance(pairs, list) else []
@@ -1008,13 +1016,16 @@ class StorageBackend(ABC):
         host = await self._query_host(source=query.get("source_model"), data_source=data_source, stage_names=stage_names)
         if host is None:
             return
+        extensions = query.get("extensions")
+        extensions = [e for e in extensions if isinstance(e, dict)] if isinstance(extensions, list) else []
         for i, pairs in enumerate(found):
             if pairs is None:
                 continue
             temporal = [
                 literal for literal, column in pairs
-                if await self._stored_column_type(host=host, parts=[p.name for p in column.parts])
-                in (DataType.DATE.value, DataType.TIMESTAMP.value)
+                if await self._stored_column_type(
+                    host=host, parts=[p.name for p in column.parts], extensions=extensions,
+                ) in (DataType.DATE.value, DataType.TIMESTAMP.value)
             ]
             if temporal:
                 filters[i] = repaired_filter(filters[i], temporal)
@@ -1037,22 +1048,23 @@ class StorageBackend(ABC):
         raw = await self._cached_raw_model_dict(name=name, data_source=data_source) if data_source else None
         return (raw, data_source) if isinstance(raw, dict) and data_source else None
 
-    async def _stored_column_type(self, *, host: tuple[dict, str], parts: list[str]) -> str | None:
-        """The stored type of the column ``parts`` names from ``host``, walking its stored joins."""
+    async def _stored_column_type(
+        self, *, host: tuple[dict, str], parts: list[str], extensions: list[dict],
+    ) -> str | None:
+        """The stored type of the column ``parts`` names from ``host``, walking its stored joins plus the query's ``extensions``."""
         current, data_source = host
         quals, leaf = parts[:-1], parts[-1]
         if quals and quals[0] == current.get("name"):
             quals = quals[1:]
         for hop in quals:
-            joins = current.get("joins")
-            joins = [j for j in joins if isinstance(j, dict)] if isinstance(joins, list) else []
+            joins = [j for j in _extended(key="joins", model=current, extensions=extensions) if isinstance(j, dict)]
             target = next((j.get("target_model") for j in joins if j.get("name") == hop), None) or next(
                 (hop for j in joins if not j.get("name") and j.get("target_model") == hop), None)
             peer = await self._cached_raw_model_dict(name=target, data_source=data_source) if isinstance(target, str) else None
             if peer is None:
                 return None
             current = peer
-        return _stored_type(key=leaf, columns=current.get("columns"))
+        return _stored_type(key=leaf, columns=_extended(key="columns", model=current, extensions=extensions))
 
     async def _dedup_exact_inverse_joins(
         self, *, name: str, data: dict, data_source: str,

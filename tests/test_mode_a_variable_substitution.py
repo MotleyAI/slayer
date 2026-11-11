@@ -1096,12 +1096,12 @@ class TestModelExtensionDirectSource:
                     Column(name="scaled", sql="amount * {mult}", type=DataType.DOUBLE)
                 ],
             )
-            q = SlayerQuery(
-                source_model="orders",
-                extensions=[ext],
-                measures=[{"formula": "sum(scaled)"}],
-                variables={"mult": 2},
-            )
+            q = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "extensions": [ext],
+                "measures": [{"formula": "sum(scaled)"}],
+                "variables": {"mult": 2},
+            })
             resp = await engine.execute(q)
             assert _sum(resp, "orders.scaled_sum") == 1470.0  # 735 * 2
         finally:

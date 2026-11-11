@@ -19,11 +19,13 @@ from tests._stored_upgrade_fixtures import (
     DS,
     by_dimension,
     customers_v10,
+    measure_total,
     memory_v2,
     orders_v10,
     query_backed_v10,
     raw_doc,
     raw_store,
+    rev_query,
     run,
     seed_shop,
 )
@@ -171,3 +173,70 @@ class TestMemories:
         memory = Memory.model_validate(memory_v2(memory_id="m_ext", query=_stage(), version=CURRENT_VERSIONS["Memory"]))
         again = Memory.model_validate(memory.model_dump(mode="json", exclude_none=True))
         assert again == memory
+
+
+EXTENDED_ORDERS = {
+    "source_name": "orders",
+    "columns": [{"name": "extended_date", "sql": "CAST(ordered_at AS DATE)", "type": "DATE"},
+                {"name": "status_code", "sql": "status", "type": "TEXT"}],
+}
+EXTENDED_CUSTOMERS = {
+    "source_name": "customers",
+    "columns": [{"name": "signup_day", "sql": "CAST(signed_up_at AS DATE)", "type": "DATE"}],
+}
+
+
+def _legacy_root_stage(stored_filter: str) -> dict:
+    return {"version": 9, **rev_query(filters=[stored_filter]), "source_model": EXTENDED_ORDERS}
+
+
+def _extensions_stage(stored_filter: str) -> dict:
+    return {"version": 10, **rev_query(filters=[stored_filter]), "extensions": [EXTENDED_CUSTOMERS]}
+
+
+async def _loaded_stage(storage: StorageBackend) -> SlayerQuery:
+    model = await storage.get_model("rev_x", data_source=DS)
+    assert model is not None
+    (stage,) = model.source_queries or []
+    return stage
+
+
+class TestExtensionColumnFilterLiterals:
+    @pytest.mark.parametrize("backend", BACKENDS)
+    @pytest.mark.parametrize(("stage", "repaired", "expected"), [
+        pytest.param(_legacy_root_stage("extended_date >= '2024/01/01'"), "extended_date >= '2024-01-01'", 200.0,
+                     id="legacy-root-extension-column"),
+        pytest.param(_legacy_root_stage("ordered_at >= '2024/01/01'"), "ordered_at >= '2024-01-01'", 200.0,
+                     id="legacy-root-base-column"),
+        pytest.param(_extensions_stage("customers.signup_day >= '2024/01/01'"),
+                     "customers.signup_day >= '2024-01-01'", 180.0, id="extension-of-joined-model"),
+    ])
+    async def test_a_stored_stage_filter_on_an_extension_column_is_repaired_and_runs(
+        self, tmp_path, shop_ds, backend: str, stage: dict, repaired: str, expected: float,
+    ) -> None:
+        qb = query_backed_v10(name="rev_x", stages=[stage])
+        storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=shop_ds,
+                                  models=[orders_v10(), customers_v10(), qb])
+        assert (await _loaded_stage(storage)).filters == [repaired]
+        resp = await run(storage, {"source_model": "rev_x", "measures": ["sum(rev)"]})
+        assert measure_total(resp, measure="rev_sum") == expected
+
+    async def test_a_non_temporal_extension_column_literal_stays_verbatim(self, tmp_path, shop_ds) -> None:
+        qb = query_backed_v10(name="rev_x", stages=[_legacy_root_stage("status_code = '2024/01/01'")])
+        storage = await raw_store(backend="yaml", base=str(tmp_path / "store"), datasource=shop_ds,
+                                  models=[orders_v10(), customers_v10(), qb])
+        assert (await _loaded_stage(storage)).filters == ["status_code = '2024/01/01'"]
+        resp = await run(storage, {"source_model": "rev_x", "measures": ["sum(rev)"]})
+        assert measure_total(resp, measure="rev_sum") == 60.0
+
+    @pytest.mark.parametrize("backend", BACKENDS)
+    async def test_a_stored_memory_filter_on_a_legacy_extension_column_is_repaired(
+        self, tmp_path, shop_ds, backend: str,
+    ) -> None:
+        memory = memory_v2(memory_id="m_ext_f", query=_legacy_root_stage("extended_date >= '2024/01/01'"))
+        storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=shop_ds,
+                                  models=[orders_v10(), customers_v10()], memories=[memory])
+        loaded = await storage.get_memory("m_ext_f")
+        assert loaded.query is not None
+        assert loaded.query.filters == ["extended_date >= '2024-01-01'"]
+        assert measure_total(await run(storage, loaded.query), measure="rev") == 200.0
