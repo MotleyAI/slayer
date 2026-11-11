@@ -4,17 +4,17 @@ planning: `PYTHONTRACEMALLOC=25 poetry run pytest <module> tests/test_dev2210_jo
 
 ## 1. Law self-tests (pr-tests; each must FAIL before the law exists)
 
-- [ ] 1.1 In `tests/test_law_resource_ownership.py`, add pytester self-tests of the async-engine release law
+- [x] 1.1 In `tests/test_law_resource_ownership.py`, add pytester self-tests of the async-engine release law
       (design Decision 10): a function-scoped async fixture that builds a client's async engine and drops it
       without `aclose()` fails, naming that test; the same through the owner helper passes. Verify: they fail
       now (no law), for the right reason.
-- [ ] 1.2 Add the remaining Decision 10 cases: module- and session-scoped loops (leak judged when the loop
+- [x] 1.2 Add the remaining Decision 10 cases: module- and session-scoped loops (leak judged when the loop
       closes, naming the building test), a leaking async fixture finalized after the test body, a client
       created inline and dropped, an engine built through `SlayerQueryEngine(client_factory=…)`, a sync test
       using `asyncio.run()`, a bridge-loop engine (passes), abandonment without `abandons_async_engines`
       (fails) and with it (passes). Verify: each fails now for the right reason, or passes where it pins a
       non-violation.
-- [ ] 1.3 Add `@pytest.mark.abandons_async_engines` to
+- [x] 1.3 Add `@pytest.mark.abandons_async_engines` to
       `tests/test_sql_client_event_loops.py::test_a_closed_loops_engine_is_dropped` (marker only; user approved).
       Verify: the module still passes.
 
