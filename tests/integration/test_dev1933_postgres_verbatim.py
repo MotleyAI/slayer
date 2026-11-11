@@ -110,10 +110,10 @@ class TestPostgresVerbatimExecution:
         rows = (await pg_client.execute(_HAZARD_SQL)).rows
         assert [r["status"] for r in rows] == ["pending", "pending"]
 
-    async def test_get_column_types_async_regex(self, pg_client: SlayerSQLClient) -> None:
-        types = await pg_client.get_column_types(
+    async def test_get_result_column_types_async_regex(self, pg_client: SlayerSQLClient) -> None:
+        types = await pg_client.get_result_column_types(
             render_type_probe(sqlglot.parse_one(_PROBE_SQL, dialect="postgres"), dialect=PostgresDialect()))
-        assert types == {"pat": "string", "pct": "string"}
+        assert {name: column.type for name, column in types.items()} == {"pat": DataType.TEXT, "pct": DataType.TEXT}
 
     def test_execute_sync_regex_and_percent(self, pg_client: SlayerSQLClient) -> None:
         rows = pg_client.execute_sync(_HAZARD_SQL).rows

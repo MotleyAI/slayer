@@ -29,7 +29,7 @@ UsageKey = Literal[
     "mcp:create_datasource", "mcp:create_model", "mcp:delete_datasource", "mcp:delete_model",
     "mcp:describe_datasource", "mcp:edit_datasource", "mcp:edit_model", "mcp:forget_memory",
     "mcp:get_datasource_priority", "mcp:ingest_datasource_models", "mcp:inspect",
-    "mcp:inspect_model", "mcp:list_datasources", "mcp:models_summary", "mcp:query",
+    "mcp:list_datasources", "mcp:models_summary", "mcp:query",
     "mcp:recommend_root_model", "mcp:save_memory", "mcp:search", "mcp:set_datasource_priority",
     "mcp:validate_models", "mcp:other",
     # REST route templates

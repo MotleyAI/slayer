@@ -66,7 +66,7 @@ async def test_create_app_default_leaves_the_embedded_server_unmarked(tmp_path, 
 # --------------------------------------------------------------------------- #
 def _args(**overrides: Any) -> argparse.Namespace:
     base = {
-        "storage": None, "models_dir": None, "demo": False, "ingest_on_startup": False,
+        "storage": None, "demo": False, "ingest_on_startup": False,
         "always_load_query": False, "host": "127.0.0.1", "port": 5143,
     }
     base.update(overrides)

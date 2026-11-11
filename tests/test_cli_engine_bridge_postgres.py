@@ -72,7 +72,7 @@ def test_validate_models_with_cardinality_uses_one_event_loop(
     store = _store(tmp_path / "store", pg_datasource)
     args = SimpleNamespace(
         datasource=pg_datasource.name, model=None, cardinality=True, persist_cardinality=False,
-        format="json", force_clean=False, yes=False, storage=store, models_dir=None,
+        format="json", force_clean=False, yes=False, storage=store,
     )
     _run_validate_models(args)
     data = json.loads(capsys.readouterr().out)

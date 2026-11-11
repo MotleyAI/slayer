@@ -1957,7 +1957,7 @@ def _clickhouse_dev2120_storage(clickhouse_container, tmp_path_factory):
         storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("clickhouse_dev2120")))
         run_sync(storage.save_datasource(ds))
         run_sync(storage.save_model(lib_model(data_source="testclickhouse")))
-        for model in ingestion.ingest_datasource(datasource=ds, include_tables=["docs"]):
+        for model in run_sync(_ingest(ds, include_tables=["docs"])):
             run_sync(storage.save_model(model))
         yield storage
     finally:
@@ -2033,7 +2033,7 @@ class TestClickHouseLists:
         await check_mixed_numbers(SlayerQueryEngine(storage=_clickhouse_lists[0]))
 
     def test_wrapped_element_ingested(self, _clickhouse_lists) -> None:
-        (model,) = ingestion.ingest_datasource(datasource=_clickhouse_lists[1], include_tables=["tagged"])
+        (model,) = run_sync(_ingest(_clickhouse_lists[1], include_tables=["tagged"]))
         tags = model.get_column("tags")
         assert tags is not None
         assert (tags.type, tags.element_type) == (DataType.ARRAY, DataType.TEXT)

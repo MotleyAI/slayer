@@ -52,7 +52,6 @@ def _args(store: Path, path: Path) -> SimpleNamespace:
         datasource="testds",
         dialect="ANSI_SQL",
         storage=str(store),
-        models_dir=None,
     )
 
 
@@ -131,8 +130,7 @@ def duck_store(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def _duck_args(store: Path, path: Path, *, dialect: str | None = None) -> SimpleNamespace:
-    return SimpleNamespace(osi_path=str(path), datasource=DATASOURCE, dialect=dialect, storage=str(store),
-                           models_dir=None)
+    return SimpleNamespace(osi_path=str(path), datasource=DATASOURCE, dialect=dialect, storage=str(store))
 
 
 async def _rows(store: Path, db: Path, payload: dict) -> list[dict]:

@@ -20,7 +20,6 @@ from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql import connection_policy
 from slayer.sql.dialects.base import (
-    LegacyTypeCategories,
     LIST_VALUE, PORTABLE_LIBRARY, ExtremumFn, IdentifierFolding, NativeFn, TransactionMode, ListRelation, SqlDialect, TextFn, anon, as_text,
     case, either,
     element_lambda, lit, operand_copy, setting, text_try_cast,
@@ -164,13 +163,6 @@ class SnowflakeDialect(SqlDialect):
     ds_type_aliases: frozenset[str] = frozenset({"snowflake"})
     # Its SQLAlchemy dialect sends ROLLBACK / COMMIT even in autocommit.
     transaction_mode: ClassVar[TransactionMode] = "dialect_autocommit"
-    legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories(
-        names={
-            "number": "number", "float": "number", "date": "time", "timestamp": "time", "timestamp_ltz": "time",
-            "timestamp_tz": "time", "timestamp_ntz": "time", "time": "time", "boolean": "boolean",
-        },
-        other="string",
-    )
     sa_backend_names: frozenset[str] = frozenset({"snowflake"})
     explain_prefix: str | None = "EXPLAIN USING JSON"
     log10_native: bool = False

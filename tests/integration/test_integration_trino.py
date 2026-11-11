@@ -30,7 +30,7 @@ from slayer.live_schema import ingestion
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import engine_factory
-from slayer.database.client import SlayerSQLClient, get_column_types_sync, render_type_probe
+from slayer.database.client import SlayerSQLClient, get_result_column_types_sync, render_type_probe
 from slayer.sql.dialects import TrinoDialect, dialect_for_ds_type
 from slayer.sql.dialects import trino as trino_dialect_module
 from slayer.storage.yaml_storage import YAMLStorage
@@ -1183,7 +1183,8 @@ class TestTrinoStatementTimeout:
         seen = _spy_run_time(monkeypatch)
         client = SlayerSQLClient(datasource=_ds_config(trino_container, "default"))
         prior = _pooled_run_time(client)
-        assert await client.get_column_types(_ONE_PROBE) == {"x": "number"}
+        types = await client.get_result_column_types(_ONE_PROBE)
+        assert {name: t.type for name, t in types.items()} == {"x": DataType.INT}
         assert seen == ["60s"]
         assert _pooled_run_time(client) == prior
 
@@ -1191,10 +1192,10 @@ class TestTrinoStatementTimeout:
         seen = _spy_run_time(monkeypatch)
         client = SlayerSQLClient(datasource=_ds_config(trino_container, "default"))
         prior = _pooled_run_time(client)
-        types = get_column_types_sync(
+        types = get_result_column_types_sync(
             _ONE_PROBE, engine=client._get_sync_engine_for_client(), db_type="trino", datasource_name=_DS,
         )
-        assert types == {"x": "number"}
+        assert {name: t.type for name, t in types.items()} == {"x": DataType.INT}
         assert seen == ["60s"]
         assert _pooled_run_time(client) == prior
 
@@ -1353,7 +1354,7 @@ class TestTrinoLists:
         await check_mixed_numbers(SlayerQueryEngine(storage=_trino_lists[0]))
 
     def test_list_columns_ingested(self, _trino_lists) -> None:
-        model = next(m for m in ingestion.ingest_datasource(datasource=_trino_lists[1]) if m.name == "contractors")
+        model = _ingested(_trino_lists[1], "contractors")
         typed = {c.name: (c.type, c.element_type) for c in model.columns if c.name in ("skills", "scores")}
         assert typed == {"skills": (DataType.ARRAY, DataType.TEXT), "scores": (DataType.ARRAY, DataType.INT)}
 

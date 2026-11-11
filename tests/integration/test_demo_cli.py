@@ -3,10 +3,14 @@
 Skipped unless both ``duckdb`` and the ``jafgen`` CLI are installed.
 """
 
+import argparse
 import os
 import shutil
 
 import pytest
+
+from slayer import cli
+from slayer.storage.base import resolve_storage
 
 pytest.importorskip("duckdb")
 
@@ -16,17 +20,11 @@ if shutil.which("jafgen") is None:
 
 @pytest.mark.integration
 async def test_create_demo_with_ingest_end_to_end(tmp_path):
-    from slayer import cli
-    from slayer.storage.base import resolve_storage
-
     storage_path = str(tmp_path)
     storage = resolve_storage(storage_path)
 
-    import argparse
-
     args = argparse.Namespace(
         storage=storage_path,
-        models_dir=None,
         connection_string="demo",
         name=None,
         description=None,

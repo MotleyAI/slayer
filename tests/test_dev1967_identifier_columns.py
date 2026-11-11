@@ -178,11 +178,11 @@ async def engine(request):
 
 class TestProbingAndProfiling:
     async def test_type_probe_includes_composite_members(self, engine) -> None:
-        types = await engine.get_column_types("order_lines")
+        types = await engine.get_result_column_types("order_lines")
         assert COMPOSITE_MEMBERS <= set(types)
 
     async def test_type_probe_skips_sole_primary_key(self, engine) -> None:
-        types = await engine.get_column_types("orders")
+        types = await engine.get_result_column_types("orders")
         assert "id" not in types
         assert "amount" in types
 
