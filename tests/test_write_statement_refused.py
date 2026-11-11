@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import sqlite3
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
@@ -78,8 +77,9 @@ def test_write_refusal_is_a_typed_client_error() -> None:
 @pytest.mark.parametrize("kind", _DATASOURCES)
 @pytest.mark.parametrize(("sql", "keyword"), _WRITES)
 def test_sync_refuses_and_sends_nothing(kind: str, sql: str, keyword: str) -> None:
-    with pytest.raises(_write_refused(), match=f"(?i){keyword}"):
-        SlayerSQLClient(_datasource(kind)).execute_sync(sql)
+    client, refused = SlayerSQLClient(_datasource(kind)), _write_refused()
+    with pytest.raises(refused, match=f"(?i){keyword}"):
+        client.execute_sync(sql)
 
 
 @pytest.mark.usefixtures("nothing_sent")
@@ -102,7 +102,7 @@ def _file_backed(tmp_path: Path, ds_type: str) -> Generator[SlayerSQLClient]:
     if ds_type == "duckdb":
         duckdb.connect(str(path)).close()
     else:
-        sqlite3.connect(path).close()
+        path.touch()
     ds = DatasourceConfig(name="ds", type=ds_type, database=str(path))
     client = SlayerSQLClient(ds)
     try:
@@ -146,8 +146,27 @@ def test_reads_run(tmp_path: Path, ds_type: str, sql: str, rows: list[dict[str, 
 )
 def test_explain_refuses_a_plan_of_a_write(ds_type: str, statements: ExplainStatements) -> None:
     client = SlayerSQLClient(DatasourceConfig(name="ds", type=ds_type, connection_string=_NETWORKED[ds_type]))
+    explaining = client.explain(statements)
     with pytest.raises(SqlClientError):
-        asyncio.run(client.explain(statements))
+        asyncio.run(explaining)
+
+
+@pytest.mark.usefixtures("nothing_sent")
+@pytest.mark.parametrize(
+    ("ds_type", "statements"),
+    [
+        ("sqlserver", ExplainStatements(statement="SELECT 1", session_on="DROP TABLE t", session_off="SET SHOWPLAN_ALL OFF")),
+        ("postgres", ExplainStatements(statement="SELECT 1", session_on="SET SHOWPLAN_ALL ON",
+                                       session_off="SET SHOWPLAN_ALL OFF")),
+    ],
+)
+def test_explain_switches_plan_mode_only_with_the_dialects_own_statements(
+    ds_type: str, statements: ExplainStatements,
+) -> None:
+    client = SlayerSQLClient(DatasourceConfig(name="ds", type=ds_type, connection_string=_NETWORKED[ds_type]))
+    explaining = client.explain(statements)
+    with pytest.raises(SessionStatementRefused):
+        asyncio.run(explaining)
 
 
 # ---------------------------------------------------------------------------

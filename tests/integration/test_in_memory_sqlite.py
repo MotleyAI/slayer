@@ -8,8 +8,6 @@ module-level engine cache must remain in effect.
 Marked integration because it touches a real on-disk SQLite file.
 """
 
-import contextlib
-import sqlite3
 from pathlib import Path
 from collections.abc import Iterable
 
@@ -18,11 +16,12 @@ import pytest
 from slayer.core.models import DatasourceConfig
 from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient
+from slayer.storage.sqlite_conn import transaction
 
 
 def _setup(db_path: Path, statements: Iterable[str]) -> None:
     """Seed the file through the raw driver (SLayer's connections are read-only)."""
-    with contextlib.closing(sqlite3.connect(db_path)) as conn, conn:
+    with transaction(db_path) as conn:
         for stmt in statements:
             conn.execute(stmt)
 

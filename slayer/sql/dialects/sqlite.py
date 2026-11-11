@@ -7,12 +7,14 @@ import re
 from calendar import monthrange
 from datetime import date, datetime, timedelta
 from functools import lru_cache
+from urllib.parse import unquote
 
 from collections.abc import Callable, Sequence
 from typing import Any, ClassVar, Optional
 
 from pydantic import BaseModel
 from sqlalchemy.dialects.sqlite.base import SQLiteDialect as SaSqliteDialect
+from sqlalchemy.engine.url import URL
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
@@ -31,7 +33,9 @@ from slayer.sql.dialects.base import (
     TRUE_WORDS,
     VENDOR_ONLY_CAST_TYPES,
     ExtremumFn,
+    LocalDatabase,
     MathFn,
+    ServerProfile,
     SqlDialect,
     TemporalComparisonOp,
     TextFn,
@@ -634,6 +638,9 @@ def _like_source(pattern: LikePattern) -> str:
 
 # Reads SQLite's type-affinity rules; never connects.
 _SA_SQLITE = SaSqliteDialect()
+
+_MEMORY = ":memory:"
+_FILE_URI = "file:"
 _GENERATED_TYPE_WORDS = re.compile(r"\b(?:GENERATED|ALWAYS)\b", re.IGNORECASE)
 
 
@@ -1039,5 +1046,23 @@ class SqliteDialect(SqlDialect):
     def register_udfs(self, dbapi_connection) -> None:
         """Register the Python aggregate / scalar UDFs on the connection."""
         register_sqlite_udfs(dbapi_connection)
+
+    def local_database(self, url: URL) -> LocalDatabase:
+        """A ``file:`` name is a URI only with ``uri=true``; otherwise SQLite reads it as a literal filename."""
+        database = url.database or ""
+        if not database or database == _MEMORY:
+            return LocalDatabase(kind="memory")
+        if str(url.query.get("uri", "")).lower() != "true" or not database.startswith(_FILE_URI):
+            return LocalDatabase(kind="file", path=database)
+        target, _, params = database[len(_FILE_URI):].partition("?")
+        if not target or _MEMORY in target or url.query.get("mode") == "memory" or "mode=memory" in params:
+            return LocalDatabase(kind="memory")
+        if target.startswith("//"):  # ``file://<authority>/<path>``
+            target = "/" + target[2:].partition("/")[2]
+        return LocalDatabase(kind="file", path=unquote(target))
+
+    def make_connection_read_only(self, dbapi_connection: Any, *, profile: ServerProfile) -> None:
+        """Covers the main, attached and temporary databases alike."""
+        dbapi_connection.execute("PRAGMA query_only = ON")
 
 

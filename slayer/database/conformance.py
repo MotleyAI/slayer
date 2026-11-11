@@ -110,7 +110,7 @@ def _checks(client: SqlClient, caps: Capabilities) -> list[tuple[str, bool, Call
 
     async def execute_error_unchanged() -> None:
         try:
-            await client.execute("SELEC 1")
+            await client.execute("SELECT 1 +")
         except SqlClientError as exc:
             raise _Failed(f"a syntax error surfaced as {type(exc).__name__}") from exc
         except Exception:  # noqa: BLE001 — the database's own error is the contract

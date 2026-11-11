@@ -51,13 +51,11 @@ def test_a_mysql_url_with_its_own_init_command_is_refused(ds_type: str, scheme: 
         name="own_init", type=ds_type,
         connection_string=f"{scheme}://u@db.invalid/d?init_command=SET%20NAMES%20utf8mb4",
     )
+    build = engine_factory.get_engine if builder == "sync" else _build_async
     engine_factory.reset_cache()
     try:
         with pytest.raises(SlayerError, match="own_init"):
-            if builder == "sync":
-                engine_factory.get_engine(ds)
-            else:
-                _build_async(ds)
+            build(ds)
     finally:
         engine_factory.reset_cache()
 
@@ -70,13 +68,11 @@ def test_a_mysql_url_with_its_own_init_command_is_refused(ds_type: str, scheme: 
 @pytest.mark.parametrize("scheme", ["clickhouse+native", "clickhouse+asynch"])
 def test_another_clickhouse_driver_is_refused(scheme: str) -> None:
     ds = DatasourceConfig(name="ch", type="clickhouse", connection_string=f"{scheme}://u@db.invalid:9000/d")
+    build = _build_async if scheme.endswith("asynch") else engine_factory.get_engine
     engine_factory.reset_cache()
     try:
         with pytest.raises(UnsupportedDriverError) as raised:
-            if scheme.endswith("asynch"):
-                _build_async(ds)
-            else:
-                engine_factory.get_engine(ds)
+            build(ds)
     finally:
         engine_factory.reset_cache()
     assert "clickhouse+http" in raised.value.hint

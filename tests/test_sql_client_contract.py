@@ -163,11 +163,11 @@ class TestTypedFailures:
         client = SlayerSQLClient(datasource=shop.datasource)
         try:
             with pytest.raises(Exception) as excinfo:  # NOSONAR(S5958) — the driver's own error type
-                await client.execute("SELEC 1")
+                await client.execute("SELECT 1 +")
         finally:
             client.close()
         assert not isinstance(excinfo.value, SqlClientError)
-        assert 'near "SELEC": syntax error' in str(excinfo.value)
+        assert "incomplete input" in str(excinfo.value)
 
     async def test_rejected_credentials_are_reported_and_connections_discarded(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,

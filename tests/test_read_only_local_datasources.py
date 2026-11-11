@@ -4,18 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import sqlite3
+import functools
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
 import duckdb
 import pytest
-import sqlalchemy as sa
+from sqlalchemy.exc import DBAPIError
 
 from slayer.core.models import DatasourceConfig
 from slayer.database import engine_factory
 from slayer.database.client import DatabaseUnavailable, ExecutionResult, SlayerSQLClient
+from slayer.storage.sqlite_conn import open_connection, transaction
 from tests._engine_helpers import disposable_engine
 
 
@@ -25,12 +26,12 @@ def _seed_duckdb(path: Path) -> None:
 
 
 def _seed_sqlite(path: Path) -> None:
-    with contextlib.closing(sqlite3.connect(path)) as conn:
+    with transaction(path) as conn:
         conn.executescript("CREATE TABLE t (x INTEGER); INSERT INTO t VALUES (1);")
 
 
 def _sqlite_rows(path: Path) -> list[tuple[int, ...]]:
-    with contextlib.closing(sqlite3.connect(path)) as conn:
+    with open_connection(path) as conn:
         return conn.execute("SELECT x FROM t").fetchall()
 
 
@@ -53,7 +54,7 @@ def test_a_write_through_a_duckdb_engine_fails(tmp_path: Path) -> None:
     _seed_duckdb(path)
     with _datasource(type="duckdb", database=str(path)) as ds:
         with engine_factory.get_engine(ds).connect() as conn:
-            with pytest.raises(sa.exc.DBAPIError, match="(?i)read-only"):
+            with pytest.raises(DBAPIError, match="(?i)read-only"):
                 conn.exec_driver_sql("INSERT INTO t VALUES (2)")
     with duckdb.connect(str(path), read_only=True) as conn:
         assert conn.execute("SELECT x FROM t").fetchall() == [(1,)]
@@ -79,7 +80,7 @@ def test_a_sqlite_connection_refuses_writes_to_every_database(tmp_path: Path, wr
     with _datasource(type="sqlite", database=str(main)) as ds:
         with engine_factory.get_engine(ds).connect() as conn:
             conn.exec_driver_sql(f"ATTACH DATABASE '{other}' AS other")
-            with pytest.raises(sa.exc.DBAPIError, match="(?i)readonly"):
+            with pytest.raises(DBAPIError, match="(?i)readonly"):
                 conn.exec_driver_sql(write)
             median = conn.exec_driver_sql("SELECT median(x) FROM (SELECT 1 AS x UNION ALL SELECT 3)").scalar()
     assert median == 2
@@ -129,12 +130,13 @@ def test_a_callers_engine_is_not_modified(tmp_path: Path) -> None:
 
 def _assert_missing_refused(ds: DatasourceConfig, *, path: Path, mode: str) -> None:
     client = SlayerSQLClient(ds)
+    run = (
+        functools.partial(client.execute_sync, "SELECT 1 AS x") if mode == "sync"
+        else functools.partial(asyncio.run, client.execute("SELECT 1 AS x"))
+    )
     try:
         with pytest.raises(DatabaseUnavailable) as raised:
-            if mode == "sync":
-                client.execute_sync("SELECT 1 AS x")
-            else:
-                asyncio.run(client.execute("SELECT 1 AS x"))
+            run()
     finally:
         client.close()
     assert ds.name in str(raised.value)
@@ -224,3 +226,25 @@ def test_execute_sync_releases_a_duckdb_file(tmp_path: Path) -> None:
             assert client.execute_sync("SELECT x FROM t ORDER BY x").rows == [{"x": 1}, {"x": 2}]
         finally:
             client.close()
+
+
+# ---------------------------------------------------------------------------
+# Where a URL keeps its database
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("url", "kind", "path"),
+    [
+        ("sqlite:///file:///abs/dir/a%20b.db?uri=true", "file", "/abs/dir/a b.db"),
+        ("sqlite:///file://localhost/abs/c.db?uri=true", "file", "/abs/c.db"),
+        ("sqlite:///file:rel.db", "file", "file:rel.db"),
+        ("sqlite:///file::memory:?uri=true", "memory", None),
+        ("duckdb:///md:analytics", "remote", None),
+        ("duckdb://", "memory", None),
+        ("postgresql+psycopg://u@h/d", "remote", None),
+    ],
+)
+def test_local_database_classification(url: str, kind: str, path: str | None) -> None:
+    local = engine_factory.local_database(url)
+    assert (local.kind, local.path) == (kind, path)

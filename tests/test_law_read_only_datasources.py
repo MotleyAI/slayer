@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import sqlite3
 from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import Any
@@ -12,12 +11,14 @@ from typing import Any
 import duckdb
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.exc import DBAPIError
 from pytest_postgresql import factories
 
 from slayer.core.models import DatasourceConfig
 from slayer.database import client as sql_client
 from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient
+from slayer.storage.sqlite_conn import transaction
 from tests._pg_helpers import pg_database
 
 postgresql_ro = factories.postgresql_proc(port=None, postgres_options="-c unix_socket_directories=")
@@ -38,7 +39,7 @@ def _local(tmp_path: Path, ds_type: str) -> Generator[DatasourceConfig]:
         with duckdb.connect(str(path)) as conn:
             conn.execute("CREATE TABLE t (x INTEGER); INSERT INTO t VALUES (1)")
     else:
-        with contextlib.closing(sqlite3.connect(path)) as conn:
+        with transaction(path) as conn:
             conn.executescript("CREATE TABLE t (x INTEGER); INSERT INTO t VALUES (1);")
     ds = DatasourceConfig(name="local", type=ds_type, database=str(path))
     try:
@@ -101,22 +102,24 @@ _ENGINE_PATHS: dict[str, Callable[[sa.Engine], None]] = {
 @pytest.mark.parametrize("ds_type", ["duckdb", "sqlite"])
 def test_local_file_engines_refuse_writes(tmp_path: Path, ds_type: str, path: str) -> None:
     with _local(tmp_path, ds_type) as ds:
-        with pytest.raises(sa.exc.DBAPIError, match=_READ_ONLY_ERRORS):
-            _ENGINE_PATHS[path](engine_factory.get_engine(ds))
+        write, engine = _ENGINE_PATHS[path], engine_factory.get_engine(ds)
+        with pytest.raises(DBAPIError, match=_READ_ONLY_ERRORS):
+            write(engine)
 
 
 @pytest.mark.parametrize("path", sorted(_ENGINE_PATHS))
 @pytest.mark.parametrize("scheme", ["postgresql+psycopg", "postgresql+psycopg2", "postgresql+pg8000"])
 def test_postgres_sync_engines_refuse_writes(postgresql_ro: Any, scheme: str, path: str) -> None:
     with _postgres(postgresql_ro, scheme) as ds:
-        with pytest.raises(sa.exc.DBAPIError, match="read-only transaction"):
-            _ENGINE_PATHS[path](engine_factory.get_engine(ds))
+        write, engine = _ENGINE_PATHS[path], engine_factory.get_engine(ds)
+        with pytest.raises(DBAPIError, match="read-only transaction"):
+            write(engine)
 
 
 @pytest.mark.parametrize("scheme", ["postgresql+psycopg", "postgresql+asyncpg"])
 def test_postgres_async_engines_refuse_writes(postgresql_ro: Any, scheme: str) -> None:
     with _postgres(postgresql_ro, scheme) as ds:
-        with pytest.raises(sa.exc.DBAPIError, match="read-only transaction"):
+        with pytest.raises(DBAPIError, match="read-only transaction"):
             _write_through_async(ds)
 
 
@@ -146,8 +149,9 @@ def nothing_sent(monkeypatch: pytest.MonkeyPatch) -> None:
     ids=lambda ds: ds.type,
 )
 def test_the_client_refuses_a_write_unsent(ds: DatasourceConfig) -> None:
-    with pytest.raises(_write_refused()):
-        SlayerSQLClient(ds).execute_sync(_WRITE)
+    client, refused = SlayerSQLClient(ds), _write_refused()
+    with pytest.raises(refused):
+        client.execute_sync(_WRITE)
 
 
 # ---------------------------------------------------------------------------

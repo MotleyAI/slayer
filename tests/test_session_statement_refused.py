@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -115,7 +114,7 @@ def test_ordinary_statements_run(tmp_path: Path, ds_type: str) -> None:
     if ds_type == "duckdb":
         duckdb.connect(str(path)).close()
     else:
-        sqlite3.connect(path).close()
+        path.touch()
     client = SlayerSQLClient(DatasourceConfig(name="ds", type=ds_type, database=str(path)))
     try:
         rows = [client.execute_sync(sql).rows for sql, _ in _ORDINARY]

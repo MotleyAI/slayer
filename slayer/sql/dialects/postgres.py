@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
-from typing import Any, ClassVar, Optional
+from collections.abc import Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 from pydantic import Field
+from sqlalchemy.engine.url import URL
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expression
@@ -18,7 +19,9 @@ from slayer.sql.dialects.base import (
     LIST_ELEMENT,
     CONSTANT_INPUT,
     PORTABLE_LIBRARY,
+    SET_TRANSACTION_READ_ONLY,
     IdentifierFolding,
+    ReadOnlyEngineArgs,
     TransactionMode,
     set_statement,
     NativeFn,
@@ -48,7 +51,22 @@ from slayer.sql.dialects.reflection import (
     result_column_type_of_name,
 )
 
+if TYPE_CHECKING:
+    from slayer.core.models import DatasourceConfig
+
 _NUMERIC_OID = 1700
+
+# Every transaction read-only from connection start: libpq's ``options``, else a settings argument per driver.
+_READ_ONLY_OPTION = "-c default_transaction_read_only=on"
+_READ_ONLY_SETTINGS = {"default_transaction_read_only": "on"}
+_OPTIONS_DRIVERS = frozenset({"psycopg", "psycopg_async", "psycopg2"})
+_SETTINGS_ARGUMENTS = {"asyncpg": "server_settings", "pg8000": "startup_params"}
+
+# Drivers that begin each transaction ``READ ONLY`` under SQLAlchemy's ``postgresql_readonly``.
+_READONLY_OPTION_DRIVERS = frozenset({"psycopg", "psycopg_async", "psycopg2", "asyncpg"})
+
+# Drivers whose transaction start ``begin_read_only`` replaces.
+_SWAPPED_BEGIN_DRIVERS = frozenset({"pg8000"})
 
 # ``pg_type`` OIDs → canonical type names.
 _PG_TYPE_NAMES: dict[int, str] = {
@@ -175,9 +193,47 @@ class PostgresDialect(SqlDialect):
         "REVERSE", "CONCAT_WS", "CHR", "ASCII", "SPLIT_PART", "PI", "CBRT", "GREATEST", "LEAST",
     })
     regex_flavour: ClassVar[Optional[RegexFlavour]] = POSTGRES
+    read_only_transaction_sql: ClassVar[str | None] = SET_TRANSACTION_READ_ONLY
 
     def describe_cursor_column(self, description_row: Sequence[Any]) -> ResultColumnType | None:
         return describe_pg_cursor_column(description_row)
+
+    def read_only_engine_args(
+        self, *, url: URL, datasource: DatasourceConfig, connect_args: Mapping[str, Any],
+    ) -> ReadOnlyEngineArgs:
+        """Direct: every transaction read-only from connection start. Behind a pooler, which drops session
+        state, each transaction begins read-only instead."""
+        driver = url.get_driver_name()
+        if datasource.transaction_pooler:
+            if driver in _READONLY_OPTION_DRIVERS:
+                return ReadOnlyEngineArgs(execution_options={"postgresql_readonly": True})
+            return ReadOnlyEngineArgs()
+        if driver in _OPTIONS_DRIVERS:
+            own = connect_args.get("options") or url.query.get("options")
+            if isinstance(own, tuple):
+                own = " ".join(own)
+            return ReadOnlyEngineArgs(connect_args={"options": " ".join(o for o in (own, _READ_ONLY_OPTION) if o)})
+        argument = _SETTINGS_ARGUMENTS.get(driver)
+        if argument is None:
+            return ReadOnlyEngineArgs()
+        return ReadOnlyEngineArgs(connect_args={argument: {**(connect_args.get(argument) or {}), **_READ_ONLY_SETTINGS}})
+
+    def begins_read_only(self, *, url: URL, datasource: DatasourceConfig) -> bool:
+        return datasource.transaction_pooler and url.get_driver_name() in _SWAPPED_BEGIN_DRIVERS
+
+    def begin_read_only(self, dbapi_connection: Any) -> None:
+        """pg8000 sends its own ``begin transaction`` unless one is open: open it read-only first."""
+        if dbapi_connection.autocommit:
+            return
+        dbapi_connection.autocommit = True
+        try:
+            cursor = dbapi_connection.cursor()
+            try:
+                cursor.execute("START TRANSACTION READ ONLY")
+            finally:
+                cursor.close()
+        finally:
+            dbapi_connection.autocommit = False
 
     def profile_needed(self, keys: Iterable[object]) -> bool:
         """``TRY_CAST`` and ``json_value`` check their input with ``pg_input_is_valid`` on 16+."""

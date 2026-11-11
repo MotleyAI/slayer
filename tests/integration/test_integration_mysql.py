@@ -24,6 +24,7 @@ from typing import Any
 import pytest
 
 import sqlalchemy as sa
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.engine.url import make_url
 from tests._dev1737_fixtures import (
     DateCase,
@@ -1903,7 +1904,7 @@ def test_a_write_through_the_sync_engine_fails(read_only_ds: DatasourceConfig, a
         with engine.connect() as conn:
             conn.invalidate()
     with engine.connect() as conn:
-        with pytest.raises(sa.exc.DBAPIError, match=_RO_ERROR):
+        with pytest.raises(DBAPIError, match=_RO_ERROR):
             conn.exec_driver_sql("INSERT INTO t VALUES (2)")
 
 
@@ -1912,7 +1913,7 @@ async def test_a_write_through_the_async_engine_fails(read_only_ds: DatasourceCo
     client = SlayerSQLClient(datasource=_aiomysql(read_only_ds).model_copy(update={"type": read_only_ds.type}))
     try:
         async with client._get_async_engine().connect() as conn:
-            with pytest.raises(sa.exc.DBAPIError, match=_RO_ERROR):
+            with pytest.raises(DBAPIError, match=_RO_ERROR):
                 await conn.exec_driver_sql("INSERT INTO t VALUES (2)")
     finally:
         await client.aclose()

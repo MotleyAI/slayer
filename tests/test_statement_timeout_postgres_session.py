@@ -170,15 +170,14 @@ def test_a_failed_probe_leaves_no_transaction_open(postgresql_logged: Any, drive
     with _logged(postgresql_logged, driver=driver) as (ds, _log):
         client = SlayerSQLClient(ds)
 
-        async def _work() -> tuple[Any, Any]:
+        async def _work() -> tuple[Any, Any, Any]:
             before = (await client.execute(_STATE_SQL)).rows[0]
             with pytest.raises(Exception, match="missing_table"):
                 await client.get_result_column_types("SELECT * FROM missing_table")
             after = (await client.execute(_STATE_SQL)).rows[0]
-            return before, after
+            return before, after, _admin(ds, f"SELECT state FROM pg_stat_activity WHERE pid = {int(after['p'])}")
 
-        before, after = _in_one_loop(client, _work)
-        state = _admin(ds, f"SELECT state FROM pg_stat_activity WHERE pid = {int(after['p'])}")
+        before, after, state = _in_one_loop(client, _work)
     assert after["p"] == before["p"]
     assert (after["t"], after["ro"]) == ("2min", "on")
     assert state == [("idle",)]

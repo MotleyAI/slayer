@@ -241,6 +241,7 @@ async def _rows(live: Live, tmp_path: Path, models: Iterable[SlayerModel],
     await storage.save_datasource(live.datasource)
     for model in models:
         await storage.save_model(model)
+    live.engine.dispose()  # SLayer opens a DuckDB file read-only, which a held read-write connection refuses
     engine = SlayerQueryEngine(storage=storage)
     try:
         return (await engine.execute(SlayerQuery.model_validate(payload))).data

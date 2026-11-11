@@ -8,7 +8,7 @@ from collections.abc import Generator
 from typing import Any
 
 import pytest
-import sqlalchemy as sa
+from sqlalchemy.exc import DBAPIError
 from pytest_postgresql import factories
 
 from slayer.core.models import DatasourceConfig
@@ -133,8 +133,10 @@ def test_sync_engines_refuse_writes_in_autocommit(postgresql_logged: Any, scheme
     with _pg(postgresql_logged, scheme=scheme) as (ds, _log):
         with engine_factory.get_engine(ds).connect() as conn:
             assert conn.exec_driver_sql("SHOW default_transaction_read_only").scalar() == "on"
-            assert conn.get_isolation_level() == "AUTOCOMMIT"
-            with pytest.raises(sa.exc.DBAPIError, match=_RO_ERROR):
+            dbapi_connection = conn.connection.dbapi_connection
+            assert dbapi_connection is not None
+            assert dbapi_connection.autocommit is True
+            with pytest.raises(DBAPIError, match=_RO_ERROR):
                 conn.exec_driver_sql(_WRITE)
 
 
@@ -142,7 +144,7 @@ def test_sync_engines_refuse_writes_in_autocommit(postgresql_logged: Any, scheme
 def test_async_engines_refuse_writes(postgresql_logged: Any, scheme: str) -> None:
     with _pg(postgresql_logged, scheme=scheme) as (ds, _log):
         assert _async_session(ds, "SHOW default_transaction_read_only") == ["on"]
-        with pytest.raises(sa.exc.DBAPIError, match=_RO_ERROR):
+        with pytest.raises(DBAPIError, match=_RO_ERROR):
             _async_session(ds, _WRITE)
 
 
@@ -179,11 +181,11 @@ def test_pooler_transactions_begin_read_only(postgresql_logged: Any, scheme: str
     with _pg(postgresql_logged, scheme=scheme, transaction_pooler=True) as (ds, log):
         _three_queries(ds)
         if scheme.endswith("asyncpg"):
-            with pytest.raises(sa.exc.DBAPIError, match=_RO_ERROR):
+            with pytest.raises(DBAPIError, match=_RO_ERROR):
                 _async_session(ds, _WRITE)
         else:
             with engine_factory.get_engine(ds).connect() as conn:
-                with pytest.raises(sa.exc.DBAPIError, match=_RO_ERROR):
+                with pytest.raises(DBAPIError, match=_RO_ERROR):
                     conn.exec_driver_sql(_WRITE)
         entries = log.statements(until="INSERT INTO t")
     sent = [e.sql for e in entries]

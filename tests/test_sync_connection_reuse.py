@@ -7,7 +7,6 @@ import json
 import os
 import select
 import signal
-import sqlite3
 import subprocess
 import sys
 import textwrap
@@ -320,7 +319,7 @@ _EXIT_SCRIPT = textwrap.dedent("""
 def test_process_exit_leaves_nothing_open(
     pg_ds: DatasourceConfig, postgresql_proc: Any, tmp_path: Path,
 ) -> None:
-    sqlite3.connect(tmp_path / "exit.db").close()
+    (tmp_path / "exit.db").touch()
     local = DatasourceConfig(name="file", type="sqlite", database=str(tmp_path / "exit.db"))
     payload = json.dumps([pg_ds.model_dump(), local.model_dump()])
     proc = subprocess.run(

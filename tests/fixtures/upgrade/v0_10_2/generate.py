@@ -5,10 +5,8 @@
 """
 
 import asyncio
-import contextlib
 import json
 import shutil
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -24,6 +22,7 @@ from slayer.core.query import SlayerQuery
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.base import StorageBackend
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -161,7 +160,7 @@ def _seed_db() -> None:
 
 def _seed_lite() -> None:
     LITE_DB.unlink(missing_ok=True)
-    with contextlib.closing(sqlite3.connect(LITE_DB)) as conn, conn:
+    with transaction(LITE_DB) as conn:
         conn.execute("CREATE TABLE sales (id INTEGER PRIMARY KEY, status TEXT, amount REAL)")
         conn.executemany("INSERT INTO sales VALUES (?,?,?)", [(o[0], o[2], o[4]) for o in _ORDERS])
 
