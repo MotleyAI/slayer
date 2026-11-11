@@ -13,7 +13,7 @@ from slayer.database import engine_factory
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
-from slayer.storage.migrations import CURRENT_VERSIONS
+from slayer.storage.migrations import CURRENT_VERSIONS, stamp_stored
 from tests._stored_upgrade_fixtures import (
     BACKENDS,
     DS,
@@ -164,7 +164,7 @@ class TestMemories:
 
     def test_an_unversioned_stored_memory(self) -> None:
         doc = {"id": "m_old", "learning": "x", "entities": [], "query": _stage(version=None)}
-        _assert_upgraded(Memory.model_validate(doc).query)
+        _assert_upgraded(Memory.model_validate(stamp_stored(doc)).query)
 
     def test_a_memory_dump_reloads_unchanged(self) -> None:
         memory = Memory.model_validate(memory_v2(memory_id="m_ext", query=_stage(), version=CURRENT_VERSIONS["Memory"]))

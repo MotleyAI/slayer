@@ -15,6 +15,7 @@ from slayer.engine.profiling import refresh_table_backed_model_sampled
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.facade.catalog import build_catalog
 from slayer.facade.translator import QueryResult, translate
+from slayer.memories.models import Memory
 from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
@@ -58,6 +59,19 @@ class TestFreshInputConverts:
         assert q.source_model == "orders"
         assert q.extensions == [instance]
         assert q.source_model_name == "orders"
+
+    def test_a_stage_of_a_fresh_model_warns(self) -> None:
+        with pytest.warns(FutureWarning, match="extensions"):
+            model = SlayerModel.model_validate({"name": "qb", "data_source": "shop", "source_queries": [
+                {"source_model": LEGACY, "measures": ["sum(double_amount)"]}]})
+        assert [q.source_model for q in model.source_queries or []] == ["orders"]
+
+    def test_the_query_of_a_fresh_memory_warns(self) -> None:
+        with pytest.warns(FutureWarning, match="extensions"):
+            memory = Memory.model_validate({"id": "m", "learning": "x", "entities": [], "query": {
+                "source_model": LEGACY, "measures": ["sum(double_amount)"]}})
+        assert memory.query is not None
+        assert memory.query.source_model == "orders"
 
     def test_legacy_form_next_to_an_extension_of_another_model(self) -> None:
         with pytest.warns(FutureWarning):

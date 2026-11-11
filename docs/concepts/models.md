@@ -592,7 +592,7 @@ Query results use `model_name.column_name` keys. Aggregations map to keys: `sum(
 
 ## Schema versioning
 
-Every persisted SLayer entity (`SlayerModel`, `SlayerQuery`, `DatasourceConfig`, `Memory`) carries a `version: int` field — currently `18` for `SlayerModel`, `9` for `SlayerQuery`, `3` for `DatasourceConfig`, `7` for `Memory`. Behaviour:
+Every persisted SLayer entity (`SlayerModel`, `SlayerQuery`, `DatasourceConfig`, `Memory`) carries a `version: int` field — currently `18` for `SlayerModel`, `10` for `SlayerQuery`, `3` for `DatasourceConfig`, `7` for `Memory`. Behaviour:
 
 - **On save**, SLayer always writes the current schema version.
 - **On load**, an older `version` triggers a chain of pure dict→dict converters before Pydantic validation. Hand-edited and older files keep working as the schema evolves.

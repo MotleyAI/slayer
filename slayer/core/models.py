@@ -762,7 +762,8 @@ class SlayerModel(BaseModel):
     @model_validator(mode="wrap")
     @classmethod
     def _name_nested_migrations(cls, data: Any, handler: ModelWrapValidatorHandler["SlayerModel"]) -> "SlayerModel":
-        with migrating_document(data.get("name") if isinstance(data, dict) else None):
+        is_dict = isinstance(data, dict)
+        with migrating_document(data.get("name") if is_dict else None, stored=is_dict and "version" in data):
             return handler(data)
 
     @model_validator(mode="before")

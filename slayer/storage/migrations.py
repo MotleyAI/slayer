@@ -26,21 +26,24 @@ CURRENT_VERSIONS: dict[str, int] = {
 }
 
 _document: ContextVar[str | None] = ContextVar("slayer_migrated_document", default=None)
+_stored: ContextVar[bool] = ContextVar("slayer_stored_document", default=False)
 
 
 @contextmanager
-def migrating_document(label: str | None) -> Iterator[None]:
-    """Name the stored document whose nested documents migrate inside the block."""
+def migrating_document(label: str | None, *, stored: bool) -> Iterator[None]:
+    """Name the document whose nested documents migrate inside the block; ``stored`` when it carries a version."""
     token = _document.set(label or _document.get())
+    stored_token = _stored.set(stored or _stored.get())
     try:
         yield
     finally:
+        _stored.reset(stored_token)
         _document.reset(token)
 
 
 def in_stored_document() -> bool:
-    """Whether validation runs inside a stored document (a model's or memory's nested documents)."""
-    return _document.get() is not None
+    """Whether validation runs inside a stored (versioned) model's or memory's nested documents."""
+    return _stored.get()
 
 
 def document_label(data: dict) -> str | None:

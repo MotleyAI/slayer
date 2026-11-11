@@ -7,7 +7,8 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | No | Name for this query — used to reference it from other queries in a list |
-| `source_model` | string, SlayerModel, or ModelExtension | No | The population (query root): a model name, inline model, or model extension. Omit it to infer the population — see [Population](#population). |
+| `source_model` | string or SlayerModel | No | The population (query root): a model name or inline model. Omit it to infer the population — see [Population](#population). |
+| `extensions` | list[ModelExtension] | No | Query-scoped columns, measures and joins added to any model the query reads — see [Query extensions](#query-extensions). |
 | `measures` | list[ModelMeasure] | No | Computed/aggregated values — formulas, arithmetic, transforms. Aggregations are function calls (`sum(revenue)`, incl. expressions like `sum(amount - cost)`) — see [Formulas](formulas.md) and [Aggregation syntax](references.md#aggregation-syntax). |
 | `dimensions` | list[str \| ColumnRef \| ComputedDimension] | No | Columns to group by — bare strings (`"status"`) or `{"name": "status"}` dicts, dotted names for joined models (`customers.name`), or `{"expression": …, "name": …}` for a [computed expression](#expression-dimensions). |
 | `time_dimensions` | list[TimeDimension] | No | Time dimensions with granularity |
