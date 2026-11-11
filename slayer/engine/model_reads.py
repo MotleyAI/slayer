@@ -188,9 +188,12 @@ class _Reads:
             self.read(edge.target_model, scope=scope)
 
     def ref(self, parts: Sequence[str], *, host: SlayerModel, scope: QueryScope) -> None:
-        """A reference rooted at ``host``: its hops, then the definition of a derived column or saved measure it names."""
+        """A reference rooted at ``host``: its hops, then the definition of a derived column or saved measure it names;
+        one no path reaches from ``host`` is a product read of the model it names."""
         terminal = self.path(tuple(parts[:-1]), host=host, scope=scope)
         if terminal is None:
+            if parts[0] != host.spelling:
+                self.product_ref(tuple(parts), scope=scope)
             return
         self.column(host=terminal, name=parts[-1], scope=scope)
         self.measure(host=terminal, name=parts[-1], scope=scope)
@@ -227,9 +230,10 @@ class _Reads:
             if host is not None:
                 self.ref(parts, host=host, scope=scope)
             else:
-                self.unhosted_ref(parts, scope=scope)
+                self.product_ref(parts, scope=scope)
 
-    def unhosted_ref(self, parts: tuple[str, ...], *, scope: QueryScope) -> None:
+    def product_ref(self, parts: tuple[str, ...], *, scope: QueryScope) -> None:
+        """A reference rooted at the model of the scope its head names."""
         root = scope.models.get(parts[0]) if len(parts) > 1 else None
         if root is not None:
             self.read(root.name, scope=scope)

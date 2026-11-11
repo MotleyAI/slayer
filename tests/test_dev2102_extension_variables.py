@@ -121,6 +121,12 @@ def test_a_short_form_reference_reads_the_models_on_its_route() -> None:
     assert {(DS, "customers"), (DS, "regions")} <= reads
 
 
+def test_a_product_read_reads_the_unrelated_model() -> None:
+    query = q(source_model="orders", dimensions=["status"], measures=[{"formula": "count(countries.id)", "name": "n"}])
+    reads = models_read_by(query, models=[orders(), customers(), regions(), countries()], data_source=DS)
+    assert (DS, "countries") in reads
+
+
 def test_a_rootless_sibling_stage_extension_reads_through_its_joins() -> None:
     home = ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])
     backed = SlayerModel(name="backed", data_source="", source_queries=[
