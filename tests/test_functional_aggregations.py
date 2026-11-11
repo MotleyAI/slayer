@@ -30,6 +30,7 @@ from slayer.core.syntax import (
     Arith,
     DottedRef,
     Literal,
+    NamedArg,
     Ref,
     ScalarCall,
     StarSource,
@@ -164,7 +165,8 @@ class TestDispatchUnchanged:
     def test_rank_over_functional_agg_with_partition(self) -> None:
         assert parse_expr("rank(sum(revenue), partition_by=status, direction='desc')") == TransformCall(
             op="rank", input=_SUM_REVENUE,
-            kwargs=(("partition_by", Ref(name="status")), ("direction", Literal(value="desc"))),
+            args=(NamedArg(name="partition_by", value=Ref(name="status")),
+                  NamedArg(name="direction", value=Literal(value="desc"))),
         )
 
     def test_scalar_call_stays_scalar(self) -> None:
@@ -197,7 +199,8 @@ class TestUnknownNameDeferral:
     def test_unknown_with_kwargs_defers(self) -> None:
         assert parse_expr("trimmed(price, low=1, high=9)") == AggCall(
             source=Ref(name="price"), agg="trimmed",
-            kwargs=(("low", Literal(value=Decimal("1"))), ("high", Literal(value=Decimal("9")))))
+            args=(NamedArg(name="low", value=Literal(value=Decimal("1"))),
+                  NamedArg(name="high", value=Literal(value=Decimal("9")))))
 
 
 class TestFunctionalParseErrors:

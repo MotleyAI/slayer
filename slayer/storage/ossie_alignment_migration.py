@@ -6,6 +6,7 @@ Stored-only. A custom-granularity call needs its datasource's names, so the stor
 """
 
 import logging
+from functools import partial
 
 from slayer.core.enums import GRANULARITY_NAMES
 from slayer.storage.migrations import document_label, register_migration
@@ -17,38 +18,40 @@ _RENAMED = "agg_aggregation"
 _logger = logging.getLogger(__name__)
 
 
-def upgraded_text(text: str) -> str:
-    """One stored Mode-B text in the 2.0 spelling."""
-    text = bucket_calls_as_date_trunc(text, units=GRANULARITY_NAMES)
-    return renamed_calls(canonical_spellings(text), old=_RESERVED, new=_RENAMED)
+def upgraded_text(text: str, *, rename_agg: bool = True) -> str:
+    """One stored Mode-B text in the 2.0 spelling; ``rename_agg`` calls ``agg(…)`` as ``agg_aggregation(…)``."""
+    text = canonical_spellings(bucket_calls_as_date_trunc(text, units=GRANULARITY_NAMES))
+    return renamed_calls(text, old=_RESERVED, new=_RENAMED) if rename_agg else text
 
 
 def upgrade_model(data: dict) -> dict:
     """Rename a stored ``agg`` aggregation and upgrade the measure formulas; mark nested stored queries as stored."""
     aggregations = data.get("aggregations")
+    rename_agg = True
     if isinstance(aggregations, list):
-        data["aggregations"] = _renamed_reserved(aggregations, model=document_label(data))
-    return rewrite_model_texts(data, upgraded_text)
+        data["aggregations"], rename_agg = _renamed_reserved(aggregations, model=document_label(data))
+    return rewrite_model_texts(data, partial(upgraded_text, rename_agg=rename_agg))
 
 
-def _renamed_reserved(aggregations: list, *, model: str | None) -> list:
+def _renamed_reserved(aggregations: list, *, model: str | None) -> tuple[list, bool]:
+    """The aggregations with a reserved ``agg`` renamed, and whether calls to it follow the rename."""
     names = [n for a in aggregations if isinstance(a, dict) and isinstance(n := a.get("name"), str)]
     reserved = [n for n in names if n.casefold() == _RESERVED]
     if not reserved:
-        return aggregations
+        return aggregations, True
     if any(n.casefold() == _RENAMED for n in names):
         _logger.warning(
             "model %r: aggregation %r is the reserved function name AGG and %r is taken; it is kept, and calls to "
             "agg(…) are refused", model, reserved[0], _RENAMED,
         )
-        return aggregations
+        return aggregations, False
     _logger.warning(
         "model %r: aggregation %r is the reserved function name AGG; renamed to %r with every call to it",
         model, reserved[0], _RENAMED,
     )
     return [
         {**a, "name": _RENAMED} if isinstance(a, dict) and a.get("name") == reserved[0] else a for a in aggregations
-    ]
+    ], True
 
 
 def upgrade_query(data: dict) -> dict:

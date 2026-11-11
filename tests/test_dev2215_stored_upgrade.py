@@ -333,12 +333,14 @@ class TestAggRename:
     async def test_the_new_name_is_taken(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
                                          caplog: pytest.LogCaptureFixture) -> None:
         both = orders_doc(aggregations=[{"name": "agg", "formula": "SUM({value})"},
-                                        {"name": "agg_aggregation", "formula": "MAX({value})"}])
+                                        {"name": "agg_aggregation", "formula": "MAX({value})"}],
+                          measures=[{"name": "a", "formula": "agg(amount)"}])
         storage = await store(tmp_path, shop_ds, backend=backend, models=[both])
         with logged(caplog) as texts:
             model = await storage.get_model("orders", data_source=DS)
         assert model is not None
         assert sorted(a.name for a in model.aggregations) == ["agg", "agg_aggregation"]
+        assert [m.formula for m in model.measures] == ["agg(amount)"]
         assert any("agg" in t and "orders" in t for t in texts), texts
         with pytest.raises(SlayerError, match="(?i)AGG.*reserved"):
             await run(storage, {"source_model": "orders", "measures": ["agg(amount)"]})
