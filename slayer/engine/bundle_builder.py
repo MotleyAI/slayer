@@ -99,7 +99,7 @@ async def build_resolved_source_bundle(
     stage_source_models = await _stage_source_models(
         named_queries=named_queries, storage=storage, data_source=walk_ds or data_source,
     )
-    peers = failures.skip(await storage.load_models(data_source=walk_ds)) if walk_ds is not None else []
+    peer_names, peer_edge_names = await _datasource_names(storage=storage, data_source=walk_ds, failures=failures)
 
     query_variables = merge_query_variables(
         runtime=runtime_variables,
@@ -127,9 +127,17 @@ async def build_resolved_source_bundle(
         now=datetime.now() if now is None else now,
         granularities=ds.granularity_definitions if ds else {},
         spine_clash=spine_clash,
-        datasource_model_names=frozenset(m.name for m in peers),
-        datasource_edge_names=frozenset(j.name for m in peers for j in m.joins if j.name),
+        datasource_model_names=peer_names,
+        datasource_edge_names=peer_edge_names,
     )
+
+
+async def _datasource_names(
+    *, storage: "StorageBackend", data_source: Optional[str], failures: DocumentLoadFailures,
+) -> "Tuple[frozenset[str], frozenset[str]]":
+    """The model names and stored edge names of ``data_source``."""
+    peers = failures.skip(await storage.load_models(data_source=data_source)) if data_source is not None else []
+    return frozenset(m.name for m in peers), frozenset(j.name for m in peers for j in m.joins if j.name)
 
 
 async def _stage_source_models(

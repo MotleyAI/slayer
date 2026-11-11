@@ -9,7 +9,7 @@ A join declared by a query extension of model `M` towards `T` SHALL be matched a
 - **No match.** A declaration matching no candidate SHALL be a new query-local edge.
 - **Join type.** The declared join type SHALL take no part in this identity and SHALL NOT change how an edge is traversed: a matched edge keeps its stored join type, and a new query-local edge is traversed as LEFT. A declaration's description and meta SHALL be ignored on a match.
 - **Cardinality.** Cardinalities conflict only when both are set and differ after orientation. A matched edge keeps its stored cardinality.
-- **Names.** A declared name equal to a stored edge name of the datasource that does not belong to the matched edge SHALL be an error. A new query-local edge's name SHALL follow the stored edge-name rules: it SHALL NOT equal a model name of the datasource or a stage name in scope. A declared name equal to the target model's own name SHALL be accepted as that model's spelling.
+- **Names.** A declared name equal to a stored edge name of the datasource that does not belong to the matched edge SHALL be an error. A new query-local edge's name, and an alias, SHALL follow the stored edge-name rules: it SHALL NOT equal a model name of the datasource or a stage name in scope. A declared name equal to the target model's own name SHALL be accepted as that model's spelling.
 - **One relationship declared twice.** Declarations of one new relationship from both sides, or twice from one side, SHALL be one edge: unnamed, or carrying the one name declared. Two different names for one new relationship SHALL be an error.
 - **Parallel new edges.** A new unnamed edge parallel to another edge between the same models SHALL leave a bare hop between them failing closed as ambiguous.
 
@@ -52,6 +52,10 @@ A join declared by a query extension of model `M` towards `T` SHALL be matched a
 #### Scenario: Alias equal to another edge's name is an error
 - **WHEN** an extension matches the shipping edge by its pairs but names it `billing_address`
 - **THEN** the query fails naming `billing_address`
+
+#### Scenario: Alias equal to a model or stage name is an error
+- **WHEN** an extension matches the stored `orders → customers` edge by its pairs but names it after another model or a stage in scope
+- **THEN** the query fails naming the alias
 
 #### Scenario: Two names for one new relationship
 - **WHEN** an extension of `a` declares a new join to `b` named `x`, and an extension of `b` declares the reverse join named `y`

@@ -23,7 +23,12 @@ SPLICED_STAGE_PREFIX = "__slayer_qb__"
 def stage_sibling_reads(*, query: SlayerQuery, siblings: AbstractSet[str]) -> Set[str]:
     """Sibling names in ``siblings`` that ``query`` references; purely structural, never raises."""
     spec = query.source_model
-    names = [spec] if isinstance(spec, str) else [j.target_model for j in spec.joins] if spec is not None else []
+    if isinstance(spec, str):
+        names = [spec]
+    elif spec is not None:
+        names = [j.target_model for j in spec.joins]
+    else:
+        names = []
     return {n for n in (*names, *extension_model_names(query)) if n in siblings}
 
 

@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple
 from slayer.core.enums import JoinType
 from slayer.core.errors import ModelNotFoundError, QueryExtensionError, TimeSpineError
 from slayer.core.join_edges import EdgeMerge
-from slayer.core.models import SlayerModel
+from slayer.core.models import ModelJoin, SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.core.scope import ModelScope, StageSchema
 from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine
@@ -85,23 +85,7 @@ def apply_query_extensions(
             *(j.name for m in models.values() for j in m.joins if j.name and not j.query_local),
         },
     )
-    restrictions: List[InnerRestriction] = []
-    for extension in query.extensions:
-        for join in extension.joins or []:
-            if join.target_model not in merge.models:
-                _extended(join.target_model, models=merge.models, bundle=bundle, where=where)
-            try:
-                merged = merge.add(declaring=extension.source_name, join=join)
-            except QueryExtensionError as exc:
-                raise QueryExtensionError(f"{where}: {exc}" if where else str(exc)) from exc
-            if join.join_type is JoinType.INNER:
-                declaring = merge.models[extension.source_name]
-                target = merge.models[join.target_model]
-                restrictions.append(InnerRestriction(
-                    model=declaring.spelling, token=merged.token, key=merged.edge.join_pairs[0][1],
-                    label=f"INNER join from {declaring.spelling!r} to {target.spelling!r}"
-                    + (f" in {where}" if where else ""),
-                ))
+    restrictions = _merge_joins(query=query, merge=merge, bundle=bundle, where=where)
     models = merge.models
     source = models[bundle.source_model.name] if bundle.source_model is not None else None
     bundle = bundle.model_copy(update={
@@ -109,8 +93,46 @@ def apply_query_extensions(
         "referenced_models": [models.get(m.name, m) for m in bundle.referenced_models],
         "inner_restrictions": (*bundle.inner_restrictions, *restrictions),
     })
+    return _extended_scope(scope, query=query, models=models, source=source), bundle
+
+
+def _merge_joins(
+    *, query: SlayerQuery, merge: EdgeMerge, bundle: ResolvedSourceBundle, where: Optional[str],
+) -> List[InnerRestriction]:
+    """Merge every extension join into ``merge``; the INNER ones' population filters."""
+    restrictions = [
+        _merge_join(declaring=extension.source_name, join=join, merge=merge, bundle=bundle, where=where)
+        for extension in query.extensions or [] for join in extension.joins or []
+    ]
+    return [r for r in restrictions if r is not None]
+
+
+def _merge_join(
+    *, declaring: str, join: ModelJoin, merge: EdgeMerge, bundle: ResolvedSourceBundle, where: Optional[str],
+) -> Optional[InnerRestriction]:
+    """Merge one extension join into ``merge``; its population filter when INNER."""
+    if join.target_model not in merge.models:
+        _extended(join.target_model, models=merge.models, bundle=bundle, where=where)
+    try:
+        merged = merge.add(declaring=declaring, join=join)
+    except QueryExtensionError as exc:
+        raise QueryExtensionError(f"{where}: {exc}" if where else str(exc)) from exc
+    if join.join_type is not JoinType.INNER:
+        return None
+    source = merge.models[declaring]
+    target = merge.models[join.target_model]
+    return InnerRestriction(
+        model=source.spelling, token=merged.token, key=merged.edge.join_pairs[0][1],
+        label=f"INNER join from {source.spelling!r} to {target.spelling!r}" + (f" in {where}" if where else ""),
+    )
+
+
+def _extended_scope(
+    scope: "ModelScope | StageSchema | None", *, query: SlayerQuery, models: Dict[str, SlayerModel],
+    source: Optional[SlayerModel],
+) -> "ModelScope | StageSchema | None":
     if isinstance(scope, ModelScope) and scope.source_model is not None:
-        scope = ModelScope(source_model=models.get(scope.source_model.name, scope.source_model))
-    elif isinstance(scope, StageSchema) and source is not None and extension_of(query, source.name) is not None:
-        scope = ModelScope(source_model=source)
-    return scope, bundle
+        return ModelScope(source_model=models.get(scope.source_model.name, scope.source_model))
+    if isinstance(scope, StageSchema) and source is not None and extension_of(query, source.name) is not None:
+        return ModelScope(source_model=source)
+    return scope

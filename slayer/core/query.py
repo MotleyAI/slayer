@@ -1047,10 +1047,28 @@ def _source_spec_tag(value: Any) -> str:
     return "model" if isinstance(value, (SlayerModel, dict)) else "name"
 
 
-_LEGACY_EXTENSION_MESSAGE = (
-    "An extension object in `source_model` is deprecated and will be removed in SLayer 3.0; "
-    "name the model in `source_model` and put the extension in `extensions`."
-)
+def _reject_retired_strict(data: dict) -> None:
+    """Reject retired `strict` unless a pre-v4 integer stored version migrates it (v3→v4: strict:true→'error').
+
+    ``version`` is raw here, so only int / integer-string forms count; a float or other malformed value never
+    truncates into a stale version.
+    """
+    if "strict" not in data:
+        return
+    raw_version = data.get("version")
+    version: int | None = None
+    if isinstance(raw_version, int) and not isinstance(raw_version, bool):
+        version = raw_version
+    elif isinstance(raw_version, str):
+        try:
+            version = int(raw_version)
+        except ValueError:
+            version = None
+    if version is None or version >= _STRICT_RETIRED_AT:
+        raise ValueError(
+            "`strict` is retired; set to_many_handling='error' instead "
+            "(one of broadcast|associate|error)."
+        )
 
 
 def convert_legacy_root_extension(data: dict) -> dict:
@@ -1063,7 +1081,11 @@ def convert_legacy_root_extension(data: dict) -> dict:
     else:
         return data
     if not in_stored_document():
-        warn_deprecated(_LEGACY_EXTENSION_MESSAGE, removal="3.0", stacklevel=4)
+        warn_deprecated(
+            "An extension object in `source_model` is deprecated and will be removed in SLayer 3.0; "
+            "name the model in `source_model` and put the extension in `extensions`.",
+            removal="3.0", stacklevel=4,
+        )
     return data
 
 
@@ -1233,27 +1255,8 @@ class SlayerQuery(BaseModel):
         # Single before-validator: migrate, THEN rewrite the functional granularity
         # form. Pydantic runs before-validators in reverse declaration order, so
         # sequencing them explicitly here keeps the rewrite on migrated input.
-        # `strict` is retired. Reject it for fresh (no version), v4-or-later,
-        # or malformed payloads; only a pre-v4 *integer* stored version
-        # migrates it (v3→v4 maps strict:true→to_many_handling='error'). ``version``
-        # is raw here (pre-coercion), so accept only int / integer-string forms —
-        # never truncate a float or other malformed value into a stale version.
-        if isinstance(data, dict) and "strict" in data:
-            raw_version = data.get("version")
-            version: int | None = None
-            if isinstance(raw_version, int) and not isinstance(raw_version, bool):
-                version = raw_version
-            elif isinstance(raw_version, str):
-                try:
-                    version = int(raw_version)
-                except ValueError:
-                    version = None
-            if version is None or version >= _STRICT_RETIRED_AT:
-                raise ValueError(
-                    "`strict` is retired; set to_many_handling='error' instead "
-                    "(one of broadcast|associate|error)."
-                )
         if isinstance(data, dict):
+            _reject_retired_strict(data)
             data = convert_legacy_root_extension(data)
         data = _migrate_schema(entity="SlayerQuery", data=data)
         if isinstance(data, dict):

@@ -45,7 +45,7 @@ def _query(*, version: int, **fields: Any) -> SlayerQuery:
 class TestVersions:
     def test_versions_bumped(self) -> None:
         assert CURRENT_VERSIONS["SlayerModel"] == 18
-        assert CURRENT_VERSIONS["SlayerQuery"] == 9
+        assert CURRENT_VERSIONS["SlayerQuery"] == 10
         assert CURRENT_VERSIONS["DatasourceConfig"] == 3
         assert CURRENT_VERSIONS["Memory"] == 7
 

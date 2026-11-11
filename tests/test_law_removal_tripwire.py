@@ -54,6 +54,7 @@ PINNED: dict[tuple[str, str], str] = {
     },
     ("slayer/engine/population/__init__.py", "slayer.engine.population."): "3.0",
     ("slayer/engine/cardinality/__init__.py", "slayer.engine.cardinality."): "3.0",
+    ("slayer/core/query.py", "An extension object in `source_model`"): "3.0",
 }
 MOVED_PATH_SITES = frozenset(k for k, removal in PINNED.items() if removal == "3.0")
 

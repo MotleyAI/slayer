@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError, SlayerError
+from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError, QueryExtensionError, SlayerError
+from slayer.core.join_edges import EdgeMerge
 from slayer.core.models import ModelJoin
 from slayer.engine.query_engine import SlayerQueryEngine
 
@@ -176,6 +177,34 @@ class TestConflicts:
         async with shop(dialect) as engine:
             message = await _error(engine, [stage, root])
         assert repr(name) in message or f"'{name}'" in message or f"`{name}`" in message, message
+
+    @pytest.mark.parametrize("name", ["countries", "s"], ids=["model-name", "stage-name"])
+    async def test_an_alias_named_like_a_model_or_stage_is_an_error(self, dialect, name: str) -> None:
+        stage = q(name="s", source_model="orders", dimensions=["status"])
+        root = q(source_model="orders", dimensions=["id"], extensions=[ext("orders", joins=[
+            join("customers", CUSTOMER_PAIRS, name=name), join("s", [["status", "status"]])])])
+        async with shop(dialect) as engine:
+            message = await _error(engine, [stage, root])
+        assert f"'{name}'" in message, message
+
+    @pytest.mark.parametrize("extensions", [
+        [ext("orders", joins=[join("addresses", BILLING_PAIRS, name="a"), join("addresses", SHIPPING_PAIRS, name="a")])],
+        [ext("orders", joins=[join("addresses", BILLING_PAIRS, name="a")]),
+         ext("customers", joins=[join("regions", REGION_PAIRS, name="a")])],
+    ], ids=["alias-of-another-stored-edge", "new-edge"])
+    async def test_an_alias_names_one_edge(self, dialect, extensions: list[dict]) -> None:
+        query = q(source_model="orders", dimensions=["id"], extensions=extensions)
+        async with shop(dialect) as engine:
+            message = await _error(engine, query)
+        assert "'a'" in message, message
+
+    def test_several_edges_sharing_the_declared_name_are_ambiguous(self) -> None:
+        home = ModelJoin(target_model="regions", name="home", join_pairs=REGION_PAIRS)
+        back = ModelJoin(target_model="customers", name="home", join_pairs=[["id", "region_id"]])
+        merge = EdgeMerge(models={"customers": customers(home), "regions": regions().model_copy(
+            update={"joins": [back]})})
+        with pytest.raises(QueryExtensionError, match="matches 2 edges"):
+            merge.add(declaring="customers", join=home)
 
     async def test_two_names_for_one_new_relationship_are_an_error(self, dialect) -> None:
         query = q(source_model="customers", dimensions=["name"], extensions=[

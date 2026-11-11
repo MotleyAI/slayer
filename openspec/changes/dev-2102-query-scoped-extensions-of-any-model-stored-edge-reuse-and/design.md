@@ -50,7 +50,7 @@ Principles that bind the design:
 10. **Scope and resolution order**: sibling stage, else inline source, else stored model; extensions are invisible to other stages and to stored definitions. (default, per engine P11)
 11. **Extensions of `time_spine` are rejected.** (default)
 12. **Cardinality compatibility** means equal after orientation, or unset on either side; a reused edge keeps its stored value. (default)
-13. **New query-local edge names follow the stored edge-name rules**; an alias equal to the target model's name is that model's spelling. (default)
+13. **New query-local edge names and aliases follow the stored edge-name rules**; an alias equal to the target model's name is that model's spelling. (default)
 14. **One new relationship declared twice** under two different names is an error; one name, or none, gives one edge. (default, folded from codex)
 15. **Save-time refusal**, through the existing save-time stage planning, of stored stages whose extensions are guaranteed to fail. (default, system P11)
 16. **Every stored-dict walker in `slayer/storage/*`** that reads a query's `source_model` extension also walks `extensions`, because walkers that run at or after v10 see the new shape. (default)

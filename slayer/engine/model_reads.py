@@ -232,9 +232,7 @@ class _Reads:
     def stages(self, queries: list[SlayerQuery], *, data_source: str | None) -> None:
         named = {q.name: q for q in queries[:-1] if q.name}
         for query in queries:
-            for name in extension_model_names(query):
-                for model in self.holders(name, data_source=data_source):
-                    self.read(model)
+            self.extended_models(query, data_source=data_source)
             try:
                 spec = follow_sibling_chain(spec=query.source_model, named_queries=named)
             except ValueError:
@@ -247,6 +245,11 @@ class _Reads:
                     self.ref(parts, host=host)
                 if not hosts:
                     self.unhosted_ref(parts, data_source=data_source)
+
+    def extended_models(self, query: SlayerQuery, *, data_source: str | None) -> None:
+        for name in extension_model_names(query):
+            for model in self.holders(name, data_source=data_source):
+                self.read(model)
 
     def source(self, spec: SourceSpec | None, *, data_source: str | None) -> list[SlayerModel]:
         """The hosts a stage source may resolve to (every holder of an ambiguous name), recording what they read."""

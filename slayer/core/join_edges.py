@@ -83,6 +83,12 @@ class _Candidate(BaseModel):
     cardinality: JoinCardinality | None
 
 
+def _check_unique(matches: list[_Candidate], *, label: str) -> None:
+    if len(matches) > 1:
+        names = ", ".join(repr(c.join.name or c.join.target_model) for c in matches)
+        raise QueryExtensionError(f"The {label} matches {len(matches)} edges ({names}); name the edge it means.")
+
+
 def _cardinality_label(cardinality: JoinCardinality | None) -> str:
     return cardinality.value if cardinality is not None else "unset"
 
@@ -101,6 +107,7 @@ class EdgeMerge:
             else (j.name for m in models.values() for j in m.joins if j.name and not j.query_local)
         )
         self._local_names: set[str] = set()
+        self._alias_edges: dict[str, tuple[str, int]] = {}
 
     def add(self, *, declaring: str, join: ModelJoin) -> ExtensionEdge:
         """Merge ``join``, declared by an extension of ``declaring``; raises ``QueryExtensionError`` on a conflict."""
@@ -112,6 +119,7 @@ class EdgeMerge:
         candidates = self._candidates(source=source, target_name=join.target_model)
         pairs = _pair_set(join.join_pairs)
         named = [c for c in candidates if join.name is not None and c.join.name == join.name]
+        _check_unique(named, label=label)
         if named:
             match = named[0]
             if match.pairs != pairs:
@@ -121,11 +129,7 @@ class EdgeMerge:
                 )
             return self._reuse(match, join=join, extended=declaring, label=label, alias=None)
         matches = [c for c in candidates if c.pairs == pairs]
-        if len(matches) > 1:
-            names = ", ".join(repr(c.join.name or c.join.target_model) for c in matches)
-            raise QueryExtensionError(
-                f"The {label} matches {len(matches)} edges ({names}); name the edge it means."
-            )
+        _check_unique(matches, label=label)
         target_spelling = target.spelling if target is not None else join.target_model
         declared = join.name if join.name != target_spelling else None
         if matches:
@@ -160,6 +164,8 @@ class EdgeMerge:
             alias = None
         elif alias is not None and alias in self._edge_names:
             raise QueryExtensionError(f"The {label} names another stored edge {alias!r}.")
+        elif alias is not None:
+            self._claim_alias(alias, edge=(match.declaring, match.index), label=label)
         if alias is not None and alias not in stored.aliases:
             stored = self._replace(match, stored.with_aliases((*stored.aliases, alias)))
         return self._edge(declaring=match.declaring, join=stored, from_model=extended, token=alias)
@@ -195,6 +201,13 @@ class EdgeMerge:
         if name in self._reserved:
             raise QueryExtensionError(f"The {label} is named {name!r}, which names a model or stage.")
         self._local_names.add(name)
+
+    def _claim_alias(self, alias: str, *, edge: tuple[str, int], label: str) -> None:
+        """Register ``alias`` for the stored ``edge``; one alias names one edge."""
+        if self._alias_edges.get(alias) == edge:
+            return
+        self._check_new_name(alias, label=label)
+        self._alias_edges[alias] = edge
 
     def _replace(self, match: _Candidate, join: ModelJoin) -> ModelJoin:
         model = self.models[match.declaring]

@@ -76,7 +76,6 @@ from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.dialects.reflection import ResultColumnType
 from slayer.database.engine_factory import ClientCacheKey, client_cache_key
 from slayer.sql.naming import render_table_name
-from slayer.core.errors import QueryExtensionError
 from slayer.core.join_edges import EdgeMerge
 from slayer.ir.source_bundle import overlay_columns_and_measures
 
@@ -881,7 +880,7 @@ def _with_stage_extensions(stage: SlayerQuery, models_by_name: dict[str, SlayerM
         for join in extension.joins or [] if extension.source_name in models else []:
             try:
                 merge.add(declaring=extension.source_name, join=join)
-            except (QueryExtensionError, ValueError):
+            except ValueError:  # QueryExtensionError included
                 continue
     return merge.models
 
