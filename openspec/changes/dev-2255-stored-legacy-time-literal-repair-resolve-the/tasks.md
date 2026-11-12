@@ -1,25 +1,25 @@
 ## 1. Tests (pr-tests stage; all fail before implementation)
 
-- [ ] 1.1 `tests/_stored_upgrade_fixtures.py`: seed a `regions` table and a raw `regions` model (DATE `opened_on`, TEXT
+- [x] 1.1 `tests/_stored_upgrade_fixtures.py`: seed a `regions` table and a raw `regions` model (DATE `opened_on`, TEXT
       `name`), a `customers → regions` join, and a variant whose `orders ↔ customers` join is declared on `customers`
       only; verify the existing stored-upgrade tests still pass on the new fixtures
-- [ ] 1.2 Stored-upgrade tests, YAML and SQLite backends: short-form two-hop route (`regions.opened_on`), reverse edge
+- [x] 1.2 Stored-upgrade tests, YAML and SQLite backends: short-form two-hop route (`regions.opened_on`), reverse edge
       (`customers.signed_up_at` over a join declared on `customers`), extension-declared DATE column on routed
       `regions` — each loads with no legacy fragment and returns the expected total; verify they fail on the current code
-- [ ] 1.3 Verbatim tests: a routed TEXT column, an ambiguous short-form route (two routes, neither the sole
+- [x] 1.3 Verbatim tests: a routed TEXT column, an ambiguous short-form route (two routes, neither the sole
       fan-out-free one), and an unloadable model in the datasource not blocking the repair of a reference that does not
       touch it; verify the routed-TEXT and ambiguous cases pass verbatim and the unloadable case fails today
-- [ ] 1.4 Quoting test: a case-sensitive model and column reached through double-quoted hop and leaf segments is
+- [x] 1.4 Quoting test: a case-sensitive model and column reached through double-quoted hop and leaf segments is
       repaired; verify it fails today
-- [ ] 1.5 Memory tests: a v2 memory whose query filters a short-form routed DATE column is repaired; with the same model
+- [x] 1.5 Memory tests: a v2 memory whose query filters a short-form routed DATE column is repaired; with the same model
       in two datasources and an explicit priority, the repair follows the priority datasource; verify both fail today
-- [ ] 1.6 Raw-cache hygiene test: loading every model concurrently leaves the raw stored documents and the written-back
+- [x] 1.6 Raw-cache hygiene test: loading every model concurrently leaves the raw stored documents and the written-back
       bytes identical across two load orders; verify it runs
-- [ ] 1.7 `core.syntax` literal-comparison reader tests: spans and parts for `=`, `==`, `!=`, `<>`, `<`, `<=`, `>`,
+- [x] 1.7 `core.syntax` literal-comparison reader tests: spans and parts for `=`, `==`, `!=`, `<>`, `<`, `<=`, `>`,
       `>=` in both operand orders, parenthesised comparisons, all-literal vs mixed `IN` / `NOT IN`, quoted segments,
       a literal that is a function argument (not reported), unparseable text (empty); splicing each span back yields
       the exact text; verify they fail (reader absent)
-- [ ] 1.8 `resolve_path` / `QueryScope.resolve` quoting tests: a quoted hop matches only its exact spelling; callers
+- [x] 1.8 `resolve_path` / `QueryScope.resolve` quoting tests: a quoted hop matches only its exact spelling; callers
       passing no quoting resolve as before; verify they fail (parameter absent)
 
 ## 2. `core.syntax` reader
