@@ -1,7 +1,7 @@
 """Removal tripwire: compatibility code tagged for removal fails the suite once its major version ships.
 
-The tag is a call to ``slayer.core.deprecation.warn_deprecated`` or ``raise_moved`` (any import
-spelling) with a string-literal ``removal``. Spec: compatibility/removal-tripwire.
+The tag is a call to ``slayer.core.deprecation.warn_deprecated``, ``raise_moved`` or ``scheduled_notice`` (any
+import spelling) with a string-literal ``removal``. Spec: compatibility/removal-tripwire.
 """
 
 from __future__ import annotations
@@ -17,7 +17,10 @@ from tests.test_law_resource_ownership import _canonical, _import_bindings
 
 REPO = Path(__file__).resolve().parent.parent
 SLAYER = REPO / "slayer"
-HELPERS = frozenset({"slayer.core.deprecation.warn_deprecated", "slayer.core.deprecation.raise_moved"})
+HELPERS = frozenset({
+    "slayer.core.deprecation.warn_deprecated", "slayer.core.deprecation.raise_moved",
+    "slayer.core.deprecation.scheduled_notice",
+})
 HELPER_MODULE = "slayer/core/deprecation.py"
 
 #: The deprecated Mode-B spellings, each warned with a message spelling its token literally.
@@ -39,6 +42,7 @@ PINNED: dict[tuple[str, str], str] = {
     ("slayer/engine/cardinality/__init__.py", "slayer.engine.cardinality."): "3.0",
     ("slayer/core/query.py", "An extension object in `source_model`"): "3.0",
     **{("slayer/core/legacy_spellings.py", token): "3.0" for token in MODE_B_SPELLING_TOKENS},
+    ("slayer/engine/elaborate_env.py", "midnight"): "3.0",
 }
 
 
@@ -178,6 +182,7 @@ def test_aliased_and_relative_uses_are_found() -> None:
         from .deprecation import warn_deprecated
         from slayer.core.deprecation import raise_moved as _moved
         from .deprecation import raise_moved
+        from .deprecation import scheduled_notice
 
         def f():
             dep.warn_deprecated("a", removal="2.0")
@@ -187,10 +192,13 @@ def test_aliased_and_relative_uses_are_found() -> None:
             dep.raise_moved("e", "e2", removal="3.0")
             _moved("f", "f2", removal="3.0")
             raise_moved(old="g", new="g2", removal="3.0")
+            dep.scheduled_notice("h", removal="3.0")
+            scheduled_notice(message="i", removal="3.0")
     """)
     sites = _sites_in(source, rel="slayer/core/x.py")
     assert sorted((s.message, s.removal) for s in sites) == [
         ("a", "2.0"), ("b", "2.0"), ("c", "2.0"), ("d", "2.0"), ("e", "3.0"), ("f", "3.0"), ("g", "3.0"),
+        ("h", "3.0"), ("i", "3.0"),
     ]
 
 

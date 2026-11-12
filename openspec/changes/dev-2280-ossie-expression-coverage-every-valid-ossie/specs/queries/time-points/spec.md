@@ -46,7 +46,7 @@ A string literal compared with a temporal operand, or used as a `date_range` ele
 
 #### Scenario: Date-only value bound through a variable
 
-- **WHEN** a filter is `created_at <= {cutoff}` and the variable `cutoff` is `'2024-04-10'`, whether as a saved default or a value passed at execution
+- **WHEN** a filter is `created_at <= '{cutoff}'` and the variable `cutoff` is `'2024-04-10'`, whether as a saved default or a value passed at execution
 - **THEN** it matches the rows at or before `2024-04-10 00:00:00`
 
 ### Requirement: Comparisons against a period use period semantics
@@ -115,7 +115,7 @@ A query, and a save of a model or query, in which a date-only literal is compare
 
 #### Scenario: Variable-bound value names the variable
 
-- **WHEN** a query filters `created_at <= {cutoff}` with `cutoff` = `'2024-12-31'`
+- **WHEN** a query filters `created_at <= '{cutoff}'` with `cutoff` = `'2024-12-31'`
 - **THEN** the response carries the warning naming the variable `cutoff`
 
 #### Scenario: A saved measure is announced at save

@@ -21,7 +21,7 @@ On load, a stored model, saved query or memory written before this change — ju
 
 #### Scenario: Unchanged comparisons
 
-- **WHEN** a stored query has the filters `created_at >= '2024-01-01'`, `created_at < '2025-01-01'`, `code <= '2024-12-31'` on a TEXT column, `created_at <= '2024-12-31 00:00:00'` and `created_at <= {cutoff}`
+- **WHEN** a stored query has the filters `created_at >= '2024-01-01'`, `created_at < '2025-01-01'`, `code <= '2024-12-31'` on a TEXT column, `created_at <= '2024-12-31 00:00:00'` and `created_at <= '{cutoff}'`
 - **THEN** each loads byte-identical
 
 #### Scenario: Untypable operand is left and logged
