@@ -5,11 +5,11 @@ from typing import Any
 
 import yaml
 
-# YAML 1.2 core schema (§10.3.2) plain scalars that do not resolve to a string.
+# Plain scalars a YAML 1.2 loader may not read as a string; anything number-like is quoted, since loaders
+# accept numeric spellings beyond the core schema (signs on 0o/0x, underscores).
 _YAML12_NON_STRING = re.compile(
     r"null|Null|NULL|~|true|True|TRUE|false|False|FALSE"
-    r"|[-+]?[0-9]+|0o[0-7]+|0x[0-9a-fA-F]+"
-    r"|[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?"
+    r"|[-+]?\.?[0-9].*"
     r"|[-+]?\.(inf|Inf|INF)|\.(nan|NaN|NAN)"
 )
 

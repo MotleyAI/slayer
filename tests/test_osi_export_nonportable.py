@@ -125,7 +125,7 @@ async def test_model_stored_before_the_shape_change(env) -> None:
 
 _RETYPABLE = ["1e3", "1E3", "+1e3", "-1.5E+3", "0o17", "0x1F", ".Inf", "NULL", "yes", "010", "2024-01-01",
               "-.inf", "+.INF", ".NaN", ".nan", "1.", ".5", "1e-3", "-0x1f", "True", "~", "null", "Off",
-              "2024-01-01T00:00:00Z", "12:30:00"]
+              "2024-01-01T00:00:00Z", "12:30:00", "-0o77", "+0o17", "+0xFF", "0o7_7", "1_000e3"]
 
 
 def _yaml12(text: str) -> Any:
