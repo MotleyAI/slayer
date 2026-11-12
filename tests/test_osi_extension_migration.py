@@ -1,4 +1,4 @@
-"""SlayerModel 21→22: stored Ossie foreign extensions move to ``osi_nonportable_extensions`` with object data."""
+"""SlayerModel 22→23: stored Ossie foreign extensions move to ``osi_nonportable_extensions`` with object data."""
 
 import copy
 from pathlib import Path
@@ -15,7 +15,7 @@ OLD, NEW = "osi_custom_extensions", "osi_nonportable_extensions"
 LOCATIONS = ["model", "column", "measure", "join", "semantic_model"]
 
 
-def _doc(meta: dict[str, Any] | None = None, *, location: str = "model", version: int = 21) -> dict[str, Any]:
+def _doc(meta: dict[str, Any] | None = None, *, location: str = "model", version: int = 22) -> dict[str, Any]:
     doc: dict[str, Any] = {
         "version": version, "name": "orders", "sql_table": "orders", "data_source": "osids",
         "columns": [{"name": "id", "sql": "o_orderkey", "type": "INT", "primary_key": True},
@@ -58,8 +58,8 @@ def _migrated(location: str, entries: Any) -> Any:
     return meta.get(NEW)
 
 
-def test_version_is_22() -> None:
-    assert CURRENT_VERSIONS["SlayerModel"] == 22
+def test_version_is_23() -> None:
+    assert CURRENT_VERSIONS["SlayerModel"] == 23
 
 
 @pytest.mark.parametrize("location", LOCATIONS)
@@ -111,7 +111,7 @@ def test_other_meta_kept() -> None:
 
 def test_current_version_document_untouched() -> None:
     meta = {OLD: [{"vendor_name": "A", "data": '{"k": 1}'}]}
-    model = SlayerModel.model_validate(_doc(copy.deepcopy(meta), location="model", version=22))
+    model = SlayerModel.model_validate(_doc(copy.deepcopy(meta), location="model", version=23))
     assert model.meta == meta
 
 
@@ -119,9 +119,9 @@ async def test_stored_model_upgraded_on_load(tmp_path: Path) -> None:
     storage = YAMLStorage(base_dir=str(tmp_path))
     path = tmp_path / "models" / "osids" / "orders.yaml"
     path.parent.mkdir(parents=True)
-    doc = _doc({OLD: [{"vendor_name": "ACME", "data": '{"k": 1}'}]}, location="column")
+    doc = _doc({OLD: [{"vendor_name": "ACME", "data": '{"k": 1}'}]}, location="column", version=21)
     path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
     model = await storage.get_model("orders", data_source="osids")
     assert model is not None
-    assert model.version == 22
+    assert model.version == 23
     assert _meta(model, "column") == {NEW: [{"vendor_name": "ACME", "data": {"k": 1}}]}

@@ -75,13 +75,6 @@ def qb_model() -> SlayerModel:
     })])
 
 
-def inline_model() -> dict[str, Any]:
-    """An inline root named ``ad_hoc`` over the ``orders`` table."""
-    return SlayerModel(
-        name="ad_hoc", sql_table="orders", data_source="test", columns=orders_columns(),
-    ).model_dump(mode="json", exclude_none=True)
-
-
 @contextlib.asynccontextmanager
 async def orders_engine(backend: str, *, edge_name: Optional[str] = None) -> AsyncGenerator[SlayerQueryEngine]:
     async with exec_engine(

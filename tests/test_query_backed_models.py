@@ -384,9 +384,8 @@ class TestCacheRefreshOnExecute:
             tmp.cleanup()
 
     async def test_model_extension_over_query_backed_model_adds_columns(self) -> None:
-        """ModelExtension wrapping a saved query-backed model adds extra
-        columns to the resolved virtual model — but must NOT write those
-        extension columns back into the base model's persisted cache.
+        """A computed dimension over a saved query-backed model must NOT be
+        written back into the base model's persisted cache.
         """
         engine, tmp = await _engine_with_orders()
         try:
@@ -398,19 +397,12 @@ class TestCacheRefreshOnExecute:
                 }),
                 name="rev_by_region",
             )
-            # Outer query uses the saved query-backed model under a
-            # ModelExtension that adds an extra computed column.
             outer = SlayerQuery.model_validate({
                 "source_model": "rev_by_region",
-                "extensions": [{
-                    "source_name": "rev_by_region",
-                    "columns": [{
-                        "name": "is_high_rev",
-                        "sql": "CASE WHEN amount_sum > 1000 THEN 1 ELSE 0 END",
-                        "type": "number",
-                    }],
-                }],
-                "dimensions": ["region", "is_high_rev"],
+                "dimensions": [
+                    "region",
+                    {"expression": "iif(amount_sum > 1000, 1, 0)", "name": "is_high_rev"},
+                ],
                 "measures": [{"formula": "max(amount_sum)"}],
             })
             resp = await engine.execute(outer, dry_run=True)
@@ -418,7 +410,7 @@ class TestCacheRefreshOnExecute:
             assert "is_high_rev" in resp.sql
             assert "amount_sum" in resp.sql
 
-            # Extension columns must not bleed into the base model's cache.
+            # The computed dimension must not bleed into the base model's cache.
             base = await engine.storage.get_model("rev_by_region")
             assert base is not None
             assert not any(c.name == "is_high_rev" for c in base.columns)
@@ -426,9 +418,8 @@ class TestCacheRefreshOnExecute:
             tmp.cleanup()
 
     async def test_model_extension_over_named_query_stage_adds_columns(self) -> None:
-        """ModelExtension wrapping a named-query stage in a runtime list adds
-        extra columns to the resolved virtual model. The named-query stage
-        is ephemeral and must never get persisted as a side effect.
+        """A computed dimension over a named-query stage in a runtime list. The
+        named-query stage is ephemeral and must never get persisted as a side effect.
         """
         engine, tmp = await _engine_with_orders()
         try:
@@ -441,15 +432,7 @@ class TestCacheRefreshOnExecute:
                 }),
                 SlayerQuery.model_validate({
                     "source_model": "staged",
-                    "extensions": [{
-                        "source_name": "staged",
-                        "columns": [{
-                            "name": "doubled",
-                            "sql": "amount_sum * 2",
-                            "type": "number",
-                        }],
-                    }],
-                    "dimensions": ["region", "doubled"],
+                    "dimensions": ["region", {"expression": "amount_sum * 2", "name": "doubled"}],
                     "measures": [{"formula": "max(amount_sum)"}],
                 }),
             ]
@@ -749,7 +732,7 @@ class TestInlineQueryBackedSourceModel:
                 "dimensions": ["region"],
             })],
         )
-        with pytest.raises(ValueError, match=r"(?is)inline_qb.*named stages?|named stages?.*inline_qb"):
+        with pytest.raises(ValueError, match="(?i)inline"):
             SlayerQuery.model_validate({
                 "source_model": inline,
                 "dimensions": ["region"],
@@ -757,9 +740,7 @@ class TestInlineQueryBackedSourceModel:
             })
 
     def test_inline_dict_slayermodel_with_source_queries_rejected(self) -> None:
-        with pytest.raises(
-            ValueError, match=r"(?is)inline_qb_dict.*named stages?|named stages?.*inline_qb_dict",
-        ):
+        with pytest.raises(ValueError, match="(?i)inline"):
             SlayerQuery.model_validate({
                 "source_model": {
                     "name": "inline_qb_dict",

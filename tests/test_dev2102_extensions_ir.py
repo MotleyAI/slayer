@@ -12,18 +12,17 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 
 from slayer.api.server import QueryRequest, create_app
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.models import ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ModelExtension, QueryRefinement, SlayerQuery
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 
 CUSTOMERS_EXT = {
     "source_name": "customers",
-    "columns": [{"name": "tier_label", "sql": "upper(tier)", "type": "TEXT"}],
     "measures": [{"name": "credit_total", "formula": "sum(credit)"}],
     "joins": [{"target_model": "regions", "join_pairs": [["region_id", "id"]]}],
 }
-ORDERS_EXT = {"source_name": "orders", "columns": [{"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"}]}
+ORDERS_EXT = {"source_name": "orders", "measures": [{"name": "double_amount", "formula": "sum(amount * 2)"}]}
 WITH_FILTERS = {"source_name": "customers", "filters": ["credit > 5"]}
 MEASURES_ONLY = {"source_name": "orders", "measures": [{"formula": "sum(amount)", "name": "rev"}]}
 ONE_MEASURE = [{"formula": "count(*)"}]
@@ -72,7 +71,6 @@ class TestTyped:
         assert [type(e) for e in q.extensions or []] == [ModelExtension, ModelExtension]
         first = (q.extensions or [])[0]
         assert first.source_name == "customers"
-        assert isinstance((first.columns or [])[0], Column)
         assert isinstance((first.measures or [])[0], ModelMeasure)
         assert isinstance((first.joins or [])[0], ModelJoin)
 
@@ -80,7 +78,7 @@ class TestTyped:
         assert SlayerQuery(source_model="orders").extensions is None
 
     def test_extensions_on_a_rootless_query(self) -> None:
-        q = _query(extensions=[CUSTOMERS_EXT], dimensions=["customers.tier_label"])
+        q = _query(extensions=[CUSTOMERS_EXT], dimensions=["customers.regions.name"])
         assert q.source_model is None
         assert (q.extensions or [])[0].source_name == "customers"
 
@@ -101,7 +99,7 @@ class TestRejected:
 
     def test_an_extension_without_source_name(self) -> None:
         with pytest.raises(ValidationError, match="source_name"):
-            _query(source_model="orders", extensions=[{"columns": []}])
+            _query(source_model="orders", extensions=[{"measures": []}])
 
     def test_refinements_carry_no_extensions(self) -> None:
         with pytest.raises(ValidationError) as info:
@@ -117,10 +115,10 @@ class TestRejected:
 
 
 class TestSchema:
-    def test_source_model_lists_a_name_or_an_inline_model(self) -> None:
+    def test_source_model_is_a_name_or_null(self) -> None:
         schema = SlayerQuery.model_json_schema()
         prop = schema["properties"]["source_model"]
-        assert _refs(prop) == {"string", "#/$defs/SlayerModel", "null"}
+        assert _refs(prop) == {"string", "null"}
         assert "source_name" not in prop.get("description", "")
 
     def test_extensions_list_model_extension_references(self) -> None:
@@ -138,14 +136,15 @@ class TestSchema:
     async def test_mcp_query_tool_carries_the_definitions(self, mcp_server) -> None:
         tools = {t.name: t for t in await mcp_server.list_tools()}
         schema = tools["query"].inputSchema
-        assert {"ModelExtension", "SlayerModel"} <= set(schema.get("$defs", {}))
+        assert "ModelExtension" in schema.get("$defs", {})
+        assert "SlayerModel" not in schema.get("$defs", {})
         assert '"extensions"' in json.dumps(schema)
 
     def test_openapi_rest_body_carries_extensions(self, rest_client) -> None:
         props = rest_client.get("/openapi.json").json()["components"]["schemas"]["QueryRequest"]["properties"]
         assert "#/components/schemas/ModelExtension" in json.dumps(props["extensions"])
         assert "#/components/schemas/ModelExtension" not in json.dumps(props["source_model"])
-        assert "#/components/schemas/SlayerModel" in json.dumps(props["source_model"])
+        assert "#/components/schemas/SlayerModel" not in json.dumps(props["source_model"])
 
 
 class TestRestAndMcp:

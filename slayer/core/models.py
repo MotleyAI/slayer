@@ -16,9 +16,12 @@ from pydantic import (
     model_validator,
 )
 from sqlalchemy.engine import URL as _SA_URL
+from sqlglot.errors import SqlglotError
+from sqlglot.tokenizer_core import TokenType
+from sqlglot.tokens import Tokenizer
 
 from slayer.core.enums import BUILTIN_AGGREGATION_FORMULAS, BUILTIN_AGGREGATIONS, DEFAULT_AGGREGATIONS_BY_TYPE, GRANULARITY_NAMES, LIST_AGGREGATIONS, DataType, type_display, JoinCardinality, JoinType, ObjectKind, PRIMARY_KEY_AGGREGATIONS, RANKED_AGGREGATIONS, RESERVED_DATE_SYNTAX_NAMES, RESERVED_NAMES, _coerce_legacy_datatype, builtin_empty_value, ALL_TRANSFORMS
-from slayer.core.errors import AmbiguousAggregationError, AmbiguousReferenceError, GranularityDefinitionError, JoinKeyError
+from slayer.core.errors import AmbiguousAggregationError, AmbiguousReferenceError, ColumnSqlStatementError, GranularityDefinitionError, JoinKeyError
 from slayer.core.names import folded_collisions, match_name
 from slayer.core.warnings import NameCollisionWarning
 from slayer.core.format import NumberFormat
@@ -178,6 +181,30 @@ def _coerce_legacy_type_field(data: Any) -> Any:
     return data
 
 
+#: Words opening a statement rather than an expression (a following ``.`` makes the word a qualifier instead).
+_STATEMENT_WORDS = frozenset({
+    "SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "MERGE", "UPSERT", "REPLACE", "DROP", "CREATE", "ALTER", "GRANT",
+    "REVOKE", "TRUNCATE", "COPY", "SET", "USE", "CALL", "EXEC", "EXECUTE", "PRAGMA", "VALUES", "SHOW", "DESCRIBE",
+    "EXPLAIN", "BEGIN", "COMMIT", "ROLLBACK", "ANALYZE", "ATTACH", "DETACH", "VACUUM", "LOAD", "CACHE", "UNCACHE",
+    "REFRESH", "KILL", "DECLARE", "TABLE",
+})
+
+
+def _check_one_expression(*, column: str, sql: str) -> None:
+    """Refuse a statement, or several, as ``sql``; text the generic tokenizer cannot read is left to the dialect."""
+    try:
+        tokens = Tokenizer().tokenize(sql)
+    except (SqlglotError, ValueError):
+        return
+    while tokens and tokens[-1].token_type is TokenType.SEMICOLON:
+        tokens = tokens[:-1]
+    several = any(t.token_type is TokenType.SEMICOLON for t in tokens)
+    opens_statement = len(tokens) > 1 and tokens[0].token_type is not TokenType.IDENTIFIER and (
+        tokens[0].text.upper() in _STATEMENT_WORDS) and not (len(tokens) > 1 and tokens[1].token_type is TokenType.DOT)
+    if several or opens_statement:
+        raise ColumnSqlStatementError(column=column, sql=sql)
+
+
 class Column(BaseModel):
     """A row-level column, usable per-query as a GROUP BY dimension or an aggregation measure."""
     name: str
@@ -245,6 +272,12 @@ class Column(BaseModel):
             # SQL-mode: validate at construction so DSL constructs raise early.
             parse_sql_predicate(v)
         return v
+
+    @model_validator(mode="after")
+    def _validate_sql_expression(self) -> "Column":
+        if self.sql is not None:
+            _check_one_expression(column=self.name, sql=self.sql)
+        return self
 
     @model_validator(mode="after")
     def _validate_granularity_temporal(self) -> "Column":
@@ -826,12 +859,10 @@ class SlayerModel(BaseModel):
     # Runtime-only: a list child's ``(parent model, list column)``.
     _list_of: tuple[str, str] | None = PrivateAttr(default=None)
     # Runtime-only: the list children built from this model (``join_walker.list_child``).
-    _list_children: dict[tuple[str, str | None, str, DataType | None, bool], "SlayerModel"] = PrivateAttr(
+    _list_children: dict[tuple[str, str | None, str, DataType | None], "SlayerModel"] = PrivateAttr(
         default_factory=dict)
     # Runtime-only: the column and measure names a query extension added.
     _query_local: frozenset[str] = PrivateAttr(default=frozenset())
-    # Runtime-only: the query's own inline source definition, never a persisted model.
-    _inline: bool = PrivateAttr(default=False)
 
     @field_validator("filters")
     @classmethod
@@ -1025,16 +1056,6 @@ class SlayerModel(BaseModel):
     def with_query_local(self, names: frozenset[str]) -> "SlayerModel":
         out = self.model_copy()
         out._query_local = names
-        return out
-
-    @property
-    def inline(self) -> bool:
-        """Whether this is a query's inline source definition rather than a persisted model."""
-        return self._inline
-
-    def as_inline(self) -> "SlayerModel":
-        out = self.model_copy()
-        out._inline = True
         return out
 
     @property

@@ -19,7 +19,7 @@ from slayer.core.errors import (
     UnanalyzableAggregationParameterError,
     UnknownReferenceError,
 )
-from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, SqlFragmentKey
+from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, LiteralKey, SqlFragmentKey, walk_value_keys
 from slayer.core.models import Aggregation, AggregationParam, Column, ModelJoin, SlayerModel
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.binding import bind_expr
@@ -136,8 +136,8 @@ class TestExplicitStringFragments:
         assert _key("wsum(amount, weight='customers.region_id')") \
             == _key("wsum(amount, weight=customers.region_id)")
 
-    def test_a_string_expression_equals_the_identical_default(self) -> None:
-        assert _kw("wsum(amount, weight='customers.spend * 1')") == _kw("wfmt_a(amount)")
+    def test_a_string_expression_equals_its_unquoted_twin(self) -> None:
+        assert _kw("wsum(amount, weight='customers.spend * 1')") == _kw("wsum(amount, weight=customers.spend * 1)")
 
     def test_a_marker_string_stays_a_string(self) -> None:
         kw = _kw("wshadow(customers.spend, window='90d')")
@@ -190,8 +190,6 @@ def _stage_key(formula: str) -> AggregateKey:
 
 #: Row expressions whose nodes span every accepted helper-node family.
 ROW_TEXTS = [
-    "INTERVAL '1' DAY",
-    "ordered_at AT TIME ZONE 'UTC'",
     "ordered_at + INTERVAL '1' DAY",
     "CAST(amount AS DECIMAL(10, 2))",
     "EXTRACT(YEAR FROM ordered_at)",
@@ -200,11 +198,16 @@ ROW_TEXTS = [
     "COALESCE(amount, 0) * 2",
     "amount IN (1, 2)",
     "status LIKE 'a%'",
+]
+#: Dialect SQL that is no Mode-B row expression: refused as a query-side string argument.
+DIALECT_ONLY_TEXTS = [
+    "INTERVAL '1' DAY",
+    "ordered_at AT TIME ZONE 'UTC'",
     "(amount, cost) IN ((1, 2))",
     "amount[1:2]",
     "JSON_OBJECT('a': amount)",
     "CAST(amount AS STRUCT(x INT))",
-    "NULL",
+    "list_transform(amount, x -> x + 1)",
 ]
 
 
@@ -223,32 +226,45 @@ class TestUnanalysableText:
             _key(f"{agg}(amount)")
         self._assert_names(ei.value, agg=agg, text=BAD_DEFAULTS[agg])
 
-    @pytest.mark.parametrize("text", sorted(BAD_DEFAULTS.values()))
+    @pytest.mark.parametrize("text", sorted(set(BAD_DEFAULTS.values()) - {"BEGIN"}))
     def test_string_argument(self, text: str) -> None:
         quoted = text.replace("'", "''")
         with pytest.raises(UnanalyzableAggregationParameterError) as ei:
             _key(f"wsum(amount, weight='{quoted}')")
         self._assert_names(ei.value, agg="wsum", text=text)
 
+    def test_a_bare_word_argument_is_a_reference(self) -> None:
+        with pytest.raises(UnknownReferenceError, match="BEGIN"):
+            _key("wsum(amount, weight='BEGIN')")
+
     @pytest.mark.parametrize("text", ROW_TEXTS)
     def test_row_expression_binds(self, text: str) -> None:
         quoted = text.replace("'", "''")
         assert _kw(f"wsum(amount, weight='{quoted}')")["weight"] is not None
 
-    @pytest.mark.parametrize("dialect,text", [
-        ("duckdb", "list_transform(amount, x -> x + 1)"),
-        ("mysql", "JSON_VALUE(status, '$.x') + amount"),
-    ])
-    def test_dialect_row_expression_binds(self, dialect: str, text: str) -> None:
-        models = dev1901_models()
+    @pytest.mark.parametrize("text", DIALECT_ONLY_TEXTS)
+    def test_a_dialect_only_argument_is_refused(self, text: str) -> None:
         quoted = text.replace("'", "''")
-        key = bind_expr(
-            parse_expr(f"wsum(amount, weight='{quoted}')"),
-            scope=ModelScope(source_model=models[0]),
-            bundle=bundle_of(models, dialect=dialect), allow_measures=True,
-        ).value_key
-        assert isinstance(key, AggregateKey)
-        assert AMOUNT in _fragment(dict(key.kwargs)["weight"]).refs
+        with pytest.raises(UnanalyzableAggregationParameterError) as ei:
+            _key(f"wsum(amount, weight='{quoted}')")
+        self._assert_names(ei.value, agg="wsum", text=text)
+
+    def test_null_equals_its_unquoted_twin(self) -> None:
+        assert _kw("wsum(amount, weight='NULL')") == _kw("wsum(amount, weight=NULL)")
+
+    def test_dialect_row_expression_binds(self) -> None:
+        models = dev1901_models()
+
+        def weight(formula: str):
+            key = bind_expr(
+                parse_expr(formula), scope=ModelScope(source_model=models[0]),
+                bundle=bundle_of(models, dialect="mysql"), allow_measures=True,
+            ).value_key
+            assert isinstance(key, AggregateKey)
+            return dict(key.kwargs)["weight"]
+
+        assert weight("wsum(amount, weight='JSON_VALUE(status, ''$.x'') + amount')") == weight(
+            "wsum(amount, weight=JSON_VALUE(status, '$.x') + amount)")
 
     def test_is_a_slayer_error(self) -> None:
         assert issubclass(UnanalyzableAggregationParameterError, SlayerError)
@@ -316,10 +332,8 @@ def _first_token_revisit_models() -> List[SlayerModel]:
 
 class TestFragmentTextSurvives:
     def test_a_literal_spelling_the_placeholder_sentinel_is_kept(self) -> None:
-        frag = _fragment(_kw(
-            "wsum(amount, weight='CASE WHEN status = ''__slayer_r0__'' THEN amount ELSE 0 END')")["weight"])
-        assert "'__slayer_r0__'" in frag.template, frag.template
-        assert set(frag.refs) == {AMOUNT, ColumnKey(path=(), leaf="status")}
+        weight = _kw("wsum(amount, weight='CASE WHEN status = ''__slayer_r0__'' THEN amount ELSE 0 END')")["weight"]
+        assert LiteralKey(value="__slayer_r0__") in walk_value_keys(weight), weight
 
 
 class TestFirstTokenRevisit:

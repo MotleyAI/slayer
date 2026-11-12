@@ -21,10 +21,10 @@ from slayer.core.strict_flag import without_strict
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
-    "SlayerModel": 22,
-    "SlayerQuery": 13,
+    "SlayerModel": 23,
+    "SlayerQuery": 14,
     "DatasourceConfig": 3,
-    "Memory": 9,
+    "Memory": 10,
     "Embedding": 1,
 }
 
@@ -223,9 +223,9 @@ def _owner_extensions(owner: Any) -> Any:
     return {**owner, "meta": meta}
 
 
-@register_migration(entity="SlayerModel", source_version=21, stored_only=True)
-def _model_v21_to_v22(data: dict) -> dict:
-    """v22: stored Ossie foreign extensions move to ``nonportable_extensions`` with object data."""
+@register_migration(entity="SlayerModel", source_version=22, stored_only=True)
+def _model_v22_to_v23(data: dict) -> dict:
+    """v23: stored Ossie foreign extensions move to ``nonportable_extensions`` with object data."""
     data = _owner_extensions(data)
     for key in ("columns", "measures", "joins"):
         if isinstance(data.get(key), list):
@@ -286,3 +286,4 @@ from slayer.storage import distinct_column_migration  # noqa: E402, F401  # ALLO
 from slayer.storage import colon_spelling_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import ossie_alignment_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import many_handling_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import extension_columns_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here

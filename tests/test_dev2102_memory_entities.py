@@ -10,7 +10,7 @@ import pytest_asyncio
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery
+from slayer.core.query import ColumnRef, ComputedDimension, ModelExtension, SlayerQuery
 from slayer.memories.resolver import extract_entities_from_query
 from slayer.storage.base import StorageBackend
 from slayer.storage.yaml_storage import YAMLStorage
@@ -48,37 +48,28 @@ async def storage(tmp_path: Path) -> AsyncIterator[StorageBackend]:
     yield s
 
 
-def _orders_extension() -> ModelExtension:
-    return ModelExtension(
-        source_name="orders",
-        columns=[Column(name="premium", sql="amount * 2", type=DataType.DOUBLE)],
-        measures=[ModelMeasure(name="premium_total", formula="sum(premium)")],
-    )
-
-
 class TestRootExtensionFields:
     async def test_projected_column_records_its_stored_reads(self, storage: StorageBackend) -> None:
         q = SlayerQuery(
-            source_model="orders", extensions=[_orders_extension()],
-            dimensions=[ColumnRef(name="premium")], measures=[ModelMeasure(formula="count(*)")],
+            source_model="orders",
+            dimensions=[ComputedDimension(expression="amount * 2", name="premium")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.amount" in result.canonical_forms
         assert "mydb.orders.premium" not in result.canonical_forms
 
     async def test_aggregated_column_records_its_stored_reads(self, storage: StorageBackend) -> None:
-        q = SlayerQuery(
-            source_model="orders", extensions=[_orders_extension()],
-            measures=[ModelMeasure(formula="avg(premium)")],
-        )
+        q = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="avg(amount * 2)")])
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.amount" in result.canonical_forms
         assert "mydb.orders.premium" not in result.canonical_forms
 
     async def test_root_qualified_column_records_its_stored_reads(self, storage: StorageBackend) -> None:
         q = SlayerQuery(
-            source_model="orders", extensions=[_orders_extension()],
-            dimensions=[ColumnRef(name="orders.premium")], measures=[ModelMeasure(formula="count(*)")],
+            source_model="orders",
+            dimensions=[ComputedDimension(expression="orders.amount * 2", name="premium")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.amount" in result.canonical_forms
@@ -86,8 +77,7 @@ class TestRootExtensionFields:
 
     async def test_measure_records_reads_through_extension_column(self, storage: StorageBackend) -> None:
         q = SlayerQuery(
-            source_model="orders", extensions=[_orders_extension()],
-            measures=[ModelMeasure(formula="premium_total")],
+            source_model="orders", measures=[ModelMeasure(formula="sum(amount * 2)", name="premium_total")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.amount" in result.canonical_forms
@@ -98,11 +88,8 @@ class TestJoinedExtensionFields:
     async def test_joined_column_records_its_stored_reads(self, storage: StorageBackend) -> None:
         q = SlayerQuery(
             source_model="orders",
-            extensions=[ModelExtension(
-                source_name="customers",
-                columns=[Column(name="premium", sql="region_id + 1", type=DataType.DOUBLE)],
-            )],
-            dimensions=[ColumnRef(name="customers.premium")], measures=[ModelMeasure(formula="count(*)")],
+            dimensions=[ComputedDimension(expression="customers.region_id + 1", name="premium")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.customers.region_id" in result.canonical_forms
@@ -145,10 +132,12 @@ class TestExtensionJoinPaths:
         assert "otherdb.regions.name" not in result.canonical_forms
 
     async def test_extension_column_reads_through_extension_join(self, storage: StorageBackend) -> None:
-        extension = _ROOT_JOIN.model_copy(update={
-            "columns": [Column(name="region_label", sql="regions.name", type=DataType.TEXT)],
-        })
-        result = await extract_entities_from_query(_projecting("region_label", extension=extension), storage=storage)
+        q = SlayerQuery(
+            source_model="orders", extensions=[_ROOT_JOIN],
+            dimensions=[ComputedDimension(expression="regions.name", name="region_label")],
+            measures=[ModelMeasure(formula="count(*)")],
+        )
+        result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.regions.name" in result.canonical_forms
         assert "mydb.orders.region_label" not in result.canonical_forms
 
@@ -181,14 +170,9 @@ class TestNamedExtensionJoins:
     async def test_extension_column_through_named_join(self, storage: StorageBackend, kind: str, path: str) -> None:
         q = SlayerQuery(
             source_model="orders",
-            extensions=[
-                ModelExtension(source_name="orders", joins=[_NAMED_JOINS[kind]]),
-                ModelExtension(
-                    source_name="customers",
-                    columns=[Column(name="premium", sql="region_id + 1", type=DataType.DOUBLE)],
-                ),
-            ],
-            dimensions=[ColumnRef(name=path)], measures=[ModelMeasure(formula="count(*)")],
+            extensions=[ModelExtension(source_name="orders", joins=[_NAMED_JOINS[kind]])],
+            dimensions=[ComputedDimension(expression=f"{path.removesuffix('premium')}region_id + 1", name="premium")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.customers.region_id" in result.canonical_forms
@@ -258,8 +242,7 @@ class TestStoredNamedJoinsWithoutExtensions:
 class TestRootlessQueries:
     async def test_extension_field_of_the_inferred_population(self, storage: StorageBackend) -> None:
         q = SlayerQuery(
-            extensions=[_orders_extension()], dimensions=[ColumnRef(name="orders.id")],
-            measures=[ModelMeasure(formula="avg(orders.premium)")],
+            dimensions=[ColumnRef(name="orders.id")], measures=[ModelMeasure(formula="avg(orders.amount * 2)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert {"mydb.orders", "mydb.orders.amount"} <= set(result.canonical_forms)
@@ -299,10 +282,9 @@ class TestModelNameCase:
 
     async def test_an_extension_written_in_another_case(self, cased_storage: StorageBackend) -> None:
         q = SlayerQuery(
-            source_model="Orders", dimensions=[ColumnRef(name="Customers.shout")],
-            measures=[ModelMeasure(formula="count(*)")],
+            source_model="Orders", measures=[ModelMeasure(formula="Customers.shout")],
             extensions=[ModelExtension(source_name="customers",
-                                       columns=[Column(name="shout", sql="upper(name)", type=DataType.TEXT)])],
+                                       measures=[ModelMeasure(name="shout", formula="max(upper(name))")])],
         )
         result = await extract_entities_from_query(q, storage=cased_storage)
         assert "mydb.Customers.name" in result.canonical_forms
