@@ -66,7 +66,7 @@ Only the `__slayer_` prefix is reserved for SLayer-internal identifiers.
 
 ## Columns
 
-A column is the unit of structure on the model. The same column entry can serve as a group-by key in one query and as input to an aggregation in another — the role is decided per query, not declared up front. A list column is the exception: it is never a group-by key and aggregates only with `count` and `count_distinct`; its elements group and aggregate through `<column>.value`. What the column *carries* is its identity (name), how to compute it from the source (`sql`), what data type to expect, and a handful of policy fields (which aggregations are allowed, whether it's a primary key, whether it's hidden).
+A column is the unit of structure on the model. The same column entry can serve as a group-by key in one query and as input to an aggregation in another — the role is decided per query, not declared up front. A [list column](queries.md#list-columns) is the exception. What the column *carries* is its identity (name), how to compute it from the source (`sql`), what data type to expect, and a handful of policy fields (which aggregations are allowed, whether it's a primary key, whether it's hidden).
 
 ### Fields
 
@@ -108,7 +108,7 @@ A column's `sql` is rendered into the executed statement, which reaches the data
 | `TIMESTAMP` | Date and time | TIMESTAMP, DATETIME |
 | `DATE` | Date only | DATE |
 | `UNKNOWN` | Opaque: stored and displayed, never grouped, aggregated or cast | Postgres `point`, `json`, range types |
-| `ARRAY` | A list of scalars, its elements its non-NULL elements; re-ingest re-types a `TEXT` column whose live type is a list, keeping its other attributes | `TEXT[]`, BigQuery `REPEATED STRING`, `Array(String)` |
+| `ARRAY` | A list of `element_type` values, see [list columns](queries.md#list-columns); re-ingest re-types a `TEXT` column whose live type is a list, keeping its other attributes | `TEXT[]`, BigQuery `REPEATED STRING`, `Array(String)` |
 
 ### Aggregation eligibility
 
@@ -120,7 +120,7 @@ A column with no explicit `allowed_aggregations` whitelist gets a default set ba
 | `TEXT` | count, count_distinct, count_distinct_approx, first, last, min, max, collect |
 | `BOOLEAN` | the `INT` set |
 | `DATE` / `TIMESTAMP` | count, count_distinct, count_distinct_approx, first, last, min, max, collect |
-| `ARRAY` | count (non-NULL lists), count_distinct; aggregate its elements through `skills.value`, see [list columns](queries.md#list-columns) |
+| `ARRAY` | count (non-NULL lists), count_distinct (distinct element sets) |
 | `UNKNOWN` | none |
 
 A boolean is its integer (true 1, false 0, NULL ignored) inside every numeric aggregation, so `sum` counts the true rows, `avg` is their share (formatted as a percentage), and `min` / `max` stay boolean.
@@ -289,7 +289,7 @@ Aggregations are the operators that turn a column expression into a value: `sum`
 | `var_samp` / `var_pop` | `var_samp(latency)` | Sample / population variance |
 | `corr` | `corr(price, other=quantity)` | Pearson correlation between two columns |
 | `covar_samp` / `covar_pop` | `covar_samp(price, other=quantity)` | Sample / population covariance |
-| `collect` | `collect(name)` | The distinct non-NULL values as a sorted list; `[]` when there are none |
+| `collect` | `collect(name)` | The values as a list, see [list columns](queries.md#list-columns) |
 
 `count(*)` is always available with no measure definition. `*` means "all rows" and is **only** valid with `count` — `sum(*)` and friends are rejected. Detailed NULL / N=1 semantics for the statistical aggregations are documented in [database-support.md](../database-support.md).
 
