@@ -122,6 +122,13 @@ async def test_an_authored_models_literal_flat_column_is_suggested() -> None:
     assert "m.a__b" in err.suggestion
 
 
+async def test_a_flat_column_wins_over_an_opaque_list_hop() -> None:
+    m = _authored("m", "a__b__c")
+    m = m.model_copy(update={"columns": [*m.columns, Column(name="a", sql="name", type=DataType.ARRAY, element_type=DataType.UNKNOWN)]})
+    err = await _refused(_root_joining("m", "m.a.b.c"), models=with_models(m))
+    assert "m.a__b__c" in err.suggestion
+
+
 def _hr(*names: str) -> list[SlayerModel]:
     """``customers → regions`` under each named edge, so ``customers__regions__name`` respells each."""
     return with_models(customers(*(ModelJoin(target_model="regions", name=n, join_pairs=_REGION_PAIRS)
@@ -149,7 +156,8 @@ async def test_an_ambiguous_respelling_gives_no_hint() -> None:
     ('s."customers"."name"', 's."customers__name"'),
     ('s.customers."name"', 's."customers__name"'),
     ("s.CUSTOMERS.NAME", "s.customers__name"),
-], ids=["quoted", "leaf-quoted", "case-folded"])
+    ('"addresses".s.customers.name', '"addresses".s.customers__name'),
+], ids=["quoted", "leaf-quoted", "case-folded", "root-quoted"])
 async def test_the_flat_hint_follows_quoting(ref: str, hint: str) -> None:
     err = await _refused(_joined("addresses", ref))
     assert hint in err.suggestion
