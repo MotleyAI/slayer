@@ -141,11 +141,17 @@ class _Stage:
     def _owner(self, name: Any) -> str:
         if not isinstance(name, str):
             raise UnconvertibleStoredQueryError("an extension without source_name")
-        found = next((n for n in self.scope.models if n == name), None) or next(
-            (n for n in self.scope.models if n.casefold() == name.casefold()), None)
+        found = self._model_named(name, quoted=False)
         if found is None:
             raise UnconvertibleStoredQueryError(f"extension columns of {name!r}, which the store does not hold")
         return found
+
+    def _model_named(self, name: str, *, quoted: bool) -> Optional[str]:
+        """The model or stage of the scope ``name`` reaches, matched as the engine matches a model name."""
+        try:
+            return match_name(name=name, declared=self.scope.models, quoted=quoted)
+        except AmbiguousReferenceError as exc:
+            raise UnconvertibleStoredQueryError(f"a reference {name!r} that names several models") from exc
 
     def _column(self, raw: Any, *, owner: str) -> _Column:
         if not isinstance(raw, dict) or not isinstance(raw.get("name"), str):
@@ -170,8 +176,7 @@ class _Stage:
         owner = self._owner(extension.get("source_name"))
         for join in extension.get("joins") or []:
             target = join.get("target_model") if isinstance(join, dict) else None
-            target_owner = next((n for n in self.scope.models if isinstance(target, str)
-                                 and n.casefold() == target.casefold()), target)
+            target_owner = (self._model_named(target, quoted=False) or target) if isinstance(target, str) else target
             for pair in (join.get("join_pairs") or []) if isinstance(join, dict) else []:
                 if (owner, pair[0]) in self.columns or (target_owner, pair[1]) in self.columns:
                     raise UnconvertibleStoredQueryError(f"an extension join of {owner!r} keyed on an extension column")
@@ -213,7 +218,7 @@ class _Stage:
         """The qualifying prefix, model and remaining hops a reference resolves from."""
         if root is not None:
             return (), root, hops
-        head_name = match_name(name=hops[0], declared=self.scope.models, quoted=quoted[0]) if hops else None
+        head_name = self._model_named(hops[0], quoted=quoted[0]) if hops else None
         if head_name is not None:
             return (head_name,), self.scope.models[head_name], hops[1:]
         if not hops and any(k[1] == leaf or (not quoted[0] and k[1].casefold() == leaf.casefold())

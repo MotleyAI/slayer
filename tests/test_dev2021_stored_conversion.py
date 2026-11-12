@@ -383,6 +383,13 @@ class TestUnconvertible:
         assert {m.name for m in loaded} == {"orders", "customers", "good"}
         assert [e.name for e in failed] == ["bad"]
 
+    async def test_an_extension_of_a_name_several_models_match_fails_to_load(self, tmp_path, shop_ds) -> None:
+        stage = _stage(extensions=[_ext("Customers", {"name": "tier_label", "sql": "upper(region)"})],
+                       dimensions=["customers.tier_label"], measures=[_REV])
+        storage = await _store(tmp_path, shop_ds, "yaml", {**customers_v10(), "name": "CUSTOMERS"}, _qb("bad", stage))
+        with pytest.raises(StoredDocumentLoadError):
+            await storage.get_model("bad", data_source=DS)
+
 
 # --------------------------------------------------------------------------- #
 # Memories.
