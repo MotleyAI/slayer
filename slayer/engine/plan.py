@@ -81,7 +81,8 @@ def plan_query(
     )
     prebound = elaborated.prebound
     update = {k: v for k, v in (("granularity_conflicts", prebound.granularity_conflicts),
-                                ("whole_list_reads", prebound.whole_list_reads)) if v}
+                                ("whole_list_reads", prebound.whole_list_reads),
+                                ("date_only_notices", prebound.date_only_notices)) if v}
     return planned.model_copy(update=update) if update else planned
 
 

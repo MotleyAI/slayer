@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import sqlglot
 from pydantic import BaseModel, ConfigDict, Field
@@ -20,13 +20,17 @@ from sqlglot.expressions.core import Expression
 from slayer.core.errors import SlayerError
 from slayer.core.enums import RANKED_AGGREGATIONS, DataType, JoinCardinality
 from slayer.core.join_walker import aggregation_owner, model_column_type, terminal_model, walk
+from slayer.core.time_points import parse_temporal_value
 from slayer.core.keys import (
+    MIRRORED_TIME_POINT_OP,
     AggregateKey,
+    ArithmeticKey,
     ColumnKey,
     ColumnSqlKey,
     LiteralKey,
     SqlFragmentKey,
     StarKey,
+    TimePointCmpKey,
     TransformKey,
     ValueKey,
     aggregation_source_type,
@@ -193,6 +197,20 @@ def _ossie_division(tree: Expression) -> Expression:
         if node is None and isinstance(divisor, exp.Nullif) and divisor.expression == exp.Literal.number(0):
             divisor.replace(divisor.this)
     return tree
+
+
+def _instant_comparisons(key: ValueKey) -> ValueKey:
+    """``key`` with each comparison against an instant (a bare date is its midnight) as the plain SQL comparison."""
+    key = cast(ValueKey, key.map_children(_instant_comparisons))
+    if not isinstance(key, TimePointCmpKey) or key.reads_whole_day or parse_temporal_value(key.point.strip()) is None:
+        return key
+    literal = LiteralKey(value=key.point.strip())
+    if key.literal_on_left:
+        return ArithmeticKey(op=_SQL_OP[MIRRORED_TIME_POINT_OP[key.op]], operands=(literal, key.operand))
+    return ArithmeticKey(op=_SQL_OP[key.op], operands=(key.operand, literal))
+
+
+_SQL_OP = {"=": "==", "!=": "!=", "<": "<", "<=": "<=", ">": ">", ">=": ">="}
 
 
 def _refuse_slayer_only(agg: AggregateKey) -> None:
@@ -622,7 +640,7 @@ class _Exporter:
         portable = not any(a.agg == "count_distinct_approx" for a in aggregates)
         scoped = len(set(readers)) == 1
         try:
-            tree = self._render(ds.graph, key, scoped=scoped, portable=portable)
+            tree = self._render(ds.graph, _instant_comparisons(key), scoped=scoped, portable=portable)
         except Exception as exc:  # noqa: BLE001 — anything the shared renderer refuses stays SLayer-only
             raise _Refused(f"does not render as standard SQL ({exc})", _RESTORE) from exc
         return _Metric(home=ds.model.name, measure=measure, scope="dataset" if scoped else "model",

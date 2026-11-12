@@ -101,12 +101,16 @@ from slayer.core.keys import (
     walk_value_keys,
     list_set_key,
 )
+from slayer.core.date_only import scan_date_only, whole_day_spelling
+from slayer.core.deprecation import scheduled_notice
 from slayer.core.models import SlayerModel
 from slayer.core.names import folded_collisions
 from slayer.core.refs import bucket_remedy, dotted_key_display, key_display
 from slayer.core.scope import ModelScope, StageSchema, peek_model_column
+from slayer.core.warnings import DateOnlyMidnightWarning
 from slayer.core.time_points import (
-    TIME_POINT_FORMS, Instant, add_units, ceil_to, floor_to, is_relative_token, is_time_point, resolve_time_point,
+    TIME_POINT_FORMS, Instant, add_units, ceil_to, floor_to, is_date_only, is_relative_token, is_time_point,
+    resolve_time_point,
 )
 from slayer.sql.sql_expr import has_window_function
 from slayer.ir.planned import MaskTyping
@@ -1247,6 +1251,62 @@ def resolve_time_points(
     return rebuilt
 
 
+_ANNOUNCED_OPS = frozenset({"<=", ">", "=", "!="})
+
+
+def date_only_notices(
+    roots: Sequence[ValueKey], *, column_type: ColumnTypeFn, variables: Mapping[str, str],
+) -> List[DateOnlyMidnightWarning]:
+    """One notice per spelling of a date-only literal compared with a TIMESTAMP operand where its midnight reading
+    changed the rows; ``variables`` maps a date-only value to the variable that bound it."""
+    out: Dict[str, DateOnlyMidnightWarning] = {}
+    for key in (k for root in roots for k in walk_value_keys(root)):
+        if not isinstance(key, TimePointCmpKey) or key.reads_whole_day or key.op not in _ANNOUNCED_OPS:
+            continue
+        date_text = key.point.strip()
+        _, t, gran = _time_operand(key.operand, column_type=column_type)
+        if t is not DataType.TIMESTAMP or gran is not None or not is_date_only(date_text):
+            continue
+        operand = _operand_display(key.operand)
+        notice = date_only_notice(
+            comparison=key_display(key), operand=operand, date=date_text, variable=variables.get(date_text),
+            whole_day=whole_day_spelling(operand=operand, op=key.op, date=date_text),
+        )
+        out.setdefault(notice.message, notice)
+    return list(out.values())
+
+
+def saved_date_only_notices(model: SlayerModel) -> List[DateOnlyMidnightWarning]:
+    """The notices for ``model``'s saved measures and column filters, typed by its own columns."""
+    types = {c.name: c.type for c in model.columns}
+    out: Dict[str, DateOnlyMidnightWarning] = {}
+    texts = [*(m.formula for m in model.measures), *(c.filter for c in model.columns if c.filter)]
+    for text in texts:
+        for site in scan_date_only(text).sites:
+            parts = site.parts[1:] if len(site.parts) == 2 and site.parts[0] == model.name else site.parts
+            if len(parts) != 1 or types.get(parts[0]) is not DataType.TIMESTAMP:
+                continue
+            notice = date_only_notice(
+                comparison=text[site.start:site.end], operand=site.operand, date=site.date, whole_day=site.twin,
+            )
+            out.setdefault(notice.message, notice)
+    return list(out.values())
+
+
+def date_only_notice(
+    *, comparison: str, whole_day: str, operand: str, date: str, variable: Optional[str] = None,
+) -> DateOnlyMidnightWarning:
+    via = f", bound through the variable {variable!r}," if variable else ""
+    day_form = f"{operand} in '{date}'"
+    day = "" if whole_day == day_form else f"; the day itself is `{day_form}`"
+    message = scheduled_notice(
+        f"`{comparison}`{via} compares with {date} 00:00:00 (midnight), not the whole day, as in SQL; "
+        f"write `{whole_day}` for the whole day{day}.",
+        removal="3.0",
+    )
+    return DateOnlyMidnightWarning(comparison=comparison, whole_day=whole_day, variable=variable, message=message)
+
+
 def _time_operand(
     operand: ValueKey, *, column_type: ColumnTypeFn,
 ) -> Tuple[ValueKey, Optional[DataType], Optional[Granularity]]:
@@ -1296,7 +1356,7 @@ def _lower_time_point(
     target, t, gran = _time_operand(key.operand, column_type=column_type)
     if t is None:
         return _non_temporal_comparison(key, units=units)
-    point = resolve_time_point(key.point, now=now, units=units)
+    point = resolve_time_point(key.point, now=now, units=units, whole_day=key.reads_whole_day)
     if point is None:
         _raise_not_a_time_point(operand=key.operand, text=key.point)
     op = {"in": "=", _NOT_IN: "!="}.get(key.op, key.op)

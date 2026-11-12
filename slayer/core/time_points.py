@@ -20,8 +20,8 @@ _NO_UNITS: Units = MappingProxyType({})
 
 # The accepted forms, quoted by every time-literal error.
 TIME_POINT_FORMS = (
-    "an instant 'YYYY-MM-DD HH:MM[:SS[.ffffff]]' (no zone offset), a period literal "
-    "'YYYY', 'YYYY-Qn', 'YYYY-MM', 'YYYY-Www' or 'YYYY-MM-DD', or a relative token: "
+    "an instant 'YYYY-MM-DD[ HH:MM[:SS[.ffffff]]]' (no zone offset; a bare date is its midnight), a period "
+    "literal 'YYYY', 'YYYY-Qn', 'YYYY-MM', 'YYYY-Www' (or 'YYYY-MM-DD' after in), or a relative token: "
     "'today', 'yesterday', 'tomorrow', 'this|last|next <unit>', 'last N <units>', "
     "'next N <units>', 'N <units> ago', 'N <units> from now', "
     "'week|month|quarter|year to date' (unit: second, minute, hour, day, week, "
@@ -100,15 +100,17 @@ def _day_period(day: date) -> Period:
     return Period(start=start, next_start=start + timedelta(days=1))
 
 
-def _parse_literal(text: str) -> TimePoint | None:
-    """A period literal or an instant; ``None`` when ``text`` is neither or names no real period."""
+def _parse_literal(text: str, *, whole_day: bool = False) -> TimePoint | None:
+    """A period literal or an instant (``YYYY-MM-DD``: its day when ``whole_day``, else its midnight); ``None`` when
+    ``text`` is neither or names no real period."""
     try:
         if m := _INSTANT_RE.fullmatch(text):
             y, mo, d, h, mi, s, frac = m.groups()
             micro = int(frac.ljust(6, "0")) if frac else 0
             return Instant(value=datetime(int(y), int(mo), int(d), int(h), int(mi), int(s or 0), micro))
         if m := _DAY_RE.fullmatch(text):
-            return _day_period(date(*map(int, m.groups())))
+            day = date(*map(int, m.groups()))
+            return _day_period(day) if whole_day else Instant(value=datetime(day.year, day.month, day.day))
         if m := _WEEK_RE.fullmatch(text):
             start = date.fromisocalendar(int(m.group(1)), int(m.group(2)), 1)
             return _span(datetime(start.year, start.month, start.day), TimeGranularity.WEEK, 1)
@@ -159,8 +161,18 @@ def _parse_relative(text: str, *, units: Units) -> _Relative | None:
     return _Relative(kind="span", unit=unit, offset=offset, count=n)
 
 
-def _parse(text: str, *, units: Units = _NO_UNITS) -> TimePoint | _Relative | None:
-    return _parse_literal(text.strip()) or _parse_relative(text, units=units)
+def _parse(text: str, *, units: Units = _NO_UNITS, whole_day: bool = False) -> TimePoint | _Relative | None:
+    return _parse_literal(text.strip(), whole_day=whole_day) or _parse_relative(text, units=units)
+
+
+def is_date_only(text: str) -> bool:
+    """Whether ``text`` is a real calendar date ``YYYY-MM-DD``."""
+    return _DAY_RE.fullmatch(text.strip()) is not None and _parse_literal(text.strip()) is not None
+
+
+def next_day(text: str) -> str:
+    """The calendar day after the date-only ``text``, as ``YYYY-MM-DD``."""
+    return (date.fromisoformat(text.strip()) + timedelta(days=1)).isoformat()
 
 
 def is_time_point(text: str, *, units: Units = _NO_UNITS) -> bool:
@@ -189,10 +201,13 @@ def is_relative_token(text: str, *, units: Units = _NO_UNITS) -> bool:
     return isinstance(_parse(text, units=units), _Relative)
 
 
-def resolve_time_point(text: str, *, now: datetime, units: Units = _NO_UNITS) -> TimePoint | None:
+def resolve_time_point(
+    text: str, *, now: datetime, units: Units = _NO_UNITS, whole_day: bool = False,
+) -> TimePoint | None:
     """``text`` as an ``Instant`` or a resolved ``Period`` against ``now``; ``None`` when not a
-    time point (a relative token's unit must be built-in or in ``units``)."""
-    parsed = _parse(text, units=units)
+    time point (a relative token's unit must be built-in or in ``units``). A date-only ``text`` is its
+    day when ``whole_day`` (``date_range``, single-string ``in``), else the instant at its midnight."""
+    parsed = _parse(text, units=units, whole_day=whole_day)
     if not isinstance(parsed, _Relative):
         return parsed
     if parsed.kind == "to_date":
@@ -208,11 +223,9 @@ def resolve_time_point(text: str, *, now: datetime, units: Units = _NO_UNITS) ->
 def parse_temporal_value(text: str) -> date | datetime | None:
     """``YYYY-MM-DD`` as a ``date``, an instant as a ``datetime``; ``None`` otherwise."""
     parsed = _parse_literal(text)
-    if isinstance(parsed, Instant):
-        return parsed.value
-    if isinstance(parsed, Period) and _DAY_RE.fullmatch(text):
-        return parsed.start.date()
-    return None
+    if not isinstance(parsed, Instant):
+        return None
+    return parsed.value.date() if _DAY_RE.fullmatch(text) else parsed.value
 
 
 def _span(start: datetime, unit: Granularity, count: int) -> Period:

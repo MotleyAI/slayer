@@ -33,7 +33,7 @@ from slayer.core.granularity import CustomGranularity
 from slayer.core.join_edges import JoinEdgeRef, edge_reference, resolve_join_refs, without_joins
 from slayer.core.query import QueryRefinement, SlayerQuery
 from slayer.core.recommend import render_recommendation_markdown
-from slayer.core.warnings import NarrowedAccessWarning, ResponseTruncationWarning
+from slayer.core.warnings import ResponseTruncationWarning, SlayerWarning
 from slayer import async_utils
 from slayer.live_schema import ingestion as engine_ingestion
 from slayer.live_schema.ingestion import (
@@ -757,7 +757,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         A custom aggregation named sum_sq is called like a built-in: sum_sq(column). Authoring guide: inspect(reference="memory:help.models", entity_type="memory").
         """
-        notes: list[NarrowedAccessWarning] = []
+        notes: list[SlayerWarning] = []
         if query is not None:
             table_params = {
                 k: v for k, v in {
@@ -1192,7 +1192,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             # Strip the cached columns so save_model repopulates them from a
             # fresh expansion of the backing query.
             validated = validated.model_copy(update={"columns": []})
-        notes: list[NarrowedAccessWarning] = []
+        notes: list[SlayerWarning] = []
         # save_model refreshes a query-backed model's cache (and may recompute its
         # data_source, so cleanup below uses the returned identity); otherwise it
         # normalizes, validates Mode-A join paths and trial-executes a raw-sql source.
@@ -1792,7 +1792,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     return mcp
 
 
-def _warning_lines(notes: list[NarrowedAccessWarning]) -> str:
+def _warning_lines(notes: list[SlayerWarning]) -> str:
     return "".join(f"\nWarning: {n.human_message()}" for n in notes)
 
 

@@ -89,4 +89,5 @@ class TestImport:
         document = flat([ds("ev", fields=[f("id"), f("created_at"), f("amount")], metrics=[m("v", sql)])])
         result = import_osi(document, db=db)
         got = await value(models=result.models, db=db, model="ev", formula="v")
-        assert got is not None and float(got) == expected, got
+        assert got is not None
+        assert float(got) == expected, got

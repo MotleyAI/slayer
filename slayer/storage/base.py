@@ -59,6 +59,7 @@ from slayer.memories.models import (
     _validate_memory_id_charset,
 )
 from slayer.storage import migrations as _mig
+from slayer.storage.date_only_migration import StoredModels, below_upgrade, stored_type, typing_with
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded, stored_document_boundary
 from slayer.storage.granularity_rename import (
     Renames,
@@ -188,25 +189,6 @@ def _undeclared_key(*, key: Any, columns: list) -> bool:
     )
 
 
-def _stored_type(*, key: Any, columns: Any) -> str | None:
-    """The stored ``type`` of the column named ``key`` when it is a valid ``DataType``."""
-    if not isinstance(columns, list):
-        return None
-    col = next((c for c in columns if isinstance(c, dict) and c.get("name") == key), None)
-    try:
-        return DataType(col["type"]).value if col is not None and "type" in col else None
-    except ValueError:
-        return None
-
-
-def _extended(*, key: str, model: dict, extensions: list[dict]) -> list:
-    """``model[key]`` plus the ``key`` entries of each of ``extensions`` that extends ``model``."""
-    own = model.get(key)
-    added = [x for e in extensions if e.get("source_name") == model.get("name") and isinstance(e.get(key), list)
-             for x in e[key]]
-    return [*(own if isinstance(own, list) else []), *added]
-
-
 def _key_pairs(join: Any) -> list[tuple[Any, Any]]:
     pairs = join.get("join_pairs") if isinstance(join, dict) else None
     return [(p[0], p[1]) for p in pairs if isinstance(p, list) and len(p) == 2] if isinstance(pairs, list) else []
@@ -222,7 +204,7 @@ def _incoming_keys(*, sibling: dict, target: str, target_columns: list) -> list[
         canonical = {**join, "join_pairs": canonical_join_pairs(
             pairs=join.get("join_pairs"), source_columns=sibling.get("columns"), target_columns=target_columns,
         )}
-        out.extend((tgt, _stored_type(key=src, columns=sibling.get("columns"))) for src, tgt in _key_pairs(canonical))
+        out.extend((tgt, stored_type(key=src, columns=sibling.get("columns"))) for src, tgt in _key_pairs(canonical))
     return out
 
 
@@ -981,11 +963,27 @@ class StorageBackend(ABC):
             )
         await self._settle_library_granularities()
         data = self._renamed_since_read(data, kind="model", key=f"{data_source}.{name}")
-        write_back = False
         data = _mig.stamp_stored(data)
         pre_version = int(data["version"])
         if pre_version < _CUSTOM_BUCKET_CALLS_BELOW["SlayerModel"]:
             data = rewrite_model_doc(data, await self._custom_bucket_calls(data_sources=[data_source]))
+        typing = await self._stored_models(data_source) if below_upgrade("SlayerModel", data) else StoredModels()
+        with typing_with(typing):
+            model, write_back = await self._migrated_model(name=name, data=data, data_source=data_source)
+        if not caller_announces():
+            warn_library_shadows(model)
+            for payload in name_collision_warnings(model):
+                warnings.warn(SlayerNameCollisionWarning(payload), stacklevel=2)
+        if write_back:
+            # Write-back must not re-validate: legacy models may hold cycles or
+            # fanning refs a user needs to load to repair.
+            await self.save_model(model, _validate=False)
+        return model
+
+    async def _migrated_model(self, *, name: str, data: dict, data_source: str) -> tuple[SlayerModel, bool]:
+        """A stamped stored model dict migrated, repaired and validated; and whether a migration ran."""
+        write_back = False
+        pre_version = int(data["version"])
         if pre_version < _mig.CURRENT_VERSIONS["SlayerModel"]:
             data = _mig.migrate("SlayerModel", data)
             # Rewrite legacy ``__`` split-alias qualifiers to dotted on the RAW
@@ -1005,16 +1003,7 @@ class StorageBackend(ABC):
                 await self._apply_refinement_or_raise(
                     name=name, data=data, data_source=data_source,
                 )
-        model = SlayerModel.model_validate(data)
-        if not caller_announces():
-            warn_library_shadows(model)
-            for payload in name_collision_warnings(model):
-                warnings.warn(SlayerNameCollisionWarning(payload), stacklevel=2)
-        if write_back:
-            # Write-back must not re-validate: legacy models may hold cycles or
-            # fanning refs a user needs to load to repair.
-            await self.save_model(model, _validate=False)
-        return model
+        return SlayerModel.model_validate(data), write_back
 
     async def _canonicalize_join_key_spellings(self, *, data: dict, data_source: str) -> None:
         """Rewrite stored physical join-key spellings in ``data`` to ``Column.name``, both sides."""
@@ -1051,7 +1040,7 @@ class StorageBackend(ABC):
             target = join.get("target_model") if isinstance(join, dict) else None
             peer = await self._cached_raw_model_dict(name=target, data_source=data_source) if isinstance(target, str) else None
             peer_columns = peer.get("columns") if isinstance(peer, dict) else None
-            keys.extend((src, _stored_type(key=tgt, columns=peer_columns)) for src, tgt in _key_pairs(join))
+            keys.extend((src, stored_type(key=tgt, columns=peer_columns)) for src, tgt in _key_pairs(join))
         return keys
 
     async def _sibling_keys_into(self, *, name: str, columns: list, data_source: str) -> list[tuple[Any, str | None]]:
@@ -1129,18 +1118,29 @@ class StorageBackend(ABC):
     ) -> str | None:
         """The stored type of the column ``parts`` names from ``host``, walking its stored joins plus the query's ``extensions``."""
         current, data_source = host
-        quals, leaf = parts[:-1], parts[-1]
-        if quals and quals[0] == current.get("name"):
-            quals = quals[1:]
-        for hop in quals:
-            joins = [j for j in _extended(key="joins", model=current, extensions=extensions) if isinstance(j, dict)]
-            target = next((j.get("target_model") for j in joins if j.get("name") == hop), None) or next(
-                (hop for j in joins if not j.get("name") and j.get("target_model") == hop), None)
-            peer = await self._cached_raw_model_dict(name=target, data_source=data_source) if isinstance(target, str) else None
-            if peer is None:
-                return None
-            current = peer
-        return _stored_type(key=leaf, columns=_extended(key="columns", model=current, extensions=extensions))
+        models = await self._stored_models(data_source) if len(parts) > 1 else StoredModels()
+        return models.column_type(host=current, parts=parts, extensions=extensions)
+
+    async def _stored_models(self, data_source: str | None) -> StoredModels:
+        """Every raw stored model dict of ``data_source``."""
+        if data_source is None:
+            return StoredModels()
+        models: dict[str, dict] = {}
+        for ds, name in await self._list_all_model_identities():
+            raw = await self._cached_raw_model_dict(name=name, data_source=ds) if ds == data_source else None
+            if isinstance(raw, dict):
+                models[name] = raw
+        return StoredModels(data_source=data_source, models=models)
+
+    async def _memory_typing(self, data: dict) -> StoredModels:
+        """The stored models of the datasource a stored memory's query reads."""
+        inline_data_source, source = memory_source_model(data)
+        data_source = inline_data_source
+        if data_source is None and source is not None:
+            with contextlib.suppress(AmbiguousModelError):
+                identity = await self.resolve_model_identity(source)
+                data_source = identity[0] if identity is not None else None
+        return await self._stored_models(data_source)
 
     async def _dedup_exact_inverse_joins(
         self, *, name: str, data: dict, data_source: str,
@@ -1391,10 +1391,12 @@ class StorageBackend(ABC):
             if isinstance(data, dict) and int(data["version"]) < _CUSTOM_BUCKET_CALLS_BELOW["Memory"]:
                 data = rewrite_memory_doc(data, await self._custom_bucket_calls(
                     data_sources=await self._memory_data_sources(data)))
-            # Memories are never written back, so the repair repeats on every load of a pre-v4 document.
-            if isinstance(data, dict) and int(data["version"]) < _MEMORY_FILTER_REPAIR_BELOW_VERSION:
-                await self._repair_query_filters(query=data.get("query"), data_source=None)
-            return Memory.model_validate(data)
+            typing = await self._memory_typing(data) if below_upgrade("Memory", data) else StoredModels()
+            with typing_with(typing):
+                # Memories are never written back, so the repair repeats on every load of a pre-v4 document.
+                if isinstance(data, dict) and int(data["version"]) < _MEMORY_FILTER_REPAIR_BELOW_VERSION:
+                    await self._repair_query_filters(query=data.get("query"), data_source=None)
+                return Memory.model_validate(data)
 
     @abstractmethod
     async def _delete_memory_row(self, memory_id: str) -> bool:

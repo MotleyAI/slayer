@@ -9,7 +9,7 @@ A string compared with a temporal expression — or used as a `date_range` bound
 | Form | Example | Meaning |
 |---|---|---|
 | Instant | `'2025-03-01 10:00:00'`, `'2025-03-01T10:00'`, `'2025-03-01 10:00:00.250'` | That moment (up to six fractional digits; no zone offset) |
-| Day | `'2025-03-15'` | `[2025-03-15, 2025-03-16)` — a date-only string is the whole day |
+| Date | `'2025-03-15'` | In a comparison (`=`, `!=`, `<`, `<=`, `>`, `>=`, `BETWEEN`), the instant `2025-03-15 00:00:00`; after `in` / `not in` and in `date_range`, the day `[2025-03-15, 2025-03-16)` |
 | Month | `'2025-03'` | `[2025-03-01, 2025-04-01)` |
 | Quarter | `'2025-Q1'` | `[2025-01-01, 2025-04-01)` |
 | ISO week | `'2025-W05'` | `[2025-01-27, 2025-02-03)`, Monday-anchored |
@@ -42,7 +42,9 @@ A comparison of a temporal operand `x` with a period `P` reads the period as a w
 | `x = P`, `x in 'P'` | `start(P) <= x < next_start(P)` |
 | `x != P`, `x not in 'P'` | outside `[start(P), next_start(P))` |
 
-So `ordered_at <= '2024-12-31'` includes Dec 31 10:00, and `ordered_at = '2024-06'` is June. A literal on the left mirrors the comparison; an instant keeps a plain comparison. `in` with a tuple (`code in ('2025-Q1',)`) keeps its value-list meaning.
+So `ordered_at <= '2024-12'` includes Dec 31 10:00, and `ordered_at = '2024-06'` is June. A literal on the left mirrors the comparison; an instant keeps a plain comparison. `in` with a tuple (`code in ('2025-Q1',)`) keeps its value-list meaning.
+
+A date-only string in a comparison is its midnight, as in SQL: `ordered_at <= '2024-12-31'` stops at `2024-12-31 00:00:00`. For the whole day write `ordered_at in '2024-12-31'`, or `ordered_at < '2025-01-01'` as an upper bound. Where this differs from the whole day (`<=`, `>`, `=`, `!=` or `BETWEEN` against a TIMESTAMP), the response carries a `date_only_midnight` warning naming that spelling; it is dropped in SLayer 3.0.
 
 A temporal operand is anything typed DATE or TIMESTAMP: a declared column (base, derived, joined or a stage column), `min` / `max` / `first` / `last` of one, a date function or `interval` arithmetic, the clock, a `CAST(… AS DATE)` / `CAST(… AS TIMESTAMP)`, a `DATE '…'` / `TIMESTAMP '…'` literal, or a `coalesce` / `iif` over those (ISO literals inside count as dates). A plain date string against a non-temporal column keeps its string meaning; a relative token or single-string `in` there is a type error naming the column — declare its `type`. A DATE operand rejects sub-day points (`'last 6 hours'`, `'2025-01-01 10:00:00'`).
 
@@ -62,7 +64,7 @@ A time dimension's `date_range` is one time point, or a `[lower, upper]` pair wh
 {"dimension": "created_at", "granularity": "month", "date_range": ["2024-01-01", null]}
 ```
 
-A pair means `x >= lower` and `x <= upper` in the comparison semantics above, so a date-only upper bound covers its whole day; write an instant (`'2024-12-31 00:00:00'`) for a midnight-inclusive end. `[]`, three or more elements, `[null, null]` and unparseable bounds are rejected when the query is built; a relative unit the datasource does not define (`last fortnight`) fails when the query is planned.
+A pair means `x >= lower` and `x <= upper` with each date-only bound read as its whole day, so `["2024-01-01", "2024-12-31"]` covers all of Dec 31; write an instant (`'2024-12-31 00:00:00'`) for a midnight-inclusive end. `[]`, three or more elements, `[null, null]` and unparseable bounds are rejected when the query is built; a relative unit the datasource does not define (`last fortnight`) fails when the query is planned.
 
 ## Time bounds do not clip the window
 
@@ -78,7 +80,7 @@ A trailing window has to read rows from *before* the earliest bucket you asked f
 
 A bound is a *frame* bound when it bounds a **time dimension's own expression** (a column or any temporal row-level expression) by a time point — `<`, `<=`, `>`, `>=`, a period `=` / `in`, a `date_range`, or `date_trunc('<unit>', expr)` against a point. Everything else restricts the window's input like any row filter:
 
-- an instant `=`, and `!=` / `not in` against a period;
+- an instant `=` (a date-only `=` included), and `!=` / `not in` against a period;
 - a bound on a temporal expression that is not one of the query's time dimensions, or against another column;
 - a bound wrapped in `or` or `not`;
 - `filters` declared on the **model**.

@@ -104,6 +104,7 @@ from slayer.engine.elaborate_env import (
     coerce_text_numbers,
     coerce_zoned_comparisons,
     resolve_time_points,
+    date_only_notices,
 )
 from slayer.engine.population.home import row_expression_crossing
 from slayer.engine.cardinality.join_safety import assert_partition_key_attributable
@@ -587,6 +588,14 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         ],
         column_type=column_type,
     )
+    notices = date_only_notices(
+        [
+            *(dm.bound.value_key for dm in declared_measures),
+            *(bf.value_key for bf in bound_filters),
+            *(spec.bound.value_key for spec in order_specs),
+        ],
+        column_type=column_type, variables=query.date_variables,
+    )
     # Every time point resolves against the execution's one clock reading.
     declared_measures, bound_filters, order_specs = _map_bound_keys(
         lambda vk: coerce_zoned_comparisons(
@@ -828,6 +837,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         mode_policy=ModePolicy.resolve(query.to_many_handling),
         granularity_conflicts=granularity_conflicts,
         whole_list_reads=list_reads,
+        date_only_notices=notices,
     )
 
 
@@ -1425,12 +1435,12 @@ def _build_date_range_filter(
     assert date_range  # the caller builds this only for a present date_range
     if len(date_range) == 1:
         assert date_range[0] is not None  # construction rejects a lone null
-        comparisons = [TimePointCmpKey(op="=", operand=col_key, point=date_range[0])]
+        comparisons = [TimePointCmpKey(op="=", operand=col_key, point=date_range[0], whole_day=True)]
     else:
         lower, upper = date_range
         comparisons = [
-            *([] if lower is None else [TimePointCmpKey(op=">=", operand=col_key, point=lower)]),
-            *([] if upper is None else [TimePointCmpKey(op="<=", operand=col_key, point=upper)]),
+            *([] if lower is None else [TimePointCmpKey(op=">=", operand=col_key, point=lower, whole_day=True)]),
+            *([] if upper is None else [TimePointCmpKey(op="<=", operand=col_key, point=upper, whole_day=True)]),
         ]
     predicate = comparisons[0] if len(comparisons) == 1 else ArithmeticKey(op="and", operands=tuple(comparisons))
     refs = tuple(walk_value_keys(predicate))

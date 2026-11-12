@@ -55,7 +55,7 @@ Each exported dataset, field, metric and relationship carries one custom extensi
 - column types, formats, granularities, hidden flags, allowed aggregations and filters
 - model sources (table or SQL plus filters, or saved queries plus variables), access tags, custom aggregations, and SLayer-only columns and measures
 
-SLayer-only columns read joined models. SLayer-only measures are transforms (`change_pct`, `cumsum`, …), `first`/`last`, windowed or partitioned aggregates, aggregates reading several models, and measures whose route to another model is ambiguous. Each payload records a fingerprint of the Ossie content it was written with. `slayer import-osi` restores the SLayer structure only where the document is unedited; where a third party edited it, the Ossie content wins and the import report says so. Other vendors' extensions recorded on imported entities are written back unchanged.
+SLayer-only columns read joined models. A comparison with an instant (`ts <= '2024-04-10'`, a date being its midnight) exports as written. SLayer-only measures are transforms (`change_pct`, `cumsum`, …), comparisons with a period or relative token (`ts in '2025-Q1'`, `ts >= 'last month'`), `first`/`last`, windowed or partitioned aggregates, aggregates reading several models, and measures whose route to another model is ambiguous. Each payload records a fingerprint of the Ossie content it was written with. `slayer import-osi` restores the SLayer structure only where the document is unedited; where a third party edited it, the Ossie content wins and the import report says so. Other vendors' extensions recorded on imported entities are written back unchanged.
 
 ## Without Extensions
 
