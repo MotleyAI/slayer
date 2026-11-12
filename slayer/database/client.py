@@ -5,7 +5,6 @@ import concurrent.futures
 import contextlib
 import functools
 import logging
-import os
 import re
 import threading
 import time
@@ -24,7 +23,8 @@ from sqlglot import expressions as exp
 from sqlglot.dialects.dialect import Dialect as SqlglotDialect
 from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expr
-from sqlglot.tokenizer_core import TokenType
+from sqlglot.expressions.dml import DML
+from sqlglot.tokenizer_core import Token, TokenType
 from sqlalchemy.engine.url import URL, make_url
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -34,7 +34,15 @@ from slayer.async_utils import on_caller_thread, run_sync
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
-from slayer.database import engine_factory
+from slayer.database import engine_factory, server_profiles
+from slayer.database.errors import (
+    AuthenticationRefused,
+    DatabaseUnavailable,
+    ObjectNotFound,
+    SessionStatementRefused,
+    SqlClientError,
+    WriteStatementRefused,
+)
 from slayer.sql import connection_policy
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.dialects.base import ExplainStatements, ServerProfile, describe_type_name_code
@@ -63,26 +71,6 @@ _ENV_REF = re.compile(r"\$\{\w+\}")
 EngineOwner = Literal["caller", "client", "factory"]
 
 
-class SqlClientError(Exception):
-    """Base of the typed client failures."""
-
-
-class DatabaseUnavailable(SqlClientError):
-    """The database could not be reached."""
-
-
-class AuthenticationRefused(SqlClientError):
-    """The database rejected the client's credentials."""
-
-
-class ObjectNotFound(SqlClientError):
-    """A metadata read named a schema or table that does not exist."""
-
-
-class SessionStatementRefused(SqlClientError):
-    """``execute`` was given a statement that changes session state or controls transactions."""
-
-
 # Leading keywords of a statement the default client refuses.
 _SESSION_LEADS = (
     ("ALTER", "SESSION"), ("START", "TRANSACTION"),
@@ -90,8 +78,14 @@ _SESSION_LEADS = (
     ("END",), ("ABORT",), ("SAVEPOINT",), ("RELEASE",), ("SAVE",), ("XA",),
 )
 
-# Leading keywords of a statement that only reads.
-_READ_LEADS = frozenset({"SELECT", "WITH", "VALUES", "TABLE", "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "("})
+# Statements a read may be.
+_READ_ROOTS = (exp.Query, exp.Values, exp.Show, exp.Describe)
+
+# Nodes that change data or schema, or that sqlglot reads as nothing more than an unknown command.
+_WRITE_NODES = (DML, exp.DDL, exp.Into, exp.Command)
+
+# Comment openings MySQL and MariaDB run as SQL (``/*! … */``, ``/*M! … */``), as sqlglot keeps their text.
+_EXECUTABLE_COMMENTS = ("!", "M!")
 
 # Tokens that are never keywords: literals and quoted names.
 _LITERAL_TOKENS = frozenset({
@@ -101,40 +95,92 @@ _LITERAL_TOKENS = frozenset({
 })
 
 
-# Keywords that make a statement leading with a read keyword (a ``WITH``) write.
-_WRITE_TOKENS = frozenset({TokenType.INSERT, TokenType.UPDATE, TokenType.DELETE, TokenType.MERGE})
-
-
-def _statement_leads(sql: str, *, dialect: SqlDialect) -> list[tuple[tuple[str, ...], bool]]:
-    """Each ``;``-separated statement's first two words, upper-cased (a literal or quoted name reads as ``""``),
-    and whether it holds a write keyword."""
-    statements: list[tuple[list[str], list[bool]]] = [([], [False])]
-    for token in SqlglotDialect.get_or_raise(dialect.sqlglot_name).tokenize(sql):
+def _statement_leads(tokens: list[Token]) -> list[tuple[str, ...]]:
+    """Each ``;``-separated statement's first two words, upper-cased (a literal or quoted name reads as ``""``)."""
+    statements: list[list[str]] = [[]]
+    for token in tokens:
         if token.token_type is TokenType.SEMICOLON:
-            statements.append(([], [False]))
-            continue
-        words, writes = statements[-1]
-        if len(words) < 2:
-            words.append("" if token.token_type in _LITERAL_TOKENS else token.text.upper())
-        if token.token_type in _WRITE_TOKENS:
-            writes[0] = True
-    return [(tuple(words), writes[0]) for words, writes in statements if words]
+            statements.append([])
+        elif len(statements[-1]) < 2:
+            statements[-1].append("" if token.token_type in _LITERAL_TOKENS else token.text.upper())
+    return [tuple(words) for words in statements if words]
 
 
-def admit_statement(sql: str, *, dialect: SqlDialect) -> bool:
-    """Refuse session and transaction statements in ``sql``; return whether it does anything but read."""
+def _is_read(statement: Expr, *, glot: SqlglotDialect) -> bool:
+    """A ``SHOW`` reads unless it writes its output to a file (``INTO OUTFILE``); a ``DESCRIBE`` of a statement
+    is its plan."""
+    if isinstance(statement, exp.Command):
+        rest = glot.tokenize(statement.text("expression"))
+        return statement.name.upper() == "SHOW" and all(token.token_type is not TokenType.INTO for token in rest)
+    if isinstance(statement, exp.Show) and statement.args.get("into_outfile") is not None:
+        return False
+    if isinstance(statement, exp.Describe) and not isinstance(statement.this, exp.Table):
+        return False
+    return isinstance(statement, _READ_ROOTS) and statement.find(*_WRITE_NODES) is None
+
+
+def _non_read_refusal(
+    sql: str, *, tokens: list[Token], leads: list[tuple[str, ...]], glot: SqlglotDialect,
+) -> str | None:
+    """Why ``sql`` is not reads only, or ``None`` when every statement parses as a read."""
+    if any(comment.startswith(_EXECUTABLE_COMMENTS) for token in tokens for comment in token.comments):
+        return "it refuses executable comments (/*! … */), which MySQL runs"
     try:
-        leads = _statement_leads(sql, dialect=dialect)
+        statements = [statement for statement in glot.parse(sql) if statement is not None]
+        refused = next((i for i, statement in enumerate(statements) if not _is_read(statement, glot=glot)), None)
+    except SqlglotError as exc:
+        return f"it cannot classify this text as reads: {str(exc).splitlines()[0].rstrip('.')}"
+    if not statements:
+        return "it holds no statement to classify as a read"
+    if refused is None:
+        return None
+    if len(statements) != len(leads):
+        return "it cannot tell this text's statements apart to classify them as reads"
+    return f"it refuses this {leads[refused][0]} statement and sends only statements that read"
+
+
+def admit_statement(sql: str, *, dialect: SqlDialect, writes_allowed: bool = False) -> bool:
+    """Refuse session and transaction statements in ``sql``, and, unless ``writes_allowed``, any text that does
+    not parse as reads; return whether it does anything but read."""
+    glot = SqlglotDialect.get_or_raise(dialect.sqlglot_name)
+    try:
+        tokens = glot.tokenize(sql)
     except SqlglotError as exc:
         raise SessionStatementRefused(f"The SQL client cannot split this text into statements: {exc}") from exc
-    for lead, _writes in leads:
+    leads = _statement_leads(tokens)
+    for lead in leads:
         refused = next((words for words in _SESSION_LEADS if lead[:len(words)] == words), None)
         if refused is not None:
             raise SessionStatementRefused(
                 f"The SQL client refuses {' '.join(refused)} statements: session state and transactions "
                 "are managed by SLayer.",
             )
-    return any(writes or lead[0] not in _READ_LEADS for lead, writes in leads)
+    if any(lead[0] == "EXPLAIN" for lead in leads):  # MySQL parses EXPLAIN <table> as a DESCRIBE
+        raise WriteStatementRefused("The SQL client refuses EXPLAIN statements: a plan goes through explain().")
+    refusal = _non_read_refusal(sql, tokens=tokens, leads=leads, glot=glot)
+    if refusal is not None and not writes_allowed:
+        raise WriteStatementRefused(f"The SQL client refuses this text: {refusal}.")
+    return refusal is not None
+
+
+def admit_explain(statements: ExplainStatements, *, dialect: SqlDialect, writes_allowed: bool = False) -> None:
+    """Refuse ``statements`` unless they are ``dialect``'s plan of a statement ``admit_statement`` admits."""
+    on, off = dialect.explain_session(True), dialect.explain_session(False)
+    if statements.session_on is not None:
+        expected = (
+            None if on is None else on.sql(dialect=dialect.sqlglot_name),
+            None if off is None else off.sql(dialect=dialect.sqlglot_name),
+        )
+        if (statements.session_on, statements.session_off) != expected:
+            raise SessionStatementRefused("The SQL client switches plan mode only with its dialect's own statements.")
+        admit_statement(statements.statement, dialect=dialect, writes_allowed=writes_allowed)
+        return
+    prefix = dialect.explain_prefix or ""
+    pattern = r"\s+".join(re.escape(word) for word in prefix.split())
+    match = re.match(rf"\s*{pattern}\s+(.*)", statements.statement, re.IGNORECASE | re.DOTALL) if prefix else None
+    if match is None:
+        raise WriteStatementRefused(f"The SQL client explains only {prefix or 'EXPLAIN'} of a statement that reads.")
+    admit_statement(match.group(1), dialect=dialect, writes_allowed=writes_allowed)
 
 
 class UnparseableTypeProbeError(ValueError):
@@ -283,31 +329,6 @@ async def _exec_verbatim_async(conn, sql: str) -> Any:
     return await conn.exec_driver_sql(sql, execution_options={"no_parameters": True})
 
 
-# Per-engine server profile, and the lock guarding its fill. A failed fill is never cached.
-_server_profiles: "weakref.WeakKeyDictionary[Any, ServerProfile]" = weakref.WeakKeyDictionary()
-_profile_locks: "weakref.WeakKeyDictionary[Any, Any]" = weakref.WeakKeyDictionary()
-_profile_locks_guard = threading.Lock()
-
-
-def _fresh_profile_locks() -> None:
-    """In a forked child: the parent's profile locks may be held, so start over."""
-    global _profile_locks_guard
-    _profile_locks_guard = threading.Lock()
-    _profile_locks.clear()
-
-
-if hasattr(os, "register_at_fork"):
-    os.register_at_fork(after_in_child=_fresh_profile_locks)
-
-
-def _profile_lock(engine: Any, factory: Callable[[], Any]) -> Any:
-    with _profile_locks_guard:
-        lock = _profile_locks.get(engine)
-        if lock is None:
-            lock = _profile_locks[engine] = factory()
-        return lock
-
-
 def _skip(datasource_name: str, timeout_seconds: int, reason: str) -> StatementTimeoutSkippedWarning:
     """Build the skip payload and emit its Python warning now, before the statement runs."""
     payload = StatementTimeoutSkippedWarning.model_validate(
@@ -322,56 +343,20 @@ def _first_row(result: Any) -> tuple | None:
     return None if row is None else tuple(row)
 
 
-def _correlated_probe_failed(exc: Exception) -> None:
-    logger.warning("Correlated-subquery setting probe failed; treating it as unknown: %s", exc)
-
-
 def _server_profile(conn, *, engine: Any, dialect: SqlDialect) -> ServerProfile:
     """The engine's cached profile, filled over ``conn`` on first use (verbatim, never via ``execute``)."""
-    profile_sql = dialect.server_profile_sql()
-    if profile_sql is None:
-        return ServerProfile()
-    with _profile_lock(engine, threading.Lock):
-        cached = _server_profiles.get(engine)
-        if cached is not None:
-            return cached
-        base_row = _first_row(_exec_verbatim(conn, profile_sql))
-        profile = dialect.parse_server_profile(base_row=base_row)
-        correlated = dialect.correlated_setting_probe(profile)
-        if correlated is not None:
-            correlated_sql = correlated.sql(dialect=dialect.sqlglot_name)
-            try:
-                correlated_row = _first_row(_exec_verbatim(conn, correlated_sql))
-            except Exception as exc:  # the driver's own error types need not be DBAPI errors
-                _correlated_probe_failed(exc)
-                return profile
-            profile = dialect.parse_server_profile(base_row=base_row, correlated_row=correlated_row)
-        _server_profiles[engine] = profile
-        return profile
+    return server_profiles.cached_profile(
+        engine=engine, dialect=dialect, first_row=lambda sql: _first_row(_exec_verbatim(conn, sql)),
+    )
 
 
 async def _server_profile_async(conn, *, engine: Any, dialect: SqlDialect) -> ServerProfile:
     """Async sibling of ``_server_profile``."""
-    profile_sql = dialect.server_profile_sql()
-    if profile_sql is None:
-        return ServerProfile()
-    async with _profile_lock(engine, asyncio.Lock):
-        cached = _server_profiles.get(engine)
-        if cached is not None:
-            return cached
-        base_row = _first_row(await _exec_verbatim_async(conn, profile_sql))
-        profile = dialect.parse_server_profile(base_row=base_row)
-        correlated = dialect.correlated_setting_probe(profile)
-        if correlated is not None:
-            correlated_sql = correlated.sql(dialect=dialect.sqlglot_name)
-            try:
-                correlated_row = _first_row(await _exec_verbatim_async(conn, correlated_sql))
-            except Exception as exc:  # the driver's own error types need not be DBAPI errors
-                _correlated_probe_failed(exc)
-                return profile
-            profile = dialect.parse_server_profile(base_row=base_row, correlated_row=correlated_row)
-        _server_profiles[engine] = profile
-        return profile
+
+    async def _row(sql: str) -> server_profiles.FirstRow:
+        return _first_row(await _exec_verbatim_async(conn, sql))
+
+    return await server_profiles.cached_profile_async(engine=engine, dialect=dialect, first_row=_row)
 
 
 def _server_profile_sync(*, engine: sa.Engine, dialect: SqlDialect) -> ServerProfile:
@@ -507,14 +492,8 @@ async def _statement_timeout_async(
 _TYPE_PROBE_TIMEOUT_SECONDS = 60
 
 
-# Dialects whose SET TRANSACTION READ ONLY binds the current txn.
-_READ_ONLY_TXN_DIALECTS = frozenset({"postgres", "redshift", "oracle"})
-
-
 def _read_only_transaction_sql(db_type: str | None) -> str | None:
-    if dialect_for_ds_type(db_type).sqlglot_name in _READ_ONLY_TXN_DIALECTS:
-        return "SET TRANSACTION READ ONLY"
-    return None
+    return dialect_for_ds_type(db_type).read_only_transaction_sql
 
 
 def type_probe_of(sql: str, *, db_type: str | None) -> TypeProbe:
@@ -798,6 +777,12 @@ class SlayerSQLClient:
     def _dialect(self) -> SqlDialect:
         return dialect_for_ds_type(self.datasource.type)
 
+    def _in_memory(self) -> bool:
+        """Whether this client's database is an in-memory one, which it may write."""
+        if self._sync_engine_owner == "caller" and self._sync_engine is not None:
+            return engine_factory.local_database(self._sync_engine.url).kind == "memory"
+        return engine_factory.local_database(self._connection_datasource().get_connection_string()).kind == "memory"
+
     def _async_url(self) -> URL | None:
         """The connection URL when its driver runs async; ``None`` for a caller's engine or a sync-only driver."""
         if self._sync_engine_owner is not None and self._sync_engine_owner != "factory":
@@ -837,6 +822,7 @@ class SlayerSQLClient:
         conn_str = ds.get_connection_string()
         connection_policy.check_transaction_pooler_backend(ds, url=conn_str)
         load_driver(ds, conn_str, dialect=self._dialect, is_async=True)
+        engine_factory.refuse_missing_local_file(ds, conn_str)
         built = create_async_engine(conn_str, **connection_policy.engine_kwargs(
             url=conn_str, dialect=self._dialect, datasource=ds, is_async=True,
         ))
@@ -930,8 +916,8 @@ class SlayerSQLClient:
         sql: str,
         timeout_seconds: int = 120,
     ) -> ExecutionResult:
-        """Execute SQL asynchronously; a session or transaction statement is refused."""
-        writes = admit_statement(sql, dialect=self._dialect)
+        """Execute SQL asynchronously; a statement other than a read is refused (writes only into memory)."""
+        writes = admit_statement(sql, dialect=self._dialect, writes_allowed=self._in_memory())
         return await self._typed_execute(sql=sql, timeout_seconds=timeout_seconds, writes=writes)
 
     async def _typed_execute(self, *, sql: str, timeout_seconds: int, writes: bool) -> ExecutionResult:
@@ -972,7 +958,9 @@ class SlayerSQLClient:
         )
 
     async def explain(self, statements: ExplainStatements, timeout_seconds: int = 120) -> ExecutionResult:
-        """The plan rows of ``statements``, run on one connection whose plan mode is always switched back off."""
+        """The plan rows of ``statements``, run on one connection whose plan mode is always switched back off;
+        anything but the dialect's plan of a read is refused."""
+        admit_explain(statements, dialect=self._dialect, writes_allowed=self._in_memory())
         try:
             return await self._explain(statements=statements, timeout_seconds=timeout_seconds)
         except Exception as exc:
@@ -1178,12 +1166,14 @@ class SlayerSQLClient:
         sql: str,
         timeout_seconds: int = 120,
     ) -> ExecutionResult:
-        """Execute SQL synchronously (CLI, notebooks, tests); a session or transaction statement is refused.
+        """Execute SQL synchronously (CLI, notebooks, tests); a statement other than a read is refused (writes
+        only into memory).
 
         An async driver runs on the bridge loop, whose connections serve later calls; a sync one
-        runs here, discarding only the sync engine on auth failure.
+        runs here, discarding only the sync engine on auth failure. Either way, idle connections holding a
+        local database file are released on return.
         """
-        writes = admit_statement(sql, dialect=self._dialect)
+        writes = admit_statement(sql, dialect=self._dialect, writes_allowed=self._in_memory())
         if self._async_url() is not None:
             return run_sync(self._execute_bridged(sql=sql, timeout_seconds=timeout_seconds, writes=writes))
         try:
@@ -1199,6 +1189,9 @@ class SlayerSQLClient:
         except Exception as exc:
             self._discard_sync_engine_on_auth_failure(exc)
             raise
+        finally:
+            if self._sync_engine is not None and self._sync_engine_owner == "factory":
+                engine_factory.release_idle(self._sync_engine)
 
     async def _execute_bridged(self, *, sql: str, timeout_seconds: int, writes: bool) -> ExecutionResult:
         try:
