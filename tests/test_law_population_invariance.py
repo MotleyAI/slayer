@@ -23,10 +23,10 @@ _BASES = [
 # Measure sets layered onto each base; all bind under either population.
 _MEASURE_SETS = [
     [],
-    [{"formula": "orders.amount:sum", "name": "m1"}],
+    [{"formula": "sum(orders.amount)", "name": "m1"}],
     [
-        {"formula": "orders.amount:sum", "name": "m1"},
-        {"formula": "orders.amount:avg", "name": "m2"},
+        {"formula": "sum(orders.amount)", "name": "m1"},
+        {"formula": "avg(orders.amount)", "name": "m2"},
     ],
 ]
 

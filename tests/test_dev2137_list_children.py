@@ -9,7 +9,6 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType, JoinCardinality
-from slayer.core.errors import SlayerError
 from slayer.core.join_walker import list_child, with_list_children
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
@@ -121,8 +120,15 @@ class TestElementDimension:
         resp = await engine.execute(query(dimensions=["skills.value"], measures=[measure("count(skills.*)", "n")]))
         assert _per(resp, "skills.value") == {"go": 3, "sql": 2}
 
-    async def test_default_broadcast_of_a_parent_measure(self, engine) -> None:
+    async def test_default_association_of_a_parent_measure(self, engine) -> None:
         q = query(dimensions=["skills.value"], measures=[measure("count(*)", "n")])
+        with pytest.warns(UserWarning):
+            resp = await engine.execute(q)
+        assert _per(resp, "skills.value") == {"go": 2, "sql": 2}
+        assert associated_warnings(resp)
+
+    async def test_broadcast_of_a_parent_measure(self, engine) -> None:
+        q = query(dimensions=["skills.value"], measures=[measure("count(*)", "n")], to_many_handling="broadcast")
         with pytest.warns(UserWarning):
             resp = await engine.execute(q)
         assert _per(resp, "skills.value") == {"go": 5, "sql": 5}
@@ -145,17 +151,18 @@ class TestKeylessAssociation:
             resp = await keyless.execute(q)
         assert _per(resp, "skills.value", model="twins") == {"go": 2}
 
-    async def test_another_to_many_hop_keeps_the_key_requirement(self) -> None:
+    async def test_another_to_many_hop_uses_the_row_identity(self) -> None:
         contractors = contractors_model(keyed=False).model_copy(update={"joins": [ModelJoin(
             target_model="assignments", join_pairs=[["id", "contractor_id"]],
             cardinality=JoinCardinality.ONE_TO_MANY)]})
         assignments = SlayerModel(name="assignments", sql_table="assignments", data_source="test", columns=[
             Column(name="id", type=DataType.INT, primary_key=True), Column(name="contractor_id", type=DataType.INT)])
         async with list_engine(models=[contractors, assignments, twins_model()]) as e:
-            q = query(dimensions=["skills.value", "assignments.id"],
-                      measures=[measure("count(*)", "n")], to_many_handling="associate")
-            with pytest.raises(SlayerError, match="primary or unique key"):
-                await e.execute(q)
+            resp = await e.execute(query(dimensions=["skills.value", "assignments.id"],
+                                         measures=[measure("count(*)", "n")], to_many_handling="associate"))
+        cells = {(r["contractors.skills.value"], r["contractors.assignments.id"]): r["contractors.n"] for r in resp.data}
+        assert cells == {("go", 1): 1, ("go", 2): 1, ("go", 5): 1, ("sql", 1): 1, ("sql", 2): 1, ("sql", 3): 1}
+        assert [w for w in resp.warnings or [] if w.kind == "associated"]
 
 
 class TestNoFanOut:

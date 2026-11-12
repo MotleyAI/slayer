@@ -15,8 +15,8 @@ from typing import Any, Optional
 import duckdb
 import pytest
 from fastapi.testclient import TestClient
-from pytest_postgresql import factories
 from mcp.types import TextContent
+from pytest_postgresql import factories
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
@@ -39,19 +39,19 @@ from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelJoin,
 from slayer.core.query import SlayerQuery
 from slayer.core.refs import key_display
 from slayer.core.syntax import parse_expr
-from slayer.live_schema.ingestion import ingest_datasource_async
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.inspect.collection_render import render_models_summary
 from slayer.inspect.model_render import render_model_inspection
+from slayer.live_schema.ingestion import ingest_datasource_async
 from slayer.mcp.server import create_mcp_server
 from slayer.search.render import render_column_text
-from slayer.database import engine_factory
 from slayer.sql.dialects import get_dialect
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2101_fixtures import emit
 from tests._dev2120_fixtures import NATIVE_LIST_DIALECTS, NO_LIST_DATABASES
 from tests._dev2137_fixtures import measure, num, query
 from tests._engine_helpers import seeded_exec_engine
+from tests._pg_helpers import client_datasource, pg_query_engine
 
 postgresql_proc = factories.postgresql_proc(port=None)
 postgresql = factories.postgresql("postgresql_proc")
@@ -168,20 +168,9 @@ async def postgres_engine(conn: Any, base: Path, *, statements: Iterable[str],
     for stmt in statements:
         cur.execute(stmt)
     conn.commit()
-    info = conn.info
-    ds = DatasourceConfig(name="test", type="postgres", host=info.host, port=info.port, database=info.dbname,
-                          username=info.user, password="")
-    storage = YAMLStorage(base_dir=str(base / "store"))
-    await storage.save_datasource(ds)
-    for model in engine_models:
-        await storage.save_model(model)
-    engine = SlayerQueryEngine(storage=storage)
-    try:
+    async with pg_query_engine(client_datasource(conn.info, name="test"), base_dir=str(base / "store"),
+                               models=engine_models) as engine:
         yield engine
-    finally:
-        await engine.aclose()
-        engine.close()
-        engine_factory.invalidate_engine(ds)
 
 
 @pytest.fixture(params=["duckdb", "postgres"])
@@ -593,8 +582,8 @@ class TestCounts:
         expected = {t: len({elset(r["skills"]) for r in ROWS if r["team"] == t} - {None}) for t in ("A", "B", "C")}
         assert {cell(r, "team"): num(cell(r, "n")) for r in resp.data} == expected
 
-    async def test_colon_spelling(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(query(measures=["skills:count_distinct"]))
+    async def test_unnamed_measure(self, engine: SlayerQueryEngine) -> None:
+        resp = await engine.execute(query(measures=["count_distinct(skills)"]))
         assert num(next(iter(resp.data[0].values()))) == 4
 
     async def test_distinct_lists_and_distinct_elements(self, engine: SlayerQueryEngine) -> None:

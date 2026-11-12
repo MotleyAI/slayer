@@ -1,4 +1,4 @@
-"""DEV-1847 task 1.2/3.2 — the to_many_handling mode axis at the re-aggregation
+"""The to_many_handling mode axis at the re-aggregation
 seam (SQLite + DuckDB). Partition_by=city alone spans regions, so region is
 unattributable to the operand dataset: the default broadcasts a self-announcing
 global value, associate reconciles per region, error refuses. Fails until the
@@ -47,11 +47,11 @@ def _q(mode=None):
 
 
 class TestBroadcast:
-    async def test_default_broadcasts_global_and_warns(self, exec_engine):
-        """Scenario: Unattributable outer dimension broadcasts with a warning —
-        EVERY region row carries the global average of city totals, and the
-        warning names region with a non-empty reason plus the associate remedy."""
-        resp = await exec_engine.execute(_q())
+    async def test_broadcast_mode_broadcasts_global_and_warns(self, exec_engine):
+        """Scenario: Unattributable outer dimension broadcasts with a warning under
+        explicit broadcast — EVERY region row carries the global average of city
+        totals, and the warning names region with a non-empty reason plus the remedy."""
+        resp = await exec_engine.execute(_q("broadcast"))
         vals = {k[0]: v["sales.acc"] for k, v in region_key(resp).items()}
         # the global value lands on every region row, not just a couple.
         for value in vals.values():
@@ -64,11 +64,12 @@ class TestBroadcast:
 
 
 class TestAssociate:
-    async def test_associate_reconciles_per_region(self, exec_engine):
-        """Scenario: Unattributable outer dimension associates on request — each
-        region aggregates the distinct city cells associated with it; Alpha's
-        total counts in both North and South."""
-        resp = await exec_engine.execute(_q("associate"))
+    @pytest.mark.parametrize("mode", [None, "associate"])
+    async def test_associate_reconciles_per_region(self, exec_engine, mode):
+        """Scenario: Unattributable outer dimension associates by default and under
+        associate — each region aggregates the distinct city cells associated with
+        it; Alpha's total counts in both North and South."""
+        resp = await exec_engine.execute(_q(mode))
         vals = {k[0]: v["sales.acc"] for k, v in region_key(resp).items()}
         for region, expected in ASSOCIATE_AVG_CITY_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
@@ -111,7 +112,7 @@ class TestExplicitOuterKeyUnattributable:
             dimensions=["region", "product"], to_many_handling=mode,
             measures=[reagg("avg", INNER_CR, name="acc", partition_by="product")])
 
-    async def test_default_refuses(self, exec_engine):
+    async def test_broadcast_mode_refuses(self, exec_engine):
         query = self._pq("broadcast")
         with pytest.raises(PartitionKeyError) as ei:
             await exec_engine.execute(query)
@@ -137,7 +138,8 @@ class TestExpressionGrainNonTransitivity:
         resp = await exec_engine.execute(sales_q(
             dimensions=[band, "region"],
             measures=[ModelMeasure(
-                formula="avg(sum(amount, partition_by=spend_band))", name="abt")]))
+                formula="avg(sum(amount, partition_by=spend_band))", name="abt")],
+            to_many_handling="broadcast"))
         by = rows_by(resp, "sales.spend_band", "sales.region")
         for (bandv, _region), cell in by.items():
             assert float(cell["sales.abt"]) == pytest.approx(
@@ -154,7 +156,8 @@ class TestJoinedDimensionSeeding:
         resp = await exec_engine.execute(chain_q(
             dimensions=["customers.regions.name"],
             measures=[ModelMeasure(
-                formula="avg(sum(amount, partition_by=amount))", name="a")]))
+                formula="avg(sum(amount, partition_by=amount))", name="a")],
+            to_many_handling="broadcast"))
         assert len(resp.data) == 2  # one row per region, no hidden duplicates
         vals = {row["corders.customers.regions.name"]: float(row["corders.a"])
                 for row in resp.data}

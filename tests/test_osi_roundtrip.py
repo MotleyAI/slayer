@@ -97,8 +97,8 @@ def _models() -> list[SlayerModel]:
                                     col("email", DataType.TEXT)],
                            measures=[measure("n_profiles", "count(*)")])
     rich = rich_orders()
-    rich.columns.append(col("Status", DataType.TEXT, '"LegalType"'))
-    rich.measures += [measure("n_types", "count_distinct(Status)"),
+    rich.columns.append(col("LegalType", DataType.TEXT, '"LegalType"'))
+    rich.measures += [measure("n_types", "count_distinct(LegalType)"),
                       measure("approx", "count_distinct_approx(customer_id)")]
     return [
         customers(joins=[to_active, to_profile], measures=[

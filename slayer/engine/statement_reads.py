@@ -38,11 +38,16 @@ def statement_reads(
         if root is None:
             continue
         models = with_list_children({**own.models_by_name, root.name: root})
+        # Closed in the plan's own universe: a stored model and another stage's inline namesake never mix.
+        local = StatementReads()
         for root_name, root_key in plan_value_keys_by_root(plan):
             key_root = models.get(root_name, root) if root_name else root
             for key in walk_value_keys(root_key):
-                _add_key(reads, key=key, root=key_root, models=models)
-    _close_columns(reads, models=_all_models(plans, bundle=bundle))
+                _add_key(local, key=key, root=key_root, models=models)
+        _close_columns(local, models=models)
+        reads.columns |= local.columns
+        reads.joins |= local.joins
+        reads.aggregations |= local.aggregations
     return reads
 
 
@@ -50,12 +55,12 @@ def _add_key(reads: StatementReads, *, key: ValueKey, root: SlayerModel, models:
     if isinstance(key, (ColumnKey, ColumnSqlKey, StarKey)):
         _add_path(reads, path=key.path, root=root, models=models)
         terminal = resolved_terminal(root=root, path=key.path, models_by_name=models)
-        if terminal is not None and not isinstance(key, StarKey):
+        if terminal is not None and not terminal.inline and not isinstance(key, StarKey):
             reads.columns.add((terminal.name, key.column_name if isinstance(key, ColumnSqlKey) else key.leaf))
     elif isinstance(key, AggregateKey):
         owner = aggregation_owner(root=root, source=key.source, models_by_name=models)
         definition = aggregation_definition(owner=owner, agg=key.agg) if owner is not None else None
-        if owner is not None and definition is not None:
+        if owner is not None and not owner.inline and definition is not None:
             reads.aggregations.add((owner.name, definition.name))
 
 
@@ -69,17 +74,16 @@ def _add_path(reads: StatementReads, *, path: tuple[str, ...], root: SlayerModel
         forward = edge.source_model == edge.declaring_model
         pairs = [(s, t) if forward else (t, s) for s, t in edge.join_pairs]
         target = edge.target_model if forward else edge.source_model
-        reads.joins.add((edge.declaring_model, target, edge.name, frozenset(pairs)))
-        reads.columns.update((edge.declaring_model, s) for s, _ in pairs)
-        reads.columns.update((target, t) for _, t in pairs)
+        if not _inline(edge.declaring_model, models=models):
+            reads.joins.add((edge.declaring_model, target, edge.name, frozenset(pairs)))
+            reads.columns.update((edge.declaring_model, s) for s, _ in pairs)
+        if not _inline(target, models=models):
+            reads.columns.update((target, t) for _, t in pairs)
 
 
-def _all_models(plans: list, *, bundle: ResolvedSourceBundle) -> dict[str, SlayerModel]:
-    models = dict(bundle.models_by_name)
-    for plan in plans:
-        if plan.stage_bundle is not None:
-            models.update(plan.stage_bundle.models_by_name)
-    return models
+def _inline(name: str, *, models: dict[str, SlayerModel]) -> bool:
+    model = models.get(name)
+    return model is not None and model.inline
 
 
 def _close_columns(reads: StatementReads, *, models: dict[str, SlayerModel]) -> None:
@@ -88,10 +92,10 @@ def _close_columns(reads: StatementReads, *, models: dict[str, SlayerModel]) -> 
     while pending:
         model_name, column_name = pending.pop()
         host = models.get(model_name)
-        column = host.get_column(column_name) if host is not None else None
+        column = host.get_column(column_name, quoted=True) if host is not None else None
         if host is None or column is None:
             continue
         for read in definition_reads(column=column, host=host, reachable=models):
-            if read not in reads.columns:
+            if read not in reads.columns and not _inline(read[0], models=models):
                 reads.columns.add(read)
                 pending.append(read)

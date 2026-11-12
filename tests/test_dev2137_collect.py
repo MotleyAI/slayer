@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import pytest
@@ -147,3 +148,19 @@ class TestEmission:
     async def test_elements_per_team_emit(self, dialect: str) -> None:
         await emit_contractors(query(dimensions=["team"], measures=[measure("collect(skills.value)", "c")]),
                                dialect=dialect, models=all_models())
+
+
+_TYPED_EMPTY = (r"CAST\(\s*(ARRAY\s*)?\[\]\s+AS\b", r"ARRAY<\w+>\s*\[\]")
+
+
+class TestJoinBackOfAPrimaryKey:
+    @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
+    async def test_join_back_fallback_is_untyped(self, dialect: str) -> None:
+        sql = await emit_contractors(query(dimensions=["name"], measures=[measure("collect(assignments.id)", "c")]),
+                                     dialect=dialect, models=all_models())
+        assert not [p for p in _TYPED_EMPTY if re.search(p, sql, re.I)], sql
+
+    async def test_join_back_without_a_row_is_empty(self, engine) -> None:
+        got = await _collected(engine, "collect(assignments.id)", by_key="name")
+        assert {k: [int(x) for x in v] for k, v in got.items()} == {
+            "Ann": [1, 2], "Bob": [3], "Cid": [4], "Dee": [], "Eve": [5]}

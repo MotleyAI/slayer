@@ -86,9 +86,9 @@ class TestStoredOnlyGate:
         assert out["version"] == 3
 
     def test_current_versions(self):
-        assert mig.CURRENT_VERSIONS["SlayerModel"] == 18
-        assert mig.CURRENT_VERSIONS["SlayerQuery"] == 9
-        assert mig.CURRENT_VERSIONS["Memory"] == 7
+        assert mig.CURRENT_VERSIONS["SlayerModel"] == 21
+        assert mig.CURRENT_VERSIONS["SlayerQuery"] == 13
+        assert mig.CURRENT_VERSIONS["Memory"] == 9
         for key in (("SlayerModel", 12), ("SlayerQuery", 4), ("Memory", 2)):
             assert key in mig._REGISTRY
 
@@ -101,17 +101,17 @@ class TestRewrite:
         (BARE, FILLED),
         ("dense_rank(sum(amount), partition_by=region)",
          "dense_rank(sum(amount), partition_by=region, direction='desc')"),
-        ("rank(amount:sum)", "rank(amount:sum, direction='desc')"),
+        ("rank(amount:sum)", "rank(sum(amount), direction='desc')"),
         ("rank(amount:sum(partition_by=region)) <= 3",
-         "rank(amount:sum(partition_by=region), direction='desc') <= 3"),
+         "rank(sum(amount, partition_by=region), direction='desc') <= 3"),
         ("rank(rank(amount:sum)) + 1",
-         "rank(rank(amount:sum, direction='desc'), direction='desc') + 1"),
+         "rank(rank(sum(amount), direction='desc'), direction='desc') + 1"),
         ("weighted_avg(amount, weight=rank(sum(amount, partition_by=region)))",
          "weighted_avg(amount, weight=rank(sum(amount, partition_by=region), direction='desc'))"),
         ("sum(quantity * rank(avg(unit_price, partition_by=product)))",
          "sum(quantity * rank(avg(unit_price, partition_by=product), direction='desc'))"),
         ("iif(dense_rank(amount:sum) <= 3, 'top', 'rest')",
-         "iif(dense_rank(amount:sum, direction='desc') <= 3, 'top', 'rest')"),
+         "iif(dense_rank(sum(amount), direction='desc') <= 3, 'top', 'rest')"),
         ("rank(sum(amount)) + ntile(sum(amount), n=4)",
          "rank(sum(amount), direction='desc') + ntile(sum(amount), n=4)"),
     ])
@@ -126,7 +126,7 @@ class TestRewrite:
         "rank(sum(amount), direction='asc')",
         "rank(sum(amount), direction = 'DESC')",
         "dense_rank(sum(amount), partition_by=region, direction='ascending')",
-        "iif(region == 'rank(x)', 1, 0)",
+        "iif(region = 'rank(x)', 1, 0)",
         "customers.rank(amount)",
         "ntile(sum(amount), n=4)",
         "percent_rank(sum(amount))",
@@ -135,6 +135,9 @@ class TestRewrite:
     ])
     def test_untouched(self, formula):
         assert _migrated_formula(formula) == formula
+
+    def test_rank_inside_a_string_is_untouched_while_double_equals_is_canonicalised(self):
+        assert _migrated_formula("iif(region == 'rank(x)', 1, 0)") == "iif(region = 'rank(x)', 1, 0)"
 
     @pytest.mark.parametrize("formula", ["rank(sum(amount)", "rank(sum(amount), 'oops)"])
     def test_untokenisable_formula_loads_byte_identical(self, formula):
@@ -168,13 +171,13 @@ class TestRewrite:
 def _query_dict(version: Any = 4) -> dict:
     data: dict = {
         "source_model": "sales",
-        "dimensions": ["region", {"expression": "rank(amount:sum(partition_by=region))", "name": "rk"}],
+        "dimensions": ["region", {"expression": "rank(sum(amount, partition_by=region))", "name": "rk"}],
         "measures": [
             "rank(sum(amount)) + 1",
-            {"formula": "iif(dense_rank(amount:sum(partition_by=[region])) <= 2, 1, 0)", "name": "top"},
+            {"formula": "iif(dense_rank(sum(amount, partition_by=[region])) <= 2, 1, 0)", "name": "top"},
         ],
         "filters": ["rank(sum(amount, partition_by=region)) <= 3 and city <> 'rank('"],
-        "order": [{"column": "abs(rank(amount:sum))", "direction": "asc"}],
+        "order": [{"column": "abs(rank(sum(amount)))", "direction": "asc"}],
         "main_time_dimension": "rank(sum(amount))",
     }
     if version is not None:
@@ -192,7 +195,7 @@ def _assert_query_filled(q: SlayerQuery) -> None:
     _assert_only_direction_added(before=raw["measures"][1]["formula"], after=measures[1].formula)
     assert q.filters == ["rank(sum(amount, partition_by=region), direction='desc') <= 3 and city <> 'rank('"]
     order = q.order or []
-    assert order[0].raw_formula == "abs(rank(amount:sum, direction='desc'))"
+    assert order[0].raw_formula == "abs(rank(sum(amount), direction='desc'))"
     assert q.main_time_dimension == FILLED
 
 
@@ -222,7 +225,8 @@ class TestStoredQuery:
     def test_inline_extension_measures_of_a_stored_query(self):
         ext = {"source_name": "sales", "measures": [{"name": "x", "formula": BARE}]}
         q = SlayerQuery.model_validate({**_query_dict(version=4), "source_model": ext})
-        assert getattr(q.source_model, "measures")[0].formula == FILLED
+        assert q.source_model == "sales"
+        assert ((q.extensions or [])[0].measures or [])[0].formula == FILLED
 
     def test_memory_query(self):
         mem = Memory.model_validate({"version": 2, "id": "m1", "learning": "x", "query": _query_dict(version=4)})

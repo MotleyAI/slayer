@@ -1,6 +1,6 @@
 """A dotted saved measure whose formula crosses back to a model on the host chain composes.
 
-``customers.order_total`` (``orders.amount:sum``) from an ``orders``-rooted query reads a
+``customers.order_total`` (``sum(orders.amount)``) from an ``orders``-rooted query reads a
 second ``orders`` occurrence — the customer's orders — evaluated once per row of it.
 Expected values come from raw-SQL oracles over the seeded DEV-1836 rows.
 """

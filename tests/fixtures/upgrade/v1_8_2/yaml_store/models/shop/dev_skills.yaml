@@ -1,0 +1,28 @@
+version: 15
+name: dev_skills
+sql: SELECT id, name, skills FROM contractors
+query_variables: {}
+data_source: shop
+columns:
+- name: id
+  type: INT
+  primary_key: true
+  unique: false
+  hidden: false
+- name: name
+  type: TEXT
+  primary_key: false
+  unique: false
+  hidden: false
+- name: skills
+  type: ARRAY
+  element_type: UNKNOWN
+  primary_key: false
+  unique: false
+  hidden: false
+measures: []
+aggregations: []
+joins: []
+filters: []
+hidden: false
+access_tags: []

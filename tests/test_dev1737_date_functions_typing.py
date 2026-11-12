@@ -315,7 +315,7 @@ class TestStageOperands:
         })
         outer = SlayerQuery.model_validate({
             "source_model": "s1", "dimensions": [{"expression": "date_part('year', created_at)", "name": "y"}],
-            "measures": [{"formula": "n:sum", "name": "n_total"}],
+            "measures": [{"formula": "sum(n)", "name": "n_total"}],
         })
         await engine.execute([s1, outer], dry_run=True)
 
@@ -338,7 +338,7 @@ class TestStageOperands:
         })
         outer = SlayerQuery.model_validate({
             "source_model": "s1", "filters": ["date_part('year', status) = 1"],
-            "measures": [{"formula": "n:sum", "name": "n_total"}],
+            "measures": [{"formula": "sum(n)", "name": "n_total"}],
         })
         with pytest.raises(QueryTypeError) as exc:
             await engine.execute([s1, outer], dry_run=True)
@@ -434,7 +434,7 @@ class TestResultTypes:
                 },
                 {
                     "source_model": "s1", "dimensions": ["created_at"],
-                    "measures": [{"formula": "max(od)", "name": "o"}, {"formula": "n:sum", "name": "total"}],
+                    "measures": [{"formula": "max(od)", "name": "o"}, {"formula": "sum(n)", "name": "total"}],
                 },
             ],
             name="passthrough", save=False,
@@ -472,12 +472,12 @@ class TestResultTypes:
         })
         s2 = SlayerQuery.model_validate({
             "name": "s2", "source_model": "s1", "dimensions": ["created_at"],
-            "measures": [{"formula": "n:sum", "name": "total"}],
+            "measures": [{"formula": "sum(n)", "name": "total"}],
         })
         s3 = SlayerQuery.model_validate({
             "source_model": "s2",
             "time_dimensions": [TimeDimension(dimension="created_at", granularity=TimeGranularity.DAY)],
-            "measures": [{"formula": "total:sum", "name": "t"}],
+            "measures": [{"formula": "sum(total)", "name": "t"}],
         })
         with pytest.raises(TimeDimensionColumnError, match="already bucketed at 'month'"):
             await engine.execute([s1, s2, s3], dry_run=True)
@@ -491,7 +491,7 @@ class TestResultTypes:
         outer = SlayerQuery.model_validate({
             "source_model": "s1",
             "time_dimensions": [TimeDimension(dimension="due", granularity=TimeGranularity.MONTH)],
-            "measures": [{"formula": "n:sum", "name": "n_total"}],
+            "measures": [{"formula": "sum(n)", "name": "n_total"}],
         })
         await engine.execute([s1, outer], dry_run=True)
 
@@ -504,7 +504,7 @@ class TestResultTypes:
         outer = SlayerQuery.model_validate({
             "source_model": "s1",
             "time_dimensions": [TimeDimension(dimension="m", granularity=TimeGranularity.MONTH)],
-            "measures": [{"formula": "n:sum", "name": "n_total"}],
+            "measures": [{"formula": "sum(n)", "name": "n_total"}],
         })
         with pytest.raises(TimeDimensionColumnError, match="INT"):
             await engine.execute([s1, outer], dry_run=True)

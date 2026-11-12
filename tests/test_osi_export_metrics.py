@@ -1,5 +1,6 @@
 """Ossie export: measures become metrics with Ossie component semantics; portable vs dialect-only expressions."""
 
+import re
 from pathlib import Path
 from typing import Any, LiteralString, cast
 
@@ -10,6 +11,7 @@ from pytest_postgresql import factories
 from sqlglot import exp
 
 from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.errors import SlayerError
 from slayer.core.models import Aggregation, DatasourceConfig, ModelJoin
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._osi_export_fixtures import (
@@ -17,7 +19,7 @@ from tests._osi_export_fixtures import (
 )
 from tests._osi_export_helpers import (
     Env, all_metrics, carries, dataset, export, export_models, expression_sql, field, make_env, metric, reimport,
-    relationships, rows, run_sql, same_sql,
+    relationships, rows, run_sql, same_sql, save,
 )
 from tests._pg_helpers import pg_database
 
@@ -190,15 +192,20 @@ async def test_relationship_and_metric_names_unique_document_wide(env) -> None:
 
 async def test_case_ambiguous_identifier_is_quoted(env) -> None:
     columns = [*orders_columns(), col("Status", DataType.TEXT, '"LegalType"')]
-    result = await export_models(env, customers(),
-                                 orders(columns=columns, measures=[measure("n_types", "count_distinct(Status)")]))
+    await save(env, customers())
+    # Unvalidated save: a grandfathered ``status``/``Status`` collision a validated save would refuse.
+    await YAMLStorage(base_dir=str(env.store)).save_model(
+        orders(columns=columns, measures=[measure("n_types", "count_distinct(Status)")]), _validate=False)
+    result = await export(env)
     tree = sqlglot.parse_one(_sql(metric(dataset(result.document, "orders"), "n_types")), read="snowflake")
     [ident] = [c.this for c in tree.find_all(exp.Column)]
     assert ident.quoted
     assert ident.name == "Status"
-    imported, _ = await reimport(env, result.document)
-    data = await rows(imported, {"source_model": "orders", "measures": ["n_types"]})
-    assert data[0]["orders.n_types"] == 2
+    # Re-import saves a new model, so the collision is no longer grandfathered.
+    with pytest.raises(SlayerError) as raised:
+        await reimport(env, result.document)
+    assert re.search(r"\bstatus\b", str(raised.value))
+    assert re.search(r"\bStatus\b", str(raised.value))
 
 
 # ─────────────────────── portable vs dialect-only fields ───────────────────

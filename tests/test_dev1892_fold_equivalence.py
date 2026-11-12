@@ -1,6 +1,6 @@
 """DEV-1892 task 1.4 — the folded pick path renders every value-source shape
 identically, whether or not a parameter rides alongside: a to-one-path measure
-filter and ``*:count`` keep their executed values (fold regression), a
+filter and ``count(*)`` keep their executed values (fold regression), a
 cross-model to-one derived source carries a weight, and a definition default
 anchored on the owner binds the TARGET column even when the host shares the bare
 name.
@@ -77,10 +77,10 @@ def _vals(resp, measure):
 
 class TestBaseValueFoldRegression:
     async def test_star_count_still_counts_distinct_entities(self, assoc_engine):
-        """The fold's no-value (``*:count``) branch is unchanged."""
+        """The fold's no-value (``count(*)``) branch is unchanged."""
         resp = await assoc_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.*:count", name="nc")]))
+            measures=[ModelMeasure(formula="count(customers.*)", name="nc")]))
         vals = _vals(resp, "orders.nc")
         for status, n in ASSOC_COUNT_BY_STATUS.items():
             assert int(vals[status]) == n
@@ -91,7 +91,7 @@ class TestBaseValueFoldRegression:
         fold."""
         resp = await toone_filter_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.north_spend:sum", name="ns")]))
+            measures=[ModelMeasure(formula="sum(customers.north_spend)", name="ns")]))
         vals = _vals(resp, "orders.ns")
         for status, spend in NORTH_SPEND_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(spend)
@@ -105,7 +105,7 @@ class TestParameterOverSourceShapes:
         resp = await assoc_engine.execute(assoc_q(
             dimensions=["status"],
             measures=[ModelMeasure(
-                formula="customers.regions.pop:weighted_avg(weight=customers.spend)",
+                formula="weighted_avg(customers.regions.pop, weight=customers.spend)",
                 name="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in WAVG_POPVAL_BY_STATUS.items():
@@ -117,7 +117,7 @@ class TestParameterOverSourceShapes:
         owner-anchored default, never the host's per-order value."""
         resp = await shared_default_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.spend:wsum", name="w")]))
+            measures=[ModelMeasure(formula="wsum(customers.spend)", name="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -127,7 +127,7 @@ class TestParameterOverSourceShapes:
         and evaluates once per entity — SUM(spend * spend)."""
         resp = await expr_default_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.spend:wsum2", name="w")]))
+            measures=[ModelMeasure(formula="wsum2(customers.spend)", name="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -138,7 +138,7 @@ class TestParameterOverSourceShapes:
         SUM(spend * pop)."""
         resp = await toone_default_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.spend:wsum3", name="w")]))
+            measures=[ModelMeasure(formula="wsum3(customers.spend)", name="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in ASSOC_WSUM3_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)

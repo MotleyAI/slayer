@@ -19,11 +19,12 @@ from slayer.core.errors import UnknownReferenceError
 from slayer.core.join_walker import walk, walk_cancelling
 from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, StarKey, TimeTruncKey
 from slayer.core.models import ModelJoin, SlayerModel
-from slayer.core.query import TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.core.scope import ModelScope
 from slayer.engine import bind_inputs, param_binding
 from slayer.live_schema import schema_drift
 from slayer.engine.binding import bind_expr, bind_time_dimension
+from slayer.engine.extensions import QueryScope, query_scopes
 from slayer.engine.cardinality.join_safety import attributable_from_root, reroot_from_root
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.core.syntax import parse_expr
@@ -161,7 +162,7 @@ class TestBoundKeysAreCanonical:
             path=("customers", "hr"), model="regions", column_name="bad_pop")
 
     def test_star_key(self) -> None:
-        key = _bind("customers.regions.*:count").value_key
+        key = _bind("count(customers.regions.*)").value_key
         assert isinstance(key, AggregateKey)
         assert key.source == StarKey(path=("customers", "hr"))
 
@@ -254,7 +255,7 @@ class TestNamedEdgeTypedByModelName:
     async def test_result_keys_follow_the_edge_name(self, engine) -> None:
         resp = await engine.execute(orders_q(
             dimensions=["customers.regions.rname"],
-            measures=["customers.regions.pop:max"]))
+            measures=["max(customers.regions.pop)"]))
         assert resp.columns == [RNAME, "orders.customers.hr.pop_max"]
         assert by_key(resp, RNAME, "orders.customers.hr.pop_max") == POP_MAX_BY_RNAME
         assert not broadcast_warnings(resp)
@@ -262,9 +263,9 @@ class TestNamedEdgeTypedByModelName:
     async def test_metadata_matches_the_edge_name_spelling(self, engine) -> None:
         typed = await engine.execute(orders_q(
             dimensions=["customers.regions.rname"],
-            measures=["customers.regions.pop:max"]))
+            measures=["max(customers.regions.pop)"]))
         canon = await engine.execute(orders_q(
-            dimensions=["customers.hr.rname"], measures=["customers.hr.pop:max"]))
+            dimensions=["customers.hr.rname"], measures=["max(customers.hr.pop)"]))
         assert typed.attributes == canon.attributes
         assert typed.attributes.dimensions[RNAME].label == "Region name"
         assert "orders.customers.hr.pop_max" in typed.attributes.measures
@@ -274,7 +275,7 @@ class TestNamedEdgeTypedByModelName:
             time_dimensions=[TimeDimension(
                 dimension="customers.regions.founded_at",
                 granularity=TimeGranularity.YEAR)],
-            measures=["amount:sum"],
+            measures=["sum(amount)"],
             order=[{"column": "customers.regions.founded_at", "direction": "asc"}])
         resp = await engine.execute(query)
         key = "orders.customers.hr.founded_at"
@@ -286,9 +287,9 @@ class TestNamedEdgeTypedByModelName:
 
 class TestMixedSpellingsJoinOnce:
     async def test_filter_and_dimension_share_one_join(self, engine) -> None:
-        mixed = orders_q(dimensions=["customers.hr.rname"], measures=["amount:sum"],
+        mixed = orders_q(dimensions=["customers.hr.rname"], measures=["sum(amount)"],
                          filters=["customers.regions.rname = 'North'"])
-        canon = orders_q(dimensions=["customers.hr.rname"], measures=["amount:sum"],
+        canon = orders_q(dimensions=["customers.hr.rname"], measures=["sum(amount)"],
                          filters=["customers.hr.rname = 'North'"])
         sql = await _dry(engine, mixed)
         assert table_count(sql, "regions") == 1
@@ -297,20 +298,20 @@ class TestMixedSpellingsJoinOnce:
         assert by_key(resp, RNAME, "orders.amount_sum") == {"North": 100.0}
 
     async def test_order_by_the_other_spelling(self, engine) -> None:
-        mixed = orders_q(dimensions=["customers.hr.rname"], measures=["amount:sum"],
+        mixed = orders_q(dimensions=["customers.hr.rname"], measures=["sum(amount)"],
                          order=[{"column": "customers.regions.rname",
                                  "direction": "desc"}])
-        canon = orders_q(dimensions=["customers.hr.rname"], measures=["amount:sum"],
+        canon = orders_q(dimensions=["customers.hr.rname"], measures=["sum(amount)"],
                          order=[{"column": "customers.hr.rname", "direction": "desc"}])
         assert await _dry(engine, mixed) == await _dry(engine, canon)
 
     async def test_aggregate_filter_interns_to_the_selected_slot(self, engine) -> None:
         mixed = orders_q(dimensions=["customers.hr.rname"],
-                         measures=["customers.hr.pop:max"],
-                         filters=["customers.regions.pop:max > 150"])
+                         measures=["max(customers.hr.pop)"],
+                         filters=["max(customers.regions.pop) > 150"])
         canon = orders_q(dimensions=["customers.hr.rname"],
-                         measures=["customers.hr.pop:max"],
-                         filters=["customers.hr.pop:max > 150"])
+                         measures=["max(customers.hr.pop)"],
+                         filters=["max(customers.hr.pop) > 150"])
         assert await _dry(engine, mixed) == await _dry(engine, canon)
         resp = await engine.execute(mixed)
         assert by_key(resp, RNAME, "orders.customers.hr.pop_max") == {"South": 200.0}
@@ -318,9 +319,9 @@ class TestMixedSpellingsJoinOnce:
     async def test_functional_order_on_a_time_dimension(self, engine) -> None:
         td = [TimeDimension(dimension="customers.hr.founded_at",
                             granularity=TimeGranularity.YEAR)]
-        mixed = orders_q(time_dimensions=td, measures=["amount:sum"], order=[
+        mixed = orders_q(time_dimensions=td, measures=["sum(amount)"], order=[
             {"column": "max(customers.regions.founded_at)", "direction": "desc"}])
-        canon = orders_q(time_dimensions=td, measures=["amount:sum"], order=[
+        canon = orders_q(time_dimensions=td, measures=["sum(amount)"], order=[
             {"column": "max(customers.hr.founded_at)", "direction": "desc"}])
         assert await _dry(engine, mixed) == await _dry(engine, canon)
         assert not broadcast_warnings(await engine.execute(mixed))
@@ -329,7 +330,7 @@ class TestMixedSpellingsJoinOnce:
 class TestAggregateGroupedThroughTheOtherSpelling:
     async def test_measure_is_per_region(self, engine) -> None:
         resp = await engine.execute(orders_q(
-            dimensions=["customers.hr.rname"], measures=["customers.regions.pop:max"]))
+            dimensions=["customers.hr.rname"], measures=["max(customers.regions.pop)"]))
         assert by_key(resp, RNAME, "orders.customers.hr.pop_max") == POP_MAX_BY_RNAME
         assert not broadcast_warnings(resp)
 
@@ -338,9 +339,9 @@ class TestReverseHopRouteUnderDivergentSpelling:
     async def test_reverse_suffix_determines(self, engine) -> None:
         key = "orders.customers.hr.region_events.value_max"
         mixed = orders_q(dimensions=["customers.regions.rname"],
-                         measures=["customers.hr.region_events.value:max"])
+                         measures=["max(customers.hr.region_events.value)"])
         canon = orders_q(dimensions=["customers.hr.rname"],
-                         measures=["customers.hr.region_events.value:max"])
+                         measures=["max(customers.hr.region_events.value)"])
         resp = await engine.execute(mixed)
         assert by_key(resp, RNAME, key) == EVENT_MAX_BY_RNAME
         assert not broadcast_warnings(resp)
@@ -354,8 +355,8 @@ class TestTwoSpellingsEqualADuplicate:
         assert await _outcome(engine, mixed) == await _outcome(engine, dup)
 
     async def test_parity_for_a_measure(self, engine) -> None:
-        mixed = orders_q(measures=["customers.hr.pop:max", "customers.regions.pop:max"])
-        dup = orders_q(measures=["customers.hr.pop:max", "customers.hr.pop:max"])
+        mixed = orders_q(measures=["max(customers.hr.pop)", "max(customers.regions.pop)"])
+        dup = orders_q(measures=["max(customers.hr.pop)", "max(customers.hr.pop)"])
         assert await _outcome(engine, mixed) == await _outcome(engine, dup)
 
 
@@ -373,7 +374,7 @@ class TestModelSqlSpelledByModelName:
         assert orders is not None
         orders.filters = [*orders.filters, "customers.regions.pop > 0"]
         await engine.storage.save_model(orders)
-        query = orders_q(dimensions=["customers.hr.rname"], measures=["amount:sum"])
+        query = orders_q(dimensions=["customers.hr.rname"], measures=["sum(amount)"])
         sql = await _dry(engine, query)
         # Once inside orders' filtered dataset, once for the dimension.
         assert table_count(sql, "regions") == 2
@@ -383,7 +384,7 @@ class TestModelSqlSpelledByModelName:
 
     async def test_column_filter_joins_once(self, engine) -> None:
         query = orders_q(dimensions=["customers.hr.rname"],
-                         measures=["north_amount:sum"])
+                         measures=["sum(north_amount)"])
         sql = await _dry(engine, query)
         assert "customers__regions" not in sql
         resp = await engine.execute(query)
@@ -404,9 +405,9 @@ class TestModelSqlSpelledByModelName:
 class TestDefinitionDefaultSpelledByModelName:
     async def test_default_equals_the_edge_name_spelling(self, engine) -> None:
         default = orders_q(dimensions=["customers.hr.rname"],
-                           measures=[{"formula": "amount:wpop", "name": "w"}])
+                           measures=[{"formula": "wpop(amount)", "name": "w"}])
         explicit = orders_q(dimensions=["customers.hr.rname"], measures=[
-            {"formula": "amount:wpop(weight=customers.hr.pop)", "name": "w"}])
+            {"formula": "wpop(amount, weight=customers.hr.pop)", "name": "w"}])
         resp = await engine.execute(default)
         assert by_key(resp, RNAME, "orders.w") == WPOP_BY_RNAME
         assert not broadcast_warnings(resp)
@@ -424,7 +425,7 @@ class TestDefinitionDefaultSpelledByModelName:
 class TestAutoRoutedShortForm:
     async def test_result_key_is_canonical(self, engine) -> None:
         resp = await engine.execute(orders_q(
-            dimensions=["regions.rname"], measures=["amount:sum"]))
+            dimensions=["regions.rname"], measures=["sum(amount)"]))
         assert resp.columns == [RNAME, "orders.amount_sum"]
         assert by_key(resp, RNAME, "orders.amount_sum") == AMOUNT_BY_RNAME
 
@@ -465,11 +466,11 @@ class TestSavedMeasures:
 class TestSpellingTwinsShareOneCachedResult:
     async def test_one_db_execution(self, engine, monkeypatch) -> None:
         first = await engine.execute(orders_q(
-            dimensions=["customers.regions.rname"], measures=["amount:sum"]),
+            dimensions=["customers.regions.rname"], measures=["sum(amount)"]),
             cache=True)
         calls = execution_spy(monkeypatch)
         second = await engine.execute(orders_q(
-            dimensions=["customers.hr.rname"], measures=["amount:sum"]), cache=True)
+            dimensions=["customers.hr.rname"], measures=["sum(amount)"]), cache=True)
         assert calls == []
         assert engine.cache_size == 1
         assert first.columns == second.columns
@@ -492,23 +493,26 @@ class TestCanonicalSpellingsUnchanged:
             await engine.execute(query)
 
 
+
+def _stage_scope(stage: SlayerQuery, models_by_name: dict) -> QueryScope:
+    return query_scopes([stage], models_by_ds={"ds": models_by_name}, data_source="ds")[0][0]
+
+
 class TestSchemaDriftAttribution:
     @pytest.mark.parametrize("ref", [
         "customers.regions.rname", "customers.hr.rname", "regions.rname"])
     def test_every_spelling_attributes_to_regions(self, ref) -> None:
         M = _mbn()
-        graph = schema_drift._build_stage_graph(  # noqa: SLF001
-            stage=orders_q(), stage_source_name="orders", models_by_name=M)
+        graph = _stage_scope(orders_q(), M)
         assert schema_drift._attribute_ref_to_base(  # noqa: SLF001
-            ref=ref, base_name="regions", graph=graph) == "rname"
+            ref=ref, base_name="regions", scope=graph) == "rname"
 
     @pytest.mark.parametrize("ref", ["customers.regions.rname", "regions.rname"])
     def test_ambiguous_attributes_to_nothing(self, ref) -> None:
         M = _mbn(_parallel_models())
-        graph = schema_drift._build_stage_graph(  # noqa: SLF001
-            stage=orders_q(), stage_source_name="orders", models_by_name=M)
+        graph = _stage_scope(orders_q(), M)
         assert schema_drift._attribute_ref_to_base(  # noqa: SLF001
-            ref=ref, base_name="regions", graph=graph) is None
+            ref=ref, base_name="regions", scope=graph) is None
 
 
 class TestDeterminationRouteOnCanonicalPaths:

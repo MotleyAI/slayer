@@ -42,13 +42,13 @@ def _q(**kw) -> SlayerQuery:
     return SlayerQuery(**kw)
 
 
-BAND = "CASE WHEN amount:sum(partition_by=city) > 5000 THEN 1 ELSE 0 END"
+BAND = "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END"
 
 
 def _flagship(**extra) -> SlayerQuery:
     return _q(
         dimensions=["region", {"expression": BAND, "name": "band"}],
-        measures=[ModelMeasure(formula="amount:sum", name="band_total")],
+        measures=[ModelMeasure(formula="sum(amount)", name="band_total")],
         **extra,
     )
 
@@ -95,11 +95,11 @@ class TestAggregateOncePerGroup:
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
             measures=[
-                ModelMeasure(formula="amount:sum", name="s"),
-                ModelMeasure(formula="*:count", name="n"),
-                ModelMeasure(formula="amount:avg", name="a"),
-                ModelMeasure(formula="ok_amount:sum", name="ok"),
-                ModelMeasure(formula="customer_id:count_distinct", name="cd"),
+                ModelMeasure(formula="sum(amount)", name="s"),
+                ModelMeasure(formula="count(*)", name="n"),
+                ModelMeasure(formula="avg(amount)", name="a"),
+                ModelMeasure(formula="sum(ok_amount)", name="ok"),
+                ModelMeasure(formula="count_distinct(customer_id)", name="cd"),
             ],
         ))
         by = {(r["orders.region"], int(r["orders.band"])): r for r in resp.data}
@@ -113,7 +113,7 @@ class TestAggregateOncePerGroup:
     async def test_row_count_reconciles_across_bands(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
-            measures=[ModelMeasure(formula="*:count", name="n")],
+            measures=[ModelMeasure(formula="count(*)", name="n")],
         ))
         per_region: dict = {}
         for r in resp.data:
@@ -128,11 +128,11 @@ class TestAggregateOncePerGroup:
 # --------------------------------------------------------------------------- #
 class TestCrossModelPartition:
     async def test_partition_by_joined_column(self, exec_engine) -> None:
-        band = ("CASE WHEN amount:sum(partition_by=customers.region_id) > 10000 "
+        band = ("CASE WHEN sum(amount, partition_by=customers.region_id) > 10000 "
                 "THEN 1 ELSE 0 END")
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         by = {(r["orders.region"], int(r["orders.band"])): float(r["orders.s"])
               for r in resp.data}
@@ -145,14 +145,15 @@ class TestExtensionColumnPartition:
     async def test_partition_aggregate_sees_extension_column(self, exec_engine) -> None:
         # amount2 = 2*amount is added at query time; the synthesized aggregate
         # stage must resolve it. Doubling preserves the >5000 banding.
-        band = "CASE WHEN amount2:sum(partition_by=city) > 10000 THEN 1 ELSE 0 END"
+        band = "CASE WHEN sum(amount2, partition_by=city) > 10000 THEN 1 ELSE 0 END"
         resp = await exec_engine.execute(SlayerQuery(
-            source_model=ModelExtension.model_validate({
+            source_model="orders",
+            extensions=[ModelExtension.model_validate({
                 "source_name": "orders",
                 "columns": [{"name": "amount2", "sql": "amount * 2", "type": "DOUBLE"}],
-            }),
+            })],
             dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         by = {(r["orders.region"], int(r["orders.band"])): float(r["orders.s"])
               for r in resp.data}
@@ -204,10 +205,10 @@ class TestGrandTotalPartitionKey:
     async def test_partition_by_empty_bands_on_grand_total(self, exec_engine) -> None:
         # Grand total 25000 > 20000 -> every city bands to 1 (a single-row
         # cross join). Group (region, 1) == region totals.
-        band = "CASE WHEN amount:sum(partition_by=[]) > 20000 THEN 1 ELSE 0 END"
+        band = "CASE WHEN sum(amount, partition_by=[]) > 20000 THEN 1 ELSE 0 END"
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         by = {(r["orders.region"], int(r["orders.band"])): float(r["orders.s"])
               for r in resp.data}
@@ -219,11 +220,11 @@ class TestTimeBucketPartitionKey:
     async def test_partition_by_month_bucket(self, exec_engine) -> None:
         # Band by whether the month's total (across regions) crosses 5000:
         # Jan 9200 -> 1, Feb 14000 -> 1, Mar 1800 -> 0.
-        band = "CASE WHEN amount:sum(partition_by=ordered_at) > 5000 THEN 1 ELSE 0 END"
+        band = "CASE WHEN sum(amount, partition_by=ordered_at) > 5000 THEN 1 ELSE 0 END"
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"expression": band, "name": "band"}],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         by = {(r["orders.region"], month_key(r["orders.ordered_at"]),
                int(r["orders.band"])): float(r["orders.s"]) for r in resp.data}
@@ -245,11 +246,11 @@ class TestMultipleAggregatesInOneDimension:
     async def test_two_distinct_partition_sets(self, exec_engine) -> None:
         # band = 1 iff the city total > 5000 AND the region total > 10000.
         # city>5000: Paris, Berlin, NULL ; region>10000: EU only.
-        band = ("CASE WHEN amount:sum(partition_by=city) > 5000 "
-                "AND amount:sum(partition_by=region) > 10000 THEN 1 ELSE 0 END")
+        band = ("CASE WHEN sum(amount, partition_by=city) > 5000 "
+                "AND sum(amount, partition_by=region) > 10000 THEN 1 ELSE 0 END")
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         by = {(r["orders.region"], int(r["orders.band"])): float(r["orders.s"])
               for r in resp.data}
@@ -272,16 +273,16 @@ class TestSiblingStageSource:
         stage1 = SlayerQuery(
             name="per_city", source_model="orders",
             dimensions=["city", "region"],
-            measures=[ModelMeasure(formula="amount:sum", name="amt")],
+            measures=[ModelMeasure(formula="sum(amount)", name="amt")],
         )
         stage2 = SlayerQuery(
             source_model="per_city",
             dimensions=[
                 "region",
-                {"expression": "CASE WHEN amt:sum(partition_by=city) > 5000 "
+                {"expression": "CASE WHEN sum(amt, partition_by=city) > 5000 "
                                "THEN 1 ELSE 0 END", "name": "band"},
             ],
-            measures=[ModelMeasure(formula="amt:sum", name="band_total")],
+            measures=[ModelMeasure(formula="sum(amt)", name="band_total")],
         )
         resp = await exec_engine.execute([stage1, stage2])
         got = {(_suffix(r, ".region"), int(_suffix(r, ".band")),
@@ -298,7 +299,7 @@ class TestCardinalityInvariant:
         banded = await exec_engine.execute(_flagship())
         plain = await exec_engine.execute(_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:sum", name="band_total")],
+            measures=[ModelMeasure(formula="sum(amount)", name="band_total")],
         ))
         plain_by = {r["orders.region"]: float(r["orders.band_total"]) for r in plain.data}
         summed: dict = {}

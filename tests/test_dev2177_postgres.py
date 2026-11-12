@@ -5,13 +5,11 @@ Spec: aggregations/boolean-inputs; queries/mixed-type-coercion.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 import pytest
 
-from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2177_fixtures import (
     BOOLEAN_PARAMETER_CHECKS,
     check_concat_branches_rejected,
@@ -19,6 +17,7 @@ from tests._dev2177_fixtures import (
     dev2177_models,
 )
 from tests._mcp_idiom_fixtures import idiom_seed_statements
+from tests._pg_helpers import client_datasource, pg_query_engine
 
 pytest.importorskip("pytest_postgresql")
 
@@ -29,20 +28,15 @@ postgresql = factories.postgresql("postgresql_proc")
 
 
 @pytest.fixture
-async def pg_engine(postgresql, tmp_path) -> SlayerQueryEngine:
+async def pg_engine(postgresql, tmp_path) -> AsyncIterator[SlayerQueryEngine]:
     cur = postgresql.cursor()
     for stmt in idiom_seed_statements():
         cur.execute(stmt)
     postgresql.commit()
-    storage = YAMLStorage(base_dir=str(tmp_path))
-    info = postgresql.info
-    await storage.save_datasource(DatasourceConfig(
-        name="pg", type="postgres", host=info.host, port=info.port,
-        database=info.dbname, username=info.user, password="",
-    ))
-    for model in dev2177_models(data_source="pg"):
-        await storage.save_model(model)
-    return SlayerQueryEngine(storage=storage)
+    async with pg_query_engine(
+        client_datasource(postgresql.info), base_dir=str(tmp_path), models=dev2177_models(data_source="pg"),
+    ) as engine:
+        yield engine
 
 
 @pytest.mark.parametrize("check", BOOLEAN_PARAMETER_CHECKS, ids=[c.__name__ for c in BOOLEAN_PARAMETER_CHECKS])

@@ -7,7 +7,7 @@ Guarantees that a store written by any released SLayer version still loads, re-s
 
 ### Requirement: A released store opens with its release's results
 
-A store written by SLayer 0.10.2 SHALL load completely when opened by the current version, both with its datasource present and with the datasource entry absent. The store SHALL hold every model and memory shape that release could write: ingested models, a Cube import whose foreign key is not a dimension, a multi-stage query-backed model ordering by `rank(...)`, an aggregation reading a quoted parameter, legacy time literals, and a memory with a query. With the datasource present, every model SHALL re-save and the datasource SHALL re-ingest. Every query the release could run SHALL return the rows the release returned.
+A store written by SLayer 0.10.2, and a store written by SLayer 1.8.2, SHALL each load completely when opened by the current version, both with its datasource present and with the datasource entry absent. The 0.10.2 store SHALL hold every model and memory shape that release could write: ingested models, a Cube import whose foreign key is not a dimension, a multi-stage query-backed model ordering by `rank(...)`, an aggregation reading a quoted parameter, legacy time literals, and a memory with a query. The 1.8.2 store SHALL hold the list-column shapes that release could write: ingested native list columns, an `sql`-mode list column whose undeclared `element_type` 1.8.2 stored as `UNKNOWN`, a sole primary key allowing `collect`, stored measures and a query-backed model using `collect`, the list functions and list elements, and a memory with such a query. With the datasource present, every model SHALL re-save and the datasource SHALL re-ingest. Every query the release could run SHALL return the rows the release returned.
 
 #### Scenario: The 0.10.2 corpus opens with its datasource present
 
@@ -15,6 +15,16 @@ A store written by SLayer 0.10.2 SHALL load completely when opened by the curren
 - **THEN** every model and memory loads, every model re-saves, the datasource re-ingests, and every recorded query returns the rows recorded from 0.10.2
 
 #### Scenario: The 0.10.2 corpus opens offline
+
+- **WHEN** the same store is opened with its datasource entry removed
+- **THEN** every model and memory loads, without any connection being attempted
+
+#### Scenario: The 1.8.2 corpus opens with its datasource present
+
+- **WHEN** the committed store written by `motley-slayer==1.8.2`, on both the YAML and the SQLite store, is opened with its DuckDB datasource present
+- **THEN** every model and memory loads, every model re-saves, the datasource re-ingests, and every recorded query returns the rows recorded from 1.8.2
+
+#### Scenario: The 1.8.2 corpus opens offline
 
 - **WHEN** the same store is opened with its datasource entry removed
 - **THEN** every model and memory loads, without any connection being attempted
@@ -220,7 +230,7 @@ On load, every time dimension of a stored model's `source_queries`, a saved quer
 
 ### Requirement: Library growth never invalidates a stored artefact
 
-Every name the Mode-B library reserves — scalar and list functions, function spellings, date-part aliases, transforms, built-in granularities and built-in aggregations — SHALL be pinned, so a newly reserved name is only accepted when it is a function or function spelling (which a model's own definition shadows) or when a stored-upgrade migration covers stored documents already using it. A stored model whose custom aggregation takes any reserved function or spelling name SHALL load and answer its aggregation, and a stored datasource whose custom granularity takes any reserved name SHALL load after migration and answer through the renamed granularity.
+Every name the Mode-B library reserves — scalar and list functions, function spellings, date-part aliases, transforms, built-in granularities, built-in aggregations, and names reserved with no meaning (`agg`) — SHALL be pinned, so a newly reserved name is only accepted when it is a function or function spelling (which a model's own definition shadows) or when a stored-upgrade migration covers stored documents already using it. A stored model whose custom aggregation takes any reserved function or spelling name SHALL load and answer its aggregation, and a stored datasource whose custom granularity takes any reserved name SHALL load after migration and answer through the renamed granularity.
 
 #### Scenario: Every reserved function name as a stored aggregation
 
@@ -239,7 +249,7 @@ Every name the Mode-B library reserves — scalar and list functions, function s
 
 ### Requirement: Stored granularities colliding with a library name are renamed
 
-On every load, whatever the document's version, a stored datasource custom granularity whose name case-insensitively matches any reserved library name SHALL be renamed to `<name>_granularity`, or `<name>_granularity_<n>` with the smallest `n` ≥ 2 that is free, and every reference to it in that datasource's stored models, saved queries, query-backed models and memories SHALL be rewritten to the new name in every position a granularity name is accepted. Each rename SHALL be logged as a warning naming the datasource and both names. The rename SHALL be a function of the stored datasource alone, and dependent documents SHALL be persisted before the datasource, so a load interrupted at any point completes on the next load. A client saving a custom granularity with a reserved name SHALL still be refused.
+On every load, whatever the document's version, a stored datasource custom granularity whose name case-insensitively matches any reserved library name SHALL be renamed to `<name>_granularity`, or `<name>_granularity_<n>` with the smallest `n` ≥ 2 that is free, and every reference to it in that datasource's stored models, saved queries, query-backed models and memories SHALL be rewritten to the new name in every position a granularity name is accepted. Each rename SHALL be logged as a warning naming the datasource and both names. The rename SHALL be a function of the stored datasource alone, and dependent documents SHALL be persisted before the datasource, so a load interrupted at any point completes on the next load. This SHALL hold on both the YAML and the SQLite store. A client saving a custom granularity with a reserved name SHALL still be refused.
 
 #### Scenario: Granularity named left
 
@@ -260,6 +270,11 @@ On every load, whatever the document's version, a stored datasource custom granu
 
 - **WHEN** a load is interrupted after some dependent documents were persisted with the new name and before the datasource was
 - **THEN** the next load renames the datasource's granularity to the same name and rewrites the remaining documents, leaving one consistent store
+
+#### Scenario: A rename converges
+
+- **WHEN** a store whose granularity `contains` was renamed is loaded again, on the YAML and on the SQLite store
+- **THEN** no document changes and no rename warning is logged
 
 #### Scenario: A granularity colliding with a later library addition
 
@@ -298,3 +313,117 @@ Every persisted model, saved query, datasource and memory, in every storage back
 
 - **WHEN** a model, a saved query, a datasource and a memory are saved to each backend
 - **THEN** no stored value is `null`
+
+### Requirement: Stored colon spellings are upgraded to the functional spelling
+
+On load, every Mode-B surface of a stored model, saved query or memory written before this change — `ModelMeasure.formula`, and a stored query's measures, dimensions, computed-dimension expressions, time-dimension columns, order columns and expressions, `main_time_dimension` and filters, recursively through stored `source_queries`, saved queries and inline `ModelExtension.measures` — SHALL have every colon span rewritten to its twin: `date_trunc('<name>', <source>)` when `<name>` is a built-in granularity, and `<name>(<source>[, <args>])` otherwise, with the source and arguments as written and colon spans inside the arguments rewritten too. Everything outside a colon span SHALL stay byte-identical, and a colon inside a string literal, a quoted identifier or a `::` cast SHALL be untouched. A stored order item whose expression is rewritten SHALL load exactly as the same order key written fresh in the functional spelling. The document SHALL return the rows and result keys it returned before; a persisted computed-dimension name SHALL be kept and keep its meaning. A datasource granularity rename SHALL apply before the rewrite. Stored text that cannot otherwise be parsed SHALL be left unchanged, with a warning naming the document and the field. Mode-A surfaces SHALL NOT be rewritten, and a client query without a version SHALL NOT be rewritten.
+
+#### Scenario: Aggregations, stars and parameters
+
+- **WHEN** a stored model has the measures `amount:sum`, `*:count`, `customers.*:count`, `customers.regions.population:sum`, `price:percentile(p=0.9)` and `balance:last(updated_at)`
+- **THEN** they load as `sum(amount)`, `count(*)`, `count(customers.*)`, `sum(customers.regions.population)`, `percentile(price, p=0.9)` and `last(balance, updated_at)` and return the values they returned before
+
+#### Scenario: Colon spans inside larger text
+
+- **WHEN** a stored query has the measure `rank(rev:sum)`, the filter `amount:sum > 100 AND note = 'a:sum'` and the measure `sum(amount::INT) / *:count`
+- **THEN** they load as `rank(sum(rev))`, `sum(amount) > 100 AND note = 'a:sum'` and `sum(amount::INT) / count(*)`, every other byte unchanged
+
+#### Scenario: Order items
+
+- **WHEN** a stored query orders by the item persisted as `{column: {name: amount_sum}, raw_formula: "amount:sum"}` descending, and by `*:count`
+- **THEN** it loads exactly as a fresh query ordering by `sum(amount)` descending and by `count(*)`, and returns the rows in the order it returned them before
+
+#### Scenario: Granularity spans
+
+- **WHEN** a stored query orders by `created_at:month` and a stored computed dimension buckets `created_at:fiscal_quarter` on a datasource defining `fiscal_quarter`
+- **THEN** they load as `date_trunc('month', created_at)` and `fiscal_quarter(created_at)` and return the rows they returned before
+
+#### Scenario: A granularity renamed on load
+
+- **WHEN** a stored datasource defines the granularity `left`, and a stored model's source query and a memory's query bucket by `created_at:left`
+- **THEN** after load they read `left_granularity(created_at)` and return the rows they returned before
+
+#### Scenario: Result keys and computed-dimension names are kept
+
+- **WHEN** a stored query has the unnamed measures `amount:sum / *:count` and a measure whose derived key is long enough to carry a hash, and a computed dimension persisted with its auto-name
+- **THEN** after load the result keys are the ones returned before, and the computed dimension keeps its name and is still treated as auto-named
+
+#### Scenario: Memories
+
+- **WHEN** a memory stored as YAML frontmatter or as a SQLite row bundles a query measuring `amount:sum`, and it is loaded twice
+- **THEN** both loads give `sum(amount)` and the query's rows
+
+#### Scenario: The released corpus returns its results
+
+- **WHEN** the committed store written by `motley-slayer==0.10.2` is opened
+- **THEN** every colon formula in it loads in the functional spelling and every recorded query returns the rows and result keys recorded from 0.10.2
+
+#### Scenario: Client queries are refused, not rewritten
+
+- **WHEN** a client sends a query without a version measuring `amount:sum`
+- **THEN** it is not rewritten and fails with the colon-spelling error
+
+### Requirement: Stored bucket calls are upgraded to date_trunc
+On load, a stored model, saved query or memory written before this change SHALL have every Mode-B call `<g>(x)` whose callee names a built-in granularity, or a custom granularity of the datasource it belongs to, rewritten to `date_trunc('<g>', x)` — in query measures, filters, dimensions, time dimensions, order keys and `main_time_dimension`, in saved-measure formulas, and in every nested saved query, inline source model, model extension and query-backed model — with the rest of the text byte-identical. Mode-A text (`Column.sql`, `sql_table`, model `filters`, custom-aggregation formulas and parameter defaults), structured time dimensions, transform units and `Column.granularity` SHALL be untouched. A call whose callee is a custom aggregation of the owning model and not a granularity SHALL be untouched. Every upgraded query SHALL return the rows and result keys it returned before. The custom-granularity rewrite SHALL use the datasource's settled granularity names (after any library-collision rename) and SHALL complete on the next load when a load is interrupted.
+
+#### Scenario: Saved query bucketing by month
+- **WHEN** a stored model's saved query has the dimension `month(created_at)`, the filter `year(created_at) >= '2024'` and the order key `month(created_at)`
+- **THEN** after load they read `date_trunc('month', created_at)`, `date_trunc('year', created_at) >= '2024'` and `date_trunc('month', created_at)`, and the query returns the rows and result keys it returned before
+
+#### Scenario: Custom granularity in a memory
+- **WHEN** a stored datasource defines `fiscal_year` and a stored memory's query buckets `fiscal_year(order_date)`
+- **THEN** after load the memory's query reads `date_trunc('fiscal_year', order_date)` and returns its earlier rows
+
+#### Scenario: Custom aggregation is not a bucket
+- **WHEN** a stored model defines the custom aggregation `fiscal_total` and a saved measure `fiscal_total(amount)`
+- **THEN** the measure loads unchanged
+
+#### Scenario: Mode-A text is untouched
+- **WHEN** a stored column's `sql` is `month(created_at)` and a model filter is `year(created_at) > 2020`
+- **THEN** both load unchanged
+
+### Requirement: Stored deprecated spellings are upgraded
+On load, a stored model, saved query or memory written before this change SHALL have each deprecated Mode-B spelling (`queries/expression-grammar` › Legacy spellings keep their meaning) replaced by its canonical twin in every Mode-B field and nested document, with the rest of the text byte-identical and no `FutureWarning`. The colon aggregation spelling is outside this requirement.
+
+#### Scenario: Python spellings in a saved measure
+- **WHEN** a stored saved measure is `sum(iif(status == 'paid' and region is not None, amount, None))`
+- **THEN** it loads as `sum(iif(status = 'paid' and region IS NOT NULL, amount, NULL))` and returns the same value
+
+#### Scenario: Method call and list after IN in a saved query
+- **WHEN** a stored saved query has the measure `order_items.sum(price)` and the filter `region in ['EU', 'US']`
+- **THEN** they load as `sum(order_items.price)` and `region in ('EU', 'US')`
+
+### Requirement: Stored agg aggregations are renamed
+On load, a stored model written before this change whose custom aggregation is named `agg` in any case SHALL have it renamed to `agg_aggregation`, and every Mode-B call `agg(` in any case in that model and in the saved queries, query-backed models and memories of the same store SHALL be rewritten to `agg_aggregation(`, with one logged warning naming the model and both names. When the model already defines `agg_aggregation`, the aggregation SHALL be left unrenamed with a logged warning, and calls to it fail per `models/aggregation-names` › agg is reserved for measure evaluation.
+
+#### Scenario: Aggregation named agg
+- **WHEN** a stored model defines the aggregation `agg` with formula `SUM({value}) * 2` and a saved query of the store measures `agg(amount)`
+- **THEN** after load the aggregation is `agg_aggregation`, the saved query reads `agg_aggregation(amount)`, a warning names the rename, and the query returns twice the sum as before
+
+#### Scenario: The new name is taken
+- **WHEN** a stored model defines both `agg` and `agg_aggregation`
+- **THEN** it loads with a warning, `agg` unrenamed, and a query calling `agg(amount)` fails with the reserved-name error
+
+### Requirement: Stored root extensions move to query extensions
+
+On load, every stored query written before this change whose `source_model` is an extension object SHALL become a query with `source_model` naming the extension's base model and that extension as its one `extensions` entry. This SHALL apply recursively through stored `source_queries`, saved queries and memories' queries, including a query nested in a document whose own version is current.
+- The upgrade SHALL emit no deprecation warning and SHALL lose no column, measure or join.
+- Repeated loads SHALL change nothing further.
+- The upgraded query SHALL return the rows it returned before.
+- A save SHALL write the upgraded form.
+
+#### Scenario: A stored query-backed model's stage
+- **WHEN** a stored query-backed model has a stage with `source_model` = `{"source_name": "orders", "joins": [...]}`
+- **THEN** it loads with `source_model` `orders` and one extension of `orders` carrying those joins, without a deprecation warning, and returns the rows recorded before the upgrade
+
+#### Scenario: A memory's query in a current-version memory
+- **WHEN** a memory at the current memory version holds a query marked with a version before this change whose `source_model` is an extension object
+- **THEN** the query loads in the upgraded form, without a deprecation warning, with its extension intact
+
+#### Scenario: An unversioned stored memory query
+- **WHEN** a stored memory without a version holds a query whose `source_model` is an extension object
+- **THEN** it loads in the upgraded form, without a deprecation warning
+
+#### Scenario: Upgrade is idempotent
+- **WHEN** an upgraded document is saved and loaded again
+- **THEN** it is unchanged

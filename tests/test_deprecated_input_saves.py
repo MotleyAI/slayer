@@ -178,7 +178,7 @@ class TestMcpModelSave:
 
 class TestMemorySave:
     @staticmethod
-    async def _stored_query_mode(store: AccessStore, memory_id: str) -> str:
+    async def _stored_query_mode(store: AccessStore, memory_id: str) -> str | None:
         memory = await store.storage.get_memory(memory_id)
         assert memory.query is not None
         return memory.query.to_many_handling

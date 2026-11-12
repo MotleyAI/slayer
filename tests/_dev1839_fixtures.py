@@ -66,25 +66,25 @@ dev1839_models = dev1824_models
 # --------------------------------------------------------------------------- #
 # Dimension expressions under test.
 # --------------------------------------------------------------------------- #
-MIXED_RANK = "rank(amount:sum(partition_by=region) - amount:sum(partition_by=city), direction='desc')"
-KEYLESS_RANK = "rank(amount:sum(partition_by=region) / amount:sum(partition_by=[]), direction='desc')"
+MIXED_RANK = "rank(sum(amount, partition_by=region) - sum(amount, partition_by=city), direction='desc')"
+KEYLESS_RANK = "rank(sum(amount, partition_by=region) / sum(amount, partition_by=[]), direction='desc')"
 SUBSET_RANK = (
-    "rank(amount:sum(partition_by=[region, city]) - amount:sum(partition_by=region), direction='desc')"
+    "rank(sum(amount, partition_by=[region, city]) - sum(amount, partition_by=region), direction='desc')"
 )
 NESTED_RANK = (
-    "rank(cumsum(amount:sum(partition_by=[region, ordered_at])) - "
-    "amount:sum(partition_by=city), direction='desc')"
+    "rank(cumsum(sum(amount, partition_by=[region, ordered_at])) - "
+    "sum(amount, partition_by=city), direction='desc')"
 )
 EXPLICIT_PART_RANK = (
-    "rank(amount:sum(partition_by=region) - amount:sum(partition_by=city), "
+    "rank(sum(amount, partition_by=region) - sum(amount, partition_by=city), "
     "partition_by=region, direction='desc')"
 )
 SAMEGRAIN_RANK = (
-    "rank(amount:sum(partition_by=region) + ok_amount:sum(partition_by=region), direction='desc')"
+    "rank(sum(amount, partition_by=region) + sum(ok_amount, partition_by=region), direction='desc')"
 )
-MEASURE_DIFF = "amount:sum(partition_by=region) - amount:sum(partition_by=city)"
+MEASURE_DIFF = "sum(amount, partition_by=region) - sum(amount, partition_by=city)"
 SAMEGRAIN_DIFF = (
-    "amount:sum(partition_by=region) - ok_amount:sum(partition_by=region)"
+    "sum(amount, partition_by=region) - sum(ok_amount, partition_by=region)"
 )
 
 # --------------------------------------------------------------------------- #

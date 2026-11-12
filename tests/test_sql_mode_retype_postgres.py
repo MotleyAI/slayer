@@ -3,11 +3,8 @@
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasourceConfig
-from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.database import engine_factory
-from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2120_fixtures import contractors_statements
+from tests._pg_helpers import client_datasource, pg_query_engine
 from tests._sql_mode_retype_fixtures import (
     check_query_carries_finding,
     check_reingest_retypes,
@@ -32,15 +29,9 @@ async def pg(postgresql, tmp_path):
     # A list function sqlglot cannot type.
     cur.execute("CREATE FUNCTION same_list(a INTEGER[]) RETURNS INTEGER[] LANGUAGE SQL AS 'SELECT a'")
     postgresql.commit()
-    info = postgresql.info
-    ds = DatasourceConfig(name="pg", type="postgres", host=info.host, port=info.port, database=info.dbname,
-                          username=info.user, password="")
-    storage = YAMLStorage(base_dir=str(tmp_path))
-    await storage.save_datasource(ds)
-    try:
-        yield SlayerQueryEngine(storage=storage), ds
-    finally:
-        engine_factory.invalidate_engine(ds)
+    ds = client_datasource(postgresql.info)
+    async with pg_query_engine(ds, base_dir=str(tmp_path)) as engine:
+        yield engine, ds
 
 
 @pytest.mark.parametrize(("sql", "column", "element"), sql_shapes(table="contractors", column="scores",

@@ -11,6 +11,8 @@ from typing import Any, Optional
 
 import pytest
 import sqlalchemy as sa
+from mcp.server.fastmcp.exceptions import ToolError
+from mcp.types import TextContent
 from sqlalchemy.dialects import postgresql
 from sqlglot import exp
 
@@ -19,8 +21,10 @@ from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
 from slayer.core.models import Aggregation, Column, DatasourceConfig, SlayerModel
 from slayer.live_schema.ingestion import (
-    IntrospectedColumn, _inferred_elements, _retyped_list, ingest_datasource_idempotent,
+    IntrospectedColumn, ResultList, _inferred_elements, _retyped_list, ingest_datasource_idempotent,
+    retyped_sql_columns,
 )
+from slayer.mcp.server import create_mcp_server
 from slayer.live_schema.schema_scope import SchemaRef
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.inspect.collection_render import render_models_summary
@@ -30,9 +34,11 @@ from slayer.database import engine_factory
 from slayer.sql.dialects import get_dialect
 from slayer.database.client import ExecutionResult
 from slayer.sql.dialects.reflection import column_from_sa_type, column_from_type_string
+from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2120_fixtures import contractors_engine, contractors_model, emit_contractors
 from tests._dev2137_fixtures import list_engine, measure, num, query
+from tests._stored_upgrade_fixtures import DS, raw_doc, raw_store
 
 
 def _array(element: str) -> dict[str, Any]:
@@ -212,8 +218,8 @@ class TestEligibility:
                                           filters=["name IN ('Cid', 'Dee', 'Eve')"]))
         assert num(resp.data[0]["contractors.n"]) == 2
 
-    async def test_counting_lists_colon_spelling(self, engine) -> None:
-        resp = await engine.execute(query(measures=["skills:count"]))
+    async def test_counting_lists_unnamed_measure(self, engine) -> None:
+        resp = await engine.execute(query(measures=["count(skills)"]))
         assert num(next(iter(resp.data[0].values()))) == 4
 
     async def test_custom_aggregation_over_a_list(self) -> None:
@@ -343,7 +349,7 @@ async def _reingest(ds: DatasourceConfig, tmp: str, stored: SlayerModel) -> Slay
     finally:
         await engine.aclose()
         engine.close()
-    loaded = await storage.get_model("contractors", data_source=ds.name)
+    loaded = await storage.get_model(stored.name, data_source=ds.name)
     assert loaded is not None
     return loaded
 
@@ -510,3 +516,133 @@ class TestCatalogFallbackLists:
                                             ref=SchemaRef(catalog="OTHER_DB", name="RAW")))
         assert typed.element_type is DataType.INT
         assert "OTHER_DB.RAW.kinds" in statements[0], statements
+
+
+# --------------------------------------------------------------------------- #
+# sql-mode list columns
+# --------------------------------------------------------------------------- #
+SKILLS_SQL = "SELECT id, skills FROM contractors"
+
+
+def _dev_skills(skills: dict[str, Any], *, data_source: str = "test") -> SlayerModel:
+    return SlayerModel.model_validate({"name": "dev_skills", "sql": SKILLS_SQL, "data_source": data_source,
+                                       "columns": [{"name": "id", "type": "INT", "primary_key": True},
+                                                   {"name": "skills", **skills}]})
+
+
+def _skills(model: Optional[SlayerModel]) -> Column:
+    assert model is not None
+    skills = model.get_column("skills")
+    assert skills is not None
+    return skills
+
+
+class TestSqlModeElementType:
+    def test_a_standalone_column_needs_no_element_type(self) -> None:
+        assert Column.model_validate({"name": "skills", "type": "ARRAY"}).type is DataType.ARRAY
+
+    def test_undeclared_element_type_is_unknown(self) -> None:
+        assert _skills(_dev_skills({"type": "ARRAY"})).element_type is DataType.UNKNOWN
+
+    def test_a_declared_element_type_is_kept(self) -> None:
+        assert _skills(_dev_skills(_array("TEXT"))).element_type is DataType.TEXT
+
+    async def test_element_access_names_the_opaque_type(self) -> None:
+        async with contractors_engine(models=[contractors_model(), _dev_skills({"type": "ARRAY"})]) as e:
+            with pytest.raises(SlayerError, match="UNKNOWN"):
+                await e.execute({"source_model": "dev_skills", "dimensions": ["skills.value"]})
+
+    @pytest.mark.parametrize("backend", ["yaml", "sqlite"])
+    async def test_a_stored_model_loads_and_re_saves_unknown(self, tmp_path, backend: str) -> None:
+        doc = {"version": CURRENT_VERSIONS["SlayerModel"], "name": "dev_skills", "sql": SKILLS_SQL,
+               "data_source": DS, "columns": [{"name": "id", "type": "INT", "primary_key": True},
+                                              {"name": "skills", "type": "ARRAY"}]}
+        storage = await raw_store(backend=backend, base=str(tmp_path), models=[doc],
+                                  datasource=DatasourceConfig(name=DS, type="duckdb", database=":memory:"))
+        loaded = await storage.get_model("dev_skills", data_source=DS)
+        assert _skills(loaded).element_type is DataType.UNKNOWN
+        assert loaded is not None
+        await storage.save_model(loaded)
+        (saved,) = [c for c in (await raw_doc(storage, "dev_skills"))["columns"] if c["name"] == "skills"]
+        assert saved.get("element_type") == "UNKNOWN", saved
+
+    async def test_a_declared_element_type_survives_re_ingest(self) -> None:
+        with _duckdb_file(*LIVE) as (ds, tmp):
+            loaded = await _reingest(ds, tmp, _dev_skills(_array("TEXT")))
+            assert _skills(loaded).element_type is DataType.TEXT
+            engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=os.path.join(tmp, "store")))
+            try:
+                resp = await engine.execute({"source_model": "dev_skills", "dimensions": ["id"],
+                                             "filters": ["contains(skills, 'go')"]})
+            finally:
+                engine.close()
+        assert [int(r["dev_skills.id"]) for r in resp.data] == [1]
+
+    async def test_an_undeclared_element_type_stays_opaque_on_re_ingest(self) -> None:
+        with _duckdb_file(*LIVE) as (ds, tmp):
+            loaded = await _reingest(ds, tmp, _dev_skills({"type": "ARRAY"}))
+        assert (_skills(loaded).type, _skills(loaded).element_type) == (DataType.ARRAY, DataType.UNKNOWN)
+
+    def test_snowflake_re_inference_applies(self) -> None:
+        model = SlayerModel.model_validate({"name": "tagged", "sql": "SELECT id, tags FROM t", "data_source": "sf",
+                                            "columns": [{"name": "id", "type": "INT"},
+                                                        {"name": "tags", "type": "ARRAY"}]})
+        updated, retyped = retyped_sql_columns(model, lists={"tags": ResultList(element_type=DataType.INT,
+                                                                                db_type="ARRAY")})
+        tags = updated.get_column("tags")
+        assert tags is not None
+        assert (retyped, tags.element_type) == (["tags"], DataType.INT)
+
+
+async def _mcp(server: Any, *, name: str, arguments: dict[str, Any]) -> str:
+    """The tool's text, or its error's when it raises."""
+    try:
+        blocks, _ = await server.call_tool(name=name, arguments=arguments)
+    except ToolError as exc:
+        return str(exc)
+    return "\n".join(b.text for b in blocks if isinstance(b, TextContent))
+
+
+class TestMCPSqlModeElementType:
+    @contextlib.asynccontextmanager
+    async def _server(self):
+        with _duckdb_file(*LIVE) as (ds, tmp):
+            storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
+            await storage.save_datasource(ds)
+            await storage.save_model(SlayerModel(name="contractors", sql_table="contractors", data_source="test",
+                                                 columns=[Column(name="id", type=DataType.INT, primary_key=True)]))
+            yield create_mcp_server(storage=storage, _seed_help=False), storage
+
+    async def test_create_model_canonicalises_sql_mode(self) -> None:
+        async with self._server() as (server, storage):
+            await _mcp(server, name="create_model", arguments={
+                "name": "dev_skills", "data_source": "test", "sql": SKILLS_SQL,
+                "columns": [{"name": "id", "type": "INT"}, {"name": "skills", "type": "ARRAY"}]})
+            assert _skills(await storage.get_model("dev_skills")).element_type is DataType.UNKNOWN
+
+    async def test_create_model_refuses_a_table_backed_list(self) -> None:
+        async with self._server() as (server, storage):
+            out = await _mcp(server, name="create_model", arguments={
+                "name": "raw_skills", "data_source": "test", "sql_table": "contractors",
+                "columns": [{"name": "id", "type": "INT"}, {"name": "skills", "type": "ARRAY"}]})
+            assert "skills" in out, out
+            assert "element_type" in out, out
+            assert await storage.get_model("raw_skills") is None
+
+    async def test_edit_model_canonicalises_sql_mode(self) -> None:
+        async with self._server() as (server, storage):
+            await storage.save_model(_dev_skills(_array("TEXT")).model_copy(update={"columns": [
+                Column(name="id", type=DataType.INT, primary_key=True)]}))
+            await _mcp(server, name="edit_model", arguments={
+                "model_name": "dev_skills", "columns": [{"name": "skills", "type": "ARRAY"}]})
+            assert _skills(await storage.get_model("dev_skills")).element_type is DataType.UNKNOWN
+
+    async def test_edit_model_refuses_a_table_backed_list(self) -> None:
+        async with self._server() as (server, storage):
+            out = await _mcp(server, name="edit_model", arguments={
+                "model_name": "contractors", "columns": [{"name": "skills", "type": "ARRAY"}]})
+            assert "skills" in out, out
+            assert "element_type" in out, out
+            stored = await storage.get_model("contractors")
+            assert stored is not None
+            assert stored.get_column("skills") is None

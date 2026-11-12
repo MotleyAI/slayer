@@ -125,7 +125,7 @@ async def test_query_engine_execute_sync_inside_a_running_loop(pg_ds: Datasource
         columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
     ), _validate=False)
     engine = SlayerQueryEngine(storage=storage)
-    query = SlayerQuery.model_validate({"source_model": "orders", "measures": ["*:count"]})
+    query = SlayerQuery.model_validate({"source_model": "orders", "measures": ["count(*)"]})
     try:
         awaited = await engine.execute(query)
         bridged = engine.execute_sync(query)
@@ -163,6 +163,7 @@ async def test_releasing_one_loop_keeps_the_other(pg_ds: DatasourceConfig, build
     gc.collect()
 
 
+@pytest.mark.abandons_async_engines
 def test_a_closed_loops_engine_is_dropped(
     pg_ds: DatasourceConfig, builds: list[Any], monkeypatch: pytest.MonkeyPatch,
 ) -> None:

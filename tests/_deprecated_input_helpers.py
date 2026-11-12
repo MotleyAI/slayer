@@ -1,7 +1,7 @@
 """Shared helpers for the deprecated-input tests: warning capture, payload filters, and an orders→customers engine.
 
-The engine is the dev1840 graph: ``sum(customers.spend)`` by ``orders.status`` broadcasts by default, fails under
-``to_many_handling="error"`` and splits per cell under ``"associate"``, so each mode is observable.
+The engine is the dev1840 graph: ``sum(customers.spend)`` by ``orders.status`` associates by default, fails under
+``to_many_handling="error"`` and repeats one total under ``"broadcast"``, so each mode is observable.
 """
 
 from __future__ import annotations

@@ -71,7 +71,7 @@ class TestPythonConversion:
     def test_false_is_dropped(self, token: Any) -> None:
         with recorded() as caught:
             query = _q(strict=token)
-        assert query.to_many_handling == "broadcast"
+        assert query.to_many_handling is None
         assert "to_many_handling" not in query.model_fields_set
         assert len(deprecations(caught)) == 1
 
@@ -107,9 +107,9 @@ class TestPythonConversion:
 
 class TestStoredMigration:
     @pytest.mark.parametrize(("value", "expected"), [
-        (True, "error"), ("yes", "error"), (1, "error"), (False, "broadcast"), ("off", "broadcast"), (0, "broadcast"),
+        (True, "error"), ("yes", "error"), (1, "error"), (False, None), ("off", None), (0, None),
     ])
-    def test_pre_v4_migrates_silently(self, value: Any, expected: str) -> None:
+    def test_pre_v4_migrates_silently(self, value: Any, expected: str | None) -> None:
         with recorded() as caught:
             query = SlayerQuery.model_validate({"version": 3, "source_model": "orders", "strict": value})
         assert query.to_many_handling == expected

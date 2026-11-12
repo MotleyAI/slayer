@@ -96,6 +96,17 @@ async def _joined_sql(*, agg: Aggregation, formula: str, validate: bool = True) 
     return await _engine_generate(query=_q(formula), model=host, extra_models=[customers], validate=validate)
 
 
+async def _fails_as_its_comparison_twin(*, formula: str, twin: str, aggs: tuple[Aggregation, ...]) -> str:
+    """``formula`` fails like ``twin``, its non-parameter ``name = value`` parenthesised; returns the message."""
+    with pytest.raises(ValueError) as twin_info:
+        await _sql(twin, aggs=aggs)
+    with pytest.raises(ValueError) as info:
+        await _sql(formula, aggs=aggs)
+    assert type(info.value) is type(twin_info.value), str(info.value)
+    assert "==" not in str(info.value)
+    return str(info.value)
+
+
 _SUMSQ = Aggregation(name="sumsq", formula="SUM({value} * {value})")
 _SCALED = Aggregation(
     name="scaled", formula="SUM({value}) / {scale}",
@@ -128,21 +139,21 @@ class TestFormulaGoldens:
     async def test_weighted_avg_compound_value(self, dialect: str) -> None:
         nullif = "nullIf" if dialect == "clickhouse" else "NULLIF"
         net = f"CAST(orders.price-orders.discountAS{_CAST[dialect]})"
-        sql = _squash(await _sql("netd:weighted_avg(weight=quantity)", dialect=dialect))
+        sql = _squash(await _sql("weighted_avg(netd, weight=quantity)", dialect=dialect))
         assert f"SUM({net}*orders.quantity)*1.0/{nullif}(SUM(CASEWHEN" in sql, sql
         assert "THENorders.quantityEND),0)" in sql, sql
 
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_custom_repeated_placeholder(self, dialect: str) -> None:
         net = f"CAST(orders.price-orders.discountAS{_CAST[dialect]})"
-        sql = _squash(await _sql("netd:sumsq", dialect=dialect, aggs=(_SUMSQ,)))
+        sql = _squash(await _sql("sumsq(netd)", dialect=dialect, aggs=(_SUMSQ,)))
         assert f"SUM({net}*{net})" in sql, sql
 
 
 class TestCompoundValueKeepsGrouping:
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_weighted_avg_multiplies_the_whole_value(self, dialect: str) -> None:
-        sql = await _sql("netd:weighted_avg(weight=quantity)", dialect=dialect)
+        sql = await _sql("weighted_avg(netd, weight=quantity)", dialect=dialect)
         tree = sqlglot.parse_one(sql, dialect=dialect)
         mul = next(m for m in tree.find_all(exp.Mul) if m.find_ancestor(exp.Sum))
         left_cols = {c.name for c in mul.this.find_all(exp.Column)}
@@ -151,25 +162,25 @@ class TestCompoundValueKeepsGrouping:
 
     @pytest.mark.parametrize("dialect", [d for d in TIER1 if d != "clickhouse"])
     async def test_compound_weight_parenthesised_only_under_operator(self, dialect: str) -> None:
-        sql = _squash(await _sql("price:weighted_avg(weight=q2)", dialect=dialect))
+        sql = _squash(await _sql("weighted_avg(price, weight=q2)", dialect=dialect))
         assert "SUM(orders.price*(orders.quantity+1))*1.0/NULLIF(SUM(CASEWHEN" in sql
         assert "THENorders.quantity+1END),0)" in sql
 
     async def test_compound_weight_clickhouse(self) -> None:
-        sql = _squash(await _sql("price:weighted_avg(weight=q2)", dialect="clickhouse"))
+        sql = _squash(await _sql("weighted_avg(price, weight=q2)", dialect="clickhouse"))
         assert "SUM(orders.price*(orders.quantity+1))*1.0/nullIf(SUM(CASEWHEN" in sql
         assert "THENorders.quantity+1END),0)" in sql
 
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_plain_weighted_avg_byte_identical(self, dialect: str) -> None:
-        sql = _squash(await _sql("price:weighted_avg(weight=quantity)", dialect=dialect))
+        sql = _squash(await _sql("weighted_avg(price, weight=quantity)", dialect=dialect))
         nullif = "nullIf" if dialect == "clickhouse" else "NULLIF"
         assert f"SUM(orders.price*orders.quantity)*1.0/{nullif}(SUM(CASEWHEN" in sql
         assert "THENorders.quantityEND),0)" in sql
 
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_custom_repeated_placeholder_renders_each_occurrence(self, dialect: str) -> None:
-        sql = await _sql("netd:sumsq", dialect=dialect, aggs=(_SUMSQ,))
+        sql = await _sql("sumsq(netd)", dialect=dialect, aggs=(_SUMSQ,))
         tree = sqlglot.parse_one(sql, dialect=dialect)
         mul = next(m for m in tree.find_all(exp.Mul) if m.find_ancestor(exp.Sum))
         assert mul.this is not mul.expression
@@ -178,17 +189,17 @@ class TestCompoundValueKeepsGrouping:
 
     @pytest.mark.parametrize("dialect", [d for d in TIER1 if d != "clickhouse"])
     async def test_custom_compound_param_under_division(self, dialect: str) -> None:
-        sql = _squash(await _sql("price:scaled(scale=q2)", dialect=dialect, aggs=(_SCALED,)))
+        sql = _squash(await _sql("scaled(price, scale=q2)", dialect=dialect, aggs=(_SCALED,)))
         assert "SUM(orders.price)/(orders.quantity+1)" in sql
 
 
 class TestFormulaExecution:
     @pytest.mark.parametrize("dialect", ["sqlite", "duckdb"])
     @pytest.mark.parametrize(("formula", "expected"), [
-        ("netd:weighted_avg(weight=quantity)", WAVG_NETD_BY_QTY),
-        ("price:weighted_avg(weight=q2)", WAVG_PRICE_BY_Q2),
-        ("netd:sumsq", SUMSQ_NETD),
-        ("price:scaled(scale=100)", SCALED_PRICE_100),
+        ("weighted_avg(netd, weight=quantity)", WAVG_NETD_BY_QTY),
+        ("weighted_avg(price, weight=q2)", WAVG_PRICE_BY_Q2),
+        ("sumsq(netd)", SUMSQ_NETD),
+        ("scaled(price, scale=100)", SCALED_PRICE_100),
     ])
     async def test_executes_to_oracle(self, dialect: str, formula: str, expected: float) -> None:
         async with seeded_exec_engine(
@@ -202,15 +213,15 @@ class TestPlaceholderRecognition:
     async def test_quoted_value_placeholder_is_rejected(self) -> None:
         lbl = Aggregation(name="lbl", formula="MAX(CASE WHEN {value} > 0 THEN '{value}' END)")
         with pytest.raises(SqlTemplateError, match=r"\{value\}"):
-            await _sql("price:lbl", aggs=(lbl,))
+            await _sql("lbl(price)", aggs=(lbl,))
 
     async def test_whitespace_inside_braces(self) -> None:
         spaced = Aggregation(name="s1", formula="SUM({ value })")
         tight = Aggregation(name="s1", formula="SUM({value})")
-        assert await _sql("price:s1", aggs=(spaced,)) == await _sql("price:s1", aggs=(tight,))
+        assert await _sql("s1(price)", aggs=(spaced,)) == await _sql("s1(price)", aggs=(tight,))
 
     async def test_whitespace_placeholder_kwarg_registers_its_join(self) -> None:
-        query = "price:scaled(scale='customers.weight')"
+        query = "scaled(price, scale='customers.weight')"
         spaced = await _joined_sql(
             agg=Aggregation(name="scaled", formula="SUM({value}) / MAX({ scale })"), formula=query,
         )
@@ -224,13 +235,13 @@ class TestPlaceholderRecognition:
             name="plain", formula="SUM({value})",
             params=[AggregationParam(name="w", sql="customers.weight")],
         )
-        assert "customers" not in await _joined_sql(agg=unused, formula="price:plain", validate=False)
+        assert "customers" not in await _joined_sql(agg=unused, formula="plain(price)", validate=False)
 
     @pytest.mark.parametrize("declared", [Aggregation(name="corr"), _SUMSQ])
     async def test_formula_less_builtin_string_kwarg_registers_its_join(
         self, declared: Aggregation,
     ) -> None:
-        sql = await _joined_sql(agg=declared, formula="price:corr(other='customers.weight')")
+        sql = await _joined_sql(agg=declared, formula="corr(price, other='customers.weight')")
         assert "CORR(orders.price, customers.weight)" in sql
         assert "JOIN customers" in sql
 
@@ -239,7 +250,7 @@ class TestInvalidTemplates:
     @pytest.mark.parametrize("formula", ["SUM({value}", "SUM({t}.amount)"])
     async def test_invalid_formula_fails_naming_the_aggregation(self, formula: str) -> None:
         bad = Aggregation(name="broken_agg", formula=formula)
-        query = _q("price:broken_agg")
+        query = _q("broken_agg(price)")
         model = _orders((bad,))
         with pytest.raises(SqlTemplateError, match="broken_agg"):
             await _engine_generate(query=query, model=model, validate=False)
@@ -250,7 +261,7 @@ class TestInvalidTemplates:
     ) -> None:
         missing = Aggregation(name="needs_scale", formula="SUM({value}) * {scale}")
         with pytest.raises(SqlTemplateError, match=r"needs_scale[\s\S]*scale|scale[\s\S]*needs_scale"):
-            await _sql("price:needs_scale", dialect=dialect, aggs=(missing,))
+            await _sql("needs_scale(price)", dialect=dialect, aggs=(missing,))
 
     @pytest.mark.parametrize("sql", ["", "  "])
     def test_empty_param_default_is_rejected(self, sql: str) -> None:
@@ -264,10 +275,9 @@ class TestInvalidTemplates:
             Aggregation(name=name, formula="SUM({value})" if name == "custom_agg" else None, params=params)
 
     @pytest.mark.parametrize(("formula", "aggs"), [
-        ("price:sumsq(value=0)", (_SUMSQ,)),
-        ("price:sumsq(value=missing.path)", (_SUMSQ,)),
-        ("price:weighted_avg(weight=quantity, value=0)", ()),
-        ("price:sum(value=0)", (Aggregation(name="sum", formula="SUM({value}) * 2"),)),
+        ("sumsq(price, value=0)", (_SUMSQ,)),
+        ("sumsq(price, value=missing.path)", (_SUMSQ,)),
+        ("sum(price, value=0)", (Aggregation(name="sum", formula="SUM({value}) * 2"),)),
     ])
     async def test_value_kwarg_on_value_template_explains(
         self, formula: str, aggs: tuple[Aggregation, ...],
@@ -277,23 +287,22 @@ class TestInvalidTemplates:
 
     async def test_dialect_only_formula_accepts_its_kwarg(self) -> None:
         duck = Aggregation(name="dk", formula="SUM({value}) * {scale} // 2")  # `//`: DuckDB-only
-        sql = await _sql("price:dk(scale=2)", dialect="duckdb", aggs=(duck,))
+        sql = await _sql("dk(price, scale=2)", dialect="duckdb", aggs=(duck,))
         assert "SUM(orders.price) * 2 // 2" in sql
 
-    @pytest.mark.parametrize(("formula", "aggs", "message"), [
-        ("price:SUM(value=0)", (), r"'sum' takes no args or kwargs other than window; got 'value'"),
-        ("price:percentile(p=0.5, value=0)", (), r"'percentile' does not accept argument 'value'; accepted: p, window"),
-        ("price:corr(other=quantity, foo=1)", (), r"'corr' does not accept argument 'foo'; accepted: other, window"),
-        ("price:rows(value=1)", (Aggregation(name="rows", formula="COUNT(*)"),),
-         r"'rows' takes no args or kwargs other than window; got 'value'"),
-        ("price:scaled(scale=2, bogus=1)", (_SCALED,), r"'scaled' does not accept argument 'bogus'; accepted: scale, window"),
+    @pytest.mark.parametrize(("formula", "twin", "aggs"), [
+        ("SUM(price, value=0)", "SUM(price, (value=0))", ()),
+        ("percentile(price, p=0.5, value=0)", "percentile(price, p=0.5, (value=0))", ()),
+        ("corr(price, other=quantity, foo=1)", "corr(price, other=quantity, (foo=1))", ()),
+        ("rows(price, value=1)", "rows(price, (value=1))", (Aggregation(name="rows", formula="COUNT(*)"),)),
+        ("scaled(price, scale=2, bogus=1)", "scaled(price, scale=2, (bogus=1))", (_SCALED,)),
+        ("weighted_avg(price, weight=quantity, value=0)", "weighted_avg(price, weight=quantity, (value=0))", ()),
     ])
-    async def test_unknown_kwarg_is_rejected(
-        self, formula: str, aggs: tuple[Aggregation, ...], message: str,
+    async def test_non_parameter_name_is_a_comparison(
+        self, formula: str, twin: str, aggs: tuple[Aggregation, ...],
     ) -> None:
-        with pytest.raises(ValueError, match=message) as ei:
-            await _sql(formula, aggs=aggs)
-        assert "aggregated column" not in str(ei.value)
+        message = await _fails_as_its_comparison_twin(formula=formula, twin=twin, aggs=aggs)
+        assert "aggregated column" not in message
 
     @pytest.mark.parametrize("name", ["custom_agg", "weighted_avg"])
     @pytest.mark.parametrize("formula", ["", "  "])
@@ -303,11 +312,11 @@ class TestInvalidTemplates:
 
 
 async def _pct_sql(p: str | None = None, *, default: str | None = None) -> str:
-    """``price:percentile`` with ``p`` passed as a query-time string and/or a model default."""
+    """``percentile(price)`` with ``p`` passed as a query-time string and/or a model default."""
     aggs = (Aggregation(name="percentile", params=[AggregationParam(name="p", sql=default)]),) \
         if default is not None else ()
-    arg = "" if p is None else "(p='" + p.replace("'", "''") + "')"
-    return await _sql(f"price:percentile{arg}", aggs=aggs)
+    arg = "" if p is None else ", p='" + p.replace("'", "''") + "'"
+    return await _sql(f"percentile(price{arg})", aggs=aggs)
 
 
 def _emitted_p(sql: str) -> Expression:
@@ -342,7 +351,7 @@ class TestPercentileP:
 
     async def test_model_default_spelling_reaches_the_query_sql(self) -> None:
         pct = Aggregation(name="percentile", params=[AggregationParam(name="p", sql="0.50")])
-        sql = await _sql("price:percentile", aggs=(pct,))
+        sql = await _sql("percentile(price)", aggs=(pct,))
         assert "PERCENTILE_CONT(0.50)" in sql
 
     @pytest.mark.parametrize("p", ["nan", "NaN", "1e999", "1.5", "-0.1", "'0.5'", "quantity",
@@ -363,7 +372,7 @@ class TestPercentileP:
 
     async def test_non_literal_p_rejected_at_query_level(self) -> None:
         with pytest.raises(ValueError, match=r"must be a numeric literal in \[0, 1\]"):
-            await _sql("price:percentile(p=quantity)")
+            await _sql("percentile(price, p=quantity)")
 
 
 class TestValueResolutionIsAst:
@@ -426,7 +435,7 @@ class TestPickedValueExecution:
             dialect="sqlite", seed=seed_1832_sqlite, models=dev1832_models(),
         ) as (engine, _db):
             resp = await engine.execute(sales_q(measures=[ModelMeasure(
-                formula="amount:weighted_avg(weight=q_amount)", name="m")]))
+                formula="weighted_avg(amount, weight=q_amount)", name="m")]))
         assert resp.data[0]["sales.m"] == pytest.approx(WAVG_AMOUNT_WEIGHT_QAMT)
 
 
@@ -456,48 +465,48 @@ async def _windowed_sql(formula: str, agg: Aggregation) -> str:
 
 class TestKwargNamesFollowTheRenderDialect:
     async def test_postgres_array_placeholder_is_accepted(self) -> None:
-        sql = await _sql("price:arr(scale=3)", aggs=(_ARR,))
+        sql = await _sql("arr(price, scale=3)", aggs=(_ARR,))
         assert "SUM(orders.price)*(ARRAY[3])[1]" in _squash(sql)
 
     async def test_placeholder_only_the_target_dialect_sees_is_accepted(self) -> None:
-        sql = await _sql("price:masked(mask=3)", aggs=(_XOR,))
+        sql = await _sql("masked(price, mask=3)", aggs=(_XOR,))
         assert "SUM(orders.price) # 3" in sql
 
     async def test_placeholder_hidden_in_the_target_dialect_is_rejected(self) -> None:
         with pytest.raises(AggregationArgumentError, match="'masked' takes no args or kwargs other than window"):
-            await _sql("price:masked(mask=3)", dialect="mysql", aggs=(_XOR,))
+            await _sql("masked(price, mask=3)", dialect="mysql", aggs=(_XOR,))
 
     async def test_untokenizable_formula_fails_before_arguments_bind(self) -> None:
         bad = Aggregation(name="bad", formula="SUM({value}) + 'x")
         with pytest.raises(SqlTemplateError, match="Aggregation 'bad': cannot tokenize"):
-            await _sql("price:bad(foo=missing.path)", aggs=(bad,), validate=False)
+            await _sql("bad(price, foo=missing.path)", aggs=(bad,), validate=False)
 
 
 class TestOverrideFormulaRenders:
     async def test_builtin_override_formula_renders_with_its_default(self) -> None:
-        assert "SUM(orders.price) * 2" in await _sql("price:sum", aggs=(_SUM_SCALE,))
+        assert "SUM(orders.price) * 2" in await _sql("sum(price)", aggs=(_SUM_SCALE,))
 
     async def test_builtin_override_formula_takes_its_placeholder_kwarg(self) -> None:
-        assert "SUM(orders.price) * 3" in await _sql("price:sum(scale=3)", aggs=(_SUM_SCALE,))
+        assert "SUM(orders.price) * 3" in await _sql("sum(price, scale=3)", aggs=(_SUM_SCALE,))
 
     async def test_weighted_avg_override_needs_no_builtin_weight(self) -> None:
-        assert "SUM(orders.price) * 7" in await _sql("price:weighted_avg", aggs=(_WAVG_K,))
+        assert "SUM(orders.price) * 7" in await _sql("weighted_avg(price)", aggs=(_WAVG_K,))
 
     async def test_builtin_param_the_override_never_reads_is_rejected(self) -> None:
         with pytest.raises(AggregationArgumentError, match="'weighted_avg' does not accept argument 'weight'; accepted: k, window"):
-            await _sql("price:weighted_avg(weight=quantity)", aggs=(_WAVG_K,))
+            await _sql("weighted_avg(price, weight=quantity)", aggs=(_WAVG_K,))
 
     @pytest.mark.parametrize(("formula", "agg", "rendered"), [
-        ("price:sum(window='1y')", _SUM_SCALE, "SUM(_src._w_value) * 2"),
-        ("price:weighted_avg(window='1y')", _WAVG_K, "SUM(_src._w_value) * 7"),
-        ("price:weighted_avg(k=3, window='1y')", _WAVG_K, "SUM(_src._w_value) * 3"),
+        ("sum(price, window='1y')", _SUM_SCALE, "SUM(_src._w_value) * 2"),
+        ("weighted_avg(price, window='1y')", _WAVG_K, "SUM(_src._w_value) * 7"),
+        ("weighted_avg(price, k=3, window='1y')", _WAVG_K, "SUM(_src._w_value) * 3"),
     ])
     async def test_windowed_override_formula_renders(self, formula: str, agg: Aggregation, rendered: str) -> None:
         assert rendered in await _windowed_sql(formula, agg)
 
     async def test_formula_less_override_keeps_the_builder(self) -> None:
         pct = Aggregation(name="percentile", params=[AggregationParam(name="p", sql="0.25")])
-        assert "PERCENTILE_CONT(0.25)" in await _sql("price:percentile", aggs=(pct,))
+        assert "PERCENTILE_CONT(0.25)" in await _sql("percentile(price)", aggs=(pct,))
 
 
 class TestArgumentNamesCheckedFirst:
@@ -509,13 +518,14 @@ class TestArgumentNamesCheckedFirst:
         with pytest.raises(AggregationArgumentError, match="'kx' does not accept argument 'unused'"):
             await _sql("kx(price, missing.path)", aggs=(_K_UNUSED,), validate=False)
 
-    async def test_keyword_name_rejected_before_its_value_binds(self) -> None:
-        with pytest.raises(AggregationArgumentError, match="'scaled' does not accept argument 'bogus'"):
-            await _sql("price:scaled(bogus=missing.path)", aggs=(_SCALED,))
+    async def test_non_parameter_name_binds_as_a_comparison(self) -> None:
+        message = await _fails_as_its_comparison_twin(
+            formula="scaled(price, bogus=missing.path)", twin="scaled(price, (bogus=missing.path))", aggs=(_SCALED,))
+        assert "does not accept argument 'bogus'" not in message
 
     async def test_accepted_name_still_resolves_its_value(self) -> None:
         with pytest.raises(UnresolvableDimensionJoinError, match="missing.path"):
-            await _sql("price:scaled(scale=missing.path)", aggs=(_SCALED,))
+            await _sql("scaled(price, scale=missing.path)", aggs=(_SCALED,))
 
 
 _COUNT_K = Aggregation(
@@ -545,16 +555,16 @@ async def _associated_star_sql(formula: str) -> str:
 
 class TestCountStarOverride:
     @pytest.mark.parametrize(("formula", "rendered"), [
-        ("*:count", "COUNT(*) * 7"), ("*:count(k=3)", "COUNT(*) * 3"), ("count(*)", "COUNT(*) * 7"),
+        ("count(*)", "COUNT(*) * 7"), ("count(*, k=3)", "COUNT(*) * 3"),
     ])
     async def test_star_renders_the_override(self, formula: str, rendered: str) -> None:
         assert rendered in await _star_sql(formula)
 
     async def test_having_renders_the_override(self) -> None:
-        assert "HAVING(COUNT(*)*7)>1" in _squash(await _star_sql("*:count", filters=["count(*) > 1"]))
+        assert "HAVING(COUNT(*)*7)>1" in _squash(await _star_sql("count(*)", filters=["count(*) > 1"]))
 
     async def test_windowed_star_renders_the_override(self) -> None:
-        assert "COUNT(_src._w_value) * 7" in await _windowed_sql("*:count(window='1y')", _COUNT_K)
+        assert "COUNT(_src._w_value) * 7" in await _windowed_sql("count(*, window='1y')", _COUNT_K)
 
     async def test_associated_cross_model_star_renders_the_override(self) -> None:
-        assert "COUNT(*) * 7" in await _associated_star_sql("customers.*:count")
+        assert "COUNT(*) * 7" in await _associated_star_sql("count(customers.*)")

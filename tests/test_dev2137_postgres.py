@@ -5,14 +5,11 @@ import pytest
 from pytest_postgresql import factories
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasourceConfig
 from slayer.live_schema.ingestion import ingest_datasource_async
-from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.database import engine_factory
-from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2120_fixtures import contractors_model, contractors_statements
 from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
 from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_model, mixed_numbers_statements
+from tests._pg_helpers import client_datasource, pg_query_engine
 
 postgresql_proc = factories.postgresql_proc(port=None)
 postgresql = factories.postgresql("postgresql_proc")
@@ -25,21 +22,11 @@ async def pg(postgresql, tmp_path):
                  *mixed_numbers_statements(dialect="postgres")]:
         cur.execute(stmt)
     postgresql.commit()
-    info = postgresql.info
-    ds = DatasourceConfig(name="pg", type="postgres", host=info.host, port=info.port, database=info.dbname,
-                          username=info.user, password="")
-    storage = YAMLStorage(base_dir=str(tmp_path))
-    await storage.save_datasource(ds)
-    for model in (contractors_model(data_source="pg"), assignments_model(data_source="pg"),
-                  mixed_numbers_model(data_source="pg")):
-        await storage.save_model(model)
-    engine = SlayerQueryEngine(storage=storage)
-    try:
+    ds = client_datasource(postgresql.info)
+    models = [contractors_model(data_source="pg"), assignments_model(data_source="pg"),
+              mixed_numbers_model(data_source="pg")]
+    async with pg_query_engine(ds, base_dir=str(tmp_path), models=models) as engine:
         yield engine, ds
-    finally:
-        await engine.aclose()
-        engine.close()
-        engine_factory.invalidate_engine(ds)
 
 
 async def test_lists(pg) -> None:

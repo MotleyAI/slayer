@@ -92,12 +92,12 @@ async def engine() -> AsyncIterator[Tuple[SlayerQueryEngine, str]]:
 
 
 def _stage1() -> SlayerQuery:
-    return SlayerQuery(
-        name="stage1",
-        source_model="orders",
-        dimensions=["customers.region"],
-        measures=[{"formula": "amount:sum"}],
-    )
+    return SlayerQuery.model_validate({
+        "name": "stage1",
+        "source_model": "orders",
+        "dimensions": ["customers.region"],
+        "measures": [{"formula": "sum(amount)"}],
+    })
 
 
 async def test_dev1449_flat_name_resolves(engine):
@@ -105,11 +105,11 @@ async def test_dev1449_flat_name_resolves(engine):
     name ``customers__region``.
     """
     eng, _ = engine
-    root = SlayerQuery(
-        source_model="stage1",
-        dimensions=["customers__region"],
-        measures=[{"formula": "amount_sum:sum"}],
-    )
+    root = SlayerQuery.model_validate({
+        "source_model": "stage1",
+        "dimensions": ["customers__region"],
+        "measures": [{"formula": "sum(amount_sum)"}],
+    })
     resp = await eng.execute([_stage1(), root])
     assert resp.columns == ["stage1.customers__region", "stage1.amount_sum_sum"]
     assert {
@@ -131,11 +131,11 @@ async def test_dev1449_flat_name_resolves(engine):
 async def test_dev1449_dotted_form_raises(engine):
     """The dotted form reads a model no join path reaches from the flat upstream stage."""
     eng, _ = engine
-    root = SlayerQuery(
-        source_model="stage1",
-        dimensions=["customers.region"],
-        measures=[{"formula": "amount_sum:sum"}],
-    )
+    root = SlayerQuery.model_validate({
+        "source_model": "stage1",
+        "dimensions": ["customers.region"],
+        "measures": [{"formula": "sum(amount_sum)"}],
+    })
     stage1 = _stage1()
     with pytest.raises(UnrelatedDatasetError):
         await eng.execute([stage1, root])

@@ -16,13 +16,13 @@ latest record's value in each group), `collect(x)` (the distinct sorted values i
 group, as a list), plus the model's custom aggregations
 (`inspect` the model to list them). Any column argument may be a row-level expression:
 `weighted_avg(x, weight=qty * 2)`, `last(x, coalesce(updated_at, created_at))`.
-After an aggregation's or transform's first argument, `name = value` is a keyword
-argument (`first(x, a = b)` binds the keyword `a`), so a comparison there needs `==`; a
-keyword's value may itself be a single-`=` comparison. In a scalar function
-(`iif(status = 'paid', …)`) `=` compares.
+In an aggregation or transform call, `name = value` is a keyword argument when `name` is
+one of its parameters (`weighted_avg(x, weight = qty)`) and a comparison otherwise
+(`sum(status = 'paid')` counts the paid rows); write `sum((weight = 1))` to compare a column
+named like a parameter. In a scalar function (`iif(status = 'paid', …)`) `=` compares.
 
 A sole primary-key column only takes `count`, `count_distinct`,
-`count_distinct_approx`, `min` and `max`; a column's `allowed_aggregations` may
+`count_distinct_approx`, `min`, `max` and `collect`; a column's `allowed_aggregations` may
 restrict it further. Expressions are not gated: `sum(price * quantity)` works.
 
 ## Expressions and booleans

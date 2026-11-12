@@ -73,14 +73,14 @@ class TestQueryRefinementModel:
         assert r.order == [OrderItem(column=ColumnRef(name="revenue"), direction="desc")]
 
     def test_functional_granularity_in_dimensions_becomes_time_dimension(self) -> None:
-        r = QueryRefinement.model_validate({"dimensions": ["region", "year(ordered_at)"]})
+        r = QueryRefinement.model_validate({"dimensions": ["region", "date_trunc('year', ordered_at)"]})
         assert [d.name for d in r.dimensions or []] == ["region"]
         assert [(td.dimension, str(td.granularity)) for td in r.time_dimensions or []] == [
             ("ordered_at", "year"),
         ]
 
     def test_time_dimension_string_form(self) -> None:
-        r = QueryRefinement.model_validate({"time_dimensions": ["year(ordered_at)"]})
+        r = QueryRefinement.model_validate({"time_dimensions": ["date_trunc('year', ordered_at)"]})
         assert [(td.dimension, str(td.granularity)) for td in r.time_dimensions or []] == [
             ("ordered_at", "year"),
         ]
@@ -177,17 +177,17 @@ class TestMeasures:
 
 class TestTimeDimensions:
     def test_new_granularity_appended(self) -> None:
-        merged = merge(saved(time_dimensions=[MONTH_TD], measures=[REVENUE]), time_dimensions=["year(ordered_at)"])
+        merged = merge(saved(time_dimensions=[MONTH_TD], measures=[REVENUE]), time_dimensions=["date_trunc('year', ordered_at)"])
         assert td_keys(merged) == [("ordered_at", "month"), ("ordered_at", "year")]
 
     def test_functional_dimension_merges_as_time_dimension(self) -> None:
-        merged = merge(saved(time_dimensions=[MONTH_TD], measures=[REVENUE]), dimensions=["year(ordered_at)"])
+        merged = merge(saved(time_dimensions=[MONTH_TD], measures=[REVENUE]), dimensions=["date_trunc('year', ordered_at)"])
         assert td_keys(merged) == [("ordered_at", "month"), ("ordered_at", "year")]
         assert not merged.dimensions
 
     def test_functional_dimension_on_saved_key_collapses(self) -> None:
         base = saved(time_dimensions=[MONTH_TD], measures=[REVENUE])
-        assert merge(base, dimensions=["month(ordered_at)"]).time_dimensions == base.time_dimensions
+        assert merge(base, dimensions=["date_trunc('month', ordered_at)"]).time_dimensions == base.time_dimensions
 
     def test_date_range_taken_from_refinement(self) -> None:
         merged = merge(
@@ -314,12 +314,12 @@ class TestWholeQuery:
 
     def test_non_refinable_fields_survive(self) -> None:
         base = SlayerQuery.model_validate({
-            "name": "final", "source_model": {"source_name": "orders"}, "measures": [REVENUE],
+            "name": "final", "source_model": "orders", "extensions": [{"source_name": "orders"}], "measures": [REVENUE],
             "variables": {"status": "paid"},
         })
         merged = merge(base, dimensions=["region"])
-        assert (merged.name, merged.source_model, merged.variables, merged.version) == (
-            base.name, base.source_model, base.variables, base.version,
+        assert (merged.name, merged.source_model, merged.extensions, merged.variables, merged.version) == (
+            base.name, base.source_model, base.extensions, base.variables, base.version,
         )
 
     def test_merged_query_revalidated(self) -> None:

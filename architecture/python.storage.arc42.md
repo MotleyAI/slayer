@@ -28,9 +28,9 @@ Child `migrations` (the registry); the other modules are leaves of the node.
    carry `version`; migrations run automatically on load. [review]
    - **3.1** A load never writes; an upgraded document is persisted only by a
      save. [target: DEV-1844]
-   - **3.2** Library growth never invalidates a stored artefact: a newly
-     reserved name yields to a model's own definition of it inside that model;
-     any other collision ships with a migration.
+   - **3.2** Library growth never invalidates a stored artefact: a new library
+     function yields to a model's own definition of it inside that model; any
+     other newly reserved name ships with a migration.
      [enforced: test:tests/test_library_growth.py]
 
 ## 4. Rationale

@@ -20,24 +20,32 @@ from slayer.core.strict_flag import without_strict
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
-    "SlayerModel": 18,
-    "SlayerQuery": 9,
+    "SlayerModel": 21,
+    "SlayerQuery": 13,
     "DatasourceConfig": 3,
-    "Memory": 7,
+    "Memory": 9,
     "Embedding": 1,
 }
 
 _document: ContextVar[str | None] = ContextVar("slayer_migrated_document", default=None)
+_stored: ContextVar[bool] = ContextVar("slayer_stored_document", default=False)
 
 
 @contextmanager
-def migrating_document(label: str | None) -> Iterator[None]:
-    """Name the stored document whose nested documents migrate inside the block."""
+def migrating_document(label: str | None, *, stored: bool) -> Iterator[None]:
+    """Name the document whose nested documents migrate inside the block; ``stored`` when it carries a version."""
     token = _document.set(label or _document.get())
+    stored_token = _stored.set(stored or _stored.get())
     try:
         yield
     finally:
+        _stored.reset(stored_token)
         _document.reset(token)
+
+
+def in_stored_document() -> bool:
+    """Whether validation runs inside a stored (versioned) model's or memory's nested documents."""
+    return _stored.get()
 
 
 def document_label(data: dict) -> str | None:
@@ -152,8 +160,32 @@ def _drop_blank_agg_fields(agg: dict) -> dict:
 @register_migration(entity="SlayerQuery", source_version=3, stored_only=True)
 def _query_v3_to_v4(data: dict) -> dict:
     """v4: retire ``strict`` — ``strict: true`` → ``to_many_handling: "error"``;
-    ``false``/absent drops to the ``"broadcast"`` default. Fresh ``strict`` converts with a deprecation instead."""
+    ``false``/absent leaves the mode omitted (the default). Fresh ``strict`` converts with a deprecation instead."""
     return without_strict(data) if "strict" in data else data
+
+
+def is_legacy_root_extension(source: Any) -> bool:
+    """Whether a raw ``source_model`` is the legacy extension object."""
+    return isinstance(source, dict) and "source_name" in source
+
+
+def hoist_root_extension(data: dict) -> dict:
+    """A query whose ``source_model`` is an extension object, as ``source_model: <base>`` plus that extension."""
+    source = data.get("source_model")
+    if not isinstance(source, dict) or not is_legacy_root_extension(source):
+        return data
+    return with_root_extension(data, extension=source, base=source["source_name"])
+
+
+def with_root_extension(data: dict, *, extension: Any, base: Any) -> dict:
+    """``data`` sourced from ``base`` with ``extension`` first in its extensions; a non-list ``extensions`` is left to validation."""
+    extensions = data.get("extensions")
+    if extensions is not None and not isinstance(extensions, list):
+        return data
+    return {**data, "source_model": base, "extensions": [extension, *(extensions or [])]}
+
+
+register_migration(entity="SlayerQuery", source_version=12, stored_only=True)(hoist_root_extension)
 
 
 def migrate(entity: str, data: Any) -> Any:
@@ -206,3 +238,6 @@ from slayer.storage import stored_repair_migration  # noqa: E402, F401  # ALLOW(
 from slayer.storage import sql_string_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import time_dimension_text_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import distinct_column_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import colon_spelling_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import ossie_alignment_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import many_handling_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here

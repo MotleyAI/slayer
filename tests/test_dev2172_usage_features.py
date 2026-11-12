@@ -57,7 +57,7 @@ MEASURE_TABLE: list[tuple[str, list[str], list[str], list[str], list[str]]] = [
     ("count(DISTINCT x)", ["count_distinct"], [], [], []),
     ("array_length(tags)", ["custom"], [], [], []),
     ("dsum(amount)", ["custom"], [], [], []),
-    ("amount:sum", ["sum"], [], [], []),
+    ("sum(amount)", ["sum"], [], [], []),
     ("time_shift(sum(amount), -1)", ["sum"], ["time_shift"], [], []),
     ("cumsum(sum(x)) / count(*)", ["sum", "count"], ["cumsum"], [], []),
     ("collect(city)", ["collect"], [], [], []),
@@ -174,10 +174,17 @@ def test_every_stage_is_read() -> None:
 @pytest.mark.parametrize("body", [
     {"dimensions": [{"name": "m", "expression": "month(ordered_at)"}], "measures": ["count(*)"]},
     {"measures": ["count(*)"], "filters": ["year(ordered_at) = 2024"]},
-    {"measures": ["count(*)"], "filters": ["date_trunc('month', ordered_at) = '2024-01-01'"]},
 ])
-def test_time_granularity_calls_are_not_counted(body: dict[str, Any]) -> None:
+def test_extraction_calls_count_as_date_part(body: dict[str, Any]) -> None:
     found = query_features({"source_model": "orders", **body})
+    assert Counter(found.aggregations) == Counter(["count"])
+    assert found.functions == ["date_part"]
+
+
+def test_date_trunc_granularity_call_is_not_counted() -> None:
+    found = query_features({
+        "source_model": "orders", "measures": ["count(*)"], "filters": ["date_trunc('month', ordered_at) = '2024-01-01'"],
+    })
     assert Counter(found.aggregations) == Counter(["count"])
     assert found.functions == []
 
@@ -188,14 +195,15 @@ def test_list_children_are_not_counted() -> None:
     assert Counter(found.aggregations) == Counter(["count"])
 
 
-@pytest.mark.parametrize("source_model", [
-    {"source_name": "orders", "measures": [{"name": "m2", "formula": "max(round(amount))"}]},
-    {"name": "orders_inline", "data_source": "test", "sql_table": "orders",
-     "columns": [{"name": "id", "type": "INT", "primary_key": True}, {"name": "amount", "type": "DOUBLE"}],
-     "measures": [{"name": "m2", "formula": "max(round(amount))"}]},
+@pytest.mark.parametrize("root", [
+    {"source_model": "orders",
+     "extensions": [{"source_name": "orders", "measures": [{"name": "m2", "formula": "max(round(amount))"}]}]},
+    {"source_model": {"name": "orders_inline", "data_source": "test", "sql_table": "orders",
+                      "columns": [{"name": "id", "type": "INT", "primary_key": True}, {"name": "amount", "type": "DOUBLE"}],
+                      "measures": [{"name": "m2", "formula": "max(round(amount))"}]}},
 ])
-def test_inline_model_measure_formulas_are_read(source_model: dict[str, Any]) -> None:
-    found = query_features({"source_model": source_model, "measures": ["count(*)"]})
+def test_inline_model_measure_formulas_are_read(root: dict[str, Any]) -> None:
+    found = query_features({**root, "measures": ["count(*)"]})
     assert Counter(found.functions) == Counter(["round"])
     assert Counter(found.aggregations) == Counter(["count", "max"])
 

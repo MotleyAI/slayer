@@ -39,7 +39,7 @@ A query then asks for `sum(revenue)` (aggregate the `revenue` column), `aov` (th
 | `hidden` | bool | No | Hide from listings (still queryable by name and joinable). Set automatically at ingest for recognised ELT/migration internals — see [Recognised internals](../reference/cli.md#recognised-internals) |
 | `access_tags` | list[str] | No | Access groups: through an [access-filtered store](../configuration/storage.md#access-filtered-storage) a caller sees the model only if it is untagged or shares a tag, else it reads as deleted (unlike `hidden`, which curates listings for everyone) |
 | `meta` | dict | No | Arbitrary JSON metadata for caller bookkeeping. Ingestion writes `internal_table: <tool>` on auto-hidden internals |
-| `version` | int | No | Schema version stamp (currently `18`) |
+| `version` | int | No | Schema version stamp (currently `19`) |
 
 ## Source modes
 
@@ -66,7 +66,7 @@ Only the `__slayer_` prefix is reserved for SLayer-internal identifiers.
 
 ## Columns
 
-A column is the unit of structure on the model. The same column entry can serve as a group-by key in one query and as input to an aggregation in another — the role is decided per query, not declared up front. A list column is the exception: it is never a group-by key and aggregates only with `count`; its elements group and aggregate through `<column>.value`. What the column *carries* is its identity (name), how to compute it from the source (`sql`), what data type to expect, and a handful of policy fields (which aggregations are allowed, whether it's a primary key, whether it's hidden).
+A column is the unit of structure on the model. The same column entry can serve as a group-by key in one query and as input to an aggregation in another — the role is decided per query, not declared up front. A list column is the exception: it is never a group-by key and aggregates only with `count` and `count_distinct`; its elements group and aggregate through `<column>.value`. What the column *carries* is its identity (name), how to compute it from the source (`sql`), what data type to expect, and a handful of policy fields (which aggregations are allowed, whether it's a primary key, whether it's hidden).
 
 ### Fields
 
@@ -77,9 +77,9 @@ A column is the unit of structure on the model. The same column entry can serve 
 | `label` | string | No | — | Display name; propagates into query result metadata |
 | `sql` | string | No | (bare column name) | SQL expression — defaults to the column's name |
 | `type` | string | No | `TEXT` | `TEXT`, `INT`, `DOUBLE`, `BOOLEAN`, `DATE`, `TIMESTAMP`, `UNKNOWN`, `ARRAY` |
-| `element_type` | string | With `ARRAY` | — | A list's element type (`TEXT`, `INT`, `DOUBLE`, `BOOLEAN`, `DATE`, `TIMESTAMP`, or `UNKNOWN` for nested lists and records, which support only `length` and NULL tests); rejected on any other type |
+| `element_type` | string | With `ARRAY` on a table-backed model | `UNKNOWN` on an `sql`-mode model's `ARRAY` | A list's element type (`TEXT`, `INT`, `DOUBLE`, `BOOLEAN`, `DATE`, `TIMESTAMP`, or `UNKNOWN` for nested lists and records, which support only NULL tests and `count`); rejected on any other type |
 | `db_type` | string | No | — | The raw database type, recorded by ingestion where `type` loses information: `UNKNOWN`, exact `NUMERIC` / `DECIMAL`, JSON, zoned timestamps and lists |
-| `primary_key` | bool | No | `false` | A model's sole primary key is an identifier, restricted to counting and `min` / `max`; members of a composite key are ordinary columns |
+| `primary_key` | bool | No | `false` | A model's sole primary key is an identifier, restricted to counting, `min` / `max` and `collect`; members of a composite key are ordinary columns |
 | `unique` | bool | No | `false` | Single-column uniqueness (non-PK). A sole `primary_key` implies unique; a composite-key member does not. Auto-set from `UNIQUE` constraints / unique indexes; used to infer one-to-one joins |
 | `hidden` | bool | No | `false` | Hide from listings |
 | `format` | dict | No | — | `NumberFormat` used by response metadata |
@@ -120,12 +120,12 @@ A column with no explicit `allowed_aggregations` whitelist gets a default set ba
 | `TEXT` | count, count_distinct, count_distinct_approx, first, last, min, max, collect |
 | `BOOLEAN` | the `INT` set |
 | `DATE` / `TIMESTAMP` | count, count_distinct, count_distinct_approx, first, last, min, max, collect |
-| `ARRAY` | count (non-NULL lists); aggregate its elements through `skills.value`, see [list columns](queries.md#list-columns) |
+| `ARRAY` | count (non-NULL lists), count_distinct; aggregate its elements through `skills.value`, see [list columns](queries.md#list-columns) |
 | `UNKNOWN` | none |
 
 A boolean is its integer (true 1, false 0, NULL ignored) inside every numeric aggregation, so `sum` counts the true rows, `avg` is their share (formatted as a percentage), and `min` / `max` stay boolean.
 
-`count_distinct_approx` is dialect-aware: it emits the database-native approximate-distinct function where one exists and falls back to an exact `COUNT(DISTINCT)` where it does not (Postgres / SQLite / MySQL). A model's sole primary-key column is always restricted to `count` / `count_distinct` / `count_distinct_approx` / `min` / `max` regardless of type, and is skipped by sampling and profiling; composite primary-key members aggregate by their type. When `allowed_aggregations` is set, every entry must already be eligible under the type-default map (or be a custom aggregation defined on this model); violations are caught at model construction time, so query-time validation is a single membership check. On a list column it may name only `count`, and a custom aggregation over a list is rejected.
+`count_distinct_approx` is dialect-aware: it emits the database-native approximate-distinct function where one exists and falls back to an exact `COUNT(DISTINCT)` where it does not (Postgres / SQLite / MySQL). A model's sole primary-key column is always restricted to `count` / `count_distinct` / `count_distinct_approx` / `min` / `max` / `collect` regardless of type, and is skipped by sampling and profiling; composite primary-key members aggregate by their type. When `allowed_aggregations` is set, every entry must already be eligible under the type-default map (or be a custom aggregation defined on this model); violations are caught at model construction time, so query-time validation is a single membership check. On a list column it may name only `count` and `count_distinct`, and a custom aggregation over a list is rejected.
 
 ### Filtered columns
 
@@ -175,7 +175,7 @@ joins:
 
 At query time, `aoi_ratio` expands to `telescopes.aperture / (stations.foo_raw / 100.0)`. The same applies to local-model chains (a column on the source model referencing another derived column on the same model) and to multi-hop join paths (use the dotted form, e.g., `B.C.x_derived`, when crossing more than one join).
 
-A derived column whose definition (recursively) crosses a fanning (not provably to-one) hop fails closed with a typed error when used as an aggregate input, a population filter, or an `error`-mode dimension — declare the [join cardinality](#join-cardinality) or primary key to prove the hop, or query it under `broadcast`/`associate` handling. A derived column whose definition reaches a to-many (or undeclared) target cannot be aggregated as a column of its model — aggregate the target column directly (`sum(line_items.qty)`). Where the hop is *provably* fanning (declared `one_to_many`/`many_to_many`), the model is rejected at **save time**; an unproven hop saves with a warning and relies on the query-time check above. A definition whose join path **revisits** a model already on it (a cycle, e.g. `regions.customers.spend` declared on `customers`) is rejected at **save time** as a circular definition — reference the column on the revisited model directly, or aggregate on the model the hop leaves. A definition crossing an ambiguous hop (two or more edges between the pair and no edge name in the path) is also rejected at **save time** — spell that hop by an edge name.
+A derived column whose definition (recursively) crosses a fanning (not provably to-one) hop fails closed with a typed error when used as an aggregate input, a population filter, or an `error`-mode dimension — declare the [join cardinality](#join-cardinality) or primary key to prove the hop, or query it under the default (associating) or `broadcast` handling. A derived column whose definition reaches a to-many (or undeclared) target cannot be aggregated as a column of its model — aggregate the target column directly (`sum(line_items.qty)`). Where the hop is *provably* fanning (declared `one_to_many`/`many_to_many`), the model is rejected at **save time**; an unproven hop saves with a warning and relies on the query-time check above. A definition whose join path **revisits** a model already on it (a cycle, e.g. `regions.customers.spend` declared on `customers`) is rejected at **save time** as a circular definition — reference the column on the revisited model directly, or aggregate on the model the hop leaves. A definition crossing an ambiguous hop (two or more edges between the pair and no edge name in the path) is also rejected at **save time** — spell that hop by an edge name.
 
 Same-model references may be written **bare** (just the column name) or qualified with the host alias — both forms expand the same way. So given `bucket.sql = "raw_a / 10"`, a sibling `rn.sql = "ROW_NUMBER() OVER (PARTITION BY bucket ORDER BY id)"` correctly expands `bucket` to the inlined body. Bare references inside a nested scope (sub-query, `UNION` branch, CTE, `VALUES`) are NOT inlined — those identifiers belong to the inner rowset, not the host model — so `Column.sql = "(SELECT MAX(score) FROM other) + score"` inlines the outer `score` but leaves the inner one alone.
 
@@ -302,7 +302,7 @@ columns:
   - {name: balance, sql: balance, type: DOUBLE}
 ```
 
-`last(balance, updated_at)` gives the most recent balance per group; `first(balance, updated_at)` the earliest. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time column is specified, ordering resolves via: the first DATE / TIMESTAMP row-level dimension in the query → the first time dimension's untruncated column or expression → the model's `default_time_dimension` (its only DATE / TIMESTAMP column when unset). Whichever column wins is an input of the aggregation: if it, or a derived definition it names, crosses a join hop that is not provably to-one from the aggregation's root, the query fails with the input-safety error exactly as an explicit ranking argument would. The value and the ranking key may each be a row-level expression (`first(amount - customers.discount)`, `last(balance, coalesce(updated_at, created_at))`), and a computed dimension typed DATE / TIMESTAMP counts as a DATE / TIMESTAMP dimension in that order.
+`last(balance, updated_at)` gives the most recent balance per group; `first(balance, updated_at)` the earliest. A row whose ranking key is NULL is never picked, on every database; a group whose keys are all NULL returns NULL. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time column is specified, ordering resolves via: the first DATE / TIMESTAMP row-level dimension in the query → the first time dimension's untruncated column or expression → the model's `default_time_dimension` (its only DATE / TIMESTAMP column when unset). Whichever column wins is an input of the aggregation: if it, or a derived definition it names, crosses a join hop that is not provably to-one from the aggregation's root, the query fails with the input-safety error exactly as an explicit ranking argument would. The value and the ranking key may each be a row-level expression (`first(amount - customers.discount)`, `last(balance, coalesce(updated_at, created_at))`), and a computed dimension typed DATE / TIMESTAMP counts as a DATE / TIMESTAMP dimension in that order.
 
 Not to be confused with the [`last()` formula function](formulas.md#first-and-last-functions) — a window-function transform that broadcasts a value across all rows. Same name, different layer.
 
@@ -320,7 +320,7 @@ aggregations:
 
 Use at query time: `weighted_avg(price, weight=quantity)`, `trimmed_mean(revenue, low=10, high=1000)`. An aggregation entry can also override a built-in's default parameters without redefining the SQL, or give a built-in other than `first`/`last` a `formula`, which then replaces its SQL. Like columns and measures, aggregations accept an optional `meta` dict for caller bookkeeping. A formula that does not parse as SQL is rejected when the model is saved, and so is a parameter whose default `sql` is empty, whose name is `value` (which always stands for the aggregated column) or `window` (the trailing-window argument), or that the formula never references; a query argument the aggregation does not accept is rejected, listing the accepted names. A built-in aggregation's name, in any case, resolves only to an aggregation named exactly that built-in's lowercase name.
 
-An aggregation may take the name of a library function or function spelling (`reverse`, `left`, `strpos`, …): inside its own model every call over that model's columns — `reverse(a)`, `a:reverse`, `t.reverse(a)`, in any letter case — is the aggregation, the library function stays reachable everywhere else (another model's columns, a literal argument), and saving, loading and every query response that resolves through it carry a `library_name_shadow` warning; transform, date-part and granularity names stay reserved.
+An aggregation may take the name of a library function or function spelling (`reverse`, `left`, `strpos`, …): inside its own model every call over that model's columns — `reverse(a)`, `t.reverse(a)`, in any letter case — is the aggregation, the library function stays reachable everywhere else (another model's columns, a literal argument), and saving, loading and every query response that resolves through it carry a `library_name_shadow` warning; transform, date-part and granularity names stay reserved.
 
 A placeholder inside a quoted string literal (`SUM({value}) * CAST('{n}' AS DOUBLE)`) splices its parameter's value and so needs a literal one, a number or a string; write a literal brace there as `{{` or `}}`.
 
@@ -379,7 +379,7 @@ joins:
     cardinality: many_to_one   # many orders → one customer
 ```
 
-`cardinality` is one of `one_to_one`, `one_to_many`, `many_to_one`, `many_to_many` (omit it when undetermined). It is **orthogonal to the join type** — joins stay LEFT regardless — but it is load-bearing for [cross-model measures](queries.md#cross-model-measures): a dimension reached over a hop that is provably to-one (a primary key on the far side, or a declared `one_to_one`/`many_to_one`) gets the **exact** per-group value, while an unproven hop makes the measure **broadcast** across that dimension with a response warning. Declaring cardinality (or primary keys) is how you make such dimensions exact. Proof is **per orientation**: a declared `customers → orders (one_to_many)` edge traversed in reverse is a provable `many_to_one` hop, while inverting a to-one hop yields a fan-out orientation that broadcasts.
+`cardinality` is one of `one_to_one`, `one_to_many`, `many_to_one`, `many_to_many` (omit it when undetermined). It is **orthogonal to the join type** — joins stay LEFT regardless — but it is load-bearing for [cross-model measures](queries.md#cross-model-measures): a dimension reached over a hop that is provably to-one (a primary key on the far side, or a declared `one_to_one`/`many_to_one`) gets the **exact** per-group value, while an unproven hop makes the measure **associate** across that dimension (each cell aggregating the distinct rows reaching it, cells possibly overlapping) with a response warning. Declaring cardinality (or primary keys) is how you make such dimensions partition the rows. Proof is **per orientation**: a declared `customers → orders (one_to_many)` edge traversed in reverse is a provable `many_to_one` hop, while inverting a to-one hop yields a fan-out orientation that associates.
 
 Auto-ingestion fills it structurally from key constraints: an FK join defaults to `many_to_one`, upgrading to `one_to_one` when the source key is itself unique. To infer it from the actual data instead, run:
 
@@ -392,7 +392,7 @@ Detection full-scans each side of the join and reports the observed arity, a `ve
 
 A side with no non-null key rows reports `no_evidence` and detects nothing: an empty scan would trivially look unique, and that is not weak evidence — it is none. Re-run once the table has data. A join whose scan fails outright reports `scan_failed` and does not stop the rest of the report. Full verdict table: [CLI reference](../reference/cli.md#slayer-validate-models).
 
-`validate-models` also prints a **Join safety** section with one finding per declared edge, reporting the provability of **both orientations**; an edge neither declared `many_to_one`/`one_to_one` nor structurally proven (via a primary/unique key on the target side) is flagged as a warning — cross-model measures crossing such a join [broadcast](queries.md#cross-model-measures) instead of computing per-group values, so each finding names the remedy.
+`validate-models` also prints a **Join safety** section with one finding per declared edge, reporting the provability of **both orientations**; an edge neither declared `many_to_one`/`one_to_one` nor structurally proven (via a primary/unique key on the target side) is flagged as a warning — dimensions across such a join are [associated](queries.md#cross-model-measures) rather than partitioning the rows, and aggregation inputs across it are refused, so each finding names the remedy.
 
 ### Path-based table aliases
 
@@ -592,7 +592,7 @@ Query results use `model_name.column_name` keys. Aggregations map to keys: `sum(
 
 ## Schema versioning
 
-Every persisted SLayer entity (`SlayerModel`, `SlayerQuery`, `DatasourceConfig`, `Memory`) carries a `version: int` field — currently `18` for `SlayerModel`, `9` for `SlayerQuery`, `3` for `DatasourceConfig`, `7` for `Memory`. Behaviour:
+Every persisted SLayer entity (`SlayerModel`, `SlayerQuery`, `DatasourceConfig`, `Memory`) carries a `version: int` field — currently `19` for `SlayerModel`, `11` for `SlayerQuery`, `3` for `DatasourceConfig`, `8` for `Memory`. Behaviour:
 
 - **On save**, SLayer always writes the current schema version.
 - **On load**, an older `version` triggers a chain of pure dict→dict converters before Pydantic validation. Hand-edited and older files keep working as the schema evolves.

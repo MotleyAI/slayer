@@ -1,7 +1,7 @@
 """Shared fixtures for DEV-1800 — change/change_pct over a cross-model inner
 aggregate combined into a composite.
 
-The failing composite class (``change(cm) + amount:sum`` etc.) is exercised on
+The failing composite class (``change(cm) + sum(amount)`` etc.) is exercised on
 the DEV-1750 dataset (imported where used — it carries ``wscaled_sum`` and
 multi-order customers). This module adds the *attributable* dataset: the
 cross-model inner varies along the query's time axis (customer signup month),

@@ -1,9 +1,9 @@
-"""DEV-1841 golden SQL (task 3.2 / 4.5) — the two-level association producer
+"""Golden SQL — the two-level association producer
 across seven Tier-1 dialects, plus cross-model broadcast byte-identity
 tripwires.
 
-Blessed BEFORE implementation, so every ``bcast/`` case pins today's bytes (the
-default must stay byte-identical) and every ``assoc/`` case records today's
+Blessed BEFORE implementation, so every ``bcast/`` case pins today's bytes
+(broadcast must stay byte-identical) and every ``assoc/`` case records today's
 feature-missing raise. At implementation each ``assoc/`` case's flip to the
 nested GROUP BY enters ALLOWED_DELTAS, is re-blessed, and the manifest is
 emptied. ``test_association_cases_emit_two_level_group_by`` is this module's
@@ -32,13 +32,13 @@ _MODEL_SETS = {
     "ext": dev1841_models,
 }
 
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
-NC = ModelMeasure(formula="customers.*:count", name="nc")
-POP = ModelMeasure(formula="customers.regions.pop:sum", name="pop")
-MED = ModelMeasure(formula="customers.spend:median", name="med")
-RENT = ModelMeasure(formula="stores.rent:sum", name="rent")
-GS = ModelMeasure(formula="customers.gold_spend:sum", name="gs")
-PART = ModelMeasure(formula="customers.spend:sum(partition_by=status)", name="cm")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+NC = ModelMeasure(formula="count(customers.*)", name="nc")
+POP = ModelMeasure(formula="sum(customers.regions.pop)", name="pop")
+MED = ModelMeasure(formula="median(customers.spend)", name="med")
+RENT = ModelMeasure(formula="sum(stores.rent)", name="rent")
+GS = ModelMeasure(formula="sum(customers.gold_spend)", name="gs")
+PART = ModelMeasure(formula="sum(customers.spend, partition_by=status)", name="cm")
 
 
 def _cases() -> dict:
@@ -57,7 +57,7 @@ def _cases() -> dict:
                                        "kw": {"dimensions": ["status"], "measures": [GS]}},
         "assoc/explicit_partition": {"models": "default", "mode": "associate",
                                      "kw": {"dimensions": ["status"], "measures": [PART]}},
-        "bcast/spend_by_status": {"models": "default", "mode": None,
+        "bcast/spend_by_status": {"models": "default", "mode": "broadcast",
                                   "kw": {"dimensions": ["status"], "measures": [CM]}},
         "bcast/attributable_tier": {"models": "default", "mode": None,
                                     "kw": {"dimensions": ["customers.tier"], "measures": [CM]}},

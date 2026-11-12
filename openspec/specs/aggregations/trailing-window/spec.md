@@ -113,9 +113,10 @@ yields 0, never 1 for the cell's own grain row.
 ranks earliest or latest by the ranking time column, resolved as for plain `first`/`last`:
 the explicit positional argument, else the query's temporal row dimension, else the time
 dimension's raw column, else the model's `default_time_dimension`. An empty interval
-SHALL yield NULL. NULL ranking keys and ties SHALL order per the dialect's native
-ordering, as for plain `first`/`last`; a row whose ranking key is NULL is still an
-interval member.
+SHALL yield NULL. A row whose ranking key is NULL SHALL never be picked, as for plain
+`first`/`last` (`aggregations/functional-form` › first and last never pick a NULL ranking
+key), so an interval whose rows all have a NULL ranking key SHALL yield NULL; ties SHALL
+order per the dialect's native ordering.
 
 #### Scenario: Default ranking is the window axis
 - **WHEN** the rows of the first scenario are queried with `first(amount, window='90d')`
@@ -126,14 +127,14 @@ interval member.
 #### Scenario: Explicit ranking column with NULL keys
 - **WHEN** the same rows carry `updated_at` = 2024-01-02, 2024-01-16, NULL, 2024-03-25,
   2024-03-16 and the query selects `last(amount, updated_at, window='90d')`
-- **THEN** last is `{Jan 200, Feb 200, Mar 400}`: February skips the NULL-keyed row
-  under descending native ordering on SQLite and DuckDB, and March picks the row with
-  the latest `updated_at` rather than the latest `created_at`
+- **THEN** last is `{Jan 200, Feb 200, Mar 400}` on every Tier-1 dialect: February skips the
+  NULL-keyed row, and March picks the row with the latest `updated_at` rather than the latest
+  `created_at`
 
 #### Scenario: Interval whose only rows have NULL ranking keys
 - **WHEN** the same query groups by `region` and the EU/February cell's interval holds
   only the NULL-keyed 300 row
-- **THEN** `last(amount, updated_at, window='90d')` for that cell is 300, not NULL
+- **THEN** `last(amount, updated_at, window='90d')` for that cell is NULL
 
 #### Scenario: Cross-model windowed last
 - **WHEN** a query rooted at `orders` over the `customers.signup_at` month time dimension

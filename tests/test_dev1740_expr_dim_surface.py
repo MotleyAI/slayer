@@ -16,8 +16,11 @@ from slayer.core.query import ColumnRef, ComputedDimension, SlayerQuery
 
 
 def _dims(dimensions):
-    return SlayerQuery(source_model="orders", dimensions=dimensions,
-                       measures=[{"formula": "amount:sum"}]).dimensions
+    return SlayerQuery.model_validate({
+        "source_model": "orders",
+        "dimensions": dimensions,
+        "measures": [{"formula": "sum(amount)"}],
+    }).dimensions
 
 
 class TestDictForm:

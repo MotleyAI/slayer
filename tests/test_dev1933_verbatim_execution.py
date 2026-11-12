@@ -313,16 +313,17 @@ class TestModelExtensionRegexColumnEndToEnd:
     async def test_regex_extension_column_as_dimension(self, tmp_path) -> None:
         engine = await self._seed_engine(tmp_path)
         query = SlayerQuery(
-            source_model=ModelExtension(
+            source_model="orders",
+            extensions=[ModelExtension(
                 source_name="orders",
                 columns=[Column(
                     name="rx",
                     sql=f"CASE WHEN status = '{_REGEX_LITERAL}' THEN 1 ELSE 0 END",
                     type=DataType.DOUBLE,
                 )],
-            ),
+            )],
             dimensions=[ColumnRef(name="rx")],
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         result = await engine.execute(query=query)
         by_rx = {int(row["orders.rx"]): row["orders._count"] for row in result.data}

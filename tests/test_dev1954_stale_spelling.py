@@ -45,7 +45,7 @@ def _with_query_backed(models: List[SlayerModel]) -> List[SlayerModel]:
         name="region_amounts", data_source="test",
         source_queries=[orders_q(
             dimensions=["customers.region_id", "customers.regions.rname"],
-            measures=[{"formula": "amount:sum", "name": "amt"}])])]
+            measures=[{"formula": "sum(amount)", "name": "amt"}])])]
 
 
 def _parallel_models() -> List[SlayerModel]:
@@ -81,7 +81,7 @@ def _ambiguous_qb_models() -> List[SlayerModel]:
     return [*models, SlayerModel(
         name="pq", data_source="test", source_queries=[orders_q(
             dimensions=["customers.region_id", "customers.hr.rname", "customers.hr2.rname"],
-            measures=[{"formula": "amount:sum", "name": "amt"}])])]
+            measures=[{"formula": "sum(amount)", "name": "amt"}])])]
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -98,13 +98,13 @@ async def parallel_engine(request) -> AsyncIterator[SlayerQueryEngine]:
 
 def _stage1(**kw) -> SlayerQuery:
     kw.setdefault("dimensions", ["customers.regions.rname"])
-    kw.setdefault("measures", ["amount:sum"])
+    kw.setdefault("measures", ["sum(amount)"])
     return slayer_query(name="s1", source_model="orders", **kw)
 
 
 def _stage2(*, dim: str, **kw) -> SlayerQuery:
     return slayer_query(source_model="s1", dimensions=[dim],
-                       measures=["amount_sum:sum"], **kw)
+                       measures=["sum(amount_sum)"], **kw)
 
 
 def _amounts(*, resp, key: str) -> dict:
@@ -125,7 +125,7 @@ class TestStageColumnRespellings:
         bundle = ResolvedSourceBundle(dialect="postgres", source_model=models[0],
                                       referenced_models=models[1:])
         planned = plan_stages(
-            queries=[stage, slayer_query(source_model=stage.name, measures=["*:count"])],
+            queries=[stage, slayer_query(source_model=stage.name, measures=["count(*)"])],
             bundle=bundle)
         schema = planned[0].stage_schema
         assert schema is not None
@@ -133,8 +133,8 @@ class TestStageColumnRespellings:
 
     def test_one_named_hop(self) -> None:
         cols = self._schema(models=dev1954_models(), stage=_stage1(
-            measures=["customers.regions.pop:max",
-                      {"formula": "customers.hr.pop:min", "name": "explicit"}]))
+            measures=["max(customers.regions.pop)",
+                      {"formula": "min(customers.hr.pop)", "name": "explicit"}]))
         assert set(cols) == {CANON, "customers__hr__pop_max", "explicit"}
         assert set(cols[CANON].respellings) == {STALE}
         assert set(cols["customers__hr__pop_max"].respellings) == \
@@ -143,9 +143,9 @@ class TestStageColumnRespellings:
 
     @pytest.mark.parametrize("stage", [
         _stage1(dimensions=[], measures=["max(customers.regions.pop)"]),
-        _stage1(dimensions=[], measures=["customers.regions.*:count"]),
+        _stage1(dimensions=[], measures=["count(customers.regions.*)"]),
         _stage1(dimensions=[], measures=["customers.regions.maxpop"]),
-        _stage1(dimensions=[], measures=["amount:sum"], time_dimensions=[
+        _stage1(dimensions=[], measures=["sum(amount)"], time_dimensions=[
             {"dimension": "customers.regions.founded_at", "granularity": "year"}]),
     ], ids=["functional", "star", "saved", "time"])
     def test_every_path_derived_form(self, stage) -> None:
@@ -163,7 +163,7 @@ class TestStageColumnRespellings:
             ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]],
                       name="buyer") if j.target_model == "customers" else j
             for j in orders.joins]
-        cols = self._schema(models=models, stage=_stage1(measures=["customers.regions.pop:max"]))
+        cols = self._schema(models=models, stage=_stage1(measures=["max(customers.regions.pop)"]))
         assert set(cols["buyer__hr__rname"].respellings) == {
             "customers__hr__rname", "buyer__regions__rname", STALE}
         assert set(cols["buyer__hr__pop_max"].respellings) == {
@@ -172,19 +172,19 @@ class TestStageColumnRespellings:
 
     def test_explicit_name_with_a_path_prefix_has_none(self) -> None:
         cols = self._schema(models=dev1954_models(), stage=_stage1(measures=[
-            {"formula": "customers.hr.pop:min", "name": "customers__hr__custom"}]))
+            {"formula": "min(customers.hr.pop)", "name": "customers__hr__custom"}]))
         assert cols["customers__hr__custom"].respellings == ()
 
     def test_pass_through_inherits(self) -> None:
-        stage1 = _stage1(measures=["customers.regions.pop:max"])
+        stage1 = _stage1(measures=["max(customers.regions.pop)"])
         stage2 = slayer_query(name="s2", source_model="s1", dimensions=[CANON],
-                              measures=["customers__hr__pop_max:max",
-                                        {"formula": "customers__hr__pop_max:min",
+                              measures=["max(customers__hr__pop_max)",
+                                        {"formula": "min(customers__hr__pop_max)",
                                          "name": "customers__hr__lo"}])
         bundle = ResolvedSourceBundle(dialect="postgres", source_model=dev1954_models()[0],
                                       referenced_models=dev1954_models()[1:])
         planned = plan_stages(queries=[stage1, stage2, slayer_query(
-            source_model="s2", measures=["*:count"])], bundle=bundle)
+            source_model="s2", measures=["count(*)"])], bundle=bundle)
         schema = planned[1].stage_schema
         assert schema is not None
         cols = {c.name: c for c in schema.columns}
@@ -215,8 +215,8 @@ class TestDownstreamStageStaleReference:
 
     async def test_extension_over_the_sibling_stage(self, engine) -> None:
         def ext(dim: str) -> SlayerQuery:
-            return slayer_query(source_model={"source_name": "s1"}, dimensions=[dim],
-                                measures=["amount_sum:sum"])
+            return slayer_query(source_model="s1", extensions=[{"source_name": "s1"}], dimensions=[dim],
+                                measures=["sum(amount_sum)"])
 
         stale = await engine.execute([_stage1(), ext(STALE)])
         canon = await engine.execute([_stage1(), ext(CANON)])
@@ -226,9 +226,9 @@ class TestDownstreamStageStaleReference:
 
     async def test_survives_a_chain_of_stages(self, engine) -> None:
         stage2 = slayer_query(name="s2", source_model="s1", dimensions=[STALE],
-                              measures=["amount_sum:sum"])
+                              measures=["sum(amount_sum)"])
         resp = await engine.execute([_stage1(), stage2, slayer_query(
-            source_model="s2", dimensions=[STALE], measures=["amount_sum_sum:sum"])])
+            source_model="s2", dimensions=[STALE], measures=["sum(amount_sum_sum)"])])
         assert {r[f"s2.{CANON}"]: r["s2.amount_sum_sum_sum"] for r in resp.data} \
             == AMOUNT_BY_NAME
         warnings = stale_warnings(resp)
@@ -252,9 +252,9 @@ class TestDownstreamStageStaleReference:
             f"region_amounts__{STALE}", f"region_amounts__{CANON}")
 
     async def test_exact_name_wins(self, engine) -> None:
-        stage1 = _stage1(measures=[{"formula": "amount:sum", "name": STALE}])
+        stage1 = _stage1(measures=[{"formula": "sum(amount)", "name": STALE}])
         resp = await engine.execute([stage1, slayer_query(
-            source_model="s1", measures=[{"formula": f"{STALE}:sum", "name": "t"}])])
+            source_model="s1", measures=[{"formula": f"sum({STALE})", "name": "t"}])])
         assert resp.data[0]["s1.t"] == pytest.approx(167.0)
         assert stale_warnings(resp) == []
 
@@ -280,9 +280,9 @@ class TestQueryBackedConsumer:
 
     async def test_query_on_the_query_backed_model(self, engine) -> None:
         stale = await engine.execute(slayer_query(
-            source_model="region_amounts", dimensions=[STALE], measures=["amt:sum"]))
+            source_model="region_amounts", dimensions=[STALE], measures=["sum(amt)"]))
         canon = await engine.execute(slayer_query(
-            source_model="region_amounts", dimensions=[CANON], measures=["amt:sum"]))
+            source_model="region_amounts", dimensions=[CANON], measures=["sum(amt)"]))
         assert stale.columns == canon.columns
         assert sorted(map(repr, stale.data)) == sorted(map(repr, canon.data))
         _assert_one_stale(stale)
@@ -304,15 +304,15 @@ class TestQueryBackedConsumer:
         await engine.storage.save_model(SlayerModel(
             name="ra2", data_source="test", source_queries=[slayer_query(
                 source_model="region_amounts", dimensions=[CANON],
-                measures=[{"formula": "amt:sum", "name": "amt2"}])]))
+                measures=[{"formula": "sum(amt)", "name": "amt2"}])]))
         resp = await engine.execute(slayer_query(
-            source_model="ra2", dimensions=[STALE], measures=["amt2:sum"]))
+            source_model="ra2", dimensions=[STALE], measures=["sum(amt2)"]))
         assert {r[f"ra2.{CANON}"] for r in resp.data} == {"North", "South", None}
         _assert_one_stale(resp)
 
     async def test_stored_query_keeps_its_spelling(self, engine) -> None:
         await engine.execute(slayer_query(
-            source_model="region_amounts", dimensions=[STALE], measures=["amt:sum"]))
+            source_model="region_amounts", dimensions=[STALE], measures=["sum(amt)"]))
         model = await engine.storage.get_model("region_amounts", data_source="test")
         assert model is not None
         assert model.source_queries
@@ -332,7 +332,7 @@ class TestQueryBackedConsumer:
 class TestEdgeNamedLater:
     async def test_existing_reference_keeps_resolving(self, unnamed_engine) -> None:
         query = slayer_query(source_model="region_amounts", dimensions=[STALE],
-                            measures=["amt:sum"])
+                            measures=["sum(amt)"])
         before = await unnamed_engine.execute(query)
         assert stale_warnings(before) == []
 

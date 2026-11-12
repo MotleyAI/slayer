@@ -7,8 +7,8 @@ The DEV-1900 ``orders → customers → regions → region_events`` graph with t
 * ``regions.pop`` labelled ``Population`` (so measure metadata surfaces);
 * ``regions.rname`` (physical copy of ``name``) and ``regions.founded_at``
   (North 2020-01-15, South 2021-06-15);
-* ``regions.maxpop`` (saved ``pop:max``), ``customers.tot_spend`` (saved
-  ``spend:sum``), ``orders.rp`` (saved ``customers.regions.pop:max``);
+* ``regions.maxpop`` (saved ``max(pop)``), ``customers.tot_spend`` (saved
+  ``sum(spend)``), ``orders.rp`` (saved ``max(customers.regions.pop)``);
 * ``orders.region_label`` (Mode-A ``customers.regions.rname``),
   ``orders.north_amount`` (``amount`` masked by ``customers.regions.rname = 'North'``) and the
   aggregation ``orders.wpop`` whose ``weight`` defaults to ``customers.regions.pop``.
@@ -61,7 +61,7 @@ def dev1954_models(*, named: bool = True) -> List[SlayerModel]:
         if j.target_model == "regions" else j
         for j in customers.joins
     ]
-    customers.measures.append(ModelMeasure(name="tot_spend", formula="spend:sum"))
+    customers.measures.append(ModelMeasure(name="tot_spend", formula="sum(spend)"))
 
     regions = _by_name(models, "regions")
     regions.columns = [c.model_copy(update={"label": "Population"}) if c.name == "pop" else c
@@ -69,7 +69,7 @@ def dev1954_models(*, named: bool = True) -> List[SlayerModel]:
     regions.columns.append(Column(name="rname", type=DataType.TEXT, label="Region name"))
     regions.columns.append(Column(name="founded_at", type=DataType.TIMESTAMP,
                                   label="Founded"))
-    regions.measures.append(ModelMeasure(name="maxpop", formula="pop:max"))
+    regions.measures.append(ModelMeasure(name="maxpop", formula="max(pop)"))
 
     orders = _by_name(models, "orders")
     orders.columns.append(Column(
@@ -77,7 +77,7 @@ def dev1954_models(*, named: bool = True) -> List[SlayerModel]:
         filter="customers.regions.rname = 'North'"))
     orders.columns.append(Column(
         name="region_label", type=DataType.TEXT, sql="customers.regions.rname"))
-    orders.measures.append(ModelMeasure(name="rp", formula="customers.regions.pop:max"))
+    orders.measures.append(ModelMeasure(name="rp", formula="max(customers.regions.pop)"))
     orders.aggregations.append(Aggregation(
         name="wpop", formula="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="customers.regions.pop")]))

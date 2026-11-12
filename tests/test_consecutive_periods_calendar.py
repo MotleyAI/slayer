@@ -113,12 +113,12 @@ class TestCalendarStreak:
             "name": "s1", "source_model": "orders",
             "time_dimensions": [{"dimension": "order_date", "granularity": "month"}],
             "filters": ["customer_id = 1"],
-            "measures": [{"formula": "amount:sum", "name": "total"}],
+            "measures": [{"formula": "sum(amount)", "name": "total"}],
         })
         outer = SlayerQuery.model_validate({
             "source_model": "s1",
             "time_dimensions": [{"dimension": "order_date", "granularity": "month"}],
-            "measures": [{"formula": "consecutive_periods(total:sum > 100)", "name": "v"}],
+            "measures": [{"formula": "consecutive_periods(sum(total) > 100)", "name": "v"}],
         })
         resp = await exec_engine.execute(query=[inner, outer])
         got = _unique([(month_of(r["s1.order_date"]), int(r["s1.v"])) for r in resp.data])
@@ -179,10 +179,19 @@ class TestSubDayTimeOffsets:
 
 
 class TestPeriodKeywordRejected:
-    async def test_period_keyword_raises(self) -> None:
+    async def test_period_is_not_a_keyword_but_a_rejected_comparison(self) -> None:
         models = calendar_models()
-        query = orders_query(formula="consecutive_periods(sum(amount) > 100, period='year')")
-        with pytest.raises(ValueError, match=r"consecutive_periods.*'period'"):
+
+        async def generate(formula: str) -> None:
             await _engine_generate(
-                query=query, model=models[0], extra_models=models[1:], dialect="duckdb",
+                query=orders_query(formula=formula), model=models[0], extra_models=models[1:], dialect="duckdb",
             )
+
+        # `period` is not a parameter of consecutive_periods, so it fails like its parenthesised twin.
+        with pytest.raises(ValueError) as twin:
+            await generate("consecutive_periods(sum(amount) > 100, (period='year'))")
+        with pytest.raises(ValueError) as info:
+            await generate("consecutive_periods(sum(amount) > 100, period='year')")
+        assert type(info.value) is type(twin.value), str(info.value)
+        assert "keyword argument 'period'" not in str(info.value)
+        assert "==" not in str(info.value)

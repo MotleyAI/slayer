@@ -77,19 +77,19 @@ class TestSchema:
 
 class TestFunctionalForms:
     def test_functional_dimension_over_an_expression(self) -> None:
-        functional = _q(dimensions=[f"month({EFF})"])
+        functional = _q(dimensions=[f"date_trunc('month', {EFF})"])
         explicit = _q(time_dimensions=[{"dimension": EFF, "granularity": "month"}])
         assert functional == explicit
         assert functional.dimensions is None
 
     def test_functional_time_dimension_string_over_a_cast(self) -> None:
-        functional = _q(time_dimensions=[f"month({CAST_TXT})"])
+        functional = _q(time_dimensions=[f"date_trunc('month', {CAST_TXT})"])
         explicit = _q(time_dimensions=[{"dimension": CAST_TXT, "granularity": "month"}])
         assert functional == explicit
 
     def test_functional_order_of_appearance_with_expressions(self) -> None:
         query = _q(time_dimensions=[{"dimension": "created_at", "granularity": "year"}],
-                   dimensions=["region", f"month({EFF})", f"week({CAST_TXT})"])
+                   dimensions=["region", f"date_trunc('month', {EFF})", f"date_trunc('week', {CAST_TXT})"])
         assert [(t.dimension, t.granularity) for t in _tds(query)] == [
             ("created_at", "year"), (EFF, "month"), (CAST_TXT, "week"),
         ]
@@ -97,16 +97,17 @@ class TestFunctionalForms:
         assert [d.name for d in query.dimensions] == ["region"]
 
     def test_non_temporal_argument_is_not_a_shape_error(self) -> None:
-        query = _q(dimensions=["month(upper(status))"])
+        query = _q(dimensions=["date_trunc('month', upper(status))"])
         assert [(t.dimension, t.granularity) for t in _tds(query)] == [("upper(status)", "month")]
 
-    @pytest.mark.parametrize("entry", ["month()", "month(a, b)", "month(*)", "month(created_at, granularity=2)"])
+    @pytest.mark.parametrize("entry", ["date_trunc('month')", "date_trunc('month', a, b)", "date_trunc('month', *)",
+                                       "date_trunc('month', created_at, granularity=2)"])
     @pytest.mark.parametrize("field", ["dimensions", "time_dimensions"])
     def test_wrong_shapes_still_rejected(self, entry: str, field: str) -> None:
         with pytest.raises((GranularityCallError, ValidationError)) as ei:
             _q(**{field: [entry]})
         msg = str(ei.value)
-        assert "gran(" in msg
+        assert "date_trunc('<unit>', expr)" in msg
         assert "month" in msg
         assert "quarter" in msg
 
@@ -168,9 +169,9 @@ class TestNames:
 
 
 class TestDedupe:
-    @pytest.mark.parametrize("second", [f"month({EFF})", {"dimension": EFF, "granularity": "month"}])
+    @pytest.mark.parametrize("second", [f"date_trunc('month', {EFF})", {"dimension": EFF, "granularity": "month"}])
     def test_exact_duplicate_expression_dedupes(self, second: Any) -> None:
-        query = _q(dimensions=[f"month({EFF})"], time_dimensions=[second])
+        query = _q(dimensions=[f"date_trunc('month', {EFF})"], time_dimensions=[second])
         assert [(t.dimension, t.granularity) for t in _tds(query)] == [(EFF, "month")]
 
     def test_model_prefixed_column_dedupes(self) -> None:

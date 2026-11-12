@@ -171,4 +171,4 @@ class TestFacadeAgreement:
         assert checked > 0
         assert "flag_avg" in by_name
         assert by_name["flag_sum"].data_type is DataType.INT
-        assert by_name["flag_wsum"].data_type is DataType.BOOLEAN
+        assert by_name["flag_wsum"].data_type is None

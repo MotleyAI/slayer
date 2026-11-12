@@ -35,6 +35,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The forward-merge spec guard walks history to the merge bases with 1.x.
+          fetch-depth: 0
 
       - uses: ./.github/actions/poetry-env
         with:
@@ -45,6 +48,15 @@ jobs:
 
       - name: Check living-architecture cross-walk
         run: poetry run la-arch-check
+
+      - name: Forward-merge spec guard (1.x requirements survive or are ledgered)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git fetch --no-tags origin +refs/heads/1.x:refs/remotes/origin/1.x
+          poetry run python -m scripts.forward_merge_specs --base "$BASE_SHA" --head "$HEAD_SHA" --one-x origin/1.x
 
   unit-tests:
     runs-on: ubuntu-latest

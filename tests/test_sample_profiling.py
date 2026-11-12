@@ -15,7 +15,7 @@ import slayer.inspect.model_render as model_render
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
-from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery
+from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.engine.profiling import (
     ProfileOutcome,
     ensure_samples_fresh,
@@ -109,7 +109,7 @@ def _record(*, engine: SlayerQueryEngine, monkeypatch) -> list[SlayerQuery]:
 
 
 def _numeric_batches(log: list[SlayerQuery]) -> list[SlayerQuery]:
-    return [q for q in log if isinstance(q.source_model, ModelExtension)]
+    return [q for q in log if bool(q.extensions)]
 
 
 def _categorical(log: list[SlayerQuery]) -> list[SlayerQuery]:
@@ -117,7 +117,7 @@ def _categorical(log: list[SlayerQuery]) -> list[SlayerQuery]:
 
 
 def _probes(log: list[SlayerQuery]) -> list[SlayerQuery]:
-    return [q for q in log if not q.dimensions and not isinstance(q.source_model, ModelExtension)]
+    return [q for q in log if not q.dimensions and not bool(q.extensions)]
 
 
 def _count_persists(*, storage: StorageBackend, monkeypatch) -> list[str]:

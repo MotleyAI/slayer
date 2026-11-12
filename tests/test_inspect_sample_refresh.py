@@ -31,7 +31,7 @@ import pytest_asyncio
 
 import slayer.inspect.model_render as mr
 from slayer.core.enums import DataType
-from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.core.query import SlayerQuery
 from slayer.core.models import (
     Aggregation,
     Column,
@@ -91,7 +91,7 @@ async def inspect_setup(tmp_path) -> AsyncIterator[tuple[InspectService, object]
                    description="Hidden but inspectable.", hidden=True),
         ],
         measures=[
-            ModelMeasure(name="aov", formula="amount:sum / *:count",
+            ModelMeasure(name="aov", formula="sum(amount) / count(*)",
                          description="Average order value."),
         ],
         aggregations=[
@@ -113,7 +113,7 @@ def _count_profile_calls(monkeypatch, svc: InspectService) -> list:
 
     async def counting(*args, **kwargs):
         q = kwargs.get("query", args[0] if args else None)
-        if isinstance(q, SlayerQuery) and (q.dimensions or isinstance(q.source_model, ModelExtension)):
+        if isinstance(q, SlayerQuery) and (q.dimensions or bool(q.extensions)):
             calls.append(q)
         return await real(*args, **kwargs)
 
@@ -222,7 +222,7 @@ async def test_measure_does_not_refresh(inspect_setup, monkeypatch) -> None:
     out = await svc.inspect(
         reference="ds.orders.aov", entity_type="measure", compact=False,
     )
-    assert "amount:sum / *:count" in out
+    assert "sum(amount) / count(*)" in out
     assert calls == [], "measures have no sample concept"
 
 

@@ -28,6 +28,7 @@ from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.compile.discovery import RootDisposition
 from slayer.engine.compile.stages import _regroup_producer_prebound
 from slayer.engine.plan import plan_query
+from slayer.ir.prebound import ModePolicy
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.sqlite_conn import transaction
@@ -47,7 +48,7 @@ R = "avg(sum(amount, partition_by=[city, region]), partition_by=region)"
 RLEVEL = {"expression": f"CASE WHEN {R} > 50 THEN 'hi' ELSE 'lo' END", "name": "rlevel"}
 TLEVEL = {"expression": f"CASE WHEN rank({R}, direction='desc') > 1 THEN 'top' ELSE 'rest' END",
           "name": "tlevel"}
-TOT = ModelMeasure(formula="amount:sum", name="tot")
+TOT = ModelMeasure(formula="sum(amount)", name="tot")
 
 R_BY_REGION = {"North": 45.0, "South": 70.0, "East": 60.0, "Gap": 10.0, "Void": None}
 TOT_BY_REGION = {"North": 90.0, "South": 140.0, "East": 180.0, "Gap": 20.0, "Void": None}
@@ -56,7 +57,7 @@ RANK_BY_REGION = {"South": 1, "East": 2, "North": 3, "Gap": 4, "Void": None}
 TLEVEL_BY_REGION = {"South": "rest", "East": "top", "North": "top", "Gap": "top",
                     "Void": "rest"}
 
-PLAIN_RANK = "rank(amount:sum(partition_by=region), direction='desc')"
+PLAIN_RANK = "rank(sum(amount, partition_by=region), direction='desc')"
 PBAND = {"expression": f"CASE WHEN {PLAIN_RANK} > 1 THEN 'top' ELSE 'rest' END",
          "name": "pband"}
 
@@ -66,7 +67,7 @@ FINE_DIM = {"expression": f"CASE WHEN {FINE} > 30 THEN 'hi' ELSE 'lo' END", "nam
 FINE_TOT = {("North", "lo"): 30.0, ("North", "hi"): 60.0, ("South", "hi"): 140.0,
             ("East", "hi"): 180.0, ("Gap", "lo"): 20.0, ("Void", "lo"): None}
 
-CITY_BAND = {"expression": "CASE WHEN amount:sum(partition_by=[city, region]) > 45 "
+CITY_BAND = {"expression": "CASE WHEN sum(amount, partition_by=[city, region]) > 45 "
                            "THEN 'hi' ELSE 'lo' END", "name": "band"}
 
 CHAIN_R = "avg(sum(amount, partition_by=customer_id), partition_by=customers.regions.name)"
@@ -105,14 +106,14 @@ def _approx(d: dict) -> dict:
 class TestReaggregationInDimensionAndElsewhere:
     async def test_measure_typed_filter(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", RLEVEL], measures=[TOT], filters=[f"{R} < amount:sum"]))
+            dimensions=["region", RLEVEL], measures=[TOT], filters=[f"{R} < sum(amount)"]))
         got = {(r["sales.region"], r["sales.rlevel"]): r["sales.tot"] for r in resp.data}
         assert got == _approx({("East", "hi"): 180.0, ("Gap", "lo"): 20.0,
                                ("North", "lo"): 90.0, ("South", "hi"): 140.0})
 
     async def test_measure_typed_filter_keeping_nothing(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", RLEVEL], measures=[TOT], filters=[f"{R} > amount:sum"]))
+            dimensions=["region", RLEVEL], measures=[TOT], filters=[f"{R} > sum(amount)"]))
         assert resp.data == []
 
     async def test_order_target(self, exec_engine):
@@ -198,14 +199,14 @@ class TestFilterOnAggregateOwnedByDimensionTransform:
     async def test_executes_at_query_grain(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", PBAND], measures=[TOT],
-            filters=["amount:sum(partition_by=region) > 100"]))
+            filters=["sum(amount, partition_by=region) > 100"]))
         assert _col(resp, "tot") == _approx({"South": 140.0, "East": 180.0})
 
     def test_finer_partition_key_is_a_typed_error(self):
-        band = {"expression": "CASE WHEN rank(amount:sum(partition_by=[city, region]), direction='desc') > 1 "
+        band = {"expression": "CASE WHEN rank(sum(amount, partition_by=[city, region]), direction='desc') > 1 "
                               "THEN 'top' ELSE 'rest' END", "name": "cband"}
         query = sales_q(dimensions=["region", band], measures=[TOT],
-                        filters=["amount:sum(partition_by=[city, region]) > 50"])
+                        filters=["sum(amount, partition_by=[city, region]) > 50"])
         bundle = _bundle()
         with pytest.raises(PartitionKeyError) as ei:
             plan_query(query=query, bundle=bundle)
@@ -216,8 +217,8 @@ class TestCrossModelReaggregationInDimension:
     async def test_measure_typed_filter(self, exec_engine):
         resp = await exec_engine.execute(chain_q(
             dimensions=["customers.regions.name", CL],
-            measures=[ModelMeasure(formula="amount:sum", name="tot")],
-            filters=[f"{CHAIN_R} < amount:sum"]))
+            measures=[ModelMeasure(formula="sum(amount)", name="tot")],
+            filters=[f"{CHAIN_R} < sum(amount)"]))
         got = [(r["corders.customers.regions.name"], r["corders.cl"], r["corders.tot"])
                for r in resp.data]
         assert got == [("North", "lo", pytest.approx(70.0))]
@@ -242,7 +243,7 @@ class TestFinerGrainedReaggregationDimension:
 
 class TestPlainMeasureTypedFilterOverDimensionAggregate:
     def test_same_partition_key_error_as_without_dimension(self):
-        flt = "amount:sum(partition_by=[city, region]) < amount:sum"
+        flt = "sum(amount, partition_by=[city, region]) < sum(amount)"
         bare_q = sales_q(dimensions=["region"], measures=[TOT], filters=[flt])
         banded_q = sales_q(dimensions=["region", CITY_BAND], measures=[TOT], filters=[flt])
         bundle = _bundle()
@@ -266,9 +267,9 @@ def _fine_cases():
          r"measure 'f'"),
         ("transform", {"measures": [ModelMeasure(formula=f"rank({FINE}, direction='desc')", name="f")]},
          r"measure 'f'"),
-        ("filter", {"measures": [TOT], "filters": [f"{FINE} < amount:sum"]}, r"filter\b"),
+        ("filter", {"measures": [TOT], "filters": [f"{FINE} < sum(amount)"]}, r"filter\b"),
         ("split-filter",
-         {"measures": [TOT], "filters": [f"{FINE} < amount:sum and region <> 'Gap'"]},
+         {"measures": [TOT], "filters": [f"{FINE} < sum(amount) and region <> 'Gap'"]},
          r"filter\b"),
     ]
 
@@ -292,7 +293,7 @@ class TestReaggregationOuterKeyCarriesTheRule:
             plan_query(query=query, bundle=bundle)
         _assert_consumer_error(ei.value, key="city", location=location)
 
-    @pytest.mark.parametrize(("dim", "agg"), [(CITY_BAND, "amount:sum(partition_by=[city, region])"),
+    @pytest.mark.parametrize(("dim", "agg"), [(CITY_BAND, "sum(amount, partition_by=[city, region])"),
                                               (FINE_DIM, FINE)], ids=["plain", "reagg"])
     @pytest.mark.parametrize("template", ["rank({}, direction='desc')", "{} + 1"], ids=["transform", "arithmetic"])
     def test_order_expression_over_dimension_aggregate(self, dim, agg, template):
@@ -321,7 +322,7 @@ def _is_r(key: ValueKey) -> bool:
 
 
 _R_CONSUMERS = [
-    pytest.param({"filters": [f"{R} < amount:sum"]}, id="filter"),
+    pytest.param({"filters": [f"{R} < sum(amount)"]}, id="filter"),
     pytest.param({"order": [{"column": R, "direction": "desc"}]}, id="order"),
     pytest.param({"measures": [TOT, ModelMeasure(formula=R, name="r")]}, id="measure"),
 ]
@@ -394,7 +395,7 @@ def _grain_names(keys) -> dict:
     prebound, _ = _regroup_producer_prebound(
         pks=Grain(keys=frozenset(keys)),
         aggs=[AggregateKey(source=ColumnKey(leaf="amount"), agg="sum")],
-        model=models[0], bundle=_bundle(), inherited=[], n_date_range=0,
+        model=models[0], bundle=_bundle(), inherited=[], n_date_range=0, mode_policy=ModePolicy(),
     )
     dims = [dm for dm in prebound.declared_measures if dm.is_dimension]
     return {dm.bound.value_key: dm.public_name for dm in dims}

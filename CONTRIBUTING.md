@@ -84,7 +84,7 @@ Make changes with `/la:pr` in [Claude Code](https://docs.claude.com/en/docs/clau
 **Install the `la` plugin** at the version pinned in `pyproject.toml`, from inside Claude Code:
 
 ```text
-/plugin marketplace add MotleyAI/living-architecture#v0.4.0
+/plugin marketplace add MotleyAI/living-architecture#v0.6.0
 /plugin install la@living-architecture
 ```
 
@@ -158,6 +158,7 @@ Publishing a GitHub release publishes to PyPI (`.github/workflows/publish.yml`),
 - Branch from `main`, and keep each PR focused on one feature or fix.
 - Include tests for new behaviour.
 - Update `docs/` when your change affects user-facing behaviour.
+- A PR that merges `1.x` forward must keep every `openspec/specs` requirement `1.x` added or changed, verbatim, or list it with a reason in `openspec/forward-merge-ledger.yaml`. CI checks this with `scripts/forward_merge_specs.py`.
 
 Before pushing, run:
 

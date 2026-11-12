@@ -31,7 +31,7 @@ Importing a module path that SLayer 2.0 moved SHALL raise an `ImportError` whose
 
 ### Requirement: One marker for code scheduled for removal
 
-Every piece of compatibility code scheduled for removal in a future major version SHALL be marked through one shared mechanism that records the removal version as a literal, and that mechanism SHALL be the only way such code is marked and the only emitter of `FutureWarning` in the package. A marked form that still works SHALL emit exactly one `FutureWarning` per use, attributed to the line that used it (for an input form, the first line outside SLayer that supplied it), and the CLI SHALL print it as one `Deprecated: …` line on stderr; a marked module path that moved SHALL raise an `ImportError` instead. The covered workarounds SHALL be every module path moved in 2.0 by the database-access, live-schema, row-supply and cardinality carve-outs, the Mode-B grammar's `slayer.engine.syntax` and `slayer.core.formula`, and the OSI importer's `slayer.osi.expression`, each removed in 3.0; and the `strict` query input form, removed in 3.0. Stored-data upgrade paths, the colon aggregation spelling, the Flight pyarrow adapter modules and the pg facade's `token=` argument SHALL NOT be marked.
+Every piece of compatibility code scheduled for removal in a future major version SHALL be marked through one shared mechanism that records the removal version as a literal, and that mechanism SHALL be the only way such code is marked and the only emitter of `FutureWarning` in the package. A marked form that still works SHALL emit exactly one `FutureWarning` per use (a deprecated Mode-B spelling: per spelling per query or save), attributed to the line that used it (for an input form, the first line outside SLayer that supplied it), and the CLI SHALL print it as one `Deprecated: …` line on stderr; a marked module path that moved SHALL raise an `ImportError` instead. The covered workarounds SHALL be every module path moved in 2.0 by the database-access, live-schema, row-supply and cardinality carve-outs, the Mode-B grammar's `slayer.engine.syntax` and `slayer.core.formula`, and the OSI importer's `slayer.osi.expression`; the `strict` query input form and the extension object in `source_model`; and the deprecated Mode-B spellings `==`, `is None` / `is not None`, bare `None`, a `[…]` list after `IN` and the method-call aggregation form (`queries/expression-grammar` › Legacy spellings keep their meaning); each removed in 3.0. Stored-data upgrade paths, the colon aggregation spelling, the Flight pyarrow adapter modules and the pg facade's `token=` argument SHALL NOT be marked.
 
 #### Scenario: Every covered workaround is marked
 - **WHEN** the marked sites in the package are enumerated
@@ -48,6 +48,10 @@ Every piece of compatibility code scheduled for removal in a future major versio
 #### Scenario: The CLI prints a deprecation on one line
 - **WHEN** a deprecation is emitted while a CLI command runs
 - **THEN** stderr carries it as exactly one `Deprecated: <message>` line
+
+#### Scenario: A deprecated spelling used twice in one query
+- **WHEN** a query has the filters `status == 'paid'` and `region == 'EU'`
+- **THEN** it emits exactly one `FutureWarning` naming `=` and "SLayer 3.0"
 
 ### Requirement: The tripwire stops the release of a removal's major version
 

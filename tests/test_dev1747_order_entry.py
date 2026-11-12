@@ -33,7 +33,7 @@ from slayer.core.keys import AggregateKey
 from slayer.core.keys import ColumnKey
 from slayer.core.keys import Phase
 
-_MEASURE = [{"formula": "amount:sum", "name": "rev"}]
+_MEASURE = [{"formula": "sum(amount)", "name": "rev"}]
 
 
 def _plan(query: SlayerQuery):
@@ -130,8 +130,8 @@ class TestScopeClassification:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                {"formula": "amount:sum", "name": "rev"},
-                {"formula": "customers.spend:sum", "name": "cs"},
+                {"formula": "sum(amount)", "name": "rev"},
+                {"formula": "sum(customers.spend)", "name": "cs"},
             ],
             order=[OrderItem(column=ColumnRef(name="cs"), direction="desc")],
         ))
@@ -142,31 +142,21 @@ class TestScopeClassification:
         regroup producer that renders as a ``_cm_`` CTE, so its ordered value
         now resolves in the cross-model / regroup scope rather than a dedicated
         ``_wm_`` windowed CTE."""
-        entry = _sole_scoped(SlayerQuery(
-            source_model="orders",
-            time_dimensions=[TimeDimension(
+        entry = _sole_scoped(SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [TimeDimension(
                 dimension="created_at",
                 granularity=TimeGranularity.MONTH,
-            )],
-            measures=[{"formula": "amount:sum(window='90d')", "name": "w"}],
-            order=[OrderItem(column=ColumnRef(name="w"), direction="desc")],
-        ))
+            )], "measures": [{"formula": "sum(amount, window='90d')", "name": "w"}], "order": [OrderItem(column=ColumnRef(name="w"), direction="desc")]}))
         assert entry.scope is OrderScope.CROSS_MODEL_CTE
 
     def test_transform_measure_is_transform_step(self) -> None:
-        entry = _sole_scoped(SlayerQuery(
-            source_model="orders",
-            time_dimensions=[TimeDimension(
+        entry = _sole_scoped(SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [TimeDimension(
                 dimension="created_at",
                 granularity=TimeGranularity.MONTH,
-            )],
-            measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],
-            order=[OrderItem(column=ColumnRef(name="cs"), direction="asc")],
-        ))
+            )], "measures": [{"formula": "cumsum(sum(amount))", "name": "cs"}], "order": [OrderItem(column=ColumnRef(name="cs"), direction="asc")]}))
         assert entry.scope is OrderScope.TRANSFORM_STEP
 
     def test_composite_over_a_cross_model_operand_is_outer_composite(self) -> None:
-        """``customers.spend:sum + amount:sum`` cannot be evaluated in ``_base``
+        """``sum(customers.spend) + sum(amount)`` cannot be evaluated in ``_base``
         — one operand lives in a ``_cm_`` CTE — so it is rendered in the outer
         combined SELECT and ordered there.
 
@@ -174,12 +164,12 @@ class TestScopeClassification:
         has no CTE column to name, only an outer alias or a re-rendered
         expression, which is exactly the branch
         ``_resolve_combined_order_term``'s precedence chain gets wrong."""
-        entry = _sole_scoped(SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[{"formula": "customers.spend:sum + amount:sum", "name": "mix"}],
-            order=[OrderItem(column=ColumnRef(name="mix"), direction="desc")],
-        ))
+        entry = _sole_scoped(SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": [ColumnRef(name="status")],
+            "measures": [{"formula": "sum(customers.spend) + sum(amount)", "name": "mix"}],
+            "order": [OrderItem(column=ColumnRef(name="mix"), direction="desc")],
+        }))
         assert entry.scope is OrderScope.OUTER_COMPOSITE
 
     def test_hidden_composite_order_is_outer_composite_too(self) -> None:
@@ -190,9 +180,7 @@ class TestScopeClassification:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=_MEASURE,
-            order=[OrderItem(
-                column="customers.spend:sum + amount:sum", direction="desc",
-            )],
+            order=[OrderItem.model_validate({"column": "sum(customers.spend) + sum(amount)", "direction": "desc"})],
         ))
         assert entry.scope is OrderScope.OUTER_COMPOSITE
 
@@ -337,7 +325,7 @@ class TestHostGrainMarker:
         assert wraps[0].locus == "target"
 
     def test_host_grain_and_target_grain_are_distinct_identities(self) -> None:
-        """A user-declared ``customers.regions.name:max`` measure and the
+        """A user-declared ``max(customers.regions.name)`` measure and the
         synthetic host-grain wrap mean different things (global vs per-group),
         so they must not intern onto one slot."""
 
@@ -371,8 +359,8 @@ _HOST_GRAIN_WITH_PATH = SlayerQuery(
 _TARGET_GRAIN_WITH_PATH = SlayerQuery(
     **_GROUPED_HEAD,
     measures=[
-        {"formula": "amount:sum", "name": "rev"},
-        {"formula": "customers.spend:sum", "name": "cs"},
+        {"formula": "sum(amount)", "name": "rev"},
+        {"formula": "sum(customers.spend)", "name": "cs"},
     ],
 )
 

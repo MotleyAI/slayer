@@ -303,8 +303,7 @@ def _skip_labels(report) -> list[str]:
 async def _query_count(storage: YAMLStorage, model_name: str) -> int:
     engine = SlayerQueryEngine(storage=storage)
     resp = await engine.execute(
-        SlayerQuery(source_model=model_name,
-                    measures=[{"formula": "*:count", "name": "n"}])
+        SlayerQuery.model_validate({"source_model": model_name, "measures": [{"formula": "count(*)", "name": "n"}]})
     )
     assert resp.row_count == 1, resp.data
     return next(iter(resp.data[0].values()))
@@ -325,7 +324,7 @@ class TestReportedRegression:
 
     async def test_explicit_schema_qualifies_and_is_queryable(self, basic_db, tmp_path) -> None:
         """The issue's repro: ``--schema openfda_rest`` yields a qualified
-        ``sql_table`` and a real ``*:count`` returns rows (was: table-not-found)."""
+        ``sql_table`` and a real ``count(*)`` returns rows (was: table-not-found)."""
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(basic_db)
 

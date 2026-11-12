@@ -21,11 +21,10 @@ def test_string_dimension_with_placeholder() -> None:
     assert q.dimensions == [ComputedDimension(expression="amount * {k}", name="amount_k")]
 
 
-@pytest.mark.parametrize("column", ["sum(amount) * {k}", "amount:sum * {k}"])
-def test_order_expression_with_placeholder(column: str) -> None:
-    q = build(order=[{"column": column, "direction": "desc"}])
+def test_order_expression_with_placeholder() -> None:
+    q = build(order=[{"column": "sum(amount) * {k}", "direction": "desc"}])
     assert q.order is not None
-    assert q.order[0].raw_formula == column
+    assert q.order[0].raw_formula == "sum(amount) * {k}"
     assert q.order[0].direction == "desc"
 
 
@@ -49,7 +48,7 @@ def test_literal_bound_beside_placeholder_still_checked() -> None:
     ({"dimension": "ordered_at", "granularity": "{g}"}, "granularity"),
     ("{g}(ordered_at)", "granularity"),
     ({"dimension": "{col}", "granularity": "month"}, "column"),
-    ("month({col})", "column"),
+    ("date_trunc('month', {col})", "column"),
 ])
 def test_granularity_or_column_placeholder_rejected(time_dimension, what: str) -> None:
     with pytest.raises(ValueError) as info:

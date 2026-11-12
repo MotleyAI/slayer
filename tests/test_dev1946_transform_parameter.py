@@ -91,7 +91,7 @@ from tests._dev1946_fixtures import (
     local_sales_global,
 )
 
-AMOUNT = ModelMeasure(formula="amount:sum", name="a")
+AMOUNT = ModelMeasure(formula="sum(amount)", name="a")
 
 
 def _m(formula: str) -> ModelMeasure:
@@ -196,19 +196,18 @@ class TestLocalRootSales:
 class TestCollapsingLast:
     """Scenario: Collapsing transform parameter drops the axis."""
 
-    async def test_default_mode_broadcasts_over_months(self, orders_engine):
-        resp = await orders_engine.execute(
-            mode_q(None, time_dimensions=ordered_month_td(), measures=[_m(LAST_PARAM)]))
+    async def test_broadcast_mode_broadcasts_over_months(self, orders_engine):
+        resp = await orders_engine.execute(mode_q(
+            "broadcast", time_dimensions=ordered_month_td(), measures=[_m(LAST_PARAM)]))
         vals = ordered_month_vals(resp)
         assert set(vals) == {"2024-01", "2024-02", "2024-03", "2024-04"}
         for value in vals.values():
             assert float(value) == pytest.approx(last_default_value())  # 8165/128
         assert broadcast_warnings(resp)  # broadcast over the unattributable month
 
-    @pytest.mark.parametrize("mode", [None, "broadcast"])
-    async def test_by_tier_and_month(self, orders_engine, mode):
+    async def test_by_tier_and_month(self, orders_engine):
         resp = await orders_engine.execute(mode_q(
-            mode, dimensions=["customers.tier"], time_dimensions=ordered_month_td(),
+            "broadcast", dimensions=["customers.tier"], time_dimensions=ordered_month_td(),
             measures=[_m(LAST_PARAM)]))
         assert_cells(tier_month_vals(resp), last_by_tier_month())
         assert broadcast_warnings(resp)
@@ -331,10 +330,9 @@ class TestRankedFilterAndOrder:
 class TestNestedParameter:
     """Scenario: Nested transform parameter inside an attached aggregate parameter."""
 
-    @pytest.mark.parametrize("mode", [None, "broadcast"])
-    async def test_broadcast_to_status(self, orders_engine, mode):
+    async def test_broadcast_to_status(self, orders_engine):
         resp = await orders_engine.execute(
-            mode_q(mode, dimensions=["status"], measures=[_m(NESTED)]))
+            mode_q("broadcast", dimensions=["status"], measures=[_m(NESTED)]))
         got = status_vals(resp)
         assert set(got) == {"ok", "new"}
         for value in got.values():
@@ -406,9 +404,10 @@ class TestPlanShape:
     error, the association / trailing-window kernels each carry ``weight``."""
 
     @pytest.mark.parametrize("mode, dims", [
-        (None, ["status"]), (None, ["customers.tier"]), ("error", ["customers.tier"]),
+        ("broadcast", ["status"]), (None, ["customers.tier"]),
+        ("error", ["customers.tier"]),
     ])
-    def test_plain_kernel_under_default_and_error(self, mode, dims):
+    def test_plain_kernel_outside_association(self, mode, dims):
         att = _customers_attach(plan_query(
             query=mode_q(mode, dimensions=dims, measures=[_m(RANKED)]),
             bundle=orders_bundle()))

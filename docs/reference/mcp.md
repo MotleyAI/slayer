@@ -115,18 +115,19 @@ claude mcp list
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `source_model` | string \| ModelExtension \| SlayerModel | Model name (string), inline `ModelExtension` dict (`{"source_name": "orders", "columns": [...], "joins": [...], "measures": [...]}` — extend a saved model with extras for this query), or inline `SlayerModel` dict (`{"name": "ad_hoc", "sql_table": "...", "data_source": "...", "columns": [...]}` — define a model ad-hoc). Required. |
+| `source_model` | string \| SlayerModel | Model or stage name (string), or inline `SlayerModel` dict (`{"name": "ad_hoc", "sql_table": "...", "data_source": "...", "columns": [...]}` — define a model ad-hoc). Omit it to infer the population. |
+| `extensions` | list[ModelExtension] | Query-scoped `columns`, `measures` and `joins` added to any model the query reads, one entry per model: `[{"source_name": "customers", "columns": [...], "joins": [...], "measures": [...]}]`; a join repeating an existing edge is that edge, and an `inner` join keeps only the population rows with a match ([details](../concepts/queries.md#query-extensions)). |
 | `measures` | list | Aggregated values: column-aggregations, arithmetic, transforms. E.g. `["count(*)", {"formula": "sum(revenue) / count(*)", "name": "aov", "label": "Average Order Value"}, "cumsum(sum(revenue))"]`. Each entry has an optional `label` for human-readable display. Supports nesting: `"change(cumsum(sum(revenue)))"`. Bare names resolve to saved `ModelMeasure` formulas on the model. |
-| `dimensions` | list | Dimension names or dotted paths, e.g. `["status", "customers.regions.name"]`, or computed dimensions `{"expression": "month(created_at)", "name": "month"}`. When using the engine directly, dimensions accept an optional `label` via `{"name": "status", "label": "Order Status"}`. |
+| `dimensions` | list | Dimension names or dotted paths, e.g. `["status", "customers.regions.name"]`, or computed dimensions `{"expression": "month(created_at)", "name": "month_of_year"}`. When using the engine directly, dimensions accept an optional `label` via `{"name": "status", "label": "Order Status"}`. |
 | `filters` | list[str] | Filter formula strings, e.g. `["status = 'active'", "amount > 100"]`. Supports operators (`=`, `<>`, `>`, `>=`, `<`, `<=`, `IN`, `BETWEEN`, `IS NULL`, `IS NOT NULL`, `IS [NOT] TRUE` / `FALSE`, `IS [NOT] DISTINCT FROM`, `LIKE`, `ILIKE`, regex `~`, JSON `->>`, `CAST(x AS type)`), the list functions `contains` / `contains_any` / `contains_all`, boolean logic (`AND`, `OR`, `NOT`), and inline transform expressions (`"change(revenue) > 0"`). Filters on measures are automatically routed to HAVING. |
-| `time_dimensions` | list[dict \| str] | Time grouping. Each entry is a dict whose `dimension` may be any DATE / TIMESTAMP expression, with an optional `name`, or the string form `"month(created_at)"`; it also supports an optional `label` for display and a [`date_range`](../concepts/time.md#date_range): one time point or a `[lower, upper]` pair. |
+| `time_dimensions` | list[dict \| str] | Time grouping. Each entry is a dict whose `dimension` may be any DATE / TIMESTAMP expression, with an optional `name`, or the string form `"date_trunc('month', created_at)"`; it also supports an optional `label` for display and a [`date_range`](../concepts/time.md#date_range): one time point or a `[lower, upper]` pair. |
 | `main_time_dimension` | string | Name of the time dimension transforms (`change` / `lag` / …) key off, overriding auto-detection when a query has multiple time dimensions. |
 | `order` | list[dict] | Sorting, e.g. `[{"column": "count(*)", "direction": "desc", "nulls": "last"}]`; `column` is a result name or any aggregate or transform expression, and `nulls` (`"first"` / `"last"`) is optional |
 | `limit` | int | Max rows, trusted verbatim; without it the response is capped at 20 rows with a truncation notice |
 | `offset` | int | Skip rows |
 | `whole_periods_only` | bool | Snap time bounds to bucket boundaries and exclude the current incomplete bucket — see [Time](../concepts/time.md#whole_periods_only) |
 | `distinct_dimension_values` | bool | Default `true` — auto-dedup dim-only queries (`GROUP BY <dim/td aliases>`). Set `false` to emit raw rows (no top-level `GROUP BY`); rejects any measure reference in `measures` / `filters` / `order`. |
-| `to_many_handling` | str | Default `"broadcast"` — how an aggregate resolves query dimensions [unattributable from its root](../concepts/queries.md#cross-model-measures): `broadcast` (repeat and warn), `associate` (per-cell value over the distinct associated entities), or `error` (refuse). A query-object field. |
+| `to_many_handling` | str | Optional — how an aggregate resolves query dimensions [unattributable from its root](../concepts/queries.md#cross-model-measures): omitted (per-cell value over the distinct associated rows, broadcasting with a warning where association is unsupported), `associate` (the same, refusing the unsupported), `broadcast` (repeat and warn), or `error` (refuse). A query-object field. |
 | `variables` | dict | Per-stage `{var}` values, scoped to this stage; overridden by the top-level `variables` arg (see precedence above). |
 | `name` | string | List form only — names a stage so sibling stages can reference it via `source_model` (every non-final stage must be named). |
 
@@ -206,7 +207,7 @@ SLayer's conceptual help is not a tool: it ships as a predefined set of **help m
 | `memory:help.workflow` | Discovery, query method, filter literals, building and verifying a result, common-error decoder, connecting a database |
 | `memory:help.aggregations` | Every aggregation, expressions and booleans, empty-input values, result names, `partition_by`, `window`, nesting |
 | `memory:help.transforms` | Every transform, the time axis, ranking, limits |
-| `memory:help.time` | Time points, `date_range` and look-back, granularity calls |
+| `memory:help.time` | Time points, `date_range` and look-back, time buckets |
 | `memory:help.joins` | Dotted paths, choosing the root, joined aggregates (broadcast vs associate), patterns such as anti-joins |
 | `memory:help.queries` | Query shapes, stages and their column names, raw rows, functions, variables, debugging |
 

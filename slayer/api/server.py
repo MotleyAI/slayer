@@ -11,7 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ModelWrapValidatorHandler, PrivateAttr, model_validator
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from slayer import usage_reporting
@@ -23,8 +23,15 @@ from slayer.core.errors import (
 )
 from slayer.core.format import NumberFormat, encode_json
 from slayer.core.models import DatasourceConfig, SlayerModel
-from slayer.core.query import QueryRefinement, SlayerQuery, SourceSpec
-from slayer.core.warnings import SlayerWarning
+from slayer.core.query import (
+    ModelExtension,
+    QueryRefinement,
+    SlayerQuery,
+    SourceSpec,
+    check_unique_extensions,
+    prepare_query_input,
+)
+from slayer.core.warnings import DeprecatedInputWarning, SlayerWarning
 from slayer.async_utils import run_sync
 from slayer.live_schema import ingestion as engine_ingestion
 from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine
@@ -49,6 +56,7 @@ class QueryRequest(BaseModel):
 
     name: str | None = None  # Run-by-name: backing query for a query-backed model
     source_model: SourceSpec | None = None
+    extensions: list[ModelExtension] | None = None
     # ``measures`` and ``dimensions`` accept bare strings as a shorthand,
     # mirroring the Python API: ``"count(*)"`` is lifted to
     # ``{"formula": "count(*)"}``, ``"status"`` to ``{"name": "status"}``.
@@ -56,7 +64,7 @@ class QueryRequest(BaseModel):
     # ``_coerce_dimensions``) do the actual lifting downstream.
     measures: list[str | dict[str, Any]] | None = None
     dimensions: list[str | dict[str, Any]] | None = None
-    # A string entry is the functional ``gran(col)`` form, coerced downstream by
+    # A string entry is the ``date_trunc('<unit>', expr)`` form, coerced downstream by
     # ``SlayerQuery``.
     time_dimensions: list[str | dict[str, Any]] | None = None
     filters: list[str] | None = None
@@ -77,6 +85,29 @@ class QueryRequest(BaseModel):
     variables: dict[str, Any] | None = None
     # Run-by-name only: clauses merged into the saved query's final stage.
     refine: QueryRefinement | None = None
+
+    _deprecated_inputs: tuple[DeprecatedInputWarning, ...] = PrivateAttr(default=())
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _prepare_query_input(cls, data: Any, handler: ModelWrapValidatorHandler["QueryRequest"]) -> "QueryRequest":
+        payload = None
+        if isinstance(data, dict):
+            data, payload = prepare_query_input(data)
+        request = handler(data)
+        if payload is not None:
+            request._deprecated_inputs = (payload,)
+        return request
+
+    @property
+    def deprecated_inputs(self) -> tuple[DeprecatedInputWarning, ...]:
+        """Deprecations of the input forms converted while building this request."""
+        return self._deprecated_inputs
+
+    @model_validator(mode="after")
+    def _one_extension_per_model(self) -> "QueryRequest":
+        check_unique_extensions(self.extensions)
+        return self
 
 
 _RUN_BY_NAME_FIELDS = frozenset({"name", "variables", "dry_run", "explain", "refine"})
@@ -360,6 +391,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             # tool's list form and ``engine.execute(query=[...])``.
             # Engine auto-sorts the list and validates DAG invariants.
             run_kwargs: dict[str, Any] = {}
+            # Conversions made while parsing the request body; the query built from its dump carries none.
+            request_deprecations = request.deprecated_inputs if isinstance(request, QueryRequest) else ()
             if isinstance(request, QueryListRequest):
                 if not request.queries:
                     raise HTTPException(
@@ -432,7 +465,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 columns=result.columns,
                 attributes=attributes,
                 warnings=[
-                    w.model_dump(mode="json") for w in (result.warnings or [])
+                    w.model_dump(mode="json") for w in [*(result.warnings or []), *request_deprecations]
                 ],
                 population=result.population,
                 population_inferred=result.population_inferred,

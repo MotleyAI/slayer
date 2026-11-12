@@ -6,15 +6,17 @@
   filters, measure formulas, computed- and time-dimension expressions and
   order expressions, and substitutes its ``date_range`` bounds.
 - :func:`substitute_model_sql_surfaces` substitutes a model's four Mode-A
-  surfaces (SQL regime) and binds its saved measure formulas.
+  surfaces (SQL regime) and binds its saved measure formulas;
+  :func:`substitute_extension_surfaces` does the same for a query's extensions.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Optional
+from collections.abc import Callable
+from typing import Any, Dict, List, Optional
 
-from slayer.core.models import ModelMeasure, SlayerModel
+from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.core.syntax import bind_variables, has_bindings, variable_names
 from slayer.core.query import (
     ComputedDimension,
@@ -200,31 +202,60 @@ def substitute_model_sql_surfaces(
             filter_str=text, variables=variables, backslash_escapes=backslash_escapes,
         )
 
-    columns = []
-    for col in model.columns:
-        updates: Dict[str, Any] = {}
-        if col.sql is not None:
-            updates["sql"] = _sub(col.sql)
-        if col.filter is not None:
-            updates["filter"] = _sub(col.filter)
-        columns.append(col.model_copy(update=updates) if updates else col)
-    update: Dict[str, Any] = {"columns": columns}
+    update: Dict[str, Any] = {"columns": _substituted_columns(model.columns, _sub)}
     if model.sql is not None:
         update["sql"] = _sub(model.sql)
     if model.filters:
         update["filters"] = [_sub(f) for f in model.filters]
     if model.measures:
-        update["measures"] = [
-            m.substituted(bind_variables(m.formula, variables), variables=variables) if _measure_needs_pass(m) else m
-            for m in model.measures
-        ]
+        update["measures"] = _substituted_measures(model.measures, variables)
     return model.model_copy(update=update)
+
+
+def _substituted_columns(columns: List[Column], sub: Callable[[str], str]) -> List[Column]:
+    out = []
+    for col in columns:
+        updates: Dict[str, Any] = {}
+        if col.sql is not None:
+            updates["sql"] = sub(col.sql)
+        if col.filter is not None:
+            updates["filter"] = sub(col.filter)
+        out.append(col.model_copy(update=updates) if updates else col)
+    return out
+
+
+def _substituted_measures(measures: List[ModelMeasure], variables: Dict[str, Any]) -> List[ModelMeasure]:
+    return [
+        m.substituted(bind_variables(m.formula, variables), variables=variables) if _measure_needs_pass(m) else m
+        for m in measures
+    ]
+
+
+def substitute_extension_surfaces(
+    *, query: SlayerQuery, variables: Dict[str, Any], backslash_escapes: bool,
+) -> SlayerQuery:
+    """``query`` with ``{var}`` substituted into its extensions' column SQL and bound into their measures."""
+    if not query.extensions:
+        return query
+
+    def _sub(text: str) -> str:
+        return substitute_variables(filter_str=text, variables=variables, backslash_escapes=backslash_escapes)
+
+    extensions = [
+        e.model_copy(update={
+            "columns": _substituted_columns(e.columns, _sub) if e.columns else e.columns,
+            "measures": _substituted_measures(e.measures, variables) if e.measures else e.measures,
+        })
+        for e in query.extensions
+    ]
+    return query.model_copy(update={"extensions": extensions})
 
 
 __all__ = [
     "apply_variables_to_query",
     "model_needs_substitution_pass",
     "model_placeholder_names",
+    "substitute_extension_surfaces",
     "substitute_model_sql_surfaces",
     "extract_placeholder_names",
     "merge_query_variables",

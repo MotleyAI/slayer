@@ -63,23 +63,23 @@ async def test_saved_relation_without_outgoing_joins_can_use_incoming_edge(engin
     assert cells(response, dim_suffix="name", measure="total") == AMOUNT_BY_CUSTOMER
 
 
-async def test_extension_keeps_distinct_named_stored_and_added_joins(engine):
+async def test_extension_join_alias_resolves_to_the_named_stored_edge(engine):
     totals = _customer_totals()
     await engine.save_model(totals.model_copy(update={
         "joins": [totals.joins[0].model_copy(update={"name": "owner"})],
     }))
 
     response = await engine.execute(_query(
-        source_model={"source_name": "customer_totals", "joins": [{
+        source_model="customer_totals", extensions=[{"source_name": "customer_totals", "joins": [{
             "target_model": "customers", "join_pairs": [["customer_id", "id"]], "name": "reviewer",
-        }]},
+        }]}],
         dimensions=["owner.name", "reviewer.tier"],
         measures=[{"formula": "sum(amt)", "name": "total"}],
     ))
 
     assert {
         row["customer_totals.owner.name"]: (
-            row["customer_totals.reviewer.tier"], row["customer_totals.total"]
+            row["customer_totals.owner.tier"], row["customer_totals.total"]
         )
         for row in response.data
     } == {"Ann": ("gold", 30.0), "Bob": ("silver", 30.0), "Cid": ("gold", 90.0)}

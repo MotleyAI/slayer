@@ -67,10 +67,10 @@ class TestHeadlineOracle:
         sibling plain measure (the core SLayer invariant)."""
         base = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:sum", name="tot")]))
+            measures=[ModelMeasure(formula="sum(amount)", name="tot")]))
         with_reagg = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:sum", name="tot"),
+            measures=[ModelMeasure(formula="sum(amount)", name="tot"),
                       reagg("avg", INNER_CR, name="acr")]))
         a = {k: v["sales.tot"] for k, v in region_key(base).items()}
         b = {k: v["sales.tot"] for k, v in region_key(with_reagg).items()}

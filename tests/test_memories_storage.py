@@ -27,6 +27,7 @@ from slayer.core.models import ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
+from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
@@ -45,7 +46,7 @@ def storage(request: pytest.FixtureRequest) -> Iterator[StorageBackend]:
 def sample_query() -> SlayerQuery:
     return SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
     )
 
 
@@ -69,7 +70,7 @@ class TestMemoryCRUD:
         assert memory.learning.startswith("orders.is_returned")
         assert memory.entities == ["mydb.orders.is_returned"]
         assert memory.query is None
-        assert memory.version == 7
+        assert memory.version == CURRENT_VERSIONS["Memory"]
         assert memory.created_at is not None
 
     async def test_save_with_query_persists_query(
@@ -112,7 +113,7 @@ class TestMemoryCRUD:
         assert loaded.query.source_model == "orders"
         assert loaded.query.measures is not None
         assert len(loaded.query.measures) == 1
-        assert loaded.query.measures[0].formula == "*:count"
+        assert loaded.query.measures[0].formula == "count(*)"
 
     async def test_get_missing_raises(self, storage: StorageBackend) -> None:
         with pytest.raises(MemoryNotFoundError):

@@ -171,8 +171,8 @@ class TestModels:
             "data_source": "test",
             "columns": [{"name": "amount", "sql": "amount", "type": "number"}],
             "measures": [
-                {"name": "aov", "formula": "amount:sum / *:count"},
-                {"name": "revenue", "formula": "amount:sum"},
+                {"name": "aov", "formula": "sum(amount) / count(*)"},
+                {"name": "revenue", "formula": "sum(amount)"},
             ],
         }
         client.post("/models", json=model)
@@ -281,7 +281,7 @@ class TestIngestEndpoint:
 
 class TestQuery:
     def test_query_missing_model(self, client: TestClient) -> None:
-        resp = client.post("/query", json={"source_model": "nonexistent", "measures": [{"formula": "*:count"}]})
+        resp = client.post("/query", json={"source_model": "nonexistent", "measures": [{"formula": "count(*)"}]})
         assert resp.status_code == 400
 
     def test_query_missing_datasource(self, client: TestClient, storage: YAMLStorage) -> None:
@@ -291,7 +291,7 @@ class TestQuery:
             data_source="missing_ds",
             columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )))
-        resp = client.post("/query", json={"source_model": "orders", "measures": [{"formula": "revenue:sum"}]})
+        resp = client.post("/query", json={"source_model": "orders", "measures": [{"formula": "sum(revenue)"}]})
         assert resp.status_code == 400
 
     def test_query_schema_drift_returns_422(
@@ -306,7 +306,7 @@ class TestQuery:
 
         monkeypatch.setattr(SlayerQueryEngine, "execute", _raise_drift)
         resp = client.post("/query", json={
-            "source_model": "orders", "measures": [{"formula": "*:count"}],
+            "source_model": "orders", "measures": [{"formula": "count(*)"}],
         })
         assert resp.status_code == 422
         assert resp.json()["detail"]["error"] == "schema_drift"
@@ -314,35 +314,35 @@ class TestQuery:
     def test_request_measures_payload_reaches_slayer_query(self) -> None:
         """v2 `measures` key must be declared on QueryRequest so FastAPI keeps it."""
         req = QueryRequest.model_validate(
-            {"source_model": "orders", "measures": [{"formula": "*:count"}]}
+            {"source_model": "orders", "measures": [{"formula": "count(*)"}]}
         )
         slayer_query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert slayer_query.measures is not None
         assert len(slayer_query.measures) == 1
-        assert slayer_query.measures[0].formula == "*:count"
+        assert slayer_query.measures[0].formula == "count(*)"
 
     def test_request_accepts_bare_string_measures_and_dimensions(self) -> None:
         """Bare strings in ``measures`` / ``dimensions`` (matching ``SlayerQuery``'s
         coercion and the docs / example READMEs) must pass FastAPI validation
         and lift to ``{"formula": ...}`` / ``{"name": ...}`` downstream."""
         req = QueryRequest.model_validate(
-            {"source_model": "orders", "measures": ["*:count"], "dimensions": ["status"]}
+            {"source_model": "orders", "measures": ["count(*)"], "dimensions": ["status"]}
         )
         slayer_query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert slayer_query.measures is not None
-        assert slayer_query.measures[0].formula == "*:count"
+        assert slayer_query.measures[0].formula == "count(*)"
         assert slayer_query.dimensions is not None
         assert slayer_query.dimensions[0].name == "status"
 
     def test_request_legacy_fields_payload_migrates(self) -> None:
         """Legacy v1 `fields` key flows through `extra='allow'` and SlayerQuery's v1→v2 migration."""
         req = QueryRequest.model_validate(
-            {"source_model": "orders", "fields": [{"formula": "*:count"}]}
+            {"source_model": "orders", "fields": [{"formula": "count(*)"}]}
         )
         slayer_query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert slayer_query.measures is not None
         assert len(slayer_query.measures) == 1
-        assert slayer_query.measures[0].formula == "*:count"
+        assert slayer_query.measures[0].formula == "count(*)"
 
 
 class TestQueryBackedModelsAPI:
@@ -370,7 +370,7 @@ class TestQueryBackedModelsAPI:
             "data_source": "ds",
             "source_queries": [{
                 "source_model": "upstream",
-                "measures": [{"formula": "amount:sum"}],
+                "measures": [{"formula": "sum(amount)"}],
                 "dry_run": True,
             }],
             "query_variables": {},
@@ -402,7 +402,7 @@ class TestQueryBackedModelsAPI:
             "data_source": "ds",
             "source_queries": [{
                 "source_model": "upstream",
-                "measures": [{"formula": "amount:sum"}],
+                "measures": [{"formula": "sum(amount)"}],
             }],
             "columns": [{"name": "x", "type": "string"}],
         })
@@ -560,12 +560,12 @@ class TestQueryListBody:
                 {
                     "name": "by_customer",
                     "source_model": "orders",
-                    "measures": [{"formula": "amount:sum"}],
+                    "measures": [{"formula": "sum(amount)"}],
                     "dimensions": [{"name": "customer_id"}],
                 },
                 {
                     "source_model": "by_customer",
-                    "measures": [{"formula": "amount_sum:avg"}],
+                    "measures": [{"formula": "avg(amount_sum)"}],
                 },
             ],
             "dry_run": True,
@@ -585,17 +585,17 @@ class TestQueryListBody:
                 {
                     "name": "a",
                     "source_model": "b",
-                    "measures": [{"formula": "amount_sum:avg"}],
+                    "measures": [{"formula": "avg(amount_sum)"}],
                 },
                 {
                     "name": "b",
                     "source_model": "orders",
-                    "measures": [{"formula": "amount:sum"}],
+                    "measures": [{"formula": "sum(amount)"}],
                     "dimensions": [{"name": "customer_id"}],
                 },
                 {
                     "source_model": "a",
-                    "measures": [{"formula": "amount_sum_avg:max"}],
+                    "measures": [{"formula": "max(amount_sum_avg)"}],
                 },
             ],
             "dry_run": True,
@@ -613,9 +613,9 @@ class TestQueryListBody:
         self._setup_orders(client)
         resp = client.post("/query", json={
             "queries": [
-                {"name": "a", "source_model": "b", "measures": [{"formula": "amount:sum"}]},
-                {"name": "b", "source_model": "a", "measures": [{"formula": "amount:sum"}]},
-                {"source_model": "orders", "measures": [{"formula": "amount:sum"}]},
+                {"name": "a", "source_model": "b", "measures": [{"formula": "sum(amount)"}]},
+                {"name": "b", "source_model": "a", "measures": [{"formula": "sum(amount)"}]},
+                {"source_model": "orders", "measures": [{"formula": "sum(amount)"}]},
             ],
             "dry_run": True,
         })
@@ -646,18 +646,19 @@ class TestQueryInlineSourceModel:
         assert resp.status_code in (200, 201), resp.text
 
     def test_inline_model_extension_dict(self, client: TestClient) -> None:
-        """``source_model: {"source_name": "orders", "columns": [...]}``
+        """``extensions: [{"source_name": "orders", "columns": [...]}]``
         extends the stored model with an extra column for this one query.
         """
         self._setup_orders(client)
         resp = client.post("/query", json={
-            "source_model": {
+            "source_model": "orders",
+            "extensions": [{
                 "source_name": "orders",
                 "columns": [
                     {"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"},
                 ],
-            },
-            "measures": [{"formula": "double_amount:sum"}],
+            }],
+            "measures": [{"formula": "sum(double_amount)"}],
             "dry_run": True,
         })
         assert resp.status_code == 200, resp.text
@@ -680,7 +681,7 @@ class TestQueryInlineSourceModel:
                 "data_source": "ds_adhoc",
                 "columns": [{"name": "x", "sql": "x", "type": "DOUBLE"}],
             },
-            "measures": [{"formula": "x:sum"}],
+            "measures": [{"formula": "sum(x)"}],
             "dry_run": True,
         })
         assert resp.status_code == 200, resp.text
@@ -755,7 +756,7 @@ class TestOpenAPI400Documentation:
             "data_source": "ds",
             "source_queries": [{
                 "source_model": "upstream",
-                "measures": [{"formula": "amount:sum"}],
+                "measures": [{"formula": "sum(amount)"}],
             }],
         })
         assert setup_resp.status_code == 200, setup_resp.text

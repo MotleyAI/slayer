@@ -27,7 +27,7 @@ from tests import _statement_render_law as statement_render_law
 from tests._dev1824_fixtures import make_exec_engine
 from tests._usage_reporting_capture import CaptureServer
 
-pytest_plugins = ["tests._sharding", "pytester"]
+pytest_plugins = ["tests._sharding", "tests._async_engine_release_law", "pytester"]
 
 
 class JaffleGeneratorSpy:

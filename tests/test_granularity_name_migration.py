@@ -303,7 +303,7 @@ async def test_a_current_version_store_colliding_with_a_later_addition(tmp_path:
     def current(doc: dict, entity: str) -> dict:
         return {**doc, "version": CURRENT_VERSIONS[entity]}
 
-    stage = current(stage_doc(dimensions=["left(created_at)"], measures=[SUM]), "SlayerQuery")
+    stage = current(stage_doc(dimensions=["date_trunc('left', created_at)"], measures=[SUM]), "SlayerQuery")
     storage = await write_raw_store(
         backend=backend, base=str(tmp_path),
         datasources=[current(datasource_doc(db_path=live_db(str(tmp_path)), granularities=["left"]),
@@ -313,8 +313,8 @@ async def test_a_current_version_store_colliding_with_a_later_addition(tmp_path:
     )
     assert await _granularity_names(storage) == ["left_granularity"]
     loaded = await _stage(storage, "bucketed")
-    assert loaded.dimensions is not None
-    assert [getattr(d, "expression", d) for d in loaded.dimensions] == ["left_granularity(created_at)"]
+    assert [(str(t.dimension), str(t.granularity)) for t in loaded.time_dimensions or []] == [
+        ("created_at", "left_granularity")]
     resp = await run(storage, {"source_model": "bucketed", "dimensions": ["created_at"], "measures": ["sum(s)"]})
     assert {str(r["bucketed.created_at"])[:10]: float(r["bucketed.s_sum"]) for r in resp.data} == EXPECTED_BUCKETS
 
@@ -361,7 +361,6 @@ QUERY_POSITIONS: dict[str, Callable[[str], dict]] = {
     "time-dimension-call": lambda g: {"time_dimensions": [f"{g}(created_at)"], "measures": [SUM]},
     "dimension-call": lambda g: {"dimensions": [f"{g}(created_at)"], "measures": [SUM]},
     "computed-dimension": lambda g: {"dimensions": [{"expression": f"{g}(created_at)", "name": "b"}], "measures": [SUM]},
-    "colon-dimension": lambda g: {"dimensions": [f"created_at:{g}"], "measures": [SUM]},
     "measure": lambda g: {"measures": [{"formula": f"count_distinct({g}(created_at))", "name": "n"}]},
     "measure-filter-clause": lambda g: {
         "measures": [{"formula": f"sum(amount) FILTER (WHERE {g}(created_at) = '2025-02-15')", "name": "f"}]},
@@ -494,6 +493,23 @@ async def test_concurrent_first_loads_all_see_the_rename(tmp_path: Any, backend:
         query = loaded.query if isinstance(loaded, Memory) else (loaded.source_queries or [None])[0]
         assert query is not None
         assert _td_granularity(query) == "left_granularity"
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_a_rename_converges(tmp_path: Any, caplog: pytest.LogCaptureFixture, backend: str) -> None:
+    store = await _contains_store(tmp_path=tmp_path, backend=backend)
+    await store.storage.get_datasource(DS)
+    await store.storage.get_model("bucketed", data_source=DS)
+    await store.storage.get_memory("m")
+    before = store.raw()
+    storage = reopen(backend=backend, base=store.base)
+    caplog.clear()
+    with _captured(caplog) as texts:
+        assert await _granularity_names(storage) == ["contains_granularity"]
+        assert _td_granularity(await _stage(storage, "bucketed")) == "contains_granularity"
+        assert _td_granularity(await _memory_query(storage, "m")) == "contains_granularity"
+    assert store.raw() == before
+    assert not any("contains_granularity" in t for t in texts), texts
 
 
 def _current(doc: dict, entity: str) -> dict:

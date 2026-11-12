@@ -81,7 +81,7 @@ async def rich_storage() -> AsyncIterator[YAMLStorage]:
                 measures=[
                     ModelMeasure(
                         name="total_revenue",
-                        formula="amount:sum",
+                        formula="sum(amount)",
                         label="Total revenue",
                         description="Sum of order amounts",
                     )
@@ -535,7 +535,7 @@ async def test_mentions_memory_to_measure(rich_storage: YAMLStorage) -> None:
                 sql_table="orders",
                 data_source="ds",
                 columns=[Column(name="id", type=DataType.INT, primary_key=True)],
-                measures=[ModelMeasure(name="rev", formula="id:sum")],
+                measures=[ModelMeasure(name="rev", formula="sum(id)")],
             )
         )
         await storage.save_memory(

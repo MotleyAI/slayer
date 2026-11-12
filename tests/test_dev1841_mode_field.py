@@ -1,6 +1,6 @@
 """The ``to_many_handling`` field, ``strict`` as its deprecated alias, and the SlayerQuery v3→v4 storage migration.
 
-Spec: queries/attribution-modes — "Query-level mode selection", "The strict flag is a deprecated alias".
+Spec: queries/attribution-modes — "Mode selection and the association default", "The strict flag is a deprecated alias".
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ def _q(**kw) -> SlayerQuery:
 
 
 class TestModeField:
-    def test_default_is_broadcast(self) -> None:
-        assert _q().to_many_handling == "broadcast"
+    def test_default_is_omitted(self) -> None:
+        assert _q().to_many_handling is None
 
     @pytest.mark.parametrize("mode", ["broadcast", "associate", "error"])
     def test_each_value_accepted(self, mode: str) -> None:
@@ -49,7 +49,7 @@ class TestStrictRetired:
     def test_strict_false_is_dropped_with_a_deprecation(self) -> None:
         with recorded() as caught:
             query = _q(strict=False)
-        assert query.to_many_handling == "broadcast"
+        assert query.to_many_handling is None
         assert len(deprecations(caught)) == 1
 
     @pytest.mark.parametrize("version", [4, "4", 3.9])

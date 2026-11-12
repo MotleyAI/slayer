@@ -1,4 +1,4 @@
-"""DEV-1859 golden SQL (task 4.9) — the row-grain + attached-parameter shapes
+"""Golden SQL — the row-grain + attached-parameter shapes
 across the Tier-1 dialects. ``test_param_cases_generate`` guards that no
 attached-parameter case regresses to recording a raise.
 """
@@ -26,10 +26,10 @@ _MODEL_SETS = {
     "orders_wsum": customers_wsum_models,
 }
 _REGION_SUM = "sum(amount, partition_by=region)"
-_HEADLINE = ("customers.spend:weighted_avg("
+_HEADLINE = ("weighted_avg(customers.spend, "
              "weight=sum(amount, partition_by=customers.regions.name))")
 _MIXED_TWIN = "sum(customers.spend * sum(amount, partition_by=customers.regions.name))"
-_RANKED_TRANSFORM = ("customers.spend:weighted_avg("
+_RANKED_TRANSFORM = ("weighted_avg(customers.spend, "
                      "weight=rank(sum(amount, partition_by=customers.regions.name), direction='desc'))")
 _LOCAL_RANKED_TRANSFORM = f"weighted_avg(amount, weight=rank({_REGION_SUM}, direction='desc'))"
 
@@ -50,11 +50,11 @@ def _cases() -> dict:
             "kw": {"dimensions": ["status"],
                    "measures": [{"formula": _HEADLINE, "name": "w"}]}},
         "param/broadcast": {
-            "models": "orders", "source": "orders", "mode": None,
+            "models": "orders", "source": "orders", "mode": "broadcast",
             "kw": {"dimensions": ["status"],
                    "measures": [{"formula": _HEADLINE, "name": "w"}]}},
         "mixed/cross_model_constituent": {
-            "models": "orders", "source": "orders", "mode": None,
+            "models": "orders", "source": "orders", "mode": "broadcast",
             "kw": {"dimensions": ["status"],
                    "measures": [{"formula": _MIXED_TWIN, "name": "w"}]}},
         "param/ordinary": {
@@ -77,7 +77,7 @@ def _cases() -> dict:
                 {"formula": ("wsum(sum(amount, partition_by=[city, region]), "
                              "weight=count(id))"), "name": "w"}]}},
         "param/ranked_transform": {
-            "models": "orders", "source": "orders", "mode": None,
+            "models": "orders", "source": "orders", "mode": "broadcast",
             "kw": {"dimensions": ["status"],
                    "measures": [{"formula": _RANKED_TRANSFORM, "name": "w"}]}},
         "param/local_ranked_transform": {

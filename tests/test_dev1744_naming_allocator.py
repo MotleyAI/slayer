@@ -91,6 +91,7 @@ async def _build_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQuer
     await storage.save_datasource(
         DatasourceConfig(name="prod", type=dialect, database=db_path)
     )
+    # Unvalidated save: a grandfathered case collision a validated save would refuse.
     await storage.save_model(
         SlayerModel(
             name="customers",
@@ -104,7 +105,8 @@ async def _build_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQuer
                 Column(name="Rev", sql="revx", type=DataType.DOUBLE),
                 Column(name="rev", sql="revy", type=DataType.DOUBLE),
             ],
-        )
+        ),
+        _validate=False,
     )
     await storage.save_model(
         SlayerModel(
@@ -210,8 +212,8 @@ class TestCrossModelCteNameAllocation:
         await _isolated_then_combined(
             engine,
             measures=[
-                ModelMeasure(formula="customers.Rev:sum", name="upper"),
-                ModelMeasure(formula="customers.rev:sum", name="lower"),
+                ModelMeasure(formula="sum(customers.Rev)", name="upper"),
+                ModelMeasure(formula="sum(customers.rev)", name="lower"),
             ],
         )
 
@@ -223,8 +225,8 @@ class TestCrossModelCteNameAllocation:
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
                 measures=[
-                    ModelMeasure(formula="customers.Rev:sum", name="upper"),
-                    ModelMeasure(formula="customers.rev:sum", name="lower"),
+                    ModelMeasure(formula="sum(customers.Rev)", name="upper"),
+                    ModelMeasure(formula="sum(customers.rev)", name="lower"),
                 ],
             ),
             dry_run=True,
@@ -247,8 +249,8 @@ class TestCrossModelCteNameAllocation:
         await _isolated_then_combined(
             engine,
             measures=[
-                ModelMeasure(formula="customers.revenue:sum", name="xmodel"),
-                ModelMeasure(formula="customers__revenue:sum", name="local"),
+                ModelMeasure(formula="sum(customers.revenue)", name="xmodel"),
+                ModelMeasure(formula="sum(customers__revenue)", name="local"),
             ],
         )
 
@@ -258,8 +260,8 @@ class TestCrossModelCteNameAllocation:
         await _isolated_then_combined(
             engine,
             measures=[
-                ModelMeasure(formula="amount:sum", name="unfiltered"),
-                ModelMeasure(formula="customers__revenue:sum", name="filtered"),
+                ModelMeasure(formula="sum(amount)", name="unfiltered"),
+                ModelMeasure(formula="sum(customers__revenue)", name="filtered"),
             ],
         )
 
@@ -271,8 +273,8 @@ class TestCrossModelCteNameAllocation:
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
                 measures=[
-                    ModelMeasure(formula="customers.revenue:sum"),
-                    ModelMeasure(formula="customers.Rev:sum"),
+                    ModelMeasure(formula="sum(customers.revenue)"),
+                    ModelMeasure(formula="sum(customers.Rev)"),
                 ],
             )
         )
@@ -299,11 +301,12 @@ class TestCrossModelCteNameAllocation:
                 measures=[
                     # Hidden CMA feeding a transform.
                     ModelMeasure(
-                        formula="cumsum(customers.revenue:sum)", name="run",
+                        formula="cumsum(sum(customers.revenue))", name="run",
                     ),
                     # A second cross-model aggregate, so a leaked alias differs.
-                    ModelMeasure(formula="customers.Rev:sum", name="rv"),
+                    ModelMeasure(formula="sum(customers.Rev)", name="rv"),
                 ],
+                to_many_handling="broadcast",
             ),
             dry_run=True,
         )
@@ -332,8 +335,8 @@ class TestCrossModelCteNameAllocation:
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
                 measures=[
-                    ModelMeasure(formula="customers.revenue:sum", name="a"),
-                    ModelMeasure(formula="customers.revenue:sum", name="b"),
+                    ModelMeasure(formula="sum(customers.revenue)", name="a"),
+                    ModelMeasure(formula="sum(customers.revenue)", name="b"),
                 ],
             ),
             dry_run=True,
@@ -349,8 +352,8 @@ class TestCrossModelCteNameAllocation:
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
                 measures=[
-                    ModelMeasure(formula="customers.revenue:sum", name="a"),
-                    ModelMeasure(formula="customers.revenue:sum", name="b"),
+                    ModelMeasure(formula="sum(customers.revenue)", name="a"),
+                    ModelMeasure(formula="sum(customers.revenue)", name="b"),
                 ],
             )
         )
@@ -410,7 +413,7 @@ class TestAllocatorRouting:
     async def test_windowed_cte_names_use_the_shared_helper(
         self, tmp_path,
     ) -> None:
-        """Windowed producers render as ``_cm_`` CTEs through the shared allocator (Wm/wm)."""
+        """Windowed producers render as ``_cm_`` CTEs through the shared allocator."""
         engine = await _hostile_engine(
             column="revx2", base_dir=str(tmp_path),
         )
@@ -424,8 +427,8 @@ class TestAllocatorRouting:
                     ),
                 ],
                 measures=[
-                    ModelMeasure(formula="amount:sum(window='90d')", name="Wm"),
-                    ModelMeasure(formula="amount:sum(window='30d')", name="wm"),
+                    ModelMeasure(formula="sum(amount, window='90d')", name="Wm"),
+                    ModelMeasure(formula="sum(amount, window='30d')", name="wm2"),
                 ],
             ),
             dry_run=True,
@@ -540,8 +543,8 @@ class TestInternalNamesDoNotCollideWithUserColumns:
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
                 measures=[
-                    ModelMeasure(formula=f"{column}:sum", name="hostile_sum"),
-                    ModelMeasure(formula="amount:sum", name="amt"),
+                    ModelMeasure(formula=f"sum({column})", name="hostile_sum"),
+                    ModelMeasure(formula="sum(amount)", name="amt"),
                 ],
             )
         )
@@ -564,7 +567,7 @@ class TestInternalNamesDoNotCollideWithUserColumns:
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name=column)],
-                measures=[ModelMeasure(formula="amount:sum", name="amt")],
+                measures=[ModelMeasure(formula="sum(amount)", name="amt")],
             )
         )
         assert {r[f"orders.{column}"] for r in resp.data} == {1.0, 2.0, 3.0}
@@ -581,7 +584,7 @@ class TestInternalNamesDoNotCollideWithUserColumns:
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="amount:last", name="lastamt")],
+                measures=[ModelMeasure(formula="last(amount)", name="lastamt")],
             )
         )
         by_status = {r["orders.status"]: r["orders.lastamt"] for r in resp.data}
@@ -605,7 +608,7 @@ class TestInternalNamesDoNotCollideWithUserColumns:
                     ),
                 ],
                 measures=[
-                    ModelMeasure(formula="amount:sum(window='90d')", name="w"),
+                    ModelMeasure(formula="sum(amount, window='90d')", name="w"),
                 ],
             )
         )

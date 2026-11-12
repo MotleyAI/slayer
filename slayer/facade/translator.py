@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import re
 from contextvars import ContextVar
+from typing import Protocol
 from collections.abc import Callable, Mapping, Sequence, Set as AbstractSet
 
 import sqlglot
@@ -25,14 +26,16 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType, JoinCardinality, JoinType, TimeGranularity
 from slayer.core.models import ModelJoin, SlayerModel
+from slayer.core.refs import functional_agg_text
 from slayer.core.query import (
     ColumnRef,
+    computed_dimension_name,
     ModelExtension,
     OrderItem,
     SlayerQuery,
-    SourceSpec,
     TimeDimension,
 )
+from slayer.core.syntax import measure_text_at_path
 from slayer.engine.cardinality.inference import declares_solo_unique
 from slayer.facade.catalog import (
     CATALOG_NAME,
@@ -243,15 +246,14 @@ _TIME_GRAIN_NAMES: dict[str, TimeGranularity] = {
     "second": TimeGranularity.SECOND,
 }
 
-# Unwrapped one-arg time functions parse to dedicated nodes (exp.Month, …).
-_TIME_GRAIN_CLASSES: dict[type, TimeGranularity] = {
-    exp.Year: TimeGranularity.YEAR,
-    exp.Quarter: TimeGranularity.QUARTER,
-    exp.Month: TimeGranularity.MONTH,
-    exp.Week: TimeGranularity.WEEK,
-    exp.Day: TimeGranularity.DAY,
-    # Hour/Minute/Second lack dedicated classes; accepted via exp.Anonymous.
+# One-arg date-part functions parse to dedicated nodes (exp.Month, …): integer extraction, never a bucket.
+_EXTRACTION_CLASSES: dict[type, str] = {
+    cls: part for name, part in (
+        ("Year", "year"), ("Quarter", "quarter"), ("Month", "month"), ("Week", "week"), ("Day", "day"),
+        ("Hour", "hour"), ("Minute", "minute"), ("Second", "second"),
+    ) if (cls := getattr(exp, name, None)) is not None
 }
+_EXTRACTION_PARTS = frozenset(_TIME_GRAIN_NAMES)
 
 # Aggregate AST classes → SLayer aggregation names. COUNT handled separately.
 _AGG_CLASS_TO_NAME: dict[type, str] = {
@@ -545,35 +547,39 @@ def _unwrap_signed_day_offset(
     return node
 
 
-def _detect_time_grain_single_arg(
-    node: Expression,
-) -> tuple[TimeGranularity, exp.Column] | None:
-    """Dedicated AST classes like ``exp.Month`` / ``exp.Year``."""
-    for cls, grain in _TIME_GRAIN_CLASSES.items():
-        if isinstance(node, cls):
-            target = node.this
-            if isinstance(target, exp.Column):
-                return grain, target
-            return None
+def _detect_extraction(node: Expression) -> tuple[str, exp.Column] | None:
+    """``(part, column)`` when ``node`` is ``MONTH(col)`` and its siblings, ``EXTRACT(<part> FROM col)`` or
+    ``date_part('<part>', col)`` for one of the eight date parts, else ``None``."""
+    if isinstance(node, exp.Paren):
+        return _detect_extraction(node.this)
+    part: str | None = None
+    target: Expression | None = None
+    cls_part = next((p for cls, p in _EXTRACTION_CLASSES.items() if isinstance(node, cls)), None)
+    if cls_part is not None:
+        part, target = cls_part, node.this
+    elif isinstance(node, exp.Extract):
+        part, target = str(node.this.name).lower(), node.expression
+    elif isinstance(node, exp.Anonymous):
+        name, args = str(node.this).lower(), node.args.get("expressions") or []
+        if name in _EXTRACTION_PARTS and len(args) == 1:
+            part, target = name, args[0]
+        elif name == "date_part" and len(args) == 2 and isinstance(args[0], exp.Literal) and args[0].is_string:
+            part, target = str(args[0].this).lower(), args[1]
+    if part in _EXTRACTION_PARTS and isinstance(target, exp.Column):
+        return part, target
     return None
 
 
-def _detect_time_grain_anonymous(
-    node: exp.Anonymous,
-) -> tuple[TimeGranularity, exp.Column] | None:
-    """``hour(col)`` / ``minute(col)`` / ``second(col)`` come through here."""
-    grain = _TIME_GRAIN_NAMES.get(str(node.this).lower())
-    if grain is None:
-        return None
-    args = node.args.get("expressions") or []
-    if len(args) == 1 and isinstance(args[0], exp.Column):
-        return grain, args[0]
-    return None
+def _alias_for_extraction(
+    part: str, col: exp.Column, *, strip_prefix: tuple[str, str] | None = None, alias_map: dict[str, str] | None = None,
+) -> str:
+    """The canonical projection name every spelling of one extraction shares."""
+    return f"date_part('{part}', {_column_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)})"
 
 
 def _detect_time_grain(node: Expression) -> tuple[TimeGranularity, exp.Column] | None:
-    """If ``node`` is ``<grain>(<column>)`` or ``date_trunc('<grain>', <column>)``,
-    return ``(granularity, column)``, else ``None``. Also unwraps an outer
+    """If ``node`` is ``date_trunc('<grain>', <column>)`` (or the Sunday-week wrapper), return
+    ``(granularity, column)``, else ``None``. Also unwraps an outer
     ``CAST(...)`` (Metabase casts DATE-typed trunc results back to DATE)."""
     if isinstance(node, exp.Cast):
         unwrapped = _detect_time_grain(node.this)
@@ -587,14 +593,7 @@ def _detect_time_grain(node: Expression) -> tuple[TimeGranularity, exp.Column] |
         if recur is not None:
             return recur
     if isinstance(node, (exp.DateTrunc, exp.TimestampTrunc)):
-        match = _detect_time_grain_date_trunc(node)
-        if match is not None:
-            return match
-    single = _detect_time_grain_single_arg(node)
-    if single is not None:
-        return single
-    if isinstance(node, exp.Anonymous):
-        return _detect_time_grain_anonymous(node)
+        return _detect_time_grain_date_trunc(node)
     return None
 
 
@@ -668,10 +667,10 @@ def _detect_aggregate(  # NOSONAR(S3776) — flat per-aggregate-kind dispatch; s
 
 
 def _agg_formula(call: _AggCall) -> str:
-    """The internal legacy colon-form measure formula for a recognised aggregate."""
+    """The functional measure formula for a recognised aggregate."""
     if call.is_count_star:
-        return "*:count"
-    return f"{call.inner_ref}:{call.agg}"
+        return "count(*)"
+    return functional_agg_text(source=call.inner_ref or "", suffix=call.agg)
 
 
 def _saved_measure_names(table: FacadeTable) -> set[str]:
@@ -843,6 +842,8 @@ class _ProjectionItem(BaseModel):
     dimension: FacadeDimension | None = None
     time_grain: TimeGranularity | None = None
     time_grain_underlying: FacadeDimension | None = None
+    # A date-part extraction of ``time_grain_underlying`` (``month``, …).
+    extraction: str | None = None
     # CAST(<column> AS <type>) target: overrides projection_types[i], leaving
     # the engine alias and SlayerQuery measure/dimension untouched.
     cast_target: DataType | None = None
@@ -877,6 +878,30 @@ def _resolve_time_grain_projection(
         dimension=dim,
         time_grain=grain,
         time_grain_underlying=dim,
+    )
+
+
+def _resolve_extraction_projection(
+    *,
+    part: str,
+    col: exp.Column,
+    alias_name: str | None,
+    table: FacadeTable,
+    dims_by_name: dict[str, FacadeDimension],
+    strip_prefix: tuple[str, str] | None = None,
+    alias_map: dict[str, str] | None = None,
+) -> _ProjectionItem:
+    dotted = _column_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)
+    dim = dims_by_name.get(dotted)
+    if dim is None or not dim.is_time:
+        raise TranslationError(
+            f"{part}() extracts a date part of a time column; {dotted!r} is not one on table {table.name!r}"
+        )
+    return _ProjectionItem(
+        projected_name=alias_name or _alias_for_extraction(part, col, strip_prefix=strip_prefix, alias_map=alias_map),
+        dimension=dim,
+        time_grain_underlying=dim,
+        extraction=part,
     )
 
 
@@ -1111,6 +1136,14 @@ def _resolve_projection(  # NOSONAR(S3776) — flat dispatch over projection-exp
             out.append(_resolve_time_grain_projection(
                 grain=grain, col=col, alias_name=alias_name,
                 table=table, dims_by_name=dims_by_name,
+                strip_prefix=strip_prefix, alias_map=alias_map,
+            ))
+            continue
+        extraction = _detect_extraction(body)
+        if extraction is not None:
+            part, col = extraction
+            out.append(_resolve_extraction_projection(
+                part=part, col=col, alias_name=alias_name, table=table, dims_by_name=dims_by_name,
                 strip_prefix=strip_prefix, alias_map=alias_map,
             ))
             continue
@@ -1485,12 +1518,12 @@ def _apply_where(
     reads_aggregate = False
     time_dim_names = set(time_dims_built.keys())
     for conj in _split_and_chain(where.this):
-        colon_form = _metric_filter(
+        metric_form = _metric_filter(
             conj, items_by_projected_name, strip_prefix=strip_prefix, alias_map=alias_map,
             metrics_by_name=metrics_by_name, temporal_columns=temporal_columns | time_dim_names,
         )
-        if colon_form is not None:
-            filters_out.append(colon_form)
+        if metric_form is not None:
+            filters_out.append(metric_form)
             reads_aggregate = True
             continue
         lifted, verbatim = _classify_where_conjunct(
@@ -1530,12 +1563,12 @@ def _apply_having(
         metrics_by_formula.update(extra_metrics_by_formula)
     for conj in _split_and_chain(having.this):
         # Metric-name form (``HAVING "rev" > 1000``) wins before the agg-call form.
-        colon_form = _metric_filter(
+        metric_form = _metric_filter(
             conj, items_by_projected_name, strip_prefix=strip_prefix, alias_map=alias_map,
             metrics_by_name=metrics_by_name, temporal_columns=temporal_columns,
         )
-        if colon_form is not None:
-            filters_out.append(colon_form)
+        if metric_form is not None:
+            filters_out.append(metric_form)
             continue
         while isinstance(conj, exp.Paren):
             conj = conj.this
@@ -1674,6 +1707,7 @@ def _translate_order_by(
     order: exp.Order | None,
     item_by_projected_name: dict[str, _ProjectionItem],
     *,
+    items: Sequence[_ProjectionItem] = (),
     strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
 ) -> list[OrderItem]:
@@ -1695,14 +1729,20 @@ def _translate_order_by(
         if not isinstance(ord_expr, exp.Ordered):
             continue
         direction = "desc" if ord_expr.args.get("desc") else "asc"
-        item, name = _resolve_order_by_item(
-            ord_expr.this, item_by_projected_name, metric_item_by_formula,
-            strip_prefix=strip_prefix, alias_map=alias_map,
+        ordinal = _ordinal(ord_expr.this, count=len(items))
+        item, name = (items[ordinal - 1], items[ordinal - 1].projected_name) if ordinal is not None else (
+            _resolve_order_by_item(
+                ord_expr.this, item_by_projected_name, metric_item_by_formula,
+                strip_prefix=strip_prefix, alias_map=alias_map,
+            )
         )
         _reject_lossy_cast_or_pass(
             kind="ORDER BY", name=name, item=item,
             lossy_pairs=_LOSSY_ORDER_BY_CAST_PAIRS,
         )
+        if item.extraction is not None:
+            out.append(OrderItem.model_validate({"column": _extraction_expression(item), "direction": direction}))
+            continue
         if item.metric is not None:
             # use the projection's SELECT alias, not the catalog
             # ``FacadeMetric.name``. ``_record_metric`` registered the SLayer
@@ -1716,6 +1756,15 @@ def _translate_order_by(
             ref = ColumnRef.from_string(item.dimension.dimension_ref)
         out.append(OrderItem(column=ref, direction=direction))
     return out
+
+
+def _ordinal(node: Expression, *, count: int) -> int | None:
+    """A 1-based select-list position written as an integer literal (``ORDER BY 1``), else ``None``."""
+    if isinstance(node, exp.Literal) and not node.is_string and str(node.this).isdigit():
+        position = int(str(node.this))
+        if 1 <= position <= count:
+            return position
+    return None
 
 
 def _order_by_name(
@@ -1742,6 +1791,9 @@ def _order_by_name(
     if grain_match is not None:
         grain, col = grain_match
         return _alias_for_time_grain(grain, col, strip_prefix=strip_prefix, alias_map=alias_map)
+    extraction = _detect_extraction(body)
+    if extraction is not None:
+        return _alias_for_extraction(*extraction, strip_prefix=strip_prefix, alias_map=alias_map)
     return body.sql()
 
 
@@ -1775,6 +1827,10 @@ def _validate_group_by(  # NOSONAR(S3776) — single GROUP BY validation pass; e
                 user_items.append(_alias_for_time_grain(
                     grain, col, strip_prefix=strip_prefix, alias_map=alias_map,
                 ))
+                continue
+            extraction = _detect_extraction(g)
+            if extraction is not None:
+                user_items.append(_alias_for_extraction(*extraction, strip_prefix=strip_prefix, alias_map=alias_map))
                 continue
             user_items.append(g.sql())
     for u in user_items:
@@ -2215,13 +2271,12 @@ def _route_catalog_query(
 
 # Lightweight Protocol so the translator doesn't pull catalog_sql at import
 # time (which would create a duckdb-at-import dependency for Flight).
-class CatalogSqlExecutorProtocol:
+class CatalogSqlExecutorProtocol(Protocol):
     """Protocol the catalog SQL executor must satisfy. Defined here so
     ``translate`` can type-annotate its parameter without importing
     catalog_sql (which imports duckdb)."""
 
-    def execute(self, *, parsed: Expression, sql: str) -> RowBatch:
-        raise NotImplementedError
+    def execute(self, *, parsed: Expression, sql: str) -> RowBatch: ...
 
 
 class _ProjectionPlan(BaseModel):
@@ -2231,6 +2286,7 @@ class _ProjectionPlan(BaseModel):
 
     measures: list[dict]
     dimension_refs: list[ColumnRef]
+    expression_dims: list[str]
     time_dims: list[TimeDimension]
     time_dim_by_name: dict[str, TimeDimension]
     derived_dims: list[str]
@@ -2275,6 +2331,24 @@ def _record_time_grain(
     plan.projection_types.append(item.time_grain_underlying.data_type)
 
 
+def _record_extraction(
+    *, plan: _ProjectionPlan, item: _ProjectionItem, table: FacadeTable,
+) -> None:
+    assert item.extraction is not None and item.time_grain_underlying is not None
+    expression = _extraction_expression(item)
+    plan.expression_dims.append(expression)
+    plan.derived_dims.append(item.projected_name)
+    if expression != item.projected_name:
+        plan.derived_dims.append(expression)
+    plan.column_name_mapping.append((f"{table.name}.{computed_dimension_name(expression)}", item.projected_name))
+    plan.projection_types.append(DataType.INT)
+
+
+def _extraction_expression(item: _ProjectionItem) -> str:
+    assert item.extraction is not None and item.time_grain_underlying is not None
+    return f"date_part('{item.extraction}', {item.time_grain_underlying.dimension_ref})"
+
+
 def _record_dimension(
     *, plan: _ProjectionPlan, item: _ProjectionItem, table: FacadeTable,
 ) -> None:
@@ -2298,7 +2372,7 @@ def _build_projection_plan(
     items: Sequence[_ProjectionItem], table: FacadeTable,
 ) -> _ProjectionPlan:
     plan = _ProjectionPlan(
-        measures=[], dimension_refs=[], time_dims=[], time_dim_by_name={},
+        measures=[], dimension_refs=[], expression_dims=[], time_dims=[], time_dim_by_name={},
         derived_dims=[], column_name_mapping=[], projection_types=[],
     )
     for item in items:
@@ -2306,6 +2380,8 @@ def _build_projection_plan(
             _record_metric(plan=plan, item=item, table=table)
         elif item.time_grain is not None:
             _record_time_grain(plan=plan, item=item, table=table)
+        elif item.extraction is not None:
+            _record_extraction(plan=plan, item=item, table=table)
         else:
             _record_dimension(plan=plan, item=item, table=table)
     return plan
@@ -2338,6 +2414,8 @@ def _index_items_by_canonical_form(
                 f"{item.time_grain.value}({item.time_grain_underlying.dimension_ref})"
             )
             by_name.setdefault(canonical, item)
+        elif item.extraction is not None:
+            by_name.setdefault(_extraction_expression(item), item)
     return by_name
 
 
@@ -2713,10 +2791,7 @@ def _materialise_dynamic_join_lookups(
             dimension_ref=ref,
         )
     for m in local_metrics:
-        if m.measure_formula == "*:count":
-            formula = f"{prefix}.*:count"
-        else:
-            formula = f"{prefix}.{m.measure_formula}"
+        formula = measure_text_at_path(m.measure_formula, path=[prefix])
         new_metric = FacadeMetric(
             name=f"{prefix}.{m.name}",
             description=m.description,
@@ -2728,17 +2803,14 @@ def _materialise_dynamic_join_lookups(
         extra_metrics_by_formula[formula] = new_metric
 
 
-def _build_source_model_from_join(
+def _extensions_from_join(
     *, parent_name: str, plan: _JoinPlan,
-) -> SourceSpec:
-    """``SlayerQuery.source_model`` value derived from the join plan:
-    the parent's bare name when an existing configured join matched, or a
-    ``ModelExtension`` carrying the dynamically-built ``ModelJoin`` when
-    not.
-    """
+) -> list[ModelExtension]:
+    """The query extensions the join plan needs: none when an existing configured join matched, else one
+    ``ModelExtension`` of the parent carrying the dynamically-built ``ModelJoin``."""
     if not plan.is_dynamic:
-        return parent_name
-    return ModelExtension(
+        return []
+    return [ModelExtension(
         source_name=parent_name,
         joins=[ModelJoin(
             target_model=plan.target_table.name,
@@ -2746,7 +2818,7 @@ def _build_source_model_from_join(
             join_type=JoinType.LEFT,
             cardinality=_dynamic_join_cardinality(plan),
         )],
-    )
+    )]
 
 
 def _dynamic_join_cardinality(plan: "_JoinPlan") -> JoinCardinality | None:
@@ -2844,6 +2916,8 @@ def _build_item_index(items: list[_ProjectionItem]) -> dict[str, _ProjectionItem
                 f"{item.time_grain.value}({item.time_grain_underlying.dimension_ref})"
             )
             out.setdefault(canonical, item)
+        elif item.extraction is not None:
+            out.setdefault(_extraction_expression(item), item)
         elif (
             item.dimension is not None
             and item.cast_target is None
@@ -2945,20 +3019,17 @@ def _translate_slayer_select(
     )
 
     order_items = _translate_order_by(
-        parsed.args.get("order"), _build_item_index(items),
+        parsed.args.get("order"), _build_item_index(items), items=items,
         strip_prefix=strip_prefix, alias_map=overlays.alias_map,
     )
 
-    source_model: SourceSpec = (
-        _build_source_model_from_join(parent_name=table.name, plan=join_plan)
-        if join_plan is not None
-        else table.name
-    )
+    extensions = _extensions_from_join(parent_name=table.name, plan=join_plan) if join_plan is not None else []
 
     query = SlayerQuery.model_validate({
-        "source_model": source_model,
+        "source_model": table.name,
+        "extensions": extensions or None,
         "measures": plan.measures or None,
-        "dimensions": plan.dimension_refs or None,
+        "dimensions": [*plan.dimension_refs, *plan.expression_dims] or None,
         "time_dimensions": plan.time_dims or None,
         "filters": filters or None,
         "order": order_items or None,

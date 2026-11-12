@@ -1,0 +1,34 @@
+version: 15
+name: assignments
+sql_table: assignments
+source_kind: table
+query_variables: {}
+data_source: shop
+columns:
+- name: id
+  sql: id
+  type: INT
+  primary_key: true
+  unique: false
+  hidden: false
+  format:
+    type: integer
+- name: contractor_id
+  sql: contractor_id
+  type: INT
+  primary_key: false
+  unique: false
+  hidden: false
+  format:
+    type: integer
+measures: []
+aggregations: []
+joins:
+- target_model: contractors
+  join_pairs:
+  - - contractor_id
+    - id
+  join_type: left
+filters: []
+hidden: false
+access_tags: []

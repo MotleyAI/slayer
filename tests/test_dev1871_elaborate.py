@@ -54,13 +54,13 @@ def _partitioned_key(partition: ColumnKey) -> AggregateKey:
 
 class TestTypingEnvironment:
     def test_every_position_gets_a_verdict(self) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            dimensions=["status"],
-            measures=[{"formula": "amount:sum", "name": "rev"}],
-            filters=["status = 'ok'", "amount:sum > 5"],
-            order=[{"column": "status", "direction": "asc"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": ["status"],
+            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+            "filters": ["status = 'ok'", "sum(amount) > 5"],
+            "order": [{"column": "status", "direction": "asc"}],
+        })
         elab = elaborate_query(query=query, bundle=_bundle())
         assert isinstance(elab, ElaboratedQuery)
         assert [e.verdict for e in elab.dimensions] == ["field"]
@@ -69,11 +69,11 @@ class TestTypingEnvironment:
         assert [e.verdict for e in elab.order] == ["field"]
 
     def test_measure_entry_home_and_resolved_grain(self) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            dimensions=["status"],
-            measures=[{"formula": "amount:sum", "name": "rev"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": ["status"],
+            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+        })
         elab = elaborate_query(query=query, bundle=_bundle())
         entry = elab.measures[0]
         assert entry.home == ModelDataset(data_source=_DS, model_name="orders")
@@ -81,12 +81,12 @@ class TestTypingEnvironment:
 
     def test_aggregate_terms_memoized_by_key_identity(self) -> None:
         """The same aggregate in measure and filter position is one term."""
-        query = SlayerQuery(
-            source_model="orders",
-            dimensions=["status"],
-            measures=[{"formula": "amount:sum", "name": "rev"}],
-            filters=["amount:sum > 5"],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": ["status"],
+            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+            "filters": ["sum(amount) > 5"],
+        })
         elab = elaborate_query(query=query, bundle=_bundle())
         agg_keys = [k for k in elab.terms if isinstance(k, AggregateKey)]
         assert len(agg_keys) == 1
@@ -104,8 +104,8 @@ class TestTypingEnvironment:
                 "status",
                 ComputedDimension(
                     expression=(
-                        "amount:sum(partition_by=status)"
-                        " + amount:sum(partition_by=tier)"
+                        "sum(amount, partition_by=status)"
+                        " + sum(amount, partition_by=tier)"
                     ),
                     name="mix",
                 ),
@@ -129,13 +129,13 @@ class TestTypingEnvironment:
 class TestEntryEquivalence:
     def test_raw_and_prebound_entries_build_the_same_environment(self) -> None:
         """D9 stage 2: binding is a sub-phase, so both doors agree."""
-        query = SlayerQuery(
-            source_model="orders",
-            dimensions=["status"],
-            measures=[{"formula": "amount:sum", "name": "rev"}],
-            filters=["amount:sum > 5"],
-            order=[{"column": "status", "direction": "asc"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": ["status"],
+            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+            "filters": ["sum(amount) > 5"],
+            "order": [{"column": "status", "direction": "asc"}],
+        })
         bundle = _bundle()
         raw = elaborate_query(query=query, bundle=bundle)
         prebound = bind_query_inputs(query=query, bundle=bundle)
@@ -147,11 +147,11 @@ class TestEntryEquivalence:
 
 class TestCompileSeam:
     def test_compile_of_elaborated_matches_plan_query(self) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            dimensions=["status"],
-            measures=[{"formula": "amount:sum", "name": "rev"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": ["status"],
+            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+        })
         planned = plan_query(query=query, bundle=_bundle())
         compiled = compile_query(
             elaborated=elaborate_query(query=query, bundle=_bundle()),

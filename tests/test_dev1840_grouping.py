@@ -1,4 +1,4 @@
-"""DEV-1840 task 1.3 — first-reverse-hop grouping and the SemiJoinFilter IR
+"""First-reverse-hop grouping and the SemiJoinFilter IR
 (design D3/D5).
 
 One EXISTS per root-adjacent reverse hop; conjuncts of a group are AND-ed in
@@ -19,9 +19,9 @@ from tests._dev1840_fixtures import (
     q,
 )
 
-M = ModelMeasure(formula="amount:sum", name="m")
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
-RM = ModelMeasure(formula="stores.rent:sum", name="rm")
+M = ModelMeasure(formula="sum(amount)", name="m")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+RM = ModelMeasure(formula="sum(stores.rent)", name="rm")
 
 
 def _plan(query, models=None):
@@ -69,6 +69,7 @@ class TestGrouping:
         att = _attach(_plan(q(
             dimensions=["status"], measures=[M, RM],
             filters=["channel = 'app'", "customers.tier = 'gold'"],
+            to_many_handling="broadcast",
         )), "stores")
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.target_model for h in sj.hops] == ["orders", "customers"]
@@ -89,6 +90,7 @@ class TestHopDescriptors:
         att = _attach(_plan(q(
             dimensions=["status"], measures=[M, RM],
             filters=["channel = 'app'"],
+            to_many_handling="broadcast",
         )), "stores")
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.target_model for h in sj.hops] == ["orders"]
@@ -100,6 +102,7 @@ class TestHopDescriptors:
         att = _attach(_plan(q(
             dimensions=["status"], measures=[CM],
             filters=["cust_tier = 'gold'"],
+            to_many_handling="broadcast",
         )), "customers")
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.target_model for h in sj.hops] == ["orders", "customers"]

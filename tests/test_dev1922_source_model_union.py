@@ -1,6 +1,6 @@
-"""``SlayerQuery.source_model`` is a typed union (str | ModelExtension | SlayerModel |
-None) validated at construction; ``TimeDimension`` accepts ``column`` as an alias of
-``dimension``.
+"""``SlayerQuery.source_model`` is a typed union (str | SlayerModel | None) validated at
+construction, a legacy extension object converting into ``extensions``; ``TimeDimension``
+accepts ``column`` as an alias of ``dimension``.
 
 Spec: queries/population — "Population specs are typed at construction";
 queries/time-dimensions — "column is an accepted alias of dimension".
@@ -24,12 +24,6 @@ from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery, TimeDimension
 from slayer.engine.stage_ordering import topologically_order_stages
 from slayer.ir import source_bundle
-from slayer.ir.source_bundle import (
-    as_extension_over_nonsibling,
-    follow_sibling_chain,
-    source_name_if_sibling,
-    spec_adds_measures,
-)
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1866_fixtures import DS_CHAIN, make_chain_exec_engine
@@ -40,7 +34,7 @@ EXTENSION = {
 }
 EXTENSION_WITH_MEASURES = {
     "source_name": "orders",
-    "measures": [{"formula": "amount:sum", "name": "rev"}],
+    "measures": [{"formula": "sum(amount)", "name": "rev"}],
 }
 EXTENSION_WITH_FILTERS = {"source_name": "orders", "filters": ["subtotal > tax_paid * 5"]}
 INLINE_MODEL = {
@@ -50,7 +44,7 @@ INLINE_MODEL = {
     "columns": [{"name": "x", "sql": "x", "type": "DOUBLE"}],
 }
 JOIN_TO_CUSTOMERS = {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}
-ONE_MEASURE = [{"formula": "amount:sum"}]
+ONE_MEASURE = [{"formula": "sum(amount)"}]
 
 
 def _leaf_types(tp) -> set:
@@ -103,17 +97,11 @@ async def chain_engine():
 
 
 class TestSchema:
-    def test_source_model_lists_the_three_forms(self) -> None:
+    def test_source_model_lists_the_two_forms(self) -> None:
         schema = SlayerQuery.model_json_schema()
         prop = schema["properties"]["source_model"]
-        assert prop["anyOf"] == [
-            {"oneOf": [
-                {"type": "string"},
-                {"$ref": "#/$defs/ModelExtension"},
-                {"$ref": "#/$defs/SlayerModel"},
-            ]},
-            {"type": "null"},
-        ]
+        assert "#/$defs/ModelExtension" not in str(prop)
+        assert "#/$defs/SlayerModel" in str(prop)
         assert {"ModelExtension", "SlayerModel"} <= set(schema["$defs"])
         assert "filters" not in prop["description"]
 
@@ -128,7 +116,7 @@ class TestSchema:
         spec = core_query.SourceSpec
         assert source_bundle.SourceSpec is spec
         assert "SourceSpec" not in source_bundle.__all__
-        assert _leaf_types(spec) == {str, ModelExtension, SlayerModel}
+        assert _leaf_types(spec) == {str, SlayerModel}
 
     async def test_mcp_query_tool_carries_the_definitions(self, mcp_server) -> None:
         tools = {t.name: t for t in await mcp_server.list_tools()}
@@ -137,9 +125,10 @@ class TestSchema:
 
     def test_openapi_embeds_the_forms_for_the_rest_body(self, rest_client) -> None:
         spec = rest_client.get("/openapi.json").json()
-        prop = spec["components"]["schemas"]["QueryRequest"]["properties"]["source_model"]
-        assert "#/components/schemas/ModelExtension" in str(prop)
-        assert "#/components/schemas/SlayerModel" in str(prop)
+        props = spec["components"]["schemas"]["QueryRequest"]["properties"]
+        assert "#/components/schemas/ModelExtension" not in str(props["source_model"])
+        assert "#/components/schemas/SlayerModel" in str(props["source_model"])
+        assert "#/components/schemas/ModelExtension" in str(props["extensions"])
 
 
 # ---------------------------------------------------------------------------
@@ -155,9 +144,12 @@ class TestRejection:
         with pytest.raises(ValidationError):
             SlayerQuery(source_model=bad)
 
-    def test_unknown_extension_key_is_named(self) -> None:
+    @pytest.mark.parametrize("form", ["legacy", "extensions"])
+    def test_unknown_extension_key_is_named(self, form: str) -> None:
+        raw = ({"source_model": EXTENSION_WITH_FILTERS} if form == "legacy"
+               else {"source_model": "orders", "extensions": [EXTENSION_WITH_FILTERS]})
         with pytest.raises(ValidationError) as ei:
-            _query(source_model=EXTENSION_WITH_FILTERS)
+            _query(**raw)
         assert _error_keys(ei.value) == {("extra_forbidden", "filters")}
 
     def test_source_name_plus_model_keys_is_an_extension_never_a_model(self) -> None:
@@ -175,12 +167,14 @@ class TestRejection:
         with pytest.raises(ValidationError, match="filters"):
             SlayerModel(
                 name="qb",
-                source_queries=[{"source_model": EXTENSION_WITH_FILTERS, "measures": ONE_MEASURE}],
+                source_queries=[{"source_model": "orders", "extensions": [EXTENSION_WITH_FILTERS],
+                                 "measures": ONE_MEASURE}],
             )
 
     def test_rest_body_rejects_unknown_extension_key_with_422(self, rest_client) -> None:
         resp = rest_client.post("/query", json={
-            "source_model": EXTENSION_WITH_FILTERS, "measures": ONE_MEASURE, "dry_run": True,
+            "source_model": "orders", "extensions": [EXTENSION_WITH_FILTERS], "measures": ONE_MEASURE,
+            "dry_run": True,
         })
         assert resp.status_code == 422, resp.text
         assert "filters" in resp.text
@@ -194,7 +188,7 @@ class TestRejection:
     async def test_mcp_query_tool_rejects_unknown_extension_key(self, mcp_server) -> None:
         with pytest.raises(ToolError, match="filters"):
             await mcp_server.call_tool(name="query", arguments={
-                "query": {"source_model": EXTENSION_WITH_FILTERS, "measures": ONE_MEASURE},
+                "query": {"source_model": "orders", "extensions": [EXTENSION_WITH_FILTERS], "measures": ONE_MEASURE},
                 "dry_run": True,
             })
 
@@ -205,13 +199,15 @@ class TestRejection:
 
 
 class TestTypedAtConstruction:
-    def test_extension_object_validates_typed(self) -> None:
-        q = _query(source_model={
-            **EXTENSION_WITH_MEASURES,
-            "columns": EXTENSION["columns"],
-            "joins": [JOIN_TO_CUSTOMERS],
-        })
-        sm = q.source_model
+    def test_legacy_extension_object_converts_typed(self) -> None:
+        with pytest.warns(FutureWarning, match="extensions"):
+            q = _query(source_model={
+                **EXTENSION_WITH_MEASURES,
+                "columns": EXTENSION["columns"],
+                "joins": [JOIN_TO_CUSTOMERS],
+            })
+        assert q.source_model == "orders"
+        (sm,) = q.extensions or []
         assert isinstance(sm, ModelExtension)
         assert sm.source_name == "orders"
         assert sm.columns
@@ -233,29 +229,25 @@ class TestTypedAtConstruction:
         assert SlayerQuery(source_model="orders").source_model == "orders"
 
     def test_instances_pass_through_by_identity(self) -> None:
-        ext = ModelExtension(source_name="orders")
         model = SlayerModel.model_validate(INLINE_MODEL)
-        assert SlayerQuery(source_model=ext).source_model is ext
         assert SlayerQuery(source_model=model).source_model is model
-        assert QueryRequest(source_model=ext).source_model is ext
         assert QueryRequest(source_model=model).source_model is model
 
     def test_rest_body_model_types_the_spec_and_feeds_the_query(self) -> None:
-        req = QueryRequest.model_validate({"source_model": EXTENSION, "measures": ["amount:sum"]})
-        assert isinstance(req.source_model, ModelExtension)
+        req = QueryRequest.model_validate({"source_model": "orders", "extensions": [EXTENSION], "measures": ["sum(amount)"]})
+        assert isinstance((req.extensions or [])[0], ModelExtension)
         q = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
-        assert q.source_model == req.source_model
+        assert (q.source_model, q.extensions) == (req.source_model, req.extensions)
 
     def test_model_copy_replacement_keeps_a_union_member(self) -> None:
         """``model_copy`` runs no validation, so the engine only ever swaps in typed forms."""
         q = SlayerQuery(source_model="orders")
         for replacement, expected in (
             ("customers", "customers"),
-            (ModelExtension(source_name="orders"), "orders"),
             (SlayerModel.model_validate(INLINE_MODEL), "ad_hoc"),
         ):
             copied = q.model_copy(update={"source_model": replacement})
-            assert isinstance(copied.source_model, (str, ModelExtension, SlayerModel))
+            assert isinstance(copied.source_model, (str, SlayerModel))
             assert copied.source_model_name == expected
 
 
@@ -265,18 +257,20 @@ class TestTypedAtConstruction:
 
 
 class TestRoundTrip:
-    @pytest.mark.parametrize("spec", [EXTENSION, INLINE_MODEL], ids=["extension", "model"])
+    @pytest.mark.parametrize("raw", [
+        {"source_model": "orders", "extensions": [EXTENSION]}, {"source_model": INLINE_MODEL},
+    ], ids=["extension", "model"])
     @pytest.mark.parametrize("mode", ["python", "json"])
-    def test_dump_then_validate_equals_the_original(self, spec, mode) -> None:
-        q = _query(source_model=spec, measures=["amount:sum"])
+    def test_dump_then_validate_equals_the_original(self, raw, mode) -> None:
+        q = _query(**raw, measures=["sum(amount)"])
         again = SlayerQuery.model_validate(q.model_dump(mode=mode))
         assert again == q
         assert type(again.source_model) is type(q.source_model)
         assert not isinstance(again.source_model, dict)
 
     def test_exclude_none_dump_is_the_minimal_object(self) -> None:
-        q = _query(source_model=EXTENSION_WITH_MEASURES)
-        assert q.model_dump(exclude_none=True)["source_model"] == EXTENSION_WITH_MEASURES
+        q = _query(source_model="orders", extensions=[EXTENSION_WITH_MEASURES])
+        assert q.model_dump(exclude_none=True)["extensions"] == [EXTENSION_WITH_MEASURES]
         assert SlayerQuery(source_model="orders").model_dump(exclude_none=True)["source_model"] == "orders"
 
     def test_exclude_none_dump_of_an_inline_model_carries_no_null_keys(self) -> None:
@@ -296,72 +290,42 @@ class TestRoundTrip:
 class TestSourceModelName:
     @pytest.mark.parametrize(
         "spec, expected",
-        [("orders", "orders"), (EXTENSION, "orders"), (INLINE_MODEL, "ad_hoc"), (None, None)],
-        ids=["str", "extension", "model", "none"],
+        [("orders", "orders"), (INLINE_MODEL, "ad_hoc"), (None, None)],
+        ids=["str", "model", "none"],
     )
-    def test_property_over_the_four_cases(self, spec, expected) -> None:
+    def test_property_over_the_three_cases(self, spec, expected) -> None:
         assert SlayerQuery(source_model=spec).source_model_name == expected
 
+    def test_property_over_a_converted_legacy_extension(self) -> None:
+        with pytest.warns(FutureWarning):
+            assert SlayerQuery(source_model=EXTENSION).source_model_name == "orders"  # pyright: ignore[reportArgumentType] — the deprecated form, on purpose
+
     async def test_root_qualifier_uses_the_typed_name(self, chain_engine) -> None:
-        qualified = await chain_engine.execute(_query(source_model=EXTENSION, dimensions=["orders.status"]))
-        bare = await chain_engine.execute(_query(source_model=EXTENSION, dimensions=["status"]))
+        qualified = await chain_engine.execute(_query(
+            source_model="orders", extensions=[EXTENSION], dimensions=["orders.status"]))
+        bare = await chain_engine.execute(_query(source_model="orders", extensions=[EXTENSION], dimensions=["status"]))
         assert qualified.sql == bare.sql
         assert qualified.columns == bare.columns == ["orders.status"]
 
 
 # ---------------------------------------------------------------------------
-# Helpers over typed specs (parity with the retired dict arms)
+# Stage ordering over typed extensions
 # ---------------------------------------------------------------------------
 
 
-class TestHelpersOverTypedSpecs:
-    def test_source_name_if_sibling(self) -> None:
-        ext = _query(source_model={"source_name": "stage_a"}).source_model
-        inline = _query(source_model=INLINE_MODEL).source_model
-        assert source_name_if_sibling(spec=ext, sibling_names={"stage_a"}) == "stage_a"
-        assert source_name_if_sibling(spec=ext, sibling_names={"other"}) is None
-        assert source_name_if_sibling(spec="stage_a", sibling_names={"stage_a"}) == "stage_a"
-        assert source_name_if_sibling(spec=inline, sibling_names={"ad_hoc"}) is None
-
-    def test_spec_adds_measures(self) -> None:
-        assert spec_adds_measures(_query(source_model=EXTENSION_WITH_MEASURES).source_model)
-        assert not spec_adds_measures(_query(source_model=EXTENSION).source_model)
-        assert not spec_adds_measures(_query(source_model=INLINE_MODEL).source_model)
-        assert not spec_adds_measures("orders")
-
-    def test_as_extension_over_nonsibling_returns_the_held_instance(self) -> None:
-        q = _query(source_model=EXTENSION)
-        assert as_extension_over_nonsibling(spec=q.source_model, sibling_names=set()) is q.source_model
-        assert as_extension_over_nonsibling(spec=q.source_model, sibling_names={"orders"}) is None
-        assert as_extension_over_nonsibling(spec="orders", sibling_names=set()) is None
-        inline = _query(source_model=INLINE_MODEL).source_model
-        assert as_extension_over_nonsibling(spec=inline, sibling_names=set()) is None
-
-    def test_follow_sibling_chain_reaches_the_typed_base(self) -> None:
-        a = _query(name="a", source_model=EXTENSION)
-        b = _query(name="b", source_model={"source_name": "a"})
-        named = {"a": a, "b": b}
-        base = follow_sibling_chain(spec=SlayerQuery(source_model="b").source_model, named_queries=named)
-        assert base is a.source_model
-        assert follow_sibling_chain(spec=None, named_queries=named) is None
-
-    def test_follow_sibling_chain_cycle_raises(self) -> None:
-        x = _query(name="x", source_model={"source_name": "y"})
-        y = SlayerQuery(name="y", source_model="x")
-        with pytest.raises(ValueError, match="Circular"):
-            follow_sibling_chain(spec="x", named_queries={"x": x, "y": y})
-
+class TestStageOrdering:
     def test_stage_ordering_walks_typed_specs_from_raw_objects(self) -> None:
         a = SlayerQuery(name="a", source_model="orders")
         c = SlayerQuery(name="c", source_model="orders")
         via_join = SlayerQuery.model_validate({
             "name": "via_join",
-            "source_model": {
+            "source_model": "orders",
+            "extensions": [{
                 "source_name": "orders",
                 "joins": [{"target_model": "c", "join_pairs": [["id", "id"]]}],
-            },
+            }],
         })
-        assert isinstance(via_join.source_model, ModelExtension)
+        assert isinstance((via_join.extensions or [])[0], ModelExtension)
         root = SlayerQuery(source_model="via_join")
         names = [q.name for q in topologically_order_stages([via_join, a, c, root])]
         assert names.index("c") < names.index("via_join")
@@ -375,8 +339,8 @@ class TestHelpersOverTypedSpecs:
 class TestExecutionParity:
     async def test_extension_columns_execute(self, chain_engine) -> None:
         resp = await chain_engine.execute(_query(
-            source_model=EXTENSION,
-            measures=[{"formula": "double_amount:sum", "name": "dbl"}],
+            source_model="orders", extensions=[EXTENSION],
+            measures=[{"formula": "sum(double_amount)", "name": "dbl"}],
         ))
         assert resp.data[0]["orders.dbl"] == pytest.approx(130.0)
         assert resp.population == "orders"
@@ -387,7 +351,7 @@ class TestExecutionParity:
                 "name": "inl_orders", "data_source": DS_CHAIN, "sql_table": "orders",
                 "columns": [{"name": "amount", "type": "DOUBLE"}],
             },
-            measures=[{"formula": "amount:sum", "name": "total"}],
+            measures=[{"formula": "sum(amount)", "name": "total"}],
         ))
         assert resp.data[0]["inl_orders.total"] == pytest.approx(65.0)
         assert resp.population == "inl_orders"

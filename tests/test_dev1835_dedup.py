@@ -81,12 +81,12 @@ class TestDedupPositive:
         """The same region total inside a computed dimension AND as a selected
         measure: one producer relation, both roles correct."""
         dialect, engine = exec_backend
-        band = "CASE WHEN amount:sum(partition_by=region) > 55 THEN 1 ELSE 0 END"
+        band = "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END"
         query = q(
             dimensions=["region", {"expression": band, "name": "rband"}],
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
-                ModelMeasure(formula="amount:sum(partition_by=region)", name="rt"),
+                ModelMeasure(formula="sum(amount)", name="m"),
+                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
             ],
         )
         resp = await engine.execute(query)
@@ -112,9 +112,9 @@ class TestDedupPositive:
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum(window='1y')", name="wb"),
+                ModelMeasure(formula="sum(amount, window='1y')", name="wb"),
                 ModelMeasure(
-                    formula="amount:sum(window='1y', partition_by=region)",
+                    formula="sum(amount, window='1y', partition_by=region)",
                     name="we",
                 ),
             ],
@@ -132,8 +132,8 @@ class TestDedupPositive:
         query = q(
             dimensions=["region"],
             measures=[
-                ModelMeasure(formula="amount:last", name="lb"),
-                ModelMeasure(formula="amount:last(partition_by=region)", name="le"),
+                ModelMeasure(formula="last(amount)", name="lb"),
+                ModelMeasure(formula="last(amount, partition_by=region)", name="le"),
             ],
         )
         resp = await engine.execute(query)
@@ -148,13 +148,13 @@ class TestDedupPositive:
         """D10 subsumption: the dual-role total dedups to one producer, the
         bare windowed measure adds exactly one more."""
         dialect, engine = exec_backend
-        band = "CASE WHEN amount:sum(partition_by=region) > 55 THEN 1 ELSE 0 END"
+        band = "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END"
         query = q(
             dimensions=["region", {"expression": band, "name": "rband"}],
             time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum(partition_by=region)", name="rt"),
-                ModelMeasure(formula="amount:sum(window='1y')", name="w"),
+                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
+                ModelMeasure(formula="sum(amount, window='1y')", name="w"),
             ],
         )
         resp = await engine.execute(query)
@@ -175,8 +175,8 @@ class TestDedupNegative:
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum(window='90d')", name="w90"),
-                ModelMeasure(formula="amount:sum(window='45d')", name="w45"),
+                ModelMeasure(formula="sum(amount, window='90d')", name="w90"),
+                ModelMeasure(formula="sum(amount, window='45d')", name="w45"),
             ],
         )
         resp = await engine.execute(query)
@@ -192,8 +192,8 @@ class TestDedupNegative:
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="amount:sum(window='90d')", name="w"),
-                ModelMeasure(formula="ok_amount:sum(window='90d')", name="wok"),
+                ModelMeasure(formula="sum(amount, window='90d')", name="w"),
+                ModelMeasure(formula="sum(ok_amount, window='90d')", name="wok"),
             ],
         )
         resp = await engine.execute(query)
@@ -205,14 +205,14 @@ class TestDedupNegative:
     async def test_different_ranking_columns_stay_separate(
         self, shipped_backend,
     ) -> None:
-        """``amount:last`` (default ``ordered_at``) vs an explicit
+        """``last(amount)`` (default ``ordered_at``) vs an explicit
         ``shipped_at`` ranking column — North's values differ (30 vs 10)."""
         dialect, engine = shipped_backend
         query = q(
             dimensions=["region"],
             measures=[
-                ModelMeasure(formula="amount:last", name="lo"),
-                ModelMeasure(formula="amount:last(shipped_at)", name="ls"),
+                ModelMeasure(formula="last(amount)", name="lo"),
+                ModelMeasure(formula="last(amount, shipped_at)", name="ls"),
             ],
         )
         resp = await engine.execute(query)

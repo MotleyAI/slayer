@@ -8,10 +8,10 @@ doors, the sync psycopg driver runs the sync door, and the engine runs the repor
 """
 
 import uuid
+from collections.abc import AsyncIterator
 
 import pytest
 
-from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery
@@ -20,7 +20,7 @@ import sqlglot
 
 from slayer.database.client import SlayerSQLClient, render_type_probe
 from slayer.sql.dialects import PostgresDialect
-from slayer.storage.yaml_storage import YAMLStorage
+from tests._pg_helpers import pg_query_engine
 
 pytest.importorskip("pytest_postgresql")
 
@@ -85,22 +85,26 @@ def _pg_datasource(postgresql_proc):
 
 
 @pytest.fixture
-def pg_client(_pg_datasource) -> SlayerSQLClient:
-    return SlayerSQLClient(datasource=_pg_datasource)
+async def pg_client(_pg_datasource) -> AsyncIterator[SlayerSQLClient]:
+    client = SlayerSQLClient(datasource=_pg_datasource)
+    try:
+        yield client
+    finally:
+        await client.aclose()
+        client.close()
 
 
 @pytest.fixture
-def pg_env(_pg_datasource, tmp_path) -> SlayerQueryEngine:
-    storage = YAMLStorage(base_dir=str(tmp_path))
-    run_sync(storage.save_datasource(_pg_datasource))
-    run_sync(storage.save_model(SlayerModel(
+async def pg_env(_pg_datasource, tmp_path) -> AsyncIterator[SlayerQueryEngine]:
+    model = SlayerModel(
         name="orders", sql_table="orders", data_source="testpg",
         columns=[
             Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
             Column(name="status", sql="status", type=DataType.TEXT),
         ],
-    )))
-    return SlayerQueryEngine(storage=storage)
+    )
+    async with pg_query_engine(_pg_datasource, base_dir=str(tmp_path), models=[model]) as engine:
+        yield engine
 
 
 @pytest.mark.integration
@@ -121,16 +125,17 @@ class TestPostgresVerbatimExecution:
 
     async def test_regexp_replace_extension_end_to_end(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
-            source_model=ModelExtension(
+            source_model="orders",
+            extensions=[ModelExtension(
                 source_name="orders",
                 columns=[Column(
                     name="rx",
                     sql=f"REGEXP_REPLACE(status, '{_REGEX_LITERAL}', 'X')",
                     type=DataType.TEXT,
                 )],
-            ),
+            )],
             dimensions=[ColumnRef(name="rx")],
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         result = await pg_env.execute(query=query)
         # No status matches the pattern, so REGEXP_REPLACE returns each unchanged.

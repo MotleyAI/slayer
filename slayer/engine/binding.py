@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import difflib
 import os
 from collections.abc import Iterator, Sequence
@@ -23,6 +24,7 @@ from slayer.core.errors import (
     AggregationNotAllowedError,
     CastTypeError,
     ListTypeError,
+    CallArgumentError,
     CircularJoinPathError,
     GranularityCallError,
     IllegalScopeReferenceError,
@@ -30,17 +32,19 @@ from slayer.core.errors import (
     MeasureCycleError,
     MeasureRecursionLimitError,
     PartitionKeyError,
+    ReservedFunctionNameError,
     TimeLiteralError,
     TransformArgumentError,
     UnknownFunctionError,
+    UnknownGranularityError,
     UnknownReferenceError,
     UnresolvableDimensionJoinError,
     UnresolvedPlaceholderError,
 )
-from slayer.core.enums import AMBIGUOUS_WEEKDAY_NAMES, BUILTIN_AGGREGATION_PARAM_ORDER, BUILTIN_AGGREGATIONS, DATE_PART_ALIASES, DEFAULT_AGGREGATIONS_BY_TYPE, GRANULARITY_NAMES, NUMERIC_ONLY_AGGREGATIONS, PRIMARY_KEY_AGGREGATIONS, RANKED_AGGREGATIONS, DataType, ambiguous_weekday_message, normalize_aggregation_name, ALL_TRANSFORMS
+from slayer.core.enums import RESERVED_NAMES, AMBIGUOUS_WEEKDAY_NAMES, BUILTIN_AGGREGATION_PARAM_ORDER, BUILTIN_AGGREGATIONS, DATE_PART_ALIASES, DEFAULT_AGGREGATIONS_BY_TYPE, GRANULARITY_NAMES, NUMERIC_ONLY_AGGREGATIONS, PRIMARY_KEY_AGGREGATIONS, RANKED_AGGREGATIONS, DataType, ambiguous_weekday_message, normalize_aggregation_name, ALL_TRANSFORMS
 from slayer.core.direction import rank_direction, with_direction_kwarg
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
-from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
+from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity, unknown_granularity_message
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
 from slayer.core.keys import ColumnTypeFn, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, list_valued, numeric_valued
 from slayer.core.join_walker import (
@@ -53,6 +57,7 @@ from slayer.core.join_walker import (
     walk_miss,
     walk_terminal,
 )
+from slayer.core.names import match_name, match_path
 from slayer.core.models import (
     VALUE_PLACEHOLDER,
     Aggregation,
@@ -79,8 +84,10 @@ from slayer.core.syntax import (
     BoundVariable,
     Cast,
     Cmp,
+    DateTrunc,
     DottedRef,
     Literal,
+    NamedArg,
     ParsedExpr,
     Placeholder,
     Ref,
@@ -92,7 +99,9 @@ from slayer.core.syntax import (
     UnaryOp,
     aggregation_reading,
     canonical_measure_text,
+    classify_arguments,
     comparison_hint,
+    dotted_quoting,
     drop_root_qualifier,
     keyword_spelling,
     parse_bound_expr,
@@ -231,6 +240,7 @@ def spelled_aggregate_key(
     a bound definition default is never part of the spelling."""
     if not isinstance(parsed, AggCall):
         return key
+    parsed = _classified(parsed, bundle=bundle)
     positional = _declared_agg_param_names(agg=key.agg, source=key.source, bundle=bundle)
     written = {k for k, _ in parsed.kwargs} | set(positional[:len(parsed.args)])
     return key.model_copy(update={
@@ -281,9 +291,9 @@ def _resolve_column_ref(
             suggestion=None,
         )
     if isinstance(parsed, DottedRef):
-        bound_col = _resolve_dotted(parsed.parts, scope=scope, bundle=bundle)
+        bound_col = _resolve_dotted(parsed.parts, scope=scope, bundle=bundle, quoted=dotted_quoting(parsed))
     else:
-        bound_col = _resolve_ref(parsed.name, scope=scope, bundle=bundle)
+        bound_col = _resolve_ref(parsed.name, scope=scope, bundle=bundle, quoted=parsed.quoted)
     if not isinstance(bound_col, (ColumnKey, ColumnSqlKey)):
         # Defensive: an identifier ref against a ModelScope is always a column.
         raise ValueError(
@@ -424,6 +434,10 @@ def _bind(
     )
     if isinstance(parsed, Cast):
         return _bind_cast(parsed, source=sub(parsed.source), scope=scope, bundle=bundle)
+    if isinstance(parsed, DateTrunc):
+        return _bind_date_trunc(parsed, source=sub(parsed.value), bundle=bundle)
+    if isinstance(parsed, NamedArg):
+        raise CallArgumentError(f"`{canonical_measure_text(parsed)}` is only an argument of a call.")
     if isinstance(parsed, AggCall):
         return _bind_agg_call(
             parsed, scope=scope, bundle=bundle, alias_map=alias_map,
@@ -497,11 +511,11 @@ def _bind_leaf(
         if isinstance(parsed, Ref):
             return _resolve_ref(
                 parsed.name, scope=scope, bundle=bundle, alias_map=alias_map,
-                measure_ctx=measure_ctx,
+                measure_ctx=measure_ctx, quoted=parsed.quoted,
             )
         return _resolve_dotted(
             parsed.parts, scope=scope, bundle=bundle, alias_map=alias_map,
-            measure_ctx=measure_ctx,
+            measure_ctx=measure_ctx, quoted=dotted_quoting(parsed),
         )
     except UnknownReferenceError as e:
         raise _with_hint(e, hint=_QUOTE_HINT.format(name=e.name)) if parsed.quoted else e
@@ -720,17 +734,19 @@ def _resolve_ref(
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
+    quoted: bool = False,
 ) -> ValueKey:
-    """Resolve a bare identifier against the scope.
+    """Resolve a bare identifier against the scope (``slayer.core.names.match_name``).
 
     Resolution order: declared alias → column → saved measure. A saved-measure
     name (no matching column) resolves inline only when ``measure_ctx`` is set
     (eligible position), else errors."""
-    if alias_map and name in alias_map:
-        return alias_map[name]
+    alias = match_name(name=name, declared=alias_map, quoted=quoted) if alias_map else None
+    if alias_map and alias is not None:
+        return alias_map[alias]
 
     if isinstance(scope, StageSchema):
-        col = scope.resolve_flat_name(name)
+        col = scope.resolve_flat_name(name, quoted=quoted)
         if col is None:
             raise UnknownReferenceError(
                 name=name,
@@ -753,15 +769,15 @@ def _resolve_ref(
         )
     model = scope.source_model
 
-    # A ``__``-bearing name is not special: it resolves by ordinary exact-match.
-    col = resolve_generated_column(model=model, name=name)
+    # A ``__``-bearing name is not special: it resolves like any other name.
+    col = resolve_generated_column(model=model, name=name, quoted=quoted)
     if col is not None:
         if col.needs_expansion:
             return ColumnSqlKey(path=(), model=model.name, column_name=col.name)
         return ColumnKey(path=(), leaf=col.name)
 
     # No column: a saved measure resolves inline in an eligible position.
-    mm = model.get_measure(name)
+    mm = model.get_measure(name, quoted=quoted)
     if mm is not None:
         return _resolve_saved_measure(
             measure=mm, terminal_model=model, scope=scope, bundle=bundle,
@@ -786,6 +802,7 @@ def _walk_join_chain(
     parts: Tuple[str, ...],
     leaf: str,
     original_parts: Optional[Tuple[str, ...]] = None,
+    quoted: Tuple[bool, ...] = (),
 ):
     """Walk ``hop_path`` join hops from ``host`` through the shared bidirectional
     walker; returns ``(terminal_model, canonical effective_hop_path)``. Each token
@@ -804,7 +821,7 @@ def _walk_join_chain(
     models_by_name.setdefault(host.name, host)
     spelled = parts if original_parts is None else original_parts
     try:
-        walked = walk_terminal(root=host, path=hop_path, models_by_name=models_by_name)
+        walked = walk_terminal(root=host, path=hop_path, models_by_name=models_by_name, quoted=quoted)
     except CircularJoinPathError as e:
         raise CircularJoinPathError(
             reference=".".join(spelled), root_model=host.name,
@@ -812,25 +829,28 @@ def _walk_join_chain(
         ) from None
     if walked is not None:
         return walked
-    miss = walk_miss(root=host, path=hop_path, models_by_name=models_by_name)
+    miss = walk_miss(root=host, path=hop_path, models_by_name=models_by_name, quoted=quoted)
     assert miss is not None
     if miss.kind == "unloaded":
         assert miss.target is not None
         raise _target_not_in_bundle(parts=parts, target=miss.target)
-    _reject_opaque_elements(host=host, hop_path=hop_path, index=miss.index, parts=parts, models_by_name=models_by_name)
+    _reject_opaque_elements(
+        host=host, hop_path=hop_path, index=miss.index, parts=parts, models_by_name=models_by_name, quoted=quoted,
+    )
     return _route_edgeless_hop(
         host=host, hop=miss.token, hop_path=hop_path, leaf=leaf, parts=parts,
-        models_by_name=models_by_name,
+        models_by_name=models_by_name, quoted=bool(quoted) and quoted[0],
     )
 
 
 def _reject_opaque_elements(
     *, host: SlayerModel, hop_path: Tuple[str, ...], index: int, parts: Tuple[str, ...],
-    models_by_name: Dict[str, SlayerModel],
+    models_by_name: Dict[str, SlayerModel], quoted: Tuple[bool, ...],
 ) -> None:
     """A hop naming a list of opaque elements: they have no element access."""
-    owner = resolved_terminal(root=host, path=hop_path[:index], models_by_name=models_by_name)
-    column = owner.get_column(hop_path[index]) if owner is not None else None
+    walked = walk_terminal(root=host, path=hop_path[:index], models_by_name=models_by_name, quoted=quoted[:index])
+    hop_quoted = index < len(quoted) and quoted[index]
+    column = walked[0].get_column(hop_path[index], quoted=hop_quoted) if walked is not None else None
     if column is not None and column.type is DataType.ARRAY:
         raise UnknownReferenceError(
             name=".".join(parts), scope_kind="ModelScope",
@@ -850,6 +870,7 @@ def _route_edgeless_hop(
     leaf: str,
     parts: Tuple[str, ...],
     models_by_name: Dict[str, SlayerModel],
+    quoted: bool = False,
 ) -> Tuple[SlayerModel, Tuple[str, ...]]:
     """A hop with no incident edge: a bare ``Target`` short form auto-routes to
     its datasource-scoped path; a longer chain is broken."""
@@ -858,6 +879,10 @@ def _route_edgeless_hop(
             host=host, hop_path=hop_path, leaf=leaf, parts=parts,
             models_by_name=models_by_name,
         )
+    found = match_name(name=hop, declared=models_by_name, quoted=quoted)
+    if found is None and quoted:
+        raise _target_not_in_bundle(parts=parts, target=hop)
+    hop = found or hop
     route = dimension_routing.route_dotted_target(
         root=host, target_model=hop, leaf=leaf, models_by_name=models_by_name,
     )
@@ -906,26 +931,31 @@ def _resolve_dotted(
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
+    quoted: Tuple[bool, ...] = (),
 ) -> ValueKey:
-    """Resolve a dotted ref against the scope.
+    """Resolve a dotted ref against the scope; ``quoted`` flags each double-quoted segment, matched exactly.
 
     Resolution order: root qualifier dropped → declared alias (dotted text) → join walk
     → leaf column → saved measure (re-anchored into host coords, eligible position)."""
     original_parts = parts
-    parts = drop_root_qualifier(parts, root_spelling(scope))
+    original_quoted = tuple(quoted[:len(parts)]) + (False,) * max(0, len(parts) - len(quoted))
+    parts = drop_root_qualifier(parts, root_spelling(scope), quoted=original_quoted)
+    quoted = original_quoted[len(original_parts) - len(parts):]
     if alias_map:
-        for dotted_text in dict.fromkeys((".".join(parts), ".".join(original_parts))):
-            if dotted_text in alias_map:
-                return alias_map[dotted_text]
+        candidates = [(parts, quoted)] + ([(original_parts, original_quoted)] if parts != original_parts else [])
+        for path, flags in candidates:
+            alias = match_path(parts=path, declared=alias_map, quoted=flags)
+            if alias is not None:
+                return alias_map[alias]
 
     if len(parts) == 1:
         return _resolve_ref(
             parts[0], scope=scope, bundle=bundle, alias_map=alias_map,
-            measure_ctx=measure_ctx,
+            measure_ctx=measure_ctx, quoted=quoted[0],
         )
 
     if isinstance(scope, StageSchema):
-        scope = _stage_list_scope(parts, scope=scope, bundle=bundle, leaf=LIST_ELEMENT_COLUMN)
+        scope = _stage_list_scope(parts, scope=scope, bundle=bundle, leaf=LIST_ELEMENT_COLUMN, quoted=quoted)
 
     assert isinstance(scope, ModelScope)
     if scope.source_model is None:
@@ -943,21 +973,27 @@ def _resolve_dotted(
     leaf = parts[-1]
     current, effective_hop_path = _walk_join_chain(
         hop_path=hop_path, host=host, bundle=bundle, parts=parts, leaf=leaf,
-        original_parts=original_parts,
+        original_parts=original_parts, quoted=quoted[:-1],
     )
 
     return _resolve_terminal_leaf(
         current=current, leaf=leaf, hop_path=effective_hop_path,
         original_parts=original_parts, scope=scope, bundle=bundle,
-        measure_ctx=measure_ctx,
+        measure_ctx=measure_ctx, quoted=quoted[-1],
     )
 
 
 def _stage_list_scope(
-    parts: Tuple[str, ...], *, scope: StageSchema, bundle: ResolvedSourceBundle, leaf: str,
+    parts: Tuple[str, ...], *, scope: StageSchema, bundle: ResolvedSourceBundle, leaf: str, quoted: Tuple[bool, ...],
 ) -> ModelScope:
     """The stage's model scope for ``L.value`` / ``L.*`` over its list column ``L``; any other dotted ref is illegal."""
-    head = scope.resolve_flat_name(parts[0]) if len(parts) == 2 and parts[1] == leaf else None
+    element_shaped = len(parts) == 2 and match_name(name=parts[1], declared=[leaf], quoted=quoted[1]) is not None
+    head = scope.resolve_flat_name(parts[0], quoted=quoted[0]) if element_shaped else None
+    if element_shaped and head is None:
+        raise UnknownReferenceError(
+            name=".".join(parts), scope_kind="StageSchema",
+            scope_summary=f"{scope.label} columns: {[c.name for c in scope.columns]}", suggestion=None,
+        )
     if head is None or head.type != DataType.ARRAY or bundle.source_model is None:
         raise IllegalScopeReferenceError(
             name=".".join(parts),
@@ -979,10 +1015,11 @@ def _resolve_terminal_leaf(
     scope: ModelScope,
     bundle: ResolvedSourceBundle,
     measure_ctx: Optional[MeasureResolutionCtx],
+    quoted: bool = False,
 ) -> ValueKey:
     """Resolve ``leaf`` on terminal model ``current``: column (plain or derived)
     → saved measure (re-anchored into host coords) → unresolved error."""
-    col = resolve_generated_column(model=current, name=leaf)
+    col = resolve_generated_column(model=current, name=leaf, quoted=quoted)
     if col is not None:
         if col.needs_expansion:
             # Derived / filtered column on a joined model — path is part of the
@@ -991,7 +1028,7 @@ def _resolve_terminal_leaf(
                 path=tuple(hop_path), model=current.name, column_name=col.name,
             )
         return ColumnKey(path=tuple(hop_path), leaf=col.name)
-    mm = current.get_measure(leaf)
+    mm = current.get_measure(leaf, quoted=quoted)
     if mm is not None:
         return _resolve_saved_measure(
             measure=mm, terminal_model=current, scope=scope, bundle=bundle,
@@ -1087,10 +1124,16 @@ def _resolve_saved_measure(
             chain=_fmt_measure_chain(child.chain), limit=measure_ctx.depth_limit,
         )
     records = _bind_records.get()
-    if records is not None:
+    if records is not None and not terminal_model.inline:
         records.measures[(terminal_model.name, measure.name)] = None
     parsed = parse_bound_expr(measure.formula, measure.bound_variables)
     _reject_placeholders(parsed, text=measure.formula)
+    if measure.name not in terminal_model.query_local_names:
+        # A stored definition never sees a query's extensions.
+        bundle = bundle.definition_view()
+        terminal_model = terminal_model.definition_view()
+        if scope.source_model is not None:
+            scope = ModelScope(source_model=scope.source_model.definition_view())
     if not host_path:
         # Bare/local: measure lives on the host; bind inline at this scope.
         return _bind(
@@ -1113,15 +1156,18 @@ def _resolve_dotted_star(
     *,
     scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
+    quoted: Tuple[bool, ...],
 ) -> StarKey:
     """Resolve a dotted star (``customers.*``) to a ``StarKey`` whose ``path`` is
     the validated hop chain (empty path = local star)."""
     assert parts and parts[-1] == "*"
-    parts = drop_root_qualifier(parts, root_spelling(scope))
+    original_parts = parts
+    parts = drop_root_qualifier(parts, root_spelling(scope), quoted=quoted)
+    quoted = quoted[len(original_parts) - len(parts):]
     if parts == ("*",):
         return StarKey()
     if isinstance(scope, StageSchema):
-        scope = _stage_list_scope(parts, scope=scope, bundle=bundle, leaf="*")
+        scope = _stage_list_scope(parts, scope=scope, bundle=bundle, leaf="*", quoted=quoted)
     assert isinstance(scope, ModelScope)
     host = scope.source_model
     if host is None:
@@ -1135,7 +1181,7 @@ def _resolve_dotted_star(
     # Validate the hop chain (raises on missing / circular join, auto-routes a
     # short form); the routed effective path carries the star.
     _, effective_hop_path = _walk_join_chain(
-        hop_path=hop_path, host=host, bundle=bundle, parts=parts, leaf="*",
+        hop_path=hop_path, host=host, bundle=bundle, parts=parts, leaf="*", quoted=quoted[:-1],
     )
     return StarKey(path=tuple(effective_hop_path))
 
@@ -1258,23 +1304,23 @@ def _callee_granularity(name: str, *, bundle: Optional[ResolvedSourceBundle]) ->
     return resolve_granularity(name, defined=bundle.granularities if bundle is not None else {})
 
 
-def _source_is_reaggregation(node, *, bundle: Optional[ResolvedSourceBundle] = None) -> bool:
+def _source_is_reaggregation(node) -> bool:
     """Whether a parsed aggregation source carries an attached value — a nested
     AggCall or a grained transform, alone or composed. Such a source is bound
     structurally (its inner AggCalls / TransformCalls become nested keys) whether
     it is a pure re-aggregation or a row-grain mix."""
-    if isinstance(node, AggCall) and _callee_granularity(node.agg, bundle=bundle) is not None:
-        return False  # a granularity call is row-level
     if isinstance(node, (AggCall, TransformCall)):
         return True
     if isinstance(node, (Arith, Cmp)):
-        return _source_is_reaggregation(node.left, bundle=bundle) or _source_is_reaggregation(node.right, bundle=bundle)
+        return _source_is_reaggregation(node.left) or _source_is_reaggregation(node.right)
     if isinstance(node, ScalarCall):
-        return any(_source_is_reaggregation(a, bundle=bundle) for a in node.args)
-    if isinstance(node, UnaryOp):
-        return _source_is_reaggregation(node.operand, bundle=bundle)
+        return any(_source_is_reaggregation(a) for a in node.args)
+    if isinstance(node, (UnaryOp, Cast)):
+        return _source_is_reaggregation(node.operand if isinstance(node, UnaryOp) else node.source)
+    if isinstance(node, DateTrunc):
+        return _source_is_reaggregation(node.value)
     if isinstance(node, BoolOp):
-        return any(_source_is_reaggregation(o, bundle=bundle) for o in node.operands)
+        return any(_source_is_reaggregation(o) for o in node.operands)
     return False
 
 
@@ -1286,8 +1332,10 @@ def _bind_agg_call(
     measure_ctx: Optional[MeasureResolutionCtx] = None,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> AggregateKey | TransformKey | TimeTruncKey:
-    """Bind an ``AggCall`` (a granularity callee is a row-level bucket); ``first`` / ``last`` dispatch by the bound operand's
+    """Bind an ``AggCall`` (a granularity called like a function is refused); ``first`` / ``last`` dispatch by the bound operand's
     type — attached → the series transform, row grain → the ranked aggregation."""
+    if parsed.agg.lower() in RESERVED_NAMES:
+        raise ReservedFunctionNameError(name=parsed.agg, where=f"{canonical_measure_text(parsed)}")
     if parsed.filter is not None:
         return _bind_filtered_agg(
             parsed, scope=scope, bundle=bundle, alias_map=alias_map, measure_ctx=measure_ctx,
@@ -1296,11 +1344,13 @@ def _bind_agg_call(
     if parsed.library_error is not None and _owner_definition(
         parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
     ) is None:
-        raise ValueError(parsed.library_error)
-    granularity = _callee_granularity(parsed.agg, bundle=bundle)
-    if granularity is not None:
-        return _bind_granularity_call(parsed, scope=scope, bundle=bundle, granularity=granularity)
+        raise (GranularityCallError if parsed.agg.lower() == "date_trunc" else ValueError)(parsed.library_error)
+    parsed = _classified(parsed, bundle=bundle)
+    _refuse_granularity_call(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
     op = normalize_aggregation_name(parsed.agg)
+    custom = [a.name for m in _bundle_models(bundle) for a in m.aggregations]
+    if op not in BUILTIN_AGGREGATIONS and match_name(name=parsed.agg, declared=custom, quoted=False) is None:
+        raise _unknown_function_error(parsed.agg, aggregations=BUILTIN_AGGREGATIONS | set(custom), bundle=bundle)
     if op in RANKED_AGGREGATIONS:
         operand = _bind_transform_input(
             parsed.source, scope=scope, bundle=bundle, alias_map=alias_map,
@@ -1313,6 +1363,22 @@ def _bind_agg_call(
                 scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
             )
     return _bind_agg(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
+
+
+def _refuse_granularity_call(
+    parsed: AggCall, *,
+    scope: ModelScope | StageSchema,
+    bundle: ResolvedSourceBundle,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]],
+) -> None:
+    """A granularity called like a function, unless an aggregation of that name shadows it, is refused."""
+    granularity = _callee_granularity(parsed.agg, bundle=bundle)
+    if granularity is not None and _owner_definition(
+        parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+    ) is None:
+        raise GranularityCallError.no_call_form(
+            str(granularity), operand=", ".join(canonical_measure_text(a) for a in (parsed.source, *parsed.args)),
+        )
 
 
 _FILTER_CLAUSE = "FILTER (WHERE …)"
@@ -1363,19 +1429,58 @@ def _carrying_filter(key: AggregateKey, *, condition: ValueKey) -> AggregateKey:
     return key.model_copy(update={"filter": condition})
 
 
-def _bind_granularity_call(
-    parsed: AggCall, *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
-    granularity: Granularity,
-) -> TimeTruncKey:
-    """``gran(expr)`` as the row-level bucket of ``expr``."""
-    if parsed.args or parsed.kwargs or isinstance(parsed.source, StarSource):
-        raise GranularityCallError.wrong_shape(f"{parsed.agg}(...)")
-    source = _bind(parsed.source, scope=scope, bundle=bundle, in_filter=False)
+def _bind_date_trunc(parsed: DateTrunc, *, source: ValueKey, bundle: ResolvedSourceBundle) -> TimeTruncKey:
+    """``date_trunc('<unit>', expr)`` as the row-level bucket of ``expr``."""
+    granularity = resolve_granularity(parsed.unit, defined=bundle.granularities)
+    if granularity is None:
+        raise UnknownGranularityError(summary=unknown_granularity_message(
+            name=parsed.unit, defined=bundle.granularities.values(), where=canonical_measure_text(parsed),
+        ))
     if source.phase is not Phase.ROW or isinstance(source, SqlFragmentKey) or any(
         isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(source)
     ):
-        raise GranularityCallError.wrong_shape(f"{parsed.agg}(...)")
+        raise GranularityCallError.wrong_shape(canonical_measure_text(parsed))
     return TimeTruncKey(source=source, granularity=granularity)
+
+
+def _aggregation_parameters(agg: str, *, bundle: ResolvedSourceBundle) -> List[str]:
+    """The keyword names a call of ``agg`` may take: a built-in's, or any model definition's, plus the routing ones."""
+    names = ["partition_by", "window", *BUILTIN_AGGREGATION_PARAM_ORDER.get(normalize_aggregation_name(agg), ())]
+    for model in _bundle_models(bundle):
+        definition = aggregation_definition(owner=model, agg=agg)
+        if definition is None:
+            continue
+        names += _declared_agg_param_names(agg=definition.name, source=None, bundle=bundle, definition=definition)
+        names += _formula_placeholders(definition, dialect=bundle.dialect)
+    return list(dict.fromkeys(names))
+
+
+def _formula_placeholders(definition: Aggregation, *, dialect: str) -> List[str]:
+    """The placeholders ``definition``'s formula reads on ``dialect`` or as generic SQL (a dialect may hide one)."""
+    try:
+        names = sorted(aggregation_reads(agg=definition.name, definition=definition, dialect=dialect))
+    except SqlTemplateError as e:
+        raise SqlTemplateError(f"Aggregation '{definition.name}': {e}") from e
+    with contextlib.suppress(SqlTemplateError):
+        names += sorted(aggregation_reads(agg=definition.name, definition=definition, dialect=""))
+    return names
+
+
+def _classified(parsed: AggCall, *, bundle: ResolvedSourceBundle) -> AggCall:
+    """``parsed`` with each ``name = value`` argument a keyword (a parameter of the aggregation) or a comparison."""
+    items = (parsed.source, *parsed.args)
+    if not any(isinstance(i, NamedArg) for i in items):
+        return parsed
+    positional, keywords = classify_arguments(
+        items, parameters=_aggregation_parameters(parsed.agg, bundle=bundle), call=parsed.agg,
+    )
+    if not positional:
+        raise AggregationArgumentError(
+            f"Aggregation '{parsed.agg}' requires a value argument, e.g. {parsed.agg}(column)."
+        )
+    return parsed.model_copy(update={
+        "source": positional[0], "args": positional[1:], "kwargs": (*parsed.kwargs, *keywords),
+    })
 
 
 def _bind_agg_source(
@@ -1384,7 +1489,7 @@ def _bind_agg_source(
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]],
 ) -> AggregateSource:
-    if _source_is_reaggregation(parsed.source, bundle=bundle):
+    if _source_is_reaggregation(parsed.source):
         # Re-aggregation: bind the operand subtree — inner AggCalls
         # become AggregateKeys — so the outer key carries a nested-aggregate
         # source (axiom 6). Discovery/planning lift it to a producer-over-producer.
@@ -1405,7 +1510,7 @@ def _bind_agg_source(
         # Cross-model star: ``count(customers.*)`` → a StarKey carrying the join
         # path so the planner routes COUNT(*) through the join graph.
         return _resolve_dotted_star(
-            parsed.source.parts, scope=scope, bundle=bundle,
+            parsed.source.parts, scope=scope, bundle=bundle, quoted=dotted_quoting(parsed.source),
         )
     if isinstance(parsed.source, (Ref, DottedRef)):
         bound_source = _bind(
@@ -1445,6 +1550,7 @@ def _bind_agg(
         names=[*folded, *(k for k, _ in parsed.kwargs if k != "partition_by")],
         keywords=frozenset(k for k, _ in parsed.kwargs),
     )
+    _check_slotless_comparisons(parsed, agg=effective_agg, source=source, bundle=bundle)
     args = tuple(
         _bind_agg_arg(a, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
         for a in parsed.args
@@ -1494,10 +1600,12 @@ def _owner_definition(
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> Optional[Aggregation]:
     """The aggregation ``parsed.agg`` its column-reading source's owner declares, else ``None``."""
-    if not any(parsed.agg.lower() == a.name.lower() for m in _bundle_models(bundle) for a in m.aggregations):
+    if all(aggregation_definition(owner=m, agg=parsed.agg) is None for m in _bundle_models(bundle)):
         return None
     try:
-        source = _bind_agg_source(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
+        source = _bind_agg_source(
+            _classified(parsed, bundle=bundle), scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+        )
     except (ValueError, LookupError):
         return None
     if not any(isinstance(k, (ColumnKey, ColumnSqlKey)) for k in walk_value_keys(source)):
@@ -1532,12 +1640,14 @@ def _resolve_agg_owner(
 
 
 def _declared_agg_param_names(
-    *, agg: str, source, bundle: ResolvedSourceBundle,
+    *, agg: str, source, bundle: ResolvedSourceBundle, definition: Optional[Aggregation] = None,
 ) -> List[str]:
-    """Declared parameter order for ``agg`` — the owning model's custom
-    definition wins over the built-in registry; ``[]`` when none declared."""
-    owner, _leaf = _resolve_agg_owner(source, bundle)
-    custom = aggregation_definition(owner=owner, agg=agg)
+    """Declared parameter order for ``agg`` — ``definition``, else the owning model's custom
+    definition, wins over the built-in registry; ``[]`` when none declared."""
+    custom = definition
+    if custom is None:
+        owner, _leaf = _resolve_agg_owner(source, bundle)
+        custom = aggregation_definition(owner=owner, agg=agg)
     if custom is not None:
         return [p.name for p in custom.params]
     return list(BUILTIN_AGGREGATION_PARAM_ORDER.get(agg, ()))
@@ -1572,6 +1682,23 @@ def _check_agg_kwarg_names(
             f"Aggregation '{agg}' does not accept argument '{name}'; "
             f"accepted: {', '.join(sorted(accepted))}.{hint}"
         )
+
+
+def _check_slotless_comparisons(parsed: AggCall, *, agg: str, source, bundle: ResolvedSourceBundle) -> None:
+    """A ``name = value`` comparison past ``agg``'s positional slots fails as the argument it was likely meant as."""
+    owner, _leaf = _resolve_agg_owner(source, bundle)
+    ranked = agg in RANKED_AGGREGATIONS and builtin_semantics(aggregation_definition(owner=owner, agg=agg))
+    slots = len(_declared_agg_param_names(agg=agg, source=source, bundle=bundle)) or int(ranked)
+    name = next((n for n in map(keyword_spelling, parsed.args[slots:]) if n is not None), None)
+    if name is None:
+        return
+    accepted = sorted({*_aggregation_parameters(agg, bundle=bundle)} - {VALUE_PLACEHOLDER, "partition_by"})
+    takes = "takes no args or kwargs other than window" if accepted == ["window"] else (
+        f"takes no further value; its keywords: {', '.join(accepted)}"
+    )
+    raise AggregationArgumentError(
+        f"Aggregation '{agg}' {takes}. `{name} = …` names none of its parameters, so it reads as a comparison."
+    )
 
 
 def _check_ranking_positional(*, agg: str, source, bundle: ResolvedSourceBundle, args: tuple) -> None:
@@ -1812,7 +1939,7 @@ _TRANSFORM_POSITIONAL_KWARGS: dict = {
 
 
 def _transform_positional_pairs(
-    *, op: str, args: Tuple[ParsedExpr, ...], kwargs: Tuple[Tuple[str, ParsedExpr], ...],
+    *, op: str, args: Tuple[ParsedExpr, ...], kwargs: Tuple[Tuple[str, ParsedExpr], ...], hint: str = "",
 ) -> List:
     """Map a transform's extra positional params onto kwarg names; most transforms
     are keyword-only after the value."""
@@ -1820,17 +1947,16 @@ def _transform_positional_pairs(
         return []
     pos_names = _TRANSFORM_POSITIONAL_KWARGS.get(op)
     if pos_names is None:
+        accepted = sorted(_transform_parameters(op))
+        rest = f"pass {', '.join(accepted)} by keyword" if accepted else "it takes no other arguments"
         raise ValueError(
-            f"Transform {op!r} accepts exactly one positional "
-            f"argument (the value to transform); pass any offset, "
-            f"partition, or other settings as keyword arguments "
-            f"(e.g. ``{op}(value, partition_by=...)``)."
+            f"Transform {op!r} accepts exactly one positional argument (the value to transform); {rest}.{hint}"
         )
     if len(args) > len(pos_names):
         raise ValueError(
             f"Transform {op!r} accepts at most {len(pos_names)} "
             f"positional argument(s) after the value "
-            f"({', '.join(pos_names)}); got {len(args)}."
+            f"({', '.join(pos_names)}); got {len(args)}.{hint}"
         )
     explicit_kw_names = {k for k, _ in kwargs}
     for k in pos_names[:len(args)]:
@@ -1850,14 +1976,34 @@ def _bind_transform(
     measure_ctx: Optional[MeasureResolutionCtx] = None,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> TransformKey:
+    parameters = _transform_parameters(parsed.op)
+    stray = next((a.name for a in parsed.args if isinstance(a, NamedArg)
+                  and match_name(name=a.name, declared=parameters, quoted=False) is None), None)
+    positional, keywords = classify_arguments((parsed.input, *parsed.args), parameters=parameters, call=parsed.op)
+    if not positional:
+        raise TransformArgumentError(summary=f"Transform {parsed.op!r} requires the value to transform first.")
     inp = _bind_transform_input(
-        parsed.input, scope=scope, bundle=bundle, alias_map=alias_map,
+        positional[0], scope=scope, bundle=bundle, alias_map=alias_map,
         measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
     )
     return _bind_transform_params(
-        op=parsed.op, inp=inp, args=parsed.args, kwargs=parsed.kwargs,
-        scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+        op=parsed.op, inp=inp, args=positional[1:], kwargs=(*parsed.kwargs, *keywords),
+        scope=scope, bundle=bundle, dim_alias_map=dim_alias_map, stray=stray,
     )
+
+
+def _stray_hint(op: str, stray: Optional[str]) -> str:
+    """Why a comparison reached ``op``'s arguments: ``stray = …`` names none of its parameters."""
+    if stray is None:
+        return ""
+    accepted = ", ".join(sorted(_transform_parameters(op))) or "none"
+    return f" `{stray} = …` is no parameter of {op}, so it reads as a comparison; its keywords: {accepted}."
+
+
+def _transform_parameters(op: str) -> frozenset[str]:
+    """The keyword names transform ``op`` takes."""
+    names = _TRANSFORM_KWARG_RULES.get(op, frozenset()) | frozenset(_TRANSFORM_POSITIONAL_KWARGS.get(op, ()))
+    return names | {"partition_by", "direction"} if op in RANK_FAMILY_TRANSFORMS else names
 
 
 def _bind_transform_input(
@@ -1882,8 +2028,9 @@ def _bind_transform_params(
     scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]],
+    stray: Optional[str] = None,
 ) -> TransformKey:
-    positional_pairs = _transform_positional_pairs(op=op, args=args, kwargs=kwargs)
+    positional_pairs = _transform_positional_pairs(op=op, args=args, kwargs=kwargs, hint=_stray_hint(op, stray))
     bound_kwargs: List = []
     partition_keys: Grain = Grain.EMPTY
     allowed_kwargs = _TRANSFORM_KWARG_RULES.get(op, frozenset())
@@ -1916,7 +2063,7 @@ def _bind_transform_params(
             raise TransformArgumentError(
                 summary=f"Transform {op!r} keyword {k!r} must be a "
                 f"scalar literal; got expression of kind "
-                f"{type(v).__name__}."
+                f"{type(v).__name__}.{_stray_hint(op, stray)}"
             )
         bound_kwargs.append((k, scalar))
     direction = rank_direction(op=op, given="direction" in seen_kwargs, value=direction_value)

@@ -86,7 +86,7 @@ MONTHLY_ROWS = [
 MONTHLY_INNER = SlayerQuery.model_validate({
     "name": "s1", "source_model": "orders",
     "time_dimensions": [TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
-    "measures": [{"formula": "amount:sum", "name": "rev"}],
+    "measures": [{"formula": "sum(amount)", "name": "rev"}],
 })
 
 

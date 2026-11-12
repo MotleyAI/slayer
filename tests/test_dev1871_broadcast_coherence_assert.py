@@ -33,8 +33,8 @@ def _query(formula: str) -> SlayerQuery:
     )
 
 
-_TWO_ATTACHED = "amount:sum(partition_by=status) + amount:sum(partition_by=tier)"
-_INLINE_PLUS_ATTACHED = "amount:sum + amount:sum(partition_by=status)"
+_TWO_ATTACHED = "sum(amount, partition_by=status) + sum(amount, partition_by=tier)"
+_INLINE_PLUS_ATTACHED = "sum(amount) + sum(amount, partition_by=status)"
 
 
 @pytest.mark.parametrize("formula", [_TWO_ATTACHED, _INLINE_PLUS_ATTACHED])

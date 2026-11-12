@@ -1,10 +1,10 @@
-"""DEV-1836 task 1.6 — broadcast metadata and strict mode (design D6/D9, F8).
+"""Broadcast metadata and strict mode (design D6/D9, F8).
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Broadcast metadata",
 "Strict mode". A silent-semantics event (implicit-grain broadcast, excluded
 producer filter) is reported per distinct aggregate in lenient mode and errors
 under ``SlayerQuery.strict``; explicit ``partition_by=`` broadcasting neither
-warns nor errors, and a filter pushed down by semi-join (DEV-1840) is
+warns nor errors, and a filter pushed down by semi-join is
 correctly applied — neither warned nor a strict error.
 """
 
@@ -34,8 +34,8 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="amount:sum", name="m")
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
+M = ModelMeasure(formula="sum(amount)", name="m")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
 
 
 class TestBroadcastMetadata:
@@ -43,7 +43,9 @@ class TestBroadcastMetadata:
         _, engine = exec_backend
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
-            resp = await engine.execute(q(dimensions=["status"], measures=[M, CM]))
+            resp = await engine.execute(q(
+                to_many_handling="broadcast", dimensions=["status"], measures=[M, CM],
+            ))
         (w,) = broadcast_warnings(resp)
         assert "cm" in w.measure
         dims = {d.dimension for d in w.dimensions}
@@ -58,7 +60,10 @@ class TestBroadcastMetadata:
     async def test_only_the_unsafe_dimension_is_reported(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(
-            q(dimensions=["customers.tier", "status"], measures=[M, CM]),
+            q(
+                to_many_handling="broadcast",
+                dimensions=["customers.tier", "status"], measures=[M, CM],
+            ),
         )
         (w,) = broadcast_warnings(resp)
         dims = {d.dimension for d in w.dimensions}
@@ -69,19 +74,21 @@ class TestBroadcastMetadata:
         """F8 — measure + filter + ORDER BY roles dedup to one warning."""
         _, engine = exec_backend
         resp = await engine.execute(q(
+            to_many_handling="broadcast",
             dimensions=["status"], measures=[M, CM],
-            filters=["customers.spend:sum > 0"],
-            order=[OrderItem(column="customers.spend:sum", direction="desc")],
+            filters=["sum(customers.spend) > 0"],
+            order=[OrderItem.model_validate({"column": "sum(customers.spend)", "direction": "desc"})],
         ))
         assert len(broadcast_warnings(resp)) == 1
 
     async def test_distinct_aggregates_warn_separately(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(q(
+            to_many_handling="broadcast",
             dimensions=["status"],
             measures=[
                 CM,
-                ModelMeasure(formula="customers.regions.pop:sum", name="pop"),
+                ModelMeasure(formula="sum(customers.regions.pop)", name="pop"),
             ],
         ))
         assert len(broadcast_warnings(resp)) == 2
@@ -91,8 +98,9 @@ class TestBroadcastMetadata:
         named by its canonical aggregate form."""
         _, engine = exec_backend
         resp = await engine.execute(q(
+            to_many_handling="broadcast",
             dimensions=["status"], measures=[M],
-            filters=["customers.spend:sum > 0"],
+            filters=["sum(customers.spend) > 0"],
         ))
         (w,) = broadcast_warnings(resp)
         assert "spend" in w.measure
@@ -110,7 +118,7 @@ class TestBroadcastMetadata:
         resp = await engine.execute(q(
             dimensions=["status"],
             measures=[M, ModelMeasure(
-                formula="customers.spend:sum(partition_by=[])", name="total",
+                formula="sum(customers.spend, partition_by=[])", name="total",
             )],
         ))
         assert broadcast_warnings(resp) == []
@@ -124,19 +132,23 @@ class TestBroadcastMetadata:
     ):
         """The per-dimension reason names the actual join hop — an unproven forward
         hop by its target, a fanning reverse hop by the model it fans back to —
-        never 'unreachable' (DEV-1908: a prefix-side dimension reached back over a
+        never 'unreachable' (a prefix-side dimension reached back over a
         fanning hop names that hop, not the old round-trip artifact)."""
         _, engine = exec_backend
         # segments.label: a stored but unproven FORWARD hop from customers.
         via_hop = await engine.execute(
-            q(dimensions=["customers.segments.label"], measures=[CM]),
+            q(
+                to_many_handling="broadcast",
+                dimensions=["customers.segments.label"], measures=[CM],
+            ),
         )
         (w_hop,) = broadcast_warnings(via_hop)
         # tier from the regions-rooted pop aggregate: reachable only back over the
-        # fanning REVERSE hop regions → customers (never 'unreachable' post-DEV-1908).
+        # fanning REVERSE hop regions → customers (never 'unreachable').
         via_reverse = await engine.execute(q(
+            to_many_handling="broadcast",
             dimensions=["customers.tier"],
-            measures=[ModelMeasure(formula="customers.regions.pop:sum",
+            measures=[ModelMeasure(formula="sum(customers.regions.pop)",
                                    name="pop")],
         ))
         (w_rev,) = broadcast_warnings(via_reverse)
@@ -161,7 +173,7 @@ class TestStrictMode:
         assert "cardinality" in message or "unique" in message
 
     async def test_strict_passes_on_pushable_filter(self, exec_backend):
-        """DEV-1840: the host filter pushes down by semi-join, so strict has
+        """The host filter pushes down by semi-join, so strict has
         nothing to flag; the metric covers the app customers (c1, c3)."""
         _, engine = exec_backend
         resp = await engine.execute(q(
@@ -174,7 +186,7 @@ class TestStrictMode:
         assert float(by[("gold",)]["orders.cm"]) == pytest.approx(160.0)
 
     async def test_mixed_disjunction_pushes_in_error_mode(self, exec_backend):
-        """DEV-1935: a root-local OR cross-path conjunct no longer errors — the
+        """A root-local OR cross-path conjunct no longer errors — the
         producer is restricted by a boolean-total semi-join (gold cm = 160)."""
         _, engine = exec_backend
         resp = await engine.execute(q(
@@ -208,7 +220,7 @@ class TestStrictMode:
         resp = await engine.execute(q(
             to_many_handling="error", dimensions=["status"],
             measures=[ModelMeasure(
-                formula="customers.spend:sum(partition_by=[])", name="total",
+                formula="sum(customers.spend, partition_by=[])", name="total",
             )],
         ))
         for row in resp.data:

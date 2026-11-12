@@ -14,6 +14,7 @@ from slayer.async_utils import run_sync
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.inspect.service import InspectService
 from slayer.storage.base import StorageBackend
+from slayer.storage.migrations import CURRENT_VERSIONS
 from tests._stored_upgrade_fixtures import (
     BACKENDS,
     DS,
@@ -55,7 +56,7 @@ async def test_v14_model_loads_without_backing_sql(storage: StorageBackend) -> N
     assert model is not None
     assert "backing_query_sql" not in model.model_dump()
     doc = await raw_doc(storage, "rev")
-    assert doc["version"] == 18
+    assert doc["version"] == CURRENT_VERSIONS["SlayerModel"]
     assert "backing_query_sql" not in doc
 
 
@@ -89,7 +90,7 @@ def test_rest_returns_no_backing_sql() -> None:
 
 
 async def test_dry_run_renders_the_sql(storage: StorageBackend) -> None:
-    response = await run(storage, {"source_model": "rev", "measures": [{"formula": "rev:sum"}]}, dry_run=True)
+    response = await run(storage, {"source_model": "rev", "measures": [{"formula": "sum(rev)"}]}, dry_run=True)
     assert response.sql is not None
     assert "orders" in response.sql
     assert "stale_marker" not in response.sql

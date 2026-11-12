@@ -57,7 +57,8 @@ def test_plain_query_sets_no_flag(store: str) -> None:
 
 @pytest.mark.parametrize(("query", "flag"), [
     (AVG_CUSTOMER_REVENUE, "multistage"),
-    ({"source_model": {"source_name": "orders", "columns": [{"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"}]},
+    ({"source_model": "orders",
+      "extensions": [{"source_name": "orders", "columns": [{"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"}]}],
       "measures": ["sum(double_amount)"]}, "inline_source"),
     ({"source_model": {"name": "orders_inline", "data_source": "test", "sql_table": "orders",
                        "columns": [{"name": "id", "type": "INT", "primary_key": True},

@@ -347,7 +347,7 @@ async def test_time_grain_group_by(pg_demo_server) -> None:
     conn = await _connect(host, port)
     try:
         rows = await conn.fetch(
-            "SELECT month(ordered_at) AS m, row_count FROM orders "
+            "SELECT DATE_TRUNC('month', ordered_at) AS m, row_count FROM orders "
             "GROUP BY m ORDER BY m"
         )
         assert len(rows) > 0
@@ -378,7 +378,8 @@ async def test_select_star_browse_mode_expands(pg_demo_server) -> None:
         assert len(rows) >= 1
         # At least the standard demo columns are projected.
         keys = set(rows[0].keys())
-        assert "id" in keys and "ordered_at" in keys
+        assert "id" in keys
+        assert "ordered_at" in keys
     finally:
         await conn.close()
 

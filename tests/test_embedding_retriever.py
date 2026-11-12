@@ -84,7 +84,7 @@ def _make_model() -> SlayerModel:
             Column(name="secret", type=DataType.TEXT, hidden=True),
         ],
         measures=[
-            ModelMeasure(name="rev", formula="amount:sum"),
+            ModelMeasure(name="rev", formula="sum(amount)"),
         ],
         aggregations=[
             Aggregation(name="my_agg", formula="SUM({x})"),
@@ -264,8 +264,10 @@ async def test_fetch_corpus_filters_by_active_model_name(
 
     rows_a = await retriever_a.fetch_corpus()
     rows_b = await retriever_b.fetch_corpus()
-    assert len(rows_a) == 1 and rows_a[0].embedding_model_name == "openai/a"
-    assert len(rows_b) == 1 and rows_b[0].embedding_model_name == "openai/b"
+    assert len(rows_a) == 1
+    assert rows_a[0].embedding_model_name == "openai/a"
+    assert len(rows_b) == 1
+    assert rows_b[0].embedding_model_name == "openai/b"
 
 
 # ---------------------------------------------------------------------------

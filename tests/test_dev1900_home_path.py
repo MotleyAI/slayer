@@ -23,8 +23,8 @@ from tests._dev1900_fixtures import (
 )
 
 EXPLICIT = ModelMeasure(
-    formula="customers.regions.pop:wsum_cust_spend(weight=customers.spend)", name="w")
-DEFAULT = ModelMeasure(formula="customers.regions.pop:wsum_cust_spend", name="w")
+    formula="wsum_cust_spend(customers.regions.pop, weight=customers.spend)", name="w")
+DEFAULT = ModelMeasure(formula="wsum_cust_spend(customers.regions.pop)", name="w")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -54,6 +54,6 @@ class TestReverseHopDefaultFailsClosed:
         no forward home."""
         q = SlayerQuery(
             source_model="regions",
-            measures=[ModelMeasure(formula="pop:wsum_cust_spend", name="w")])
+            measures=[ModelMeasure(formula="wsum_cust_spend(pop)", name="w")])
         with pytest.raises(ValueError, match="unproven join hop"):
             await engine.execute(q)

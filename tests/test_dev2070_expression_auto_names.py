@@ -73,7 +73,7 @@ async def test_repro_date_comparison_inside_a_scalar_call(engine) -> None:
     [
         ("sum(iif(ordered_at == '2024-02', 1, 0))", "orders.iif_ordered_at_2024_02_1_0_sum", 2),
         ("sum(iif(ordered_at != '2024-02', 1, 0))", "orders.iif_ordered_at_2024_02_1_0_sum", 4),
-        ("sum(iif(month(ordered_at) >= '2024-02', 1, 0))", "orders.iif_month_ordered_at_2024_02_1_0_sum", 5),
+        ("sum(iif(date_trunc('month', ordered_at) >= '2024-02', 1, 0))", "orders.iif_date_trunc_month_ordered_at_2024_02_1_0_sum", 5),
         ("sum(amount > 5 and ordered_at >= '2024-02-01')", "orders.amount_5_and_ordered_at_2024_02_01_sum", 4),
         ("sum(iif('2024-02-01' <= ordered_at, 1, 0))", "orders.iif_2024_02_01_ordered_at_1_0_sum", 5),
     ],
@@ -147,8 +147,8 @@ async def test_null_literal_spelled_null(engine) -> None:
         ("sum(customers.spend - customers.regions.weight)", "orders.customers.spend_regions_weight_sum", 343),
         ("sum(customers.spend_x2 + 1)", "orders.customers.spend_x2_1_sum", 703),
         (
-            "sum(iif(month(customers.signup_at) >= '2024-02', 1, 0))",
-            "orders.customers.iif_month_signup_at_2024_02_1_0_sum", 2,
+            "sum(iif(date_trunc('month', customers.signup_at) >= '2024-02', 1, 0))",
+            "orders.customers.iif_date_trunc_month_signup_at_2024_02_1_0_sum", 2,
         ),
         (
             "sum(iif(customers.region_id in (1, 3), customers.spend, 0))",

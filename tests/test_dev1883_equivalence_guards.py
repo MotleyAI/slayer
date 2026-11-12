@@ -29,7 +29,7 @@ def _mtd(*grans_and_cols: tuple) -> SlayerQuery:
     return fx.q(
         source_model="orders",
         time_dimensions=[{"dimension": c, "granularity": g} for g, c in grans_and_cols],
-        measures=[{"formula": "amount:sum"}],
+        measures=[{"formula": "sum(amount)"}],
         main_time_dimension="created_at",
     )
 
@@ -45,15 +45,15 @@ class TestMainTimeDimensionAmbiguity:
     async def test_two_same_column_buckets_raise_via_execute(self, engine) -> None:
         q = fx.q(
             source_model="orders",
-            dimensions=["month(created_at)", "year(created_at)"],
+            dimensions=["date_trunc('month', created_at)", "date_trunc('year', created_at)"],
             main_time_dimension="created_at",
-            measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],
+            measures=[{"formula": "cumsum(sum(amount))", "name": "cs"}],
         )
         with pytest.raises(AmbiguousReferenceError) as ei:
             await engine.execute(q, dry_run=True)
         msg = str(ei.value)
-        assert "month(created_at)" in msg
-        assert "year(created_at)" in msg
+        assert "date_trunc('month', created_at)" in msg
+        assert "date_trunc('year', created_at)" in msg
 
     async def test_unit_resolve_raises_on_same_column_buckets(self, engine) -> None:
         model = await _orders_model(engine)
@@ -85,7 +85,7 @@ class TestMainTimeDimensionAmbiguity:
                 {"dimension": "created_at", "granularity": "month"},
                 {"dimension": "created_at", "granularity": "year"},
             ],
-            measures=[{"formula": "amount:sum"}],
+            measures=[{"formula": "sum(amount)"}],
         )
         assert _resolve_main_time_dimension(query=q, model=model) is None
 
@@ -97,7 +97,7 @@ class TestMainTimeDimensionAmbiguity:
                 {"dimension": "created_at", "granularity": "month"},
                 {"dimension": "customers.created_at", "granularity": "year"},
             ],
-            measures=[{"formula": "amount:sum"}],
+            measures=[{"formula": "sum(amount)"}],
         )
         resolved = _resolve_main_time_dimension(query=q, model=model)
         assert resolved is not None
@@ -118,7 +118,7 @@ class TestMainTimeDimensionAmbiguity:
                 {"dimension": "created_at", "granularity": "month"},
                 {"dimension": "created_at", "granularity": "year"},
             ],
-            measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],
+            measures=[{"formula": "cumsum(sum(amount))", "name": "cs"}],
         )
         with pytest.raises(ValueError, match="unambiguous time dimension"):
             await engine.execute(q, dry_run=True)
@@ -131,7 +131,7 @@ class TestMainTimeDimensionAmbiguity:
                 {"dimension": "created_at", "granularity": "month"},
                 {"dimension": "created_at", "granularity": "year"},
             ],
-            measures=[{"formula": "amount:sum"}],
+            measures=[{"formula": "sum(amount)"}],
         )
         resp = await engine.execute(q, dry_run=True)
         assert resp.sql

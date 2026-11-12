@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+from functools import partial
 import logging
 import os
 import sys
@@ -13,30 +14,43 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Callable, Hashable, Iterable
 
-from slayer.core.enums import DataType, JoinCardinality, TimeGranularity, invert_cardinality
+from slayer.core.enums import RESERVED_NAMES, DataType, JoinCardinality, TimeGranularity, invert_cardinality
 from slayer.core.granularity import resolve_granularity, unknown_granularity_message
 from slayer.core.time_spine import TIME_SPINE_MODEL, spine_model
 from slayer.core.errors import (
     AmbiguousModelError,
+    CaseCollisionError,
+    ColonSpellingError,
     IdCollisionError,
     MemoryNotFoundError,
     DefaultTimeDimensionTypeError,
+    ReservedFunctionNameError,
     ReservedModelNameError,
     StoredDocumentLoadError,
     UnknownGranularityError,
 )
 from slayer.engine.column_dependency import check_model_filters, validate_derived_columns, warn_broken_dependents
 from slayer.core.join_walker import edges_between
+from slayer.core.names import folded_collisions
+from slayer.core.legacy_spellings import LegacySpan, emit_deprecations
 from slayer.core.models import (
     DatasourceConfig,
     SlayerModel,
     _validate_column_name,
+    case_collisions,
+    name_collision_warnings,
     is_base_column_sql,
     physical_column_sql,
     shadows_library_function,
 )
 from slayer.core.query import SlayerQuery
-from slayer.core.warnings import LibraryNameShadowWarning, SlayerLibraryNameShadowWarning, caller_announces
+from slayer.core.syntax import parse_expr
+from slayer.core.warnings import (
+    LibraryNameShadowWarning,
+    SlayerLibraryNameShadowWarning,
+    SlayerNameCollisionWarning,
+    caller_announces,
+)
 from slayer.embeddings.models import Embedding
 from slayer.sql import connection_policy
 from slayer.memories.models import (
@@ -53,6 +67,12 @@ from slayer.storage.granularity_rename import (
     rename_in_memory,
     rename_in_model,
     renamed_datasource,
+)
+from slayer.storage.mode_b_texts import (
+    canonical_spellings,
+    custom_buckets_as_date_trunc,
+    rewrite_memory_doc,
+    rewrite_model_doc,
 )
 from slayer.storage.legacy_time_literals import legacy_literal_sites, repaired_filter
 from slayer.storage.legacy_alias_rewrite import (
@@ -177,6 +197,14 @@ def _stored_type(*, key: Any, columns: Any) -> str | None:
         return DataType(col["type"]).value if col is not None and "type" in col else None
     except ValueError:
         return None
+
+
+def _extended(*, key: str, model: dict, extensions: list[dict]) -> list:
+    """``model[key]`` plus the ``key`` entries of each of ``extensions`` that extends ``model``."""
+    own = model.get(key)
+    added = [x for e in extensions if e.get("source_name") == model.get("name") and isinstance(e.get(key), list)
+             for x in e[key]]
+    return [*(own if isinstance(own, list) else []), *added]
 
 
 def _key_pairs(join: Any) -> list[tuple[Any, Any]]:
@@ -369,6 +397,21 @@ def _write_sample_fields(
         col["distinct_count"] = distinct_count
 
 
+#: The versions below which a stored document's custom-granularity calls are bucket calls.
+_CUSTOM_BUCKET_CALLS_BELOW = {"SlayerModel": 20, "Memory": 9}
+
+
+def with_canonical_spellings(model: SlayerModel) -> SlayerModel:
+    """``model`` with each deprecated spelling in its Mode-B texts replaced by its twin, warning once per spelling."""
+    found: dict[str, LegacySpan] = {}
+    dumped = model.model_dump(mode="json", exclude_none=True)
+    rewritten = rewrite_model_doc(dumped, lambda text: canonical_spellings(text, found=found))
+    if not found:
+        return model
+    emit_deprecations(found)
+    return SlayerModel.model_validate(rewritten)
+
+
 def warn_library_shadows(model: SlayerModel) -> None:
     """One warning per aggregation of ``model`` that shadows a library function."""
     for agg in model.aggregations:
@@ -464,6 +507,17 @@ def _validate_path_component(value: str, *, kind: str) -> None:
             )
 
 
+def _refuse_colon_measures(model: SlayerModel) -> None:
+    """A measure formula in a removed colon spelling fails the save; other parse errors surface at binding."""
+    for measure in model.measures:
+        try:
+            parse_expr(measure.formula)
+        except ColonSpellingError:
+            raise
+        except Exception:  # noqa: BLE001, S112 — reported when a query binds it
+            continue
+
+
 def _validate_default_time_dimension(model: SlayerModel) -> None:
     column = model.get_column(model.default_time_dimension) if model.default_time_dimension else None
     if column is not None and column.type not in (DataType.DATE, DataType.TIMESTAMP):
@@ -483,8 +537,10 @@ class StorageBackend(ABC):
     async def save_model(
         self, model: SlayerModel, *, _validate: bool = True, failures: DocumentLoadFailures | None = None,
     ) -> None:
-        """Persist a model after ``validate_for_save`` (skipped by ``_validate=False``, migration write-back only). Backends must NOT override this."""
+        """Persist a model after ``validate_for_save`` (skipped by ``_validate=False``, migration write-back only), each
+        deprecated Mode-B spelling stored as its twin. Backends must NOT override this."""
         if _validate:
+            model = with_canonical_spellings(model)
             await self.validate_for_save(model, failures=failures)
             warn_library_shadows(model)
         await self._save_model_impl(model)
@@ -494,8 +550,10 @@ class StorageBackend(ABC):
         """Reserved-name and case-collision rejection, derived-column and model-filter well-formedness (reference arity + cycles) and join-edge validation against this store's peers; then a warning per dependent the save breaks, unless ``failures`` is unreported."""
         if model.name == TIME_SPINE_MODEL:
             raise ReservedModelNameError(name=model.name)
+        _refuse_colon_measures(model)
         if self._ids_collide_as_filenames:
             await self._check_model_identity_collision(model)
+        await self._check_case_collisions(model)
         # A skipped (unloadable) peer is invisible to these checks; its edge names go unchecked.
         failures = failures or DocumentLoadFailures()
         loaded, unloaded = await self.load_models(data_source=model.data_source, exclude=model.name)
@@ -510,6 +568,24 @@ class StorageBackend(ABC):
             warn_broken_dependents(
                 model=model, stored=await self.get_model(model.name, data_source=model.data_source), peers=peers,
             )
+
+    async def _check_case_collisions(self, model: SlayerModel) -> None:
+        """Refuse a name that newly collides by case with another in its namespace (the datasource's model names
+        included); a collision the stored document already holds is grandfathered, with a warning."""
+        identities = await self._list_all_model_identities()
+        peers = [n for d, n in identities if d == model.data_source]
+        new = [g for g in folded_collisions([*peers, model.name]) if model.name in g] if model.name not in peers else []
+        if new:
+            raise CaseCollisionError(names=new[0], namespace=f"datasource {model.data_source!r}'s models")
+        stored = None
+        with contextlib.suppress(Exception):
+            stored = await self.get_model(model.name, data_source=model.data_source)
+        held = {(w, tuple(g)) for w, g in case_collisions(stored)} if stored is not None else set()
+        for where, group in case_collisions(model):
+            if (where, tuple(group)) not in held:
+                raise CaseCollisionError(names=group, namespace=f"model {model.name!r}'s {where}")
+        for payload in name_collision_warnings(model):
+            warnings.warn(SlayerNameCollisionWarning(payload), stacklevel=4)
 
     async def _validate_column_granularities(self, model: SlayerModel) -> None:
         named = [(c, c.granularity) for c in model.columns if c.granularity is not None and not isinstance(c.granularity, TimeGranularity)]
@@ -533,6 +609,8 @@ class StorageBackend(ABC):
             check_aggregation_definition(
                 where=f"Model '{model.name}', aggregation '{agg.name}'", agg=agg, dialect=dialect,
             )
+            if agg.name.lower() in RESERVED_NAMES:
+                raise ReservedFunctionNameError(name=agg.name, where=f"Model '{model.name}', aggregation")
 
     @staticmethod
     def _validate_join_edges(
@@ -673,6 +751,22 @@ class StorageBackend(ABC):
 
     async def _write_raw_memory_dict(self, *, memory_id: str, data: dict) -> None:
         raise NotImplementedError
+
+    async def _custom_bucket_calls(self, *, data_sources: list[str]) -> Callable[[str], str]:
+        """The text rewrite spelling a call of one of ``data_sources``' granularities ``date_trunc``."""
+        units: set[str] = set()
+        for name in data_sources:
+            with contextlib.suppress(Exception):
+                ds = await self.get_datasource(name)
+                units |= set(ds.granularity_definitions) if ds is not None else set()
+        return partial(custom_buckets_as_date_trunc, units=frozenset(units))
+
+    async def _memory_data_sources(self, data: dict) -> list[str]:
+        """The datasources a stored memory's query reads: its inline model's, else those holding its root model."""
+        inline_data_source, source = memory_source_model(data)
+        if inline_data_source is not None:
+            return [inline_data_source]
+        return sorted({d for d, n in await self._list_all_model_identities() if n == source})
 
     async def _settle_library_granularities(self) -> None:
         """Once per instance, before any model or memory loads: rename the library-named granularities of every stored
@@ -890,6 +984,8 @@ class StorageBackend(ABC):
         write_back = False
         data = _mig.stamp_stored(data)
         pre_version = int(data["version"])
+        if pre_version < _CUSTOM_BUCKET_CALLS_BELOW["SlayerModel"]:
+            data = rewrite_model_doc(data, await self._custom_bucket_calls(data_sources=[data_source]))
         if pre_version < _mig.CURRENT_VERSIONS["SlayerModel"]:
             data = _mig.migrate("SlayerModel", data)
             # Rewrite legacy ``__`` split-alias qualifiers to dotted on the RAW
@@ -912,6 +1008,8 @@ class StorageBackend(ABC):
         model = SlayerModel.model_validate(data)
         if not caller_announces():
             warn_library_shadows(model)
+            for payload in name_collision_warnings(model):
+                warnings.warn(SlayerNameCollisionWarning(payload), stacklevel=2)
         if write_back:
             # Write-back must not re-validate: legacy models may hold cycles or
             # fanning refs a user needs to load to repair.
@@ -994,13 +1092,16 @@ class StorageBackend(ABC):
         host = await self._query_host(source=query.get("source_model"), data_source=data_source, stage_names=stage_names)
         if host is None:
             return
+        extensions = query.get("extensions")
+        extensions = [e for e in extensions if isinstance(e, dict)] if isinstance(extensions, list) else []
         for i, pairs in enumerate(found):
             if pairs is None:
                 continue
             temporal = [
                 literal for literal, column in pairs
-                if await self._stored_column_type(host=host, parts=[p.name for p in column.parts])
-                in (DataType.DATE.value, DataType.TIMESTAMP.value)
+                if await self._stored_column_type(
+                    host=host, parts=[p.name for p in column.parts], extensions=extensions,
+                ) in (DataType.DATE.value, DataType.TIMESTAMP.value)
             ]
             if temporal:
                 filters[i] = repaired_filter(filters[i], temporal)
@@ -1011,7 +1112,7 @@ class StorageBackend(ABC):
         """The raw stored model a stored query reads and its datasource; ``None`` for a stage or an unresolvable source."""
         if isinstance(source, dict) and isinstance(source.get("columns"), list):
             return source, str(source.get("data_source") or data_source)
-        name = source.get("source_name") if isinstance(source, dict) else source
+        name = source
         if not isinstance(name, str) or name in stage_names:
             return None
         if data_source is None:
@@ -1023,22 +1124,23 @@ class StorageBackend(ABC):
         raw = await self._cached_raw_model_dict(name=name, data_source=data_source) if data_source else None
         return (raw, data_source) if isinstance(raw, dict) and data_source else None
 
-    async def _stored_column_type(self, *, host: tuple[dict, str], parts: list[str]) -> str | None:
-        """The stored type of the column ``parts`` names from ``host``, walking its stored joins."""
+    async def _stored_column_type(
+        self, *, host: tuple[dict, str], parts: list[str], extensions: list[dict],
+    ) -> str | None:
+        """The stored type of the column ``parts`` names from ``host``, walking its stored joins plus the query's ``extensions``."""
         current, data_source = host
         quals, leaf = parts[:-1], parts[-1]
         if quals and quals[0] == current.get("name"):
             quals = quals[1:]
         for hop in quals:
-            joins = current.get("joins")
-            joins = [j for j in joins if isinstance(j, dict)] if isinstance(joins, list) else []
+            joins = [j for j in _extended(key="joins", model=current, extensions=extensions) if isinstance(j, dict)]
             target = next((j.get("target_model") for j in joins if j.get("name") == hop), None) or next(
                 (hop for j in joins if not j.get("name") and j.get("target_model") == hop), None)
             peer = await self._cached_raw_model_dict(name=target, data_source=data_source) if isinstance(target, str) else None
             if peer is None:
                 return None
             current = peer
-        return _stored_type(key=leaf, columns=current.get("columns"))
+        return _stored_type(key=leaf, columns=_extended(key="columns", model=current, extensions=extensions))
 
     async def _dedup_exact_inverse_joins(
         self, *, name: str, data: dict, data_source: str,
@@ -1286,6 +1388,9 @@ class StorageBackend(ABC):
         await self._settle_library_granularities()
         with stored_document_boundary(kind="memory", name=memory_id):
             data = _mig.stamp_stored(self._renamed_since_read(decode(), kind="memory", key=memory_id))
+            if isinstance(data, dict) and int(data["version"]) < _CUSTOM_BUCKET_CALLS_BELOW["Memory"]:
+                data = rewrite_memory_doc(data, await self._custom_bucket_calls(
+                    data_sources=await self._memory_data_sources(data)))
             # Memories are never written back, so the repair repeats on every load of a pre-v4 document.
             if isinstance(data, dict) and int(data["version"]) < _MEMORY_FILTER_REPAIR_BELOW_VERSION:
                 await self._repair_query_filters(query=data.get("query"), data_source=None)

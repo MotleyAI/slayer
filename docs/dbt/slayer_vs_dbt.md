@@ -13,7 +13,7 @@ For details on importing dbt definitions into SLayer, see [dbt Import](dbt_impor
 
 ## Where SLayer Expresses dbt Constructs Differently
 
-Some dbt constructs that look missing at first glance are in fact expressible in SLayer — just via different primitives. The three building blocks are query-time [aggregations](../examples/07_aggregations/aggregations.md), multi-stage queries via [query-as-model](../examples/06_multistage_queries/multistage_queries.md), and dynamic [`ModelExtension`](../concepts/queries.md#modelextension).
+Some dbt constructs that look missing at first glance are in fact expressible in SLayer — just via different primitives. The three building blocks are query-time [aggregations](../examples/07_aggregations/aggregations.md), multi-stage queries via [query-as-model](../examples/06_multistage_queries/multistage_queries.md), and dynamic [query extensions](../concepts/queries.md#query-extensions).
 
 ### Semi-Additive Measures (`non_additive_dimension`)
 
@@ -44,7 +44,7 @@ Example — account balances rolled up to customer-level monthly totals:
 ]
 ```
 
-If the source model does not already expose the grouping entities, pull them in via [`ModelExtension`](../concepts/queries.md#modelextension) on the inner query — see [Joins](../examples/05_joins/joins.md) and [Measures from joined models](../examples/05_joined_measures/joined_measures.md) for the cross-model semantics.
+If the source model does not already expose the grouping entities, pull them in via [query extensions](../concepts/queries.md#query-extensions) on the inner query — see [Joins](../examples/05_joins/joins.md) and [Measures from joined models](../examples/05_joined_measures/joined_measures.md) for the cross-model semantics.
 
 ### Per-Measure `agg_time_dimension`
 

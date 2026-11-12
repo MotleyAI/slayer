@@ -40,7 +40,7 @@ referenceable in filters, in order and from a downstream stage.
 
 #### Scenario: Colliding derived keys fail loudly
 - **WHEN** one query contains both `sum(amount - cost)` and `sum(amount + cost)`
-  without renames, or both `sum(iif(ordered_at == '2024-02', 1, 0))` and
+  without renames, or both `sum(iif(ordered_at = '2024-02', 1, 0))` and
   `sum(iif(ordered_at != '2024-02', 1, 0))`
 - **THEN** it fails with a duplicate-key error naming both expressions and advising a rename
 
@@ -65,12 +65,12 @@ referenceable in filters, in order and from a downstream stage.
 #### Scenario: Date comparison forms
 - **WHEN** a measure on `orders` is written with a date comparison inside `iif` or
   joined by `and` — `iif(ordered_at >= 'last month', 1, 0)`,
-  `iif(ordered_at == '2024-02', 1, 0)`, `iif(ordered_at != '2024-02', 1, 0)`,
-  `iif(month(ordered_at) >= '2024-02', 1, 0)`,
+  `iif(ordered_at = '2024-02', 1, 0)`, `iif(ordered_at != '2024-02', 1, 0)`,
+  `iif(date_trunc('month', ordered_at) >= '2024-02', 1, 0)`,
   `amount > 5 and ordered_at >= '2024-02-01'` — each summed
 - **THEN** the keys are `orders.iif_ordered_at_last_month_1_0_sum`,
-  `orders.iif_ordered_at_2024_02_1_0_sum` (for both `==` and `!=`),
-  `orders.iif_month_ordered_at_2024_02_1_0_sum` and
+  `orders.iif_ordered_at_2024_02_1_0_sum` (for both `=` and `!=`),
+  `orders.iif_date_trunc_month_ordered_at_2024_02_1_0_sum` and
   `orders.amount_5_and_ordered_at_2024_02_01_sum` — the relative point named by its
   text, never by the date it resolves to
 
@@ -338,7 +338,7 @@ operand dataset for an attached one.
 #### Scenario: Attached parameter on a row-level source executes under broadcast
 - **WHEN** a measure is written
   `weighted_avg(customers.spend, weight=sum(amount, partition_by=customers.regions.name))`
-  rooted at `orders` under the default `broadcast` `to_many_handling`
+  rooted at `orders` under `to_many_handling: "broadcast"`
 - **THEN** it executes — the parameter's producer rooted at `orders`, attached per
   customer row inside the `customers`-rooted producer — with values identical to
   `associate` and `error` on every dimension the home determines, never the former
@@ -371,7 +371,7 @@ operand dataset for an attached one.
   `sum(customers.spend * sum(amount, partition_by=customers.regions.name))` — a
   row-grain source homed at `customers` whose constituent is homed at `orders`
 - **THEN** the constituent's producer is rooted at `orders` and attached per
-  customer row; by `status` under the default mode the customers-rooted total
+  customer row; by `status` under `to_many_handling: "broadcast"` the customers-rooted total
   (33780 on the reference dataset) is broadcast to both cells with the usual
   warning, and by `customers.tier` every mode returns identical hand-computed
   values (gold 15300, silver 16600, bronze 1880) — never the input-safety error the

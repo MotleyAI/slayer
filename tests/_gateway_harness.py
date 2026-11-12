@@ -11,7 +11,6 @@ import asyncio
 import sqlite3
 import sqlite3.dbapi2 as sqlite_dbapi2
 import threading
-import time
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from typing import Any
@@ -102,7 +101,7 @@ def paid_sql_model(*, data_source: str = DS_NAME) -> SlayerModel:
     )
 
 
-COUNT_ORDERS_MEM = {"source_model": "t", "measures": [{"formula": "*:count", "name": "n"}]}
+COUNT_ORDERS_MEM = {"source_model": "t", "measures": [{"formula": "count(*)", "name": "n"}]}
 
 
 def mem_count_model() -> SlayerModel:
@@ -316,32 +315,3 @@ def no_direct_access(*, backends: Sequence[DatasourceConfig] = ()) -> Generator[
     finally:
         for ds in backends:
             engine_factory.invalidate_engine(ds)
-
-
-class LoopTicker:
-    """A concurrent task recording the longest stall between its ticks (a blocked loop stalls it)."""
-
-    def __init__(self, *, interval: float = 0.005) -> None:
-        self.ticks = 0
-        self.max_stall = 0.0
-        self._interval = interval
-        self._task: asyncio.Task | None = None
-        self._last = 0.0
-
-    async def _run(self) -> None:
-        while True:
-            now = time.monotonic()
-            self.max_stall = max(self.max_stall, now - self._last)
-            self._last = now
-            self.ticks += 1
-            await asyncio.sleep(self._interval)
-
-    def __enter__(self) -> LoopTicker:
-        self._last = time.monotonic()
-        self._task = asyncio.get_running_loop().create_task(self._run())
-        return self
-
-    def __exit__(self, *_exc: object) -> None:
-        assert self._task is not None
-        self._task.cancel()
-        self.max_stall = max(self.max_stall, time.monotonic() - self._last)

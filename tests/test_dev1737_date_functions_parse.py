@@ -111,8 +111,12 @@ class TestUnitLiterals:
         with pytest.raises(ValueError, match="string literal"):
             _bind(expr)
 
-    def test_bucket_form_is_not_a_date_function(self) -> None:
-        assert not isinstance(parse_expr("month(created_at)"), ScalarCall)
+    def test_part_call_is_date_part_and_bucket_form_is_not(self) -> None:
+        assert parse_expr("month(created_at)") == ScalarCall(
+            name="date_part", args=(Literal(value="month"), Ref(name="created_at")),
+        )
+        bucket = parse_expr("date_trunc('month', created_at)")
+        assert not (isinstance(bucket, ScalarCall) and bucket.name == "date_part")
 
 
 class TestClockCalls:

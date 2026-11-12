@@ -174,7 +174,7 @@ When a query carries an aggregation-derived dimension, top-level AND conjuncts o
 - THEN each conjunct routes to its own phase and the result equals applying the two filters separately
 
 #### Scenario: Conjunction with a row-level predicate splits too
-- WHEN one filter string ANDs a predicate on the banded dimension with a plain row predicate (`band == 1 and status == 'ok'`)
+- WHEN one filter string ANDs a predicate on the banded dimension with a plain row predicate (`band = 1 and status = 'ok'`)
 - THEN the row conjunct copies into the producer and consumer, the band conjunct applies at the final stage, and the result equals applying the two filters separately
 
 #### Scenario: Unsplittable mixed predicate still fails closed

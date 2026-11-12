@@ -23,6 +23,9 @@ HELPERS = frozenset({
 })
 HELPER_MODULE = "slayer/core/deprecation.py"
 
+#: The deprecated Mode-B spellings, each warned with a message spelling its token literally.
+MODE_B_SPELLING_TOKENS = ("==", "is None", "is not None", "bare None", "list after IN", "method-call")
+
 #: Every covered workaround: (file, a token its message spells literally) -> removal version.
 PINNED: dict[tuple[str, str], str] = {
     **{
@@ -38,6 +41,8 @@ PINNED: dict[tuple[str, str], str] = {
     ("slayer/engine/population/__init__.py", "slayer.engine.population."): "3.0",
     ("slayer/engine/cardinality/__init__.py", "slayer.engine.cardinality."): "3.0",
     ("slayer/core/query.py", "strict"): "3.0",
+    ("slayer/core/query.py", "An extension object in `source_model`"): "3.0",
+    **{("slayer/core/legacy_spellings.py", token): "3.0" for token in MODE_B_SPELLING_TOKENS},
 }
 
 

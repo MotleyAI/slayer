@@ -6,8 +6,9 @@ import hashlib
 import re
 from decimal import Decimal
 from operator import attrgetter
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
+from slayer.core.enums import GRANULARITY_NAMES
 from slayer.core.granularity import CustomGranularity
 from slayer.core.keys import (
     MIRRORED_TIME_POINT_OP,
@@ -27,6 +28,7 @@ from slayer.core.keys import (
     TimePointCmpKey,
     TimeTruncKey,
     TransformKey,
+    VALUE_KEY_TYPES,
     ValueKey,
 )
 
@@ -37,15 +39,6 @@ IDENTIFIER_RE = re.compile(r"^[a-zA-Z_]\w*$")
 
 # An identifier or dotted path; used to scan formula text for reference candidates.
 IDENT_OR_PATH_RE = re.compile(r"[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*")
-
-# Legacy colon aggregation spelling (``revenue:sum``, ``*:count``). Group 1 measure name,
-# group 2 aggregation name, group 3 optional ``(...)`` arglist.
-AGG_REF_RE = re.compile(
-    r"(\*|[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*(?:\.\*)?)"  # measure / *
-    r":"
-    r"([a-zA-Z_]\w*)"
-    r"(\([^)]*\))?"
-)
 
 
 # Aggregation-suffix utilities
@@ -305,13 +298,27 @@ def _listed_display(key: ValueKey) -> str | None:
     return None
 
 
+def bucket_remedy(key: ValueKey) -> str | None:
+    """``date_trunc('<part>', <operand>)`` for a ``date_part`` extraction whose part is a granularity, else ``None``."""
+    if isinstance(key, ScalarCallKey) and key.name == "date_part" and len(key.args) == 2:
+        part, operand = key.args
+        if isinstance(part, LiteralKey) and part.value in GRANULARITY_NAMES and isinstance(operand, VALUE_KEY_TYPES):
+            return f"date_trunc('{part.value}', {key_display(cast(ValueKey, operand))})"
+    return None
+
+
+def first_bucket_remedy(keys: Any) -> str | None:
+    """``bucket_remedy`` of the first extraction among ``keys``."""
+    return next((r for k in keys if (r := bucket_remedy(k)) is not None), None)
+
+
 def key_display(key: ValueKey) -> str:
     """User-facing formula text of any key kind."""
     shown = _leaf_display(key) or _listed_display(key)
     if shown is not None:
         return shown
     if isinstance(key, TimeTruncKey):
-        return f"{key.granularity}({key_display(key.source)})"
+        return f"date_trunc('{key.granularity}', {key_display(key.source)})"
     if isinstance(key, AggregateKey):
         return _aggregate_display(key)
     if isinstance(key, TransformKey):
@@ -454,38 +461,8 @@ def canonical_agg_name(
     return f"{measure_name}_{aggregation_name}{suffix}"
 
 
-def strip_agg_suffix(raw: str) -> tuple[str, str | None]:
-    """Return ``(prefix, agg_name)`` stripping a trailing legacy colon suffix ``:agg``/``:agg(...)`` (arglist discarded); locates the outermost colon (outside parens) so ``revenue:last(created_at)`` isn't fooled."""
-    depth = 0
-    for i, ch in enumerate(raw):
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-        elif ch == ":" and depth == 0:
-            prefix = raw[:i]
-            tail = raw[i + 1:]
-            agg = tail.split("(", 1)[0]
-            return prefix, agg
-    return raw, None
-
-
-def split_agg_suffix(raw: str) -> tuple[str, str | None]:
-    """Return ``(prefix, suffix)`` splitting a trailing legacy colon suffix ``:agg`` but keeping the full suffix (args included) — unlike :func:`strip_agg_suffix`, so a re-rooted reference re-attaches it verbatim."""
-    depth = 0
-    for i, ch in enumerate(raw):
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-        elif ch == ":" and depth == 0:
-            return raw[:i], raw[i + 1:]
-    return raw, None
-
-
 def functional_agg_text(*, source: str, suffix: str) -> str:
-    """Functional text of ``(source, suffix)``, the inverse of :func:`split_agg_suffix`:
-    ``("price", "percentile(p=0.9)")`` → ``percentile(price, p=0.9)``."""
+    """Functional text of ``(source, suffix)``: ``("price", "percentile(p=0.9)")`` → ``percentile(price, p=0.9)``."""
     name, paren, rest = suffix.strip().partition("(")
     args = rest.rstrip()[:-1].strip() if paren else ""
     inner = f"{source}, {args}" if args else source

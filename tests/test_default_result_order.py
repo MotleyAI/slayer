@@ -22,16 +22,16 @@ from tests._engine_helpers import _engine_generate, seeded_exec_engine
 
 REVENUE = "sum(order_total)"
 STORE_MONTH: dict[str, Any] = {
-    "source_model": "orders", "measures": [REVENUE], "dimensions": ["stores.name", "month(ordered_at)"],
+    "source_model": "orders", "measures": [REVENUE], "dimensions": ["stores.name", "date_trunc('month', ordered_at)"],
 }
 STATUS_MONTH: dict[str, Any] = {
-    "source_model": "orders", "measures": ["count(*)"], "dimensions": ["status", "month(ordered_at)"],
+    "source_model": "orders", "measures": ["count(*)"], "dimensions": ["status", "date_trunc('month', ordered_at)"],
 }
 STATUS_MONTH_EXPLICIT: dict[str, Any] = {
     **STATUS_MONTH,
     "order": [
         {"column": "status", "direction": "asc"},
-        {"column": "month(ordered_at)", "direction": "asc"},
+        {"column": "date_trunc('month', ordered_at)", "direction": "asc"},
     ],
 }
 PER_CUSTOMER_STAGE: dict[str, Any] = {
@@ -191,7 +191,7 @@ class TestEmission:
     async def test_default_order_is_the_explicit_ascending_order(self, dialect) -> None:
         explicit = {**STORE_MONTH, "order": [
             {"column": "stores.name", "direction": "asc"},
-            {"column": "month(ordered_at)", "direction": "asc"},
+            {"column": "date_trunc('month', ordered_at)", "direction": "asc"},
         ]}
         default_sql = await _sql(STORE_MONTH, dialect=dialect)
         assert _outer_order(default_sql, dialect=dialect) is not None
@@ -206,7 +206,7 @@ class TestEmission:
         explicit = {**query, "order": [
             {"column": "status", "direction": "asc"},
             {"column": "region", "direction": "asc"},
-            {"column": "month(ordered_at)", "direction": "asc"},
+            {"column": "date_trunc('month', ordered_at)", "direction": "asc"},
         ]}
         assert await _sql(query, dialect=dialect) == await _sql(explicit, dialect=dialect)
 
@@ -343,16 +343,16 @@ class TestCombinations:
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_transform_measure_matches_explicit_spelling(self, dialect) -> None:
         query = {"source_model": "orders", "measures": [REVENUE, f"change_pct({REVENUE})"],
-                 "dimensions": ["month(ordered_at)"]}
-        explicit = {**query, "order": [{"column": "month(ordered_at)", "direction": "asc"}]}
+                 "dimensions": ["date_trunc('month', ordered_at)"]}
+        explicit = {**query, "order": [{"column": "date_trunc('month', ordered_at)", "direction": "asc"}]}
         sql = await _sql(query, dialect=dialect)
         assert _outer_order(sql, dialect=dialect) is not None
         assert sql == await _sql(explicit, dialect=dialect)
 
     async def test_transform_values_unchanged(self, engine) -> None:
         query = {"source_model": "orders", "measures": [REVENUE, f"change_pct({REVENUE})"],
-                 "dimensions": ["month(ordered_at)"]}
-        explicit = {**query, "order": [{"column": "month(ordered_at)", "direction": "asc"}]}
+                 "dimensions": ["date_trunc('month', ordered_at)"]}
+        explicit = {**query, "order": [{"column": "date_trunc('month', ordered_at)", "direction": "asc"}]}
         default = await engine.execute(query)
         assert default.data == (await engine.execute(explicit)).data
         months = [_month(v) for v in _column(default, "orders.ordered_at")]
@@ -387,7 +387,7 @@ class TestCombinations:
         assert len(keys) == 6
         explicit = {**SPINE, "order": [
             {"column": "region", "direction": "asc"},
-            {"column": "month(time_spine.timestamp)", "direction": "asc"},
+            {"column": "date_trunc('month', time_spine.timestamp)", "direction": "asc"},
         ]}
         sql = (await engine.execute(SPINE, dry_run=True)).sql
         assert sql is not None

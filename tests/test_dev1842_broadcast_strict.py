@@ -1,7 +1,7 @@
-"""DEV-1842 task 1.4 — broadcast/strict semantics are inherited, not re-built.
+"""Broadcast/strict semantics are inherited, not re-built.
 
 A dotted saved-measure reference expands to ordinary cross-model aggregates, so
-it inherits DEV-1836 broadcast metadata and strict-mode errors verbatim. Every
+it inherits cross-model broadcast metadata and strict-mode errors verbatim. Every
 assertion compares the dotted spelling against its hand-expanded twin: identical
 broadcast warnings in lenient mode, identical failure under ``to_many_handling="error"``.
 """
@@ -15,7 +15,7 @@ from slayer.core.errors import SlayerError
 from tests._dev1842_fixtures import broadcast_warnings, make_exec_engine, q
 
 DOTTED = "customers.aov"
-HAND = "customers.spend:sum / customers.*:count"
+HAND = "sum(customers.spend) / count(customers.*)"
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -37,10 +37,10 @@ class TestBroadcastMetadataInherited:
     async def test_unattributable_dim_broadcasts_identically(self, exec_backend):
         _, engine = exec_backend
         dotted = await engine.execute(
-            q(dimensions=["status"], measures=[{"formula": DOTTED, "name": "x"}]),
+            q(dimensions=["status"], measures=[{"formula": DOTTED, "name": "x"}], to_many_handling="broadcast"),
         )
         hand = await engine.execute(
-            q(dimensions=["status"], measures=[{"formula": HAND, "name": "x"}]),
+            q(dimensions=["status"], measures=[{"formula": HAND, "name": "x"}], to_many_handling="broadcast"),
         )
         assert _warn_signature(dotted) == _warn_signature(hand)
         assert _warn_signature(dotted), "expected a broadcast warning over status"
@@ -54,7 +54,7 @@ class TestBroadcastMetadataInherited:
         assert broadcast_warnings(dotted) == []
 
     async def test_explicit_partition_broadcast_never_warns(self, exec_backend):
-        """``customers.spend_grand`` (= ``spend:sum(partition_by=[])``) is an
+        """``customers.spend_grand`` (= ``sum(spend, partition_by=[])``) is an
         explicit broadcast producer — it neither warns nor errors, matching the
         hand-written ``partition_by=[]`` form."""
         _, engine = exec_backend

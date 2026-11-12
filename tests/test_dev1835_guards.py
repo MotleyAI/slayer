@@ -94,7 +94,7 @@ class TestPreservedGuardsVerbatim:
     async def test_g8_malformed_duration(self) -> None:
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="amount:sum(window='90x')", name="w")],
+            measures=[ModelMeasure(formula="sum(amount, window='90x')", name="w")],
         )
         with pytest.raises(ValueError) as ei:
             await _gen(query)
@@ -103,7 +103,7 @@ class TestPreservedGuardsVerbatim:
     async def test_g2_no_resolvable_time_dimension(self) -> None:
         query = q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:sum(window='90d')", name="w")],
+            measures=[ModelMeasure(formula="sum(amount, window='90d')", name="w")],
         )
         with pytest.raises(ValueError) as ei:
             await _gen(query)
@@ -118,7 +118,7 @@ class TestPreservedGuardsVerbatim:
         })
         query = q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:last", name="l")],
+            measures=[ModelMeasure(formula="last(amount)", name="l")],
         )
         with pytest.raises(ValueError) as ei:
             await _gen(query, models=models)
@@ -135,11 +135,12 @@ class TestRepointedGuards:
         query = q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
             measures=[ModelMeasure(
-                formula="customers.spend:sum(window='90d')", name="w",
+                formula="sum(customers.spend, window='90d')", name="w",
             )],
+            to_many_handling="broadcast",
         )
         with pytest.raises(ValueError, match=r"attributable from") as ei:
             await _gen(query)
         msg = str(ei.value)
-        assert "month(ordered_at)" in msg
+        assert "date_trunc('month', ordered_at)" in msg
         assert "DEV-1504" not in msg

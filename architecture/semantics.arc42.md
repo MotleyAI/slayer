@@ -159,14 +159,19 @@ principles every layer obeys.
    [enforced: test:tests/test_reagg_outer_grain_attribution.py]
    [enforced: test:tests/test_dev2013_expression_attribution.py]
 8. **Mode axis**: an unattributable dimension resolves per the query-level
-   `to_many_handling` mode — broadcast (the default: the value repeats across
-   the dimension's cells, with a self-announcing warning; spec:
-   `queries/semantics` › Loud degradation)
-   [enforced: test:tests/test_dev1836_broadcast_strict.py]; associate (per-cell
-   aggregation over the distinct associated home rows)
+   `to_many_handling` mode — associate (the default: per-cell aggregation over
+   the distinct associated home rows, a keyless home's rows told apart by a
+   per-query row number)
    [enforced: test:tests/test_dev1841_association_exec.py]
-   [enforced: test:tests/test_dev1910_home_rooted_association.py]; and error (refuse)
-   [enforced: test:tests/test_dev1841_error_mode.py]; an explicit partition_by
+   [enforced: test:tests/test_dev1910_home_rooted_association.py]
+   [enforced: test:tests/test_dev2216_keyless_association.py]; broadcast (the
+   value repeats across the dimension's cells, with a self-announcing warning;
+   spec: `queries/semantics` › Loud degradation)
+   [enforced: test:tests/test_dev1836_broadcast_strict.py]; and error (refuse)
+   [enforced: test:tests/test_dev1841_error_mode.py]. Every aggregation is
+   **association-eligible** [target: DEV-1914]; an ineligible one broadcasts
+   under the default, warning with the reason, and is refused under an explicit
+   associate [enforced: test:tests/test_dev2216_associate_default.py]; an explicit partition_by
    naming a dimension unattributable only from a further (cross-model) root is an
    error outside associate mode
    [enforced: test:tests/test_dev1841_association_errors.py], but one whose own
@@ -257,6 +262,7 @@ principles every layer obeys.
     fail loudly). [enforced: test:tests/test_dev1840_execution.py]
     [enforced: test:tests/test_dev1909_population_pushdown.py]
     [enforced: test:tests/test_dev1935_boolean_lowering.py]
+    A query-declared INNER join `J` is the field filter `matched(r.J)` — some row is reached along `r.J`, `r` the route from the population to `J`'s declaring dataset — and never changes how `J` is traversed. [enforced: test:tests/test_dev2102_query_inner_joins.py]
 15. **Time spine**: the spine is the dataset of all instants, keyed by its
     instant. A dataset's axis — its declared default time column, else its
     sole one — joins it to-one; an expression is never an axis, so a spine
@@ -290,8 +296,9 @@ enforced test ids as its instances land.
    measure, a filter, or an order key — positions differ only in what happens
    to the value. [review]
 5. **Dice–slice**: filtering to `d = v` equals slicing the `v` cell of a
-   groupby on `d` — exact in associate mode; the broadcast default consciously
-   trades this law away and must warn.
+   groupby on `d` — exact for every association-eligible aggregation under the
+   default and associate; broadcast consciously trades this law away and must
+   warn.
    [enforced: test:tests/test_law_dice_slice.py]
    [enforced: test:tests/test_dev1935_boolean_lowering.py]
 6. **Lowering soundness**: every emission trick is a pure optimization —

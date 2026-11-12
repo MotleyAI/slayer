@@ -47,10 +47,11 @@ async def test_saved_query_backed_join_traverses_multihop_for_aggregate(saved_to
 async def test_repeating_saved_join_in_extension_is_still_usable(saved_totals_engine):
     model = _customer_totals()
     response = await saved_totals_engine.execute(_query(
-        source_model={
+        source_model="customer_totals",
+        extensions=[{
             "source_name": "customer_totals",
             "joins": [join.model_dump() for join in model.joins],
-        },
+        }],
         dimensions=["customers.name"],
         measures=[{"formula": "sum(amt)", "name": "total"}],
     ))
@@ -63,8 +64,9 @@ async def test_repeating_saved_join_in_extension_is_still_usable(saved_totals_en
 
 async def test_repeating_stored_join_in_table_model_extension_is_that_edge(saved_totals_engine):
     response = await saved_totals_engine.execute(_query(
-        source_model={"source_name": "orders", "joins": [
-            orders_model().joins[0].model_copy(update={"description": "repeated"}).model_dump()]},
+        source_model="orders",
+        extensions=[{"source_name": "orders", "joins": [
+            orders_model().joins[0].model_copy(update={"description": "repeated"}).model_dump()]}],
         dimensions=["customers.name"],
         measures=[{"formula": "sum(amount)", "name": "total"}],
     ))
@@ -73,8 +75,9 @@ async def test_repeating_stored_join_in_table_model_extension_is_that_edge(saved
 
 async def test_extension_join_differing_from_stored_one_stays_a_parallel_edge(saved_totals_engine):
     query = _query(
-        source_model={"source_name": "orders", "joins": [
-            {"target_model": "customers", "join_pairs": [["id", "id"]]}]},
+        source_model="orders",
+        extensions=[{"source_name": "orders", "joins": [
+            {"target_model": "customers", "join_pairs": [["id", "id"]]}]}],
         dimensions=["customers.name"],
         measures=[{"formula": "sum(amount)", "name": "total"}],
     )

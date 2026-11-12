@@ -3,14 +3,17 @@
 The last stage stays root / sink. Cycles, self-references, duplicate names, and
 a root referenced by another stage raise ``ValueError`` naming the offending
 stage; forward references are reordered, not rejected. Sibling refs are walked
-through inline ``SlayerModel`` / ``ModelExtension`` specs and ``joins[].target_model``.
+through ``source_model``, inline models' and extensions' ``joins[].target_model``,
+and extensions' ``source_name``.
 """
 from __future__ import annotations
 
 from typing import AbstractSet, Any, Dict, List, Optional, Set, Tuple
 
+from slayer.core.names import match_name
 from slayer.core.models import ModelJoin
-from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
+from slayer.core.models import SlayerModel
+from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec, extension_model_names
 from slayer.core.scope import StageDisplay
 
 #: Minted identity prefixes; model names never carry them (``__slayer_`` is reserved).
@@ -20,24 +23,14 @@ SPLICED_STAGE_PREFIX = "__slayer_qb__"
 
 def stage_sibling_reads(*, query: SlayerQuery, siblings: AbstractSet[str]) -> Set[str]:
     """Sibling names in ``siblings`` that ``query`` references; purely structural, never raises."""
-    out: Set[str] = set()
-    _walk_spec(spec=query.source_model, against=siblings, out=out)
-    return out
-
-
-def _walk_spec(spec: SourceSpec | None, against: AbstractSet[str], out: Set[str]) -> None:
-    """Collect sibling refs from a ``source_model`` spec."""
-    if spec is None:
-        return
+    spec = query.source_model
+    names: List[str] = []
     if isinstance(spec, str):
-        if spec in against:
-            out.add(spec)
-        return
-    if isinstance(spec, ModelExtension) and spec.source_name in against:
-        out.add(spec.source_name)
-    for j in spec.joins or []:
-        if j.target_model in against:
-            out.add(j.target_model)
+        names = [spec]
+    elif spec is not None:
+        names = [j.target_model for j in spec.joins]
+    found = (match_name(name=n, declared=siblings, quoted=False) for n in (*names, *extension_model_names(query)))
+    return {f for f in found if f is not None}
 
 
 def stage_identity(*, name: str, model: Optional[str] = None) -> str:
@@ -47,33 +40,38 @@ def stage_identity(*, name: str, model: Optional[str] = None) -> str:
     return f"{SPLICED_STAGE_PREFIX}{model}__{name}"
 
 
+def _respelled(name: str, rename: Dict[str, str]) -> str:
+    found = match_name(name=name, declared=rename, quoted=False)
+    return name if found is None else rename[found]
+
+
 def _respell_joins(joins: List[ModelJoin], rename: Dict[str, str]) -> List[ModelJoin]:
-    return [
-        j.model_copy(update={"target_model": rename[j.target_model]})
-        if j.target_model in rename else j
-        for j in joins
-    ]
+    return [j.model_copy(update={"target_model": _respelled(j.target_model, rename)}) for j in joins]
 
 
 def _respell_spec(spec: SourceSpec | None, rename: Dict[str, str]) -> SourceSpec | None:
     """``spec`` with every query-written sibling reference respelled through ``rename``."""
     if isinstance(spec, str):
-        return rename.get(spec, spec)
-    if spec is None:
-        return None
+        return _respelled(spec, rename)
+    if isinstance(spec, SlayerModel) and any(_respelled(j.target_model, rename) != j.target_model for j in spec.joins):
+        return spec.model_copy(update={"joins": _respell_joins(list(spec.joins), rename)})
+    return spec
+
+
+def _respell_extension(extension: ModelExtension, rename: Dict[str, str]) -> ModelExtension:
     update: Dict[str, Any] = {}
-    if isinstance(spec, ModelExtension) and spec.source_name in rename:
-        update["source_name"] = rename[spec.source_name]
-    if any(j.target_model in rename for j in spec.joins or []):
-        update["joins"] = _respell_joins(list(spec.joins or []), rename)
-    return spec.model_copy(update=update) if update else spec
+    if _respelled(extension.source_name, rename) != extension.source_name:
+        update["source_name"] = _respelled(extension.source_name, rename)
+    if any(_respelled(j.target_model, rename) != j.target_model for j in extension.joins or []):
+        update["joins"] = _respell_joins(list(extension.joins or []), rename)
+    return extension.model_copy(update=update) if update else extension
 
 
 def localize_stages(
     queries: List[SlayerQuery], *, model: Optional[str] = None,
 ) -> "Tuple[List[SlayerQuery], Dict[str, StageDisplay]]":
     """Give every named non-root stage a minted identity and respell the references the
-    list itself writes (sources, extension bases, inline join targets); stored
+    list itself writes (sources, extended models, inline and extension join targets); stored
     definitions are untouched. Under ``model`` (a spliced stored query-backed model)
     the final stage takes the model's name. Returns the stages and ``{identity: display}``."""
     if not queries:
@@ -84,6 +82,8 @@ def localize_stages(
     out: List[SlayerQuery] = []
     for q in queries:
         update: Dict[str, Any] = {"source_model": _respell_spec(q.source_model, rename)}
+        if q.extensions:
+            update["extensions"] = [_respell_extension(e, rename) for e in q.extensions]
         if q is not root and q.name:
             update["name"] = rename[q.name]
         elif model is not None:
@@ -105,10 +105,10 @@ def _index_query_list_by_name(rest: List[Any], root: Any) -> Dict[str, Any]:
                 "Every non-final entry in a query list must have a "
                 "'name' (siblings reference each other by name)."
             )
-        if q.name in rest_by_name:
-            raise ValueError(f"Duplicate stage name '{q.name}' in query list.")
+        if match_name(name=q.name, declared=rest_by_name, quoted=False) is not None:
+            raise ValueError(f"Duplicate stage name '{q.name}' in query list (stage names match in any case).")
         rest_by_name[q.name] = q
-    if root.name and root.name in rest_by_name:
+    if root.name and match_name(name=root.name, declared=rest_by_name, quoted=False) is not None:
         raise ValueError(
             f"Stage name '{root.name}' is duplicated: the final entry "
             f"shares a name with an earlier entry."

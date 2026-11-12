@@ -24,7 +24,7 @@ from tests._dev1836_fixtures import (
 from slayer.engine.compile import stages
 
 LOCAL_BAND = {
-    "expression": "CASE WHEN amount:sum(partition_by=channel) > 30 THEN 1 ELSE 0 END",
+    "expression": "CASE WHEN sum(amount, partition_by=channel) > 30 THEN 1 ELSE 0 END",
     "name": "band",
 }
 
@@ -53,8 +53,8 @@ class TestExplicitRejections:
     async def test_bare_aggregate_in_dimension_is_rejected(self, exec_backend):
         _, engine = exec_backend
         query = q(
-            dimensions=[{"expression": "amount:sum", "name": "d"}],
-            measures=[ModelMeasure(formula="amount:sum", name="m")],
+            dimensions=[{"expression": "sum(amount)", "name": "d"}],
+            measures=[ModelMeasure(formula="sum(amount)", name="m")],
         )
         with pytest.raises(expected_exception=ValueError, match="partition_by") as ei:
             await engine.execute(query)
@@ -67,9 +67,9 @@ class TestExplicitRejections:
         _, engine = exec_backend
         query = q(
             dimensions=[LOCAL_BAND],
-            measures=[ModelMeasure(formula="amount:sum(partition_by=band)",
+            measures=[ModelMeasure(formula="sum(amount, partition_by=band)",
                                    name="x"),
-                      ModelMeasure(formula="amount:sum", name="s")],
+                      ModelMeasure(formula="sum(amount)", name="s")],
         )
         resp = await engine.execute(query)
         assert resp.data
@@ -83,8 +83,8 @@ class TestExplicitRejections:
         planned = plan_query(query=q(
             dimensions=["customers.tier"],
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
-                ModelMeasure(formula="customers.spend:sum", name="cm"),
+                ModelMeasure(formula="sum(amount)", name="m"),
+                ModelMeasure(formula="sum(customers.spend)", name="cm"),
             ],
         ), bundle=bundle)
         generator = SQLGenerator(dialect="postgres")
@@ -105,7 +105,7 @@ class TestTotalRoutingInvariant:
         monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
         query = q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="amount:sum(partition_by=channel)",
+            measures=[ModelMeasure(formula="sum(amount, partition_by=channel)",
                                    name="pt")],
         )
         bundle = _bundle()
@@ -126,7 +126,7 @@ class TestTotalRoutingInvariant:
         monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
         query = q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.spend:sum", name="cm")],
+            measures=[ModelMeasure(formula="sum(customers.spend)", name="cm")],
         )
         bundle = _bundle()
         with pytest.raises(expected_exception=ValueError, match="no routing disposition"):
@@ -134,10 +134,10 @@ class TestTotalRoutingInvariant:
 
     @pytest.mark.parametrize("role_kwargs", [
         pytest.param(
-            {"filters": ["customers.spend:sum > 100"]}, id="filter-only",
+            {"filters": ["sum(customers.spend) > 100"]}, id="filter-only",
         ),
         pytest.param(
-            {"order": [{"column": "customers.spend:sum", "direction": "desc"}]},
+            {"order": [{"column": "sum(customers.spend)", "direction": "desc"}]},
             id="order-only",
         ),
     ])
@@ -149,7 +149,7 @@ class TestTotalRoutingInvariant:
         monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
         query = q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="amount:sum", name="m")],
+            measures=[ModelMeasure(formula="sum(amount)", name="m")],
             **role_kwargs,
         )
         bundle = _bundle()
@@ -164,9 +164,9 @@ class TestNoSilentDrops:
         resp = await engine.execute(q(
             dimensions=["customers.tier"],
             measures=[
-                ModelMeasure(formula="amount:sum", name="m"),
-                ModelMeasure(formula="customers.spend:sum", name="cm"),
-                ModelMeasure(formula="customers.spend:sum / amount:sum",
+                ModelMeasure(formula="sum(amount)", name="m"),
+                ModelMeasure(formula="sum(customers.spend)", name="cm"),
+                ModelMeasure(formula="sum(customers.spend) / sum(amount)",
                              name="ratio"),
             ],
         ))

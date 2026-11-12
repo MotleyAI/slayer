@@ -197,7 +197,8 @@ def test_models_keep_only_measure_formulas() -> None:
 
 
 def test_inline_extension_and_standalone_objects() -> None:
-    query = {"source_model": {"source_name": "orders", "columns": [{"name": "big", "sql": "amount > 100"}]},
+    query = {"source_model": "orders",
+             "extensions": [{"source_name": "orders", "columns": [{"name": "big", "sql": "amount > 100"}]}],
              "measures": ["count(*)"]}
     assert mode_b_values(query) == ["count(*)"]
     assert mode_b_values({"formula": "cumsum(sum(revenue))"}) == ["cumsum(sum(revenue))"]

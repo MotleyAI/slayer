@@ -37,9 +37,9 @@ from tests._dev1838_fixtures import (
     q,
 )
 
-LOCAL_AGG = "amount:sum(partition_by=city)"
-CM_AGG = "customers.spend:sum(partition_by=customers.tier)"
-LOCAL_BAND = "CASE WHEN amount:sum(partition_by=city) > 25 THEN 'hi' ELSE 'lo' END"
+LOCAL_AGG = "sum(amount, partition_by=city)"
+CM_AGG = "sum(customers.spend, partition_by=customers.tier)"
+LOCAL_BAND = "CASE WHEN sum(amount, partition_by=city) > 25 THEN 'hi' ELSE 'lo' END"
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -75,13 +75,13 @@ _COMBINED_CONSUMER_CASES = [
     ),
     pytest.param(
         [_dim(LOCAL_BAND, "cband")],
-        [ModelMeasure(formula="amount:sum", name="m")],
+        [ModelMeasure(formula="sum(amount)", name="m")],
         [{"column": LOCAL_AGG, "direction": "asc"}], None, "city",
         id="raw_order_target-local",
     ),
     pytest.param(
         [_dim(SPEND_BAND, "sband")],
-        [ModelMeasure(formula="amount:sum", name="m")],
+        [ModelMeasure(formula="sum(amount)", name="m")],
         [{"column": CM_AGG, "direction": "asc"}], None, "customers.tier",
         id="raw_order_target-cross_model",
     ),
@@ -122,7 +122,7 @@ _COMBINED_CONSUMER_CASES = [
         None, None, "customers.tier", id="measure_only-cross_model",
     ),
     pytest.param(
-        ["status"], [ModelMeasure(formula="amount:sum", name="m")],
+        ["status"], [ModelMeasure(formula="sum(amount)", name="m")],
         None, [f"{CM_AGG} > 100"], "customers.tier", id="filter_only-cross_model",
     ),
 ]
@@ -182,7 +182,7 @@ async def test_keyless_banded_only_executes(exec_backend) -> None:
     dialect, engine = exec_backend
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        measures=[ModelMeasure(formula="amount:sum", name="m")],
+        measures=[ModelMeasure(formula="sum(amount)", name="m")],
     )
     resp = await engine.execute(query)
     got = {r["orders.sband"]: r["orders.m"] for r in resp.data}
@@ -206,7 +206,7 @@ async def test_keyless_filter_over_own_cross_model_aggregate_row_routes(
     dialect, engine = exec_backend
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        measures=[ModelMeasure(formula="amount:sum", name="m")],
+        measures=[ModelMeasure(formula="sum(amount)", name="m")],
         filters=[f"{CM_AGG} > 100"],
     )
     resp = await engine.execute(query)
@@ -227,7 +227,7 @@ def test_filter_over_own_cross_model_aggregate_routes_row_not_combined() -> None
     )
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        measures=[ModelMeasure(formula="amount:sum", name="m")],
+        measures=[ModelMeasure(formula="sum(amount)", name="m")],
         filters=[f"{CM_AGG} > 100"],
     )
     scope = resolve_scope(query=query, bundle=bundle, stage_schemas={})
@@ -247,7 +247,7 @@ async def test_keyless_order_by_dimension_name_cross_model_row_routes(
     dialect, engine = exec_backend
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        measures=[ModelMeasure(formula="amount:sum", name="m")],
+        measures=[ModelMeasure(formula="sum(amount)", name="m")],
         order=[{"column": "sband", "direction": "asc"}],
     )
     resp = await engine.execute(query)
@@ -266,7 +266,7 @@ async def test_keyless_filter_over_own_local_aggregate_row_routes(
     _, engine = exec_backend
     resp = await engine.execute(q(
         dimensions=[_dim(LOCAL_BAND, "cband")],
-        measures=[ModelMeasure(formula="amount:sum", name="m")],
+        measures=[ModelMeasure(formula="sum(amount)", name="m")],
         filters=[f"{LOCAL_AGG} > 25"],
     ))
     got = {r["orders.cband"]: r["orders.m"] for r in resp.data}
@@ -279,7 +279,7 @@ async def test_keyless_order_by_dimension_name_local_row_routes(
     _, engine = exec_backend
     resp = await engine.execute(q(
         dimensions=[_dim(LOCAL_BAND, "cband")],
-        measures=[ModelMeasure(formula="amount:sum", name="m")],
+        measures=[ModelMeasure(formula="sum(amount)", name="m")],
         order=[{"column": "cband", "direction": "asc"}],
     ))
     rows = [(r["orders.cband"], r["orders.m"]) for r in resp.data]

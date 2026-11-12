@@ -125,12 +125,12 @@ class TestHostGrainOrderWrapUsesEmittedAlias:
         # Group by the direct model's column, order by the CHAIN path → the
         # planner wraps the un-grouped chain column in a host-grain MIN.
         sql = await _engine_generate(
-            query=SlayerQuery(
-                source_model="host",
-                dimensions=["direct_val"],
-                measures=["*:count"],
-                order=[{"column": "a.b.val", "direction": "asc"}],
-            ),
+            query=SlayerQuery.model_validate({
+                "source_model": "host",
+                "dimensions": ["direct_val"],
+                "measures": ["count(*)"],
+                "order": [{"column": "a.b.val", "direction": "asc"}],
+            }),
             model=host, extra_models=extra,
         )
         tbl = _join_table_to_alias(sql)
@@ -181,11 +181,11 @@ class TestTwoRootsSameSpelling:
         models = ambiguity_impossible_models()  # host, a, b, a__b
         host, extra = models[0], models[1:]
         sql = await _engine_generate(
-            query=SlayerQuery(
-                source_model="host",
-                dimensions=["a.b.val"],        # chain -> alias a__b under host
-                measures=["a__b.*:count"],     # cross-model -> reroot at a__b
-            ),
+            query=SlayerQuery.model_validate({
+                "source_model": "host",
+                "dimensions": ["a.b.val"],
+                "measures": ["count(a__b.*)"],
+            }),
             model=host, extra_models=extra,
         )
         # Both relations are present and the query is structurally valid

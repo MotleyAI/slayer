@@ -90,10 +90,7 @@ def _bundle() -> ResolvedSourceBundle:
 
 class TestSingleStage:
     def test_simple_aggregation(self):
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:sum"}],
-        )
+        q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
         planned = plan_query(query=q, bundle=_bundle())
         # One slot in projection.
         assert len(planned.projection) == 1
@@ -103,21 +100,21 @@ class TestSingleStage:
         assert len(agg_slots) == 1
 
     def test_dimension_plus_measure(self):
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:sum"}],
-            dimensions=["status"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)"}],
+            "dimensions": ["status"],
+        })
         planned = plan_query(query=q, bundle=_bundle())
         # Two projection slots: status (row) + amount_sum (aggregate).
         assert len(planned.projection) == 2
 
     def test_filter_in_planned_query(self):
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:sum"}],
-            filters=["status == 'paid'"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)"}],
+            "filters": ["status == 'paid'"],
+        })
         planned = plan_query(query=q, bundle=_bundle())
         # One typed mask per filter conjunct.
         assert len(planned.masks) == 1
@@ -136,7 +133,7 @@ class TestUserNameAlias:
         q = SlayerQuery(
             source_model="orders",
             measures=[
-                {"formula": "customers.revenue:sum", "name": "rev_sum"},
+                {"formula": "sum(customers.revenue)", "name": "rev_sum"},
             ],
             dimensions=["status"],
         )
@@ -156,17 +153,17 @@ class TestDownstreamStageFlatRefs:
         # Stage 1: orders → produces `status` and `amount_sum`.
         # Stage 2: source_model="stage1" → references upstream's
         # `amount_sum` by flat name.
-        stage1 = SlayerQuery(
-            name="stage1",
-            source_model="orders",
-            measures=[{"formula": "amount:sum"}],
-            dimensions=["status"],
-        )
-        stage2 = SlayerQuery(
-            source_model="stage1",
-            measures=[{"formula": "amount_sum:max"}],
-            dimensions=["status"],
-        )
+        stage1 = SlayerQuery.model_validate({
+            "name": "stage1",
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)"}],
+            "dimensions": ["status"],
+        })
+        stage2 = SlayerQuery.model_validate({
+            "source_model": "stage1",
+            "measures": [{"formula": "max(amount_sum)"}],
+            "dimensions": ["status"],
+        })
         planned_stages = plan_stages(
             queries=[stage1, stage2], bundle=_bundle(),
         )
@@ -182,7 +179,7 @@ class TestDownstreamStageFlatRefs:
         stage1 = SlayerQuery(
             name="stage1",
             source_model="orders",
-            measures=[{"formula": "customers.revenue:sum",
+            measures=[{"formula": "sum(customers.revenue)",
                        "name": "robot_details__modelseriesval"}],
             dimensions=["status"],
         )
@@ -206,18 +203,18 @@ class TestTopoSort:
         # stage_b depends on stage_a; pass the two NAMED stages out of
         # dependency order (stage_b before stage_a) so plan_stages must
         # topo-sort them. The root (last entry) stays last by contract.
-        stage_a = SlayerQuery(
-            name="stage_a",
-            source_model="orders",
-            measures=[{"formula": "amount:sum"}],
-            dimensions=["status"],
-        )
-        stage_b = SlayerQuery(
-            name="stage_b",
-            source_model="stage_a",
-            measures=[{"formula": "amount_sum:max"}],
-            dimensions=["status"],
-        )
+        stage_a = SlayerQuery.model_validate({
+            "name": "stage_a",
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)"}],
+            "dimensions": ["status"],
+        })
+        stage_b = SlayerQuery.model_validate({
+            "name": "stage_b",
+            "source_model": "stage_a",
+            "measures": [{"formula": "max(amount_sum)"}],
+            "dimensions": ["status"],
+        })
         root = SlayerQuery(source_model="stage_b", dimensions=["status"])
         planned = plan_stages(
             queries=[stage_b, stage_a, root], bundle=_bundle(),
@@ -230,18 +227,18 @@ class TestTopoSort:
         ]
 
     def test_duplicate_stage_names_rejected(self):
-        s1 = SlayerQuery(
-            name="dup",
-            source_model="orders",
-            measures=[{"formula": "amount:sum"}],
-            dimensions=["status"],
-        )
-        s2 = SlayerQuery(
-            name="dup",
-            source_model="orders",
-            measures=[{"formula": "amount:max"}],
-            dimensions=["status"],
-        )
+        s1 = SlayerQuery.model_validate({
+            "name": "dup",
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)"}],
+            "dimensions": ["status"],
+        })
+        s2 = SlayerQuery.model_validate({
+            "name": "dup",
+            "source_model": "orders",
+            "measures": [{"formula": "max(amount)"}],
+            "dimensions": ["status"],
+        })
         root = SlayerQuery(
             source_model="dup",
             dimensions=["status"],
@@ -278,8 +275,8 @@ class TestStageSchemaMultiAlias:
         q = SlayerQuery(
             source_model="orders",
             measures=[
-                {"formula": "amount:sum", "name": "rev1"},
-                {"formula": "amount:sum", "name": "rev2"},
+                {"formula": "sum(amount)", "name": "rev1"},
+                {"formula": "sum(amount)", "name": "rev2"},
             ],
             dimensions=["status"],
         )

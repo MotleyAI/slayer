@@ -29,6 +29,7 @@ from slayer.core.keys import (
 from slayer.core.models import EmptyValue, SlayerModel
 from slayer.core.scope import StageSchema, StaleSpelling
 from slayer.ir.bound import BoundExpr, GranularityConflict, WholeListRead
+from slayer.ir.prebound import ModePolicy
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 SlotId = str
@@ -411,6 +412,8 @@ class RegroupAttachPlan(BaseModel):
     producer_root_model: Optional[str] = None
     broadcast_measure: Optional[str] = None
     broadcast_dimensions: List[Tuple[str, str]] = Field(default_factory=list)
+    # Why the default mode broadcast instead of associating; ``None`` for a requested broadcast.
+    association_unsupported: Optional[str] = None
     # Associate-mode counterparts: the aggregate resolved by
     # distinct-entity association, and the unattributable dimensions its cells
     # are not additive across (empty for an explicit ``partition_by=`` grain).
@@ -493,6 +496,8 @@ class PlannedQuery(BaseModel):
     semi_join_filters: List[SemiJoinFilter] = Field(default_factory=list)
     # The host of a spine population renders its spine as this bucket series.
     spine: Optional[SpineFactor] = None
+    # This stage's own resolved ``to_many_handling``.
+    mode_policy: ModePolicy = ModePolicy()
 
     @model_validator(mode="after")
     def _projection_is_public_and_well_formed(self) -> "PlannedQuery":

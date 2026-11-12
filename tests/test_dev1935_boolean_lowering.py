@@ -68,9 +68,9 @@ from tests._dev1935_fixtures import (
 
 MODES = ["broadcast", "associate", "error"]
 
-SPEND = ModelMeasure(formula="spend:sum", name="sp")
-SPEND_X = ModelMeasure(formula="customers.spend:sum", name="csp")
-PARTITIONED = ModelMeasure(formula="spend:sum(partition_by=tier)", name="pt")
+SPEND = ModelMeasure(formula="sum(spend)", name="sp")
+SPEND_X = ModelMeasure(formula="sum(customers.spend)", name="csp")
+PARTITIONED = ModelMeasure(formula="sum(spend, partition_by=tier)", name="pt")
 
 #: Python-warning carriers the boolean-total push must never emit.
 _SLAYER_WARNS = (
@@ -482,7 +482,7 @@ class TestNullExtendedFlag:
                 query=SlayerQuery(
                     source_model=root,
                     measures=[SPEND if root == "customers" else
-                              ModelMeasure(formula="amount:sum", name="amt")],
+                              ModelMeasure(formula="sum(amount)", name="amt")],
                     filters=[flt]),
                 bundle=_bundle(models=dev1900_models(), root=root))
             hops = _base_hops(planned)

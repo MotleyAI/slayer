@@ -74,6 +74,13 @@ class TestEngine:
             assert deprecated_in(response.warnings) == [payload]
             assert deprecations(caught) == []
 
+    @pytest.mark.parametrize("as_list", [False, True], ids=["mapping", "list"])
+    async def test_a_mapping_warns_once(self, engine: SlayerQueryEngine, as_list: bool) -> None:
+        with recorded() as caught:
+            response = await engine.execute([strict(CLEAN)] if as_list else strict(CLEAN))
+        assert len(deprecations(caught)) == 1
+        assert len(deprecated_in(response.warnings)) == 1
+
     @pytest.mark.parametrize("path", ["dry_run", "explain"])
     async def test_every_execution_path_reports(self, engine: SlayerQueryEngine, path: str) -> None:
         query, payload = _built(strict(CLEAN))
@@ -265,7 +272,7 @@ class TestHttpClient:
     async def test_server_warnings_are_kept(self, run) -> None:
         with recorded():
             response = await run(strict(CROSS, False))
-        assert sorted(w.kind for w in response.warnings) == ["broadcast", "deprecated_input"]
+        assert sorted(w.kind for w in response.warnings) == ["associated", "deprecated_input"]
 
     async def test_prebuilt_query(self, run) -> None:
         query, payload = _built(strict(CLEAN))

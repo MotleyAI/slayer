@@ -83,7 +83,7 @@ class TestMultiDialectGeneration:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="revenue:sum")],
+            measures=[ModelMeasure(formula="count(*)"), ModelMeasure(formula="sum(revenue)")],
             dimensions=[ColumnRef(name="status")],
         )
         sql = await _generate(gen, query, orders_model)
@@ -96,7 +96,7 @@ class TestMultiDialectGeneration:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
             time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
         )
         sql = await _generate(gen, query, orders_model)
@@ -126,7 +126,7 @@ class TestMultiDialectGeneration:
         def _q(grain: TimeGranularity) -> SlayerQuery:
             return SlayerQuery(
                 source_model="orders",
-                measures=[ModelMeasure(formula="*:count")],
+                measures=[ModelMeasure(formula="count(*)")],
                 time_dimensions=[TimeDimension(
                     dimension="created_at", granularity=grain
                 )],
@@ -162,7 +162,7 @@ class TestMultiDialectGeneration:
             gen,
             SlayerQuery(
                 source_model="orders",
-                measures=[ModelMeasure(formula="*:count")],
+                measures=[ModelMeasure(formula="count(*)")],
                 time_dimensions=[TimeDimension(
                     dimension="ordered_on",
                     granularity=TimeGranularity.WEEK_SUNDAY,
@@ -201,7 +201,7 @@ class TestMultiDialectGeneration:
             gen,
             SlayerQuery(
                 source_model="orders",
-                measures=[ModelMeasure(formula="*:count")],
+                measures=[ModelMeasure(formula="count(*)")],
                 time_dimensions=[TimeDimension(dimension="ts", granularity=TimeGranularity.MONTH)],
             ),
             model,
@@ -215,7 +215,7 @@ class TestMultiDialectGeneration:
             gen,
             SlayerQuery(
                 source_model="orders",
-                measures=[ModelMeasure(formula="*:count")],
+                measures=[ModelMeasure(formula="count(*)")],
                 time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             ),
             model,
@@ -223,7 +223,7 @@ class TestMultiDialectGeneration:
         # Scoped to the TIME DIMENSION operand: a bare column keeps its live
         # DB type and must not be cast. (A blanket "no CAST anywhere" check
         # would now trip on the typed pipeline's result-type cast around the
-        # ``*:count`` measure, which is unrelated to this contract.)
+        # ``count(*)`` measure, which is unrelated to this contract.)
         assert "CAST(ORDERS.CREATED_AT" not in sql.upper(), sql
 
     @pytest.mark.parametrize("dialect", ALL_DIALECTS)
@@ -233,7 +233,7 @@ class TestMultiDialectGeneration:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
-            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="time_shift(revenue:sum, -1, 'year')", name="rev_prev_year")],
+            measures=[ModelMeasure(formula="sum(revenue)"), ModelMeasure(formula="time_shift(sum(revenue), -1, 'year')", name="rev_prev_year")],
         )
         sql = await _generate(gen, query, orders_model)
         assert "shifted_" in sql
@@ -267,7 +267,7 @@ class TestMultiDialectGeneration:
                 TimeDimension(dimension="created_at",
                               granularity=TimeGranularity.DAY),
             ],
-            measures=[ModelMeasure(formula="revenue:sum(window='1y2m3d')",
+            measures=[ModelMeasure(formula="sum(revenue, window='1y2m3d')",
                                    name="rev_w")],
         )
         sql = await _generate(generator=gen, query=query, model=orders_model)
@@ -304,7 +304,7 @@ class TestMultiDialectGeneration:
                 TimeDimension(dimension="created_at",
                               granularity=TimeGranularity.DAY),
             ],
-            measures=[ModelMeasure(formula="revenue:sum(window='7d')",
+            measures=[ModelMeasure(formula="sum(revenue, window='7d')",
                                    name="rev_w")],
         )
         sql = await _generate(generator=gen, query=query, model=orders_model)
@@ -330,7 +330,7 @@ class TestMultiDialectGeneration:
                 TimeDimension(dimension="created_at",
                               granularity=TimeGranularity.DAY),
             ],
-            measures=[ModelMeasure(formula="revenue:sum(window='7d')", name="rev_w")],
+            measures=[ModelMeasure(formula="sum(revenue, window='7d')", name="rev_w")],
         )
         sql = await _generate(generator=gen, query=query, model=orders_model)
         norm = _norm(sql).upper()
@@ -348,7 +348,7 @@ class TestMultiDialectGeneration:
                 TimeDimension(dimension="created_at",
                               granularity=TimeGranularity.DAY),
             ],
-            measures=[ModelMeasure(formula="revenue:sum(window='1y2m3d')", name="rev_w")],
+            measures=[ModelMeasure(formula="sum(revenue, window='1y2m3d')", name="rev_w")],
         )
         sql = await _generate(generator=gen, query=query, model=orders_model)
         norm = _norm(sql).upper()
@@ -368,10 +368,10 @@ class TestMultiDialectGeneration:
     @pytest.mark.parametrize(
         "formula",
         [
-            "revenue:stddev_samp",
-            "revenue:stddev_pop",
-            "revenue:var_samp",
-            "revenue:var_pop",
+            "stddev_samp(revenue)",
+            "stddev_pop(revenue)",
+            "var_samp(revenue)",
+            "var_pop(revenue)",
         ],
     )
     async def test_one_arg_stat_agg_generation(
@@ -403,9 +403,9 @@ class TestMultiDialectGeneration:
     @pytest.mark.parametrize(
         "formula",
         [
-            "revenue:corr(other=quantity)",
-            "revenue:covar_samp(other=quantity)",
-            "revenue:covar_pop(other=quantity)",
+            "corr(revenue, other=quantity)",
+            "covar_samp(revenue, other=quantity)",
+            "covar_pop(revenue, other=quantity)",
         ],
     )
     async def test_two_arg_stat_agg_generation(
@@ -436,9 +436,9 @@ class TestMultiDialectGeneration:
     @pytest.mark.parametrize(
         "formula",
         [
-            "revenue:corr(other=quantity)",
-            "revenue:covar_samp(other=quantity)",
-            "revenue:covar_pop(other=quantity)",
+            "corr(revenue, other=quantity)",
+            "covar_samp(revenue, other=quantity)",
+            "covar_pop(revenue, other=quantity)",
         ],
     )
     async def test_two_arg_stat_formula_dialects_generate_valid_sql(
@@ -460,9 +460,9 @@ class TestMultiDialectGeneration:
 
     @pytest.mark.parametrize(
         "formula", [
-            "revenue:corr(other=quantity)",
-            "revenue:covar_samp(other=quantity)",
-            "revenue:covar_pop(other=quantity)",
+            "corr(revenue, other=quantity)",
+            "covar_samp(revenue, other=quantity)",
+            "covar_pop(revenue, other=quantity)",
         ],
     )
     async def test_two_arg_stat_agg_mysql_emits_formula_valid_sql(
@@ -528,7 +528,7 @@ class TestLogAliasPreservation:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="log_amount:max")],
+            measures=[ModelMeasure(formula="max(log_amount)")],
         )
         sql = await _generate(generator=gen, query=query, model=log_model)
         upper_no_ws = "".join(sql.upper().split())
@@ -557,7 +557,7 @@ class TestLogAliasPreservation:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="log2_amount:max")],
+            measures=[ModelMeasure(formula="max(log2_amount)")],
         )
         sql = await _generate(generator=gen, query=query, model=log_model)
         upper_no_ws = "".join(sql.upper().split())
@@ -608,7 +608,7 @@ class TestLogAliasPreservation:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="log_completed_amount:max")],
+            measures=[ModelMeasure(formula="max(log_completed_amount)")],
         )
         sql = await _generate(generator=gen, query=query, model=model)
         upper_no_ws = "".join(sql.upper().split())
@@ -631,7 +631,7 @@ class TestLogAliasPreservation:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="log_amount:max / *:count", name="ratio")],
+            measures=[ModelMeasure(formula="max(log_amount) / count(*)", name="ratio")],
         )
         sql = await _generate(generator=gen, query=query, model=log_model)
         upper_no_ws = "".join(sql.upper().split())
@@ -650,7 +650,7 @@ class TestLogAliasPreservation:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="log3_amount:max")],
+            measures=[ModelMeasure(formula="max(log3_amount)")],
         )
         sql = await _generate(generator=gen, query=query, model=log_model)
         upper_no_ws = "".join(sql.upper().split())
@@ -674,7 +674,7 @@ class TestLogAliasPreservation:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="ln_amount:max")],
+            measures=[ModelMeasure(formula="max(ln_amount)")],
         )
         sql = await _generate(generator=gen, query=query, model=log_model)
         # T-SQL has no LN — sqlglot transpiles to LOG(x). Every other dialect
@@ -705,7 +705,7 @@ class TestStringHygieneDialectTranslation:
     async def test_lower(self, orders_model: SlayerModel, dialect: str, expected: str) -> None:
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
             filters=["lower(status) = 'active'"],
         )
         sql = await _generate(
@@ -731,7 +731,7 @@ class TestStringHygieneDialectTranslation:
     ) -> None:
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
             filters=["instr(status, ',') > 0"],
         )
         sql = await _generate(
@@ -756,7 +756,7 @@ class TestStringHygieneDialectTranslation:
     ) -> None:
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
             filters=["substr(status, 1, 5) = 'abcde'"],
         )
         sql = await _generate(
@@ -782,7 +782,7 @@ class TestStringHygieneDialectTranslation:
     ) -> None:
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
             filters=["status || status = 'foo'"],
         )
         sql = await _generate(

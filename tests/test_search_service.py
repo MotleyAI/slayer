@@ -30,7 +30,7 @@ import pytest_asyncio
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelMeasure, SlayerModel
-from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.search.service import (
     SearchHit,
@@ -131,7 +131,7 @@ async def test_query_only_runs_channel_1_via_extracted_entities(
     response = await service.search(
         query={
             "source_model": "orders",
-            "measures": [{"formula": "amount_paid:sum"}],
+            "measures": [{"formula": "sum(amount_paid)"}],
         },
         max_results=20,
         compact=False,
@@ -345,7 +345,7 @@ async def test_resolved_input_entities_populated_for_query_input(
     response = await service.search(
         query={
             "source_model": "orders",
-            "measures": [{"formula": "amount_paid:sum"}],
+            "measures": [{"formula": "sum(amount_paid)"}],
         },
     )
     # Both the source model and the referenced column should be resolved.
@@ -361,7 +361,7 @@ async def test_resolved_input_entities_combined_input_dedupes(
         entities=["warehouse.orders.amount_paid"],
         query={
             "source_model": "orders",
-            "measures": [{"formula": "amount_paid:sum"}],
+            "measures": [{"formula": "sum(amount_paid)"}],
         },
     )
     # `amount_paid` appears via both inputs but should not duplicate.
@@ -396,7 +396,7 @@ async def storage_with_query_memories(
             entities=["warehouse.orders.amount_paid"],
             query=SlayerQuery(
                 source_model="orders",
-                measures=[ModelMeasure(formula="amount_paid:sum")],
+                measures=[ModelMeasure(formula="sum(amount_paid)")],
             ),
         )
     return storage_with_corpus
@@ -751,7 +751,7 @@ async def test_search_numeric_column_hit_is_refreshed(
 
     async def counting_execute(*args, **kwargs):
         q = kwargs.get("query", args[0] if args else None)
-        if isinstance(q, SlayerQuery) and isinstance(q.source_model, ModelExtension):
+        if isinstance(q, SlayerQuery) and bool(q.extensions):
             numeric_queries.append(q)
         return await real_execute(*args, **kwargs)
 

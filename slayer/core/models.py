@@ -17,8 +17,10 @@ from pydantic import (
 )
 from sqlalchemy.engine import URL as _SA_URL
 
-from slayer.core.enums import BUILTIN_AGGREGATION_FORMULAS, BUILTIN_AGGREGATIONS, DEFAULT_AGGREGATIONS_BY_TYPE, GRANULARITY_NAMES, LIST_AGGREGATIONS, DataType, type_display, JoinCardinality, JoinType, ObjectKind, PRIMARY_KEY_AGGREGATIONS, RANKED_AGGREGATIONS, RESERVED_DATE_SYNTAX_NAMES, _coerce_legacy_datatype, builtin_empty_value, ALL_TRANSFORMS
-from slayer.core.errors import AmbiguousAggregationError, GranularityDefinitionError, JoinKeyError
+from slayer.core.enums import BUILTIN_AGGREGATION_FORMULAS, BUILTIN_AGGREGATIONS, DEFAULT_AGGREGATIONS_BY_TYPE, GRANULARITY_NAMES, LIST_AGGREGATIONS, DataType, type_display, JoinCardinality, JoinType, ObjectKind, PRIMARY_KEY_AGGREGATIONS, RANKED_AGGREGATIONS, RESERVED_DATE_SYNTAX_NAMES, RESERVED_NAMES, _coerce_legacy_datatype, builtin_empty_value, ALL_TRANSFORMS
+from slayer.core.errors import AmbiguousAggregationError, AmbiguousReferenceError, GranularityDefinitionError, JoinKeyError
+from slayer.core.names import folded_collisions, match_name
+from slayer.core.warnings import NameCollisionWarning
 from slayer.core.format import NumberFormat
 from slayer.core.granularity import CustomGranularity, GranularitySpec, definition_error, granularity_key
 from slayer.core.keys import RESERVED_SCALAR_NAMES
@@ -153,9 +155,7 @@ def physical_column_sql(*, sql: str | None, name: str) -> str:
 
 
 def check_element_type(*, name: str, data_type: DataType, element_type: DataType | None) -> None:
-    """``element_type`` is required on a list, rejected elsewhere, and never itself a list."""
-    if data_type is DataType.ARRAY and element_type is None:
-        raise ValueError(f"Column {name!r} is a list (type ARRAY) and needs an element_type.")
+    """``element_type`` is rejected off a list and is never itself a list (the model requires it on one)."""
     if data_type is not DataType.ARRAY and element_type is not None:
         raise ValueError(
             f"Column {name!r} declares element_type {element_type.value} but its type is {data_type.value}; "
@@ -188,7 +188,10 @@ class Column(BaseModel):
     )
     element_type: DataType | None = Field(
         default=None,
-        description="A list's element type: required with ARRAY, forbidden otherwise; any type but ARRAY.",
+        description=(
+            "A list's element type, any type but ARRAY; forbidden off ARRAY. Required on a table-backed "
+            "model's list; an sql-mode model's undeclared one is UNKNOWN."
+        ),
     )
     db_type: str | None = Field(
         default=None,
@@ -504,18 +507,17 @@ class Aggregation(BaseModel):
                 f"transform function. Reserved names: "
                 f"{', '.join(sorted(transform_only))}"
             )
-        if self.name.lower() in RESERVED_DATE_SYNTAX_NAMES:
-            raise ValueError(
-                f"Aggregation name '{self.name}' is a reserved date function or "
-                f"date-part alias: {', '.join(sorted(RESERVED_DATE_SYNTAX_NAMES))}"
-            )
-        # A granularity-named aggregation would shadow the functional ``gran(col)``
-        # time-bucket form in a query dimension.
+        # A granularity name reads as a time bucket unit.
         if self.name.lower() in GRANULARITY_NAMES:
             raise ValueError(
                 f"Aggregation name '{self.name}' conflicts with a time "
                 f"granularity. Reserved granularity names: "
                 f"{', '.join(sorted(GRANULARITY_NAMES))}"
+            )
+        if self.name.lower() in RESERVED_DATE_SYNTAX_NAMES:
+            raise ValueError(
+                f"Aggregation name '{self.name}' is a reserved date function or "
+                f"date-part alias: {', '.join(sorted(RESERVED_DATE_SYNTAX_NAMES))}"
             )
         return self
 
@@ -529,13 +531,11 @@ def aggregation_definition(*, owner: "SlayerModel | None", agg: str) -> Aggregat
     declared = owner.aggregations or []
     if agg.lower() in BUILTIN_AGGREGATIONS:
         return next((a for a in declared if a.name == agg.lower()), None)
-    exact = next((a for a in declared if a.name == agg), None)
-    if exact is not None:
-        return exact
-    folded = [a for a in declared if a.name.lower() == agg.lower()]
-    if len(folded) > 1:
-        raise AmbiguousAggregationError(model=owner.name, call=agg, candidates=[a.name for a in folded])
-    return folded[0] if folded else None
+    try:
+        name = match_name(name=agg, declared=[a.name for a in declared], quoted=False)
+    except AmbiguousReferenceError as e:
+        raise AmbiguousAggregationError(model=owner.name, call=agg, candidates=e.candidates) from None
+    return None if name is None else next(a for a in declared if a.name == name)
 
 
 def shadows_library_function(aggregation: Aggregation) -> bool:
@@ -624,6 +624,28 @@ class ModelJoin(BaseModel):
     # Optional human/agent metadata; additive, so no schema-version bump needed.
     description: str | None = None
     meta: dict[str, Any] | None = None
+    # Runtime-only: a query object's local aliases of this edge.
+    _aliases: tuple[str, ...] = PrivateAttr(default=())
+    # Runtime-only: declared by a query extension, not stored.
+    _query_local: bool = PrivateAttr(default=False)
+
+    @property
+    def aliases(self) -> tuple[str, ...]:
+        return self._aliases
+
+    @property
+    def query_local(self) -> bool:
+        return self._query_local
+
+    def with_aliases(self, aliases: tuple[str, ...]) -> "ModelJoin":
+        out = self.model_copy()
+        out._aliases = aliases
+        return out
+
+    def as_query_local(self) -> "ModelJoin":
+        out = self.model_copy()
+        out._query_local = True
+        return out
 
     @field_validator("name")
     @classmethod
@@ -740,7 +762,8 @@ class SlayerModel(BaseModel):
     @model_validator(mode="wrap")
     @classmethod
     def _name_nested_migrations(cls, data: Any, handler: ModelWrapValidatorHandler["SlayerModel"]) -> "SlayerModel":
-        with migrating_document(data.get("name") if isinstance(data, dict) else None):
+        is_dict = isinstance(data, dict)
+        with migrating_document(data.get("name") if is_dict else None, stored=is_dict and "version" in data):
             return handler(data)
 
     @model_validator(mode="before")
@@ -803,8 +826,12 @@ class SlayerModel(BaseModel):
     # Runtime-only: a list child's ``(parent model, list column)``.
     _list_of: tuple[str, str] | None = PrivateAttr(default=None)
     # Runtime-only: the list children built from this model (``join_walker.list_child``).
-    _list_children: dict[tuple[str, str | None, str, DataType | None], "SlayerModel"] = PrivateAttr(
+    _list_children: dict[tuple[str, str | None, str, DataType | None, bool], "SlayerModel"] = PrivateAttr(
         default_factory=dict)
+    # Runtime-only: the column and measure names a query extension added.
+    _query_local: frozenset[str] = PrivateAttr(default=frozenset())
+    # Runtime-only: the query's own inline source definition, never a persisted model.
+    _inline: bool = PrivateAttr(default=False)
 
     @field_validator("filters")
     @classmethod
@@ -841,6 +868,17 @@ class SlayerModel(BaseModel):
                 f"separate model over the same table (or a view) and join to "
                 f"that."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_list_element_types(self) -> "SlayerModel":
+        """A list column needs an ``element_type``; an sql-mode model's undeclared one is ``UNKNOWN``."""
+        for c in self.columns:
+            if c.type is not DataType.ARRAY or c.element_type is not None:
+                continue
+            if not self.sql:
+                raise ValueError(f"Column {c.name!r} is a list (type ARRAY) and needs an element_type.")
+            c.element_type = DataType.UNKNOWN
         return self
 
     @model_validator(mode="after")
@@ -980,6 +1018,44 @@ class SlayerModel(BaseModel):
         return out
 
     @property
+    def query_local_names(self) -> frozenset[str]:
+        """The column and measure names a query extension added to this model."""
+        return self._query_local
+
+    def with_query_local(self, names: frozenset[str]) -> "SlayerModel":
+        out = self.model_copy()
+        out._query_local = names
+        return out
+
+    @property
+    def inline(self) -> bool:
+        """Whether this is a query's inline source definition rather than a persisted model."""
+        return self._inline
+
+    def as_inline(self) -> "SlayerModel":
+        out = self.model_copy()
+        out._inline = True
+        return out
+
+    @property
+    def extended(self) -> bool:
+        """Whether a query extension added anything to this model."""
+        return bool(self._query_local) or any(j.query_local or j.aliases for j in self.joins)
+
+    def definition_view(self) -> "SlayerModel":
+        """This model as stored definitions see it: without anything a query extension added."""
+        if not self.extended:
+            return self
+        local = self._query_local
+        out = self.model_copy(update={
+            "columns": [c for c in self.columns if c.name not in local],
+            "measures": [m for m in self.measures if m.name not in local],
+            "joins": [j.with_aliases(()) if j.aliases else j for j in self.joins if not j.query_local],
+        })
+        out._query_local = frozenset()
+        return out
+
+    @property
     def list_of(self) -> tuple[str, str] | None:
         """``(parent model, list column)`` when this is a list column's element child (semantics Axiom 3.2)."""
         return self._list_of
@@ -1001,23 +1077,20 @@ class SlayerModel(BaseModel):
         temporal = [c.name for c in self.columns if c.type in (DataType.DATE, DataType.TIMESTAMP)]
         return temporal[0] if len(temporal) == 1 else None
 
-    def get_column(self, name: str) -> Column | None:
-        for c in self.columns:
-            if c.name == name:
-                return c
-        return None
+    def get_column(self, name: str, *, quoted: bool = False) -> Column | None:
+        """The column ``name`` reaches (``slayer.core.names.match_name``)."""
+        found = match_name(name=name, declared=[c.name for c in self.columns], quoted=quoted)
+        return None if found is None else next(c for c in self.columns if c.name == found)
 
-    def get_measure(self, name: str) -> ModelMeasure | None:
-        for m in self.measures:
-            if m.name == name:
-                return m
-        return None
+    def get_measure(self, name: str, *, quoted: bool = False) -> ModelMeasure | None:
+        """The saved measure ``name`` reaches (``slayer.core.names.match_name``)."""
+        found = match_name(name=name, declared=[m.name for m in self.measures if m.name], quoted=quoted)
+        return None if found is None else next(m for m in self.measures if m.name == found)
 
-    def get_aggregation(self, name: str) -> Aggregation | None:
-        for a in self.aggregations:
-            if a.name == name:
-                return a
-        return None
+    def get_aggregation(self, name: str, *, quoted: bool = False) -> Aggregation | None:
+        """The aggregation ``name`` reaches (``slayer.core.names.match_name``)."""
+        found = match_name(name=name, declared=[a.name for a in self.aggregations], quoted=quoted)
+        return None if found is None else next(a for a in self.aggregations if a.name == found)
 
 
 class DatasourceConfig(BaseModel):
@@ -1201,6 +1274,7 @@ def reserved_granularity_names() -> dict[str, str]:
     out.update(dict.fromkeys(ALL_TRANSFORMS, "transform"))
     out.update(dict.fromkeys(BUILTIN_AGGREGATIONS, "aggregation"))
     out.update(dict.fromkeys(GRANULARITY_NAMES, "granularity"))
+    out.update(dict.fromkeys(RESERVED_NAMES, "reserved function"))
     return out
 
 
@@ -1210,3 +1284,30 @@ def _resolve_env_string(value: str) -> str:
         return os.environ.get(var_name, match.group(0))
 
     return re.sub(r"\$\{(\w+)\}", replacer, value)
+
+
+def case_collisions(model: SlayerModel) -> list[tuple[str, list[str]]]:
+    """Each group of ``model``'s names that differ only in case, per namespace: fields (columns and measures),
+    aggregations, join names, and a saved query's stage names and each stage's result names."""
+    namespaces: list[tuple[str, list[str]]] = [
+        ("fields", [c.name for c in model.columns] + [m.name for m in model.measures if m.name]),
+        ("aggregations", [a.name for a in model.aggregations]),
+        ("joins", [j.name for j in model.joins if j.name]),
+    ]
+    stages = model.source_queries or []
+    namespaces.append(("stages", [n for q in stages if (n := _item_name(q))]))
+    for q in stages:
+        where = f"result names of stage {_item_name(q)!r}" if _item_name(q) else "result names"
+        measures = q.get("measures") if isinstance(q, dict) else q.measures
+        namespaces.append((where, [n for m in measures or [] if (n := _item_name(m))]))
+    return [(where, group) for where, names in namespaces for group in folded_collisions(names)]
+
+
+def _item_name(item: Any) -> str | None:
+    """A stage's or measure's name, validated or a raw dict."""
+    return item.get("name") if isinstance(item, dict) else getattr(item, "name", None)
+
+
+def name_collision_warnings(model: SlayerModel) -> list[NameCollisionWarning]:
+    """The ``NameCollisionWarning`` per case collision ``model`` holds."""
+    return [NameCollisionWarning(model=model.name, namespace=where, names=names) for where, names in case_collisions(model)]

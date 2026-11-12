@@ -28,6 +28,8 @@ from slayer.sql.dialects.reflection import ReflectedColumn, TableLocation, colum
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._cli_inprocess import run_cli_in_process
+from tests._engine_helpers import owned_query_engine
+from tests._pg_helpers import client_datasource
 
 postgresql_proc = factories.postgresql_proc(port=None)
 postgresql = factories.postgresql("postgresql_proc")
@@ -136,11 +138,13 @@ async def pg(postgresql, tmp_path: Path) -> AsyncGenerator[SlayerQueryEngine]:
     for stmt in PG_LIVE:
         cur.execute(stmt)
     postgresql.commit()
-    info = postgresql.info
-    ds = DatasourceConfig(name="pg", type="postgres", host=info.host, port=info.port, database=info.dbname,
-                          username=info.user, password="")
     storage = YAMLStorage(base_dir=str(tmp_path))
-    await storage.save_datasource(ds)
+    async with owned_query_engine(storage=storage, datasources=[client_datasource(postgresql.info)]) as engine:
+        await _save_pg_models(storage)
+        yield engine
+
+
+async def _save_pg_models(storage: YAMLStorage) -> None:
     # As 1.6.0 reflection typed the table (interval TEXT, json UNKNOWN, oid TEXT, money DOUBLE, xml TEXT),
     # plus ``duration`` stored as TIMESTAMP over the interval.
     await storage.save_model(SlayerModel(name="pg_table", sql_table="pgtypes", data_source="pg", columns=[
@@ -155,13 +159,6 @@ async def pg(postgresql, tmp_path: Path) -> AsyncGenerator[SlayerQueryEngine]:
             Column(name="dur", type=DataType.TIMESTAMP), Column(name="ref", type=DataType.DOUBLE),
             Column(name="amount", type=DataType.DOUBLE), Column(name="doc", type=DataType.TEXT),
         ]))
-    engine = SlayerQueryEngine(storage=storage)
-    try:
-        yield engine
-    finally:
-        await engine.aclose()
-        engine.close()
-        engine_factory.invalidate_engine(ds)
 
 
 def _dump(entries: list[Any]) -> list[dict[str, Any]]:
@@ -357,7 +354,7 @@ class TestQueryTime:
 
     async def test_postgres_json_grouped(self, pg: SlayerQueryEngine) -> None:
         with pytest.raises(SchemaDriftError) as info:
-            await pg.execute({"source_model": "pg_sql", "dimensions": ["payload"], "measures": ["*:count"]})
+            await pg.execute({"source_model": "pg_sql", "dimensions": ["payload"], "measures": ["count(*)"]})
         err = info.value
         assert "payload" not in _removed(_dump(err.to_delete), "pg_sql"), err.to_delete
         assert "pg_sql.payload" in str(err), str(err)

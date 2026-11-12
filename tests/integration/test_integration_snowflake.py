@@ -358,7 +358,7 @@ def test_basic_query(sf_storage_with_models) -> None:
     engine = SlayerQueryEngine(storage=sf_storage_with_models)
     result = run_sync(engine.execute(SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="quantity:sum")],
+        measures=[ModelMeasure(formula="sum(quantity)")],
     )))
     rows = result.data
     assert len(rows) == 1
@@ -371,19 +371,13 @@ def test_try_cast_integer_targets(sf_storage_with_models) -> None:
     run_sync(check_try_cast_targets(SlayerQueryEngine(storage=sf_storage_with_models), model="orders"))
 
 
-def test_functional_aggregation_parity(sf_storage_with_models) -> None:
-    """sum(quantity) returns the same value as quantity:sum."""
+def test_functional_aggregation(sf_storage_with_models) -> None:
     engine = SlayerQueryEngine(storage=sf_storage_with_models)
-    colon = run_sync(engine.execute(SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="quantity:sum")],
-    )))
     func = run_sync(engine.execute(SlayerQuery(
         source_model="orders",
         measures=[ModelMeasure(formula="sum(quantity)")],
     )))
     assert int(next(iter(func.data[0].values()))) == 16
-    assert func.data == colon.data
 
 
 def test_query_with_dimension(sf_storage_with_models) -> None:
@@ -392,7 +386,7 @@ def test_query_with_dimension(sf_storage_with_models) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         source_model="orders",
         dimensions=[ColumnRef(name="status")],
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
     )))
     rows = result.data
     statuses = {row.get("orders.status") for row in rows}
@@ -404,7 +398,8 @@ def test_dev1933_regex_literal_extension_column(sf_storage_with_models) -> None:
     LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
     engine = SlayerQueryEngine(storage=sf_storage_with_models)
     result = run_sync(engine.execute(SlayerQuery(
-        source_model=ModelExtension(
+        source_model="orders",
+        extensions=[ModelExtension(
             source_name="orders",
             columns=[Column(
                 name="rx",
@@ -412,9 +407,9 @@ def test_dev1933_regex_literal_extension_column(sf_storage_with_models) -> None:
                     "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END",
                 type=DataType.DOUBLE,
             )],
-        ),
+        )],
         dimensions=[ColumnRef(name="rx")],
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
     )))
     by_rx = {int(r["orders.rx"]): r["orders._count"] for r in result.data}
     assert by_rx == {1: 2, 0: 4}
@@ -431,7 +426,7 @@ def test_rollup_join_via_explicit_joins(sf_storage_with_models) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         source_model="orders",
         dimensions=[ColumnRef(name="customers.regions.name")],
-        measures=[ModelMeasure(formula="quantity:sum")],
+        measures=[ModelMeasure(formula="sum(quantity)")],
     )))
     rows = result.data
     region_names = {row.get("orders.customers.regions.name") for row in rows}
@@ -449,8 +444,8 @@ def test_median_percentile_native(sf_storage_with_models) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         source_model="orders",
         measures=[
-            ModelMeasure(formula="quantity:median"),
-            ModelMeasure(formula="quantity:percentile(p=0.5)"),
+            ModelMeasure(formula="median(quantity)"),
+            ModelMeasure(formula="percentile(quantity, p=0.5)"),
         ],
     )))
     rows = result.data
@@ -468,8 +463,8 @@ def test_stddev_var_native(sf_storage_with_models) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         source_model="orders",
         measures=[
-            ModelMeasure(formula="quantity:stddev_samp"),
-            ModelMeasure(formula="quantity:var_samp"),
+            ModelMeasure(formula="stddev_samp(quantity)"),
+            ModelMeasure(formula="var_samp(quantity)"),
         ],
     )))
     rows = result.data
@@ -485,8 +480,8 @@ def test_corr_covar_native(sf_storage_with_models) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         source_model="orders",
         measures=[
-            ModelMeasure(formula="quantity:corr(other=customer_id)"),
-            ModelMeasure(formula="quantity:covar_samp(other=customer_id)"),
+            ModelMeasure(formula="corr(quantity, other=customer_id)"),
+            ModelMeasure(formula="covar_samp(quantity, other=customer_id)"),
         ],
     )))
     rows = result.data
@@ -505,7 +500,7 @@ def test_date_trunc_quarter(sf_storage_with_models) -> None:
             dimension="created_at",
             granularity=TimeGranularity.QUARTER,
         )],
-        measures=[ModelMeasure(formula="quantity:sum")],
+        measures=[ModelMeasure(formula="sum(quantity)")],
     )))
     rows = result.data
     # All orders are in Q1 2024 → exactly one row.
@@ -522,8 +517,8 @@ def test_time_shift_dateadd(sf_storage_with_models) -> None:
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
-            ModelMeasure(formula="quantity:sum"),
-            ModelMeasure(formula="time_shift(quantity:sum, -1, 'month')", name="prev_month"),
+            ModelMeasure(formula="sum(quantity)"),
+            ModelMeasure(formula="time_shift(sum(quantity), -1, 'month')", name="prev_month"),
         ],
     )))
     rows = result.data
@@ -538,10 +533,10 @@ def test_rank_transforms(sf_storage_with_models) -> None:
         source_model="orders",
         dimensions=[ColumnRef(name="status")],
         measures=[
-            ModelMeasure(formula="quantity:sum"),
-            ModelMeasure(formula="rank(quantity:sum, direction='desc')", name="qty_rank"),
-            ModelMeasure(formula="dense_rank(quantity:sum, direction='desc')", name="qty_dense_rank"),
-            ModelMeasure(formula="ntile(quantity:sum, n=2)", name="qty_bucket"),
+            ModelMeasure(formula="sum(quantity)"),
+            ModelMeasure(formula="rank(sum(quantity), direction='desc')", name="qty_rank"),
+            ModelMeasure(formula="dense_rank(sum(quantity), direction='desc')", name="qty_dense_rank"),
+            ModelMeasure(formula="ntile(sum(quantity), n=2)", name="qty_bucket"),
         ],
     )))
     rows = result.data
@@ -784,7 +779,7 @@ def test_explain_query_uses_explain_using_json(sf_storage_with_models) -> None:
     result = run_sync(engine.execute(
         query=SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="quantity:sum")],
+            measures=[ModelMeasure(formula="sum(quantity)")],
         ),
         explain=True,
     ))
@@ -874,7 +869,7 @@ def test_query_result_keys_use_lowercase(sf_storage_with_models) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         source_model="orders",
         dimensions=[ColumnRef(name="status")],
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
     )))
     rows = result.data
     assert rows
@@ -939,7 +934,7 @@ def test_dev1645_mixed_case_column_executes(sf_dev1645_storage) -> None:
     engine = SlayerQueryEngine(storage=sf_dev1645_storage)
     result = run_sync(engine.execute(SlayerQuery(
         source_model="dev1645_accounts",
-        measures=[ModelMeasure(formula="*:count", name="cnt")],
+        measures=[ModelMeasure(formula="count(*)", name="cnt")],
         filters=["is_inactive == True"],
     )))
     assert result.data[0]["dev1645_accounts.cnt"] == 2

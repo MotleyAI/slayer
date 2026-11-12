@@ -1,4 +1,4 @@
-"""DEV-1838 design D8 — no plan without a root survives planning.
+"""Design D8 — no plan without a root survives planning.
 
 The sweep pin proved the target-rooted legacy arms dead before task 2.5
 deleted them (with the plan type gone, it degenerates to "no cross-model
@@ -23,7 +23,7 @@ from tests._dev1838_fixtures import (
     q,
 )
 
-M = ModelMeasure(formula="amount:sum", name="m")
+M = ModelMeasure(formula="sum(amount)", name="m")
 
 
 def _bundle() -> ResolvedSourceBundle:
@@ -47,22 +47,23 @@ def _walk_cmas(planned, out) -> None:
 
 SHAPES = {
     "cross_model_sum": q(dimensions=["status"], measures=[
-        M, ModelMeasure(formula="customers.spend:sum", name="cm")]),
+        M, ModelMeasure(formula="sum(customers.spend)", name="cm")]),
     "cross_model_last": q(dimensions=["status"], measures=[
-        ModelMeasure(formula="customers.spend:last", name="sl")]),
+        ModelMeasure(formula="last(customers.spend)", name="sl")],
+        to_many_handling="broadcast"),
     "filtered_local": q(dimensions=["status"], measures=[
-        M, ModelMeasure(formula="gold_amount:sum", name="g")]),
+        M, ModelMeasure(formula="sum(gold_amount)", name="g")]),
     "crossing_arg": q(dimensions=["status"], measures=[
-        M, ModelMeasure(formula="amount:wscaled_sum", name="w")]),
+        M, ModelMeasure(formula="wscaled_sum(amount)", name="w")]),
     "host_grain_wrap": q(dimensions=["status"], measures=[M],
                          order=[OrderItem(
                              column=ColumnRef(name="tier", model="customers"),
                              direction="asc")]),
     "windowed": q(dimensions=["region"], time_dimensions=month_td(),
-                  measures=[ModelMeasure(formula="amount:sum(window='90d')",
+                  measures=[ModelMeasure(formula="sum(amount, window='90d')",
                                          name="w")]),
     "band_cross_model": q(dimensions=["status", BAND], measures=[
-        M, ModelMeasure(formula="customers.spend:sum", name="cm")]),
+        M, ModelMeasure(formula="sum(customers.spend)", name="cm")]),
 }
 
 

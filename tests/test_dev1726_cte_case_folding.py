@@ -29,12 +29,13 @@ Contract pinned here (spec-resolved, including the Codex plan review):
   validates SLayer's own allocator-sanitized output, where a fold-collision
   (quoted or not) always signals an allocator-bypass bug. It is not a
   general-purpose validator of arbitrary SQL.
-* End-to-end, per dialect: the ``Foo``/``foo`` time_shift vehicle dedups the
-  second CTE family to ``shifted_foo_2``/``sjoin_foo_2`` on folding dialects
-  (references following the rename) and keeps both original-case families on
-  ClickHouse — while the user-facing result keys ``orders.Foo``/``orders.foo``
-  survive unchanged in either case (public aliases are reserved, never
-  allocator-minted, so folding can never rename them).
+* End-to-end, per dialect: two cross-model aggregates over a stored model's
+  grandfathered ``Rev``/``rev`` columns dedup the second ``_cm_`` CTE to
+  ``..._rev_sum_2`` on folding dialects (references following the rename) and
+  keep both original-case names on ClickHouse — while the user-facing result
+  keys survive unchanged (public aliases are reserved, never allocator-minted).
+  Result names differing only in case (``Foo``/``foo``) are refused before SQL
+  generation on every dialect.
 """
 
 from __future__ import annotations
@@ -49,7 +50,8 @@ from sqlglot import exp
 import slayer.sql.generator as generator_module
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.errors import SlayerError
+from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.sql.dialects import _ALL_DIALECTS
 from slayer.sql.naming import (
@@ -266,7 +268,7 @@ class TestBeltCaseFolding:
 
 
 # ---------------------------------------------------------------------------
-# End-to-end — the Foo/foo time_shift vehicle across every registry dialect
+# End-to-end — case-only CTE names across every registry dialect
 # ---------------------------------------------------------------------------
 
 
@@ -278,16 +280,51 @@ def _vehicle_model() -> SlayerModel:
         default_time_dimension="created_at",
         columns=[
             Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
             Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
             Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    )
+
+
+def _customers_model() -> SlayerModel:
+    """Grandfathered case-only column pair over two physical columns (saved unvalidated)."""
+    return SlayerModel(
+        name="customers",
+        sql_table="public.customers",
+        data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="Rev", sql="revx", type=DataType.DOUBLE),
+            Column(name="rev", sql="revy", type=DataType.DOUBLE),
         ],
     )
 
 
-def _vehicle_query() -> SlayerQuery:
-    """Two measures whose names differ ONLY in case, both driving time_shift
-    CTE generation — the DEV-1726 repro. Distinct inputs, so each owns its
-    shifted relation (one input's offsets share one)."""
+def _cm_vehicle_query() -> SlayerQuery:
+    """Distinct result names whose ``_cm_`` CTE names differ ONLY in case."""
+    return SlayerQuery(
+        source_model="orders",
+        time_dimensions=[
+            TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)
+        ],
+        measures=[
+            ModelMeasure(formula="sum(customers.Rev)", name="up"),
+            ModelMeasure(formula="sum(customers.rev)", name="down"),
+        ],
+    )
+
+
+async def _cm_vehicle_sql(dialect: str) -> str:
+    return await _engine_generate(
+        query=_cm_vehicle_query(), model=_vehicle_model(),
+        extra_models=[_customers_model()], dialect=dialect, validate=False,
+    )
+
+
+def _case_only_result_names_query() -> SlayerQuery:
+    """Two measures whose result names differ ONLY in case — refused before SQL generation."""
     return SlayerQuery(
         source_model="orders",
         time_dimensions=[
@@ -297,8 +334,8 @@ def _vehicle_query() -> SlayerQuery:
             )
         ],
         measures=[
-            ModelMeasure(formula="time_shift(revenue:sum, -1, 'month')", name="Foo"),
-            ModelMeasure(formula="time_shift(revenue:max, -2, 'month')", name="foo"),
+            ModelMeasure(formula="time_shift(sum(revenue), -1, 'month')", name="Foo"),
+            ModelMeasure(formula="time_shift(max(revenue), -2, 'month')", name="foo"),
         ],
     )
 
@@ -332,55 +369,60 @@ def _assert_result_keys_survive(sql: str, *, dialect: str) -> None:
         for p in _outer_select(sql, dialect=dialect).expressions
     }
     if dialect in ("bigquery", "tsql"):
-        expected = {"orders___Foo", "orders___foo"}
+        expected = {"orders___up", "orders___down"}
     else:
-        expected = {"orders.Foo", "orders.foo"}
+        expected = {"orders.up", "orders.down"}
     assert expected <= aliases, (aliases, sql)
+
+
+_CM_UPPER = "_cm_orders__customers__Rev_sum"
 
 
 class TestE2eCaseFoldingAllDialects:
     @pytest.mark.parametrize("dialect", FOLDING_DIALECTS)
     async def test_folding_dialect_dedups_cte_families(self, dialect: str) -> None:
-        sql = await _engine_generate(
-            query=_vehicle_query(), model=_vehicle_model(), dialect=dialect,
-        )
+        sql = await _cm_vehicle_sql(dialect)
         names = _cte_names(sql, dialect=dialect)
         # No two CTE names fold together (single WITH scope — the helper's
         # _assert_valid_sql already rejects nested WITH).
         lowered = [n.lower() for n in names]
         assert len(lowered) == len(set(lowered)), names
-        # The exact expected families: first measure (Foo) keeps its preferred
-        # names; the second (foo) walks to _2 (Codex F6 — not just "some _2").
-        assert {"shifted_Foo", "sjoin_Foo", "shifted_foo_2", "sjoin_foo_2"} <= set(
-            names
-        ), (names, sql)
-        # References follow the rename: each renamed CTE is structurally
-        # consumed by a table reference outside its definition.
-        _assert_cte_referenced(sql, dialect=dialect, name="shifted_foo_2")
-        _assert_cte_referenced(sql, dialect=dialect, name="sjoin_foo_2")
+        # The first keeps its preferred name; the second walks to _2 (Codex F6).
+        renamed = "_cm_orders__customers__rev_sum_2"
+        assert {_CM_UPPER, renamed} <= set(names), (names, sql)
+        # References follow the rename.
+        _assert_cte_referenced(sql, dialect=dialect, name=renamed)
         # The belt agrees the output is collision-free under folding.
         assert_unique_cte_names(sql, dialect=dialect)
         _assert_result_keys_survive(sql, dialect=dialect)
 
     @pytest.mark.parametrize("dialect", EXACT_DIALECTS)
     async def test_exact_dialect_keeps_both_families(self, dialect: str) -> None:
-        sql = await _engine_generate(
-            query=_vehicle_query(), model=_vehicle_model(), dialect=dialect,
-        )
+        sql = await _cm_vehicle_sql(dialect)
         names = _cte_names(sql, dialect=dialect)
-        assert {"shifted_Foo", "sjoin_Foo", "shifted_foo", "sjoin_foo"} <= set(
-            names
-        ), (names, sql)
+        assert {_CM_UPPER, "_cm_orders__customers__rev_sum"} <= set(names), (
+            names, sql,
+        )
         # No spurious rename on a case-sensitive dialect.
         assert not any(n.endswith("_2") for n in names), names
         assert_unique_cte_names(sql, dialect=dialect)
         _assert_result_keys_survive(sql, dialect=dialect)
 
-    async def test_cp_family_dedups_on_folding_dialect(self) -> None:
-        """The ``cp_reset_*``/``cp_value_*`` family (consecutive_periods, the
-        DEV-1692 sibling emitter — a DIFFERENT allocator path than
-        time_shift's) folds the same way. Single dialect: the dialect axis is
-        already pinned by the time_shift matrix above."""
+    @pytest.mark.parametrize("dialect", FOLDING_DIALECTS + EXACT_DIALECTS)
+    async def test_case_only_result_names_are_refused(self, dialect: str) -> None:
+        query = _case_only_result_names_query()
+        model = _vehicle_model()
+        extra_models = [_customers_model()]
+        with pytest.raises(SlayerError) as err:
+            await _engine_generate(
+                query=query, model=model,
+                extra_models=extra_models, dialect=dialect, validate=False,
+            )
+        assert "Foo" in str(err.value)
+        assert "foo" in str(err.value)
+
+    async def test_case_only_cp_result_names_are_refused(self) -> None:
+        """The ``consecutive_periods`` family: same refusal, before its CTEs are minted."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
@@ -391,24 +433,22 @@ class TestE2eCaseFoldingAllDialects:
             ],
             measures=[
                 ModelMeasure(
-                    formula="consecutive_periods(revenue:sum > 0)", name="Foo",
+                    formula="consecutive_periods(sum(revenue) > 0)", name="Foo",
                 ),
                 ModelMeasure(
-                    formula="consecutive_periods(revenue:sum > 100)", name="foo",
+                    formula="consecutive_periods(sum(revenue) > 100)", name="foo",
                 ),
             ],
         )
-        sql = await _engine_generate(
-            query=query, model=_vehicle_model(), dialect="postgres",
-        )
-        names = _cte_names(sql, dialect="postgres")
-        lowered = [n.lower() for n in names]
-        assert len(lowered) == len(set(lowered)), names
-        assert {
-            "cp_reset_Foo", "cp_value_Foo", "cp_reset_foo_2", "cp_value_foo_2",
-        } <= set(names), (names, sql)
-        _assert_cte_referenced(sql, dialect="postgres", name="cp_value_foo_2")
-        assert_unique_cte_names(sql, dialect="postgres")
+        model = _vehicle_model()
+        extra_models = [_customers_model()]
+        with pytest.raises(SlayerError) as err:
+            await _engine_generate(
+                query=query, model=model,
+                extra_models=extra_models, dialect="postgres", validate=False,
+            )
+        assert "Foo" in str(err.value)
+        assert "foo" in str(err.value)
 
 
 class TestGeneratorAllocatorRouting:

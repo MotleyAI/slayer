@@ -1,7 +1,7 @@
 """DEV-1576 — parse-level coverage for the three SlayerQuery heals.
 
 1. Aggregation-name alias / casing normalization (``normalize_aggregation_name``;
-   colon-syntax healing happens at binding).
+   healing happens at binding).
 2. ``round()`` / ``abs()`` as top-level formula functions (scalar calls over
    aggregations; arity validated at binding).
 
@@ -115,11 +115,11 @@ class TestNormalizeAggregationName:
 
 
 # ---------------------------------------------------------------------------
-# §1 — colon-syntax healing at binding
+# §1 — aggregation-name healing at binding
 # ---------------------------------------------------------------------------
 
 
-class TestColonSyntaxAliasHealing:
+class TestAggregationAliasHealing:
     @pytest.mark.parametrize(
         "raw_agg,expected",
         [
@@ -132,29 +132,29 @@ class TestColonSyntaxAliasHealing:
             ("SUM", "sum"),
         ],
     )
-    def test_formula_colon_alias_heals(self, raw_agg: str, expected: str) -> None:
-        key = _bind(f"revenue:{raw_agg}")
+    def test_formula_alias_heals(self, raw_agg: str, expected: str) -> None:
+        key = _bind(f"{raw_agg}(revenue)")
         assert isinstance(key, AggregateKey)
         assert key.agg == expected
         assert getattr(key.source, "leaf", None) == "revenue"
 
     def test_star_count_alias_unaffected(self) -> None:
-        key = _bind("*:count")
+        key = _bind("count(*)")
         assert isinstance(key, AggregateKey)
         assert key.agg == "count"
 
     def test_unknown_agg_in_formula_left_for_enrichment(self) -> None:
         # The parser does not validate the vocabulary — an unknown agg parses through.
-        assert parse_expr("revenue:bogus") == AggCall(source=Ref(name="revenue"), agg="bogus")
+        assert parse_expr("bogus(revenue)") == AggCall(source=Ref(name="revenue"), agg="bogus")
 
     def test_custom_agg_named_like_alias_not_healed(self) -> None:
         # An exact custom-name match takes precedence over the alias.
-        key = _bind("revenue:countd", custom=("countd",))
+        key = _bind("countd(revenue)", custom=("countd",))
         assert isinstance(key, AggregateKey)
         assert key.agg == "countd"
 
     def test_alias_still_heals_when_custom_name_differs(self) -> None:
-        key = _bind("revenue:countd", custom=("some_other_agg",))
+        key = _bind("countd(revenue)", custom=("some_other_agg",))
         assert isinstance(key, AggregateKey)
         assert key.agg == "count_distinct"
 
@@ -176,40 +176,40 @@ def _scalar(parsed, name: str) -> ScalarCall:
 
 class TestScalarFunctionsParse:
     def test_round_two_args(self) -> None:
-        result = _scalar(parse_expr("round(revenue:sum, 2)"), "round")
+        result = _scalar(parse_expr("round(sum(revenue), 2)"), "round")
         assert result.args[1] == Literal(value=Decimal(2))
         assert _agg_names(result) == {"sum"}
         assert not any(isinstance(n, TransformCall) for n in _nodes(result))
 
     def test_round_one_arg(self) -> None:
-        assert _agg_names(_scalar(parse_expr("round(revenue:sum)"), "round")) == {"sum"}
+        assert _agg_names(_scalar(parse_expr("round(sum(revenue))"), "round")) == {"sum"}
 
     def test_abs_one_arg(self) -> None:
-        assert _agg_names(_scalar(parse_expr("abs(revenue:sum)"), "abs")) == {"sum"}
+        assert _agg_names(_scalar(parse_expr("abs(sum(revenue))"), "abs")) == {"sum"}
 
     def test_abs_over_arithmetic(self) -> None:
-        assert _agg_names(_scalar(parse_expr("abs(revenue:sum - cost:sum)"), "abs")) == {"sum"}
+        assert _agg_names(_scalar(parse_expr("abs(sum(revenue) - sum(cost))"), "abs")) == {"sum"}
 
     def test_round_over_arithmetic(self) -> None:
-        assert _agg_names(_scalar(parse_expr("round(revenue:sum / *:count, 2)"), "round")) == {"sum", "count"}
+        assert _agg_names(_scalar(parse_expr("round(sum(revenue) / count(*), 2)"), "round")) == {"sum", "count"}
 
     def test_round_negative_ndigits(self) -> None:
         # round(x, -2) is valid SQL (round to hundreds); negative integer literals are accepted.
-        _scalar(parse_expr("round(revenue:sum, -2)"), "round")
-        _bind("round(revenue:sum, -2)")
+        _scalar(parse_expr("round(sum(revenue), -2)"), "round")
+        _bind("round(sum(revenue), -2)")
 
     def test_round_wraps_nested_transform(self) -> None:
-        result = _scalar(parse_expr("round(cumsum(revenue:sum), 2)"), "round")
+        result = _scalar(parse_expr("round(cumsum(sum(revenue)), 2)"), "round")
         transforms = [n for n in _nodes(result) if isinstance(n, TransformCall)]
         assert [t.op for t in transforms] == ["cumsum"]
 
     @pytest.mark.parametrize(
         "raw",
         [
-            "ROUND(revenue:sum, 2)",
-            "Round(revenue:sum, 2)",
-            "ABS(revenue:sum)",
-            "Abs(revenue:sum)",
+            "ROUND(sum(revenue), 2)",
+            "Round(sum(revenue), 2)",
+            "ABS(sum(revenue))",
+            "Abs(sum(revenue))",
         ],
     )
     def test_scalar_functions_case_insensitive(self, raw: str) -> None:
@@ -220,13 +220,13 @@ class TestScalarFunctionsParse:
 class TestScalarFunctionArity:
     @pytest.mark.parametrize(("formula", "fn"), [
         ("round()", "round"),
-        ("round(revenue:sum, 2, 3)", "round"),
-        ("round(revenue:sum, ndigits=2)", "round"),
-        ("abs(revenue:sum, cost:sum)", "abs"),
+        ("round(sum(revenue), 2, 3)", "round"),
+        ("round(sum(revenue), ndigits=2)", "round"),
+        ("abs(sum(revenue), sum(cost))", "abs"),
         ("abs()", "abs"),
-        ("abs(revenue:sum, foo=1)", "abs"),
-        ("round(revenue:sum, 2.5)", "round"),
-        ("round(revenue:sum, x)", "round"),
+        ("abs(sum(revenue), foo=1)", "abs"),
+        ("round(sum(revenue), 2.5)", "round"),
+        ("round(sum(revenue), x)", "round"),
     ])
     def test_arity_rejected(self, formula: str, fn: str) -> None:
         with pytest.raises(ValueError, match=fn):
@@ -239,16 +239,16 @@ class TestScalarPassthroughPolicy:
 
     @pytest.mark.parametrize("fn", ["ceil", "floor", "sqrt", "ln", "nullif", "coalesce"])
     def test_common_scalars_accepted_at_top_level(self, fn: str) -> None:
-        _scalar(parse_expr(f"{fn}(revenue:sum)"), fn)
+        _scalar(parse_expr(f"{fn}(sum(revenue))"), fn)
 
     def test_inside_arithmetic_passthrough_still_works(self) -> None:
-        parsed = parse_expr("*:count / nullif(revenue:max, 0)")
+        parsed = parse_expr("count(*) / nullif(max(revenue), 0)")
         assert any(isinstance(n, ScalarCall) and n.name == "nullif" for n in _nodes(parsed))
-        _bind("*:count / nullif(revenue:max, 0)")
+        _bind("count(*) / nullif(max(revenue), 0)")
 
     def test_unknown_call_inside_arithmetic_now_rejected(self) -> None:
         with pytest.raises(UnknownFunctionError, match="Unknown function"):
-            _bind("revenue:sum + bogus_fn(other:sum)")
+            _bind("sum(revenue) + bogus_fn(sum(other))")
 
     @pytest.mark.parametrize("raw", ["countd(revenue)", "countDistinct(revenue)"])
     def test_funcstyle_aggregation_alias_heals(self, raw: str) -> None:
