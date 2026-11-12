@@ -420,7 +420,7 @@ def _need(element: pp.ParserElement, detail: str) -> pp.ParserElement:
     return element | _fail(detail)
 
 
-_RUN_CHAR = r"[^\x00-\x20\x7f!-/:-@\[-^`{-~\s]"
+_RUN_CHAR = r"[^\x00-\x08\x0e-\x1f\x7f!-/:-@\[-^`{-~\s]"
 _RUN = r"(?!\d)" + _RUN_CHAR + r"+"
 
 

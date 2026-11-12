@@ -38,6 +38,7 @@ from slayer.core.names import folded_collisions
 from slayer.core.legacy_spellings import LegacySpan, emit_deprecations
 from slayer.core.models import (
     DatasourceConfig,
+    ModelJoin,
     SlayerModel,
     _validate_column_name,
     case_collisions,
@@ -392,21 +393,8 @@ def check_join_target_spellings(
     the spine, and a name of ``model`` that a join of ``peers`` reaches only by case."""
     declared = {*names, model.name}
     for join in model.joins:
-        target = join.target_model
-        if target in declared:
-            continue
-        edge = f"join {join.name!r}" if join.name else f"the unnamed join to {target!r}"
-        if is_spine_spelling(target):
-            raise TimeSpineError(
-                summary=f"Model {model.name!r}: {edge} targets the built-in time spine.",
-                suggestion="Remove the join: the spine joins each dataset through its time axis, so a declared join "
-                "to it is never needed.",
-            )
-        hits = sorted(n for n in declared if n.casefold() == target.casefold())
-        if len(hits) > 1:
-            raise AmbiguousReferenceError(target, hits, suggestion="Write the join target exactly as one of them.")
-        if hits:
-            raise JoinTargetCaseError(model=model.name, join=join.name, target=target, declared=hits[0])
+        if join.target_model not in declared:
+            _check_join_target(model=model, join=join, declared=declared)
     for peer in sorted(peers.values(), key=lambda p: p.name):
         for join in peer.joins:
             target = join.target_model
@@ -414,6 +402,23 @@ def check_join_target_spellings(
                 raise JoinTargetCaseError(
                     model=peer.name, join=join.name, target=target, declared=model.name, saving=True,
                 )
+
+
+def _check_join_target(*, model: SlayerModel, join: ModelJoin, declared: set[str]) -> None:
+    """Refuse ``join``, whose target names no model of ``declared`` exactly, if it targets the spine or one by case."""
+    target = join.target_model
+    if is_spine_spelling(target):
+        edge = f"join {join.name!r}" if join.name else f"the unnamed join to {target!r}"
+        raise TimeSpineError(
+            summary=f"Model {model.name!r}: {edge} targets the built-in time spine.",
+            suggestion="Remove the join: the spine joins each dataset through its time axis, so a declared join "
+            "to it is never needed.",
+        )
+    hits = sorted(n for n in declared if n.casefold() == target.casefold())
+    if len(hits) > 1:
+        raise AmbiguousReferenceError(target, hits, suggestion="Write the join target exactly as one of them.")
+    if hits:
+        raise JoinTargetCaseError(model=model.name, join=join.name, target=target, declared=hits[0])
 
 
 def _warn_unnamed_parallel_edges(

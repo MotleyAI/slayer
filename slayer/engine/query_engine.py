@@ -1428,8 +1428,13 @@ class SlayerQueryEngine:
         """Each query reaching the spine in any case; a stage's name or a stored model's exact name keeps its spelling
         (the pinned datasource's, else any's). Also the spellings respelled."""
         candidates: Set[str] = set()
+
+        def collect(spelling: str) -> bool:
+            candidates.add(spelling)
+            return True
+
         for q in queries:
-            respell_spine(q, keep=lambda s: candidates.add(s) is None)
+            respell_spine(q, keep=collect)
         if not candidates:
             return queries, frozenset()
         stored = {n for ds, n in await self.storage._list_all_model_identities() if data_source in (None, ds)}
