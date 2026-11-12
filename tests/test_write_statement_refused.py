@@ -155,6 +155,9 @@ def test_statements_without_separators_are_refused(sql: str) -> None:
         ("postgres", "VALUES (1)"),
         ("postgres", "DESCRIBE t"),
         ("postgres", "(SELECT 1) UNION ALL (SELECT 2)"),
+        ("mysql", "DESCRIBE t"),
+        ("snowflake", "DESC TABLE t"),
+        ("mysql", "SELECT 1 /* a comment */"),
     ],
 )
 def test_parsed_reads_are_admitted(ds_type: str, sql: str) -> None:
@@ -166,6 +169,10 @@ def test_parsed_reads_are_admitted(ds_type: str, sql: str) -> None:
     [
         ("postgres", "TABLE t"), ("duckdb", "SUMMARIZE t"), ("postgres", "SELECT FROM WHERE"),
         ("mysql", "SHOW TABLES INTO OUTFILE '/tmp/x'"), ("clickhouse", "SHOW TABLES INTO OUTFILE 'x'"),
+        ("mysql", "EXPLAIN SELECT 1"), ("mysql", "DESCRIBE SELECT 1"),
+        ("mysql", "/*! SET SESSION TRANSACTION READ WRITE */"), ("mysql", "/*! DELETE FROM t */"),
+        ("mysql", "SELECT 1 /*!, (SELECT 2) */"), ("mysql", "/*M! DELETE FROM t */"),
+        ("postgres", "-- nothing"), ("postgres", ""),
     ],
 )
 def test_texts_not_parsed_as_reads_are_refused(ds_type: str, sql: str) -> None:

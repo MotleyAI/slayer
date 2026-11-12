@@ -2141,7 +2141,7 @@ class TestClickHouseReadOnly:
             f"WHERE type = 'QueryFinish' AND user = '{ds.username}'",
         )
         assert "t" in listing.tables
-        assert {readonly for probe, readonly in logged if probe} == {""}
+        assert {readonly for probe, readonly in logged if probe} == {"0"}  # the user's own level, not SLayer's 2
         assert {readonly for probe, readonly in logged if not probe} == {"2"}
 
     @pytest.mark.parametrize("level", [1, 2])

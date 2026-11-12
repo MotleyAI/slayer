@@ -24,7 +24,7 @@ from sqlglot.dialects.dialect import Dialect as SqlglotDialect
 from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expr
 from sqlglot.expressions.dml import DML
-from sqlglot.tokenizer_core import TokenType
+from sqlglot.tokenizer_core import Token, TokenType
 from sqlalchemy.engine.url import URL, make_url
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -84,6 +84,9 @@ _READ_ROOTS = (exp.Query, exp.Values, exp.Show, exp.Describe)
 # Nodes that change data or schema, or that sqlglot reads as nothing more than an unknown command.
 _WRITE_NODES = (DML, exp.DDL, exp.Into, exp.Command)
 
+# Comment openings MySQL and MariaDB run as SQL (``/*! … */``, ``/*M! … */``), as sqlglot keeps their text.
+_EXECUTABLE_COMMENTS = ("!", "M!")
+
 # Tokens that are never keywords: literals and quoted names.
 _LITERAL_TOKENS = frozenset({
     TokenType.STRING, TokenType.NATIONAL_STRING, TokenType.RAW_STRING, TokenType.BIT_STRING,
@@ -92,10 +95,10 @@ _LITERAL_TOKENS = frozenset({
 })
 
 
-def _statement_leads(sql: str, *, dialect: SqlDialect) -> list[tuple[str, ...]]:
+def _statement_leads(tokens: list[Token]) -> list[tuple[str, ...]]:
     """Each ``;``-separated statement's first two words, upper-cased (a literal or quoted name reads as ``""``)."""
     statements: list[list[str]] = [[]]
-    for token in SqlglotDialect.get_or_raise(dialect.sqlglot_name).tokenize(sql):
+    for token in tokens:
         if token.token_type is TokenType.SEMICOLON:
             statements.append([])
         elif len(statements[-1]) < 2:
@@ -104,23 +107,31 @@ def _statement_leads(sql: str, *, dialect: SqlDialect) -> list[tuple[str, ...]]:
 
 
 def _is_read(statement: Expr, *, glot: SqlglotDialect) -> bool:
-    """A ``SHOW`` reads unless it writes its output to a file (``INTO OUTFILE``)."""
+    """A ``SHOW`` reads unless it writes its output to a file (``INTO OUTFILE``); a ``DESCRIBE`` of a statement
+    is its plan."""
     if isinstance(statement, exp.Command):
         rest = glot.tokenize(statement.text("expression"))
         return statement.name.upper() == "SHOW" and all(token.token_type is not TokenType.INTO for token in rest)
     if isinstance(statement, exp.Show) and statement.args.get("into_outfile") is not None:
         return False
+    if isinstance(statement, exp.Describe) and not isinstance(statement.this, exp.Table):
+        return False
     return isinstance(statement, _READ_ROOTS) and statement.find(*_WRITE_NODES) is None
 
 
-def _non_read_refusal(sql: str, *, leads: list[tuple[str, ...]], dialect: SqlDialect) -> str | None:
+def _non_read_refusal(
+    sql: str, *, tokens: list[Token], leads: list[tuple[str, ...]], glot: SqlglotDialect,
+) -> str | None:
     """Why ``sql`` is not reads only, or ``None`` when every statement parses as a read."""
-    glot = SqlglotDialect.get_or_raise(dialect.sqlglot_name)
+    if any(comment.startswith(_EXECUTABLE_COMMENTS) for token in tokens for comment in token.comments):
+        return "it refuses executable comments (/*! … */), which MySQL runs"
     try:
         statements = [statement for statement in glot.parse(sql) if statement is not None]
         refused = next((i for i, statement in enumerate(statements) if not _is_read(statement, glot=glot)), None)
     except SqlglotError as exc:
-        return f"it cannot classify this text as reads: {str(exc).splitlines()[0]}"
+        return f"it cannot classify this text as reads: {str(exc).splitlines()[0].rstrip('.')}"
+    if not statements:
+        return "it holds no statement to classify as a read"
     if refused is None:
         return None
     if len(statements) != len(leads):
@@ -131,10 +142,12 @@ def _non_read_refusal(sql: str, *, leads: list[tuple[str, ...]], dialect: SqlDia
 def admit_statement(sql: str, *, dialect: SqlDialect, writes_allowed: bool = False) -> bool:
     """Refuse session and transaction statements in ``sql``, and, unless ``writes_allowed``, any text that does
     not parse as reads; return whether it does anything but read."""
+    glot = SqlglotDialect.get_or_raise(dialect.sqlglot_name)
     try:
-        leads = _statement_leads(sql, dialect=dialect)
+        tokens = glot.tokenize(sql)
     except SqlglotError as exc:
         raise SessionStatementRefused(f"The SQL client cannot split this text into statements: {exc}") from exc
+    leads = _statement_leads(tokens)
     for lead in leads:
         refused = next((words for words in _SESSION_LEADS if lead[:len(words)] == words), None)
         if refused is not None:
@@ -142,7 +155,7 @@ def admit_statement(sql: str, *, dialect: SqlDialect, writes_allowed: bool = Fal
                 f"The SQL client refuses {' '.join(refused)} statements: session state and transactions "
                 "are managed by SLayer.",
             )
-    refusal = _non_read_refusal(sql, leads=leads, dialect=dialect)
+    refusal = _non_read_refusal(sql, tokens=tokens, leads=leads, glot=glot)
     if refusal is not None and not writes_allowed:
         raise WriteStatementRefused(f"The SQL client refuses this text: {refusal}.")
     return refusal is not None

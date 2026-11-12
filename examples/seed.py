@@ -328,11 +328,14 @@ def _writable_engine(connection_string: str) -> sa.Engine:
     url = sa.engine.make_url(connection_string)
     connection_name = url.query.get("connection_name")
     if url.get_backend_name() == "snowflake" and connection_name:
+        extra = sorted(key for key, value in url.query.items() if key != "connection_name" and value)
+        if extra:
+            raise SystemExit(f"a connection_name URL cannot carry {extra}: the connector would ignore them")
         connector = snowflake_connector
         if connector is None:
             raise SystemExit("snowflake-connector-python is required for a connection_name URL")
         return sa.create_engine("snowflake://", creator=lambda: connector.connect(connection_name=connection_name))
-    return sa.create_engine(connection_string)
+    return sa.create_engine(connection_string)  # NOSONAR(S8706) — an operator-run seeder: connecting to its argument is its job
 
 
 def seed(connection_string: str) -> None:
