@@ -76,7 +76,7 @@
   - examples 02, 06, 08, 13 and 14 (14 moves from an inline model to a stored model), re-executing every touched notebook with `jupyter nbconvert --to notebook --execute --inplace`.
 
   Verify with `grep -rnE 'inline model|"columns": \[|source_model": \{' docs slayer/memories`.
-- [ ] 5.3 Run `poetry run pytest -m "not integration"`, `poetry run ruff check slayer/ tests/` and `poetry run basedpyright` (no new errors against the baseline). All green.
+- [x] 5.3 Run `poetry run pytest -m "not integration"`, `poetry run ruff check slayer/ tests/` and `poetry run basedpyright` (no new errors against the baseline). All green.
 
 ## 6. After DEV-2102 archives and before this change archives
 

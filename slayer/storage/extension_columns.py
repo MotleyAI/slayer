@@ -174,12 +174,12 @@ class _Stage:
 
     def _check_join_keys(self, extension: dict) -> None:
         owner = self._owner(extension.get("source_name"))
-        for join in extension.get("joins") or []:
-            target = join.get("target_model") if isinstance(join, dict) else None
+        for join in (j for j in extension.get("joins") or [] if isinstance(j, dict)):
+            target = join.get("target_model")
             target_owner = (self._model_named(target, quoted=False) or target) if isinstance(target, str) else target
-            for pair in (join.get("join_pairs") or []) if isinstance(join, dict) else []:
-                if (owner, pair[0]) in self.columns or (target_owner, pair[1]) in self.columns:
-                    raise UnconvertibleStoredQueryError(f"an extension join of {owner!r} keyed on an extension column")
+            if any((owner, pair[0]) in self.columns or (target_owner, pair[1]) in self.columns
+                   for pair in join.get("join_pairs") or []):
+                raise UnconvertibleStoredQueryError(f"an extension join of {owner!r} keyed on an extension column")
 
     # -- resolution ----------------------------------------------------------
     def _hit(self, ref: Any, *, root: Optional[SlayerModel]) -> Optional[Tuple[Tuple[str, ...], Key]]:
