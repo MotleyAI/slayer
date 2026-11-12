@@ -96,6 +96,13 @@ async def test_legacy_key_read_at_every_level(env, level: str) -> None:
     assert len(_legacy_notes(result)) == 1
 
 
+@pytest.mark.parametrize("level", LEVELS)
+async def test_empty_legacy_key_still_reports(env, level: str) -> None:
+    doc = _shop()
+    _entity(doc, level)["custom_extensions"] = []
+    assert len(_legacy_notes(convert_document(env, doc))) == 1
+
+
 async def test_legacy_key_on_every_level_reports_once(env) -> None:
     doc = _shop()
     for level in LEVELS:

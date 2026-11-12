@@ -6,9 +6,17 @@ semantic model; ``legacy`` marks a model split out of a ``semantic_model``
 wrapper by the parser.
 """
 
-from typing import Any, Optional, Union
+from typing import Any, Optional, Self, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ModelWrapValidatorHandler,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 
 from slayer.core.enums import DataType
 
@@ -49,12 +57,18 @@ class _Extensible(BaseModel):
     """An entity carrying ``nonportable_extensions``; legacy ``custom_extensions`` entries are appended, marked."""
 
     nonportable_extensions: Optional[list[OSINonportableExtension]] = None
+    _legacy_key: bool = PrivateAttr(default=False)
 
-    @model_validator(mode="before")
+    @property
+    def legacy_key(self) -> bool:
+        """Whether the input carried ``custom_extensions``, even an empty one."""
+        return self._legacy_key
+
+    @model_validator(mode="wrap")
     @classmethod
-    def _read_legacy_key(cls, data: Any) -> Any:
+    def _read_legacy_key(cls, data: Any, handler: ModelWrapValidatorHandler[Self]) -> Self:
         if not isinstance(data, dict) or "custom_extensions" not in data:
-            return data
+            return handler(data)
         data = dict(data)
         legacy = data.pop("custom_extensions")
         current = data.get("nonportable_extensions") or []
@@ -62,7 +76,9 @@ class _Extensible(BaseModel):
             raise ValueError("custom_extensions and nonportable_extensions must be lists")
         marked = [{**e, "legacy": True} if isinstance(e, dict) else e for e in legacy]
         data["nonportable_extensions"] = [*current, *marked]
-        return data
+        entity = handler(data)
+        entity._legacy_key = True
+        return entity
 
 
 class OSIDialectExpression(BaseModel):

@@ -261,9 +261,9 @@ class _ExtensionCheck:
     def _entity(
             self, entity: _E, *, label: str, model_name: str | None = None, metric_name: str | None = None,
             update: Optional[dict[str, Any]] = None) -> _E:
+        self._legacy = self._legacy or entity.legacy_key
         kept: list[OSINonportableExtension] = []
         for entry in entity.nonportable_extensions or []:
-            self._legacy = self._legacy or entry.legacy
             data = ext.decoded_legacy(entry.data) if entry.legacy else entry.data
             if ext.checked(vendor_name=entry.vendor_name, data=data) is None:
                 self.notes.append(ConversionWarning(

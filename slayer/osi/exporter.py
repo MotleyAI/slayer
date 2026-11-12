@@ -457,7 +457,9 @@ class _Exporter:
     def _foreign(self, entries: Any, *, owner: str, model: str | None) -> list[dict[str, Any]]:
         """The valid foreign entries of a recorded list; the malformed ones are reported."""
         out: list[dict[str, Any]] = []
-        for raw in entries if isinstance(entries, list) else [] if entries is None else [entries]:
+        if entries is None:
+            entries = []
+        for raw in entries if isinstance(entries, list) else [entries]:
             if isinstance(raw, dict) and ext.is_slayer(raw):
                 continue
             entry = (ext.checked(vendor_name=raw["vendor_name"], data=raw["data"])
