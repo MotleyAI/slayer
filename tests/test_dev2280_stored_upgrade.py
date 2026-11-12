@@ -237,6 +237,50 @@ class TestRewrites:
         assert mem.query.filters == ["created_at < '2025-01-01'", "created_at < '2024-04-11'"]
         assert ids(await run(storage, mem.query)) == {1, 2, 3}
 
+    async def test_last_representable_day(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str) -> None:
+        eod = "'9999-12-31 23:59:59.999999'"
+        stored = {
+            "created_at <= '9999-12-31'": f"created_at <= {eod}",
+            "'9999-12-31' < created_at": f"{eod} < created_at",
+            "created_at BETWEEN '2024-01-01' AND '9999-12-31'": f"(created_at >= '2024-01-01' and created_at <= {eod})",
+            "created_at NOT BETWEEN '2024-01-01' AND '9999-12-31'": f"(created_at < '2024-01-01' or created_at > {eod})",
+            "code <= '9999-12-31'": "code <= '9999-12-31'",
+        }
+        doc = orders_doc(name="orders_last", columns=[*COLUMNS, {**LATE_AMOUNT, "filter": "code > '9999-12-31'"}])
+        storage = await store(tmp_path, shop_ds, backend=backend, models=(doc,),
+                              memories=(memory("m_last", query(*stored)),))
+        mem = await storage.get_memory("m_last")
+        assert mem.query is not None
+        assert mem.query.filters == list(stored.values())
+        model = await storage.get_model("orders_last", data_source=DS)
+        assert model is not None
+        assert next(c for c in model.columns if c.name == "late_amount").filter == "code > '9999-12-31'"
+        resp = await run(storage, query("created_at <= '9999-12-31'", version=CURRENT_VERSIONS["SlayerQuery"]))
+        assert ids(resp) == {i for i, _ in ROWS}
+        assert len(notices(resp)) == 1
+        assert f"created_at <= {eod}" in notices(resp)[0]
+
+    async def test_names_match_case_insensitively(self, tmp_path: Path, shop_ds: DatasourceConfig,
+                                                  backend: str) -> None:
+        body = {**query("Created_At <= '2024-04-10'", "ORDERS.created_at > '2024-04-10'"), "source_model": "ORDERS"}
+        storage = await store(tmp_path, shop_ds, backend=backend, memories=(memory("m_case", body),))
+        mem = await storage.get_memory("m_case")
+        assert mem.query is not None
+        assert mem.query.filters == ["Created_At < '2024-04-11'", "ORDERS.created_at >= '2024-04-11'"]
+
+    async def test_join_walked_backwards(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str) -> None:
+        customers = orders_doc(name="customers", joins=[])
+        orders = orders_doc(name="purchases", joins=[{"target_model": "customers", "join_pairs": [["code", "code"]]}])
+        named = orders_doc(name="refunds", joins=[
+            {"name": "refunded", "target_model": "customers", "join_pairs": [["code", "code"]]}])
+        body = {**query("purchases.created_at <= '2024-04-10'", "refunded.created_at > '2024-04-10'"),
+                "source_model": "customers"}
+        storage = await store(tmp_path, shop_ds, backend=backend, models=(customers, orders, named),
+                              memories=(memory("m_back", body),))
+        mem = await storage.get_memory("m_back")
+        assert mem.query is not None
+        assert mem.query.filters == ["purchases.created_at < '2024-04-11'", "refunded.created_at >= '2024-04-11'"]
+
     async def test_date_column_keeps_its_rows(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str) -> None:
         storage = await store(tmp_path, shop_ds, backend=backend,
                               memories=(memory("m_date", query("order_date <= '2024-04-10'")),))
@@ -328,6 +372,24 @@ class TestVersionGating:
         mem = await storage.get_memory("m_ext_old")
         assert mem.query is not None
         assert [m.formula for e in mem.query.extensions or [] for m in e.measures or []] == [EARLY_COUNT_UPGRADED]
+
+    async def test_datasource_models_read_only_for_a_date_literal(
+        self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        storage = await store(tmp_path, shop_ds, backend=backend, memories=(
+            memory("m_plain", query("code = 'zz'")), memory("m_dated", query("created_at <= '2024-12-31'"))))
+        reads: list[str | None] = []
+        stored_models = storage._stored_models
+
+        async def counted(data_source: str | None) -> Any:
+            reads.append(data_source)
+            return await stored_models(data_source)
+
+        monkeypatch.setattr(storage, "_stored_models", counted)
+        await storage.get_memory("m_plain")
+        assert reads == []
+        await storage.get_memory("m_dated")
+        assert reads == [DS]
 
     async def test_upgrade_is_idempotent(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str) -> None:
         storage = await store(tmp_path, shop_ds, backend=backend, memories=(

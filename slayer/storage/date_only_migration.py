@@ -9,12 +9,16 @@ import logging
 from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any
+from typing import Any, Iterable
 
 from pydantic import BaseModel, Field
 
 from slayer.core.date_only import scan_date_only
 from slayer.core.enums import DataType
+from slayer.core.errors import AmbiguousReferenceError
+from slayer.core.names import match_name
+from slayer.core.syntax import string_literal_spans
+from slayer.core.time_points import is_date_only
 from slayer.core.legacy_spellings import rewrite_spans
 from slayer.storage.migrations import document_label, register_migration, stamp_stored
 from slayer.storage.rank_direction_migration import rewrite_query_fields, stamp_memory_query
@@ -25,11 +29,27 @@ UPGRADED_AT = {"SlayerModel": 23, "SlayerQuery": 15, "Memory": 11}
 _logger = logging.getLogger(__name__)
 
 
+def _named(name: Any, declared: Iterable[Any]) -> str | None:
+    """The declared name an unquoted ``name`` reaches; ``None`` when none or several do."""
+    if not isinstance(name, str):
+        return None
+    try:
+        return match_name(name=name, declared=[d for d in declared if isinstance(d, str)], quoted=False)
+    except AmbiguousReferenceError:
+        return None
+
+
+def _same(a: Any, b: Any) -> bool:
+    return isinstance(a, str) and isinstance(b, str) and a.casefold() == b.casefold()
+
+
 def stored_type(*, key: Any, columns: Any) -> str | None:
     """The stored ``type`` of the column named ``key`` when it is a valid ``DataType``."""
     if not isinstance(columns, list):
         return None
-    col = next((c for c in columns if isinstance(c, dict) and c.get("name") == key), None)
+    named = [c for c in columns if isinstance(c, dict)]
+    found = _named(key, (c.get("name") for c in named))
+    col = next((c for c in named if found is not None and c.get("name") == found), None)
     try:
         return DataType(col["type"]).value if col is not None and "type" in col else None
     except ValueError:
@@ -39,7 +59,7 @@ def stored_type(*, key: Any, columns: Any) -> str | None:
 def extended(*, key: str, model: dict, extensions: list[dict]) -> list:
     """``model[key]`` plus the ``key`` entries of each of ``extensions`` that extends ``model``."""
     own = model.get(key)
-    added = [x for e in extensions if e.get("source_name") == model.get("name") and isinstance(e.get(key), list)
+    added = [x for e in extensions if _same(e.get("source_name"), model.get("name")) and isinstance(e.get(key), list)
              for x in e[key]]
     return [*(own if isinstance(own, list) else []), *added]
 
@@ -52,23 +72,47 @@ class StoredModels(BaseModel):
 
     def host(self, source: Any) -> dict | None:
         """The raw stored model named ``source``."""
-        return self.models.get(source) if isinstance(source, str) else None
+        found = _named(source, self.models)
+        return self.models[found] if found is not None else None
 
     def column_type(self, *, host: dict, parts: list[str] | tuple[str, ...], extensions: list[dict]) -> str | None:
         """The stored type of the column ``parts`` names from ``host``, walking stored joins plus ``extensions``."""
         current = host
         quals, leaf = list(parts[:-1]), parts[-1]
-        if quals and quals[0] == current.get("name"):
+        if quals and _same(quals[0], current.get("name")):
             quals = quals[1:]
         for hop in quals:
-            joins = [j for j in extended(key="joins", model=current, extensions=extensions) if isinstance(j, dict)]
-            target = next((j.get("target_model") for j in joins if j.get("name") == hop), None) or next(
-                (hop for j in joins if not j.get("name") and j.get("target_model") == hop), None)
-            peer = self.models.get(target) if isinstance(target, str) else None
+            peer = self._hop(current=current, token=hop, extensions=extensions)
             if peer is None:
                 return None
             current = peer
         return stored_type(key=leaf, columns=extended(key="columns", model=current, extensions=extensions))
+
+    def _hop(self, *, current: dict, token: str, extensions: list[dict]) -> dict | None:
+        """The model ``token`` reaches from ``current`` by the join walker's precedence: an incident edge's name, else the
+        model at its other end; ``None`` when nothing or several edges match."""
+        edges = self._incident(current=current, extensions=extensions)
+        for tier in (0, 1):
+            try:
+                found = match_name(name=token, declared=[n for e in edges for n in (e[tier],) if n], quoted=False)
+            except AmbiguousReferenceError:
+                return None
+            if found is not None:
+                hits = [e for e in edges if e[tier] == found]
+                return self.host(hits[0][1]) if len(hits) == 1 else None
+        return None
+
+    def _incident(self, *, current: dict, extensions: list[dict]) -> list[tuple[str | None, str]]:
+        """``(edge name, model at the other end)`` per stored join incident to ``current``, declared on either side."""
+        name = current.get("name")
+        out = [(j.get("name"), j.get("target_model")) for j in extended(key="joins", model=current, extensions=extensions)
+               if isinstance(j, dict)]
+        for other in self.models.values():
+            if not _same(other.get("name"), name):
+                out.extend((j.get("name"), other.get("name"))
+                           for j in extended(key="joins", model=other, extensions=extensions)
+                           if isinstance(j, dict) and _same(j.get("target_model"), name))
+        return [(n if isinstance(n, str) else None, t) for n, t in out if isinstance(t, str)]
 
 
 _typing: ContextVar[StoredModels | None] = ContextVar("slayer_date_only_typing", default=None)
@@ -84,17 +128,46 @@ def typing_with(models: StoredModels) -> Generator[None]:
         _typing.reset(token)
 
 
-def below_upgrade(entity: str, data: Any) -> bool:
-    """Whether stored ``data`` or a document nested in it predates the upgrade."""
+def needs_typing(entity: str, data: Any) -> bool:
+    """Whether stored ``data``, or a document nested in it, predates the upgrade and holds a date-only literal."""
     if not isinstance(data, dict):
         return False
-    if int(data.get("version", 1)) < UPGRADED_AT[entity]:
-        return True
     if entity == "Memory":
-        return below_upgrade("SlayerQuery", data.get("query"))
-    if entity == "SlayerQuery":
-        return False
-    return any(below_upgrade("SlayerQuery", q) for q in data.get("source_queries") or [])
+        return needs_typing("SlayerQuery", data.get("query"))
+    texts = _query_texts(data) if entity == "SlayerQuery" else _model_texts(data)
+    if int(data.get("version", 1)) < UPGRADED_AT[entity] and any(map(_holds_date_literal, texts)):
+        return True
+    return entity == "SlayerModel" and any(needs_typing("SlayerQuery", q) for q in data.get("source_queries") or [])
+
+
+def _holds_date_literal(text: str) -> bool:
+    return any(is_date_only(s.value) for s in string_literal_spans(text))
+
+
+def _model_texts(data: dict) -> list[str]:
+    """``data``'s measure formulas and column filters."""
+    out: list[str] = []
+    for key, field in (("measures", "formula"), ("columns", "filter")):
+        items = data.get(key)
+        if isinstance(items, list):
+            out.extend(i[field] for i in items if isinstance(i, dict) and isinstance(i.get(field), str))
+    return out
+
+
+def _query_texts(data: dict) -> list[str]:
+    """Every Mode-B text of ``data`` the upgrade reads: its own fields and its extensions' texts."""
+    out: list[str] = []
+
+    def collect(text: str) -> str:
+        out.append(text)
+        return text
+
+    rewrite_query_fields(dict(data), collect)
+    raw = data.get("extensions")
+    for e in raw if isinstance(raw, list) else []:
+        if isinstance(e, dict):
+            out.extend(_model_texts(e))
+    return out
 
 
 def _upgraded(text: str, *, label: str | None, host: dict | None, extensions: list[dict]) -> str:

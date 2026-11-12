@@ -19,6 +19,7 @@ from slayer.core.granularity import resolve_granularity, unknown_granularity_mes
 from slayer.core.time_spine import TIME_SPINE_MODEL, spine_model
 from slayer.core.errors import (
     AmbiguousModelError,
+    AmbiguousReferenceError,
     CaseCollisionError,
     ColonSpellingError,
     IdCollisionError,
@@ -31,7 +32,7 @@ from slayer.core.errors import (
 )
 from slayer.engine.column_dependency import check_model_filters, validate_derived_columns, warn_broken_dependents
 from slayer.core.join_walker import edges_between
-from slayer.core.names import folded_collisions
+from slayer.core.names import folded_collisions, match_name
 from slayer.core.legacy_spellings import LegacySpan, emit_deprecations
 from slayer.core.models import (
     DatasourceConfig,
@@ -60,7 +61,7 @@ from slayer.memories.models import (
     _validate_memory_id_charset,
 )
 from slayer.storage import migrations as _mig
-from slayer.storage.date_only_migration import StoredModels, below_upgrade, stored_type, typing_with
+from slayer.storage.date_only_migration import StoredModels, needs_typing, stored_type, typing_with
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded, stored_document_boundary
 from slayer.storage.granularity_rename import (
     Renames,
@@ -978,7 +979,7 @@ class StorageBackend(ABC):
         pre_version = int(data["version"])
         if pre_version < _CUSTOM_BUCKET_CALLS_BELOW["SlayerModel"]:
             data = rewrite_model_doc(data, await self._custom_bucket_calls(data_sources=[data_source]))
-        typing = await self._stored_models(data_source) if below_upgrade("SlayerModel", data) else StoredModels()
+        typing = await self._stored_models(data_source) if needs_typing("SlayerModel", data) else StoredModels()
         with typing_with(typing):
             model, write_back = await self._migrated_model(name=name, data=data, data_source=data_source)
         if not caller_announces():
@@ -1182,8 +1183,10 @@ class StorageBackend(ABC):
         inline_data_source, source = memory_source_model(data)
         data_source = inline_data_source
         if data_source is None and source is not None:
-            with contextlib.suppress(AmbiguousModelError):
-                identity = await self.resolve_model_identity(source)
+            names = {n for _, n in await self._list_all_model_identities()}
+            with contextlib.suppress(AmbiguousModelError, AmbiguousReferenceError):
+                name = match_name(name=source, declared=sorted(names), quoted=False)
+                identity = await self.resolve_model_identity(name) if name is not None else None
                 data_source = identity[0] if identity is not None else None
         return await self._stored_models(data_source)
 
@@ -1436,7 +1439,7 @@ class StorageBackend(ABC):
             if isinstance(data, dict) and int(data["version"]) < _CUSTOM_BUCKET_CALLS_BELOW["Memory"]:
                 data = rewrite_memory_doc(data, await self._custom_bucket_calls(
                     data_sources=await self._memory_data_sources(data)))
-            typing = await self._memory_typing(data) if below_upgrade("Memory", data) else StoredModels()
+            typing = await self._memory_typing(data) if needs_typing("Memory", data) else StoredModels()
             with typing_with(typing):
                 # Memories are never written back, so the repair repeats on every load of a pre-v4 document.
                 if isinstance(data, dict) and int(data["version"]) < _MEMORY_FILTER_REPAIR_BELOW_VERSION:

@@ -379,12 +379,12 @@ class DeprecatedSpellingWarning(SlayerWarning):
 
 class DateOnlyMidnightWarning(SlayerWarning):
     """``comparison`` reads its date-only literal as midnight, where it once read the whole day; ``whole_day`` keeps the
-    day, ``variable`` names the variable that bound the date, if any."""
+    day, ``variables`` names the variables that bound the date there, if any."""
 
     kind: Literal["date_only_midnight"] = "date_only_midnight"
     comparison: str
     whole_day: str
-    variable: Optional[str] = None
+    variables: List[str] = Field(default_factory=list)
     message: str
     removal: str = "3.0"
 

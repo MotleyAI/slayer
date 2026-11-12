@@ -101,7 +101,7 @@ from slayer.core.keys import (
     walk_value_keys,
     list_set_key,
 )
-from slayer.core.date_only import scan_date_only, whole_day_spelling
+from slayer.core.date_only import normal_op, scan_date_only, whole_day_spelling
 from slayer.core.deprecation import scheduled_notice
 from slayer.core.models import SlayerModel
 from slayer.core.names import folded_collisions
@@ -1254,11 +1254,21 @@ def resolve_time_points(
 _ANNOUNCED_OPS = frozenset({"<=", ">", "=", "!="})
 
 
+def _column_parts(key: object) -> Optional[Tuple[str, ...]]:
+    """A column operand's join path plus its leaf, casefolded; ``None`` for anything else."""
+    if isinstance(key, ColumnKey):
+        return tuple(p.casefold() for p in (*key.path, key.leaf))
+    if isinstance(key, ColumnSqlKey):
+        return tuple(p.casefold() for p in (*key.path, key.column_name))
+    return None
+
+
 def date_only_notices(
-    roots: Sequence[ValueKey], *, column_type: ColumnTypeFn, variables: Mapping[str, str],
+    roots: Sequence[ValueKey], *, column_type: ColumnTypeFn,
+    variables: Mapping[Tuple[Tuple[str, ...], str, str], Tuple[str, ...]],
 ) -> List[DateOnlyMidnightWarning]:
     """One notice per spelling of a date-only literal compared with a TIMESTAMP operand where its midnight reading
-    changed the rows; ``variables`` maps a date-only value to the variable that bound it."""
+    changed the rows; ``variables`` maps ``(column path, op, date)`` to the variables that bound it there."""
     out: Dict[str, DateOnlyMidnightWarning] = {}
     for key in (k for root in roots for k in walk_value_keys(root)):
         if not isinstance(key, TimePointCmpKey) or key.reads_whole_day or key.op not in _ANNOUNCED_OPS:
@@ -1268,9 +1278,11 @@ def date_only_notices(
         if t is not DataType.TIMESTAMP or gran is not None or not is_date_only(date_text):
             continue
         operand = _operand_display(key.operand)
+        column = _column_parts(key.operand)
         notice = date_only_notice(
-            comparison=key_display(key), operand=operand, date=date_text, variable=variables.get(date_text),
+            comparison=key_display(key), operand=operand, date=date_text,
             whole_day=whole_day_spelling(operand=operand, op=key.op, date=date_text),
+            variables=variables.get((column, normal_op(key.op), date_text), ()) if column else (),
         )
         out.setdefault(notice.message, notice)
     return list(out.values())
@@ -1294,9 +1306,10 @@ def saved_date_only_notices(model: SlayerModel) -> List[DateOnlyMidnightWarning]
 
 
 def date_only_notice(
-    *, comparison: str, whole_day: str, operand: str, date: str, variable: Optional[str] = None,
+    *, comparison: str, whole_day: str, operand: str, date: str, variables: Sequence[str] = (),
 ) -> DateOnlyMidnightWarning:
-    via = f", bound through the variable {variable!r}," if variable else ""
+    noun = "variable" if len(variables) == 1 else "variables"
+    via = f", bound through the {noun} {' or '.join(repr(v) for v in variables)}," if variables else ""
     day_form = f"{operand} in '{date}'"
     day = "" if whole_day == day_form else f"; the day itself is `{day_form}`"
     message = scheduled_notice(
@@ -1304,7 +1317,8 @@ def date_only_notice(
         f"write `{whole_day}` for the whole day{day}.",
         removal="3.0",
     )
-    return DateOnlyMidnightWarning(comparison=comparison, whole_day=whole_day, variable=variable, message=message)
+    return DateOnlyMidnightWarning(comparison=comparison, whole_day=whole_day, variables=list(variables),
+                                   message=message)
 
 
 def _time_operand(

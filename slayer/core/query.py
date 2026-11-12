@@ -1397,11 +1397,11 @@ class SlayerQuery(BaseModel):
     def bound_variables(self) -> dict[str, Any]:
         return self._bound_variables
 
-    # Each date-only variable value its comparisons read, mapped to the variable's name (``apply_variables_to_query``).
-    _date_variables: dict[str, str] = PrivateAttr(default_factory=dict)
+    # (column path, op, date) per comparison a date-only variable binds → the variables binding it (``apply_variables_to_query``).
+    _date_variables: dict[tuple[tuple[str, ...], str, str], tuple[str, ...]] = PrivateAttr(default_factory=dict)
 
     @property
-    def date_variables(self) -> dict[str, str]:
+    def date_variables(self) -> dict[tuple[tuple[str, ...], str, str], tuple[str, ...]]:
         return self._date_variables
 
     variables: dict[str, Any] | None = Field(

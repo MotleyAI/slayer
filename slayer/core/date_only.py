@@ -51,10 +51,22 @@ class DateOnlyScan(BaseModel):
     unlocated: int = 0
 
 
+def _whole_day(op: str, date: str) -> Tuple[str, str]:
+    """The operand-left ``(op, literal)`` ``op 'date'`` meant as a whole day; past the last representable day, the
+    day's last microsecond bounds it."""
+    new_op, shifted = _WHOLE_DAY[op]
+    if not shifted:
+        return new_op, date
+    try:
+        return new_op, next_day(date)
+    except OverflowError:
+        return op, f"{date.strip()} 23:59:59.999999"
+
+
 def whole_day_spelling(*, operand: str, op: str, date: str) -> str:
     """The comparison ``operand <op> 'date'`` meant when a bare date was its whole day."""
-    new_op, shifted = _WHOLE_DAY[op]
-    return f"{operand} {new_op} '{next_day(date) if shifted else date}'"
+    new_op, literal = _whole_day(op, date)
+    return f"{operand} {new_op} '{literal}'"
 
 
 def scan_date_only(text: str) -> DateOnlyScan:
@@ -73,6 +85,20 @@ def scan_date_only(text: str) -> DateOnlyScan:
             pending[key] -= 1
             sites.append(site)
     return DateOnlyScan(sites=tuple(sites), unlocated=sum(pending.values()))
+
+
+def normal_op(op: str) -> str:
+    """``op`` in the scanner's spelling (``=`` is ``==``, ``<>`` is ``!=``)."""
+    return _NORMAL.get(op, op)
+
+
+def date_comparisons(text: str) -> List[Tuple[Optional[Tuple[str, ...]], str, str]]:
+    """``(operand column parts or None, operand-left op, date)`` per changed comparison in ``text``; none when it does
+    not parse."""
+    try:
+        return _candidates(parse_template(text))
+    except Exception:  # noqa: BLE001 — unparseable text has no comparisons to report
+        return []
 
 
 def _candidates(parsed: object) -> List[Tuple[Optional[Tuple[str, ...]], str, str]]:
@@ -133,9 +159,13 @@ def _between(text: str, *, low: StringLiteralSpan, high: StringLiteralSpan):
         return None
     if not _bounded(text, start=m.start(), end=high.end):
         return None
-    operand, low_text, upper = m.group(1), text[low.start:low.end], f"'{next_day(high.value)}'"
-    twin = (f"({operand} < {low_text} or {operand} >= {upper})" if m.group(2)
-            else f"({operand} >= {low_text} and {operand} < {upper})")
+    operand, low_text = m.group(1), text[low.start:low.end]
+    if m.group(2):
+        above, upper = _whole_day(">", high.value)
+        twin = f"({operand} < {low_text} or {operand} {above} '{upper}')"
+    else:
+        below, upper = _whole_day("<=", high.value)
+        twin = f"({operand} >= {low_text} and {operand} {below} '{upper}')"
     parts = _path_parts(operand)
     site = DateOnlySite(start=m.start(), end=high.end, parts=parts, operand=operand, date=high.value, twin=twin)
     return (parts, "<=", high.value), site
@@ -146,8 +176,7 @@ def _operand_left(text: str, lit: StringLiteralSpan):
     if m is None or _NORMAL[m.group(3)] not in _WHOLE_DAY or not _bounded(text, start=m.start(), end=lit.end):
         return None
     operand, op = m.group(1), _NORMAL[m.group(3)]
-    new_op, shifted = _WHOLE_DAY[op]
-    value = next_day(lit.value) if shifted else lit.value
+    new_op, value = _whole_day(op, lit.value)
     pad = " " if new_op[0].isalpha() else ""
     twin = f"{operand}{m.group(2) or pad}{new_op}{m.group(4) or pad}'{value}'"
     parts = _path_parts(operand)
@@ -163,11 +192,11 @@ def _literal_left(text: str, lit: StringLiteralSpan):
     if op not in _WHOLE_DAY or not _bounded(text, start=lit.start, end=m.end()):
         return None
     operand = m.group(4)
-    new_op, shifted = _WHOLE_DAY[op]
-    if shifted:
-        twin = f"'{next_day(lit.value)}'{m.group(1)}{_MIRROR[new_op]}{m.group(3)}{operand}"
+    new_op, value = _whole_day(op, lit.value)
+    if _WHOLE_DAY[op][1]:
+        twin = f"'{value}'{m.group(1)}{_MIRROR[new_op]}{m.group(3)}{operand}"
     else:
-        twin = whole_day_spelling(operand=operand, op=op, date=lit.value)
+        twin = f"{operand} {new_op} '{value}'"
     parts = _path_parts(operand)
     site = DateOnlySite(start=lit.start, end=m.end(), parts=parts, operand=operand, date=lit.value, twin=twin)
     return (parts, op, lit.value), site

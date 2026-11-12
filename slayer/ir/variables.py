@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+from slayer.core.date_only import date_comparisons
 from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.core.syntax import bind_variables, has_bindings, variable_names
 from slayer.core.time_points import is_date_only
@@ -147,7 +148,7 @@ def apply_variables_to_query(
     return _with_date_variables(_carrying(rebuilt, effective), date_variables)
 
 
-def _with_date_variables(query: SlayerQuery, date_variables: Dict[str, str]) -> SlayerQuery:
+def _with_date_variables(query: SlayerQuery, date_variables: DateVariables) -> SlayerQuery:
     query._date_variables = date_variables
     return query
 
@@ -167,10 +168,39 @@ def _carrying(query: SlayerQuery, variables: Dict[str, Any]) -> SlayerQuery:
     return query
 
 
-def _date_variables(query: SlayerQuery, variables: Dict[str, Any]) -> Dict[str, str]:
-    """Each date-only value a variable ``query`` reads binds, mapped to that variable's name."""
-    read = {n for t in _texts(query) for n in variable_names(t)}
-    return {v.strip(): n for n, v in variables.items() if n in read and isinstance(v, str) and is_date_only(v)}
+#: Stand-in dates, one of which marks a variable's comparisons (the first the text and the values do not hold).
+_SENTINELS = ("0001-01-01", "0001-01-02", "0001-01-03")
+
+
+DateVariables = Dict[Tuple[Tuple[str, ...], str, str], Tuple[str, ...]]
+
+
+def _date_variables(query: SlayerQuery, variables: Dict[str, Any]) -> DateVariables:
+    """``(casefolded operand column path, operand-left op, date)`` per changed comparison a date-only variable binds,
+    mapped to every variable binding it; a qualifier naming the query's source model is dropped."""
+    dated = {n: v.strip() for n, v in variables.items() if isinstance(v, str) and is_date_only(v)}
+    root = query.source_model.casefold() if isinstance(query.source_model, str) else None
+    out: DateVariables = {}
+    for text in _texts(query):
+        for name in (n for n in variable_names(text) if n in dated):
+            for parts, op in _variable_slots(text, name=name, variables=variables):
+                folded = tuple(p.casefold() for p in parts)
+                key = (folded[1:] if len(folded) > 1 and folded[0] == root else folded, op, dated[name])
+                out[key] = tuple(sorted({*out.get(key, ()), name}))
+    return out
+
+
+def _variable_slots(text: str, *, name: str, variables: Dict[str, Any]) -> List[Tuple[Tuple[str, ...], str]]:
+    """``(operand column parts, operand-left op)`` per changed comparison of ``text`` with ``'{name}'``."""
+    taken = {*(str(v).strip() for v in variables.values())}
+    sentinel = next((s for s in _SENTINELS if s not in text and s not in taken), None)
+    if sentinel is None:
+        return []
+    try:
+        bound = bind_variables(text, {**variables, name: sentinel})
+    except ValueError:
+        return []
+    return [(parts, op) for parts, op, date in date_comparisons(bound) if date == sentinel and parts]
 
 
 def _mode_a_surfaces(model: SlayerModel) -> list:

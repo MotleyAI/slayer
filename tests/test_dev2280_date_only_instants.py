@@ -9,11 +9,11 @@ from typing import Any
 import pytest
 
 from slayer.core import deprecation
-from slayer.core.models import ModelMeasure, SlayerModel
+from slayer.core.models import ModelJoin, ModelMeasure, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from tests._dev2215_fixtures import (
-    BACKENDS, dev2215_engine, dev2215_models, future_warnings, ids, m, orders_model, payload_text, q,
-    recorded_warnings, single, warnings_mentioning,
+    BACKENDS, customers_model, dev2215_engine, dev2215_models, events_model, future_warnings, ids, m, orders_model,
+    payload_text, q, recorded_warnings, single, warnings_mentioning,
 )
 from tests._time_points_fixtures import ids as tp_ids
 from tests._time_points_fixtures import ids_where, monthly, tp_engine
@@ -164,6 +164,39 @@ class TestNotice:
         resp = await engine.execute(q(dimensions=["id"], filters=["created_at <= '{cutoff}'"],
                                       variables={"cutoff": "2024-12-31"}))
         assert len(warnings_mentioning(resp, NOTICE, "cutoff")) == 1, resp.warnings
+
+    async def test_variables_sharing_a_value_each_name_their_comparison(self, engine: SlayerQueryEngine) -> None:
+        resp = await engine.execute(q(
+            dimensions=["id"], filters=["created_at <= '{cutoff}'", "shipped_at <= '{ship_cutoff}'"],
+            variables={"cutoff": "2024-12-31", "ship_cutoff": "2024-12-31"}))
+        assert sorted((w.comparison.split()[0], w.variables) for w in notices(resp)) == [
+            ("created_at", ["cutoff"]), ("shipped_at", ["ship_cutoff"])], resp.warnings
+
+    async def test_a_literal_equal_to_a_variable_names_no_variable(self, engine: SlayerQueryEngine) -> None:
+        resp = await engine.execute(q(
+            dimensions=["id"], filters=["created_at <= '{cutoff}'", "shipped_at <= '2024-12-31'"],
+            variables={"cutoff": "2024-12-31"}))
+        assert sorted((w.comparison.split()[0], w.variables) for w in notices(resp)) == [
+            ("created_at", ["cutoff"]), ("shipped_at", [])], resp.warnings
+
+    @pytest.mark.parametrize("bound", ["updated_at", "customers.updated_at", "CUSTOMERS.Updated_At"])
+    @pytest.mark.parametrize("backend", BACKENDS)
+    async def test_a_same_named_column_elsewhere_names_no_variable(self, backend: str, bound: str) -> None:
+        events = events_model().model_copy(update={"joins": [
+            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])]})
+        async with dev2215_engine(backend, models=[orders_model(), customers_model(), events]) as eng:
+            resp = await eng.execute(q(
+                source_model="customers", dimensions=["id"],
+                filters=[f"{bound} <= '{{cutoff}}'", "events.updated_at <= '2024-12-31'"],
+                variables={"cutoff": "2024-12-31"}))
+        assert sorted((w.comparison.split()[0], w.variables) for w in notices(resp)) == [
+            ("events.updated_at", []), ("updated_at", ["cutoff"])], resp.warnings
+
+    async def test_one_comparison_bound_by_two_variables_names_both(self, engine: SlayerQueryEngine) -> None:
+        resp = await engine.execute(q(
+            dimensions=["id"], filters=["created_at <= '{cutoff}' or created_at <= '{other}'"],
+            variables={"cutoff": "2024-12-31", "other": "2024-12-31"}))
+        assert [w.variables for w in notices(resp)] == [["cutoff", "other"]], resp.warnings
 
     async def test_a_saved_measure_is_announced_at_save(self, engine: SlayerQueryEngine) -> None:
         model = orders_model().model_copy(update={"measures": [
