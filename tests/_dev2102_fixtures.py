@@ -201,6 +201,14 @@ def with_models(*replacements: SlayerModel) -> list[SlayerModel]:
     return [by_name.pop(m.name, m) for m in base_models()] + list(by_name.values())
 
 
+def respelled_model(models: list[SlayerModel], *, name: str, spelling: str) -> list[SlayerModel]:
+    """``models`` with model ``name`` saved as ``spelling``, every stored join to it retargeted."""
+    def one(m: SlayerModel) -> SlayerModel:
+        joins = [j.model_copy(update={"target_model": spelling}) if j.target_model == name else j for j in m.joins]
+        return m.model_copy(update={"name": spelling if m.name == name else m.name, "joins": joins})
+    return [one(m) for m in models]
+
+
 @asynccontextmanager
 async def shop(dialect: str, models: list[SlayerModel] | None = None) -> AsyncGenerator[SlayerQueryEngine]:
     async with seeded_exec_engine(

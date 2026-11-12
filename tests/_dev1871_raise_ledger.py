@@ -462,7 +462,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          message='The filter condition … reads … together with another dataset, but no join path reaches … from the population …: each condition must read one side alone.\n  suggestion: Split it into AND-ed conditions that each read one dataset.',
          category="checker", family='unrelated-datasets', user=True, owner="checker"),
     _row(module=_EE, function='check_unrelated_row_read', exc='UnrelatedDatasetError',
-         message='… reads …, which no join path reaches from the population …: it meets … as a product, so it is read only through aggregates.\n  at …\n  suggestion: Aggregate it, e.g. max(…).',
+         message='… reads …, which no join path reaches from the population …: it meets … as a product, so it is read only through aggregates.\n  at …\n  suggestion: …',
          category="checker", family='unrelated-datasets', user=True, owner="checker"),
     _row(module=_PL, function="_iter_slot_deps", exc="TypeError",
          message="_iter_slot_deps has no case for …: classify the kind explicitly (slot-worthy, inlined composite, or never slottable).",

@@ -17,12 +17,14 @@ from tests._dev2102_fixtures import (
     DS,
     TOTAL_AMOUNT,
     TOTAL_CREDIT,
+    base_models,
     by_key,
     customers,
     ext,
     join,
     orders,
     q,
+    respelled_model,
     rows,
     shop,
     with_models,
@@ -160,6 +162,36 @@ class TestScope:
         async with shop(dialect) as engine:
             resp = await engine.execute(query)
         assert float(resp.data[0]["customers.t"]) == 10 * TOTAL_CREDIT
+
+
+class TestModelNameCase:
+    """An extension names a model as any unquoted reference does: the stored spelling in any case."""
+
+    @pytest.mark.parametrize("spelled", ["Customers", "customers", "CUSTOMERS"])
+    async def test_an_extension_reaches_a_model_saved_in_another_case(self, dialect, spelled: str) -> None:
+        query = q(source_model="orders", dimensions=["Customers.tier_label"], measures=[AMOUNT],
+                  extensions=[ext(spelled, columns=[TIER_LABEL])])
+        async with shop(dialect, respelled_model(base_models(), name="customers", spelling="Customers")) as engine:
+            resp = await engine.execute(query)
+        assert {r[resp.columns[0]] for r in resp.data} == {"GOLD", "SILVER", "BRONZE", None}
+
+    async def test_an_inline_source_joins_a_model_saved_in_another_case(self, dialect) -> None:
+        inline = {"name": "big_orders", "data_source": DS, "sql_table": "orders", "columns": [
+            {"name": "id", "type": "INT", "primary_key": True}, {"name": "customer_id", "type": "INT"}],
+            "joins": [{"target_model": "customers", "join_pairs": [["customer_id", "id"]]}]}
+        async with shop(dialect, respelled_model(base_models(), name="customers", spelling="Customers")) as engine:
+            resp = await engine.execute(q(source_model=inline, dimensions=["customers.name"]))
+        assert {r[resp.columns[0]] for r in resp.data} == {"Ann", "Bob", "Cid", "Dee", "Eve", None}
+
+    async def test_the_inline_source_shadows_a_stored_model_whatever_the_case(self, dialect) -> None:
+        inline = {"name": "customers", "data_source": DS, "sql_table": "addresses", "columns": [
+            {"name": "id", "type": "INT", "primary_key": True}, {"name": "city", "type": "TEXT"}]}
+        shout = {"name": "shout", "sql": "upper(city)", "type": "TEXT"}
+        query = q(source_model=inline, dimensions=["city", "shout"], extensions=[ext("CUSTOMERS", columns=[shout])])
+        async with shop(dialect, respelled_model(base_models(), name="customers", spelling="Customers")) as engine:
+            resp = await engine.execute(query)
+        assert resp.data
+        assert all(r["customers.shout"] == r["customers.city"].upper() for r in resp.data if r["customers.city"])
 
 
 class TestRejectedTargets:

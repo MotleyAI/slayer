@@ -54,6 +54,7 @@ from slayer.core.join_walker import (
     canonical_path,
     terminal_model,
     walk,
+    WalkMiss,
     walk_miss,
     walk_terminal,
 )
@@ -73,7 +74,7 @@ from slayer.engine.population import dimension_routing
 from slayer.engine.key_metadata import bundle_dialect, scope_column_type
 from slayer.engine.param_binding import bind_aggregation_params
 from slayer.core.query import TimeDimension
-from slayer.core.scope import ModelScope, StageSchema, resolve_generated_column, root_spelling
+from slayer.core.scope import ModelScope, StageSchema, peek_model_column, resolve_generated_column, root_spelling
 from slayer.core.time_points import is_time_point, parse_temporal_value
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.core.syntax import (
@@ -787,7 +788,7 @@ def _resolve_ref(
         name=name,
         scope_kind="ModelScope",
         scope_summary=(
-            f"model {model.name!r} columns: "
+            f"model {model.spelling!r} columns: "
             f"{[c.name for c in model.columns]}"
         ),
         suggestion=_name_suggestion(name=name, model=model),
@@ -814,33 +815,90 @@ def _walk_join_chain(
     broken chain, rejected (never silently repaired) with a short-form suggestion
     when the target is uniquely routable. ``AmbiguousJoinPathError`` from a
     parallel-pair hop propagates untouched; an edge that resolves onto a target
-    absent from the bundle stays ``UnknownReferenceError``. ``parts`` is the full
-    dotted ref, for error messages; ``original_parts`` (pre-self-prefix-strip,
-    defaulting to ``parts``) spells the circular error's reference in full."""
+    absent from the bundle stays ``UnknownReferenceError``. A failed walk whose
+    remaining tokens spell a flat column raises the flat-spelling refusal instead.
+    ``parts`` is the full dotted ref, for error messages; ``quoted`` flags each of
+    its segments; ``original_parts`` (pre-self-prefix-strip, defaulting to
+    ``parts``) spells the reference in full."""
     models_by_name = bundle.models_by_name
     models_by_name.setdefault(host.name, host)
     spelled = parts if original_parts is None else original_parts
+    hop_quoted = quoted[:len(hop_path)]
+    refusal = partial(
+        _flat_spelling_refusal, host=host, hop_path=hop_path, leaf=leaf, spelled=spelled,
+        written=spelled[:len(spelled) - len(parts)], quoted=quoted, models_by_name=models_by_name,
+    )
     try:
-        walked = walk_terminal(root=host, path=hop_path, models_by_name=models_by_name, quoted=quoted)
+        walked = walk_terminal(root=host, path=hop_path, models_by_name=models_by_name, quoted=hop_quoted)
     except CircularJoinPathError as e:
-        raise CircularJoinPathError(
-            reference=".".join(spelled), root_model=host.name,
-            revisited=e.revisited, hop=e.hop, via=e.via,
+        raise refusal() or CircularJoinPathError(
+            reference=".".join(spelled), root_model=host.spelling,
+            revisited=_model_spelling(e.revisited, models_by_name=models_by_name), hop=e.hop,
+            via=_model_spelling(e.via, models_by_name=models_by_name),
         ) from None
     if walked is not None:
         return walked
-    miss = walk_miss(root=host, path=hop_path, models_by_name=models_by_name, quoted=quoted)
+    miss = walk_miss(root=host, path=hop_path, models_by_name=models_by_name, quoted=hop_quoted)
     assert miss is not None
     if miss.kind == "unloaded":
         assert miss.target is not None
         raise _target_not_in_bundle(parts=parts, target=miss.target)
     _reject_opaque_elements(
-        host=host, hop_path=hop_path, index=miss.index, parts=parts, models_by_name=models_by_name, quoted=quoted,
+        host=host, hop_path=hop_path, index=miss.index, parts=parts, models_by_name=models_by_name, quoted=hop_quoted,
     )
+    if len(hop_path) != 1:
+        raise refusal() or _broken_chain_error(
+            host=host, hop_path=hop_path, leaf=leaf, parts=parts, miss=miss, models_by_name=models_by_name,
+            quoted=hop_quoted,
+        )
     return _route_edgeless_hop(
-        host=host, hop=miss.token, hop_path=hop_path, leaf=leaf, parts=parts,
-        models_by_name=models_by_name, quoted=bool(quoted) and quoted[0],
+        host=host, hop=miss.token, leaf=leaf, parts=parts,
+        models_by_name=models_by_name, quoted=bool(hop_quoted) and hop_quoted[0],
     )
+
+
+def _model_spelling(name: str, *, models_by_name: Dict[str, SlayerModel]) -> str:
+    model = models_by_name.get(name)
+    return name if model is None else model.spelling
+
+
+def _quoted_segment(name: str, *, quoted: bool) -> str:
+    return f'"{name}"' if quoted else name
+
+
+def _flat_spelling_refusal(
+    *,
+    host: SlayerModel,
+    hop_path: Tuple[str, ...],
+    leaf: str,
+    spelled: Tuple[str, ...],
+    written: Tuple[str, ...],
+    quoted: Tuple[bool, ...],
+    models_by_name: Dict[str, SlayerModel],
+) -> Optional[UnknownReferenceError]:
+    """The refusal of a failed walk whose remaining tokens, joined with ``__``, name a column of a model on its walked
+    prefix (nearest the root first); ``written`` is the dropped root qualifier, if any."""
+    tokens = (*hop_path, leaf)
+    for k in range(len(hop_path)):
+        try:
+            walked = walk_terminal(root=host, path=hop_path[:k], models_by_name=models_by_name, quoted=quoted[:k])
+        except CircularJoinPathError:
+            return None
+        if walked is None:
+            return None
+        model = walked[0]
+        exact = any(quoted[k:])
+        col = peek_model_column(model=model, name="__".join(tokens[k:]), quoted=exact)
+        if col is not None:
+            prefix = (*written, *(_quoted_segment(t, quoted=q) for t, q in zip(hop_path[:k], quoted)))
+            flat = ".".join((*prefix, _quoted_segment(col.name, quoted=exact)))
+            reference = ".".join(spelled)
+            return UnknownReferenceError(
+                name=reference, scope_kind="ModelScope",
+                scope_summary=f"model {model.spelling!r} columns: {[c.name for c in model.columns]}",
+                suggestion=f"{reference!r} spells the flattened column {col.name!r}; read it by its flat name {flat!r}.",
+            )
+    return None
 
 
 def _reject_opaque_elements(
@@ -863,19 +921,12 @@ def _route_edgeless_hop(
     *,
     host: SlayerModel,
     hop: str,
-    hop_path: Tuple[str, ...],
     leaf: str,
     parts: Tuple[str, ...],
     models_by_name: Dict[str, SlayerModel],
     quoted: bool = False,
 ) -> Tuple[SlayerModel, Tuple[str, ...]]:
-    """A hop with no incident edge: a bare ``Target`` short form auto-routes to
-    its datasource-scoped path; a longer chain is broken."""
-    if len(hop_path) != 1:
-        raise _broken_chain_error(
-            host=host, hop_path=hop_path, leaf=leaf, parts=parts,
-            models_by_name=models_by_name,
-        )
+    """A single-hop short form with no incident edge auto-routes to its datasource-scoped path."""
     found = match_name(name=hop, declared=models_by_name, quoted=quoted)
     if found is None and quoted:
         raise _target_not_in_bundle(parts=parts, target=hop)
@@ -904,19 +955,28 @@ def _broken_chain_error(
     hop_path: Tuple[str, ...],
     leaf: str,
     parts: Tuple[str, ...],
+    miss: WalkMiss,
     models_by_name: Dict[str, SlayerModel],
+    quoted: Tuple[bool, ...],
 ) -> UnresolvableDimensionJoinError:
     """A multi-hop dotted chain with an unresolvable hop — rejected, never
-    auto-repaired. Suggests the short form ``Target.leaf`` when its target
-    (``hop_path[-1]``) is itself uniquely routable, else no suggestion."""
+    auto-repaired. Names the model the hop leaves and its columns; suggests the short form ``Target.leaf`` when its
+    target (``hop_path[-1]``) is itself uniquely routable."""
     target = hop_path[-1]
     routable = dimension_routing.short_form_route_or_none(
         root=host, target_model=target, models_by_name=models_by_name,
     )
+    left = walk_terminal(
+        root=host, path=hop_path[:miss.index], models_by_name=models_by_name, quoted=quoted[:miss.index],
+    )
+    assert left is not None  # the walk reached the failing hop
     return UnresolvableDimensionJoinError(
         reference=".".join(parts),
-        root_model=host.name,
-        reason=f"'{'.'.join(hop_path)}' is not a valid join chain",
+        root_model=host.spelling,
+        reason=(
+            f"'{'.'.join(hop_path)}' is not a valid join chain: hop {miss.token!r} does not resolve from model "
+            f"{left[0].spelling!r}, whose columns are {[c.name for c in left[0].columns]}."
+        ),
         suggested_path=f"{target}.{leaf}" if routable is not None else None,
     )
 
@@ -970,7 +1030,7 @@ def _resolve_dotted(
     leaf = parts[-1]
     current, effective_hop_path = _walk_join_chain(
         hop_path=hop_path, host=host, bundle=bundle, parts=parts, leaf=leaf,
-        original_parts=original_parts, quoted=quoted[:-1],
+        original_parts=original_parts, quoted=quoted,
     )
 
     return _resolve_terminal_leaf(
@@ -986,7 +1046,8 @@ def _stage_list_scope(
     """The stage's model scope for ``L.value`` / ``L.*`` over its list column ``L``; any other dotted ref is illegal."""
     element_shaped = len(parts) == 2 and match_name(name=parts[1], declared=[leaf], quoted=quoted[1]) is not None
     head = scope.resolve_flat_name(parts[0], quoted=quoted[0]) if element_shaped else None
-    if element_shaped and head is None:
+    flat = scope.peek_flat_name("__".join(parts), quoted=any(quoted))
+    if element_shaped and head is None and flat is None:
         raise UnknownReferenceError(
             name=".".join(parts), scope_kind="StageSchema",
             scope_summary=f"{scope.label} columns: {[c.name for c in scope.columns]}", suggestion=None,
@@ -997,7 +1058,8 @@ def _stage_list_scope(
             scope_kind="StageSchema",
             reason=(
                 "downstream stages see a flat schema — dotted refs are not legal "
-                "bar a list column's elements (L.value, L.*). Use the flat column name."
+                "bar a list column's elements (L.value, L.*). Use the flat column name"
+                + ("." if flat is None else f" {_quoted_segment(flat.name, quoted=any(quoted))!r}.")
             ),
         )
     return ModelScope(source_model=bundle.source_model)
@@ -1067,7 +1129,7 @@ def _unresolved_dotted_error(
     measures = [m.name for m in terminal_model.measures if m.name]
     detail = (
         f"{dotted!r} is neither a column nor a saved measure on "
-        f"{terminal_model.name!r}. Columns: {columns}; saved measures: {measures}."
+        f"{terminal_model.spelling!r}. Columns: {columns}; saved measures: {measures}."
     )
     match = _name_suggestion(name=parts[-1], model=terminal_model)
     if match:
@@ -1075,7 +1137,7 @@ def _unresolved_dotted_error(
     return UnknownReferenceError(
         name=dotted,
         scope_kind="ModelScope",
-        scope_summary=f"model {terminal_model.name!r}",
+        scope_summary=f"model {terminal_model.spelling!r}",
         suggestion=detail,
     )
 
@@ -1108,7 +1170,7 @@ def _resolve_saved_measure(
     ineligible-position error when ``measure_ctx`` is None."""
     if measure_ctx is None:
         raise _ineligible_saved_measure_error(
-            ref_text=ref_text, model_name=terminal_model.name,
+            ref_text=ref_text, model_name=terminal_model.spelling,
         )
     step = (terminal_model.name, measure.name)
     if step in measure_ctx.chain:
@@ -1178,7 +1240,7 @@ def _resolve_dotted_star(
     # Validate the hop chain (raises on missing / circular join, auto-routes a
     # short form); the routed effective path carries the star.
     _, effective_hop_path = _walk_join_chain(
-        hop_path=hop_path, host=host, bundle=bundle, parts=parts, leaf="*", quoted=quoted[:-1],
+        hop_path=hop_path, host=host, bundle=bundle, parts=parts, leaf="*", quoted=quoted,
     )
     return StarKey(path=tuple(effective_hop_path))
 
