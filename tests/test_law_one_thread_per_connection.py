@@ -195,6 +195,7 @@ def _exclusive(pool: Pool) -> bool:
 
 def _config(ds_type: str, directory: Path) -> DatasourceConfig:
     if ds_type in ("sqlite", "duckdb"):
+        (directory / f"law.{ds_type}").touch()  # a missing local database file is refused
         return DatasourceConfig(name="d", type=ds_type, database=str(directory / f"law.{ds_type}"))
     if ds_type == "bigquery":
         grant = {"type": "authorized_user", "refresh_token": "r", "client_id": "c", "client_secret": "s"}  # NOSONAR(S2068) — placeholder grant

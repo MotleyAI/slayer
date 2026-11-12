@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Container
+from collections.abc import Callable, Container, Iterable
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -12,6 +12,7 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    ModelWrapValidatorHandler,
     PrivateAttr,
     SerializerFunctionWrapHandler,
     field_validator,
@@ -19,7 +20,7 @@ from pydantic import (
     model_validator,
 )
 
-from slayer.core.deprecation import warn_deprecated
+from slayer.core.deprecation import deprecated_input
 from slayer.core.direction import normalize_direction
 from slayer.core.enums import DataType, TimeGranularity, _coerce_legacy_datatype
 from slayer.core.errors import (
@@ -37,7 +38,9 @@ from slayer.core.models import (
 )
 from slayer.core.names import quoted_name
 from slayer.core.refs import auto_name_from_expression
+from slayer.core.strict_flag import strict_flag, without_strict
 from slayer.core.time_points import TIME_POINT_FORMS, is_time_point_shape
+from slayer.core.warnings import DeprecatedInputWarning
 from slayer.core.syntax import (
     AggCall,
     DateTrunc,
@@ -69,6 +72,34 @@ from slayer.storage.migrations import (
 
 #: The SlayerQuery version whose migration retired ``strict``.
 _STRICT_RETIRED_AT = 4
+
+
+def _stored_before_strict_retired(raw_version: Any) -> bool:
+    """A raw ``version`` naming a stored pre-v4 query: an int or integer string below 4; anything else is fresh."""
+    if isinstance(raw_version, bool):
+        return False
+    if isinstance(raw_version, str):
+        try:
+            raw_version = int(raw_version)
+        except ValueError:
+            return False
+    return isinstance(raw_version, int) and raw_version < _STRICT_RETIRED_AT
+
+
+def _has_fresh_strict(data: dict[str, Any]) -> bool:
+    """``data`` carries a ``strict`` that converts with a deprecation rather than migrating silently."""
+    return "strict" in data and not _stored_before_strict_retired(data.get("version"))
+
+
+def _convert_strict(data: dict[str, Any]) -> tuple[dict[str, Any], DeprecatedInputWarning]:
+    """Fresh input's deprecated ``strict`` converted to ``to_many_handling``, with its deprecation."""
+    if not strict_flag(data["strict"]):
+        new = "the query without `strict`"
+    elif "to_many_handling" in data:
+        new = "to_many_handling"
+    else:
+        new = 'to_many_handling: "error"'
+    return without_strict(data), deprecated_input("strict", new, removal="3.0")
 
 _NAME_PATTERN = re.compile(r"^[a-zA-Z_]\w*$", re.ASCII)
 _VAR_PATTERN = re.compile(r"\{\{|\}\}|\{([a-zA-Z_]\w*)\}|\{([^}]*)\}", re.ASCII)
@@ -1068,52 +1099,30 @@ class ModelExtension(BaseModel):
 
 
 
-def _reject_retired_strict(data: dict) -> None:
-    """Reject retired `strict` unless a pre-v4 integer stored version migrates it (v3→v4: strict:true→'error').
-
-    ``version`` is raw here, so only int / integer-string forms count; a float or other malformed value never
-    truncates into a stale version.
-    """
-    if "strict" not in data:
-        return
-    raw_version = data.get("version")
-    version: int | None = None
-    if isinstance(raw_version, int) and not isinstance(raw_version, bool):
-        version = raw_version
-    elif isinstance(raw_version, str):
-        try:
-            version = int(raw_version)
-        except ValueError:
-            version = None
-    if version is None or version >= _STRICT_RETIRED_AT:
-        raise ValueError(
-            "`strict` is retired; set to_many_handling='error' instead "
-            "(one of broadcast|associate|error)."
-        )
-
-
-def convert_legacy_root_extension(data: dict) -> dict:
-    """Fresh input's legacy root extension, moved into ``extensions`` with a deprecation warning."""
+def convert_legacy_root_extension(data: dict) -> tuple[dict, DeprecatedInputWarning | None]:
+    """Fresh input's legacy root extension, moved into ``extensions``, with its deprecation (none in a stored document)."""
     source = data.get("source_model")
     if isinstance(source, ModelExtension):
         data = with_root_extension(data, extension=source, base=source.source_name)
     elif "version" not in data and is_legacy_root_extension(source):
         data = hoist_root_extension(data)
     else:
-        return data
-    if not in_stored_document():
-        warn_deprecated(
-            "An extension object in `source_model` is deprecated and will be removed in SLayer 3.0; "
-            "name the model in `source_model` and put the extension in `extensions`.",
-            removal="3.0", stacklevel=4,
-        )
-    return data
+        return data, None
+    if in_stored_document():
+        return data, None
+    return data, deprecated_input("An extension object in `source_model`", "`extensions`", removal="3.0")
 
 
-def prepare_query_input(data: dict) -> dict:
-    """``data`` in the shape ``SlayerQuery``'s typed fields read: a legacy root extension converted, a versioned payload migrated."""
-    data = convert_legacy_root_extension(data)
-    return _migrate_schema(entity="SlayerQuery", data=data) if "version" in data else data
+def prepare_query_input(data: dict) -> tuple[dict, DeprecatedInputWarning | None]:
+    """``data`` in the shape ``SlayerQuery``'s typed fields read (a legacy root extension converted, a versioned
+    payload migrated around a fresh ``strict``, which ``SlayerQuery`` converts), with the conversion's deprecation."""
+    data, payload = convert_legacy_root_extension(data)
+    if "version" not in data:
+        return data, payload
+    if not _has_fresh_strict(data):
+        return _migrate_schema(entity="SlayerQuery", data=data), payload
+    rest = {k: v for k, v in data.items() if k != "strict"}
+    return {**_migrate_schema(entity="SlayerQuery", data=rest), "strict": data["strict"]}, payload
 
 
 def _refuse_inline_model(value: Any) -> Any:
@@ -1274,15 +1283,22 @@ class SlayerQuery(BaseModel):
         ),
     )
 
-    @model_validator(mode="before")
+    _deprecated_inputs: tuple[DeprecatedInputWarning, ...] = PrivateAttr(default=())
+
+    @model_validator(mode="wrap")
     @classmethod
-    def _migrate_and_rewrite(cls, data: Any) -> Any:
-        # Single before-validator: migrate, THEN rewrite the functional granularity
-        # form. Pydantic runs before-validators in reverse declaration order, so
-        # sequencing them explicitly here keeps the rewrite on migrated input.
+    def _migrate_and_rewrite(cls, data: Any, handler: ModelWrapValidatorHandler["SlayerQuery"]) -> "SlayerQuery":
+        # One validator sequences convert → migrate → functional-granularity rewrite.
+        # Fresh `strict` (no version, v4+, or a malformed version) converts with a
+        # deprecation; a stored pre-v4 one migrates silently (v3→v4).
+        payloads: list[DeprecatedInputWarning] = []
         if isinstance(data, dict):
-            _reject_retired_strict(data)
-            data = convert_legacy_root_extension(data)
+            if _has_fresh_strict(data):
+                data, payload = _convert_strict(data)
+                payloads.append(payload)
+            data, payload = convert_legacy_root_extension(data)
+            if payload is not None:
+                payloads.append(payload)
         data = _migrate_schema(entity="SlayerQuery", data=data)
         if isinstance(data, dict):
             if is_legacy_root_extension(data.get("source_model")):
@@ -1290,7 +1306,15 @@ class SlayerQuery(BaseModel):
                     "`source_model` names a model; put a query-scoped extension in `extensions`."
                 )
             data = _rewrite_functional_granularity(data)
-        return data
+        query = handler(data)
+        if payloads:
+            query._deprecated_inputs = tuple(payloads)
+        return query
+
+    @property
+    def deprecated_inputs(self) -> tuple[DeprecatedInputWarning, ...]:
+        """Deprecations of the input forms converted while building this query."""
+        return self._deprecated_inputs
 
     @field_validator("name")
     @classmethod
@@ -1559,10 +1583,27 @@ class QueryRefinement(BaseModel):
     distinct_dimension_values: bool | None = _refinement_field("distinct_dimension_values")
     to_many_handling: Literal["broadcast", "associate", "error"] | None = _refinement_field("to_many_handling")
 
-    @model_validator(mode="before")
+    _deprecated_inputs: tuple[DeprecatedInputWarning, ...] = PrivateAttr(default=())
+
+    @model_validator(mode="wrap")
     @classmethod
-    def _rewrite_functional(cls, data: Any) -> Any:
-        return _rewrite_functional_granularity(data) if isinstance(data, dict) else data
+    def _convert_and_rewrite(
+        cls, data: Any, handler: ModelWrapValidatorHandler["QueryRefinement"],
+    ) -> "QueryRefinement":
+        payload = None
+        if isinstance(data, dict):
+            if "strict" in data:
+                data, payload = _convert_strict(data)
+            data = _rewrite_functional_granularity(data)
+        refinement = handler(data)
+        if payload is not None:
+            refinement._deprecated_inputs = (payload,)
+        return refinement
+
+    @property
+    def deprecated_inputs(self) -> tuple[DeprecatedInputWarning, ...]:
+        """Deprecations of the input forms converted while building this refinement."""
+        return self._deprecated_inputs
 
     @model_validator(mode="after")
     def _validate_inputs(self) -> "QueryRefinement":
@@ -1574,7 +1615,19 @@ class QueryRefinement(BaseModel):
         return self
 
 
-_ENTRY_CONFLICT_SUGGESTION = "Give the refinement entry another name, or repeat the saved entry exactly."
+def deprecated_inputs_of(sources: Iterable[SlayerQuery | QueryRefinement | None]) -> list[DeprecatedInputWarning]:
+    """The deprecations of the input forms ``sources`` were converted from, each payload once."""
+    seen: set[int] = set()
+    out: list[DeprecatedInputWarning] = []
+    for source in sources:
+        for payload in source.deprecated_inputs if source is not None else ():
+            if id(payload) not in seen:
+                seen.add(id(payload))
+                out.append(payload)
+    return out
+
+
+_ENTRY_CONFLICT_SUGGESTION ="Give the refinement entry another name, or repeat the saved entry exactly."
 _WINDOW_CONFLICT_SUGGESTION = (
     "Add a filter on the time column instead (filters AND together), or save the window as a "
     "filter with variables, e.g. `ordered_at >= '{start}'`."

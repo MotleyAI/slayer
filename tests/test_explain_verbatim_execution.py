@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import pytest
 import sqlalchemy as sa
 
 from slayer.core.models import DatasourceConfig
+from slayer.database import client as sql_client
 from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects.base import ExplainStatements
 from tests._engine_helpers import disposable_engine
 
 _DOOR_SQL = "SELECT '(?i)(?:too complicated|too complex)' AS pat, strftime('%Y-%m', '2020-03-15') AS ym, ':name' AS n"
 _DOOR_ROW = {"pat": "(?i)(?:too complicated|too complex)", "ym": "2020-03", "n": ":name"}
+
+
+@pytest.fixture(autouse=True)
+def _any_plan_statement(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests exercise how a plan runs; which plan statements are admitted is tested elsewhere."""
+    monkeypatch.setattr(sql_client, "admit_explain", lambda *_a, **_k: None)
 
 
 async def test_an_in_memory_client_explains_verbatim() -> None:

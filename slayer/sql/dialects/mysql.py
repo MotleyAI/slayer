@@ -12,16 +12,17 @@ is actually ``VAR_POP`` — silently wrong sample variance).
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Sequence
-from typing import Any, ClassVar, Optional
+from collections.abc import Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 from pydantic import Field
+from sqlalchemy.engine.url import URL
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
-from slayer.core.errors import UnsupportedServerFunctionError
+from slayer.core.errors import ReadOnlyConnectionError, UnsupportedServerFunctionError
 from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.keys import CastKey, ScalarCallKey
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement, parse_regex
@@ -39,6 +40,7 @@ from slayer.sql.dialects.base import (
     TRUE_WORDS,
     UNSIGNED_CAST_TYPES,
     MathFn,
+    ReadOnlyEngineArgs,
     ServerProfile,
     SqlDialect,
     TextFn,
@@ -60,6 +62,8 @@ from slayer.sql.dialects.reflection import (
     result_column_type_of_name,
 )
 
+if TYPE_CHECKING:
+    from slayer.core.models import DatasourceConfig
 
 #: MySQL 8.0 brought the ICU regex functions; 8.0.21 ``JSON_VALUE``.
 _MYSQL_8_0 = (8, 0, 0)
@@ -67,6 +71,10 @@ _MYSQL_8_0_21 = (8, 0, 21)
 _VERSION = re.compile(r"\s*(\d+)\.(\d+)(?:\.(\d+))?")
 _NUMBERS = frozenset({DataType.INT, DataType.DOUBLE})
 _GATED_FUNCTIONS = REGEX_LIBRARY | {"json_value"}
+
+# The session read-only from connect, through the drivers' one init statement.
+_INIT_COMMAND = "init_command"
+_READ_ONLY_SESSION = "SET SESSION TRANSACTION READ ONLY"
 
 
 def _numeric_try_cast(key: object) -> bool:
@@ -261,6 +269,19 @@ class MysqlDialect(SqlDialect):
 
     def statement_timeout(self, timeout_seconds: int) -> Expression | None:
         return set_statement(name="max_execution_time", value=timeout_seconds * 1000)
+
+    def read_only_engine_args(
+        self, *, url: URL, datasource: DatasourceConfig, connect_args: Mapping[str, Any],
+    ) -> ReadOnlyEngineArgs:
+        """The session read-only from connect; a URL with its own init statement is refused (two would need the
+        multi-statement client flag)."""
+        if _INIT_COMMAND in url.query or _INIT_COMMAND in connect_args:
+            raise ReadOnlyConnectionError(
+                datasource_name=datasource.name,
+                reason=f"its connection sets {_INIT_COMMAND}, which SLayer uses to make the session read-only",
+                hint=f"remove {_INIT_COMMAND}; set the session state it carried on the database user instead",
+            )
+        return ReadOnlyEngineArgs(connect_args={_INIT_COMMAND: _READ_ONLY_SESSION})
 
     def describe_cursor_column(self, description_row: Sequence[Any]) -> ResultColumnType | None:
         """PyMySQL / aiomysql field types: length 1 makes ``TINY`` and ``BIT`` boolean; decimals type by scale."""

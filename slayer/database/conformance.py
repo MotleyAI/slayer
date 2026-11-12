@@ -110,12 +110,13 @@ def _checks(client: SqlClient, caps: Capabilities) -> list[tuple[str, bool, Call
 
     async def execute_error_unchanged() -> None:
         try:
-            await client.execute("SELEC 1")
+            await client.execute("SELECT id FROM conf_no_such_table")
         except SqlClientError as exc:
-            raise _Failed(f"a syntax error surfaced as {type(exc).__name__}") from exc
-        except Exception:  # noqa: BLE001 — the database's own error is the contract
+            raise _Failed(f"a database error surfaced as {type(exc).__name__}") from exc
+        except Exception as exc:  # noqa: BLE001 — the database's own error is the contract
+            _expect("conf_no_such_table" in str(exc).lower(), f"the database's error was rewritten: {exc}")
             return
-        raise _Failed("an invalid statement succeeded")
+        raise _Failed("a read of a missing table succeeded")
 
     async def explain() -> None:
         statements = dialect_for_ds_type(client.datasource.type).explain_statements(

@@ -1,4 +1,7 @@
-"""A fresh legacy root extension in ``source_model`` converts into ``extensions`` with a deprecation warning."""
+"""A fresh legacy root extension in ``source_model`` converts into ``extensions`` with a deprecation warning.
+
+Spec: compatibility/removal-tripwire › Deprecated input forms convert with a structured warning.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +9,11 @@ import warnings
 from collections.abc import Iterator
 
 import pytest
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
+
+from slayer.api.server import create_app
+from slayer.client.slayer_client import SlayerClient
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
@@ -15,10 +22,12 @@ from slayer.engine.profiling import refresh_table_backed_model_sampled
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.facade.catalog import build_catalog
 from slayer.facade.translator import QueryResult, translate
+from slayer.mcp.server import create_mcp_server
 from slayer.memories.models import Memory
 from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._deprecated_input_helpers import SAVED, deprecated_in, deprecations, mcp_payload, orders_engine, payload_of
 
 LEGACY = {
     "source_name": "orders",
@@ -100,6 +109,63 @@ class TestFreshInputConverts:
     def test_the_current_form_emits_no_warning(self, recorded) -> None:
         SlayerQuery.model_validate({"source_model": "orders", "extensions": [LEGACY]})
         assert _future_warnings(recorded) == []
+
+
+#: The legacy form over the deprecated-input helpers' engine.
+LEGACY_RUN = {"source_model": {"source_name": "orders"}, "measures": ["count(*)"]}
+
+
+class TestStructuredDeprecation:
+    def test_the_query_keeps_one_payload(self, recorded) -> None:
+        q = SlayerQuery.model_validate({"source_model": LEGACY})
+        [w] = deprecations(recorded)
+        [payload] = q.deprecated_inputs
+        assert payload is payload_of(w)
+        assert (payload.kind, payload.removal) == ("deprecated_input", "3.0")
+        assert "source_model" in payload.old
+        assert "extensions" in payload.new
+
+    def test_a_stored_document_carries_none(self, recorded) -> None:
+        q = SlayerQuery.model_validate({"version": 9, "source_model": LEGACY})
+        assert q.deprecated_inputs == ()
+        assert deprecations(recorded) == []
+
+    def test_strict_next_to_the_legacy_form_reports_both(self, recorded) -> None:
+        q = SlayerQuery.model_validate({"source_model": LEGACY, "strict": True})
+        assert sorted(p.old for p in q.deprecated_inputs) == sorted(payload_of(w).old for w in deprecations(recorded))
+        assert len(q.deprecated_inputs) == 2
+
+    @pytest.mark.parametrize("as_list", [False, True], ids=["mapping", "list"])
+    async def test_the_engine_reports_a_mapping_once(self, recorded, as_list: bool) -> None:
+        async with orders_engine() as engine:
+            response = await engine.execute([LEGACY_RUN] if as_list else LEGACY_RUN)
+        assert len(deprecated_in(response.warnings)) == 1
+        assert len(deprecations(recorded)) == 1
+
+    async def test_rest_reports_it(self, recorded) -> None:
+        async with orders_engine() as engine:
+            resp = TestClient(create_app(storage=engine.storage)).post("/query", json=LEGACY_RUN)
+        assert resp.status_code == 200, resp.text
+        [w] = deprecated_in(resp.json()["warnings"])
+        assert "extensions" in w["new"]
+
+    async def test_mcp_reports_it(self, recorded) -> None:
+        async with orders_engine() as engine:
+            server = create_mcp_server(storage=engine.storage)
+            blocks, _ = await server.call_tool(name="query", arguments={"query": LEGACY_RUN, "format": "json"})
+        assert len(deprecated_in(mcp_payload(getattr(next(iter(blocks)), "text")).get("warnings"))) == 1
+
+    async def test_the_local_client_reports_it(self, recorded) -> None:
+        async with orders_engine() as engine:
+            response = await SlayerClient(storage=engine.storage).query(LEGACY_RUN)
+        assert len(deprecated_in(response.warnings)) == 1
+
+    async def test_a_model_save_reports_its_stage(self, recorded) -> None:
+        async with orders_engine() as engine:
+            model = SlayerModel.model_validate({"name": f"{SAVED}_legacy", "source_queries": [LEGACY_RUN]})
+            notes: list = []
+            await engine.save_model(model, warnings_out=notes)
+        assert len(deprecated_in(notes)) == 1
 
 
 class TestInternalProducers:
