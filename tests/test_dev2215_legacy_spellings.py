@@ -11,7 +11,9 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 
+from slayer.api.server import create_app
 from slayer.core.models import DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.syntax import canonical_measure_text, parse_expr
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
@@ -33,6 +35,7 @@ from tests._dev2215_fixtures import (
     single,
     warnings_mentioning,
 )
+from tests._model_access_fixtures import mcp_text
 
 SLAYER_3 = "3.0"
 
@@ -162,6 +165,58 @@ async def test_a_saved_query_stores_the_canonical_twin(storage: StorageBackend) 
     assert loaded is not None
     assert loaded.source_queries
     assert loaded.source_queries[0].filters == ["status = 'paid' and region IS NOT NULL"]
+
+
+PAID_SPELLINGS = "sum(iif(status == 'paid' AND region is not None, amount, 0))"
+
+
+def spelling_payloads(notes: list[Any]) -> list[Any]:
+    return [n for n in notes if getattr(n, "kind", None) == "deprecated_spelling"]
+
+
+async def test_an_engine_save_returns_one_warning_per_spelling(storage: StorageBackend) -> None:
+    engine = SlayerQueryEngine(storage=storage)
+    model = orders_model().model_copy(update={"measures": [ModelMeasure(name="paid", formula=PAID_SPELLINGS)]})
+    notes: list[Any] = []
+    try:
+        with recorded_warnings() as caught:
+            await engine.save_model(model, warnings_out=notes)
+    finally:
+        engine.close()
+    assert sorted(p.canonical for p in spelling_payloads(notes)) == ["=", "IS NOT NULL"]
+    assert len(future_warnings(caught, SLAYER_3)) == 2
+    loaded = await storage.get_model("orders", data_source="test")
+    assert loaded is not None
+    assert [x.formula for x in loaded.measures] == ["sum(iif(status = 'paid' AND region IS NOT NULL, amount, 0))"]
+
+
+async def test_a_saved_query_save_returns_its_spelling_warnings(engine: SlayerQueryEngine) -> None:
+    saved = SlayerModel.model_validate({"name": "paid_orders", "source_queries": [
+        {"source_model": "orders", "measures": [{"formula": "count(*)", "name": "n"}],
+         "filters": ["status == 'paid' and region is not None"]}]})
+    notes: list[Any] = []
+    with recorded_warnings():
+        await engine.save_model(saved, warnings_out=notes)
+    assert sorted(p.canonical for p in spelling_payloads(notes)) == ["=", "IS NOT NULL"]
+
+
+async def test_a_rest_model_save_returns_the_spelling_warning(storage: StorageBackend) -> None:
+    client = TestClient(create_app(storage=storage))
+    body = orders_model().model_copy(update={"measures": [ModelMeasure(name="paid", formula=PAID_SPELLINGS)]})
+    with recorded_warnings():
+        resp = client.post("/models", json=body.model_dump(mode="json"))
+    assert resp.status_code == 200, resp.text
+    kinds = [(w["kind"], w.get("canonical")) for w in resp.json()["warnings"]]
+    assert sorted(kinds) == [("deprecated_spelling", "="), ("deprecated_spelling", "IS NOT NULL")]
+
+
+async def test_an_mcp_model_save_lists_the_spelling_warning(storage: StorageBackend) -> None:
+    with recorded_warnings():
+        text = await mcp_text(storage, "create_model", name="orders", sql_table="orders", data_source="test",
+                              columns=[{"name": "status", "type": "TEXT"}, {"name": "amount", "type": "DOUBLE"}],
+                              measures=[{"name": "paid", "formula": "sum(iif(status == 'paid', amount, 0))"}])
+    assert "Warning:" in text
+    assert "`=`" in text
 
 
 async def test_a_canonical_save_is_silent_and_verbatim(storage: StorageBackend) -> None:

@@ -193,7 +193,7 @@ from slayer.sql.generator import (
 from slayer.sql.physical_tables import physical_tables
 from slayer.sql.session_policy import HasColumn, ScopedTable, apply_session_policy, policy_column_checks
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
-from slayer.storage.base import StorageBackend
+from slayer.storage.base import StorageBackend, with_canonical_spellings
 from slayer.storage.engine_view import EngineStorage
 from slayer.storage.document_loading import DocumentLoadFailures
 from slayer.storage.yaml_storage import YAMLStorage
@@ -2980,11 +2980,13 @@ class SlayerQueryEngine:
     async def save_model(
         self, model: SlayerModel, *, warnings_out: Optional[List[SlayerWarning]] = None,
     ) -> SlayerModel:
-        """Persist a SlayerModel verbatim (author spelling preserved); query-backed models reject cache fields and validate via dry-run.
-        The source queries' input deprecations and narrowed-access warnings go to ``warnings_out`` when given;
-        without it, narrowed-access warnings are emitted as Python warnings."""
+        """Persist a SlayerModel, each deprecated spelling stored as its twin; query-backed models reject cache fields and validate via dry-run.
+        The source queries' input deprecations, the spelling deprecations and narrowed-access warnings go to
+        ``warnings_out`` when given; without it, narrowed-access warnings are emitted as Python warnings."""
+        deprecated_inputs = deprecated_inputs_of(model.source_queries or [])
+        model, spellings = with_canonical_spellings(model)
         if warnings_out is not None:
-            warnings_out.extend(deprecated_inputs_of(model.source_queries or []))
+            warnings_out.extend([*deprecated_inputs, *spellings])
         with announced_by_caller():
             return await self._save_model(model, warnings_out=warnings_out)
 

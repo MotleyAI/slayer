@@ -67,6 +67,7 @@ presence of a field:
 | -- | -- | -- |
 | `normalization` | The input was rewritten to canonical form | `rule_id`, `original`, `normalized`, `location`, `rule_doc_url` (nullable) |
 | `deprecated_input` | A deprecated input form was converted to its replacement ([Upgrading to 2.0](../upgrading/2.0.md)) | `old`, `new`, `removal` |
+| `deprecated_spelling` | A deprecated expression spelling was read as its canonical twin ([Upgrading to 2.0](../upgrading/2.0.md)) | `spelling`, `written`, `canonical`, `removal` |
 
 The body accepts the same fields as a `SlayerQuery`, plus `dry_run`, `explain`, and `variables`. Notable optional fields:
 
@@ -121,7 +122,7 @@ curl -X POST http://localhost:5143/models \
   }'
 ```
 
-`POST /models` and `PUT /models/{name}` return `{"status": "created" | "updated", "name": ..., "warnings": [...]}`; `warnings` holds the same `kind`-tagged entries as a query response, here `deprecated_input` and `narrowed_access` (the saved model reads tagged models whose access tags do not cover its own: `data_source`, `model`, `narrowed_by`).
+`POST /models` and `PUT /models/{name}` return `{"status": "created" | "updated", "name": ..., "warnings": [...]}`; `warnings` holds the same `kind`-tagged entries as a query response, here `deprecated_input`, `deprecated_spelling` and `narrowed_access` (the saved model reads tagged models whose access tags do not cover its own: `data_source`, `model`, `narrowed_by`).
 
 A query-backed model's `columns` are generated at save, so supplying them returns 400.
 
