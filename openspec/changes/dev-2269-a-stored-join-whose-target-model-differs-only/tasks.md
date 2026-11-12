@@ -1,13 +1,13 @@
 ## 1. Tests (pr-tests)
 
-- [ ] 1.1 Save refusals for stored join targets — single case-only match (forward), target saved second (reverse, plus the respell-first remedy), ambiguous including an unchanged stored document, Unicode fold `STRASSE`/`straße`, dangling target accepted — and verify each fails on `main`
-- [ ] 1.2 Access-filtered saves: the case-only error precedes the unknown-join-target error in the view; a hidden peer's case-only target surfaces as `HiddenContentConflictError` without its name; the bypass path behaves as the inner store
-- [ ] 1.3 Version-22 upgrade on raw documents (YAML and SQLite stores): case-only target respelled and written back; ambiguous and dangling targets unchanged; repair precedes join-key canonicalization, key declaration and exact-inverse dedup; a second load is idempotent; a spine join is dropped with the warning
-- [ ] 1.4 Query-time backstop: an ambiguous stored target fails with `AmbiguousReferenceError` naming both candidates (SQLite and DuckDB)
-- [ ] 1.5 Spine respelling (SQLite and DuckDB): `TIME_SPINE` / `Time_Spine` in `source_model`, extension model, inline-source join target, and path heads in dimensions, time dimensions, measures, filters and order return the same rows and keys as `time_spine`; quoted `"TIME_SPINE"` fails as unresolved; a string literal stays unchanged; a stage named `Time_Spine` wins
-- [ ] 1.6 Reserved spine name and grandfathered variant: `time_spine` and `Time_Spine` new saves refused; a stored `Time_Spine` loads, saves and answers exact-spelled queries, each with the name-collision warning; `TIME_SPINE` is ambiguous in its datasource and not in another one
-- [ ] 1.7 Stored join into the spine refused at save in `time_spine` and `TIME_SPINE` spellings with `TimeSpineError`
-- [ ] 1.8 `core.syntax` path-head rewriter unit tests: only head identifiers change; quoted heads, string literals, nested calls and malformed text are preserved byte for byte
+- [x] 1.1 Save refusals for stored join targets — single case-only match (forward), target saved second (reverse, plus the respell-first remedy), ambiguous including an unchanged stored document, Unicode fold `STRASSE`/`straße`, dangling target accepted — and verify each fails on `main`
+- [x] 1.2 Access-filtered saves: the case-only error precedes the unknown-join-target error in the view; a hidden peer's case-only target surfaces as `HiddenContentConflictError` without its name; the bypass path behaves as the inner store
+- [x] 1.3 Version-22 upgrade on raw documents (YAML and SQLite stores): case-only target respelled and written back; ambiguous and dangling targets unchanged; repair precedes join-key canonicalization, key declaration and exact-inverse dedup; a second load is idempotent; a spine join is dropped with the warning
+- [x] 1.4 Query-time backstop: an ambiguous stored target fails with `AmbiguousReferenceError` naming both candidates (SQLite and DuckDB)
+- [x] 1.5 Spine respelling (SQLite and DuckDB): `TIME_SPINE` / `Time_Spine` in `source_model`, extension model, inline-source join target, and path heads in dimensions, time dimensions, measures, filters and order return the same rows and keys as `time_spine`; quoted `"TIME_SPINE"` fails as unresolved; a string literal stays unchanged; a stage named `Time_Spine` wins
+- [x] 1.6 Reserved spine name and grandfathered variant: `time_spine` and `Time_Spine` new saves refused; a stored `Time_Spine` loads, saves and answers exact-spelled queries, each with the name-collision warning; `TIME_SPINE` is ambiguous in its datasource and not in another one
+- [x] 1.7 Stored join into the spine refused at save in `time_spine` and `TIME_SPINE` spellings with `TimeSpineError`
+- [x] 1.8 `core.syntax` path-head rewriter unit tests: only head identifiers change; quoted heads, string literals, nested calls and malformed text are preserved byte for byte
 
 ## 2. Storage
 
