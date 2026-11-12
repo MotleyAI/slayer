@@ -88,6 +88,11 @@ def test_mixed_entries_handled_one_by_one() -> None:
         {"vendor_name": "C", "data": "[1, 2]"}, {"vendor_name": "D", "data": {"x": 1}}, {"vendor_name": "E"}]
 
 
+def test_too_deep_string_left_unchanged() -> None:
+    deep = '{"a":' * 20000 + "1" + "}" * 20000
+    assert _migrated("column", [{"vendor_name": "A", "data": deep}]) == [{"vendor_name": "A", "data": deep}]
+
+
 @pytest.mark.parametrize("value", ["garbage", {"vendor_name": "ACME"}, 3])
 def test_non_list_value_untouched(value: Any) -> None:
     model = SlayerModel.model_validate(_doc({OLD: value, "owner": "x"}, location="column"))

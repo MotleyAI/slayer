@@ -8,10 +8,12 @@ from typing import Any
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from slayer.core.enums import JoinType
 from slayer.core.models import SlayerModel
 from slayer.ingest_report import ConversionResult
+from slayer.osi.models import OSIDataset
 from tests._osi_export_helpers import convert_document, make_env
 from tests._osi_helpers import FIXTURES, by_name, ds, f, flat, m, rel
 
@@ -96,10 +98,11 @@ async def test_legacy_key_read_at_every_level(env, level: str) -> None:
     assert len(_legacy_notes(result)) == 1
 
 
+@pytest.mark.parametrize("empty", [[], None])
 @pytest.mark.parametrize("level", LEVELS)
-async def test_empty_legacy_key_still_reports(env, level: str) -> None:
+async def test_empty_legacy_key_still_reports(env, level: str, empty: Any) -> None:
     doc = _shop()
-    _entity(doc, level)["custom_extensions"] = []
+    _entity(doc, level)["custom_extensions"] = empty
     assert len(_legacy_notes(convert_document(env, doc))) == 1
 
 
@@ -132,6 +135,22 @@ async def test_both_keys_on_one_entity(env) -> None:
         {"vendor_name": "ACME", "data": {"a": 1}}, {"vendor_name": "OTHER", "data": {"b": 2}}]
 
 
+async def test_legacy_marker_in_the_input_is_ignored(env) -> None:
+    doc = _shop()
+    _entity(doc, "field")["nonportable_extensions"] = [{**LEGACY_ACME, "legacy": True}]
+    result = convert_document(env, doc)
+    assert _stored(by_name(result), "field") == []
+    assert _reports(result, entity="amount", vendor="ACME")
+    assert not _legacy_notes(result)
+
+
+@pytest.mark.parametrize("current", [{}, "", 0])
+def test_malformed_current_key_refused_beside_legacy_key(current: Any) -> None:
+    with pytest.raises(ValidationError):
+        OSIDataset.model_validate({"name": "d", "source": "t", "nonportable_extensions": current,
+                                   "custom_extensions": []})
+
+
 @pytest.mark.parametrize("data", ["[1, 2]", "not json"])
 async def test_legacy_string_that_is_not_an_object(env, data: str) -> None:
     doc = _shop()
@@ -155,6 +174,7 @@ _BAD_DATA = [
     pytest.param("{codes: {1: one}}", id="nested-non-string-key"),
     pytest.param("[1, 2]", id="list"),
     pytest.param("text", id="scalar"),
+    pytest.param("&a {self: *a}", id="recursive-alias"),
 ]
 
 
@@ -173,6 +193,36 @@ async def test_invalid_data_drops_only_its_entry(env, data_yaml: str) -> None:
     assert _stored(models, "dataset") == [ACME]
     assert _reports(result, entity="orders", vendor="BAD")
     assert {"id", "customer_id", "amount"} <= {c.name for c in models["orders"].columns}
+
+
+_DEEP = 20000
+
+
+def _deep() -> dict[str, Any]:
+    root: dict[str, Any] = {}
+    node = root
+    for _ in range(_DEEP):
+        node["a"] = {}
+        node = node["a"]
+    return root
+
+
+@pytest.mark.parametrize("key", ["nonportable_extensions", "custom_extensions"])
+async def test_too_deep_data_drops_only_its_entry(env, key: str) -> None:
+    data: Any = _deep() if key == "nonportable_extensions" else '{"a":' * _DEEP + "1" + "}" * _DEEP
+    doc = _shop()
+    _entity(doc, "field")[key] = [{"vendor_name": "DEEP", "data": data}]
+    result = convert_document(env, doc)
+    assert _stored(by_name(result), "field") == []
+    assert _reports(result, entity="amount", vendor="DEEP")
+
+
+async def test_shared_alias_data_kept(env) -> None:
+    doc = _shop()
+    _entity(doc, "dataset")["nonportable_extensions"] = [
+        {"vendor_name": "ACME", "data": yaml.safe_load("{x: &a {k: [1]}, y: *a}")}]
+    assert _stored(by_name(convert_document(env, doc)), "dataset") == [
+        {"vendor_name": "ACME", "data": {"x": {"k": [1]}, "y": {"k": [1]}}}]
 
 
 @pytest.mark.parametrize("level", LEVELS)

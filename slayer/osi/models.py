@@ -50,7 +50,11 @@ class OSINonportableExtension(BaseModel):
 
     vendor_name: str
     data: Any
-    legacy: bool = False
+    _legacy: bool = PrivateAttr(default=False)
+
+    @property
+    def legacy(self) -> bool:
+        return self._legacy
 
 
 class _Extensible(BaseModel):
@@ -71,12 +75,17 @@ class _Extensible(BaseModel):
             return handler(data)
         data = dict(data)
         legacy = data.pop("custom_extensions")
-        current = data.get("nonportable_extensions") or []
+        if legacy is None:
+            legacy = []
+        current = data.get("nonportable_extensions")
+        if current is None:
+            current = []
         if not isinstance(legacy, list) or not isinstance(current, list):
             raise ValueError("custom_extensions and nonportable_extensions must be lists")
-        marked = [{**e, "legacy": True} if isinstance(e, dict) else e for e in legacy]
-        data["nonportable_extensions"] = [*current, *marked]
+        data["nonportable_extensions"] = [*current, *legacy]
         entity = handler(data)
+        for entry in (entity.nonportable_extensions or [])[len(current):]:
+            entry._legacy = True
         entity._legacy_key = True
         return entity
 

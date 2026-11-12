@@ -164,14 +164,25 @@ def is_slayer(extension: OSINonportableExtension | dict[str, Any]) -> bool:
     return isinstance(vendor, str) and vendor.strip().upper() == VENDOR
 
 
-def _json_value(value: Any) -> bool:
+def _json_value(value: Any, *, active: set[int], valid: set[int]) -> bool:
+    """Containers on the path are ``active`` (a revisit is a YAML-alias cycle); ``valid`` ones passed already."""
     if value is None or isinstance(value, (str, bool, int)):
         return True
     if isinstance(value, float):
         return math.isfinite(value)
+    if not isinstance(value, (list, dict)) or id(value) in active:
+        return False
+    if id(value) in valid:
+        return True
+    active.add(id(value))
     if isinstance(value, list):
-        return all(_json_value(v) for v in value)
-    return isinstance(value, dict) and all(isinstance(k, str) and _json_value(v) for k, v in value.items())
+        ok = all(_json_value(v, active=active, valid=valid) for v in value)
+    else:
+        ok = all(isinstance(k, str) and _json_value(v, active=active, valid=valid) for k, v in value.items())
+    active.discard(id(value))
+    if ok:
+        valid.add(id(value))
+    return ok
 
 
 def _reject_constant(token: str) -> Any:
@@ -184,12 +195,17 @@ def decoded_legacy(data: Any) -> Any:
         return data
     try:
         return json.loads(data, parse_constant=_reject_constant)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
 
 
 def checked(*, vendor_name: Any, data: Any) -> dict[str, Any] | None:
     """The entry ``{vendor_name, data}`` when the vendor is a non-blank string and ``data`` a JSON object, else None."""
-    if not (isinstance(vendor_name, str) and vendor_name.strip() and isinstance(data, dict) and _json_value(data)):
+    if not (isinstance(vendor_name, str) and vendor_name.strip() and isinstance(data, dict)):
+        return None
+    try:
+        if not _json_value(data, active=set(), valid=set()):
+            return None
+    except RecursionError:
         return None
     return {"vendor_name": vendor_name, "data": data}

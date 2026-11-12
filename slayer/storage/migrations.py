@@ -199,7 +199,7 @@ def _decoded_extension(entry: Any) -> Any:
         return entry
     try:
         decoded = json.loads(entry["data"])
-    except ValueError:
+    except (ValueError, RecursionError):
         return entry
     return {**entry, "data": decoded} if isinstance(decoded, dict) else entry
 
