@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple, cast
 
 from slayer.core.errors import ModelNotFoundError, QueryBackedCycleError
 from slayer.core.join_walker import incident_model_names
+from slayer.core.names import match_name
 from slayer.core.models import SlayerModel
 from slayer.core.query import SlayerQuery, SourceSpec, extension_model_names
 from slayer.core.scope import StageDisplay
@@ -452,11 +453,22 @@ async def _resolve_source_spec(
     if spec == TIME_SPINE_MODEL and data_source is not None:
         return spine_model(data_source=data_source)
     if isinstance(spec, str):
-        model = await storage.get_model(spec, data_source=data_source)
+        model = await _stored_model(storage, name=spec, data_source=data_source)
         if model is None:
             raise ModelNotFoundError(spec)
         return model
     raise ValueError(f"Invalid source_model type: {type(spec)!r}")
+
+
+async def _stored_model(
+    storage: "StorageBackend", *, name: str, data_source: Optional[str],
+) -> Optional[SlayerModel]:
+    """The stored model ``name`` reaches (``slayer.core.names.match_name``)."""
+    model = await storage.get_model(name, data_source=data_source)
+    if model is not None:
+        return model
+    found = match_name(name=name, declared=await storage.list_models(data_source=data_source), quoted=False)
+    return None if found is None else await storage.get_model(found, data_source=data_source)
 
 
 class _ModelReadCache:

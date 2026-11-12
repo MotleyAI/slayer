@@ -174,10 +174,17 @@ def test_every_stage_is_read() -> None:
 @pytest.mark.parametrize("body", [
     {"dimensions": [{"name": "m", "expression": "month(ordered_at)"}], "measures": ["count(*)"]},
     {"measures": ["count(*)"], "filters": ["year(ordered_at) = 2024"]},
-    {"measures": ["count(*)"], "filters": ["date_trunc('month', ordered_at) = '2024-01-01'"]},
 ])
-def test_time_granularity_calls_are_not_counted(body: dict[str, Any]) -> None:
+def test_extraction_calls_count_as_date_part(body: dict[str, Any]) -> None:
     found = query_features({"source_model": "orders", **body})
+    assert Counter(found.aggregations) == Counter(["count"])
+    assert found.functions == ["date_part"]
+
+
+def test_date_trunc_granularity_call_is_not_counted() -> None:
+    found = query_features({
+        "source_model": "orders", "measures": ["count(*)"], "filters": ["date_trunc('month', ordered_at) = '2024-01-01'"],
+    })
     assert Counter(found.aggregations) == Counter(["count"])
     assert found.functions == []
 

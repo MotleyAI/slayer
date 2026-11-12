@@ -36,9 +36,9 @@ def _orders(**body: Any) -> dict[str, Any]:
 async def test_every_position_at_once(engine: SlayerQueryEngine) -> None:
     resp = await assert_same(
         engine,
-        _orders(dimensions=["orders.status"], time_dimensions=["month(orders.created_at)"],
+        _orders(dimensions=["orders.status"], time_dimensions=["date_trunc('month', orders.created_at)"],
                 measures=["sum(orders.amount)"], filters=["orders.amount > 5"], order=[{"column": "orders.status"}]),
-        _orders(dimensions=["status"], time_dimensions=["month(created_at)"],
+        _orders(dimensions=["status"], time_dimensions=["date_trunc('month', created_at)"],
                 measures=["sum(amount)"], filters=["amount > 5"], order=[{"column": "status"}]),
     )
     assert resp.columns == ["orders.status", "orders.created_at", "orders.amount_sum"]
@@ -69,8 +69,8 @@ POSITIONS = {
         {"measures": [{"formula": "sum(amount) FILTER (WHERE status = 'paid')", "name": "p"}]},
     ),
     "transform": (
-        {"time_dimensions": ["month(created_at)"], "measures": [{"formula": "cumsum(sum(orders.amount))", "name": "c"}]},
-        {"time_dimensions": ["month(created_at)"], "measures": [{"formula": "cumsum(sum(amount))", "name": "c"}]},
+        {"time_dimensions": ["date_trunc('month', created_at)"], "measures": [{"formula": "cumsum(sum(orders.amount))", "name": "c"}]},
+        {"time_dimensions": ["date_trunc('month', created_at)"], "measures": [{"formula": "cumsum(sum(amount))", "name": "c"}]},
     ),
     "filter": ({"measures": ["count(*)"], "filters": ["orders.amount > 15"]},
                {"measures": ["count(*)"], "filters": ["amount > 15"]}),
@@ -90,9 +90,9 @@ POSITIONS = {
         {"dimensions": ["status"], "measures": ["sum(amount)"], "order": [{"column": "sum(amount)"}]},
     ),
     "main-time-dimension": (
-        {"time_dimensions": ["month(created_at)"], "measures": [{"formula": "change(sum(amount))", "name": "c"}],
+        {"time_dimensions": ["date_trunc('month', created_at)"], "measures": [{"formula": "change(sum(amount))", "name": "c"}],
          "main_time_dimension": "orders.created_at"},
-        {"time_dimensions": ["month(created_at)"], "measures": [{"formula": "change(sum(amount))", "name": "c"}],
+        {"time_dimensions": ["date_trunc('month', created_at)"], "measures": [{"formula": "change(sum(amount))", "name": "c"}],
          "main_time_dimension": "created_at"},
     ),
     "computed-dimension": (
@@ -285,7 +285,7 @@ def _tds(*entries: Any, extensions: Any = None) -> SlayerQuery:
 
 @pytest.mark.parametrize("extensions", [None, [{"source_name": "orders"}]], ids=["model", "extension"])
 def test_a_root_qualified_duplicate_dedupes(extensions: Any) -> None:
-    query = _tds("month(created_at)", "month(orders.created_at)", extensions=extensions)
+    query = _tds("date_trunc('month', created_at)", "date_trunc('month', orders.created_at)", extensions=extensions)
     assert [(td.dimension, str(td.granularity)) for td in query.time_dimensions or []] == [("created_at", "month")]
 
 
@@ -306,15 +306,15 @@ def test_literals_are_never_conflated() -> None:
 
 
 def test_spacing_variants_collapse_at_construction() -> None:
-    query = _tds("month(coalesce(shipped_at, created_at))", "month(COALESCE(shipped_at,created_at))")
+    query = _tds("date_trunc('month', coalesce(shipped_at, created_at))", "date_trunc('month', COALESCE(shipped_at,created_at))")
     assert len(query.time_dimensions or []) == 1
 
 
 async def test_a_root_qualified_duplicate_runs_once(engine: SlayerQueryEngine) -> None:
     await assert_same(
         engine,
-        _orders(time_dimensions=["month(created_at)", "month(orders.created_at)"], measures=["count(*)"]),
-        _orders(time_dimensions=["month(created_at)"], measures=["count(*)"]),
+        _orders(time_dimensions=["date_trunc('month', created_at)", "date_trunc('month', orders.created_at)"], measures=["count(*)"]),
+        _orders(time_dimensions=["date_trunc('month', created_at)"], measures=["count(*)"]),
     )
 
 
@@ -329,7 +329,7 @@ async def refine(request):
 
 @pytest.mark.parametrize("refinement", [
     {"measures": [{"formula": "sum(orders.amount)", "name": "revenue"}]},
-    {"time_dimensions": ["month(orders.ordered_at)"]},
+    {"time_dimensions": ["date_trunc('month', orders.ordered_at)"]},
     {"dimensions": ["orders.region"], "measures": [REVENUE]},
 ], ids=["measure-formula", "time-dimension", "dimension"])
 async def test_a_root_qualified_entry_is_the_saved_entry(refine: SlayerQueryEngine, refinement: dict) -> None:

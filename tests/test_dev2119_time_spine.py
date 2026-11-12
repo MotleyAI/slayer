@@ -110,7 +110,7 @@ class TestFactExpressionIsADimensionOfP:
     async def test_values_per_spine_month_and_bucket(self, engine) -> None:
         resp = await engine.execute(spine_query(measures=TWO_FACTS, time_dimensions=[
             spine_td(), {"dimension": EFF_EXPR, "granularity": "month"},
-        ]))
+        ], to_many_handling="broadcast"))
         assert _cells(resp) == _expected()
 
     async def test_equal_to_the_column_holding_the_value(self, engine) -> None:

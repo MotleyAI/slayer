@@ -30,6 +30,7 @@ from slayer.core.syntax import (
     AggCall,
     DottedRef,
     Ref,
+    call_keywords,
     drop_root_qualifier,
     parse_template,
     root_relative,
@@ -68,7 +69,7 @@ def _parse(text: str, *, root: str | None) -> Any:
 def _partition_refs(agg: AggCall) -> list[Ref | DottedRef]:
     """``partition_by=`` references of an aggregation node (row-valued regroup keys)."""
     out: list[Ref | DottedRef] = []
-    for name, value in agg.kwargs:
+    for name, value in call_keywords(agg):
         if name != "partition_by":
             continue
         values = value if isinstance(value, (list, tuple)) else (value,)
@@ -173,7 +174,7 @@ def _query_dimension_refs(query: SlayerQuery) -> list[str]:
         if isinstance(dim, ComputedDimension):
             refs.extend(_computed_dimension_refs(dim.expression, root=root))
         else:
-            refs.append(".".join(drop_root_qualifier(dim.parts, root)))
+            refs.append(".".join(drop_root_qualifier(dim.parts, root, quoted=dim.quoted_parts)))
     for td in query.time_dimensions or []:
         refs.extend(_computed_dimension_refs(td.dimension, root=root))
     return refs

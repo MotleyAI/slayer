@@ -12,9 +12,10 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.live_schema.schema_drift import IdempotentIngestResult
-from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._engine_helpers import owned_query_engine
+from tests._pg_helpers import client_datasource
 
 pytest.importorskip("pytest_postgresql")
 
@@ -40,9 +41,7 @@ async def shop(request: pytest.FixtureRequest, tmp_path: Path) -> AsyncGenerator
     for statement in _SEED:
         cur.execute(statement)
     conn.commit()
-    info = conn.info
-    datasource = DatasourceConfig(name=DS, type="postgres", host=info.host, port=info.port, database=info.dbname,
-                                  username=info.user, password="")
+    datasource = client_datasource(conn.info, name=DS)
     storage = YAMLStorage(base_dir=str(tmp_path / "store"))
     await storage.save_datasource(datasource)
     try:
@@ -52,32 +51,20 @@ async def shop(request: pytest.FixtureRequest, tmp_path: Path) -> AsyncGenerator
 
 
 async def _qty(storage: YAMLStorage, model: str) -> list[Any]:
-    engine = SlayerQueryEngine(storage=storage)
-    try:
+    async with owned_query_engine(storage=storage) as engine:
         rows = (await engine.execute({"source_model": model, "dimensions": ["qty"]})).data
-    finally:
-        await engine.aclose()
-        engine.close()
     return [r[f"{model}.qty"] for r in rows]
 
 
 async def _drift(storage: YAMLStorage) -> list[Any]:
-    engine = SlayerQueryEngine(storage=storage)
-    try:
+    async with owned_query_engine(storage=storage) as engine:
         return await engine.validate_models(data_source=DS)
-    finally:
-        await engine.aclose()
-        engine.close()
 
 
 async def _ingest(*, datasource: DatasourceConfig, storage: YAMLStorage, **scope: Any) -> IdempotentIngestResult:
-    engine = SlayerQueryEngine(storage=storage)
-    try:
+    async with owned_query_engine(storage=storage) as engine:
         return await ingest_datasource_idempotent(datasource=datasource, storage=storage,
                                                   client=engine.client_for(datasource), **scope)
-    finally:
-        await engine.aclose()
-        engine.close()
 
 
 async def _ingested(storage: YAMLStorage) -> SlayerModel:

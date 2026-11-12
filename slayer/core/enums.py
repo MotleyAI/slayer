@@ -165,6 +165,8 @@ class DatePart(StrEnum):
 
 # Lowercased spellings meaning one ``date_part`` part, as ``<alias>(x)`` and as a part word.
 DATE_PART_ALIASES: dict[str, DatePart] = {
+    "year": DatePart.YEAR, "quarter": DatePart.QUARTER, "month": DatePart.MONTH, "week": DatePart.WEEK,
+    "day": DatePart.DAY, "hour": DatePart.HOUR, "minute": DatePart.MINUTE, "second": DatePart.SECOND,
     "isodow": DatePart.DAY_OF_WEEK, "day_of_week": DatePart.DAY_OF_WEEK,
     "doy": DatePart.DAY_OF_YEAR, "dayofyear": DatePart.DAY_OF_YEAR, "day_of_year": DatePart.DAY_OF_YEAR,
     "isoyear": DatePart.ISO_YEAR, "iso_year": DatePart.ISO_YEAR,
@@ -175,6 +177,8 @@ DATE_PART_ALIASES: dict[str, DatePart] = {
 AMBIGUOUS_WEEKDAY_NAMES: frozenset[str] = frozenset({"dow", "dayofweek", "weekday"})
 # Date spellings a custom aggregation or granularity may not take (lowercased).
 RESERVED_DATE_SYNTAX_NAMES: frozenset[str] = frozenset({*DATE_PART_ALIASES, "extract"})
+# Function names reserved for evaluation (Ossie's ``AGG``); a field may still take one.
+RESERVED_NAMES: frozenset[str] = frozenset({"agg"})
 
 
 def ambiguous_weekday_message(name: str) -> str:

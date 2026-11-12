@@ -83,11 +83,11 @@ async def _qb_store(tmp_path, ds: DatasourceConfig, backend: str) -> StorageBack
 
 class TestVersion:
     def test_query_version_bumped(self) -> None:
-        assert CURRENT_VERSIONS["SlayerQuery"] == 11
+        assert CURRENT_VERSIONS["SlayerQuery"] == 13
 
 
 class TestQueryDocument:
-    @pytest.mark.parametrize("version", [9, 10])
+    @pytest.mark.parametrize("version", [9, 10, 11, 12])
     def test_a_stored_query_converts_silently(self, version: int) -> None:
         _assert_upgraded(SlayerQuery.model_validate(_stage(version=version)))
 
@@ -191,7 +191,7 @@ def _legacy_root_stage(stored_filter: str) -> dict:
 
 
 def _extensions_stage(stored_filter: str) -> dict:
-    return {"version": 10, **rev_query(filters=[stored_filter]), "extensions": [EXTENDED_CUSTOMERS]}
+    return {"version": 12, **rev_query(filters=[stored_filter]), "extensions": [EXTENDED_CUSTOMERS]}
 
 
 async def _loaded_stage(storage: StorageBackend) -> SlayerQuery:

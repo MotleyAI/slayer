@@ -1,10 +1,13 @@
 """The time spine and custom granularities on a real Postgres."""
 
+from collections.abc import AsyncIterator
+
 import pytest
 
-from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._engine_helpers import owned_query_engine
+from tests._pg_helpers import client_datasource
 from tests.integration._dev2015_server import (
     check_all,
     check_quarter_hour_year,
@@ -23,20 +26,18 @@ postgresql = factories.postgresql("postgresql_proc")
 
 
 @pytest.fixture
-async def pg_spine(postgresql, tmp_path) -> SlayerQueryEngine:
+async def pg_spine(postgresql, tmp_path) -> AsyncIterator[SlayerQueryEngine]:
     cur = postgresql.cursor()
     for stmt in server_statements("postgres"):
         cur.execute(stmt)
     postgresql.commit()
     storage = YAMLStorage(base_dir=str(tmp_path))
-    info = postgresql.info
-    base = DatasourceConfig(name="pg", type="postgres", host=info.host, port=info.port,
-                            database=info.dbname, username=info.user, password="")
-    for name, models in (("pg", server_models(data_source="pg")), ("pg_ts", server_models_ts(data_source="pg_ts"))):
-        await storage.save_datasource(with_granularities(base, name=name))
-        for model in models:
+    base = client_datasource(postgresql.info)
+    datasources = [with_granularities(base, name=name) for name in ("pg", "pg_ts")]
+    async with owned_query_engine(storage=storage, datasources=datasources) as engine:
+        for model in (*server_models(data_source="pg"), *server_models_ts(data_source="pg_ts")):
             await storage.save_model(model)
-    return SlayerQueryEngine(storage=storage)
+        yield engine
 
 
 @pytest.mark.integration

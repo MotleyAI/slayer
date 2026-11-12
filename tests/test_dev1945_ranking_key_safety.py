@@ -95,10 +95,11 @@ def _assert_plain_ranking_expr(expr: exp.Expression, *, leaf: str) -> None:  # p
 
 
 def _ranked_cte_order_expr(sql: str) -> tuple[exp.Expression, exp.Select]:  # pyright: ignore[reportPrivateImportUsage]
-    """(ORDER BY expression, enclosing SELECT) of the single ranked ``ROW_NUMBER``."""
+    """(ranking-key ORDER BY expression, enclosing SELECT) of the single ranked ``ROW_NUMBER``."""
     tree = sqlglot.parse_one(sql, dialect="sqlite")
     [window] = [w for w in tree.find_all(exp.Window) if isinstance(w.this, exp.RowNumber)]
-    [ordered] = window.args["order"].expressions
+    # The key is the last term; any NULL flag on it comes first.
+    ordered = window.args["order"].expressions[-1]
     select = window.find_ancestor(exp.Select)
     assert select is not None
     return ordered.this, select

@@ -25,13 +25,13 @@ from slayer.core.policy import (
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient, TypeProbe
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.base import ExplainStatements, ServerProfile
 from slayer.sql.session_policy import ScopedTable, apply_session_policy
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1739_fixtures import transaction
+from tests._engine_helpers import owned_query_engine
 
 TENANT = "org"
 TENANT_VALUE = "a"
@@ -176,15 +176,10 @@ async def file_engine(backend: str) -> AsyncGenerator[tuple[SlayerQueryEngine, D
         _seed_file(backend, db_path)
         ds = DatasourceConfig(name="test", type=backend, database=db_path)
         storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
-        await storage.save_datasource(ds)
-        await save_models(storage)
-        engine = SlayerQueryEngine(storage=storage)
-        try:
+        async with owned_query_engine(storage=storage, datasources=[ds]) as engine:
+            await save_models(storage)
             await save_query_backed(engine)
             yield engine, ds
-        finally:
-            engine.close()
-            engine_factory.invalidate_engine(ds)
 
 
 @contextlib.asynccontextmanager
@@ -194,14 +189,11 @@ async def emission_engine(dialect: str) -> AsyncGenerator[tuple[SlayerQueryEngin
         ds = DatasourceConfig(name="test", type=dialect)
         storage = YAMLStorage(base_dir=tmp)
         await storage.save_datasource(ds)
-        await save_models(storage)
-        # A query-backed model's save-time dry run never connects.
-        await storage.save_model(QUERY_BACKED, _validate=False)
-        engine = SlayerQueryEngine(storage=storage)
-        try:
+        async with owned_query_engine(storage=storage) as engine:
+            await save_models(storage)
+            # A query-backed model's save-time dry run never connects.
+            await storage.save_model(QUERY_BACKED, _validate=False)
             yield engine, ds
-        finally:
-            engine.close()
 
 
 async def correlating_profile(_self: Any) -> ServerProfile:

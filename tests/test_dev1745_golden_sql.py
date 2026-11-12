@@ -1,4 +1,4 @@
-"""DEV-1745 — golden SQL baseline for the "SQL-identical refactor" claim.
+"""Golden SQL baseline for the "SQL-identical refactor" claim.
 
 Existing suites passing unchanged is supporting evidence, not proof: they cover
 the shapes someone already thought to test. This harness pins the emitted SQL
@@ -10,7 +10,7 @@ Workflow
 --------
 The golden file is the BEFORE state, generated against the pre-refactor code.
 When an implementation commit changes emitted SQL, this test fails with a diff.
-That diff is the per-test approval artifact required by the DEV-1742 protocol.
+That diff is the per-test approval artifact required by the golden-SQL approval protocol.
 
 Blessing a change is deliberately a four-step loop:
 
@@ -144,7 +144,7 @@ def _orders() -> SlayerModel:
             # column reference, therefore no join to discover. The BigQuery
             # baseline entry records exactly that, which is what the dialect
             # does with this input rather than a defect to fix here. Mode-A
-            # portability across quoting styles is noted on DEV-1746.
+            # portability across quoting styles is a separate concern.
             Column(name="quoted_cross", sql='"customers"."spend"',
                    type=DataType.DOUBLE),
             # derived-of-derived, two hops (currently BROKEN — see module doc)
@@ -213,10 +213,12 @@ def _cases() -> dict:
         ),
         # --- cross-model _cm_ scope ---
         "cm/joined_measure": _q(
+            to_many_handling="broadcast",
             dimensions=dim_status,
             measures=[{"formula": "sum(customers.spend)"}],
         ),
         "cm/fragment_default_crossing": _q(
+            to_many_handling="broadcast",
             dimensions=dim_status,
             measures=[{"formula": "wscaled_sum(customers.spend)"}],
         ),
@@ -379,7 +381,7 @@ def test_error_entries_record_the_full_message(baseline) -> None:
 
     The baseline currently records NO exceptions: the five ``_cm_`` fragment-join
     entries were fixed by the one-Mode-A-door work, and the last three (BigQuery
-    dotted-alias corruption in the grain join-back) by DEV-1746 B2. So this now
+    dotted-alias corruption in the grain join-back) later. So this now
     guards the FORMAT rather than the existence of error entries — it is vacuous
     while the baseline is clean, and constrains the next entry that appears.
     """
@@ -393,7 +395,7 @@ def test_error_entries_record_the_full_message(baseline) -> None:
 
 
 def test_record_raise_redacts_volatile_paths_only() -> None:
-    """DEV-1786 — recorded exception messages embed volatile absolute paths
+    """Recorded exception messages embed volatile absolute paths
     (tempdir, repo root, CI checkout) that would differ run-to-run. They are
     redacted to ``<PATH>``; a URL and compact SQL division must survive intact
     so the message still pins the FAILURE, not where the test ran."""

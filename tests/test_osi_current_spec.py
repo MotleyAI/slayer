@@ -1,6 +1,7 @@
 """Current-spec OSI documents: field visibility, keys, relationships and metric resolution."""
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -278,9 +279,9 @@ def test_quoted_reference_matches_exactly(db: Path) -> None:
 
 def test_case_only_ambiguity_is_reported(db: Path) -> None:
     fields = [f("id", "o_orderkey"), f("ID", "o_custkey")]
-    result = convert(db=db, docs=documents(flat([_orders(fields, metrics=[m("n", "COUNT(DISTINCT id)")])])))
-    assert unconverted(result, "n")
-    assert any("ambiguous" in e.message.lower() for e in mentions(result, "n"))
+    docs = documents(flat([_orders(fields, metrics=[m("n", "COUNT(DISTINCT id)")])]))
+    with pytest.raises(OsiConversionError, match=r"'orders': 'id', 'ID'"):
+        convert(db=db, docs=docs)
 
 
 # ─────────────────────── legacy lenient resolution ─────────────────────────
@@ -338,15 +339,24 @@ def test_dataset_scoped_count_star_stays_on_its_dataset(db: Path) -> None:
 
 def test_dataset_scoped_metric_colliding_with_a_field(db: Path) -> None:
     orders = _orders([*ORDER_FIELDS, f("revenue", "amount")], metrics=[m("revenue", "SUM(amount)")])
-    result = convert(db=db, docs=documents(flat([orders])))
-    assert unconverted(result, "revenue")
+    docs = documents(flat([orders]))
+    with pytest.raises(OsiConversionError, match=re.escape("'orders': 'revenue', 'revenue'")):
+        convert(db=db, docs=docs)
 
 
-def test_duplicate_dataset_scoped_metric_names(db: Path) -> None:
-    orders = _orders(metrics=[m("tot", "SUM(amount)"), m("tot", "MAX(amount)")])
-    result = convert(db=db, docs=documents(flat([orders])))
-    assert [x.formula for x in by_name(result)["orders"].measures if x.name == "tot"] == ["sum(amount)"]
-    assert mentions(result, "tot")
+@pytest.mark.parametrize(("fields", "metrics", "names"), [
+    ([*ORDER_FIELDS, f("amount")], [], "'amount', 'amount'"),
+    ([*ORDER_FIELDS, f("Amount", "amount")], [], "'amount', 'Amount'"),
+    (ORDER_FIELDS, [m("STATUS", "COUNT(*)")], "'status', 'STATUS'"),
+    (ORDER_FIELDS, [m("tot", "SUM(amount)"), m("tot", "MAX(amount)")], "'tot', 'tot'"),
+    (ORDER_FIELDS, [m("tot", "SUM(amount)"), m("TOT", "MAX(amount)")], "'tot', 'TOT'"),
+], ids=["field-twice", "field-case-only", "field-and-metric", "metric-twice", "metric-case-only"])
+def test_names_repeated_within_a_dataset_refuse_the_import(
+    db: Path, fields: list[dict[str, Any]], metrics: list[dict[str, Any]], names: str,
+) -> None:
+    docs = documents(flat([_orders(fields, metrics=metrics)]))
+    with pytest.raises(OsiConversionError, match=re.escape(f"'orders': {names}")):
+        convert(db=db, docs=docs)
 
 
 def test_dataset_scoped_and_model_scoped_metric_name_clash(db: Path) -> None:

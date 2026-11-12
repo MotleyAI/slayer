@@ -1,4 +1,4 @@
-"""DEV-1824 golden SQL — the lifted ``partition_by=`` shapes and the remaining
+"""Golden SQL — the lifted ``partition_by=`` shapes and the remaining
 guard raises across five dialects.
 
 ``build_baseline`` forces ``SLAYER_VALIDATE_SCOPES=1`` so each working entry is
@@ -128,6 +128,7 @@ def _cases() -> dict:
             ],
         ),
         "lift/coexist_cross_model": q(
+            to_many_handling="broadcast",
             dimensions=["region", "city"],
             measures=[
                 ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
@@ -174,6 +175,7 @@ def _cases() -> dict:
             measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ),
         "guard/dim_cross_model_source": q(
+            to_many_handling="broadcast",
             dimensions=[
                 "region",
                 {"expression": "CASE WHEN sum(customers.spend, partition_by=region) "

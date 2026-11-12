@@ -5,7 +5,7 @@ import os
 import shutil
 import tempfile
 from typing import Any
-from collections.abc import Generator
+from collections.abc import AsyncIterator, Generator
 
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
@@ -87,9 +87,10 @@ def storage(_shared_storage: YAMLStorage) -> YAMLStorage:
 
 
 @pytest.fixture
-def mcp_server(_shared_mcp_server, storage: YAMLStorage):
+async def mcp_server(_shared_mcp_server, storage: YAMLStorage) -> AsyncIterator[Any]:
     # Depend on `storage` so the per-test reset runs first.
-    return _shared_mcp_server
+    yield _shared_mcp_server
+    await _shared_mcp_server._slayer_engine.aclose()
 
 
 async def _dry_run_sql(storage: YAMLStorage, name: str) -> str:
@@ -3136,9 +3137,12 @@ class TestDatabaseFailuresAreToolErrors:
         return storage
 
     async def _call_tool(self, storage: YAMLStorage, name: str, arguments: dict[str, Any]):
-        server = create_mcp_server(storage=storage, _seed_help=False)
-        async with create_connected_server_and_client_session(server) as session:
-            return await session.call_tool(name, arguments)
+        server: Any = create_mcp_server(storage=storage, _seed_help=False)
+        try:
+            async with create_connected_server_and_client_session(server) as session:
+                return await session.call_tool(name, arguments)
+        finally:
+            await server._slayer_engine.aclose()
 
     @staticmethod
     def _assert_database_tool_error(result) -> None:

@@ -28,6 +28,7 @@ from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.compile.discovery import RootDisposition
 from slayer.engine.compile.stages import _regroup_producer_prebound
 from slayer.engine.plan import plan_query
+from slayer.ir.prebound import ModePolicy
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.sqlite_conn import transaction
@@ -394,7 +395,7 @@ def _grain_names(keys) -> dict:
     prebound, _ = _regroup_producer_prebound(
         pks=Grain(keys=frozenset(keys)),
         aggs=[AggregateKey(source=ColumnKey(leaf="amount"), agg="sum")],
-        model=models[0], bundle=_bundle(), inherited=[], n_date_range=0,
+        model=models[0], bundle=_bundle(), inherited=[], n_date_range=0, mode_policy=ModePolicy(),
     )
     dims = [dm for dm in prebound.declared_measures if dm.is_dimension]
     return {dm.bound.value_key: dm.public_name for dm in dims}

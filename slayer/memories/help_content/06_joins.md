@@ -24,9 +24,12 @@ Each aggregation runs over its own model's rows exactly once, whatever the root:
 a dimension it cannot be attributed to (an order's status for customer credit),
 `to_many_handling` decides:
 
-- `broadcast` (default): the total repeats on every row, with a warning;
-- `associate`: each row gets the aggregate over the entities associated with it
-  (the credit of the customers having orders in that status);
+- omitted (default): each row gets the aggregate over the entities associated with
+  it (the credit of the customers having orders in that status), with an
+  `associated` warning; `window=` and `first`/`last` repeat the total instead, with
+  a `broadcast` warning naming why;
+- `associate`: the same, but refuses `window=` and `first`/`last`;
+- `broadcast`: the total repeats on every row, with a warning;
 - `error`: the query is refused.
 
 ## Patterns

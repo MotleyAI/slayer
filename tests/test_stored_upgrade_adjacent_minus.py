@@ -41,6 +41,13 @@ CASES = [
     pytest.param("(sum(a) # x\u2028y\n + sum(b)) # end", "(sum(a) -- x\u2028y\n + sum(b)) -- end", id="unicode-line-separator"),
 ]
 
+#: Full-load text where a later step (deprecated spellings \u2192 canonical twin) changes the token rewrite's output.
+_FULL_LOAD = {'note == "a--b"': "note = 'a--b'"}
+
+
+def _fully_loaded(stored: str, loaded: str) -> str:
+    return _FULL_LOAD.get(stored, loaded)
+
 
 @pytest.mark.parametrize(("stored", "loaded"), CASES)
 def test_token_rewrite(stored: str, loaded: str) -> None:
@@ -55,13 +62,13 @@ def test_loaded_text_parses(stored: str, loaded: str) -> None:
 @pytest.mark.parametrize(("stored", "loaded"), CASES)
 def test_model_measure_formula(stored: str, loaded: str) -> None:
     doc = {**orders_v10(version=15), "measures": [{"name": "x", "formula": stored}]}
-    assert SlayerModel.model_validate(doc).measures[0].formula == loaded
+    assert SlayerModel.model_validate(doc).measures[0].formula == _fully_loaded(stored, loaded)
 
 
 @pytest.mark.parametrize(("stored", "loaded"), CASES)
 def test_query_filter(stored: str, loaded: str) -> None:
     query = SlayerQuery.model_validate({"version": 6, "source_model": "orders", "filters": [stored]})
-    assert query.filters == [loaded]
+    assert query.filters == [_fully_loaded(stored, loaded)]
 
 
 def test_current_version_text_is_never_rewritten() -> None:

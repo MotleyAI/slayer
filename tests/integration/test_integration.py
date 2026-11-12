@@ -1291,13 +1291,8 @@ async def test_cross_model_measure_monthly(cross_model_env):
     response = await engine.execute(query)
 
     assert response.row_count == 3
-    # customers model has no join back to orders, so the time dimension is
-    # unreachable from the re-rooted CTE → dropped → scalar AVG CROSS JOINed.
-    # Global avg: (90 + 60 + 80) / 3 = 76.67
-    global_avg = pytest.approx((90.0 + 60.0 + 80.0) / 3)
-    assert response.data[0]["orders.customers.avg_score_avg"] == global_avg
-    assert response.data[1]["orders.customers.avg_score_avg"] == global_avg
-    assert response.data[2]["orders.customers.avg_score_avg"] == global_avg
+    # Associated: each month averages the distinct customers its orders reach (Mar: Charlie, Alice).
+    assert [r["orders.customers.avg_score_avg"] for r in response.data] == pytest.approx([90.0, 60.0, 85.0])
 
 
 async def test_cross_model_measure_no_join_raises(cross_model_env):
@@ -1439,12 +1434,8 @@ async def test_transform_on_cross_model(cross_model_env):
     )
     response = await engine.execute(query)
 
-    # customers has no join back to orders → time dim dropped → scalar avg
-    # CROSS JOINed. cumsum of a constant = constant * row_number.
-    global_avg = (90.0 + 60.0 + 80.0) / 3
-    assert response.data[0]["orders.running"] == pytest.approx(global_avg)
-    assert response.data[1]["orders.running"] == pytest.approx(global_avg * 2)
-    assert response.data[2]["orders.running"] == pytest.approx(global_avg * 3)
+    # cumsum over the associated monthly averages 90, 60, 85.
+    assert [r["orders.running"] for r in response.data] == pytest.approx([90.0, 150.0, 235.0])
 
 
 # ---------------------------------------------------------------------------
@@ -1563,11 +1554,8 @@ async def test_query_list_with_joins(cross_model_env):
     response = await engine.execute(query=[sub, main])
 
     assert response.row_count == 3
-    # customer_scores has no join back to orders → time dim dropped → scalar avg
-    global_avg = pytest.approx((90.0 + 60.0 + 80.0) / 3)
-    assert response.data[0]["orders.customer_scores.avg_score_avg_avg"] == global_avg
-    assert response.data[1]["orders.customer_scores.avg_score_avg_avg"] == global_avg
-    assert response.data[2]["orders.customer_scores.avg_score_avg_avg"] == global_avg
+    # Associated: each month averages the distinct customer_scores rows its orders reach.
+    assert [r["orders.customer_scores.avg_score_avg_avg"] for r in response.data] == pytest.approx([90.0, 60.0, 85.0])
 
 
 async def test_sibling_stage_joins_dag(cross_model_env):

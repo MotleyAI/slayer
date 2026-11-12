@@ -1,7 +1,7 @@
 # queries/cross-model-aggregates Specification
 
 ## Purpose
-Defines how aggregates over joined models compose with the query surface: where a cross-model aggregate's value is computed, which query dimensions it may vary along (fan-out safety and attribution), how it broadcasts across the rest, the strict mode that turns silent broadcasts into errors, and the metadata that reports them.
+Defines how aggregates over joined models compose with the query surface: where a cross-model aggregate's value is computed, which query dimensions it may vary along (fan-out safety and attribution), how it resolves the rest per `to_many_handling` (association by default; broadcast or error when requested), and the metadata that reports them.
 
 ## Requirements
 
@@ -36,10 +36,10 @@ other metrics are present.
 
 ### Requirement: Fan-out-safe grain with broadcast
 A metric's implicit grain is the query dimension set. Under
-`to_many_handling: "broadcast"` (the default), each aggregate SHALL be computed at the
-subset of that grain attributable to its root — the dimensions whose path from the
-root crosses only provably many-to-one join hops — and its value SHALL be broadcast
-across the remaining dimensions. Under `"associate"`, the remaining dimensions resolve
+`to_many_handling: "broadcast"`, each aggregate SHALL be computed at the subset of that
+grain attributable to its root — the dimensions whose path from the root crosses only
+provably many-to-one join hops — and its value SHALL be broadcast across the remaining
+dimensions. When the mode is omitted or `"associate"`, the remaining dimensions resolve
 by distinct-entity association per `queries/attribution-modes`; under `"error"` they
 refuse. Dimensions at the aggregate's own root or reached from it over provably-safe
 hops MUST retain exact per-dimension values in every mode; only unattributable
@@ -52,7 +52,8 @@ dimensions are mode-dependent.
   executed values
 
 #### Scenario: Unattributable dimension broadcasts
-- **WHEN** a query rooted at `orders` selects `sum(customers.spend)` by an
+- **WHEN** a query rooted at `orders` with `to_many_handling: "broadcast"` selects
+  `sum(customers.spend)` by an
   `orders`-level dimension (unreachable from `customers` over provably many-to-one
   hops)
 - **THEN** every cell of the same attributable slice carries the same broadcast value —
@@ -61,13 +62,15 @@ dimensions are mode-dependent.
 #### Scenario: Unproven join arity broadcasts rather than fanning out
 - **WHEN** a dimension is reachable from the aggregate's root only across a join whose
   arity is neither declared many-to-one/one-to-one nor structurally proven
-- **THEN** the aggregate broadcasts across that dimension instead of joining through
-  it, and never silently double-counts
+- **THEN** under `to_many_handling: "broadcast"` the aggregate broadcasts across that
+  dimension instead of joining through it; omitting the mode it associates over its
+  distinct entities with the associated-cells warning; in no mode does it silently
+  double-count
 
 #### Scenario: Associate mode replaces the broadcast with per-cell association
-- **WHEN** the same unattributable-dimension query runs with
-  `to_many_handling: "associate"`
-- **THEN** each cell carries the distinct-entity value per
+- **WHEN** the same unattributable-dimension query runs omitting the mode, and again
+  with `to_many_handling: "associate"`
+- **THEN** in both runs each cell carries the distinct-entity value per
   `queries/attribution-modes`, with the result grain unchanged
 
 ### Requirement: Broadcast metadata
@@ -77,15 +80,18 @@ dimension, and a per-dimension reason that reflects the actual path classificati
 fanning or unproven join hop when a path exists, or unreachable when no join path
 resolves — a reachable-but-fanning dimension MUST NOT be reported as unreachable, and a
 dimension on a prefix of the aggregate's own path is reachable back over that prefix,
-never a round trip through the query root. Every
-broadcast warning SHALL carry the dice–slice hint (per `queries/semantics` › Loud
-degradation). One warning SHALL be emitted per distinct aggregate: identified by its
-public measure name when directly selected, else by its canonical aggregate form and
-role (expression, order, or filter). Hidden and filter-only aggregate uses emit
+never a round trip through the query root. A
+broadcast warning SHALL carry the dice–slice hint, or, for a fallback of an
+association-ineligible aggregate under the default, the unsupported-association reason
+and remedy (per `queries/semantics` › Loud degradation). One warning SHALL be emitted
+per distinct aggregate and fallback reason: an aggregate is identified by its public
+measure name when directly selected, else by its canonical aggregate form and role
+(expression, order, or filter). Hidden and filter-only aggregate uses emit
 warnings too. Explicit `partition_by=` broadcasting is by design and MUST NOT warn.
 
 #### Scenario: Broadcast is reported per metric and dimension
-- **WHEN** a broadcast-mode query broadcasts `sum(customers.spend)` over `orders.status`
+- **WHEN** a query with `to_many_handling: "broadcast"` broadcasts `sum(customers.spend)`
+  over `orders.status`
 - **THEN** the response warnings include an entry naming that measure, the `status`
   dimension, the reason, and the dice–slice hint, and a matching Python-level warning
   is emitted
@@ -100,7 +106,7 @@ warnings too. Explicit `partition_by=` broadcasting is by design and MUST NOT wa
 - **THEN** the warning's reason names that hop classification — never "unreachable"
 
 #### Scenario: A prefix-side dimension names the fanning hop
-- **WHEN** a broadcast-mode query rooted at `orders` selects
+- **WHEN** a query with `to_many_handling: "broadcast"` rooted at `orders` selects
   `sum(customers.regions.countries.gdp)` by `customers.tier`, `regions → countries`
   provably to-one
 - **THEN** the warning's reason names the fanning reverse hop to `regions` on the way
@@ -194,15 +200,17 @@ An aggregate whose inputs — positional args, keyword args (including aggregati
 Cross-model aggregates SHALL accept `partition_by=`, `window=`, and `first`/`last`.
 Under `"broadcast"` and `"error"` modes, every explicit partition key MUST be
 attributable from the aggregate's root — an unattributable key is a hard error naming
-the remedy. Under `"associate"`, an explicit partition key not attributable from the
-root is legal: the aggregate attributes at the declared grain by distinct-entity
+the remedy. When the mode is omitted or `"associate"`, an explicit partition key not
+attributable from the root is legal: the aggregate attributes at the declared grain by distinct-entity
 association (per `queries/attribution-modes`), without warning (requested grain). A
 windowed aggregate — cross-model or rooted at the query population — requires the query's
 active time dimension attributable from its home dataset, else fails at plan time with a
 typed error naming the time dimension and the remedy, in every `to_many_handling` mode and
 whether or not the query filters: the time bucket is a grain member of the windowed
 aggregate that its home must determine, never a fanning join multiplying the windowed rows.
-Windowing by association under `"associate"` is deferred to DEV-1914.
+Windowing by association is deferred to DEV-1914: a windowed or `first`/`last` aggregate
+that needs association broadcasts with its reason when the mode is omitted and fails
+under `"associate"` (per `queries/attribution-modes`).
 
 #### Scenario: Cross-model partitioned aggregate computes at the declared grain
 - **WHEN** a query selects `sum(customers.spend, partition_by=<customer-level dimension>)`
@@ -215,8 +223,9 @@ Windowing by association under `"associate"` is deferred to DEV-1914.
 - **THEN** the query fails with a clear error naming the key and the remedy
 
 #### Scenario: Unattributable explicit partition key attributes under associate
-- **WHEN** the same aggregate runs under `to_many_handling: "associate"`
-- **THEN** the value is computed at the declared grain over distinct associated
+- **WHEN** the same aggregate runs omitting the mode, and again under
+  `to_many_handling: "associate"`
+- **THEN** in both runs the value is computed at the declared grain over distinct associated
   entities and attached to the query rows, by executed values, with no warning
 
 #### Scenario: Cross-model first/last and windowed aggregates work
@@ -232,7 +241,7 @@ Windowing by association under `"associate"` is deferred to DEV-1914.
   remedy, containing no issue reference — never a value counting a customer once per order
 
 ### Requirement: Cross-model aggregates compose in expressions and dimensions
-Cross-model aggregates SHALL be legal wherever local aggregates are: in arithmetic and scalar-call composites (including mixed with local aggregates and with aggregates from different joined models in one expression), inside transforms, in dimension expressions, in filters, and in ORDER BY. Composite legality is uniform across the composite's own shape: a cross-model operand SHALL compile whether the composite combines it with local aggregates, with literals, with several cross-model operands, or wraps it in scalar calls — the compiled route never depends on which seam the composite would otherwise render through, and no composite shape reaches an internal not-supported seam error. A computed dimension whose expression columns are all attributable from a metric's root participates in that metric's grain; otherwise the metric broadcasts across it. Consumption-position rules match local aggregates exactly: a combined-position consumer of a cross-model partitioned aggregate needs query-dimension partition keys (per the partitioned-aggregates combined-consumer requirement), while row-scope references to a computed dimension's own aggregate stay legal at any partition grain.
+Cross-model aggregates SHALL be legal wherever local aggregates are: in arithmetic and scalar-call composites (including mixed with local aggregates and with aggregates from different joined models in one expression), inside transforms, in dimension expressions, in filters, and in ORDER BY. Composite legality is uniform across the composite's own shape: a cross-model operand SHALL compile whether the composite combines it with local aggregates, with literals, with several cross-model operands, or wraps it in scalar calls — the compiled route never depends on which seam the composite would otherwise render through, and no composite shape reaches an internal not-supported seam error. A computed dimension whose expression columns are all attributable from a metric's root participates in that metric's grain; otherwise it is unattributable to the metric and resolves per `to_many_handling`. Consumption-position rules match local aggregates exactly: a combined-position consumer of a cross-model partitioned aggregate needs query-dimension partition keys (per the partitioned-aggregates combined-consumer requirement), while row-scope references to a computed dimension's own aggregate stay legal at any partition grain.
 
 #### Scenario: Local and cross-model aggregates in one expression
 - WHEN a query selects the measure `sum(orders.revenue) / sum(customers.spend)`
@@ -275,11 +284,11 @@ Cross-model aggregates SHALL be legal wherever local aggregates are: in arithmet
 - THEN rows sort by the banded value, by executed values, with no combined attach synthesized for the order reference
 
 ### Requirement: Intermediate-hop dimensions are supported
-A dimension lying on an intermediate hop of a cross-model aggregate's join chain SHALL be legal. It follows the attribution rule like any other dimension: exact when attributable from the aggregate's root, broadcast (with metadata) when not — never an internal not-implemented error.
+A dimension lying on an intermediate hop of a cross-model aggregate's join chain SHALL be legal. It follows the attribution rule like any other dimension: exact when attributable from the aggregate's root, otherwise resolved per `to_many_handling` (associated by default, broadcast with metadata under `"broadcast"`) — never an internal not-implemented error.
 
 #### Scenario: Intermediate-hop dimension broadcasts under attribution
 - WHEN a query rooted at `orders` selects `sum(customers.regions.pop)` by a `customers`-level dimension
-- THEN the query executes (no not-implemented error); the metric broadcasts across the customer-level dimension with metadata, since a region's population is not attributable per customer
+- THEN the query executes (no not-implemented error); since a region's population is not attributable per customer, omitting the mode each customer-level cell aggregates the distinct regions its customers reach, with the associated-cells warning, and under `to_many_handling: "broadcast"` the metric broadcasts across the customer-level dimension with metadata
 
 ### Requirement: Every aggregate has exactly one disposition
 Planning SHALL guarantee that every aggregate reference — measure, composite leaf, computed-dimension, filter-only, order-only, windowed, ranked, host-grain, or nested — is either computed inline, routed to exactly one producer, or rejected with a clear error. A discovery gap MUST surface as an explicit planner error, never as a silently dropped or wrong value.
@@ -653,7 +662,7 @@ bucket is absent) SHALL stay NULL, and no population cell SHALL be fabricated.
 #### Scenario: Empty value in every position
 - **WHEN** a query rooted at `customers` groups by `name` and selects the composite
   `count(orders.id) * 2`, filters on `count(orders.id) = 0`, orders by
-  `count(orders.id)`, and adds the dimension `count(orders.id, partition_by=[id]) == 0`
+  `count(orders.id)`, and adds the dimension `count(orders.id, partition_by=[id]) = 0`
 - **THEN** the childless customer's composite is 0, the filter keeps exactly the
   childless customers, the ordering places them as 0, and they fall in the `true`
   dimension bucket

@@ -16,7 +16,15 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.format import NumberFormatType
-from slayer.core.keys import AggregateKey, ArithmeticKey, ColumnKey, reroot_value_key, substitute_value_keys, walk_value_keys
+from slayer.core.keys import (
+    AggregateKey,
+    ArithmeticKey,
+    ColumnKey,
+    Grain,
+    reroot_value_key,
+    substitute_value_keys,
+    walk_value_keys,
+)
 from slayer.core.models import (
     Aggregation,
     Column,
@@ -26,8 +34,11 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
+from slayer.core.scope import ModelScope
+from slayer.engine.binding import bind_expr
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.core.syntax import AggCall, Ref, canonical_measure_text, parse_expr
+from slayer.core.syntax import AggCall, canonical_measure_text, parse_expr
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import _norm
@@ -143,9 +154,14 @@ class TestExpressionParse:
         assert parse_expr("sum(amount-cost)") == parse_expr("sum( amount - cost )")
 
     def test_kwargs_compose_with_expression(self) -> None:
-        node = parse_expr("sum(amount - cost, partition_by=region)")
-        assert isinstance(node, AggCall)
-        assert dict(node.kwargs)["partition_by"] == Ref(name="region")
+        orders = _orders()
+        bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[_customers()])
+        key = bind_expr(
+            parse_expr("sum(amount - cost, partition_by=region)"), scope=ModelScope(source_model=orders), bundle=bundle,
+        ).value_key
+        assert isinstance(key, AggregateKey)
+        assert isinstance(key.source, ArithmeticKey)
+        assert key.partition_keys == Grain.of([ColumnKey(path=(), leaf="region")])
 
 
 # ===========================================================================

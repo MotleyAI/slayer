@@ -81,7 +81,7 @@ def _stage_flags(stage: SlayerQuery) -> set[str]:
         "time_dimensions": bool(stage.time_dimensions),
         "filters": bool(stage.filters),
         "computed_dimensions": any(isinstance(d, ComputedDimension) for d in stage.dimensions or []),
-        "to_many_handling": stage.to_many_handling != SlayerQuery.model_fields["to_many_handling"].default,
+        "to_many_handling": stage.to_many_handling is not None,
     }
     return {flag for flag, on in present.items() if on}
 

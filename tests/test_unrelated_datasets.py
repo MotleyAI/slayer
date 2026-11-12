@@ -294,14 +294,15 @@ class TestStoredDefinitionsRefuse:
 
 class TestAggregates:
     async def test_grouped_query_broadcasts_the_total(self, engine) -> None:
-        resp = await engine.execute(grouped_query())
+        resp = await engine.execute(grouped_query(to_many_handling="broadcast"))
         assert rows(resp, "n_customers", "n_events") == {"A": (2.0, 5.0), "B": (1.0, 5.0)}
         (w,) = warnings_of(resp, "broadcast")
         assert "n_events" in w.measure
         assert "city" in " ".join(d.dimension for d in w.dimensions)
 
-    async def test_associate_mode_gives_the_same_total(self, engine) -> None:
-        resp = await engine.execute(grouped_query(to_many_handling="associate"))
+    @pytest.mark.parametrize("mode", [None, "associate"])
+    async def test_associate_mode_gives_the_same_total(self, engine, mode: str | None) -> None:
+        resp = await engine.execute(grouped_query(to_many_handling=mode))
         assert rows(resp, "n_customers", "n_events") == {"A": (2.0, 5.0), "B": (1.0, 5.0)}
         assert warnings_of(resp, "associated")
         assert warnings_of(resp, "broadcast") == []
@@ -331,9 +332,10 @@ class TestAggregates:
         with pytest.raises(PartitionKeyError):
             await engine.execute(q)
 
-    async def test_partition_by_a_population_dimension_under_associate(self, engine) -> None:
+    @pytest.mark.parametrize("mode", [None, "associate"])
+    async def test_partition_by_a_population_dimension_under_associate(self, engine, mode: str | None) -> None:
         resp = await engine.execute(grouped_query(
-            measures=[m("count(events.id, partition_by=[city])", "n")], to_many_handling="associate",
+            measures=[m("count(events.id, partition_by=[city])", "n")], to_many_handling=mode,
         ))
         assert rows(resp, "n") == {"A": (5.0,), "B": (5.0,)}
 
@@ -482,6 +484,12 @@ class TestWarnings:
 
     async def test_grouped_query(self, engine) -> None:
         resp = await engine.execute(grouped_query())
+        assert len(unrelated_warnings(resp)) == 1
+        assert len(warnings_of(resp, "associated")) == 1
+        assert warnings_of(resp, "broadcast") == []
+
+    async def test_grouped_query_under_broadcast(self, engine) -> None:
+        resp = await engine.execute(grouped_query(to_many_handling="broadcast"))
         assert len(unrelated_warnings(resp)) == 1
         assert len(warnings_of(resp, "broadcast")) == 1
 

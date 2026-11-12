@@ -296,7 +296,7 @@ aligned to the bucket it is the bucket containing the offset instant.
 
 `consecutive_periods` SHALL accept any Mode-B value-key input tree — arithmetic
 of any operator, scalar calls, `IN` / negated `IN`, null tests
-(`is None` / `is not None`), boolean connectives, and nested transforms in any
+(`IS NULL` / `IS NOT NULL`), boolean connectives, and nested transforms in any
 position. A boolean-shaped input is used as the predicate directly with NULL
 treated as false; a value-shaped input is true where its value is non-NULL and
 non-zero. Streak semantics are unchanged: false or NULL breaks the run and
@@ -344,21 +344,21 @@ strictly-typed dialects (Postgres, T-SQL, BigQuery).
 
 #### Scenario: Top-level null test drives the streak
 
-- **WHEN** a query requests `consecutive_periods(sum(hi_rev) is not None)`
+- **WHEN** a query requests `consecutive_periods(sum(hi_rev) IS NOT NULL)`
   grouped by store, where one store's aggregate is NULL in the last month
 - **THEN** the streak counts consecutive non-NULL months and the NULL month
-  breaks the run (and the `is None` form counts the complementary months)
+  breaks the run (and the `IS NULL` form counts the complementary months)
 
 #### Scenario: Null test under a boolean connective
 
 - **WHEN** a query requests
-  `consecutive_periods(sum(hi_rev) is not None and sum(cost) > 0)`
+  `consecutive_periods(sum(hi_rev) IS NOT NULL AND sum(cost) > 0)`
 - **THEN** the query executes with both conjuncts applied, rather than failing
   with a boolean-shaped-operands `ValueError`
 
 #### Scenario: Null test over a dimension column
 
-- **WHEN** a query requests `consecutive_periods(store is not None)` grouped by
+- **WHEN** a query requests `consecutive_periods(store IS NOT NULL)` grouped by
   store
 - **THEN** the referenced column materialises and the streak executes correctly
 
@@ -373,7 +373,7 @@ strictly-typed dialects (Postgres, T-SQL, BigQuery).
 ### Requirement: consecutive_periods predicate typing contract
 
 Boolean-shaped SHALL be defined recursively as: a comparison; a null test
-(`is None` / `is not None`); `IN`; or `and` / `or` / `not` whose
+(`IS NULL` / `IS NOT NULL`); `IN`; or `and` / `or` / `not` whose
 operands are themselves boolean-shaped. A boolean-shaped node SHALL be accepted
 at the predicate top level and in a conditional's condition position (`iif`
 first argument), and in a numeric position — an arithmetic operand, a numeric
@@ -418,7 +418,7 @@ be rejected as a predicate (its truthiness is undefined).
 
 #### Scenario: Null test in a value position rejected
 
-- **WHEN** a query requests `consecutive_periods((sum(hi_rev) is None) + 1)`
+- **WHEN** a query requests `consecutive_periods((sum(hi_rev) IS NULL) + 1)`
 - **THEN** the query executes with the null test read as its integer, so every
   month's value is 1 or 2 and the streak never breaks
 
@@ -485,7 +485,9 @@ nesting. Every operand the composite needs SHALL be materialised for it, includi
 aggregate that appears nowhere else in the query, and the composite SHALL evaluate to the
 same value whether or not any operand is also selected on its own. The transform's own
 regime (re-aggregation or series) SHALL be unchanged by the composite around it. No such
-composite SHALL fail with an internal render error.
+composite SHALL fail with an internal render error. The scenarios below run under
+`to_many_handling: "broadcast"`, where a cross-model inner over an order month repeats
+its total.
 
 #### Scenario: Transform over a cross-model inner plus a hidden local aggregate
 
@@ -1166,3 +1168,47 @@ requirement.
 - **THEN** it executes on SQLite and DuckDB and the multiset of bucket numbers is the
   balanced split of the rows into two buckets; which row lands in which bucket is not
   specified, since every input value ties
+
+### Requirement: A time-ordered transform over extraction dimensions names the date_trunc remedy
+
+When a time-ordered transform (`time_shift`, `change`, `change_pct`, `cumsum`,
+`lag`, `lead`, `first` / `last` as transforms, `consecutive_periods`) or a
+windowed aggregate fails with the existing typed no-time-dimension error because
+the query projects no time dimension, and a dimension of the query is a
+date-part extraction whose part is a built-in granularity (`year(x)`,
+`quarter(x)`, `month(x)`, `week(x)`, `day(x)`, `hour(x)`, `minute(x)`,
+`second(x)`, or `date_part('<part>', x)` with such a part, any case) of a DATE-
+or TIMESTAMP-typed value, the error SHALL additionally name the remedy
+`date_trunc('<part>', <expr>)` built from that extraction's part and argument,
+one per such dimension. The failure SHALL otherwise be unchanged — same error
+type, raised before any SQL is generated — and a query with no such dimension
+SHALL keep the existing message. An extraction dimension SHALL never serve as a
+transform's or window's time axis.
+
+#### Scenario: Running total over a month-of-year dimension
+
+- **WHEN** a query on `orders` has `dimensions=["month(created_at)"]`, no time
+  dimension, and selects `cumsum(sum(amount))`
+- **THEN** planning fails with the typed no-time-dimension error whose message
+  names `date_trunc('month', created_at)`, and no SQL is generated
+
+#### Scenario: Shift family and windowed aggregate name the remedy
+
+- **WHEN** a query has `dimensions=["year(created_at)"]`, no time dimension, and
+  selects `change(sum(amount))`, or `sum(amount, window='3m')`
+- **THEN** each fails with the typed no-time-dimension error naming
+  `date_trunc('year', created_at)`
+
+#### Scenario: The remedy executes
+
+- **WHEN** the running-total query instead has
+  `dimensions=["date_trunc('month', created_at)"]`
+- **THEN** it executes, accumulating `sum(amount)` along the month buckets, by
+  executed values
+
+#### Scenario: No extraction keeps the existing message
+
+- **WHEN** a query has `dimensions=["status"]`, no time dimension, and selects
+  `cumsum(sum(amount))`
+- **THEN** it fails with the existing no-time-dimension error, whose message
+  names no `date_trunc` remedy

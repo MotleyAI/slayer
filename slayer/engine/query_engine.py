@@ -54,21 +54,19 @@ from slayer.core.format import encode_text, format_number
 from slayer.core.join_edges import JoinEdgeRef, resolve_join_refs, without_joins
 from slayer.core.models import (
     DatasourceConfig,
+    name_collision_warnings,
     ModelMeasure,
     SlayerModel,
     is_identifier,
     _check_join_keys,
     join_key_error,
 )
-from slayer.core.granularity import resolve_granularity
 from slayer.core.query import (
     ComputedDimension,
     OrderItem,
     QueryRefinement,
     SlayerQuery,
-    computed_dimension_name,
     extract_variable_refs,
-    granularity_call_parts,
     refine_query,
     render_probe_text,
 )
@@ -85,6 +83,7 @@ from slayer.engine.population.inference import (
 from slayer.core.time_points import host_clock
 from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine_query
 from slayer.core.scope import StageDisplay, StageSchema, collect_stale_spellings
+from slayer.core.legacy_spellings import collect_legacy_spellings, emit_deprecations
 from slayer.core.warnings import (
     AnySlayerWarning,
     AssociatedWarningPayload,
@@ -92,10 +91,12 @@ from slayer.core.warnings import (
     BroadcastDimension,
     BroadcastGrainWarningPayload,
     LibraryNameShadowWarning,
+    NameCollisionWarning,
     NarrowedAccessWarning,
     NormalizationWarning,
     SemiJoinPushedWarningPayload,
     SlayerLibraryNameShadowWarning,
+    SlayerNameCollisionWarning,
     SlayerNarrowedAccessWarning,
     SlayerUnrelatedDatasetWarning,
     SlayerWholeListWarning,
@@ -146,6 +147,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle, model_from_stage_schem
 from slayer.engine.stage_ordering import localize_stages, topologically_order_stages
 from slayer.engine.statement_reads import StatementReads, statement_reads
 from slayer.engine.binding import collect_bind_records
+from slayer.engine.elaborate_env import check_result_names_case
 from slayer.engine.extensions import with_own_extension
 from slayer.engine.plan import plan_stages
 from slayer.ir.variables import (
@@ -213,6 +215,25 @@ class SavedQueryRun(BaseModel):
 
     name: str
     refinement: QueryRefinement | None = None
+
+
+def _read_model_collisions(*, reads: StatementReads, bundle: ResolvedSourceBundle) -> List[NameCollisionWarning]:
+    """A ``NameCollisionWarning`` per case collision of each model the statement reads."""
+    read = {m for m, _ in (*reads.columns, *reads.measures, *reads.aggregations)}
+    models = {**bundle.models_by_name, **({bundle.source_model.name: bundle.source_model} if bundle.source_model else {})}
+    return [w for name in sorted(read) if name in models for w in name_collision_warnings(models[name])]
+
+
+def _check_fresh_result_names(run_input: Any) -> None:
+    """The result names a caller writes may not differ only in case; a stored query is never refused."""
+    for item in run_input if isinstance(run_input, list) else [run_input]:
+        query = SlayerQuery.model_validate(item) if isinstance(item, dict) else item
+        if isinstance(query, SlayerQuery):
+            check_result_names_case(names=[
+                *(m.name for m in query.measures or [] if m.name),
+                *(d.name for d in query.dimensions or [] if isinstance(d, ComputedDimension) and d.name),
+                *(td.name for td in query.time_dimensions or [] if td.name),
+            ])
 
 
 def resolve_run_input(query: _QueryT, refine: "QueryRefinement | dict | None") -> "_QueryT | SavedQueryRun":
@@ -331,37 +352,22 @@ def _merge_query_variables(
     return {**(outer or {}), **(stage or {}), **(runtime or {})}
 
 
-def _is_granularity_call(d: ComputedDimension, *, bundle: ResolvedSourceBundle) -> bool:
-    """Whether ``d`` is an unnamed datasource-granularity call (it projects as a time dimension)."""
-    if d.name != computed_dimension_name(d.template):
-        return False
-    call = granularity_call_parts(d.expression)
-    return call is not None and resolve_granularity(call[1], defined=bundle.granularities) is not None
-
-
-def _with_default_order(query: SlayerQuery, *, bundle: ResolvedSourceBundle) -> SlayerQuery:
+def _with_default_order(query: SlayerQuery) -> SlayerQuery:
     """``query`` ordered by its projected dimensions, ascending, in result-column order, when it has no order.
 
     Each item is spelled as its dimension is declared, so it binds onto the projected value.
     """
     if query.order or query.distinct_dimension_values is False:
         return query
-    dimensions: List[str] = []
-    # Granularity calls project after the other dimensions, with the time dimensions.
-    granularity_calls: List[str] = []
-    for d in query.dimensions or []:
-        if not isinstance(d, ComputedDimension):
-            dimensions.append(d.full_name)
-        elif _is_granularity_call(d, bundle=bundle):
-            granularity_calls.append(d.expression)
-        else:
-            dimensions.append(d.name or d.expression)
+    dimensions = [
+        d.spelling if not isinstance(d, ComputedDimension) else d.name or d.expression for d in query.dimensions or []
+    ]
     time_dimensions = [
-        f"{td.granularity.value if isinstance(td.granularity, TimeGranularity) else td.granularity}"
-        f"({td.dimension})"
+        f"date_trunc('{td.granularity.value if isinstance(td.granularity, TimeGranularity) else td.granularity}', "
+        f"{td.dimension})"
         for td in query.time_dimensions or []
     ]
-    columns = [*dimensions, *time_dimensions, *granularity_calls]
+    columns = [*dimensions, *time_dimensions]
     if not columns:
         return query
     return query.model_copy(update={"order": [OrderItem.model_validate({"column": c, "implied": True}) for c in columns]})
@@ -424,8 +430,8 @@ def _semi_join_filter_texts(planned_list) -> List[str]:
 def _collect_broadcast_warnings(
     *, planned_list, stages=None, displays=None, labels=None,
 ) -> List[BroadcastGrainWarningPayload]:
-    """One broadcast payload per ``(stage location, measure label)``; dimensions unioned."""
-    dims_by_key: "dict[tuple[str, str], list[tuple[str, str]]]" = {}
+    """One broadcast payload per ``(stage location, measure label, fallback reason)``; dimensions unioned."""
+    dims_by_key: "dict[tuple[str, str, Optional[str]], list[tuple[str, str]]]" = {}
     if labels is None:
         labels = _stage_labels(stages=stages, displays=displays)
     for planned, location in zip(planned_list, labels):
@@ -433,7 +439,7 @@ def _collect_broadcast_warnings(
             measure = attach.broadcast_measure
             if not measure:
                 continue
-            dims = dims_by_key.setdefault((location, measure), [])
+            dims = dims_by_key.setdefault((location, measure, attach.association_unsupported), [])
             seen = {d for d, _ in dims}
             for dim, reason in attach.broadcast_dimensions:
                 if dim not in seen:
@@ -441,10 +447,10 @@ def _collect_broadcast_warnings(
                     seen.add(dim)
     return [
         BroadcastGrainWarningPayload(
-            measure=measure, location=location,
+            measure=measure, location=location, association_unsupported=unsupported,
             dimensions=[BroadcastDimension(dimension=d, reason=r) for d, r in dims],
         )
-        for (location, measure), dims in dims_by_key.items()
+        for (location, measure, unsupported), dims in dims_by_key.items()
     ]
 
 
@@ -583,8 +589,8 @@ def _raise_on_error_events(
         raise SlayerError(
             f"error mode: metric {w.measure!r} would broadcast across "
             f"unattributable dimension(s) {dims} ({reason}); declare join "
-            f"cardinality, a covering unique key, switch to "
-            f"to_many_handling='associate', or remove the dimension."
+            f"cardinality, a covering unique key, omit to_many_handling to "
+            f"associate, or remove the dimension."
         )
 
 
@@ -595,7 +601,9 @@ def _emit_python_warnings(response) -> None:
         if isinstance(w, BroadcastGrainWarningPayload):
             reason = w.dimensions[0].reason if w.dimensions else ""
             _warnings_module.warn(
-                BroadcastGrainWarning(measure=w.measure, reason=reason),
+                BroadcastGrainWarning(
+                    measure=w.measure, reason=reason, association_unsupported=w.association_unsupported,
+                ),
                 stacklevel=3,
             )
         elif isinstance(w, AssociatedWarningPayload):
@@ -613,6 +621,8 @@ def _emit_python_warnings(response) -> None:
             _warnings_module.warn(SlayerUnrelatedDatasetWarning(w), stacklevel=3)
         elif isinstance(w, LibraryNameShadowWarning):
             _warnings_module.warn(SlayerLibraryNameShadowWarning(w), stacklevel=3)
+        elif isinstance(w, NameCollisionWarning):
+            _warnings_module.warn(SlayerNameCollisionWarning(w), stacklevel=3)
 
 
 class SlayerResponse(BaseModel):
@@ -1008,8 +1018,9 @@ class SlayerQueryEngine:
         refine: "QueryRefinement | dict | None" = None,
     ) -> SlayerResponse:
         runtime_kwarg = variables or {}
-        run_input = resolve_run_input(query, refine)
-        with announced_by_caller():
+        with collect_legacy_spellings() as legacy, announced_by_caller():
+            run_input = resolve_run_input(query, refine)
+            _check_fresh_result_names(run_input)
             main_query, named_queries, prefer_data_source, splice_chain = await self._normalize_input(
                 run_input, runtime_kwarg=runtime_kwarg, prefer_data_source=data_source
             )
@@ -1027,6 +1038,7 @@ class SlayerQueryEngine:
             )
         # The one Python-warnings emission: after the response is built (under
         # ``-W error`` this raises) and path-independent (dry_run/explain/execute).
+        response.warnings.extend(emit_deprecations(legacy))
         _emit_python_warnings(response)
         return response
 
@@ -1188,7 +1200,10 @@ class SlayerQueryEngine:
         reads = statement_reads(plans=rendered.emitted_list, bundle=rendered.bundle, measures=records.measures)
         # A pruned stage's shadowing call is not made by the statement.
         shadows = [w for w in records.shadows.values() if (w.model, w.aggregation) in reads.aggregations]
-        return rendered.model_copy(update={"element_reads": reads, "warnings": [*rendered.warnings, *shadows]})
+        collisions = _read_model_collisions(reads=reads, bundle=rendered.bundle)
+        return rendered.model_copy(update={
+            "element_reads": reads, "warnings": [*rendered.warnings, *shadows, *collisions],
+        })
 
     async def _plan_and_render_statement(  # NOSONAR S3776 — linear pipeline (localize→infer→bundle→normalize→variables→plan→render); splitting hides the order of operations
         self,
@@ -1325,7 +1340,7 @@ class SlayerQueryEngine:
         bundle = bundle.model_copy(update={"stage_source_models": stage_sources})
 
         if result_order:
-            query = _with_default_order(query, bundle=bundle)
+            query = _with_default_order(query)
 
         # Plan the DAG (root last) and compose the whole chain as one statement.
         planned_list = plan_stages(queries=[*normed_named.values(), query], bundle=bundle)
@@ -1352,10 +1367,11 @@ class SlayerQueryEngine:
             _plan_label(planned=p, index=i, root=query if p is planned_list[-1] else None)
             for i, p in enumerate(planned_list) if id(p) in emitted_ids
         ]
-        broadcast_warnings = _collect_broadcast_warnings(planned_list=plans, labels=labels)
-        if getattr(query, "to_many_handling", "broadcast") == "error":
-            _raise_on_error_events(broadcasts=broadcast_warnings)
-        warnings.extend(broadcast_warnings)
+        refusing = [(p, label) for p, label in zip(plans, labels) if p.mode_policy.refuses]
+        _raise_on_error_events(broadcasts=_collect_broadcast_warnings(
+            planned_list=[p for p, _ in refusing], labels=[label for _, label in refusing],
+        ))
+        warnings.extend(_collect_broadcast_warnings(planned_list=plans, labels=labels))
         warnings.extend(_collect_associated_warnings(planned_list=plans, labels=labels))
         warnings.extend(_collect_unrelated_warnings(planned_list=plans, labels=labels))
         warnings.extend(_collect_semi_join_pushed_warnings(planned_list=plans, labels=labels))

@@ -122,12 +122,12 @@ class TestAssociateHeadline:
 
 
 class TestDefaultAndErrorModeTwins:
-    async def test_default_mode_broadcasts_the_global_value(self, orders_engine):
-        """Scenario: Default-mode twin — the OMITTED (default) to_many_handling
-        roots the parameter's producer at orders inside the customers-rooted
-        producer and broadcasts the global weighted value identically to both
-        status cells, with the broadcast warning."""
-        resp = await orders_engine.execute(orders_q(
+    async def test_broadcast_mode_broadcasts_the_global_value(self, orders_engine):
+        """Scenario: Broadcast-mode twin — an explicit broadcast roots the parameter's
+        producer at orders inside the customers-rooted producer and broadcasts the
+        global weighted value identically to both status cells, with the broadcast
+        warning."""
+        resp = await orders_engine.execute(bcast_q(
             dimensions=["status"],
             measures=[ModelMeasure(formula=_HEADLINE, name="w")]))
         by = status_key(resp)

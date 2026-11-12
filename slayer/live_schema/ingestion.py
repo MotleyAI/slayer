@@ -26,6 +26,7 @@ from slayer.core.models import (
     sanitize_model_name,
 )
 from slayer.core.join_edges import edge_reference
+from slayer.core.names import name_taken
 from slayer.core.query import extract_variable_refs
 from slayer.live_schema import schema_drift
 from slayer.live_schema import broken_dependents as dependents  # module import: in an import cycle
@@ -453,6 +454,42 @@ def retyped_sql_columns(model: SlayerModel, *, lists: dict[str, ResultList]) -> 
 # --- Model generation from introspected columns ---
 
 
+def case_distinct_names(names: list[str]) -> list[str]:
+    """``names`` with each later case-only duplicate given the smallest ``_<n>`` (n ≥ 2) no name takes."""
+    taken = {n.casefold() for n in names}
+    assigned: set[str] = set()
+    out: list[str] = []
+    for name in names:
+        candidate, n = name, 2
+        while candidate.casefold() in assigned or (candidate != name and candidate.casefold() in taken):
+            candidate, n = f"{name}_{n}", n + 1
+        assigned.add(candidate.casefold())
+        out.append(candidate)
+    return out
+
+
+class RenamedColumn(BaseModel):
+    """A physical column whose name differs from another's only in case, ingested under ``column``."""
+
+    model: str
+    column: str
+    physical: str
+
+
+def _renamed_columns(models: list[SlayerModel]) -> list[RenamedColumn]:
+    out: list[RenamedColumn] = []
+    for model in models:
+        for column in model.columns:
+            physical = (column.sql or "").strip('"')
+            if column.sql and is_base_column_sql(column.sql) and _logical_column_name(physical) != column.name:
+                out.append(RenamedColumn(model=model.name, column=column.name, physical=physical))
+                logger.warning(
+                    "model %r: physical column %r differs from another only in case; ingested as %r",
+                    model.name, physical, column.name,
+                )
+    return out
+
+
 def _columns_to_model(
     name: str,
     columns: list[IntrospectedColumn],
@@ -472,9 +509,7 @@ def _columns_to_model(
     _INT_FORMAT = NumberFormat(type=NumberFormatType.INTEGER)
     _FLOAT_FORMAT = NumberFormat(type=NumberFormatType.FLOAT)
 
-    for col in columns:
-        column_name = _logical_column_name(col.name)
-
+    for col, column_name in zip(columns, case_distinct_names([_logical_column_name(c.name) for c in columns])):
         if col.is_float:
             fmt = _FLOAT_FORMAT
         elif col.type in _NUMERIC_TYPES:
@@ -668,6 +703,8 @@ class IngestionScanReport(BaseModel):
     other_schemas: list[str] = Field(default_factory=list)
     # Requested schemas dropped from scope, with a reason.
     skipped_schemas: list[SkippedSchema] = Field(default_factory=list)
+    # Physical columns renamed because their names differ only in case.
+    renamed_columns: list[RenamedColumn] = Field(default_factory=list)
     # Key reads that failed: those keys are missing until a re-ingest reads them.
     key_read_failures: list[TableKeyReadFailure] = Field(default_factory=list)
 
@@ -1013,6 +1050,7 @@ async def ingest_datasource_report_async(
         )
 
     return IngestionScanReport(
+        renamed_columns=_renamed_columns(models),
         models=_plan_scanned_edges(models),
         skipped=skipped,
         objects=all_objects,
@@ -1334,6 +1372,22 @@ def _merge_persisted_columns(
     return out
 
 
+def _case_free_new_columns(columns: list[Column], *, taken: list[str], model: str) -> list[Column]:
+    """``columns``, each whose name a model name takes in another case renamed ``<name>_<n>`` (smallest free n)."""
+    out: list[Column] = []
+    for column in columns:
+        name, n = column.name, 2
+        while name_taken(name, taken):
+            name, n = f"{column.name}_{n}", n + 1
+        if name != column.name:
+            logger.warning("model %r: live column %r differs from a model name only in case; ingested as %r",
+                           model, column.name, name)
+            column = column.model_copy(update={"name": name, "sql": column.sql or column.name})
+        taken.append(name)
+        out.append(column)
+    return out
+
+
 def _additive_merge_existing(
     *,
     persisted: SlayerModel,
@@ -1360,10 +1414,14 @@ def _additive_merge_existing(
     merged_columns = columns.columns
 
     matched = persisted_names | set(live_name.values())
-    new_cols = [
-        c.model_copy(update={"primary_key": False}) if c.primary_key and not fill_key else c
-        for c in fresh.columns if c.name not in matched and _spelling(c) not in matched
-    ]
+    new_cols = _case_free_new_columns(
+        [
+            c.model_copy(update={"primary_key": False}) if c.primary_key and not fill_key else c
+            for c in fresh.columns if c.name not in matched and _spelling(c) not in matched
+        ],
+        taken=[*(c.name for c in merged_columns), *(m.name for m in persisted.measures if m.name)],
+        model=persisted.name,
+    )
     merged_columns.extend(new_cols)
     new_column_names = [c.name for c in new_cols]
 

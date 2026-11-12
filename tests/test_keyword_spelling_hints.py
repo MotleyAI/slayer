@@ -2,7 +2,7 @@
 
 import pytest
 
-from slayer.core.errors import AggregationArgumentError, TransformArgumentError, UnknownReferenceError
+from slayer.core.errors import UnknownReferenceError
 from slayer.core.scope import ModelScope
 from slayer.core.syntax import parse_expr
 from slayer.engine.binding import bind_expr
@@ -16,14 +16,20 @@ def _bind(text: str) -> None:
     bind_expr(parse_expr(text), scope=ModelScope(source_model=model), bundle=bundle, allow_measures=True)
 
 
-@pytest.mark.parametrize(("expr", "error"), [
-    ("sum(amount, is_paid = true)", AggregationArgumentError),
-    ("percentile(amount, q = 0.9)", AggregationArgumentError),
-    ("rank(sum(amount), is_paid = true)", TransformArgumentError),
+@pytest.mark.parametrize(("expr", "twin"), [
+    ("sum(amount, is_paid = true)", "sum(amount, (is_paid = true))"),
+    ("percentile(amount, q = 0.9)", "percentile(amount, (q = 0.9))"),
+    ("rank(sum(amount), is_paid = true)", "rank(sum(amount), (is_paid = true))"),
 ])
-def test_keyword_slot_suggests_double_equals(expr: str, error: type[Exception]) -> None:
-    with pytest.raises(error, match="== …"):
+def test_non_parameter_name_is_a_positional_comparison(expr: str, twin: str) -> None:
+    # A name that is not a declared parameter reads as its parenthesised comparison twin.
+    with pytest.raises(ValueError) as twin_info:
+        _bind(twin)
+    with pytest.raises(ValueError) as info:
         _bind(expr)
+    assert type(info.value) is type(twin_info.value)
+    assert "==" not in str(info.value)
+    assert "==" not in str(twin_info.value)
 
 
 @pytest.mark.parametrize(("expr", "error"), [

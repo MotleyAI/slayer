@@ -4,6 +4,7 @@ import math as _math
 import statistics
 import tempfile
 import uuid
+from collections.abc import AsyncIterator
 from typing import Any, LiteralString, cast
 
 import pytest
@@ -16,6 +17,8 @@ from slayer.live_schema import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._engine_helpers import owned_query_engine
+from tests._pg_helpers import pg_query_engine
 from tests._reserved_alias_probe import keyword_universe, unquoted_alias_failures
 from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
@@ -173,11 +176,12 @@ def _pg_env_storage(postgresql_proc, tmp_path_factory):
 
 
 @pytest.fixture
-def pg_env(_pg_env_storage):
+async def pg_env(_pg_env_storage) -> AsyncIterator[SlayerQueryEngine]:
     """Per-test SlayerQueryEngine wrapping the module-scoped storage. The
     engine is recreated per-test because its async SQLAlchemy engine binds to
     the current event loop."""
-    return SlayerQueryEngine(storage=_pg_env_storage)
+    async with owned_query_engine(storage=_pg_env_storage) as engine:
+        yield engine
 
 
 @pytest.mark.integration
@@ -476,7 +480,8 @@ async def pg_cross_model_env(postgresql):
             Column(name="avg_score", sql="score", type=DataType.DOUBLE),
         ],
     )))
-    return SlayerQueryEngine(storage=storage)
+    async with owned_query_engine(storage=storage) as engine:
+        yield engine
 
 
 @pytest.mark.integration
@@ -493,13 +498,8 @@ class TestCrossModelAndMultistage:
         )
         result = await pg_cross_model_env.execute(query=query)
         assert result.row_count == 3
-        # customers model has no join back to orders, so the time dimension is
-        # unreachable from the re-rooted CTE → dropped → scalar AVG CROSS JOINed.
-        # Global avg: (90 + 60 + 80) / 3 = 76.67
-        global_avg = pytest.approx((90.0 + 60.0 + 80.0) / 3)
-        assert float(result.data[0]["orders.customers.avg_score_avg"]) == global_avg
-        assert float(result.data[1]["orders.customers.avg_score_avg"]) == global_avg
-        assert float(result.data[2]["orders.customers.avg_score_avg"]) == global_avg
+        # Associated: each month averages the distinct customers its orders reach.
+        assert [float(r["orders.customers.avg_score_avg"]) for r in result.data] == pytest.approx([90.0, 60.0, 85.0])
 
     async def test_query_list_named(self, pg_cross_model_env: SlayerQueryEngine) -> None:
         """Query list: named sub-query referenced by main query."""
@@ -619,6 +619,14 @@ def pg_ingest_env(postgresql_proc):
         _drop_module_db(postgresql_proc, db_name)
 
 
+@pytest.fixture
+async def pg_ingest_engine(pg_ingest_env, tmp_path) -> AsyncIterator[SlayerQueryEngine]:
+    """A per-test engine over the ingested models."""
+    models, ds, _ = pg_ingest_env
+    async with pg_query_engine(ds, base_dir=str(tmp_path), models=models) as engine:
+        yield engine
+
+
 @pytest.mark.integration
 class TestRollupIngestion:
     def test_orders_has_own_columns_only(self, pg_ingest_env) -> None:
@@ -664,16 +672,9 @@ class TestRollupIngestion:
         col_names = [c.name for c in orders.columns]
         assert "amount" in col_names
 
-    async def test_rollup_query_group_by_customer(self, pg_ingest_env) -> None:
+    async def test_rollup_query_group_by_customer(self, pg_ingest_engine: SlayerQueryEngine) -> None:
         """Query orders grouped by rolled-up customer name."""
-        models, ds, _ = pg_ingest_env
-
-        tmpdir = tempfile.mkdtemp()
-        storage = YAMLStorage(base_dir=tmpdir)
-        await storage.save_datasource(ds)
-        for m in models:
-            await storage.save_model(m)
-        engine = SlayerQueryEngine(storage=storage)
+        engine = pg_ingest_engine
 
         query = SlayerQuery.model_validate({
             "source_model": "orders",
@@ -687,16 +688,9 @@ class TestRollupIngestion:
         assert by_name["Globex"] == 1
         assert by_name["Initech"] == 1
 
-    async def test_rollup_query_group_by_region(self, pg_ingest_env) -> None:
+    async def test_rollup_query_group_by_region(self, pg_ingest_engine: SlayerQueryEngine) -> None:
         """Query orders grouped by transitively rolled-up region name."""
-        models, ds, _ = pg_ingest_env
-
-        tmpdir = tempfile.mkdtemp()
-        storage = YAMLStorage(base_dir=tmpdir)
-        await storage.save_datasource(ds)
-        for m in models:
-            await storage.save_model(m)
-        engine = SlayerQueryEngine(storage=storage)
+        engine = pg_ingest_engine
 
         query = SlayerQuery.model_validate({
             "source_model": "orders",
@@ -711,16 +705,9 @@ class TestRollupIngestion:
         assert float(by_region["US"]["orders.amount_sum"]) == 450.0  # 100+200+150
         assert float(by_region["EU"]["orders.amount_sum"]) == 50.0
 
-    async def test_dotted_dimension_single_hop(self, pg_ingest_env) -> None:
+    async def test_dotted_dimension_single_hop(self, pg_ingest_engine: SlayerQueryEngine) -> None:
         """Dotted dimension 'customers.name' resolves to 'customers__name'."""
-        models, ds, _ = pg_ingest_env
-
-        tmpdir = tempfile.mkdtemp()
-        storage = YAMLStorage(base_dir=tmpdir)
-        await storage.save_datasource(ds)
-        for m in models:
-            await storage.save_model(m)
-        engine = SlayerQueryEngine(storage=storage)
+        engine = pg_ingest_engine
 
         query = SlayerQuery.model_validate({
             "source_model": "orders",
@@ -734,16 +721,9 @@ class TestRollupIngestion:
         assert by_name["Globex"] == 1
         assert by_name["Initech"] == 1
 
-    async def test_dotted_dimension_multi_hop(self, pg_ingest_env) -> None:
+    async def test_dotted_dimension_multi_hop(self, pg_ingest_engine: SlayerQueryEngine) -> None:
         """Multi-hop dotted dimension 'customers.regions.name' resolves transitively."""
-        models, ds, _ = pg_ingest_env
-
-        tmpdir = tempfile.mkdtemp()
-        storage = YAMLStorage(base_dir=tmpdir)
-        await storage.save_datasource(ds)
-        for m in models:
-            await storage.save_model(m)
-        engine = SlayerQueryEngine(storage=storage)
+        engine = pg_ingest_engine
 
         query = SlayerQuery.model_validate({
             "source_model": "orders",
@@ -757,16 +737,9 @@ class TestRollupIngestion:
         assert by_region["US"] == 3
         assert by_region["EU"] == 1
 
-    async def test_selective_joins_no_joined_dims(self, pg_ingest_env) -> None:
+    async def test_selective_joins_no_joined_dims(self, pg_ingest_engine: SlayerQueryEngine) -> None:
         """Query using only source-table dimensions should not include JOINs."""
-        models, ds, _ = pg_ingest_env
-
-        tmpdir = tempfile.mkdtemp()
-        storage = YAMLStorage(base_dir=tmpdir)
-        await storage.save_datasource(ds)
-        for m in models:
-            await storage.save_model(m)
-        engine = SlayerQueryEngine(storage=storage)
+        engine = pg_ingest_engine
 
         query = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "count(*)"}]})
         result = await engine.execute(query=query)
@@ -774,16 +747,9 @@ class TestRollupIngestion:
         assert "LEFT JOIN" not in result.sql
         assert result.data[0]["orders._count"] == 4
 
-    async def test_selective_joins_single_hop(self, pg_ingest_env) -> None:
+    async def test_selective_joins_single_hop(self, pg_ingest_engine: SlayerQueryEngine) -> None:
         """Query with customer dimension should JOIN customers but NOT regions."""
-        models, ds, _ = pg_ingest_env
-
-        tmpdir = tempfile.mkdtemp()
-        storage = YAMLStorage(base_dir=tmpdir)
-        await storage.save_datasource(ds)
-        for m in models:
-            await storage.save_model(m)
-        engine = SlayerQueryEngine(storage=storage)
+        engine = pg_ingest_engine
 
         query = SlayerQuery.model_validate({
             "source_model": "orders",
@@ -796,16 +762,9 @@ class TestRollupIngestion:
         assert "customers" in result.sql
         assert "regions" not in result.sql
 
-    async def test_selective_joins_transitive(self, pg_ingest_env) -> None:
+    async def test_selective_joins_transitive(self, pg_ingest_engine: SlayerQueryEngine) -> None:
         """Query with region dimension should include both customers and regions JOINs."""
-        models, ds, _ = pg_ingest_env
-
-        tmpdir = tempfile.mkdtemp()
-        storage = YAMLStorage(base_dir=tmpdir)
-        await storage.save_datasource(ds)
-        for m in models:
-            await storage.save_model(m)
-        engine = SlayerQueryEngine(storage=storage)
+        engine = pg_ingest_engine
 
         query = SlayerQuery.model_validate({
             "source_model": "orders",
@@ -1101,7 +1060,8 @@ async def planets_pg_env(postgresql):
             ],
         )
     )
-    return SlayerQueryEngine(storage=storage)
+    async with owned_query_engine(storage=storage) as engine:
+        yield engine
 
 
 @pytest.mark.integration
@@ -1178,7 +1138,8 @@ async def pg_derived_chain_env(postgresql):
             joins=[ModelJoin(target_model="b_tbl", join_pairs=[["b_id", "id"]])],
         )
     )
-    return SlayerQueryEngine(storage=storage)
+    async with owned_query_engine(storage=storage) as engine:
+        yield engine
 
 
 @pytest.mark.integration
@@ -1337,8 +1298,9 @@ def _pg_dev1645_storage(postgresql_proc, tmp_path_factory):
 
 
 @pytest.fixture
-def pg_dev1645(_pg_dev1645_storage):
-    return SlayerQueryEngine(storage=_pg_dev1645_storage)
+async def pg_dev1645(_pg_dev1645_storage) -> AsyncIterator[SlayerQueryEngine]:
+    async with owned_query_engine(storage=_pg_dev1645_storage) as engine:
+        yield engine
 
 
 @pytest.mark.integration
@@ -1527,8 +1489,9 @@ def _pg_reserved_storage(postgresql_proc, tmp_path_factory):
 
 
 @pytest.fixture
-def pg_reserved(_pg_reserved_storage):
-    return SlayerQueryEngine(storage=_pg_reserved_storage)
+async def pg_reserved(_pg_reserved_storage) -> AsyncIterator[SlayerQueryEngine]:
+    async with owned_query_engine(storage=_pg_reserved_storage) as engine:
+        yield engine
 
 
 @pytest.mark.integration

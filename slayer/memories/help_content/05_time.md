@@ -2,7 +2,7 @@
 
 ## Time points
 
-A string compared with a DATE / TIMESTAMP expression or a `gran(col)` call is a time
+A string compared with a DATE / TIMESTAMP expression or a `date_trunc` bucket is a time
 point. An instant (`'2025-03-01 10:00:00'`) compares as written. A period is a
 half-open range:
 
@@ -40,9 +40,11 @@ row, in two stages:
 `whole_periods_only: true` snaps date conditions to whole buckets and drops the current
 incomplete bucket.
 
-## Granularity calls
+## Time buckets
 
-`month(created_at)` in `dimensions`, `time_dimensions`, filters or order buckets the
-column, or any DATE/TIMESTAMP expression (`month(coalesce(shipped_at, created_at))`): second, minute, hour, day, week (ISO, Monday), week_sunday, month, quarter,
-year, or a custom granularity defined on the datasource (fiscal years and the like).
-`date_trunc('month', x)` is the same call as `month(x)`.
+`date_trunc('month', created_at)` in `dimensions`, `time_dimensions`, filters or order buckets
+the column, or any DATE/TIMESTAMP expression (`date_trunc('month', coalesce(shipped_at, created_at))`):
+second, minute, hour, day, week (ISO, Monday), week_sunday, month, quarter, year, or a custom
+granularity defined on the datasource (fiscal years and the like). `month(x)` and its siblings
+`year`, `quarter`, `week`, `day`, `hour`, `minute`, `second` are integer extraction
+(`date_part('month', x)`, the month of year), never a bucket.

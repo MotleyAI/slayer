@@ -1,4 +1,4 @@
-version: 18
+version: 19
 name: regions
 sql_table: regions
 source_kind: table

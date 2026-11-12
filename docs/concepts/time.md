@@ -1,6 +1,6 @@
 # Time
 
-The single reference for how SLayer reads time: time points, `date_range`, granularity calls, frame bounds, `whole_periods_only`, the time spine and custom granularities. Date *functions* (`date_part`, `date_diff`, `date_add`, `now()`, `current_date()`) are in [References](references.md#date-and-time-functions).
+The single reference for how SLayer reads time: time points, `date_range`, time buckets, frame bounds, `whole_periods_only`, the time spine and custom granularities. Date *functions* (`date_part`, `date_diff`, `date_add`, `now()`, `current_date()`) are in [References](references.md#date-and-time-functions).
 
 ## Time points
 
@@ -46,9 +46,11 @@ So `ordered_at <= '2024-12-31'` includes Dec 31 10:00, and `ordered_at = '2024-0
 
 A temporal operand is anything typed DATE or TIMESTAMP: a declared column (base, derived, joined or a stage column), `min` / `max` / `first` / `last` of one, a date function or `interval` arithmetic, the clock, a `CAST(… AS DATE)` / `CAST(… AS TIMESTAMP)`, a `DATE '…'` / `TIMESTAMP '…'` literal, or a `coalesce` / `iif` over those (ISO literals inside count as dates). A plain date string against a non-temporal column keeps its string meaning; a relative token or single-string `in` there is a type error naming the column — declare its `type`. A DATE operand rejects sub-day points (`'last 6 hours'`, `'2025-01-01 10:00:00'`).
 
-## Granularity calls
+## Time buckets
 
-`gran(expr)` — `month(created_at)`, `week(ts)`, `month(CAST(ts AS DATE))`, … — is the time bucket of the DATE / TIMESTAMP row-level expression `expr`, usable anywhere a row-level expression is: filters, aggregation sources (`count_distinct(month(created_at))`), computed dimensions and arithmetic. Compared with a time point it filters `expr` exactly: `month(created_at) >= '2024-03-15'` means `created_at >= 2024-04-01`.
+`date_trunc('<unit>', expr)` — `date_trunc('month', created_at)`, `date_trunc('week', ts)`, `date_trunc('fiscal_year', CAST(ts AS DATE))`, … — is the time bucket of the DATE / TIMESTAMP row-level expression `expr` for a built-in unit or a datasource granularity (any case), usable anywhere a row-level expression is: filters, aggregation sources (`count_distinct(date_trunc('month', created_at))`), computed dimensions and arithmetic. Compared with a time point it filters `expr` exactly: `date_trunc('month', created_at) >= '2024-03-15'` means `created_at >= 2024-04-01`.
+
+`year(x)` … `second(x)` are integer extraction (`month(created_at)` is the month of year, 1–12), and comparing one with a date (`month(created_at) = '2025-03'`) is an error naming the `date_trunc` form.
 
 ## `date_range`
 
@@ -74,7 +76,7 @@ A trailing window has to read rows from *before* the earliest bucket you asked f
  "filters": ["created_at in '2025'"]}
 ```
 
-A bound is a *frame* bound when it bounds a **time dimension's own expression** (a column or any temporal row-level expression) by a time point — `<`, `<=`, `>`, `>=`, a period `=` / `in`, a `date_range`, or `gran(expr)` against a point. Everything else restricts the window's input like any row filter:
+A bound is a *frame* bound when it bounds a **time dimension's own expression** (a column or any temporal row-level expression) by a time point — `<`, `<=`, `>`, `>=`, a period `=` / `in`, a `date_range`, or `date_trunc('<unit>', expr)` against a point. Everything else restricts the window's input like any row filter:
 
 - an instant `=`, and `!=` / `not in` against a period;
 - a bound on a temporal expression that is not one of the query's time dimensions, or against another column;
@@ -105,4 +107,4 @@ An expression is never an axis: a time dimension whose expression reads `time_sp
 
 ## Custom granularities
 
-A datasource's `granularities` list defines named buckets `{name, base, multiple, origin}` — e.g. `{"name": "fiscal_year", "base": "month", "multiple": 12, "origin": "2024-04-01"}` or `{"name": "quarter_hour", "base": "minute", "multiple": 15}` — usable wherever a built-in granularity is (time dimensions, `fiscal_year(order_date)`, `Column.granularity`, transform units), each bucket starting at `origin + k × multiple × base`.
+A datasource's `granularities` list defines named buckets `{name, base, multiple, origin}` — e.g. `{"name": "fiscal_year", "base": "month", "multiple": 12, "origin": "2024-04-01"}` or `{"name": "quarter_hour", "base": "minute", "multiple": 15}` — usable wherever a built-in granularity is (time dimensions, `date_trunc('fiscal_year', order_date)`, `Column.granularity`, transform units), each bucket starting at `origin + k × multiple × base`.

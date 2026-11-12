@@ -1,4 +1,4 @@
-"""DEV-1836 task 1.12 — the warning collector walks the regroup IR (design D6,
+"""The warning collector walks the regroup IR (design D6,
 F7): one warning per distinct dropped filter / broadcast aggregate, across
 producers, roles, and nesting.
 """
@@ -38,14 +38,14 @@ CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
 POP = ModelMeasure(formula="sum(customers.regions.pop)", name="pop")
 
 
-#: Outside DEV-1840 pushdown scope for EVERY producer root here (the OR mixes
+#: Outside the conjunct pushdown scope for EVERY producer root here (the OR mixes
 #: root-local with cross-path refs / spans branches), yet spine-equivalent to
 #: ``channel = 'app'`` — no region is named ``__none__`` — so the value pins hold.
 _EXCLUDED_APP = "channel = 'app' OR customers.regions.name = '__none__'"
 
 
 class TestPushedFilterEntryIdentity:
-    """DEV-1935: the mixed-OR host filter pushes into every producer; entries
+    """The mixed-OR host filter pushes into every producer; entries
     are keyed (location, measure, filter text) — one per measure, never one per
     consumer, nested producers included."""
 
@@ -115,6 +115,7 @@ class TestBroadcastDedup:
             dimensions=["status"], measures=[M, CM, POP],
             filters=["sum(customers.spend) > 0"],
             order=[OrderItem.model_validate({"column": "sum(customers.spend)", "direction": "desc"})],
+            to_many_handling="broadcast",
         ))
         warnings = broadcast_warnings(resp)
         assert len(warnings) == 2
@@ -129,6 +130,7 @@ class TestBroadcastDedup:
         resp = await engine.execute(q(
             dimensions=[{"expression": SPEND_BAND, "name": "sband"}, "status"],
             measures=[M, CM],
+            to_many_handling="broadcast",
         ))
         # status is unattributable for cm → one broadcast for cm; the band
         # grain member itself is attributable (customers-rooted band).
@@ -161,7 +163,7 @@ class TestBroadcastDedup:
 def _attach(**overrides):
     empty = SimpleNamespace(regroup_attach_plans=[], cross_model_aggregate_plans=[])
     base = dict(
-        broadcast_measure=None, broadcast_dimensions=[], producer_plan=empty,
+        broadcast_measure=None, broadcast_dimensions=[], association_unsupported=None, producer_plan=empty,
     )
     base.update(overrides)
     return SimpleNamespace(**base)

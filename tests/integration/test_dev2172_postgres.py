@@ -4,15 +4,17 @@ exact numerics on MCP json and over the Postgres wire (spec: results/value-encod
 import uuid
 from collections.abc import AsyncIterator
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
-from slayer.core.models import DatasourceConfig, ModelMeasure
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.core.models import ModelMeasure
 from slayer.mcp.server import create_mcp_server
 from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2172_fixtures import FacadeStore, mcp_rows, mcp_text, pg_query, serve, strict_json
+from tests._engine_helpers import owned_query_engine
+from tests._pg_helpers import client_datasource
 
 pytest.importorskip("pytest_postgresql")
 
@@ -38,17 +40,11 @@ async def store(postgresql, tmp_path) -> AsyncIterator[FacadeStore]:
     for stmt in STATEMENTS:
         cur.execute(stmt)
     postgresql.commit()
-    info = postgresql.info
-    ds = DatasourceConfig(name="pg", type="postgres", host=info.host, port=info.port, database=info.dbname,
-                          username=info.user, password="")
+    ds = client_datasource(postgresql.info)
     storage = YAMLStorage(base_dir=str(tmp_path))
     await storage.save_datasource(ds)
-    ingester = SlayerQueryEngine(storage=storage)
-    try:
+    async with owned_query_engine(storage=storage) as ingester:
         (model,) = await ingester.ingest(ds, include_tables=["things"])
-    finally:
-        await ingester.aclose()
-        ingester.close()
     await storage.save_model(model.model_copy(update={"measures": [
         ModelMeasure(name="uids", formula="collect(uid)"), ModelMeasure(name="prices", formula="collect(price)")]}))
     try:
@@ -58,7 +54,11 @@ async def store(postgresql, tmp_path) -> AsyncIterator[FacadeStore]:
 
 
 async def _mcp_rows(store: FacadeStore, query: dict) -> tuple[str, list[dict]]:
-    text = await mcp_text(create_mcp_server(storage=store.storage), query, fmt="json")
+    server: Any = create_mcp_server(storage=store.storage)
+    try:
+        text = await mcp_text(server, query, fmt="json")
+    finally:
+        await server._slayer_engine.aclose()
     return text, mcp_rows(text)
 
 

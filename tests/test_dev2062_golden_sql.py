@@ -23,9 +23,10 @@ _RATIOS = {"local": AOV, "cross": CROSS_RATIO}
 def _cases() -> dict[str, SlayerQuery]:
     out: dict[str, SlayerQuery] = {}
     for label, r in _RATIOS.items():
-        out[f"{label}/filter"] = monthly_q(m(r, "a"), filters=[f"cumsum(({r})) > 9"])
+        out[f"{label}/filter"] = monthly_q(m(r, "a"), filters=[f"cumsum(({r})) > 9"], to_many_handling="broadcast")
         out[f"{label}/order_composite"] = monthly_q(
             m(r, "a"), order=[{"column": f"cumsum(({r})) + 1", "direction": "desc"}],
+            to_many_handling="broadcast",
         )
     return out
 

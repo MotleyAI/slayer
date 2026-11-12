@@ -1,10 +1,4 @@
-"""Granularity-call error surface in dimensions, plus non-regression.
-
-Spec: openspec/changes/dev-1883-support-functional-time-granularity-form-monthcol-in-query/
-specs/queries/time-dimensions (Granularity error surface in dimensions).
-"""
-import re
-
+"""``date_trunc`` error surface in dimensions, plus non-regression (spec: queries/time-dimensions)."""
 import pydantic
 import pytest
 
@@ -14,19 +8,19 @@ from slayer.core.query import SlayerQuery
 from tests import _dev1883_fixtures as fx
 
 GRANULARITIES = [g.value for g in TimeGranularity]
+BUCKET_FORM = "date_trunc('<unit>', expr)"
 
 
-def assert_names_functional_form(msg: str) -> None:
-    """The error must show the ``gran(col)`` remedy shape."""
-    assert "(col" in msg or re.search(r"\b\w+\(created_at\)", msg), (
-        f"error must show the gran(col) form: {msg}"
-    )
+def assert_names_bucket_form(msg: str) -> None:
+    assert BUCKET_FORM in msg, f"error must show the {BUCKET_FORM} form: {msg}"
+
 
 WRONG_SHAPES = [
-    "month()",
-    "month(a, b)",
-    "month(*)",
-    "month(created_at, granularity=2)",
+    "date_trunc('month')",
+    "date_trunc('month', a, b)",
+    "date_trunc('month', *)",
+    "date_trunc(status, created_at)",
+    "date_trunc('month', created_at, granularity=2)",
 ]
 
 
@@ -51,12 +45,12 @@ class TestWrongShapeGranularityCalls:
         msg = str(ei.value)
         for gran in GRANULARITIES:
             assert gran in msg, f"error must name granularity {gran!r}: {msg}"
-        assert_names_functional_form(msg)
+        assert_names_bucket_form(msg)
 
 
 class TestNonTemporalArgument:
     async def test_fails_at_binding_as_a_time_dimension(self, exec_engine) -> None:
-        query = _q(["month(upper(status))"])  # accepted at construction
+        query = _q(["date_trunc('month', upper(status))"])  # accepted at construction
         with pytest.raises(errors.TimeDimensionColumnError, match="TEXT"):
             await exec_engine.execute(query, dry_run=True)
 
@@ -69,6 +63,7 @@ class TestUnknownSingleColumnCall:
         msg = str(ei.value)
         for gran in GRANULARITIES:
             assert gran in msg, f"error must name granularity {gran!r}: {msg}"
+        assert_names_bucket_form(msg)
         assert "partition_by" in msg
 
     def test_typed_error_class_exists(self) -> None:
@@ -114,7 +109,7 @@ class TestNonRegression:
             source_model="orders",
             dimensions=["status"],
             measures=[{"formula": "count(*)"}],
-            filters=[f"month(created_at) >= '{bound}'"],
+            filters=[f"date_trunc('month', created_at) >= '{bound}'"],
         )
         resp = await exec_engine.execute(query)
         assert {r["orders.status"]: r["orders._count"] for r in resp.data} == expected
@@ -122,7 +117,7 @@ class TestNonRegression:
     async def test_granularity_in_measure_is_treated_like_any_row_level_scalar(
         self, exec_engine,
     ) -> None:
-        """Position parity: a bare ``gran(col)`` measure gets the same treatment as another row-level temporal scalar."""
+        """Position parity: a bare ``date_trunc`` measure gets the same treatment as another row-level temporal scalar."""
         async def outcome(formula: str):
             query = fx.q(source_model="orders", dimensions=["status"], measures=[{"formula": formula, "name": "v"}])
             try:
@@ -132,4 +127,4 @@ class TestNonRegression:
                 return type(exc)
             return sorted(r["orders.status"] for r in resp.data)
 
-        assert await outcome("month(created_at)") == await outcome("date_add(created_at, 0, 'day')")
+        assert await outcome("date_trunc('month', created_at)") == await outcome("date_add(created_at, 0, 'day')")

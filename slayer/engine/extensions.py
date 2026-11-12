@@ -141,7 +141,7 @@ def declaring_model_path(
 ) -> Tuple[str, ...]:
     """The population's path to ``restriction.model``: as spelled when root or adjacent, else short-form routed."""
     spelled = (restriction.model,)
-    if host is None or not drop_root_qualifier((*spelled, restriction.key), host.spelling)[:-1]:
+    if host is None or not drop_root_qualifier((*spelled, restriction.key), host.spelling, quoted=())[:-1]:
         return spelled
     models_by_name = {**models_by_name, host.name: models_by_name.get(host.name, host)}
     try:
@@ -159,7 +159,7 @@ def resolve_path(
 ) -> Optional[Tuple[Tuple[str, ...], List[OrientedJoin]]]:
     """``hops`` from ``root`` as the binder resolves them — its own qualifier dropped, walked, a lone unmatched hop
     short-form routed — with the edges walked; ``None`` when unresolvable or ambiguous."""
-    hops = drop_root_hop(hops, root.spelling)
+    hops = drop_root_hop(hops, root.spelling, head_quoted=False)
     try:
         chain = walk(root=root, path=hops, models_by_name=models_by_name)
         if chain is None and len(hops) == 1 and resolve_hop(
@@ -311,7 +311,8 @@ def _inner_ref(
         path = declaring_model_path(restriction, host=host, models_by_name=models)
     except ValueError:  # an unreachable or ambiguous declaring model fails the engine, not the static reader
         return None
-    return (*drop_root_hop(path, host.spelling if host is not None else None), restriction.token, restriction.key)
+    return (*drop_root_hop(path, host.spelling if host is not None else None, head_quoted=False), restriction.token,
+            restriction.key)
 
 
 def _extended(

@@ -1,4 +1,4 @@
-"""DEV-1840 golden SQL — EXISTS pushdown shapes plus the inline byte-identity
+"""Golden SQL — EXISTS pushdown shapes plus the inline byte-identity
 tripwires across seven Tier-1 dialects (ClickHouse is covered by the gating
 suite, whose dry-runs need a mocked server version).
 
@@ -55,9 +55,11 @@ def _cases() -> dict:
             dimensions=["customers.tier"], measures=[CM],
             filters=["channel = 'web'", "customers.plans.level = 'basic'"])},
         "exists/composite_inverted_hop": {"models": "default", "query": q(
+            to_many_handling="broadcast",
             dimensions=["status"], measures=[M, RM],
             filters=["channel = 'app'"])},
         "exists/multi_hop_union_tree": {"models": "default", "query": q(
+            to_many_handling="broadcast",
             dimensions=["status"], measures=[M, RM],
             filters=["channel = 'app'", "customers.tier = 'gold'"])},
         "exists/correlated_outer_ref": {"models": "default", "query": q(
@@ -67,6 +69,7 @@ def _cases() -> dict:
             dimensions=["customers.tier"], measures=[CM],
             filters=["customers.plans.level = 'basic'"])},
         "exists/derived_deps_cust_tier": {"models": "default", "query": q(
+            to_many_handling="broadcast",
             dimensions=["status"], measures=[CM],
             filters=["cust_tier = 'gold'"])},
         "exists/derived_1n_last_status": {"models": "rev", "query": q(
@@ -88,6 +91,7 @@ def _cases() -> dict:
             dimensions=["customers.tier"], measures=[CM],
             filters=["customers.plans.level = 'basic'"])},
         "inline/composite_n1_root_local": {"models": "default", "query": q(
+            to_many_handling="broadcast",
             dimensions=["status"], measures=[M, RM],
             filters=["stores.city = 'NYC'"])},
         "excluded/mixed_or": {"models": "default", "query": q(
@@ -122,7 +126,7 @@ bind_golden_tests(
 def test_exists_cases_carry_an_exists(baseline) -> None:
     """Feature-missing tripwire: every pushdown case must emit a semi-join;
     inline cases must not; the ambiguous case must be the recorded fail-closed
-    raise (DEV-1853 divergences.md class (d))."""
+    raise (divergence class (d))."""
     for key, value in baseline.items():
         case_id = key.rsplit("::", 1)[0]
         if case_id == "excluded/ambiguous_inversion":
@@ -131,7 +135,7 @@ def test_exists_cases_carry_an_exists(baseline) -> None:
             continue
         assert not isinstance(value, dict), f"{key} unexpectedly raised: {value}"
         assert "__regroup__" not in value, f"{key} leaked a placeholder"
-        # DEV-1935: the mixed disjunction pushes too (boolean-total pushdown).
+        # The mixed disjunction pushes too (boolean-total pushdown).
         if case_id.startswith("exists/") or case_id == "excluded/mixed_or":
             assert "EXISTS" in value.upper(), f"{key} lacks the semi-join"
         else:

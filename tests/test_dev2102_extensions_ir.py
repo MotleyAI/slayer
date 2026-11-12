@@ -155,7 +155,7 @@ class TestRestAndMcp:
         q = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert q.extensions == req.extensions
 
-    @pytest.mark.parametrize("version", [9, 10])
+    @pytest.mark.parametrize("version", [9, 10, 11, 12])
     def test_rest_body_migrates_a_versioned_legacy_root_extension(self, version: int) -> None:
         req = QueryRequest.model_validate({"version": version, "source_model": ORDERS_EXT, "measures": ["count(*)"]})
         assert req.source_model == "orders"

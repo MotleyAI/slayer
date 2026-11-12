@@ -528,7 +528,7 @@ class _ExtensionScope(BaseModel):
     def _model(self, path: list[str], *, host: SlayerModel) -> SlayerModel | None:
         """The model ``path`` names: edge tokens from ``host`` (a lone hop short-form routed, as the binder does),
         else a model the query extends and its edge tokens."""
-        path = list(drop_root_hop(path, host.spelling))
+        path = list(drop_root_hop(path, host.spelling, head_quoted=False))
         if not path:
             return host
         walked = self._walked(host, path)
@@ -550,7 +550,7 @@ class _ExtensionScope(BaseModel):
         if star:
             model = self._model(segments, host=host)
             return f"{model.data_source}.{model.name}" if model is not None else None
-        heads = [(host, list(drop_root_qualifier(segments, host.spelling)))]
+        heads = [(host, list(drop_root_qualifier(segments, host.spelling, quoted=())))]
         routed = self.scope.resolve(segments[:-1], root=host)
         if routed is not None and routed[1]:
             heads.append((self.scope.models[routed[1][-1].target_model], segments[-1:]))

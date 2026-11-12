@@ -1,26 +1,20 @@
-"""DEV-1743 — live Postgres coverage for the dotted-canonical flip.
-
-Byte-level SQL assertions cannot catch a silently-wrong join, so these run the
-real query and assert per-path VALUES:
+"""Live Postgres values for dotted join paths.
 
 * a ``__``-named model joined and grouped returns the right per-label sums;
 * two deep long-name join paths whose naive ``__`` aliases collide after
   Postgres's 63-byte truncation still resolve to their OWN relations.
-
-Module-skips without ``pytest_postgresql``; the second class also fails today
-because join aliases are not length-fitted (the DEV-1756-deferred defect).
 """
 
 import uuid
 
 import pytest
 
+from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
-from slayer.async_utils import run_sync
+from tests._engine_helpers import owned_query_engine
 
 pytest.importorskip("pytest_postgresql")
 
@@ -104,12 +98,12 @@ def _dunder_storage(postgresql_proc, tmp_path_factory):
 @pytest.mark.integration
 class TestDunderModelLiveValues:
     async def test_per_label_sums(self, _dunder_storage) -> None:
-        engine = SlayerQueryEngine(storage=_dunder_storage)
-        result = await engine.execute(query=SlayerQuery.model_validate({
-            "source_model": "orders",
-            "dimensions": ["customer__region.label"],
-            "measures": [{"formula": "sum(amount)"}],
-        }))
+        async with owned_query_engine(storage=_dunder_storage) as engine:
+            result = await engine.execute(query=SlayerQuery.model_validate({
+                "source_model": "orders",
+                "dimensions": ["customer__region.label"],
+                "measures": [{"formula": "sum(amount)"}],
+            }))
         by_label = {r["orders.customer__region.label"]: r["orders.amount_sum"]
                     for r in result.data}
         assert by_label == {"North": 15, "South": 20}
@@ -178,16 +172,16 @@ def _long_alias_storage(postgresql_proc, tmp_path_factory):
 @pytest.mark.integration
 class TestLongAliasCollisionLiveValues:
     async def test_colliding_paths_keep_distinct_values(self, _long_alias_storage) -> None:
-        engine = SlayerQueryEngine(storage=_long_alias_storage)
         north = ("customer_entity_record.consumer_entity_record."
                  "household_entity_record_north.tag")
         south = ("customer_entity_record.consumer_entity_record."
                  "household_entity_record_south.tag")
-        result = await engine.execute(query=SlayerQuery.model_validate({
-            "source_model": "subscription_entity",
-            "dimensions": [north, south],
-            "measures": [{"formula": "sum(amount)"}],
-        }))
+        async with owned_query_engine(storage=_long_alias_storage) as engine:
+            result = await engine.execute(query=SlayerQuery.model_validate({
+                "source_model": "subscription_entity",
+                "dimensions": [north, south],
+                "measures": [{"formula": "sum(amount)"}],
+            }))
         assert result.row_count == 1
         row = result.data[0]
         # The two long paths must read their OWN leaf, not a truncation-merged one.

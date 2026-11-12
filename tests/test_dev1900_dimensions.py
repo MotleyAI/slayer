@@ -1,4 +1,4 @@
-"""DEV-1900 — a derived fanning dimension routes through the mode axis.
+"""A derived fanning dimension routes through the mode axis.
 
 A dimension naming a derived column whose definition crosses the 1:N
 ``regions → region_events`` hop is unattributable exactly as a structural
@@ -52,7 +52,7 @@ def _names_hop(warnings) -> bool:
 class TestBroadcast:
     async def test_broadcasts_the_metric_with_a_warning_naming_the_hop(self, engine):
         resp = await engine.execute(orders_q(
-            dimensions=[BAD_POP], measures=[AMOUNT_SUM, SPEND_SUM]))
+            dimensions=[BAD_POP], measures=[AMOUNT_SUM, SPEND_SUM], to_many_handling="broadcast"))
         amt = bad_pop_vals(resp, "orders.amt")
         spend = bad_pop_vals(resp, "orders.csp")
         # Every cell carries the ungrouped total (broadcast), never the per-event

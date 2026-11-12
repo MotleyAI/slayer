@@ -144,6 +144,7 @@ addopts = "--ignore=tests/perf"
 markers = [
     "integration: marks tests as integration tests (require a real database)",
     "metabase_e2e: live-Metabase end-to-end suite (requires Docker)",
+    "abandons_async_engines: the test abandons closed loops' async engines (tests/_async_engine_release_law.py)",
 ]
 asyncio_mode = "auto"
 # Resource-ownership gate: a leaked sqlite connection / undisposed engine is an error on

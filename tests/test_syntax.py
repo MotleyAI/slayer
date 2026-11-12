@@ -21,7 +21,20 @@ from decimal import Decimal
 
 import pytest
 
+from slayer.core.enums import DataType
 from slayer.core.errors import IllegalWindowInFilterError, UnknownFunctionError
+from slayer.core.keys import (
+    AggregateKey,
+    ArithmeticKey,
+    ColumnKey,
+    Grain,
+    LiteralKey,
+    ScalarCallKey,
+    TransformKey,
+    ValueKey,
+)
+from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.scope import ModelScope
 from slayer.core.syntax import (
     AggCall,
     Arith,
@@ -36,6 +49,67 @@ from slayer.core.syntax import (
     UnaryOp,
     parse_expr,
 )
+from slayer.engine.binding import bind_expr, bind_filter
+from slayer.ir.source_bundle import ResolvedSourceBundle
+
+
+# ---------------------------------------------------------------------------
+# Binding fixtures: keyword-versus-comparison is decided at binding
+# ---------------------------------------------------------------------------
+
+
+def _orders() -> SlayerModel:
+    return SlayerModel(
+        name="orders",
+        data_source="prod",
+        sql_table="orders",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="customer_id", type=DataType.INT),
+            Column(name="revenue", type=DataType.DOUBLE),
+            Column(name="price", type=DataType.DOUBLE),
+            Column(name="quantity", type=DataType.DOUBLE),
+            Column(name="col1", type=DataType.DOUBLE),
+            Column(name="region", type=DataType.TEXT),
+            Column(name="channel", type=DataType.TEXT),
+            Column(name="cohort", type=DataType.TEXT),
+            Column(name="status", type=DataType.TEXT),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    )
+
+
+def _customers() -> SlayerModel:
+    return SlayerModel(
+        name="customers",
+        data_source="prod",
+        sql_table="customers",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="region", type=DataType.TEXT),
+        ],
+    )
+
+
+def _bundle() -> ResolvedSourceBundle:
+    return ResolvedSourceBundle(dialect="postgres", source_model=_orders(), referenced_models=[_customers()])
+
+
+def _bound(text: str) -> ValueKey:
+    return bind_expr(parse_expr(text), scope=ModelScope(source_model=_orders()), bundle=_bundle()).value_key
+
+
+def _bound_filter(text: str) -> ValueKey:
+    return bind_filter(parse_expr(text), scope=ModelScope(source_model=_orders()), bundle=_bundle()).value_key
+
+
+def _assert_arguments(call: AggCall | TransformCall, *needles: str, count: int) -> None:
+    """``call`` has ``count`` non-input arguments showing ``needles`` in order, whether parsed as keywords or not."""
+    written = repr((call.args, call.kwargs))
+    assert len(call.args) + len(call.kwargs) == count, written
+    at = [written.find(needle) for needle in needles]
+    assert -1 not in at, written
+    assert at == sorted(at), written
 
 
 # ---------------------------------------------------------------------------
@@ -127,16 +201,23 @@ class TestAggregations:
         assert result.kwargs == ()
 
     def test_aggregation_with_kwarg(self):
+        # price:weighted_avg(weight=quantity) — `weight` is a declared parameter, so binding makes it a keyword.
         result = parse_expr("weighted_avg(price, weight=quantity)")
         assert isinstance(result, AggCall)
         assert result.source == Ref(name="price")
         assert result.agg == "weighted_avg"
-        assert result.kwargs == (("weight", Ref(name="quantity")),)
+        _assert_arguments(result, "'weight'", "'quantity'", count=1)
+        bound = _bound("weighted_avg(price, weight=quantity)")
+        assert isinstance(bound, AggregateKey)
+        assert bound.kwargs == (("weight", ColumnKey(path=(), leaf="quantity")),)
 
     def test_aggregation_with_numeric_kwarg(self):
         result = parse_expr("percentile(revenue, p=0.5)")
         assert isinstance(result, AggCall)
-        assert result.kwargs == (("p", Literal(value=Decimal("0.5"))),)
+        _assert_arguments(result, "'p'", "Decimal('0.5')", count=1)
+        bound = _bound("percentile(revenue, p=0.5)")
+        assert isinstance(bound, AggregateKey)
+        assert bound.kwargs == (("p", Decimal("0.5")),)
 
 
 # ---------------------------------------------------------------------------
@@ -159,12 +240,12 @@ class TestTransforms:
         assert result.op == "rank"
 
     def test_change_with_partition_by(self):
-        # change(revenue:sum, partition_by=region) — C6 routing kwarg.
+        # The argument survives parsing; whether it is a keyword is decided at binding.
         result = parse_expr("change(sum(revenue), partition_by=region)")
         assert isinstance(result, TransformCall)
         assert result.op == "change"
         assert result.input == AggCall(source=Ref(name="revenue"), agg="sum")
-        assert result.kwargs == (("partition_by", Ref(name="region")),)
+        _assert_arguments(result, "'partition_by'", "'region'", count=1)
 
     def test_nested_transform(self):
         # change(cumsum(revenue:sum))
@@ -179,7 +260,10 @@ class TestTransforms:
         result = parse_expr("ntile(sum(revenue), n=4)")
         assert isinstance(result, TransformCall)
         assert result.op == "ntile"
-        assert result.kwargs == (("n", Literal(value=Decimal(4))),)
+        _assert_arguments(result, "'n'", "Decimal('4')", count=1)
+        bound = _bound("ntile(sum(revenue), n=4)")
+        assert isinstance(bound, TransformKey)
+        assert bound.kwargs == (("n", Decimal(4)),)
 
     def test_first_transform(self):
         # One AggCall; dispatches to the transform at bind.
@@ -244,12 +328,14 @@ class TestTransforms:
 
     def test_rank_partition_by_dotted_path(self):
         # partition_by may name a joined column via a dotted path.
-        result = parse_expr("rank(sum(revenue), partition_by=customers.region, direction='desc')")
+        text = "rank(sum(revenue), partition_by=customers.region, direction='desc')"
+        result = parse_expr(text)
         assert isinstance(result, TransformCall)
-        assert result.kwargs == (
-            ("partition_by", DottedRef(parts=("customers", "region"))),
-            ("direction", Literal(value="desc")),
-        )
+        _assert_arguments(result, "'partition_by'", "'customers'", "'region'", "'direction'", "'desc'", count=2)
+        bound = _bound(text)
+        assert isinstance(bound, TransformKey)
+        assert bound.partition_keys == Grain.of([ColumnKey(path=("customers",), leaf="region")])
+        assert bound.kwargs == (("direction", "desc"),)
 
     def test_triple_nested_transforms(self):
         # last(change(cumsum(revenue:sum))) — three levels deep.
@@ -474,7 +560,7 @@ class TestRejection:
         # An unknown name over an aggregatable first argument is an AggCall candidate; with none it raises.
         assert parse_expr("random_func(revenue)") == AggCall(source=Ref(name="revenue"), agg="random_func")
         with pytest.raises(UnknownFunctionError):
-            parse_expr("random_func(p=1)")
+            _bound("random_func(p=1)")
 
     def test_raw_over_clause_raises(self):
         # `SUM(x) OVER (...)` is a window expression — DSL rejects.
@@ -668,40 +754,53 @@ class TestFilterOperatorNormalization:
         assert result.right == Literal(value="a like b")
 
     def test_transform_kwarg_preserved_in_filter(self):
-        # The n=4 kwarg survives the SQL operator normalization.
+        # `n=4` survives the filter's operator normalisation and binds as the keyword `n`.
         result = parse_expr("ntile(sum(revenue), n=4) <= 1")
         assert isinstance(result, Cmp)
         assert isinstance(result.left, TransformCall)
         assert result.left.op == "ntile"
-        assert result.left.args == ()
-        assert result.left.kwargs == (("n", Literal(value=Decimal(4))),)
+        _assert_arguments(result.left, "'n'", "Decimal('4')", count=1)
+        bound = _bound_filter("ntile(sum(revenue), n=4) <= 1")
+        assert isinstance(bound, ArithmeticKey)
+        ntile = bound.operands[0]
+        assert isinstance(ntile, TransformKey)
+        assert ntile.kwargs == (("n", Decimal(4)),)
 
     def test_rank_partition_by_kwarg_preserved_in_filter(self):
-        # Both kwargs survive the operator rewrite; binder turns partition_by into a
-        # column ref (covered by SQL-gen tests).
-        result = parse_expr("rank(sum(revenue), partition_by=region, direction='desc') <= 1")
+        # Both arguments survive the operator rewrite; binding makes them keywords.
+        text = "rank(sum(revenue), partition_by=region, direction='desc') <= 1"
+        result = parse_expr(text)
         assert isinstance(result, Cmp)
         assert result.op == "<="
         assert isinstance(result.left, TransformCall)
         assert result.left.op == "rank"
-        assert result.left.args == ()
-        assert result.left.kwargs == (
-            ("partition_by", Ref(name="region")), ("direction", Literal(value="desc")),
-        )
+        _assert_arguments(result.left, "'partition_by'", "'region'", "'direction'", "'desc'", count=2)
         assert result.right == Literal(value=Decimal(1))
+        bound = _bound_filter(text)
+        assert isinstance(bound, ArithmeticKey)
+        rank = bound.operands[0]
+        assert isinstance(rank, TransformKey)
+        assert rank.partition_keys == Grain.of([ColumnKey(path=(), leaf="region")])
+        assert rank.kwargs == (("direction", "desc"),)
 
     def test_rank_partition_by_list_kwarg_preserved_in_filter(self):
-        # A list-form partition_by kwarg survives as a tuple of Refs.
-        result = parse_expr(
-            "rank(sum(revenue), partition_by=[region, channel], direction='desc') <= 1"
-        )
+        # List-form partition_by survives and binds to both columns.
+        text = "rank(sum(revenue), partition_by=[region, channel], direction='desc') <= 1"
+        result = parse_expr(text)
         assert isinstance(result, Cmp)
         assert isinstance(result.left, TransformCall)
         assert result.left.op == "rank"
-        assert result.left.kwargs == (
-            ("partition_by", (Ref(name="region"), Ref(name="channel"))),
-            ("direction", Literal(value="desc")),
+        _assert_arguments(
+            result.left, "'partition_by'", "'region'", "'channel'", "'direction'", "'desc'", count=2,
         )
+        bound = _bound_filter(text)
+        assert isinstance(bound, ArithmeticKey)
+        rank = bound.operands[0]
+        assert isinstance(rank, TransformKey)
+        assert rank.partition_keys == Grain.of(
+            [ColumnKey(path=(), leaf="region"), ColumnKey(path=(), leaf="channel")],
+        )
+        assert rank.kwargs == (("direction", "desc"),)
 
     # -- Aggregation args/kwargs INSIDE a filter transform ------------------
     # Backfilled from the legacy ``TestExtractFilterTransforms`` (which tested
@@ -724,43 +823,55 @@ class TestFilterOperatorNormalization:
         assert agg.args == (Ref(name="ordered_at"),)
 
     def test_filter_transform_preserves_aggregation_kwarg(self):
-        # The aggregation's own kwarg survives, distinct from the transform's kwargs.
+        # change(price:weighted_avg(weight=quantity)) > 0 — the aggregation's
+        # own keyword must survive, distinct from the transform's arguments.
+        text = "change(weighted_avg(price, weight=quantity)) > 0"
+        result = parse_expr(text)
+        assert isinstance(result, Cmp)
+        inner = result.left
+        assert isinstance(inner, TransformCall)
+        _assert_arguments(inner, count=0)
+        agg = inner.input
+        assert isinstance(agg, AggCall)
+        assert agg.agg == "weighted_avg"
+        _assert_arguments(agg, "'weight'", "'quantity'", count=1)
+        bound = _bound_filter(text)
+        assert isinstance(bound, ArithmeticKey)
+        change = bound.operands[0]
+        assert isinstance(change, TransformKey)
+        assert change.kwargs == ()
+        assert isinstance(change.input, AggregateKey)
+        assert change.input.kwargs == (("weight", ColumnKey(path=(), leaf="quantity")),)
+
+    def test_filter_transform_preserves_mixed_agg_args_and_kwargs(self):
+        # change(price:weighted_avg(col1, weight=quantity)) > 0 — positional
+        # and `name = value` arguments on the same aggregation, both preserved in order.
         result = parse_expr(
-            "change(weighted_avg(price, weight=quantity)) > 0"
+            "change(weighted_avg(price, col1, weight=quantity)) > 0"
         )
         assert isinstance(result, Cmp)
         inner = result.left
         assert isinstance(inner, TransformCall)
         agg = inner.input
         assert isinstance(agg, AggCall)
-        assert agg.agg == "weighted_avg"
-        assert agg.kwargs == (("weight", Ref(name="quantity")),)
-
-    def test_filter_transform_preserves_mixed_agg_args_and_kwargs(self):
-        # Positional and keyword args on the same aggregation, both preserved.
-        result = parse_expr(
-            "change(weighted_avg(price, col1, weight=quantity)) > 0"
-        )
-        inner = getattr(result, "left")
-        assert isinstance(inner, TransformCall)
-        agg = inner.input
-        assert isinstance(agg, AggCall)
-        assert agg.args == (Ref(name="col1"),)
-        assert agg.kwargs == (("weight", Ref(name="quantity")),)
+        assert agg.args[0] == Ref(name="col1")
+        _assert_arguments(agg, "'col1'", "'weight'", "'quantity'", count=2)
 
     def test_filter_ntile_preserves_both_n_and_partition_by(self):
-        # Dropping partition_by would rank globally; dropping n would fail to re-parse.
-        result = parse_expr(
-            "ntile(sum(revenue), n=4, partition_by=cohort) <= 1"
-        )
+        # Dropping partition_by would rank globally; dropping n would fail to bind.
+        text = "ntile(sum(revenue), n=4, partition_by=cohort) <= 1"
+        result = parse_expr(text)
         assert isinstance(result, Cmp)
         inner = result.left
         assert isinstance(inner, TransformCall)
         assert inner.op == "ntile"
-        assert inner.kwargs == (
-            ("n", Literal(value=Decimal(4))),
-            ("partition_by", Ref(name="cohort")),
-        )
+        _assert_arguments(inner, "'n'", "Decimal('4')", "'partition_by'", "'cohort'", count=2)
+        bound = _bound_filter(text)
+        assert isinstance(bound, ArithmeticKey)
+        ntile = bound.operands[0]
+        assert isinstance(ntile, TransformKey)
+        assert ntile.kwargs == (("n", Decimal(4)),)
+        assert ntile.partition_keys == Grain.of([ColumnKey(path=(), leaf="cohort")])
 
     def test_grouping_paren_equality_still_rewritten(self):
         # DEV-1492 regression guard: a `=` inside a *grouping* paren (not a
@@ -781,10 +892,9 @@ class TestFilterOperatorNormalization:
         assert right.right == Literal(value=Decimal(5))
 
     def test_mixed_transform_kwarg_and_top_level_equality(self):
-        # A transform kwarg `=` and a top-level SQL equality `=` are classified independently.
-        result = parse_expr(
-            "ntile(sum(revenue), n=4) <= 1 and status = 'paid'"
-        )
+        # A keyword `=` inside a call and a top-level SQL equality are classified independently.
+        text = "ntile(sum(revenue), n=4) <= 1 and status = 'paid'"
+        result = parse_expr(text)
         assert isinstance(result, BoolOp)
         assert result.op == "and"
         assert len(result.operands) == 2
@@ -793,11 +903,21 @@ class TestFilterOperatorNormalization:
         assert left.op == "<="
         assert isinstance(left.left, TransformCall)
         assert left.left.op == "ntile"
-        assert left.left.kwargs == (("n", Literal(value=Decimal(4))),)
+        _assert_arguments(left.left, "'n'", "Decimal('4')", count=1)
         assert isinstance(right, Cmp)
         assert right.op == "=="
         assert right.left == Ref(name="status")
         assert right.right == Literal(value="paid")
+        bound = _bound_filter(text)
+        assert isinstance(bound, ArithmeticKey)
+        bound_left, bound_right = bound.operands
+        assert isinstance(bound_left, ArithmeticKey)
+        ntile = bound_left.operands[0]
+        assert isinstance(ntile, TransformKey)
+        assert ntile.kwargs == (("n", Decimal(4)),)
+        assert bound_right == ArithmeticKey(
+            op="==", operands=(ColumnKey(path=(), leaf="status"), LiteralKey(value="paid")),
+        )
 
     def test_equality_inside_string_literal_untouched(self):
         # DEV-1492 literal-awareness: the `=` inside the string literal
@@ -827,29 +947,38 @@ class TestFilterOperatorNormalization:
         assert first.right == Literal(value="paid")
         assert second == Literal(value=False)
 
-    def test_agg_kwarg_preserved_in_filter(self):
-        result = parse_expr("percentile(revenue, p=0.5) > 100")
+    def test_colon_agg_kwarg_preserved_in_filter(self):
+        # `p=0.5` survives the filter's operator rewrite and binds as percentile's keyword `p`.
+        text = "percentile(revenue, p=0.5) > 100"
+        result = parse_expr(text)
         assert isinstance(result, Cmp)
         assert result.op == ">"
         assert isinstance(result.left, AggCall)
         assert result.left.source == Ref(name="revenue")
         assert result.left.agg == "percentile"
-        assert result.left.args == ()
-        assert result.left.kwargs == (
-            ("p", Literal(value=Decimal("0.5"))),
-        )
+        _assert_arguments(result.left, "'p'", "Decimal('0.5')", count=1)
         assert result.right == Literal(value=Decimal(100))
+        bound = _bound_filter(text)
+        assert isinstance(bound, ArithmeticKey)
+        percentile = bound.operands[0]
+        assert isinstance(percentile, AggregateKey)
+        assert percentile.args == ()
+        assert percentile.kwargs == (("p", Decimal("0.5")),)
 
     def test_transform_kwarg_with_whitespace_around_equals_preserved(self):
-        # DEV-1492 (Codex review): the scanner skips whitespace when
-        # checking the `IDENT = value` shape, so a spaced kwarg still
-        # parses as a kwarg, not a positional comparison.
-        result = parse_expr("ntile(sum(revenue), n = 4) <= 1")
+        # Whitespace around `=` does not change classification.
+        text = "ntile(sum(revenue), n = 4) <= 1"
+        result = parse_expr(text)
         assert isinstance(result, Cmp)
         assert isinstance(result.left, TransformCall)
         assert result.left.op == "ntile"
-        assert result.left.args == ()
-        assert result.left.kwargs == (("n", Literal(value=Decimal(4))),)
+        _assert_arguments(result.left, "'n'", "Decimal('4')", count=1)
+        bound = _bound_filter(text)
+        assert isinstance(bound, ArithmeticKey)
+        ntile = bound.operands[0]
+        assert isinstance(ntile, TransformKey)
+        assert ntile.args == ()
+        assert ntile.kwargs == (("n", Decimal(4)),)
 
     def test_not_paren_is_grouping_not_call(self):
         # DEV-1492 (Codex review): the lowercased keyword `not` is not an
@@ -866,23 +995,24 @@ class TestFilterOperatorNormalization:
         assert result.operand.right == Literal(value="paid")
 
     def test_nested_scalar_in_transform_with_kwarg(self):
-        # DEV-1492 (Codex review): innermost-paren tracking across nested
-        # calls. Outer transform `rank` has a kwarg `partition_by=region`
-        # which must be preserved; inner scalar `coalesce(status = 'paid',
-        # 0)` has a `=` which must be rewritten (SCALAR_FUNCTIONS
-        # narrowing). Exercises the per-frame (kind, callee) stack.
-        result = parse_expr(
-            "rank(coalesce(status = 'paid', 0), partition_by=region, direction='desc') <= 1"
-        )
+        # rank's `partition_by=region` binds as a keyword; the `=` inside the scalar coalesce is a comparison.
+        text = "rank(coalesce(status = 'paid', 0), partition_by=region, direction='desc') <= 1"
+        result = parse_expr(text)
         assert isinstance(result, Cmp)
         assert result.op == "<="
         assert isinstance(result.left, TransformCall)
         assert result.left.op == "rank"
-        # Transform kwarg preserved.
-        assert result.left.kwargs == (
-            ("partition_by", Ref(name="region")), ("direction", Literal(value="desc")),
-        )
-        # Transform input is the inner coalesce ScalarCall with a Cmp arg.
+        _assert_arguments(result.left, "'partition_by'", "'region'", "'direction'", "'desc'", count=2)
+        bound = _bound_filter(text)
+        assert isinstance(bound, ArithmeticKey)
+        rank = bound.operands[0]
+        assert isinstance(rank, TransformKey)
+        assert rank.partition_keys == Grain.of([ColumnKey(path=(), leaf="region")])
+        assert rank.kwargs == (("direction", "desc"),)
+        assert rank.input == ScalarCallKey(name="coalesce", args=(
+            ArithmeticKey(op="==", operands=(ColumnKey(path=(), leaf="status"), LiteralKey(value="paid"))),
+            LiteralKey(value=Decimal(0)),
+        ))
         inner = result.left.input
         assert isinstance(inner, ScalarCall)
         assert inner.name == "coalesce"
@@ -895,13 +1025,9 @@ class TestFilterOperatorNormalization:
         assert zero == Literal(value=Decimal(0))
 
     def test_string_literal_with_parens_commas_equals_does_not_corrupt_stack(self):
-        # DEV-1492 (Codex review): a string literal containing `)`, `,`,
-        # and `=` must not perturb the scanner's paren-kind stack or
-        # previous-token tracking. Both the kwarg `n=4` and the top-level
-        # `status = '),='` must be classified correctly.
-        result = parse_expr(
-            "ntile(sum(revenue), n=4) <= 1 and status = '),='"
-        )
+        # A string literal holding `)`, `,` and `=` does not perturb classification of `n=4` or the equality.
+        text = "ntile(sum(revenue), n=4) <= 1 and status = '),='"
+        result = parse_expr(text)
         assert isinstance(result, BoolOp)
         assert result.op == "and"
         left, right = result.operands
@@ -909,45 +1035,54 @@ class TestFilterOperatorNormalization:
         assert left.op == "<="
         assert isinstance(left.left, TransformCall)
         assert left.left.op == "ntile"
-        assert left.left.kwargs == (("n", Literal(value=Decimal(4))),)
+        _assert_arguments(left.left, "'n'", "Decimal('4')", count=1)
         assert isinstance(right, Cmp)
         assert right.op == "=="
         assert right.left == Ref(name="status")
         assert right.right == Literal(value="),=")
+        bound = _bound_filter(text)
+        assert isinstance(bound, ArithmeticKey)
+        bound_left = bound.operands[0]
+        assert isinstance(bound_left, ArithmeticKey)
+        ntile = bound_left.operands[0]
+        assert isinstance(ntile, TransformKey)
+        assert ntile.kwargs == (("n", Decimal(4)),)
 
-    def test_agg_with_ambiguous_name_preserves_kwarg_in_filter(self):
-        # `first`/`last` are both transforms and aggregations; as an aggregation call a kwarg is kept.
+    def test_colon_agg_with_ambiguous_name_preserves_its_argument_in_filter(self):
+        # The colon makes `first` an aggregation; `order = created_at` stays its one argument (keyword or comparison
+        # is decided at binding).
         result = parse_expr("first(revenue, order=created_at) > 0")
         assert isinstance(result, Cmp)
         assert result.op == ">"
         assert isinstance(result.left, AggCall)
         assert result.left.source == Ref(name="revenue")
         assert result.left.agg == "first"
-        assert result.left.args == ()
-        assert result.left.kwargs == (("order", Ref(name="created_at")),)
+        assert len(result.left.args) + len(result.left.kwargs) == 1
+        written = repr((result.left.args, result.left.kwargs))
+        assert "'order'" in written
+        assert "'created_at'" in written
         assert result.right == Literal(value=Decimal(0))
 
     def test_transform_bare_ref_equality_predicate_preserved(self):
-        # DEV-1492 iteration 2 (Codex review): consecutive_periods(predicate)
-        # is documented to take a boolean predicate (formulas.md:140,163,170).
-        # A bare-ref SQL equality (`status = 'paid'`) as the first positional
-        # arg of a transform must NOT be misread as a kwarg — transforms only
-        # accept kwargs AFTER the value (i.e. after the first `,`). The colon-
-        # agg form (`sum(revenue) > 0`) already worked because the `:` token
-        # breaks the LPAREN/IDENT pattern; the bare-ref form is the gap.
-        result = parse_expr("consecutive_periods(status = 'paid') >= 2")
+        # `status` is no parameter of consecutive_periods, so `status = 'paid'` binds as its predicate.
+        text = "consecutive_periods(status = 'paid') >= 2"
+        result = parse_expr(text)
         assert isinstance(result, Cmp)
         assert result.op == ">="
         assert isinstance(result.left, TransformCall)
         assert result.left.op == "consecutive_periods"
-        assert result.left.args == ()
-        assert result.left.kwargs == ()
-        inner = result.left.input
-        assert isinstance(inner, Cmp)
-        assert inner.op == "=="
-        assert inner.left == Ref(name="status")
-        assert inner.right == Literal(value="paid")
+        written = repr((result.left.input, result.left.args, result.left.kwargs))
+        assert -1 < written.find("'status'") < written.find("'paid'"), written
         assert result.right == Literal(value=Decimal(2))
+        bound = _bound_filter(text)
+        assert isinstance(bound, ArithmeticKey)
+        streak = bound.operands[0]
+        assert isinstance(streak, TransformKey)
+        assert streak.kwargs == ()
+        assert streak.input == ArithmeticKey(
+            op="==", operands=(ColumnKey(path=(), leaf="status"), LiteralKey(value="paid")),
+        )
+        assert bound.operands[1] == LiteralKey(value=Decimal(2))
 
     def test_comparison_inside_ifnull_scalar_call_preserved(self):
         # DEV-1492 (Codex review): the SCALAR_FUNCTIONS narrowing must

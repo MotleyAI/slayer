@@ -1,10 +1,7 @@
-"""DEV-1841 task 3.4 — associate-mode eligibility: windowed / first-last
-combinations and a root without a unique key fail with a clear typed
-``SlayerError`` (specified behavior, outside the NotImplementedError ratchet).
+"""Associate-mode eligibility: windowed / first-last combinations fail with a clear typed
+``SlayerError``; a root without a unique key associates through its row identity.
 
-Spec: openspec …/specs/queries/attribution-modes — "Association eligibility and
-input handling", scenarios "Windowed or first/last combination fails closed"
-and "Root without a unique key fails closed".
+Spec: queries/attribution-modes — "Association eligibility, input handling and row identity".
 """
 
 from __future__ import annotations
@@ -16,6 +13,7 @@ import pytest
 from slayer.core.errors import SlayerError
 
 from tests._dev1841_fixtures import (
+    ASSOC_SPEND_BY_STATUS,
     ModelMeasure,
     TimeDimension,
     TimeGranularity,
@@ -93,16 +91,13 @@ class TestUnsupportedCombinations:
 
 
 class TestMissingUniqueKey:
-    async def test_root_without_unique_key_fails(self, exec_backend_keyless):
-        """Scenario: root without a unique key fails closed — association cannot
-        dedup entities, so it errors naming the model and the remedy."""
+    async def test_root_without_unique_key_associates(self, exec_backend_keyless):
+        """A keyless root is deduplicated by its per-query row identity."""
         _, engine = exec_backend_keyless
-        query = assoc_q(dimensions=["status"], measures=[CM])
-        with pytest.raises(SlayerError) as ei:
-            await engine.execute(query)
-        msg = str(ei.value)
-        assert "customers" in msg
-        assert "key" in msg.lower()
+        resp = await engine.execute(assoc_q(dimensions=["status"], measures=[CM]))
+        by = status_key(resp)
+        for status, expected in ASSOC_SPEND_BY_STATUS.items():
+            assert float(by[(status,)]["orders.cm"]) == pytest.approx(expected)
 
 
 class TestUnsafeInputInAssociate:
@@ -123,9 +118,8 @@ class TestUnsafeInputInAssociate:
 
 
 class TestColumnReferenceParameter:
-    """DEV-1892 lifts a column-reference parameter onto the deduped ``_base``:
-    the explicit weight and the definition default now execute, each picked once
-    per distinct entity (re-pointed from the old rejection)."""
+    """A column-reference parameter is picked once per distinct entity: the explicit
+    weight and the definition default both execute."""
 
     WAVG = ModelMeasure(
         formula="weighted_avg(customers.spend, weight=customers.spend)", name="wavg")

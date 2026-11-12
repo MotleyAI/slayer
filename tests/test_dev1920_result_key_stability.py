@@ -64,7 +64,7 @@ QUERY_KEYS = [
                  ["orders.created_at", "orders.amount_sum"], id="date-trunc-dimension"),
     pytest.param({"measures": ["sum(amount)"], "time_dimensions": ["date_trunc('month', created_at)"]},
                  ["orders.created_at", "orders.amount_sum"], id="date-trunc-time-dimension"),
-    pytest.param({"measures": ["sum(amount)"], "dimensions": ["fiscal_quarter(created_at)"]},
+    pytest.param({"measures": ["sum(amount)"], "dimensions": ["date_trunc('fiscal_quarter', created_at)"]},
                  ["orders.created_at", "orders.amount_sum"], id="custom-granularity-dimension"),
 ]
 

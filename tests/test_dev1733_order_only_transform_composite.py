@@ -34,7 +34,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 _MONTH = [TimeDimension(dimension="created_at", granularity="month")]
 
 # A bare ROW-column operand must fail closed with either error; both REJECT.
-# DEV-1865: a row-column operand beside an aggregate now fails closed at the
+# A row-column operand beside an aggregate now fails closed at the
 # position typing pass (PositionTypingError names both failed typings).
 _ROW_OPERAND_REJECTED = PositionTypingError
 
@@ -880,6 +880,7 @@ class TestWindowedStillGuarded:
             time_dimensions=_MONTH,
             measures=[ModelMeasure(formula="count(id)")],
             order=[OrderItem.model_validate({"column": "sum(customers.revenue, window='90d')", "direction": "desc"})],
+            to_many_handling="broadcast",
         )
         with pytest.raises(ValueError) as ei:
             await _sql(engine, query)
@@ -889,7 +890,7 @@ class TestWindowedStillGuarded:
         assert "attributable from" in str(ei.value), ei.value
 
     async def test_non_sum_avg_windowed_order_target_still_raises(self, engine) -> None:
-        # DEV-1915 lift: a local non-sum/avg windowed order target now renders
+        # Lifted: a local non-sum/avg windowed order target now renders
         # (cross-model windowed stays guarded above).
         query = SlayerQuery(
             source_model="orders",

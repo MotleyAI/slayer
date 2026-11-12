@@ -88,7 +88,7 @@ def _prefix_onto_placeholder(
     hops: tuple[str, ...], *, host: SlayerModel, peers: dict[str, SlayerModel],
 ) -> list[OrientedJoin]:
     """The longest walkable prefix of ``hops`` when it ends on a placeholder, else ``[]``."""
-    hops = drop_root_hop(hops, host.spelling)
+    hops = drop_root_hop(hops, host.spelling, head_quoted=False)
     for end in range(len(hops) - 1, 0, -1):
         try:
             prefix = walk(root=host, path=hops[:end], models_by_name=peers)
@@ -138,7 +138,7 @@ class _Reads:
                 self.measure(host=model, name=measure.name, scope=scope)
 
     def column(self, *, host: SlayerModel, name: str, scope: QueryScope) -> None:
-        col = host.get_column(name)
+        col = host.get_column(name, quoted=True)
         if col is None or not self._first_visit(host, f"column:{name}"):
             return
         if col.sql is not None and not is_trivial_base(column=col):
@@ -170,7 +170,7 @@ class _Reads:
 
     def path(self, hops: Sequence[str], *, host: SlayerModel, scope: QueryScope) -> SlayerModel | None:
         """The model ``hops`` lands on from ``host``, recording each hop; ``None`` when unresolvable."""
-        if not drop_root_hop(hops, host.spelling):
+        if not drop_root_hop(hops, host.spelling, head_quoted=False):
             return host
         peers = {**scope.models, host.name: host}
         resolved = scope.resolve(hops, root=host)

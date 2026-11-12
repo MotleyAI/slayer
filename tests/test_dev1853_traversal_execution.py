@@ -151,9 +151,9 @@ class TestOrientedCardinalityValues:
             assert got == CHAIN_AMOUNT_BY_TIER_EXACT
             assert not broadcast_warnings(resp)
 
-    async def test_undeclared_unproven_orientation_broadcasts(self) -> None:
+    async def test_undeclared_unproven_orientation_associates_by_default(self) -> None:
         # Same query shape, but the attribution hop carries no declaration and
-        # covers no unique set — unproven fails closed into broadcast.
+        # covers no unique set — unproven, so each tier associates its orders.
         with tempfile.TemporaryDirectory() as d:
             engine = await chain_engine(
                 d, declare="forward", cardinality=None, customers_id_pk=False)
@@ -161,6 +161,21 @@ class TestOrientedCardinalityValues:
                 "source_model": "customers",
                 "dimensions": ["tier"],
                 "measures": [{"formula": "sum(orders.amount)", "name": "t"}],
+            }))
+            assert not broadcast_warnings(resp)
+            assert [w for w in resp.warnings or [] if w.kind == "associated"]
+            got = {r["customers.tier"]: r["customers.t"] for r in resp.data}
+            assert got == CHAIN_AMOUNT_BY_TIER_EXACT
+
+    async def test_undeclared_unproven_orientation_broadcasts_under_broadcast(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            engine = await chain_engine(
+                d, declare="forward", cardinality=None, customers_id_pk=False)
+            resp = await engine.execute(SlayerQuery.model_validate({
+                "source_model": "customers",
+                "dimensions": ["tier"],
+                "measures": [{"formula": "sum(orders.amount)", "name": "t"}],
+                "to_many_handling": "broadcast",
             }))
             assert broadcast_warnings(resp)
             values = {r["customers.t"] for r in resp.data}
@@ -173,7 +188,7 @@ class TestOrientedCardinalityValues:
         # regions crosses two fan-out orientations.
         resp = await fwd_engine.execute(SlayerQuery(
             source_model="customers", dimensions=["orders.status"],
-            measures=[{"formula": "sum(regions.pop)", "name": "rp"}]))
+            measures=[{"formula": "sum(regions.pop)", "name": "rp"}], to_many_handling="broadcast"))
         assert broadcast_warnings(resp)
         values = {r["customers.rp"] for r in resp.data}
         assert values == {CHAIN_POP_BROADCAST_TOTAL}
@@ -184,11 +199,11 @@ class TestOrientedCardinalityValues:
         self, fwd_engine,
     ) -> None:
         # orders.status is unattributable from a customer (reverse fan-out).
-        # Default broadcasts the distinct-customer total; associate
+        # Broadcast repeats the distinct-customer total; associate
         # dedups each customer's spend once per status, never join-multiplied.
         kw = dict(source_model="customers", dimensions=["orders.status"],
                   measures=[{"formula": "sum(spend)", "name": "s"}])
-        bcast = await fwd_engine.execute(SlayerQuery.model_validate(kw))
+        bcast = await fwd_engine.execute(SlayerQuery.model_validate({**kw, "to_many_handling": "broadcast"}))
         assert broadcast_warnings(bcast)
         assert {r["customers.s"] for r in bcast.data} == {
             CHAIN_SPEND_BROADCAST_TOTAL}

@@ -113,7 +113,7 @@ def safe_reachable(
 
 class JoinSafetyFinding(BaseModel):
     """One audit record per declared edge: the provability of both orientations
-    plus, when the declared (forward) orientation is unproven, the broadcast
+    plus, when the declared (forward) orientation is unproven, its
     consequence and remedies. Detection contradictions are separate findings."""
 
     data_source: str
@@ -138,7 +138,7 @@ def audit_join_safety(
     detection: Optional[JoinCardinalityReport] = None,
 ) -> list[JoinSafetyFinding]:
     """One finding per declared edge, recording both orientations' provability.
-    The forward-unproven edges carry the broadcast consequence and remedies;
+    The forward-unproven edges carry their consequence and remedies;
     data-contradicted declarations are appended as separate error findings."""
     # Joins resolve within the parent model's datasource — no cross-datasource shadowing.
     models_by_key = {(m.data_source, m.name): m for m in models}
@@ -199,8 +199,9 @@ def _edge_finding(
     else:
         message = (
             f"Join {model.name} → {join.target_model} is unproven: "
-            f"metrics crossing it will broadcast rather than join "
-            f"through. Remedies: {_UNPROVEN_REMEDY}."
+            f"dimensions across it are associated (cells may overlap; "
+            f"to_many_handling='broadcast' repeats the total instead) and "
+            f"aggregation inputs across it are refused. Remedies: {_UNPROVEN_REMEDY}."
         )
     return JoinSafetyFinding(
         data_source=model.data_source,

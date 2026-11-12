@@ -147,7 +147,7 @@ def test_first_last_by_created_at():
 
 
 def test_last_by_updated_at_skips_nulls():
-    # Descending native ordering puts NULL keys last on both backends.
+    # A NULL ranking key is never picked, on every dialect.
     last_upd = {}
     for m, ids in MEMBERS_90D.items():
         keyed = [(i, _ORDERS[i][5]) for i in ids if _ORDERS[i][5] is not None]

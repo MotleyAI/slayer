@@ -1,7 +1,7 @@
-"""LAW dice–slice under associate (semantics.arc42.md §3 law 5): filtering the
+"""LAW dice–slice (semantics.arc42.md §3 law 5): filtering the
 population to ``d = v`` yields the same aggregate value as slicing the ``v``
-cell of the same query grouped by ``d``. Holds under ``to_many_handling:
-"associate"`` for every reachable dimension; the broadcast default does not
+cell of the same query grouped by ``d``. Holds by default and under ``to_many_handling:
+"associate"`` for every reachable dimension; explicit ``"broadcast"`` does not
 satisfy it (its warning hint is the disclosure).
 
 Spec: openspec …/specs/queries/semantics — "Dice–slice correspondence under
@@ -17,6 +17,7 @@ from tests._dev1841_fixtures import (
     ModelMeasure,
     assoc_q,
     make_exec_engine,
+    q,
     rows_by,
 )
 
@@ -59,3 +60,15 @@ async def test_filtered_value_equals_sliced_cell(exec_backend, measure_key, dim,
     assert filtered_value == pytest.approx(float(sliced_cell)), (
         f"LAW dice–slice violated for {measure_key} on {dim}={value!r}: "
         f"filtered {filtered_value} != sliced {sliced_cell}")
+
+
+@pytest.mark.parametrize("measure_key,dim,value", FAMILY)
+async def test_holds_by_default(exec_backend, measure_key, dim, value):
+    _, engine = exec_backend
+    measure = ModelMeasure(formula=MEASURES[measure_key], name="m")
+
+    filtered = await engine.execute(q(measures=[measure], filters=[f"{dim} = '{value}'"]))
+    sliced = await engine.execute(q(dimensions=[dim], measures=[measure]))
+
+    sliced_cell = rows_by(sliced, f"orders.{dim}")[(value,)]["orders.m"]
+    assert float(filtered.data[0]["orders.m"]) == pytest.approx(float(sliced_cell))

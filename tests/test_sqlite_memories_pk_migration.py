@@ -20,6 +20,7 @@ import tempfile
 
 import pytest
 
+from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.sqlite_conn import transaction
 
@@ -180,7 +181,7 @@ class TestSqliteMemoriesPkMigration:
             assert rows[0].id == "1"
             assert rows[0].learning == "legacy"
             assert rows[0].entities == ["mydb.orders"]
-            assert rows[0].version == 8
+            assert rows[0].version == CURRENT_VERSIONS["Memory"]
 
 
 @pytest.fixture(autouse=True)

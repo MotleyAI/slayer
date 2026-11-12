@@ -137,8 +137,10 @@ class TestUserSpelling:
 
     async def test_stage_warning_names_the_user_stage(self, engine) -> None:
         b = query(name="b", source_model="orders", dimensions=["status"],
-                  measures=[m("sum(amount)", "amt"), m("sum(customers.spend)", "cs")])
-        stages = [b, query(source_model="b", dimensions=["status"], measures=[m("sum(amt)", "t")])]
+                  measures=[m("sum(amount)", "amt"), m("sum(customers.spend)", "cs")],
+                  to_many_handling="broadcast")
+        stages = [b, query(source_model="b", dimensions=["status"], measures=[m("sum(amt)", "t")],
+                           to_many_handling="broadcast")]
         with pytest.warns(UserWarning):
             resp = await engine.execute(stages)
         assert [w.location for w in resp.warnings if w.kind == "broadcast"] == ["stage 'b'"]
@@ -225,11 +227,11 @@ class TestIdentifierLimit:
 class TestReverseHopSpelling:
     async def test_reverse_hop_out_of_a_stage_is_spelled_by_its_name(self, engine) -> None:
         s = query(name="s", source_model="customers", dimensions=["id", "tier"],
-                  measures=[m("sum(spend)", "sp")])
+                  measures=[m("sum(spend)", "sp")], to_many_handling="broadcast")
         root = query(source_model="s",
                      extensions=[{"source_name": "s", "joins": [
                          {"target_model": "orders", "join_pairs": [["id", "customer_id"]]}]}],
-                     dimensions=["tier"], measures=[m("sum(orders.amount)", "a")])
+                     dimensions=["tier"], measures=[m("sum(orders.amount)", "a")], to_many_handling="broadcast")
         with pytest.warns(UserWarning):
             resp = await engine.execute([s, root])
         assert rows_by(resp.data, key="s.tier", value="s.a") == {t: 145.0 for t in AMOUNT_BY_TIER}

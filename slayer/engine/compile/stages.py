@@ -32,7 +32,7 @@ from slayer.core.enums import DataType, JoinCardinality, JoinType
 from slayer.core.errors import AmbiguousJoinPathError
 from slayer.core.keys import SLOT_COMPOSITE_KINDS, AggregateKey, AggregateSource, Grain, ArithmeticKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_kernel_requiring, is_ranked, restricts_own_rows, input_masked, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, NULL_SAFE_COMPARISON_OPS, NON_IDENTITY_KEY_FIELDS, OPTIONAL_KEY_FIELDS, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, value_type, VALUE_KEY_TYPES
 from slayer.core.models import Column, EmptyValue, SlayerModel, aggregation_definition, empty_value
-from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
+from slayer.core.refs import EXPRESSION_SOURCE_KINDS, first_bucket_remedy, key_display
 from slayer.engine.reference_closure import (
     aggregate_input_closure,
     column_default_key,
@@ -73,7 +73,9 @@ from slayer.engine.cardinality.join_safety import (
 from slayer.core.query import (
     SlayerQuery,
 )
-from slayer.sql.naming import canonical_aggregate_alias, flat_name, pick_slot_alias, slot_result_key
+from slayer.sql.naming import (
+    ROW_IDENTITY_COLUMN, canonical_aggregate_alias, flat_name, pick_slot_alias, slot_result_key, with_row_identity,
+)
 from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.scope import ModelScope, StageColumn, StageSchema, host_model_name
@@ -84,7 +86,6 @@ from slayer.engine.elaborate_env import (
     is_dimension_transform_root,
     position_classes,
     check_stage_flatten_collision,
-    check_association_root_unique_key,
     check_association_windowed_ranked,
     check_cross_model_inputs_safe,
     check_cross_model_partition_keys_attributable,
@@ -157,6 +158,7 @@ from slayer.engine.key_metadata import (
     measure_key_type,
 )
 from slayer.ir.prebound import (
+    ModePolicy,
     PreboundQuery,
     StrictQueryCarrier,
     partition_declared_measures,
@@ -229,7 +231,7 @@ def _guard_windowed_measures(
         for key in _windowed_agg_keys(vk):
             selected_windowed.setdefault(key, True)
 
-    check_windowed_time_dimension(resolved=active_td_key is not None)
+    check_windowed_time_dimension(resolved=active_td_key is not None, remedy=first_bucket_remedy(measure_vks))
     return selected_windowed
 
 
@@ -305,7 +307,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
     explicit_types: Optional[Mapping[ValueKey, DataType]] = None,
     grain_name_by_key: Optional[Mapping[ValueKey, str]] = None,
     window_td_key: Optional[TimeTruncKey] = None,
-    to_many_handling: Literal["broadcast", "associate", "error"] = "broadcast",
+    mode_policy: ModePolicy,
 ) -> Tuple[PreboundQuery, List[ValueKey]]:
     """The producer's bind product: grain from partition keys, one measure per consumed aggregate, inherited base-row filters; returns prebound + ordered grain keys."""
     public_alias_by_agg = public_alias_by_agg or {}
@@ -389,7 +391,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
         n_dims=len(dims),
         n_time_dimensions=len(tds),
         distinct_dimension_values=True,
-        to_many_handling=to_many_handling,
+        mode_policy=mode_policy,
     )
     return prebound, [*dims, *tds]
 
@@ -1092,7 +1094,7 @@ def _synthesize_wrap_attach(
             pks, key=lambda k: consumer_order.get(k, len(consumer_order)),
         ),
         grain_name_by_key=grain_name_by_key,
-        to_many_handling=prebound.to_many_handling,
+        mode_policy=prebound.mode_policy,
     )
     producer_plan = compile_synthesized(
         prebound=producer_prebound,
@@ -1242,7 +1244,7 @@ def _plan_shifted_attaches(
             public_alias_by_agg=aliases,
             grain_name_by_key=grain_name_by_key,
             window_td_key=window_td,
-            to_many_handling=prebound.to_many_handling,
+            mode_policy=prebound.mode_policy,
         )
         decision = _kernel_decision(
             answer=answer, windowed=window_td is not None,
@@ -2097,7 +2099,7 @@ class _ProducerSynthesisContext(BaseModel):
             host_model=self.host_model, bundle=self.bundle, scope=self.scope,
             stage_schemas=self.stage_schemas, population=self.population,
             population_filters=self.population_filters, n_population_date=self.n_population_date,
-            to_many_handling=self.prebound.to_many_handling,
+            mode_policy=self.prebound.mode_policy,
         )
 
 
@@ -2150,10 +2152,12 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         requested = list(agg.partition_keys)
         explicit = True
     else:
-        requested = [*projected_dim_keys, *projected_td_keys]
+        # A member the rest of the grain determines is redundant to group by: it neither associates nor broadcasts.
+        kept = _prune_functionally_determined_grain(Grain.of([*projected_dim_keys, *projected_td_keys]))
+        requested = [g for g in [*projected_dim_keys, *projected_td_keys] if g in kept]
         explicit = False
 
-    mode = context.prebound.to_many_handling
+    policy = context.prebound.mode_policy
     # Host included so the reverse (fanning) hop resolves for the broadcast
     # reason; attributability/filter routing keep the host-free map unchanged.
     models_with_host = {**models_by_name, host_model.name: host_model}
@@ -2201,9 +2205,23 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     )
     product = crosses_product_hop(host=host_model, path=target_path, models_by_name=models_by_name)
     # Across a product hop every cell associates all home rows: the broadcast producer, warned as associated.
-    product_associate = mode == "associate" and product
+    product_associate = policy.associates and product
     # Association only when a DIMENSION is unattributable; attached inputs never need it.
-    associate = mode == "associate" and bool(unattributable) and not product_associate
+    associate = policy.associates and bool(unattributable) and not product_associate
+    entity: Optional[_AssociationEntity] = None
+    association_unsupported: Optional[str] = None
+    if associate:
+        entity = _association_entity(
+            root_model=root_model, target_path=target_path, unattributable=unattributable,
+            host_model=host_model, models_by_name=models_by_name,
+        )
+        # The default broadcasts an ineligible implicit grain; requested grain is never broadcast.
+        if policy.fallback and not explicit:
+            association_unsupported = _association_unsupported(
+                agg=agg, entity=entity, target_path=target_path, host_model=host_model,
+                models_by_name=models_by_name, bundle=bundle,
+            )
+            associate = association_unsupported is None
     window_td_key: Optional[TimeTruncKey] = None
     semi_joins: List[SemiJoinFilter] = []
     broadcast: List[Tuple[str, str]] = []
@@ -2219,17 +2237,16 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         # rerooted grain member joined back on the host key, and dedup per home
         # entity via the association kernel — a home entity absent from the
         # population still counts in the cells its own path reaches.
+        assert entity is not None
         agg_rooted = agg_rooted.model_copy(update={"locus": "host"})
-        picked_params, entity_keys_root, assoc_pairs, list_rows = (
-            _association_arm(
-                agg=agg, agg_rooted=agg_rooted, alias=alias, root_model=root_model,
-                target_path=target_path, unattributable=unattributable,
-                host_model=host_model, models_by_name=models_by_name,
-                bundle=bundle,
-            )
+        picked_params, entity_keys_root = _association_arm(
+            agg=agg, agg_rooted=agg_rooted, alias=alias, entity=entity,
+            target_path=target_path, host_model=host_model,
+            models_by_name=models_by_name, bundle=bundle,
         )
+        list_rows = entity.list_rows
         # The unattributable dims join back on the host key exactly like safe_pairs.
-        safe_pairs = [*safe_pairs, *assoc_pairs]
+        safe_pairs = [*safe_pairs, *entity.assoc_pairs]
         inherited, restricted_texts = _association_inline_filters(
             base_filters=base_filters_with_text, target_path=target_path,
             root_model=root_model, models_by_name=models_by_name,
@@ -2299,6 +2316,8 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         projected_dim_keys=projected_dim_keys, projected_td_keys=projected_td_keys,
         active_bucket=prebound.main_time_key,
     )
+    if associate and entity is not None:
+        root_model = entity.root_model
     root_bundle = bundle.rerooted(root_model)
     root_scope = (
         ModelScope(source_model=root_model)
@@ -2317,7 +2336,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         explicit_types=(
             {agg_rooted: declared_type} if declared_type is not None else None
         ),
-        to_many_handling=prebound.to_many_handling,
+        mode_policy=prebound.mode_policy,
     )
     decision = _kernel_decision(
         answer=agg_rooted, windowed=window_td_key is not None, associate=associate,
@@ -2412,6 +2431,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         semi_join_measure=alias,
         broadcast_measure=alias if broadcast else None,
         broadcast_dimensions=broadcast,
+        association_unsupported=association_unsupported if broadcast else None,
         associated_measure=associated_measure,
         associated_dimensions=associated_dimensions,
         association_restricted_filter_texts=restricted_texts,
@@ -2448,7 +2468,7 @@ class _EndpointsSource(BaseModel):
     population: Population | None
     population_filters: List[BoundFilter]
     n_population_date: int
-    to_many_handling: Literal["broadcast", "associate", "error"]
+    mode_policy: ModePolicy
 
 
 def _window_endpoints(
@@ -2462,7 +2482,7 @@ def _window_endpoints(
         pks=Grain.of(host_keys), aggs=[], model=source.host_model, bundle=source.bundle,
         inherited=source.population_filters, n_date_range=source.n_population_date,
         partition_order=lambda _pks: list(host_keys),
-        to_many_handling=source.to_many_handling,
+        mode_policy=source.mode_policy,
     )
     plan = compile_synthesized(
         prebound=prebound, source_model=source.host_model.name, bundle=source.bundle,
@@ -2588,25 +2608,29 @@ def _reached_by_root_lists(key: ValueKey, *, root_model: SlayerModel, models_by_
     return True
 
 
-def _association_arm(
-    *, agg: AggregateKey, agg_rooted: AggregateKey, alias: str,
-    root_model: SlayerModel, target_path: Tuple[str, ...],
+class _AssociationEntity(NamedTuple):
+    """The entities an association producer deduplicates: the home (numbered when it has no unique key),
+    each unattributable dimension rerooted into it, and its entity key columns."""
+
+    root_model: SlayerModel
+    assoc_pairs: List[Tuple[ValueKey, ValueKey]]
+    list_rows: bool
+    entity_columns: List[str]
+
+    def models_by_name(self, models_by_name: Dict[str, SlayerModel]) -> Dict[str, SlayerModel]:
+        return {**models_by_name, self.root_model.name: self.root_model}
+
+    def host_grain(self, target_path: Tuple[str, ...]) -> Grain:
+        return Grain.of(
+            column_default_key(path=target_path, leaf=col, base=self.root_model) for col in self.entity_columns
+        )
+
+
+def _association_entity(
+    *, root_model: SlayerModel, target_path: Tuple[str, ...],
     unattributable: List[_UnattributableDim], host_model: SlayerModel,
-    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
-) -> Tuple[
-    List[PickedParam], List[ValueKey], List[Tuple[ValueKey, ValueKey]], bool,
-]:
-    """The home-rooted association arm: eligibility + mode-invariant
-    input safety on the rerooted host-locus aggregate (compiled inline at its fanning
-    grain, its level-1 dedup removing the fan-out); the kernel entity keys in ROOT
-    coordinates and the parameters the entity grain picks, rerooted into the home;
-    and each unattributable dimension rerooted to join back on the host key exactly
-    like ``safe_pairs``."""
-    check_association_windowed_ranked(
-        alias=alias,
-        windowed_or_ranked=is_kernel_requiring(agg),
-    )
-    key_sets = unique_key_sets(root_model)
+    models_by_name: Dict[str, SlayerModel],
+) -> _AssociationEntity:
     assoc_pairs = [
         (u.key, reroot_from_root(
             key=u.key, target_path=target_path, root_model=root_model,
@@ -2615,12 +2639,52 @@ def _association_arm(
         for u in unattributable
     ]
     # A list child's rows are its root row's own elements: association needs no key (design D6).
-    list_rows = bool(assoc_pairs) and all(
+    if assoc_pairs and all(
         _reached_by_root_lists(rerooted, root_model=root_model, models_by_name=models_by_name)
         for _key, rerooted in assoc_pairs
+    ):
+        return _AssociationEntity(root_model=root_model, assoc_pairs=assoc_pairs, list_rows=True, entity_columns=[])
+    key_sets = unique_key_sets(root_model)
+    if not key_sets:
+        root_model = with_row_identity(root_model)
+        key_sets = [[ROW_IDENTITY_COLUMN]]
+    return _AssociationEntity(
+        root_model=root_model, assoc_pairs=assoc_pairs, list_rows=False, entity_columns=key_sets[0],
     )
-    check_association_root_unique_key(
-        alias=alias, root_name=root_model.name, has_unique_key=list_rows or bool(key_sets),
+
+
+def _association_unsupported(
+    *, agg: AggregateKey, entity: _AssociationEntity, target_path: Tuple[str, ...],
+    host_model: SlayerModel, models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+) -> Optional[str]:
+    """Why the association arm cannot serve ``agg``, else ``None``."""
+    if window_kwarg_of(agg) is not None:
+        return "window="
+    if is_ranked(agg):
+        return f"{agg.agg}()"
+    grain = entity.host_grain(target_path)
+    for name, value in _param_values(agg):
+        if not isinstance(value, (AggregateKey, TransformKey)) and not _param_is_determined(
+            value=value, grain=grain, host_model=host_model,
+            models_by_name=entity.models_by_name(models_by_name), bundle=bundle,
+        ):
+            return f"a {name}= parameter the associated entity does not determine"
+    return None
+
+
+def _association_arm(
+    *, agg: AggregateKey, agg_rooted: AggregateKey, alias: str,
+    entity: _AssociationEntity, target_path: Tuple[str, ...], host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+) -> Tuple[List[PickedParam], List[ValueKey]]:
+    """The home-rooted association arm: eligibility + mode-invariant
+    input safety on the rerooted host-locus aggregate (compiled inline at its fanning
+    grain, its level-1 dedup removing the fan-out); the kernel entity keys in ROOT
+    coordinates and the parameters the entity grain picks, rerooted into the home."""
+    root_model = entity.root_model
+    check_association_windowed_ranked(
+        alias=alias,
+        windowed_or_ranked=is_kernel_requiring(agg),
     )
     _assert_cross_model_inputs_safe(
         agg=agg, agg_rooted=agg_rooted, root_model=root_model,
@@ -2633,15 +2697,10 @@ def _association_arm(
     # one is judged by the shared home-determination rule. Lift every parameter,
     # rerooted into the home so the level-1 pick reads it there; the kernel dedups
     # by the entity key in ROOT coordinates.
-    entity_columns = [] if list_rows else key_sets[0]
-    host_entity_keys: List[ValueKey] = [
-        column_default_key(path=target_path, leaf=col, base=root_model)
-        for col in entity_columns
-    ]
+    entity_grain = entity.host_grain(target_path)
     entity_keys_root: List[ValueKey] = [
-        column_default_key(path=(), leaf=col, base=root_model) for col in entity_columns
+        column_default_key(path=(), leaf=col, base=root_model) for col in entity.entity_columns
     ]
-    entity_grain = Grain.of(host_entity_keys)
     picked_params: List[PickedParam] = []
     for name, value in _param_values(agg):
         # Attached kinds (aggregate- and transform-valued) are judged by the shared
@@ -2652,14 +2711,14 @@ def _association_arm(
                 grain_display=_grain_display(entity_grain),
                 determined=_param_is_determined(
                     value=value, grain=entity_grain, host_model=host_model,
-                    models_by_name=models_by_name, bundle=bundle,
+                    models_by_name=entity.models_by_name(models_by_name), bundle=bundle,
                 ),
             )
         picked_params.append(PickedParam(name=name, key=reroot_from_root(
             key=value, target_path=target_path, root_model=root_model,
             models_by_name=models_by_name, host_name=host_model.name,
         )))
-    return picked_params, entity_keys_root, assoc_pairs, list_rows
+    return picked_params, entity_keys_root
 
 
 def _association_inline_filters(
@@ -2847,8 +2906,8 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
             constituents.append(_value)
 
     # Attributable iff the operand grain determines it (Axiom 7); the rest resolve
-    # per to_many_handling, exactly as for model-rooted aggregates.
-    mode = prebound.to_many_handling
+    # per the mode policy, exactly as for model-rooted aggregates.
+    policy = prebound.mode_policy
     attributable: List[ValueKey] = []
     witness_of: Dict[ValueKey, ValueKey] = {}
     for g in requested:
@@ -2865,7 +2924,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     # An explicit outer key is judged here only — never against the query root.
     if root.partition_keys is not None:
         check_reaggregation_outer_keys_determined(
-            alias=alias, mode=mode,
+            alias=alias, policy=policy,
             undetermined_keys=[context.dim_display(g) for g in unattributable],
             grain_display=_grain_display(union_grain, display=context.dim_display),
         )
@@ -2873,10 +2932,10 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     broadcast_dims: List[Tuple[str, str]] = []
     if unattributable:
         check_reaggregation_dims_attributable(
-            alias=alias, mode=mode,
+            alias=alias, policy=policy,
             unattributable_names=[context.dim_display(g) for g in unattributable],
         )
-        if mode == "associate":
+        if policy.associates:
             associate_dims = unattributable
         else:
             broadcast_dims = [
@@ -2918,6 +2977,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         active_bucket=prebound.main_time_key,
         population=population,
         population_semi_join_measures=semi_join_names,
+        mode_policy=policy,
     )
 
     # The outer producer: OUTER_AGG over the constituent composite (placeholders),
@@ -2956,7 +3016,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         # reserved __regroup__ prefix into the emitted alias).
         public_alias_by_agg={outer_agg: alias},
         explicit_types={outer_agg: declared_type} if declared_type is not None else None,
-        to_many_handling=mode,
+        mode_policy=policy,
     )
     outer_plan = compile_synthesized(
         prebound=outer_prebound,
@@ -3055,6 +3115,7 @@ def _build_carrier_attach(
     producer_registry: Optional[Dict[Hashable, PlannedQuery]],
     active_bucket: Optional[TimeTruncKey],
     population: "Population",
+    mode_policy: ModePolicy,
     population_semi_join_measures: Optional[List[str]] = None,
 ) -> RegroupAttachPlan:
     """A row-attach producer at the union grain carrying every constituent (coarser
@@ -3071,6 +3132,7 @@ def _build_carrier_attach(
         pks=union_grain, aggs=constituents, model=host_model, bundle=bundle,
         inherited=inherited, n_date_range=n_date_range,
         window_td_key=active_bucket if carrier_windowed else None,
+        mode_policy=mode_policy,
     )
     carrier_plan = compile_synthesized(
         prebound=carrier_prebound,
@@ -3479,7 +3541,7 @@ def _with_population_endpoints(
     source = _EndpointsSource(
         host_model=ctx.producer_model, bundle=ctx.bundle, scope=ctx.scope, stage_schemas=ctx.stage_schemas,
         population=ctx.population, population_filters=ctx.inherited,
-        n_population_date=ctx.n_inherited_date, to_many_handling=ctx.prebound.to_many_handling,
+        n_population_date=ctx.n_inherited_date, mode_policy=ctx.prebound.mode_policy,
     )
     return {**attach_kwargs, "kernel": kernel.model_copy(update={
         "endpoints": _window_endpoints(
@@ -3526,7 +3588,7 @@ def _synthesize_local_regroup(
         },
         grain_name_by_key=grain_names,
         window_td_key=prebound.main_time_key if windowed else None,
-        to_many_handling=prebound.to_many_handling,
+        mode_policy=prebound.mode_policy,
     )
     decision = _kernel_decision(answer=producer_aggs[0], windowed=windowed)
     producer_plan = compile_synthesized(
@@ -3643,7 +3705,7 @@ def _rewrite_regrouped_prebound(
         limit=prebound.limit,
         offset=prebound.offset,
         distinct_dimension_values=prebound.distinct_dimension_values,
-        to_many_handling=prebound.to_many_handling,
+        mode_policy=prebound.mode_policy,
     )
 
 
@@ -4418,6 +4480,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         empty_base_plan=empty_base_plan,
         semi_join_filters=pop_semi_join_groups,
         spine=spine_factor,
+        mode_policy=prebound.mode_policy,
     )
     return planned
 

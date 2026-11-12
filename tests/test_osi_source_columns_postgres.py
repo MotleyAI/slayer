@@ -8,12 +8,10 @@ from typing import Any
 import pytest
 
 from slayer.core.models import DatasourceConfig
-from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ingest_report import ConversionResult
 from slayer.osi.converter import OsiToSlayerConverter
-from slayer.storage.yaml_storage import YAMLStorage
 from tests._osi_helpers import by_name, documents, ds, f, flat, m, run_converter, unconverted, visible
-from tests._pg_helpers import pg_database
+from tests._pg_helpers import pg_database, pg_query_engine
 
 pytest.importorskip("pytest_postgresql")
 
@@ -45,16 +43,8 @@ def _import(datasource: DatasourceConfig, table: str, sql: str) -> ConversionRes
 async def test_unquoted_leaf_folds(pg: DatasourceConfig, tmp_path: Path) -> None:
     result = _import(pg, "orders", "SUM(source.Quantity)")
     assert visible(by_name(result)["orders"]) == {"order_id"}
-    storage = YAMLStorage(base_dir=str(tmp_path))
-    await storage.save_datasource(pg)
-    for model in result.models:
-        await storage.save_model(model)
-    engine = SlayerQueryEngine(storage=storage)
-    try:
+    async with pg_query_engine(pg, base_dir=str(tmp_path), models=result.models) as engine:
         rows = (await engine.execute({"source_model": "orders", "measures": ["units"]})).data
-    finally:
-        await engine.aclose()
-        engine.close()
     assert rows[0]["orders.units"] == 5
 
 

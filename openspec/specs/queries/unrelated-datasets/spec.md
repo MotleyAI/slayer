@@ -53,17 +53,17 @@ In a query frame — the main query and every stage of a query list, including t
 
 ### Requirement: Aggregates across a product hop resolve like unattributable aggregates
 
-An aggregation homed on an unrelated dataset `D` SHALL be counted over `D`'s own rows (restricted by the query's one-sided `D` filters) and SHALL be attributable to no population dimension except a time-spine dimension, which it SHALL attribute through `D`'s own axis. The remaining dimensions SHALL resolve per `to_many_handling`: under `broadcast` the value at the attributable grain repeats across them with the existing `broadcast` warning; under `associate` every cell associates all of `D`'s rows, so it carries the same value with the existing `associated` warning; under `error` the query fails with the existing unattributable-dimension error. An explicit `partition_by` naming a population dimension SHALL follow the existing rule for a dimension unattributable from the aggregate's home. Transforms, nested aggregation, measure-typed filters, order entries and explicitly grained computed dimensions over such aggregates SHALL behave as over any aggregate.
+An aggregation homed on an unrelated dataset `D` SHALL be counted over `D`'s own rows (restricted by the query's one-sided `D` filters) and SHALL be attributable to no population dimension except a time-spine dimension, which it SHALL attribute through `D`'s own axis. The remaining dimensions SHALL resolve per `to_many_handling`: under `broadcast` the value at the attributable grain repeats across them with the existing `broadcast` warning; when the mode is omitted or `associate`, every cell associates all of `D`'s rows, so it carries the same value with the existing `associated` warning; under `error` the query fails with the existing unattributable-dimension error. An explicit `partition_by` naming a population dimension SHALL follow the existing rule for a dimension unattributable from the aggregate's home. Transforms, nested aggregation, measure-typed filters, order entries and explicitly grained computed dimensions over such aggregates SHALL behave as over any aggregate.
 
 #### Scenario: Grouped query broadcasts the unrelated total
 
-- **WHEN** a `customers`-rooted query groups by `city` and measures `count(*)` and `count(events.id)`
+- **WHEN** a `customers`-rooted query with `to_many_handling: broadcast` groups by `city` and measures `count(*)` and `count(events.id)`
 - **THEN** the rows are A (2, 5) and B (1, 5), with a `broadcast` warning naming `count(events.id)` and `city`
 
 #### Scenario: Associate mode gives the same total
 
-- **WHEN** the grouped query sets `to_many_handling: associate`
-- **THEN** the rows are A (2, 5) and B (1, 5), with an `associated` warning and no `broadcast` warning
+- **WHEN** the grouped query omits the mode, and again sets `to_many_handling: associate`
+- **THEN** in both runs the rows are A (2, 5) and B (1, 5), with an `associated` warning and no `broadcast` warning
 
 #### Scenario: Error mode refuses a population dimension
 
@@ -83,7 +83,7 @@ An aggregation homed on an unrelated dataset `D` SHALL be counted over `D`'s own
 #### Scenario: Partitioning by a population dimension
 
 - **WHEN** the grouped query measures `count(events.id, partition_by=[city])`
-- **THEN** it fails with the existing error for a `partition_by` key unattributable from the aggregate's home, outside `associate` mode
+- **THEN** under `broadcast` and `error` it fails with the existing error for a `partition_by` key unattributable from the aggregate's home, and omitting the mode or under `associate` each city row carries 5
 
 #### Scenario: Composed aggregates
 
@@ -159,8 +159,8 @@ Every query stage in which an aggregation crosses a product hop SHALL carry one 
 
 #### Scenario: Grouped query
 
-- **WHEN** the grouped query runs
-- **THEN** its warnings hold one `unrelated_dataset` entry and one `broadcast` entry
+- **WHEN** the grouped query runs omitting the mode
+- **THEN** its warnings hold one `unrelated_dataset` entry and one `associated` entry, and under `to_many_handling: broadcast` one `unrelated_dataset` entry and one `broadcast` entry
 
 #### Scenario: One entry per dataset and stage
 

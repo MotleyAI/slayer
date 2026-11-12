@@ -48,7 +48,7 @@ def test_literal_bound_beside_placeholder_still_checked() -> None:
     ({"dimension": "ordered_at", "granularity": "{g}"}, "granularity"),
     ("{g}(ordered_at)", "granularity"),
     ({"dimension": "{col}", "granularity": "month"}, "column"),
-    ("month({col})", "column"),
+    ("date_trunc('month', {col})", "column"),
 ])
 def test_granularity_or_column_placeholder_rejected(time_dimension, what: str) -> None:
     with pytest.raises(ValueError) as info:
