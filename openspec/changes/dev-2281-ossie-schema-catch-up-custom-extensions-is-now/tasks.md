@@ -24,4 +24,4 @@
 
 - [x] 3.1 Update `docs/osi/osi_import.md`, `docs/osi/osi_export.md`, `docs/reference/cli.md` (`--no-extensions` wording) and `docs/examples/13_osi_import/osi_import.md` to `nonportable_extensions` with object `data`; verify `grep -rn custom_extensions docs/` lists only the legacy-key mentions
 - [x] 3.2 Merge `origin/main`; `docs/upgrading/2.0.md` must exist (PR #590). If it does not, STOP and ask. Add a section on the exported document's `nonportable_extensions` and the legacy-key import; verify the page's nav entry in `zensical.toml`
-- [ ] 3.3 Full unit suite, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs the baseline) and the enforcement bundle (`poetry run la-arch-check`) green
+- [x] 3.3 Full unit suite, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs the baseline) and the enforcement bundle (`poetry run la-arch-check`) green
