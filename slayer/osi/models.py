@@ -56,6 +56,12 @@ class OSINonportableExtension(BaseModel):
     def legacy(self) -> bool:
         return self._legacy
 
+    @model_validator(mode="before")
+    @classmethod
+    def _non_mapping_entry(cls, data: Any) -> Any:
+        # A non-mapping entry reaches the importer's check (and its report) instead of refusing the document.
+        return data if isinstance(data, (dict, OSINonportableExtension)) else {"data": data}
+
 
 class _Extensible(BaseModel):
     """An entity carrying ``nonportable_extensions``; legacy ``custom_extensions`` entries are appended, marked."""

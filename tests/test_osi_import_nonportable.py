@@ -218,10 +218,12 @@ async def test_too_deep_data_drops_only_its_entry(env, key: str) -> None:
 
 
 @pytest.mark.parametrize("key", ["nonportable_extensions", "custom_extensions"])
-@pytest.mark.parametrize("entry", [{"vendor_name": "BAD"}, {"data": {"k": 1}}], ids=["no-data", "no-vendor"])
-async def test_incomplete_entry_drops_only_itself(env, key: str, entry: dict[str, Any]) -> None:
+@pytest.mark.parametrize("entry", [{"vendor_name": "BAD"}, {"data": {"k": 1}}, "junk", [1, 2]],
+                         ids=["no-data", "no-vendor", "scalar", "list"])
+async def test_incomplete_entry_drops_only_itself(env, key: str, entry: Any) -> None:
     doc = _shop()
-    _entity(doc, "dataset")[key] = [dict(entry), copy.deepcopy(ACME if key == "nonportable_extensions" else LEGACY_ACME)]
+    _entity(doc, "dataset")[key] = [copy.deepcopy(entry),
+                                    copy.deepcopy(ACME if key == "nonportable_extensions" else LEGACY_ACME)]
     result = convert_document(env, doc)
     assert _stored(by_name(result), "dataset") == [ACME]
     assert _reports(result, entity="orders", vendor="non-portable extension")
