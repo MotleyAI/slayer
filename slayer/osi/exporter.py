@@ -1,7 +1,7 @@
 """Export one datasource's SLayer models as a current-spec Ossie document.
 
 Everything Ossie defines with SLayer's meaning goes out as Ossie; SLayer-only
-content travels in one ``SLAYER`` custom extension per entity; everything else
+content travels in one ``SLAYER`` non-portable extension per entity; everything else
 is reported (entity, reason, workaround), never silently dropped.
 """
 
@@ -448,24 +448,30 @@ class _Exporter:
     def _extensions(self, entity: dict[str, Any], meta: dict[str, Any], *, payload: Any, model: str,
                     ossie: Any) -> None:
         """Re-emit valid foreign extensions recorded in ``meta``, then this entity's ``SLAYER`` payload."""
+        out = self._foreign(meta.get("osi_nonportable_extensions"), owner=repr(entity["name"]), model=model)
+        if self.extensions:
+            out.append(ext.encode(payload, ossie=ossie))
+        if out:
+            entity["nonportable_extensions"] = out
+
+    def _foreign(self, entries: Any, *, owner: str, model: str | None) -> list[dict[str, Any]]:
+        """The valid foreign entries of a recorded list; the malformed ones are reported."""
         out: list[dict[str, Any]] = []
-        for raw in meta.get("osi_custom_extensions") or []:
+        if entries is None:
+            entries = []
+        for raw in entries if isinstance(entries, list) else [entries]:
             if isinstance(raw, dict) and ext.is_slayer(raw):
                 continue
-            valid = (isinstance(raw, dict) and set(raw) == {"vendor_name", "data"}
-                     and isinstance(raw["vendor_name"], str) and raw["vendor_name"].strip()
-                     and isinstance(raw["data"], str))
-            if not valid:
-                self._report(f"Custom extension {raw!r} on {entity['name']!r} is malformed (it needs exactly a "
-                             f"non-empty vendor_name and a string data); not exported.", severity="dropped",
+            entry = (ext.checked(vendor_name=raw["vendor_name"], data=raw["data"])
+                     if isinstance(raw, dict) and set(raw) == {"vendor_name", "data"} else None)
+            if entry is None:
+                self._report(f"Non-portable extension {raw!r} on {owner} is malformed (it needs exactly a "
+                             f"non-empty vendor_name and a JSON object data); not exported.", severity="dropped",
                              category="extension", suggestion="Fix or remove it in the entity's metadata.",
                              model=model)
                 continue
-            out.append({"vendor_name": raw["vendor_name"], "data": raw["data"]})
-        if self.extensions:
-            out.append(ext.encode(payload, ossie=ossie).model_dump())
-        if out:
-            entity["custom_extensions"] = out
+            out.append(entry)
+        return out
 
     # ---- keys ----
 
@@ -805,9 +811,9 @@ class _Exporter:
             document["relationships"] = [self._relationship_entity(r) for r in relationships]
         if self.model_metrics:
             document["metrics"] = self.model_metrics
-        foreign = [e for e in (semantic or {}).get("custom_extensions") or [] if not ext.is_slayer(e)]
+        foreign = self._foreign((semantic or {}).get("nonportable_extensions"), owner="the document", model=None)
         if foreign:
-            document["custom_extensions"] = foreign
+            document["nonportable_extensions"] = foreign
         return document
 
     def _dataset_entity(self, ds: _Dataset) -> dict[str, Any]:

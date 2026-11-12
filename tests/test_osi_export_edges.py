@@ -48,7 +48,7 @@ async def test_duplicate_slayer_payloads_are_reported_and_ignored(env) -> None:
     result = await export_models(env, customers(), orders(measures=BASIC_MEASURES, hidden=True))
     edited = copy.deepcopy(result.document)
     orders_ds = dataset(edited, "orders")
-    orders_ds["custom_extensions"] = slayer_entries(orders_ds) * 2
+    orders_ds["nonportable_extensions"] = slayer_entries(orders_ds) * 2
     imported = convert_document(env, edited)
     assert not by_name(imported)["orders"].hidden
     assert mentions(imported, "2 SLAYER extensions")

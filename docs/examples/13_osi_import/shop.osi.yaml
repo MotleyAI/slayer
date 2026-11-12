@@ -5,7 +5,7 @@
 # It describes a small retail shop over four tables (orders, customers,
 # products, regions) and exercises:
 #   * ai_context on the model, datasets, fields, relationships and metrics
-#   * custom_extensions carried into column meta
+#   * nonportable_extensions carried into column meta
 #   * relationships that become SLayer joins (incl. a multi-hop chain)
 #   * dataset-scoped metrics, a FILTER metric, and cross-dataset / multi-hop
 #     model-scoped metrics (which reference fields as dataset.field)
@@ -50,9 +50,9 @@ datasets:
           synonyms:
             - "revenue"
             - "gross"
-        custom_extensions:
+        nonportable_extensions:
           - vendor_name: SNOWFLAKE
-            data: '{"unit": "usd"}'
+            data: {unit: usd}
       - name: quantity
         expression: {sql: quantity}
         datatype: Integer

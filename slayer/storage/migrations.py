@@ -11,6 +11,7 @@ Per-entity versions evolve independently. ``CURRENT_VERSIONS[entity]`` is the
 version that ``.save_*()`` will write today.
 """
 
+import json
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -20,7 +21,7 @@ from slayer.core.strict_flag import without_strict
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
-    "SlayerModel": 22,
+    "SlayerModel": 23,
     "SlayerQuery": 14,
     "DatasourceConfig": 3,
     "Memory": 10,
@@ -186,6 +187,50 @@ def with_root_extension(data: dict, *, extension: Any, base: Any) -> dict:
 
 
 register_migration(entity="SlayerQuery", source_version=12, stored_only=True)(hoist_root_extension)
+
+
+_OSI_OLD, _OSI_NEW = "osi_custom_extensions", "osi_nonportable_extensions"
+_OSI_SEMANTIC = "osi_semantic_model"
+
+
+def _decoded_extension(entry: Any) -> Any:
+    """``entry`` with string ``data`` that decodes to a JSON object decoded; anything else unchanged."""
+    if not isinstance(entry, dict) or not isinstance(entry.get("data"), str):
+        return entry
+    try:
+        decoded = json.loads(entry["data"])
+    except (ValueError, RecursionError):
+        return entry
+    return {**entry, "data": decoded} if isinstance(decoded, dict) else entry
+
+
+def _moved_extensions(meta: dict, *, old: str, new: str) -> dict:
+    entries, current = meta.get(old), meta.get(new)
+    if not isinstance(entries, list) or not isinstance(current, (list, type(None))):
+        return meta
+    out = {k: v for k, v in meta.items() if k != old}
+    out[new] = [*(current or []), *(_decoded_extension(e) for e in entries)]
+    return out
+
+
+def _owner_extensions(owner: Any) -> Any:
+    if not isinstance(owner, dict) or not isinstance(owner.get("meta"), dict):
+        return owner
+    meta = _moved_extensions(owner["meta"], old=_OSI_OLD, new=_OSI_NEW)
+    if isinstance(meta.get(_OSI_SEMANTIC), dict):
+        meta = {**meta, _OSI_SEMANTIC: _moved_extensions(meta[_OSI_SEMANTIC], old="custom_extensions",
+                                                         new="nonportable_extensions")}
+    return {**owner, "meta": meta}
+
+
+@register_migration(entity="SlayerModel", source_version=22, stored_only=True)
+def _model_v22_to_v23(data: dict) -> dict:
+    """v23: stored Ossie foreign extensions move to ``nonportable_extensions`` with object data."""
+    data = _owner_extensions(data)
+    for key in ("columns", "measures", "joins"):
+        if isinstance(data.get(key), list):
+            data[key] = [_owner_extensions(x) for x in data[key]]
+    return data
 
 
 def migrate(entity: str, data: Any) -> Any:
