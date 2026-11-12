@@ -28,7 +28,7 @@
   - SQL Server/Snowflake/BigQuery/Trino/Oracle/Redshift connection arguments and connect-time statements unchanged (emission).
 
   Verified by failing on main.
-- [ ] 1.7 Integration tests in `tests/integration/test_integration_mysql.py`, `test_integration_clickhouse.py` (and the MariaDB suite where it lives):
+- [x] 1.7 Integration tests in `tests/integration/test_integration_mysql.py`, `test_integration_clickhouse.py` (and the MariaDB suite where it lives):
   - MySQL/MariaDB `INSERT` fails while queries keep their timeout;
   - ClickHouse `readonly` 0 (write fails, timeout applied, profile read once per engine, metadata-first engine read-only);
   - ClickHouse 1 (no setting sent, `readonly_user` warning as before) and 2 (unchanged).
@@ -57,8 +57,8 @@
 
   `engine_factory._is_in_memory_sqlite` and `holds_local_file` read the classification. Verified by 1.2 passing.
 - [x] 2.3 Postgres: startup option per driver (`options` appended, `server_settings`/`startup_params` merged). Behind a pooler: `postgresql_readonly` for psycopg/psycopg2/asyncpg, and the pg8000 `begin` listener swap. Type-probe guard for Postgres, Redshift and Oracle through the hook. Verified by 1.3 passing.
-- [ ] 2.4 MySQL/MariaDB `init_command`, and refusal of a URL that sets its own. Verified by 1.6 and 1.7.
-- [ ] 2.5 ClickHouse:
+- [x] 2.4 MySQL/MariaDB `init_command`, and refusal of a URL that sets its own. Verified by 1.6 and 1.7.
+- [x] 2.5 ClickHouse:
   - move the per-engine server-profile cache out of `client.py` into a module that `engine_factory` and `client` both import;
   - add a connect listener that fills or reads the cache under the profile lock and sets `readonly = 2` in the connection's per-request settings when the level is 0;
   - refuse non-`clickhouse+http` drivers.
