@@ -16,6 +16,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
+from slayer.core.strict_flag import without_strict
+
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
     "SlayerModel": 21,
@@ -155,32 +157,11 @@ def _drop_blank_agg_fields(agg: dict) -> dict:
     return out
 
 
-# Legacy quoted ``strict`` tokens; blank/whitespace counts as false. Anything
-# outside both sets fails closed rather than silently reading as broadcast.
-_STRICT_TRUE_TOKENS = frozenset({"1", "true", "t", "yes", "y", "on"})
-_STRICT_FALSE_TOKENS = frozenset({"0", "false", "f", "no", "n", "off", ""})
-
-
-@register_migration(entity="SlayerQuery", source_version=3)
+@register_migration(entity="SlayerQuery", source_version=3, stored_only=True)
 def _query_v3_to_v4(data: dict) -> dict:
     """v4: retire ``strict`` — ``strict: true`` → ``to_many_handling: "error"``;
-    ``false``/absent leaves the mode omitted (the default)."""
-    if "strict" not in data:
-        return data
-    strict = data.pop("strict")
-    if isinstance(strict, str):
-        token = strict.strip().lower()
-        if token in _STRICT_TRUE_TOKENS:
-            strict = True
-        elif token in _STRICT_FALSE_TOKENS:
-            strict = False
-        else:
-            raise ValueError(
-                f"Unrecognized legacy strict value {strict!r}; use to_many_handling instead"
-            )
-    if strict:
-        data.setdefault("to_many_handling", "error")
-    return data
+    ``false``/absent leaves the mode omitted (the default). Fresh ``strict`` converts with a deprecation instead."""
+    return without_strict(data) if "strict" in data else data
 
 
 def is_legacy_root_extension(source: Any) -> bool:

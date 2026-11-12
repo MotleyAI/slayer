@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import re
 from decimal import Decimal
 
@@ -58,7 +58,8 @@ def rejected(text: str, *needles: str, exc: type[Exception] = ValueError) -> str
 
 class TestOneParser:
     def test_parser_lives_in_core(self) -> None:
-        assert importlib.util.find_spec("slayer.engine.syntax") is None
+        with pytest.raises(ImportError, match="slayer.core.syntax"):
+            importlib.import_module("slayer.engine.syntax")
 
     def test_no_filter_only_entry_point(self) -> None:
         assert not hasattr(syntax, "parse_filter_expr")
