@@ -65,6 +65,13 @@ from tests.integration._consecutive_periods_calendar import (
     streak_model,
 )
 from tests.integration._dev2015_server import check_all, server_models, server_models_ts, server_statements, with_granularities
+from tests._dev2018_fixtures import (
+    check_bucket_matrix,
+    check_mixed,
+    server_models as logical_type_models,
+    server_statements as logical_type_statements,
+    with_granularities as logical_type_granularities,
+)
 from tests.integration._one_request import PATHS, assert_one_request_each, run_three
 
 pytest.importorskip("testcontainers.trino")
@@ -1308,6 +1315,30 @@ class TestTrinoTimeSpine:
     def test_integer_sequence_digits_cover_the_range(self, trino_container, monkeypatch, size: int) -> None:
         monkeypatch.setattr(trino_dialect_module, "_SEQUENCE_MAX", 10)  # 3+ digit factors at small sizes
         self.test_integer_sequence_spans_the_sequence_cap(trino_container, size)
+
+
+# ---------------------------------------------------------------------------
+# One logical bucket type; a DATE meeting a TIMESTAMP reads as midnight
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def _trino_logical_types_storage(trino_container, tmp_path_factory):
+    with _seeded_schema(trino_container, logical_type_statements("trino")) as schema:
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("trino_logical_types")))
+        base = _ds_config(trino_container, schema)
+        run_sync(storage.save_datasource(logical_type_granularities(base, name="tr_lt")))
+        for model in logical_type_models(data_source="tr_lt"):
+            run_sync(storage.save_model(model))
+        yield storage
+
+
+@pytest.mark.integration
+class TestTrinoLogicalTypes:
+    async def test_bucket_matrix(self, _trino_logical_types_storage) -> None:
+        await check_bucket_matrix(SlayerQueryEngine(storage=_trino_logical_types_storage), backend="trino", data_source="tr_lt")
+
+    async def test_mixed_date_timestamp(self, _trino_logical_types_storage) -> None:
+        await check_mixed(SlayerQueryEngine(storage=_trino_logical_types_storage), backend="trino", data_source="tr_lt")
 
 
 @pytest.mark.integration

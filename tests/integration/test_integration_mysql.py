@@ -62,6 +62,13 @@ from tests.integration._dev2015_server import (
     server_statements,
     with_granularities,
 )
+from tests._dev2018_fixtures import (
+    check_bucket_matrix,
+    check_mixed,
+    server_models as logical_type_models,
+    server_statements as logical_type_statements,
+    with_granularities as logical_type_granularities,
+)
 from tests._cast_fixtures import check_try_cast_targets
 from tests._dev2101_fixtures import (
     check_filtered_aggregations,
@@ -1571,6 +1578,40 @@ def _mysql_spine_storage(mysql_container, tmp_path_factory):
 class TestMySQLTimeSpine:
     async def test_scenarios(self, _mysql_spine_storage) -> None:
         await check_all(SlayerQueryEngine(storage=_mysql_spine_storage), data_source="my", ts_data_source="my_ts")
+
+
+# ---------------------------------------------------------------------------
+# One logical bucket type; a DATE meeting a TIMESTAMP reads as midnight
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def _mysql_logical_types_storage(mysql_container, tmp_path_factory):
+    db_name = _create_module_db(mysql_container)
+    try:
+        conn = _admin_connect(mysql_container, dbname=db_name)
+        try:
+            with conn.cursor() as cur:
+                for stmt in logical_type_statements("mysql"):
+                    cur.execute(stmt)
+        finally:
+            conn.close()
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("mysql_logical_types")))
+        base = _ds_config(mysql_container, db_name)
+        run_sync(storage.save_datasource(logical_type_granularities(base, name="my_lt")))
+        for model in logical_type_models(data_source="my_lt"):
+            run_sync(storage.save_model(model))
+        yield storage
+    finally:
+        _drop_module_db(mysql_container, db_name)
+
+
+@pytest.mark.integration
+class TestMySQLLogicalTypes:
+    async def test_bucket_matrix(self, _mysql_logical_types_storage) -> None:
+        await check_bucket_matrix(SlayerQueryEngine(storage=_mysql_logical_types_storage), backend="mysql", data_source="my_lt")
+
+    async def test_mixed_date_timestamp(self, _mysql_logical_types_storage) -> None:
+        await check_mixed(SlayerQueryEngine(storage=_mysql_logical_types_storage), backend="mysql", data_source="my_lt")
 
 
 @pytest.mark.integration

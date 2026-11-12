@@ -57,6 +57,13 @@ from tests._dev2120_fixtures import (
     server_literal,
     server_table_statements as dev2120_table_statements,
 )
+from tests._dev2018_fixtures import (
+    check_bucket_matrix,
+    check_mixed,
+    server_models as logical_type_models,
+    server_statements as logical_type_statements,
+    with_granularities as logical_type_granularities,
+)
 from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
 from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_model, mixed_numbers_statements
 from tests.integration._one_request import MARKERS, PATHS, assert_one_request_each, run_three
@@ -988,6 +995,46 @@ def test_dev2120_library(sf_dev2120_storage) -> None:
 
 def test_dev2120_variant_column(sf_dev2120_storage) -> None:
     run_sync(check_native_json(SlayerQueryEngine(storage=sf_dev2120_storage)))
+
+
+# ---------------------------------------------------------------------------
+# One logical bucket type; a DATE meeting a TIMESTAMP reads as midnight
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sf_logical_types_storage(sf_transient_schema: str, sf_datasource: DatasourceConfig, tmp_path):
+    conn = snowflake.connector.connect(connection_name=_CONNECTION_NAME)
+    cur = conn.cursor()
+    try:
+        cur.execute(f"USE SCHEMA {sf_transient_schema}")
+        for stmt in logical_type_statements("snowflake"):
+            cur.execute(stmt)
+        conn.commit()
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        run_sync(storage.save_datasource(logical_type_granularities(sf_datasource)))
+        for model in logical_type_models(data_source=sf_datasource.name):
+            run_sync(storage.save_model(model.model_copy(update={
+                "columns": [c.model_copy(update={"sql": c.name}) for c in model.columns]})))
+        yield storage
+    finally:
+        try:
+            for table in ("bk", "mx"):
+                cur.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+
+
+def test_logical_bucket_types(sf_logical_types_storage, sf_datasource: DatasourceConfig) -> None:
+    run_sync(check_bucket_matrix(SlayerQueryEngine(storage=sf_logical_types_storage), backend="snowflake",
+                                 data_source=sf_datasource.name))
+
+
+def test_date_meets_timestamp_as_midnight(sf_logical_types_storage, sf_datasource: DatasourceConfig) -> None:
+    run_sync(check_mixed(SlayerQueryEngine(storage=sf_logical_types_storage), backend="snowflake",
+                         data_source=sf_datasource.name))
 
 
 # ---------------------------------------------------------------------------

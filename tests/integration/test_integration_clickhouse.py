@@ -62,6 +62,13 @@ from tests.integration._dev2015_server import (
     server_statements,
     with_granularities,
 )
+from tests._dev2018_fixtures import (
+    check_bucket_matrix,
+    check_mixed,
+    server_models as logical_type_models,
+    server_statements as logical_type_statements,
+    with_granularities as logical_type_granularities,
+)
 from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
     assert_calendar_streak,
@@ -1890,6 +1897,37 @@ def _clickhouse_spine_storage(clickhouse_container, tmp_path_factory):
 class TestClickHouseTimeSpine:
     async def test_scenarios(self, _clickhouse_spine_storage) -> None:
         await check_all(SlayerQueryEngine(storage=_clickhouse_spine_storage), data_source="ch", ts_data_source="ch_ts")
+
+
+# ---------------------------------------------------------------------------
+# One logical bucket type; a DATE meeting a TIMESTAMP reads as midnight
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def _clickhouse_logical_types_storage(clickhouse_container, tmp_path_factory):
+    db_name = _create_module_db(clickhouse_container)
+    try:
+        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in logical_type_statements("clickhouse"):
+                    conn.execute(sa.text(stmt))
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("clickhouse_logical_types")))
+        base = _ds_config(clickhouse_container, db_name)
+        run_sync(storage.save_datasource(logical_type_granularities(base, name="ch_lt")))
+        for model in logical_type_models(data_source="ch_lt"):
+            run_sync(storage.save_model(model))
+        yield storage
+    finally:
+        _drop_module_db(clickhouse_container, db_name)
+
+
+@pytest.mark.integration
+class TestClickHouseLogicalTypes:
+    async def test_bucket_matrix(self, _clickhouse_logical_types_storage) -> None:
+        await check_bucket_matrix(SlayerQueryEngine(storage=_clickhouse_logical_types_storage), backend="clickhouse", data_source="ch_lt")
+
+    async def test_mixed_date_timestamp(self, _clickhouse_logical_types_storage) -> None:
+        await check_mixed(SlayerQueryEngine(storage=_clickhouse_logical_types_storage), backend="clickhouse", data_source="ch_lt")
 
 
 @pytest.mark.integration

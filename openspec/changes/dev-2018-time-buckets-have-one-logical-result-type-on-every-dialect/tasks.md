@@ -1,21 +1,21 @@
 ## 1. Failing tests (pr-tests)
 
-- [ ] 1.1 `tests/test_dev2018_logical_types.py` (unit; SQLite, DuckDB, and Postgres via pytest-postgresql with a non-UTC session zone such as `America/Sao_Paulo`). Executed values and Python types (SQLite text shape) for every built-in granularity, a `month`-based and a `minute`-based custom granularity, over DATE and TIMESTAMP sources and NULL. Verify: it fails today on the type assertions.
-- [ ] 1.2 In the same file, the issue's three examples over DATE and TIMESTAMP sources (`max(date_trunc('month', x)) >= 'last month'`, `date_diff('month', date_trunc('month', a), b)`, `date_add(date_trunc('month', x), 1, 'month')`), plus the `queries/date-functions` and `queries/time-points` scenarios. Verify: green on SQLite and DuckDB where the behaviour already holds, failing where the bucket type changes.
-- [ ] 1.3 Mixed DATE/TIMESTAMP (`queries/mixed-type-coercion` scenarios). Verify: today SQLite returns 0 rows for `d = ts` and `date_trunc('day', ts) = ts`.
+- [x] 1.1 `tests/test_dev2018_logical_types.py` (unit; SQLite, DuckDB, and Postgres via pytest-postgresql with a non-UTC session zone such as `America/Sao_Paulo`). Executed values and Python types (SQLite text shape) for every built-in granularity, a `month`-based and a `minute`-based custom granularity, over DATE and TIMESTAMP sources and NULL. Verify: it fails today on the type assertions.
+- [x] 1.2 In the same file, the issue's three examples over DATE and TIMESTAMP sources (`max(date_trunc('month', x)) >= 'last month'`, `date_diff('month', date_trunc('month', a), b)`, `date_add(date_trunc('month', x), 1, 'month')`), plus the `queries/date-functions` and `queries/time-points` scenarios. Verify: green on SQLite and DuckDB where the behaviour already holds, failing where the bucket type changes.
+- [x] 1.3 Mixed DATE/TIMESTAMP (`queries/mixed-type-coercion` scenarios). Verify: today SQLite returns 0 rows for `d = ts` and `date_trunc('day', ts) = ts`.
   - `d = ts`, `date_trunc('day', ts) = ts`, `date_trunc('day', ts) = d`, `d = date_trunc('hour', ts)`;
   - `in`, `IS [NOT] DISTINCT FROM`;
   - `coalesce(shipped_at, d)` / `greatest` / `iif` arms against a TIMESTAMP;
   - `nullif(d, ts)` in both argument orders, with type and NULLs.
-- [ ] 1.4 SQLite storage spellings (space, `T`, date-only, fractional, invalid text) through buckets, mixed and same-type comparisons, null-safe equality, `in` and the spine join. Verify: the `T` / date-only rows fail today.
-- [ ] 1.5 Time spine over a DATE axis on SQLite and DuckDB, month and sub-day. Two-stage propagation: an inner stage with month(DATE), hour(DATE), month(TIMESTAMP) and a custom bucket; the outer stage re-buckets, compares, orders, and applies `date_add` / `date_diff`, asserting `StageSchema` types and values.
-- [ ] 1.6 Over DATE and TIMESTAMP buckets: trailing windows, `whole_periods_only`, consecutive periods, ±`time_shift` (day, sub-day, month-end), and `week_sunday` Sunday/Monday boundaries.
-- [ ] 1.7 `temporal_type` / `value_type` unit cases: `hour(d)` TIMESTAMP, `fiscal_year(d)` DATE, `quarter_hour(d)` TIMESTAMP, `week_sunday(d)` DATE, `month(ts)` TIMESTAMP; `nullif(d, ts)` DATE.
-- [ ] 1.8 `tests/dialects/`: `build_bucket(operand=…)` emission per Tier-1 dialect for each unit class and source type; promotion emission for comparisons, conditionals and join-backs; BigQuery zoned-`TIMESTAMP` buckets (built-in, custom, spine) read through `read_column` once; Tier-2 inherited emission. Verify: it fails today on the operand argument.
-- [ ] 1.9 pg facade: a bucket projection advertises the DATE OID for month(DATE) and the TIMESTAMP OID for hour(DATE), with binary and text encoding (`tests/` pg-facade unit suite).
-- [ ] 1.10 Ossie export: exported text for DATE month and DATE hour buckets on the portable reader and one dialect target.
-- [ ] 1.11 Integration type matrices (same assertions as 1.1 and 1.3) in `tests/integration/test_integration_{mysql,clickhouse,sqlserver,trino,snowflake}.py`.
-- [ ] 1.12 Codex review of the tests against this change; resolve findings with the user.
+- [x] 1.4 SQLite storage spellings (space, `T`, date-only, fractional, invalid text) through buckets, mixed and same-type comparisons, null-safe equality, `in` and the spine join. Verify: the `T` / date-only rows fail today.
+- [x] 1.5 Time spine over a DATE axis on SQLite and DuckDB, month and sub-day. Two-stage propagation: an inner stage with month(DATE), hour(DATE), month(TIMESTAMP) and a custom bucket; the outer stage re-buckets, compares, orders, and applies `date_add` / `date_diff`, asserting `StageSchema` types and values.
+- [x] 1.6 Over DATE and TIMESTAMP buckets: trailing windows, `whole_periods_only`, consecutive periods, ±`time_shift` (day, sub-day, month-end), and `week_sunday` Sunday/Monday boundaries.
+- [x] 1.7 `temporal_type` / `value_type` unit cases: `hour(d)` TIMESTAMP, `fiscal_year(d)` DATE, `quarter_hour(d)` TIMESTAMP, `week_sunday(d)` DATE, `month(ts)` TIMESTAMP; `nullif(d, ts)` DATE.
+- [x] 1.8 `tests/dialects/`: `build_bucket(operand=…)` emission per Tier-1 dialect for each unit class and source type; promotion emission for comparisons, conditionals and join-backs; BigQuery zoned-`TIMESTAMP` buckets (built-in, custom, spine) read through `read_column` once; Tier-2 inherited emission. Verify: it fails today on the operand argument.
+- [x] 1.9 pg facade: a bucket projection advertises the DATE OID for month(DATE) and the TIMESTAMP OID for hour(DATE), with binary and text encoding (`tests/` pg-facade unit suite).
+- [x] 1.10 Ossie export: exported text for DATE month and DATE hour buckets on the portable reader and one dialect target.
+- [x] 1.11 Integration type matrices (same assertions as 1.1 and 1.3) in `tests/integration/test_integration_{mysql,clickhouse,sqlserver,trino,snowflake}.py`.
+- [x] 1.12 Codex review of the tests against this change; resolve findings with the user.
 
 ## 2. Core typing
 
