@@ -15,7 +15,6 @@ from slayer.core.models import DatasourceConfig
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.models import (
     OSIAIContextObject,
-    OSICustomExtension,
     OSIDataset,
     OSIDialectExpression,
     OSIDimension,
@@ -23,6 +22,7 @@ from slayer.osi.models import (
     OSIExpression,
     OSIField,
     OSIMetric,
+    OSINonportableExtension,
     OSIRelationship,
 )
 from slayer.osi.parser import parse_osi_path
@@ -44,7 +44,7 @@ _MODEL_FOR_DEF: dict[str, type[BaseModel]] = {
     "Expression": OSIExpression,
     "DialectExpression": OSIDialectExpression,
     "Dimension": OSIDimension,
-    "CustomExtension": OSICustomExtension,
+    "NonportableExtension": OSINonportableExtension,
     "AIContext": OSIAIContextObject,
 }
 # $defs that are scalar value types, not objects.

@@ -50,7 +50,7 @@ def test_flat_document_fields() -> None:
         **flat([ds("orders", fields=[f("amount")])],
                relationships=[], metrics=[m("total", "SUM(orders.amount)")]),
         "description": "d", "ai_context": "ctx",
-        "custom_extensions": [{"vendor_name": "COMMON", "data": "{}"}],
+        "nonportable_extensions": [{"vendor_name": "COMMON", "data": {}}],
     })
     assert doc.name == "shop"
     assert doc.version == "0.3.0.dev0"
@@ -58,7 +58,7 @@ def test_flat_document_fields() -> None:
     assert doc.ai_context == "ctx"
     assert [d.name for d in doc.datasets] == ["orders"]
     assert [x.name for x in doc.metrics or []] == ["total"]
-    assert doc.custom_extensions is not None
+    assert doc.nonportable_extensions is not None
     assert doc.legacy is False
 
 

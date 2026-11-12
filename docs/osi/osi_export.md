@@ -48,14 +48,14 @@ A field's or source's expression is written as portable `sql` (`OSSIE_SQL_2026`)
 
 ## The SLAYER Extension
 
-Each exported dataset, field, metric and relationship carries one custom extension with `vendor_name: SLAYER`. Its `data` is a versioned JSON payload of what Ossie has no place for:
+Each exported dataset, field, metric and relationship carries one `nonportable_extensions` entry with `vendor_name: SLAYER`. Its `data` is a versioned payload object of what Ossie has no place for:
 
 - join types, names, cardinalities and the model that declares each join
 - measure formulas, home models, labels and types
 - column types, formats, granularities, hidden flags, allowed aggregations and filters
 - model sources (table or SQL plus filters, or saved queries plus variables), access tags, custom aggregations, and SLayer-only columns and measures
 
-SLayer-only columns read joined models. SLayer-only measures are transforms (`change_pct`, `cumsum`, …), `first`/`last`, windowed or partitioned aggregates, aggregates reading several models, and measures whose route to another model is ambiguous. Each payload records a fingerprint of the Ossie content it was written with. `slayer import-osi` restores the SLayer structure only where the document is unedited; where a third party edited it, the Ossie content wins and the import report says so. Other vendors' extensions recorded on imported entities are written back unchanged.
+SLayer-only columns read joined models. SLayer-only measures are transforms (`change_pct`, `cumsum`, …), `first`/`last`, windowed or partitioned aggregates, aggregates reading several models, and measures whose route to another model is ambiguous. Each payload records a fingerprint of the Ossie content it was written with. `slayer import-osi` restores the SLayer structure only where the document is unedited; where a third party edited it, the Ossie content wins and the import report says so. Other vendors' extensions recorded on imported entities and documents are written back unchanged, with or without `--no-extensions`; one whose `data` is not a JSON object is reported and omitted. A YAML export quotes every string a YAML 1.1 or 1.2 loader would read as a number, boolean, null or date.
 
 ## Without Extensions
 

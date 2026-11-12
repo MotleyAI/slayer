@@ -1,7 +1,7 @@
 # Provenance of the vendored upstream Ossie files (byte-identical copies); paths are relative to this directory.
 repository: apache/ossie
-commit: c1a33181c815852f059ce7986729612332240ff8
-committed: "2026-11-09"
+commit: 900d637ede768e7ef9f52dfc9d25f3b98914f0e4
+committed: "2026-11-12"
 files:
   core-spec/ossie-schema.json: ossie-schema.json
   examples/flights.mapping.yaml: upstream/flights.mapping.yaml

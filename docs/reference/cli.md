@@ -390,7 +390,7 @@ slayer export-osi --datasource my_postgres --models orders customers --out shop.
 | `--datasource` | Yes | SLayer datasource whose models to export |
 | `--out` | Yes | Output file; JSON when it ends in `.json`, YAML otherwise |
 | `--models` | No | Export only these models (an unknown name fails with no file written) |
-| `--no-extensions` | No | Omit the `SLAYER` custom extensions; SLayer-only content is reported instead of exported |
+| `--no-extensions` | No | Omit the `SLAYER` non-portable extensions; SLayer-only content is reported instead of exported |
 | `--storage` | No | Storage path |
 
 ### `slayer models`
