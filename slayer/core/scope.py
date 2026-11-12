@@ -28,7 +28,7 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from slayer.core.enums import DataType
-from slayer.core.errors import UnknownReferenceError
+from slayer.core.errors import AmbiguousReferenceError, UnknownReferenceError
 from slayer.core.format import NumberFormat
 from slayer.core.granularity import CustomGranularity, GranularitySpec
 from slayer.core.models import Column, SlayerModel
@@ -153,9 +153,14 @@ class StageSchema(BaseModel):
 
     def resolve_flat_name(self, name: str, *, quoted: bool = False) -> Optional[StageColumn]:
         """Stage-boundary lookup: the name ``match_name`` reaches, else a unique stale respelling (recorded)."""
-        return resolve_flat_name(
-            name=name, entries=[(c.name, c.respellings, c) for c in self.columns], quoted=quoted,
-        )
+        return resolve_flat_name(name=name, entries=self._flat_entries(), quoted=quoted)
+
+    def peek_flat_name(self, name: str, *, quoted: bool = False) -> Optional[StageColumn]:
+        """``resolve_flat_name`` that records nothing."""
+        return peek_flat_name(name=name, entries=self._flat_entries(), quoted=quoted)
+
+    def _flat_entries(self) -> List[Tuple[str, Tuple[str, ...], StageColumn]]:
+        return [(c.name, c.respellings, c) for c in self.columns]
 
 
 class ModelScope(BaseModel):
@@ -215,16 +220,41 @@ def resolve_flat_name(
 ) -> Optional[_T]:
     """The entry ``match_name`` reaches, else the one entry whose respellings contain it
     (recorded as a stale spelling); several or none → ``None``."""
+    hit = _flat_hit(name=name, entries=entries, quoted=quoted)
+    if hit is None:
+        return None
+    stale, entry = hit
+    if stale is not None:
+        record_stale_spelling(original=name, normalized=stale, location=location)
+    return entry
+
+
+def peek_flat_name(
+    *, name: str, entries: Sequence[Tuple[str, Tuple[str, ...], _T]], quoted: bool = False,
+) -> Optional[_T]:
+    """``resolve_flat_name`` that records nothing and never raises (an ambiguous name reaches nothing)."""
+    try:
+        hit = _flat_hit(name=name, entries=entries, quoted=quoted)
+    except AmbiguousReferenceError:
+        return None
+    return None if hit is None else hit[1]
+
+
+def peek_model_column(*, model: SlayerModel, name: str, quoted: bool = False) -> Optional[Column]:
+    """``peek_flat_name`` over ``model``'s columns."""
+    return peek_flat_name(name=name, entries=[(c.name, c.respellings, c) for c in model.columns], quoted=quoted)
+
+
+def _flat_hit(
+    *, name: str, entries: Sequence[Tuple[str, Tuple[str, ...], _T]], quoted: bool,
+) -> Optional[Tuple[Optional[str], _T]]:
+    """``(None, entry)`` for the entry ``match_name`` reaches, else ``(canonical, entry)`` for a unique respelling."""
     found = match_name(name=name, declared=[n for n, _, _ in entries], quoted=quoted)
     for entry_name, _, entry in entries:
         if entry_name == found:
-            return entry
+            return None, entry
     matches = [(n, e) for n, respellings, e in entries if name in respellings]
-    if len(matches) != 1:
-        return None
-    canonical, entry = matches[0]
-    record_stale_spelling(original=name, normalized=canonical, location=location)
-    return entry
+    return matches[0] if len(matches) == 1 else None
 
 
 class StaleSpelling(BaseModel):
