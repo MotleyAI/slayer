@@ -1,10 +1,10 @@
 ## 1. Tests (pr-tests)
 
-- [ ] 1.1 Flip `tests/test_dev2102_static_reads_harness.py::test_an_inline_source_is_local_to_its_own_stage[inline-root]`: drop the strict xfail, spell `s.customers__name`, key `customers.s.customers__name` (design decision 9); verify it passes today
-- [ ] 1.2 New test file for DEV-2268 behaviour: executed stored-root reads (`addresses`, `regions`) of `s.customers__name` on SQLite and DuckDB with matching join keys and exact rows; inline `customers` root likewise; verify they pass today (they pin existing behaviour)
-- [ ] 1.3 Failing error tests for every scenario of "A dotted spelling of a flattened column is refused with its flat name" (stored addresses, stored regions without `customers.name` suggestion, inline root not circular, longest flat wins, authored `a__b` column, stale respelling suggests canonical with no warning, ambiguous respelling gives no hint, quoted segments, downstream stage illegal-scope reason, unrelated short form suggestion, genuine join through a stage unchanged); verify each fails for the right reason
-- [ ] 1.4 Failing tests for "Reference errors name models as the user spells them" (`s.nope` from a stored root, `nope` over stage `s`: no `__slayer_` in the text) and the MODIFIED broken-chain scenario (`s.customers.nope` names `s` and its columns)
-- [ ] 1.5 List every existing test that pins an error type or text this plan changes; get the user's approval per file before aligning it
+- [x] 1.1 Flip `tests/test_dev2102_static_reads_harness.py::test_an_inline_source_is_local_to_its_own_stage[inline-root]`: drop the strict xfail, spell `s.customers__name`, key `customers.s.customers__name` (design decision 9); verify it passes today
+- [x] 1.2 New test file for DEV-2268 behaviour: executed stored-root reads (`addresses`, `regions`) of `s.customers__name` on SQLite and DuckDB with matching join keys and exact rows; inline `customers` root likewise; verify they pass today (they pin existing behaviour)
+- [x] 1.3 Failing error tests for every scenario of "A dotted spelling of a flattened column is refused with its flat name" (stored addresses, stored regions without `customers.name` suggestion, inline root not circular, longest flat wins, authored `a__b` column, stale respelling suggests canonical with no warning, ambiguous respelling gives no hint, quoted segments, downstream stage illegal-scope reason, unrelated short form suggestion, genuine join through a stage unchanged); verify each fails for the right reason
+- [x] 1.4 Failing tests for "Reference errors name models as the user spells them" (`s.nope` from a stored root, `nope` over stage `s`: no `__slayer_` in the text) and the MODIFIED broken-chain scenario (`s.customers.nope` names `s` and its columns)
+- [x] 1.5 List every existing test that pins an error type or text this plan changes; get the user's approval per file before aligning it
 
 ## 2. Implementation (pr-implement)
 
