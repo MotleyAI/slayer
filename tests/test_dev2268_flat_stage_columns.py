@@ -153,7 +153,8 @@ async def test_an_ambiguous_respelling_gives_no_hint() -> None:
     ('s."customers"."name"', 's."customers__name"'),
     ('s.customers."name"', 's."customers__name"'),
     ("s.CUSTOMERS.NAME", "s.customers__name"),
-], ids=["quoted", "leaf-quoted", "case-folded"])
+    ('"addresses".s.customers.name', '"addresses".s.customers__name'),
+], ids=["quoted", "leaf-quoted", "case-folded", "root-quoted"])
 async def test_the_flat_hint_follows_quoting(ref: str, hint: str) -> None:
     err = await _refused(_joined("addresses", ref))
     assert hint in err.suggestion

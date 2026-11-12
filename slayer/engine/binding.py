@@ -804,6 +804,7 @@ def _walk_join_chain(
     leaf: str,
     original_parts: Optional[Tuple[str, ...]] = None,
     quoted: Tuple[bool, ...] = (),
+    original_quoted: Tuple[bool, ...] = (),
 ):
     """Walk ``hop_path`` join hops from ``host`` through the shared bidirectional
     walker; returns ``(terminal_model, canonical effective_hop_path)``. Each token
@@ -819,14 +820,17 @@ def _walk_join_chain(
     remaining tokens spell a flat column raises the flat-spelling refusal instead.
     ``parts`` is the full dotted ref, for error messages; ``quoted`` flags each of
     its segments; ``original_parts`` (pre-self-prefix-strip, defaulting to
-    ``parts``) spells the reference in full."""
+    ``parts``) spells the reference in full, ``original_quoted`` flagging its segments."""
     models_by_name = bundle.models_by_name
     models_by_name.setdefault(host.name, host)
     spelled = parts if original_parts is None else original_parts
     hop_quoted = quoted[:len(hop_path)]
+    written = tuple(
+        _quoted_segment(t, quoted=q) for t, q in zip(spelled[:len(spelled) - len(parts)], original_quoted)
+    )
     refusal = partial(
         _flat_spelling_refusal, host=host, hop_path=hop_path, leaf=leaf, spelled=spelled,
-        written=spelled[:len(spelled) - len(parts)], quoted=quoted, models_by_name=models_by_name,
+        written=written, quoted=quoted, models_by_name=models_by_name,
     )
     try:
         walked = walk_terminal(root=host, path=hop_path, models_by_name=models_by_name, quoted=hop_quoted)
@@ -1030,7 +1034,7 @@ def _resolve_dotted(
     leaf = parts[-1]
     current, effective_hop_path = _walk_join_chain(
         hop_path=hop_path, host=host, bundle=bundle, parts=parts, leaf=leaf,
-        original_parts=original_parts, quoted=quoted,
+        original_parts=original_parts, quoted=quoted, original_quoted=original_quoted,
     )
 
     return _resolve_terminal_leaf(
