@@ -52,8 +52,8 @@ A store wrapped with a caller's tags and a `bypass` flag (both required, with no
 
 A model SHALL read every model that one of the following references, and every model on the path of such a reference:
 
-- the source of each stage of a query-backed model (a model name, an extension's base, or an inline model);
-- the targets of extension and inline joins;
+- the source of each stage of a query-backed model (a model name or an extension's base);
+- the targets of extension joins;
 - every dotted reference path in its stages' fields: dimensions, time dimensions, measures, filters and order;
 - every dotted reference path in its own definitions: column SQL, column filters, model filters, saved measure formulas (including saved measures they reference), and aggregation parameters.
 
