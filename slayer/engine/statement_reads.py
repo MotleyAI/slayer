@@ -55,12 +55,12 @@ def _add_key(reads: StatementReads, *, key: ValueKey, root: SlayerModel, models:
     if isinstance(key, (ColumnKey, ColumnSqlKey, StarKey)):
         _add_path(reads, path=key.path, root=root, models=models)
         terminal = resolved_terminal(root=root, path=key.path, models_by_name=models)
-        if terminal is not None and not terminal.inline and not isinstance(key, StarKey):
+        if terminal is not None and not isinstance(key, StarKey):
             reads.columns.add((terminal.name, key.column_name if isinstance(key, ColumnSqlKey) else key.leaf))
     elif isinstance(key, AggregateKey):
         owner = aggregation_owner(root=root, source=key.source, models_by_name=models)
         definition = aggregation_definition(owner=owner, agg=key.agg) if owner is not None else None
-        if owner is not None and not owner.inline and definition is not None:
+        if owner is not None and definition is not None:
             reads.aggregations.add((owner.name, definition.name))
 
 
@@ -74,16 +74,9 @@ def _add_path(reads: StatementReads, *, path: tuple[str, ...], root: SlayerModel
         forward = edge.source_model == edge.declaring_model
         pairs = [(s, t) if forward else (t, s) for s, t in edge.join_pairs]
         target = edge.target_model if forward else edge.source_model
-        if not _inline(edge.declaring_model, models=models):
-            reads.joins.add((edge.declaring_model, target, edge.name, frozenset(pairs)))
-            reads.columns.update((edge.declaring_model, s) for s, _ in pairs)
-        if not _inline(target, models=models):
-            reads.columns.update((target, t) for _, t in pairs)
-
-
-def _inline(name: str, *, models: dict[str, SlayerModel]) -> bool:
-    model = models.get(name)
-    return model is not None and model.inline
+        reads.joins.add((edge.declaring_model, target, edge.name, frozenset(pairs)))
+        reads.columns.update((edge.declaring_model, s) for s, _ in pairs)
+        reads.columns.update((target, t) for _, t in pairs)
 
 
 def _close_columns(reads: StatementReads, *, models: dict[str, SlayerModel]) -> None:
@@ -96,6 +89,6 @@ def _close_columns(reads: StatementReads, *, models: dict[str, SlayerModel]) -> 
         if host is None or column is None:
             continue
         for read in definition_reads(column=column, host=host, reachable=models):
-            if read not in reads.columns and not _inline(read[0], models=models):
+            if read not in reads.columns:
                 reads.columns.add(read)
                 pending.append(read)

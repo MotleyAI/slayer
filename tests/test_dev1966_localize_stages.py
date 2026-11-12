@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from slayer.core.models import SlayerModel
 from slayer.core.query import ModelExtension
 from slayer.core.scope import StageDisplay
 from slayer.engine.stage_ordering import localize_stages
@@ -29,8 +28,8 @@ class TestUserScope:
         assert [d.name for d in stages[-1].dimensions or []] == ["status"]
 
     def test_extension_base_is_respelled(self) -> None:
-        root = query(source_model="x", extensions=[{"source_name": "x", "columns": [{"name": "d", "sql": "a * 2"}]}],
-                     measures=[m("sum(d)", "t")])
+        root = query(source_model="x", extensions=[{"source_name": "x", "measures": [m("sum(a * 2)", "t")]}],
+                     measures=["t"])
         stages, _ = localize_stages([_x(), root])
         assert stages[-1].source_model == USER_X
         (spec,) = stages[-1].extensions or []
@@ -44,15 +43,6 @@ class TestUserScope:
         (spec,) = stages[-1].extensions or []
         assert isinstance(spec, ModelExtension)
         assert [(j.target_model, j.name) for j in spec.joins or []] == [(USER_X, None)]
-
-    def test_inline_model_join_target_is_respelled(self) -> None:
-        inline = {"name": "orders_inline", "data_source": "test", "sql_table": "orders",
-                  "columns": [{"name": "customer_id", "type": "INT"}],
-                  "joins": [{"target_model": "x", "join_pairs": [["customer_id", "customer_id"]]}]}
-        stages, _ = localize_stages([_x(), query(source_model=inline, measures=[m("sum(x.a)", "t")])])
-        spec = stages[-1].source_model
-        assert isinstance(spec, SlayerModel)
-        assert [j.target_model for j in spec.joins] == [USER_X]
 
     def test_a_model_name_that_is_not_a_stage_is_untouched(self) -> None:
         root = query(source_model="orders", extensions=[{"source_name": "orders", "joins": [

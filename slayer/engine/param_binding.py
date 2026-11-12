@@ -56,8 +56,12 @@ from slayer.sql.sql_template import SqlTemplateError, sql_template
 
 Path = Tuple[str, ...]
 ColumnRef = Union[ColumnKey, ColumnSqlKey]
-#: Resolves a reference's dotted parts in the query frame, as its unquoted twin binds.
-QueryRefResolver = Callable[[Tuple[str, ...]], ValueKey]
+#: Binds a query-side string argument as its unquoted spelling; raises ``QuotedArgumentRefused``.
+QuotedArgumentBinder = Callable[[str], Any]
+
+
+class QuotedArgumentRefused(ValueError):
+    """A query-side string argument that is no Mode-B row expression; the message is the reason."""
 
 #: Named refusals, checked first: these are expressions to sqlglot but not row values.
 _UNANALYSABLE_KINDS: Tuple[Tuple[Tuple[type, ...], str], ...] = (
@@ -99,11 +103,11 @@ def bind_aggregation_params(
     source: ValueKey,
     kwargs: Tuple[Tuple[str, Any], ...],
     bundle: ResolvedSourceBundle,
-    resolve_query_ref: QueryRefResolver,
+    bind_quoted: QuotedArgumentBinder,
 ) -> Tuple[Tuple[str, Any], ...]:
     """``kwargs`` with every parameter ``agg`` reads bound to a value: a string naming a
-    read parameter binds in the query frame, a missing one binds its definition default
-    in the owner's frame; any other string (``window='90d'``) stays a marker."""
+    read parameter is Mode B, bound by ``bind_quoted``; a missing one binds its definition
+    default (Mode A) in the owner's frame; any other string (``window='90d'``) stays a marker."""
     owner = aggregation_owner(
         root=bundle.source_model, source=source, models_by_name=bundle.models_by_name,
     )
@@ -116,7 +120,7 @@ def bind_aggregation_params(
     reads = _reads(agg=agg, definition=definition, bundle=bundle) - {VALUE_PLACEHOLDER}
     ctx = _Ctx(agg=agg, owner=owner, source=source, bundle=bundle)
     out: List[Tuple[str, Any]] = [
-        (name, _bind_text(text=value, name=name, ctx=ctx, resolve=resolve_query_ref))
+        (name, _bind_quoted(text=value, name=name, ctx=ctx, bind=bind_quoted))
         if isinstance(value, str) and name in reads else (name, value)
         for name, value in kwargs
     ]
@@ -177,10 +181,21 @@ class _Ctx:
         )
 
 
+def _bind_quoted(*, text: str, name: str, ctx: _Ctx, bind: QuotedArgumentBinder) -> object:
+    """A query-side string argument bound as its unquoted Mode-B spelling; a string literal stays a literal."""
+    try:
+        value = bind(text)
+    except QuotedArgumentRefused as e:
+        raise _unanalysable(text=text, name=name, ctx=ctx, reason=str(e)) from e
+    if isinstance(value, str):
+        return SqlFragmentKey(template=exp.Literal.string(value).sql(dialect=_sqlglot_name(ctx.bundle)), refs=())
+    return value
+
+
 def _bind_text(
-    *, text: str, name: str, ctx: _Ctx, resolve: QueryRefResolver,
+    *, text: str, name: str, ctx: _Ctx, resolve: Callable[[Tuple[str, ...]], ValueKey],
 ) -> object:
-    """Parameter text → a column key, a scalar, or a ``SqlFragmentKey``."""
+    """A definition default's Mode-A text → a column key, a scalar, or a ``SqlFragmentKey``."""
     tree = _parse(text=text, name=name, ctx=ctx)
     scalar = _scalar(tree)
     if scalar is not _NOT_SCALAR:

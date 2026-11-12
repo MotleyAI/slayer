@@ -11,15 +11,18 @@ import re
 
 import pytest
 
+from slayer.core.enums import DataType
 from slayer.core.keys import AggregateKey, ColumnKey
 from slayer.core.keys import Grain
-from slayer.core.query import ModelExtension, ModelMeasure, SlayerQuery
+from slayer.core.models import Column
+from slayer.core.query import ModelMeasure, SlayerQuery
 from slayer.engine.compile.regroup import (
     REGROUP_LEAF_PREFIX,
     RegroupPlaceholderRegistry,
 )
 
-from tests._dev1740_fixtures import cm_cte_bodies, gen
+from tests._dev1740_fixtures import cm_cte_bodies, dev1740_models, gen
+from tests._engine_helpers import _engine_generate
 
 BAND = "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END"
 
@@ -27,6 +30,17 @@ BAND = "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END"
 def _q(**kw) -> SlayerQuery:
     kw.setdefault("source_model", "orders")
     return SlayerQuery(**kw)
+
+
+async def _gen_with_reserved_column(query: SlayerQuery) -> str:
+    """``gen`` over an ``orders`` carrying a stored ``__regroup__x`` column."""
+    base, *rest = dev1740_models()
+    model = base.model_copy(update={"columns": [
+        *base.columns, Column(name="__regroup__x", sql="amount", type=DataType.DOUBLE),
+    ]})
+    return await _engine_generate(
+        query=query, model=model, extra_models=rest, dialect="duckdb", validate=False,
+    )
 
 
 def _count_isolated_ctes(sql: str) -> int:
@@ -200,29 +214,17 @@ class TestDiscoveryGuards:
             await gen(q)
 
     async def test_reserved_prefix_column_rejected_when_regroup_active(self) -> None:
-        q = SlayerQuery(
-            source_model="orders",
-            extensions=[ModelExtension.model_validate({
-                "source_name": "orders",
-                "columns": [{"name": "__regroup__x", "sql": "amount",
-                             "type": "DOUBLE"}],
-            })],
+        q = _q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
             measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         with pytest.raises(ValueError, match=r"__regroup__"):
-            await gen(q)
+            await _gen_with_reserved_column(q)
 
     async def test_reserved_prefix_column_fine_without_regroup(self) -> None:
-        q = SlayerQuery(
-            source_model="orders",
-            extensions=[ModelExtension.model_validate({
-                "source_name": "orders",
-                "columns": [{"name": "__regroup__x", "sql": "amount",
-                             "type": "DOUBLE"}],
-            })],
+        q = _q(
             dimensions=["region"],
             measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
-        sql = await gen(q)
+        sql = await _gen_with_reserved_column(q)
         assert "SELECT" in sql

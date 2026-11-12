@@ -120,6 +120,17 @@ class SchemaDriftError(SlayerError):
         self.__cause__ = original
 
 
+class ColumnSqlStatementError(SlayerError):
+    """A column's ``sql`` is a statement, or several, not one expression."""
+
+    def __init__(self, *, column: str, sql: str) -> None:
+        self.column = column
+        super().__init__(
+            f"Column {column!r}: sql must be one SQL expression, not a statement or several ({sql!r}); a "
+            f"parenthesised scalar subquery is an expression."
+        )
+
+
 class ColumnCycleError(SlayerError, ValueError):
     """A derived ``Column.sql`` chain contains a cycle; carries it as ordered ``(model, column)`` tuples."""
 
@@ -535,6 +546,20 @@ class ReservedModelNameError(SlayerError):
         super().__init__(
             f"Model name {name!r} is reserved for the built-in time spine model; choose another name."
         )
+
+
+class UnrecognizedStrictValueError(SlayerError):
+    """A query's deprecated ``strict`` flag holds a value that is neither true nor false."""
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+        super().__init__(
+            f"Unrecognized strict value {value!r}; strict is deprecated, use "
+            f"to_many_handling='error' (one of broadcast|associate|error) instead."
+        )
+
+    def __reduce__(self) -> tuple[type, tuple[Any]]:
+        return type(self), (self.value,)
 
 
 class DefaultTimeDimensionTypeError(SlayerError):
@@ -1191,6 +1216,17 @@ class LegacyDunderAliasError(SlayerError, ValueError):
             f"No joined model named '{self.alias}' on '{self.model}'. The "
             f"'__'-delimited split-alias form is no longer accepted; write the "
             f"join path with dots instead: '{self.dotted}'."
+        )
+
+
+class UnconvertibleStoredQueryError(SlayerError):
+    """A stored query holding a removed form (extension columns, an inline model) that cannot be converted."""
+
+    def __init__(self, construct: str) -> None:
+        self.construct = construct
+        super().__init__(
+            f"Stored query cannot be converted: {construct}. Rewrite the per-query column as an expression where it "
+            f"is used, or the inline model as a stored model, and save the document again."
         )
 
 

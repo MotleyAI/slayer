@@ -5303,7 +5303,7 @@ class SQLGenerator:
                 )
             finally:
                 self._gen_filter_stack = self._gen_filter_stack[:-1]
-        if model.sql_table not in self._gen_stage_relations and not model.inline:
+        if model.sql_table not in self._gen_stage_relations:
             relation = _stamp_model(relation, model=model)
         if any(c.name == ROW_IDENTITY_COLUMN for c in model.columns):
             relation = self._numbered_relation(relation, alias=alias)
@@ -6538,9 +6538,6 @@ def _user_authored_exemptions(
         surfaces.extend(s for s in (model.sql, model.sql_table) if s)
         surfaces.extend(model.filters)
         for col in model.columns:
-            surfaces.extend(_col_surfaces(col))
-    for ext in bundle.inline_extensions:
-        for col in ext.columns or []:
             surfaces.extend(_col_surfaces(col))
     tokens: set[str] = set()
     quote_styles = [d._identifier_quote_anchors()]

@@ -182,18 +182,6 @@ class TestOverlayNamespaceDisjoint:
     validator): duplicate columns and column/measure collisions are loud errors,
     not just duplicate measures."""
 
-    def test_overlay_column_reusing_base_column_rejected(self) -> None:
-        base = SlayerModel(
-            name="t", data_source="ds", sql_table="t",
-            columns=[Column(name="amount", type=DataType.DOUBLE)],
-        )
-        ext = ModelExtension(
-            source_name="t",
-            columns=[Column(name="amount", type=DataType.DOUBLE)],
-        )
-        with pytest.raises(ValueError, match=r"duplicate column names"):
-            apply_extension_overlay(base, ext)
-
     def test_overlay_measure_colliding_with_base_column_rejected(self) -> None:
         base = SlayerModel(
             name="t", data_source="ds", sql_table="t",

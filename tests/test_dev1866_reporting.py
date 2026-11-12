@@ -2,7 +2,7 @@
 
 ``SlayerResponse.population`` / ``.population_inferred`` are populated uniformly
 across execute, dry-run, explain, cache miss/hit, refresh (real re-execution),
-run-by-name, explicit vs inferred vs inline/extension source models, and the
+run-by-name, explicit vs inferred vs extended source models, and the
 Python client's decode path. Engine-level datasource forwarding into inference
 is covered here too.
 """
@@ -30,7 +30,6 @@ from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1866_fixtures import (
-    DS_CHAIN,
     DS_WIDGETS_A,
     make_chain_exec_engine,
     make_inference_storage,
@@ -67,22 +66,11 @@ class TestExplicitVsInferredReporting:
             source_model="customers",
             extensions=[ModelExtension.model_validate({
                 "source_name": "customers",
-                "columns": [{"name": "region_copy", "sql": "region"}],
+                "measures": [{"name": "n", "formula": "count(*)"}],
             })],
             dimensions=["region"],
         ))
         assert resp.population == "customers"
-        assert resp.population_inferred is False
-
-    async def test_explicit_inline_model_reports_its_name(self, engine) -> None:
-        resp = await engine.execute(SlayerQuery(
-            source_model=SlayerModel(
-                name="inl_cust", data_source=DS_CHAIN, sql_table="customers",
-                columns=[Column(name="region", type=DataType.TEXT)],
-            ),
-            dimensions=["region"],
-        ))
-        assert resp.population == "inl_cust"
         assert resp.population_inferred is False
 
     async def test_run_by_name_reports_population(self, engine) -> None:

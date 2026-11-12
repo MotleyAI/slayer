@@ -206,8 +206,8 @@ _TRICKY_SQL = {
 class TestQuotedBindingValue:
     @pytest.mark.parametrize("dialect", list(_TRICKY_SQL))
     async def test_string_kwarg_stays_inside_the_literal(self, dialect: str) -> None:
-        # The kwarg is the dialect's own spelling of a string literal valued a'b\c.
-        kwarg = exp.Literal.string(_TRICKY).sql(dialect=dialect)
+        # The kwarg is the Mode-B spelling of a string literal valued a'b\c.
+        kwarg = _mode_b_string(_TRICKY)
         sql = await _dry(f"lbl(amount, n={_mode_b_string(kwarg)})", agg=_agg(_LABEL, name="lbl", n="'x'"), dialect=dialect)
         lit = _then_literal(sql, dialect=dialect)
         assert isinstance(lit, exp.Literal)
@@ -270,7 +270,7 @@ class TestTypedLiteral:
     @pytest.mark.parametrize("value", ["a'b", "a\\b"])
     @pytest.mark.parametrize("dialect", ["postgres", "snowflake", "duckdb"])
     async def test_interval_value_cannot_hold_a_quote_or_backslash(self, dialect: str, value: str, formula: str) -> None:
-        kwarg = exp.Literal.string(value).sql(dialect=dialect)
+        kwarg = _mode_b_string(value)
         agg = _agg(formula, name="days", n="2")
         formula_text = f"days(amount, n={_mode_b_string(kwarg)})"
         with pytest.raises(SqlTemplateError) as ei:

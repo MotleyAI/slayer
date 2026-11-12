@@ -590,8 +590,6 @@ class _ExtensionScope(BaseModel):
 async def _rooted(query: SlayerQuery, *, storage: StorageBackend) -> tuple[SlayerQuery, SlayerModel]:
     """``query`` with its source model; a rootless query is rooted at the population the engine infers."""
     src = query.source_model
-    if isinstance(src, SlayerModel):
-        return query, src
     data_source = None
     if src is None:
         try:
@@ -623,7 +621,7 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
                 seen.add(f)
                 canonical.append(f)
 
-    # 1. source_model — a saved model name, an inline model, or the population the engine infers — then the models
+    # 1. source_model — a saved model name or the population the engine infers — then the models
     # its extensions name.
     query, source_model = await _rooted(query, storage=storage)
     ds = source_model.data_source

@@ -14,7 +14,7 @@ from pydantic import ValidationError
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage import migrations as mig
 from slayer.storage.sqlite_storage import SQLiteStorage
@@ -471,7 +471,7 @@ def test_query_v1_to_v2_both_fields_and_measures_raises() -> None:
 
 def test_query_v1_to_v2_inline_model_extension() -> None:
     """ModelExtension nested in source_model gets its dim/measures merged."""
-    q = SlayerQuery.model_validate({
+    q = mig.migrate("SlayerQuery", {
         "version": 1,
         "source_model": {
             "source_name": "orders",
@@ -480,19 +480,17 @@ def test_query_v1_to_v2_inline_model_extension() -> None:
         },
         "fields": [{"formula": "revenue:sum"}],
     })
-    assert q.version == mig.CURRENT_VERSIONS["SlayerQuery"]
-    assert q.source_model == "orders"
-    (sm,) = q.extensions or []
-    assert isinstance(sm, ModelExtension)
-    assert sm.source_name == "orders"
-    assert [c.name for c in sm.columns or []] == ["region", "revenue"]
-    assert sm.measures == []
+    assert q["version"] == mig.CURRENT_VERSIONS["SlayerQuery"]
+    assert q["source_model"] == "orders"
+    (sm,) = q["extensions"]
+    assert sm["source_name"] == "orders"
+    assert [c["name"] for c in sm["columns"]] == ["region", "revenue"]
+    assert sm["measures"] == []
 
 
-def test_query_v1_to_v2_inline_slayer_model_dict_migrates_during_query_validation() -> None:
-    """A v1 inline SlayerModel dict is migrated by the model's own before-validator
-    when the query's typed ``source_model`` validates it."""
-    q = SlayerQuery.model_validate({
+def test_query_v1_to_v2_inline_slayer_model_dict_migrates() -> None:
+    """A v1 query holding a v1 inline SlayerModel dict: the query and the model each migrate."""
+    q = mig.migrate("SlayerQuery", {
         "version": 1,
         "source_model": {
             "version": 1,
@@ -504,11 +502,10 @@ def test_query_v1_to_v2_inline_slayer_model_dict_migrates_during_query_validatio
         },
         "fields": [{"formula": "revenue:sum"}],
     })
-    assert q.measures is not None  # `fields` rename worked
-    m = q.source_model
-    assert isinstance(m, SlayerModel)
-    assert m.version == mig.CURRENT_VERSIONS["SlayerModel"]
-    assert [c.name for c in m.columns] == ["status", "revenue"]
+    assert q["measures"]  # `fields` rename worked
+    m = mig.migrate("SlayerModel", q["source_model"])
+    assert m["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
+    assert [c["name"] for c in m["columns"]] == ["status", "revenue"]
 
 
 def test_model_v1_to_v2_source_queries_nested_rename() -> None:
@@ -544,7 +541,7 @@ def test_model_v1_to_v2_source_queries_with_inline_extension() -> None:
     """A nested SlayerQuery whose source_model is an inline ModelExtension
     also gets recursively migrated (extension dimensions+measures merged).
     """
-    m = SlayerModel.model_validate({
+    m = mig.migrate("SlayerModel", {
         "version": 1,
         "name": "saved",
         "data_source": "demo",
@@ -558,13 +555,12 @@ def test_model_v1_to_v2_source_queries_with_inline_extension() -> None:
             "fields": [{"formula": "revenue:sum"}],
         }],
     })
-    inner = m.source_queries[0]
-    assert isinstance(inner, SlayerQuery)
-    assert inner.source_model == "orders"
-    (src,) = inner.extensions or []
-    assert isinstance(src, ModelExtension)
+    (inner,) = m["source_queries"]
+    assert inner["version"] == mig.CURRENT_VERSIONS["SlayerQuery"]
+    assert inner["source_model"] == "orders"
+    (src,) = inner["extensions"]
     # Merged into columns (status from dimensions + revenue from measures)
-    assert sorted(c.name for c in src.columns or []) == ["revenue", "status"]
+    assert sorted(c["name"] for c in src["columns"]) == ["revenue", "status"]
 
 
 def test_model_v2_input_with_source_queries_preserved() -> None:
@@ -743,7 +739,7 @@ def test_query_v2_to_v3_names_an_inline_model_without_its_contents(caplog) -> No
               "measures": [{"name": "m", "sql": f"COUNT(CASE WHEN email = '{secret}' THEN 1 END)"}]}
     caplog.set_level(logging.WARNING, logger="slayer.storage.v3_migration")
     with pytest.warns(DeprecationWarning) as caught:
-        SlayerQuery.model_validate({"version": 2, "source_model": inline, "dry_run": True})
+        mig.migrate("SlayerQuery", {"version": 2, "source_model": inline, "dry_run": True})
     texts = [r.getMessage() for r in caplog.records] + [str(w.message) for w in caught]
     assert any("inline_orders" in t for t in texts), texts
     assert not [t for t in texts if secret in t], texts

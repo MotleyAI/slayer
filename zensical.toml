@@ -24,6 +24,7 @@ nav = [
     { "REST API (Any Language)" = "getting-started/rest-api.md" },
     { "Python SDK" = "getting-started/python.md" },
   ]},
+  { "Upgrading to 2.0" = "upgrading/2.0.md" },
   { "Concepts" = [
     { "Terminology" = "concepts/terminology.md" },
     { "Models" = "concepts/models.md" },

@@ -1,4 +1,4 @@
-"""Service layer for the Memory write-side tools (DEV-1357 v2).
+"""Service layer for the Memory write-side tools.
 
 Sits between the storage backend and the surface layers (MCP, REST,
 CLI, Python client). Responsibilities:
@@ -31,6 +31,7 @@ from slayer.memories.resolver import (
     extract_entities_from_query,
     resolve_entity,
 )
+from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
 
 
@@ -57,7 +58,7 @@ def _coerce_query(query: QueryInput) -> SlayerQuery:
 
 
 def _coerce_memory_id(identifier: int | str) -> str:
-    """DEV-1428: accept native ``str`` (canonical form) or legacy
+    """Accept native ``str`` (canonical form) or legacy
     ``int`` (back-compat: stringify decimally). Validates the result
     through :func:`_validate_memory_id_charset` so the surface layer
     sees the same error on bad input regardless of input shape."""
@@ -136,6 +137,7 @@ class MemoryService:
                 attached_query, storage=self._storage
             )
             canonical.extend(extraction.canonical_forms)
+            warnings.extend(p.human_message() for p in attached_query.deprecated_inputs)
             warnings.extend(extraction.warnings)
 
         canonical = _dedup(canonical)
@@ -147,14 +149,7 @@ class MemoryService:
             id=id,
             description=description,
         )
-        # DEV-1514: fan out the upsert through SearchService so every
-        # registered retriever gets a chance to react. SearchService
-        # isolates per-retriever exceptions as prefixed warnings, so
-        # this site no longer needs its own try/except.
-        # Local import keeps the search module off the critical-path
-        # import graph.
-        from slayer.search.service import SearchService
-
+        # Every registered retriever reacts; SearchService returns their failures as prefixed warnings.
         embed_warnings = await SearchService(
             storage=self._storage,
         ).upsert_memory(memory)

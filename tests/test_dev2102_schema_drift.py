@@ -26,8 +26,9 @@ def _customers() -> SlayerModel:
     ])
 
 
-def _qb(*, extension: ModelExtension, **stage: object) -> SlayerModel:
-    query = SlayerQuery.model_validate({"source_model": "orders", "extensions": [extension], **stage})
+def _qb(*, extension: ModelExtension | None = None, **stage: object) -> SlayerModel:
+    extensions = {"extensions": [extension]} if extension else {}
+    query = SlayerQuery.model_validate({"source_model": "orders", **extensions, **stage})
     return SlayerModel(name="qb", data_source="ds", source_queries=[query])
 
 
@@ -36,26 +37,27 @@ def _whole_dropped(*, qb: SlayerModel, model: SlayerModel, column: str) -> set[s
     return {e.model_name for e in entries if isinstance(e, WholeModelDelete)}
 
 
-_NET = ModelExtension(source_name="orders", columns=[Column(name="net", sql="amount - tax", type=DataType.DOUBLE)])
+_NET = ModelExtension(source_name="orders", measures=[ModelMeasure(name="net", formula="sum(amount - tax)")])
+_NET_DIMENSION = {"expression": "amount - tax", "name": "net"}
 _BUYER = ModelExtension(source_name="orders", joins=[
     ModelJoin(target_model="customers", join_pairs=[["buyer_ref", "id"]], name="buyer"),
 ])
 
 
 class TestExtensionDefinitionDependencies:
-    def test_extension_column_sql_reading_dropped_column(self) -> None:
-        qb = _qb(extension=_NET, dimensions=["net"], measures=[{"formula": "count(*)"}])
+    def test_computed_dimension_reading_dropped_column(self) -> None:
+        qb = _qb(dimensions=[_NET_DIMENSION], measures=[{"formula": "count(*)"}])
         assert _whole_dropped(qb=qb, model=_orders(), column="tax") == {"qb"}
 
-    def test_extension_column_used_in_measure(self) -> None:
-        qb = _qb(extension=_NET, measures=[{"formula": "sum(net)", "name": "n"}])
+    def test_extension_measure_over_an_expression(self) -> None:
+        qb = _qb(extension=_NET, measures=[{"formula": "net", "name": "n"}])
         assert _whole_dropped(qb=qb, model=_orders(), column="tax") == {"qb"}
 
-    def test_extension_column_filter_reading_dropped_column(self) -> None:
-        ext = ModelExtension(source_name="orders", columns=[
-            Column(name="paid", sql="amount", type=DataType.DOUBLE, filter="status = 'paid'"),
+    def test_extension_measure_condition_reading_dropped_column(self) -> None:
+        ext = ModelExtension(source_name="orders", measures=[
+            ModelMeasure(name="paid", formula="sum(iif(status = 'paid', amount, 0))"),
         ])
-        qb = _qb(extension=ext, measures=[{"formula": "sum(paid)", "name": "p"}])
+        qb = _qb(extension=ext, measures=[{"formula": "paid", "name": "p"}])
         assert _whole_dropped(qb=qb, model=_orders(), column="status") == {"qb"}
 
     def test_extension_measure_reading_dropped_column(self) -> None:
@@ -63,7 +65,7 @@ class TestExtensionDefinitionDependencies:
         qb = _qb(extension=ext, measures=[{"formula": "taxes"}])
         assert _whole_dropped(qb=qb, model=_orders(), column="tax") == {"qb"}
 
-    def test_extension_column_unused_by_the_stage(self) -> None:
+    def test_extension_measure_unused_by_the_stage(self) -> None:
         qb = _qb(extension=_NET, measures=[{"formula": "sum(amount)", "name": "a"}])
         assert _whole_dropped(qb=qb, model=_orders(), column="tax") == set()
 
@@ -82,13 +84,13 @@ class TestExtensionDefinitionDependencies:
         qb = _qb(extension=_BUYER, dimensions=["status"], measures=[{"formula": "count(*)"}])
         assert _whole_dropped(qb=qb, model=_orders(), column="buyer_ref") == set()
 
-    def test_extension_column_aliasing_a_dropped_column(self) -> None:
-        ext = ModelExtension(source_name="orders", columns=[Column(name="gross", sql="amount", type=DataType.DOUBLE)])
-        qb = _qb(extension=ext, measures=[{"formula": "sum(gross)", "name": "g"}])
+    def test_extension_measure_aliasing_a_dropped_column(self) -> None:
+        ext = ModelExtension(source_name="orders", measures=[ModelMeasure(name="gross", formula="sum(amount)")])
+        qb = _qb(extension=ext, measures=[{"formula": "gross", "name": "g"}])
         assert _whole_dropped(qb=qb, model=_orders(), column="amount") == {"qb"}
 
 
-_UPPER_BUYER = Column(name="buyer_name", sql="UPPER(buyer.name)", type=DataType.TEXT)
+_UPPER_BUYER = {"expression": "UPPER(buyer.name)", "name": "buyer_name"}
 
 
 def _orders_with_stored_buyer() -> SlayerModel:
@@ -98,17 +100,13 @@ def _orders_with_stored_buyer() -> SlayerModel:
 
 
 class TestExtensionDefinitionJoinPaths:
-    def test_extension_column_through_extension_join(self) -> None:
-        ext = _BUYER.model_copy(update={"columns": [_UPPER_BUYER]})
-        qb = _qb(extension=ext, dimensions=["buyer_name"], measures=[{"formula": "count(*)"}])
+    def test_computed_dimension_through_extension_join(self) -> None:
+        qb = _qb(extension=_BUYER, dimensions=[_UPPER_BUYER], measures=[{"formula": "count(*)"}])
         assert _whole_dropped(qb=qb, model=_orders(), column="buyer_ref") == {"qb"}
 
-    def test_extension_column_through_stored_join(self) -> None:
+    def test_computed_dimension_through_stored_join(self) -> None:
         orders = _orders_with_stored_buyer()
-        qb = _qb(
-            extension=ModelExtension(source_name="orders", columns=[_UPPER_BUYER]),
-            dimensions=["buyer_name"], measures=[{"formula": "count(*)"}],
-        )
+        qb = _qb(dimensions=[_UPPER_BUYER], measures=[{"formula": "count(*)"}])
         entries = column_dependents(models=[orders, _customers(), qb], model=orders, column="buyer_ref")
         assert {e.model_name for e in entries if isinstance(e, WholeModelDelete)} == {"qb"}
 
@@ -117,16 +115,17 @@ class TestExtensionDefinitionJoinPaths:
         qb = _qb(extension=ext, measures=[{"formula": "buyers"}])
         assert _whole_dropped(qb=qb, model=_orders(), column="buyer_ref") == {"qb"}
 
-    def test_sibling_stage_extension_column_through_extension_join(self) -> None:
-        ext = ModelExtension(source_name="s", joins=_BUYER.joins, columns=[_UPPER_BUYER])
+    def test_sibling_stage_computed_dimension_through_extension_join(self) -> None:
+        ext = ModelExtension(source_name="s", joins=_BUYER.joins)
         qb = SlayerModel(name="qb", data_source="ds", source_queries=[
             SlayerQuery.model_validate({"name": "s", "source_model": "orders", "dimensions": ["buyer_ref"]}),
-            SlayerQuery.model_validate({"source_model": "s", "extensions": [ext], "dimensions": ["buyer_name"]}),
+            SlayerQuery.model_validate({"source_model": "s", "extensions": [ext], "dimensions": [_UPPER_BUYER]}),
         ])
         assert _whole_dropped(qb=qb, model=_customers(), column="name") == {"qb"}
 
-    def test_extension_column_through_join_unused_by_the_stage(self) -> None:
-        ext = _BUYER.model_copy(update={"columns": [_UPPER_BUYER]})
+    def test_extension_measure_through_join_unused_by_the_stage(self) -> None:
+        ext = _BUYER.model_copy(update={"measures": [
+            ModelMeasure(name="buyer_names", formula="count_distinct(UPPER(buyer.name))")]})
         qb = _qb(extension=ext, dimensions=["status"], measures=[{"formula": "count(*)"}])
         assert _whole_dropped(qb=qb, model=_orders(), column="buyer_ref") == set()
 
@@ -182,30 +181,13 @@ class TestExtensionDefinitionFrames:
             "columns": [*_customers().columns, Column(name="last_order_id", type=DataType.INT)],
             "joins": [ModelJoin(target_model="orders", join_pairs=[["last_order_id", "id"]], name="last_order")],
         })
-        ext = ModelExtension(source_name="customers", columns=[
-            Column(name="latest", sql="last_order.amount", type=DataType.DOUBLE)])
-        qb = _qb(extension=ext, dimensions=["customer.latest"], measures=[{"formula": "count(*)"}])
+        ext = ModelExtension(source_name="customers", measures=[
+            ModelMeasure(name="latest", formula="max(last_order.amount)")])
+        qb = _qb(extension=ext, measures=[{"formula": "customer.latest", "name": "l"}])
         entries = column_dependents(models=[orders, customers, qb], model=customers, column="last_order_id")
         assert {e.model_name for e in entries if isinstance(e, WholeModelDelete)} == {"qb"}
 
 
-def test_an_inline_source_shadows_the_stored_model_it_is_named_like() -> None:
-    inline = _customers().model_copy(update={"sql_table": "crm_customers"})
-    qb = SlayerModel(name="qb", data_source="ds", source_queries=[
-        SlayerQuery.model_validate({"source_model": inline, "measures": [{"formula": "count(code)", "name": "c"}]})])
-    entries = column_dependents(models=[_customers(), qb], model=_customers(), column="code")
-    assert {e.model_name for e in entries if isinstance(e, WholeModelDelete)} == set()
-
-
-def test_a_sibling_over_an_inline_source_is_not_a_dependent_of_its_stored_namesake() -> None:
-    inline = _customers().model_copy(update={"sql_table": "crm_customers"})
-    qb = SlayerModel(name="qb", data_source="ds", source_queries=[
-        SlayerQuery.model_validate({"name": "s", "source_model": inline, "dimensions": ["code"]}),
-        SlayerQuery.model_validate({"source_model": "s", "dimensions": ["code"]})])
-    entries = column_dependents(models=[_customers(), qb], model=_customers(), column="code")
-    assert {e.model_name for e in entries} == {"customers"}
-
-
-def test_a_computed_dimension_over_an_extension_column_depends_on_its_definition() -> None:
-    qb = _qb(extension=_NET, dimensions=[{"expression": "net + 1", "name": "net1"}], measures=[{"formula": "count(*)"}])
+def test_a_computed_dimension_over_an_expression_depends_on_what_it_reads() -> None:
+    qb = _qb(dimensions=[{"expression": "(amount - tax) + 1", "name": "net1"}], measures=[{"formula": "count(*)"}])
     assert _whole_dropped(qb=qb, model=_orders(), column="tax") == {"qb"}

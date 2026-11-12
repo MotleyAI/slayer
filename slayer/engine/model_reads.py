@@ -210,7 +210,7 @@ class _Reads:
         query = scope.query or query
         self.sources(query, scope=scope)
         host = scope.host
-        if host is not None and (isinstance(query.source_model, SlayerModel) or extension_of(query, host.name) is not None):
+        if host is not None and extension_of(query, host.name) is not None:
             self.definitions(host, scope=scope)
         self.extension_fields(query, scope=scope)
         for parts in [*query_reference_parts(query), *scope.inner_refs]:
@@ -220,23 +220,20 @@ class _Reads:
                 self.product_ref(parts, scope=scope)
 
     def sources(self, query: SlayerQuery, *, scope: QueryScope) -> None:
-        """The stored models ``query`` names as its source, its inline source's join targets and its extensions."""
-        spec = query.source_model
+        """The stored models ``query`` names as its source and its extensions."""
         names = list(extension_model_names(query))
-        if isinstance(spec, str):
-            names.append(spec)
-        elif isinstance(spec, SlayerModel):
-            names.extend(j.target_model for j in spec.joins)
+        if query.source_model is not None:
+            names.append(query.source_model)
         for name in names:
             self.read(name, scope=scope)
 
     def extension_fields(self, query: SlayerQuery, *, scope: QueryScope) -> None:
-        """What each of ``query``'s extension columns and measures reads, over the model it extends."""
+        """What each of ``query``'s extension measures reads, over the model it extends."""
         for extension in query.extensions or []:
             extended = scope.models.get(extension.source_name)
             if extended is None:
                 continue
-            for name in [f.name for f in [*(extension.columns or []), *(extension.measures or [])] if f.name]:
+            for name in [m.name for m in extension.measures or [] if m.name]:
                 self.column(host=extended, name=name, scope=scope)
                 self.measure(host=extended, name=name, scope=scope)
 

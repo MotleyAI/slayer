@@ -16,8 +16,8 @@ computed-dimension leaf, and when referenced from another derived definition. Th
 filter's references SHALL be dependencies of the column exactly as its value's
 references are — for join classification, dependency closure, cycle detection and
 save-time path validation — while the wrapped value's reference to the column's own
-physical column SHALL NOT form a dependency cycle. Variable substitution SHALL apply
-to `filter` and `sql` alike. No other behaviour SHALL attach to `filter`: an
+physical column SHALL NOT form a dependency cycle. Variables SHALL bind into `filter` and `sql`
+alike, as literals (`queries/variables` › Mode-A surfaces bind variables as literals). No other behaviour SHALL attach to `filter`: an
 aggregation's parameters are masked only by their own columns' filters, never by the
 source column's, and no position reads the unmasked value.
 
@@ -80,7 +80,8 @@ source column's, and no position reads the unmasked value.
 
 #### Scenario: Variables substitute into both fields
 - **WHEN** `sql` and `filter` each contain a `{variable}` and the query supplies it
-- **THEN** both are substituted before the definition is composed, by generated SQL
+- **THEN** both bind it as a literal before the definition is composed, by generated SQL, and a
+  value that is not a literal fails with the literal-values error
 
 #### Scenario: Broken filter path fails at save time
 - **WHEN** a column's filter names a dotted path that does not walk from its model
