@@ -64,6 +64,22 @@ class TestRestSurface:
         [w] = deprecated_in(resp.json()["warnings"])
         assert "to_many_handling" in w["new"]
 
+    @pytest.mark.parametrize(("version", "warned"), [(3.9, 1), (3, 0)], ids=["malformed_is_fresh", "stored_v3"])
+    async def test_versioned_strict_follows_the_python_rule(self, storage, version: object, warned: int) -> None:
+        client = TestClient(create_app(storage=storage))
+        with recorded():
+            resp = client.post("/query", json={**_STRICT_BODY, "version": version})
+        assert resp.status_code == 200, resp.text
+        assert len(deprecated_in(resp.json()["warnings"])) == warned
+
+    async def test_fresh_strict_keeps_the_rest_of_a_versioned_payload_migrated(self, storage) -> None:
+        body = {**_STRICT_BODY, "version": 3.9, "source_model": {"source_name": "orders", "columns": []}}
+        client = TestClient(create_app(storage=storage))
+        with recorded():
+            resp = client.post("/query", json=body)
+        assert resp.status_code == 200, resp.text
+        assert len(deprecated_in(resp.json()["warnings"])) == 1
+
     async def test_association_slayer_error_maps_to_400(self, storage) -> None:
         """An association-eligibility ``SlayerError`` (a status-grained attached
         parameter the customer entity does not determine) is a client error

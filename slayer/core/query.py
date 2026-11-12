@@ -88,6 +88,11 @@ def _stored_before_strict_retired(raw_version: Any) -> bool:
     return isinstance(raw_version, int) and raw_version < _STRICT_RETIRED_AT
 
 
+def _has_fresh_strict(data: dict[str, Any]) -> bool:
+    """``data`` carries a ``strict`` that converts with a deprecation rather than migrating silently."""
+    return "strict" in data and not _stored_before_strict_retired(data.get("version"))
+
+
 def _convert_strict(data: dict[str, Any]) -> tuple[dict[str, Any], DeprecatedInputWarning]:
     """Fresh input's deprecated ``strict`` converted to ``to_many_handling``, with its deprecation."""
     to_error = strict_flag(data["strict"]) and "to_many_handling" not in data
@@ -1139,9 +1144,14 @@ def convert_legacy_root_extension(data: dict) -> tuple[dict, DeprecatedInputWarn
 
 def prepare_query_input(data: dict) -> tuple[dict, DeprecatedInputWarning | None]:
     """``data`` in the shape ``SlayerQuery``'s typed fields read (a legacy root extension converted, a versioned
-    payload migrated), with the conversion's deprecation."""
+    payload migrated around a fresh ``strict``, which ``SlayerQuery`` converts), with the conversion's deprecation."""
     data, payload = convert_legacy_root_extension(data)
-    return (_migrate_schema(entity="SlayerQuery", data=data) if "version" in data else data), payload
+    if "version" not in data:
+        return data, payload
+    if not _has_fresh_strict(data):
+        return _migrate_schema(entity="SlayerQuery", data=data), payload
+    rest = {k: v for k, v in data.items() if k != "strict"}
+    return {**_migrate_schema(entity="SlayerQuery", data=rest), "strict": data["strict"]}, payload
 
 
 def _reject_inline_query_backed(value: Any) -> Any:
@@ -1317,7 +1327,7 @@ class SlayerQuery(BaseModel):
         # deprecation; a stored pre-v4 one migrates silently (v3→v4).
         payloads: list[DeprecatedInputWarning] = []
         if isinstance(data, dict):
-            if "strict" in data and not _stored_before_strict_retired(data.get("version")):
+            if _has_fresh_strict(data):
                 data, payload = _convert_strict(data)
                 payloads.append(payload)
             data, payload = convert_legacy_root_extension(data)
