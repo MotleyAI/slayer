@@ -126,6 +126,13 @@ async def test_an_authored_models_literal_flat_column_is_suggested() -> None:
     assert "m.a__b" in err.suggestion
 
 
+async def test_a_flat_column_wins_over_an_opaque_list_hop() -> None:
+    m = _authored("m", "a__b__c")
+    m = m.model_copy(update={"columns": [*m.columns, Column(name="a", sql="name", type=DataType.ARRAY, element_type=DataType.UNKNOWN)]})
+    err = await _refused(_root_joining("m", "m.a.b.c"), models=with_models(m))
+    assert "m.a__b__c" in err.suggestion
+
+
 def _hr(*names: str) -> list[SlayerModel]:
     """``customers → regions`` under each named edge, so ``customers__regions__name`` respells each."""
     return with_models(customers(*(ModelJoin(target_model="regions", name=n, join_pairs=_REGION_PAIRS)

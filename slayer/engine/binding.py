@@ -847,11 +847,15 @@ def _walk_join_chain(
     if miss.kind == "unloaded":
         assert miss.target is not None
         raise _target_not_in_bundle(parts=parts, target=miss.target)
+    broken = len(hop_path) != 1
+    flat = refusal() if broken else None
+    if flat is not None:
+        raise flat
     _reject_opaque_elements(
         host=host, hop_path=hop_path, index=miss.index, parts=parts, models_by_name=models_by_name, quoted=hop_quoted,
     )
-    if len(hop_path) != 1:
-        raise refusal() or _broken_chain_error(
+    if broken:
+        raise _broken_chain_error(
             host=host, hop_path=hop_path, leaf=leaf, parts=parts, miss=miss, models_by_name=models_by_name,
             quoted=hop_quoted,
         )
