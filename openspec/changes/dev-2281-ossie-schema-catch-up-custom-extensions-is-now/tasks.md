@@ -12,16 +12,16 @@
 
 ## 2. Implementation (pr-implement)
 
-- [ ] 2.1 `slayer/osi/models.py`: `OSINonportableExtension` (`vendor_name: str`, `data: Any`, `legacy: bool = False`); `nonportable_extensions` on document, dataset, field, metric, relationship; a before-validator moving legacy `custom_extensions` entries under the new key marked legacy, undecoded; verify the model tests pass
-- [ ] 2.2 `slayer/osi/slayer_extension.py`: the shared entry checker (decode legacy strings; require a JSON-representable object at every depth) and the codec encoding/decoding the payload as an object; `PAYLOAD_VERSION` stays 1; verify the codec tests pass
-- [ ] 2.3 `slayer/osi/converter.py`: check every entry through the checker, report and drop rejects with entity and vendor, emit one legacy `info` entry per document, store foreign entries in `meta["osi_nonportable_extensions"]` and the document's in `meta["osi_semantic_model"]["nonportable_extensions"]`; verify the import tests pass
-- [ ] 2.4 `slayer/osi/exporter.py`: write `nonportable_extensions` with object `data` for `SLAYER` and foreign entries (entity and document level), checked through the same checker; verify the export tests pass
-- [ ] 2.5 `slayer/storage/migrations.py`: `SlayerModel` 21→22 migration and `CURRENT_VERSIONS["SlayerModel"] = 22`; verify the migration tests pass
-- [ ] 2.6 `slayer/cli.py` export-osi YAML writer: one dumper quoting every string PyYAML or the YAML 1.2 core schema would retype; verify the quoting test passes
-- [ ] 2.7 Migrate `docs/examples/13_osi_import/shop.osi.yaml` to the new key and re-execute both notebooks (`jupyter nbconvert --to notebook --execute --inplace`), saving the outputs
+- [x] 2.1 `slayer/osi/models.py`: `OSINonportableExtension` (`vendor_name: str`, `data: Any`, `legacy: bool = False`); `nonportable_extensions` on document, dataset, field, metric, relationship; a before-validator moving legacy `custom_extensions` entries under the new key marked legacy, undecoded; verify the model tests pass
+- [x] 2.2 `slayer/osi/slayer_extension.py`: the shared entry checker (decode legacy strings; require a JSON-representable object at every depth) and the codec encoding/decoding the payload as an object; `PAYLOAD_VERSION` stays 1; verify the codec tests pass
+- [x] 2.3 `slayer/osi/converter.py`: check every entry through the checker, report and drop rejects with entity and vendor, emit one legacy `info` entry per document, store foreign entries in `meta["osi_nonportable_extensions"]` and the document's in `meta["osi_semantic_model"]["nonportable_extensions"]`; verify the import tests pass
+- [x] 2.4 `slayer/osi/exporter.py`: write `nonportable_extensions` with object `data` for `SLAYER` and foreign entries (entity and document level), checked through the same checker; verify the export tests pass
+- [x] 2.5 `slayer/storage/migrations.py`: `SlayerModel` 21→22 migration and `CURRENT_VERSIONS["SlayerModel"] = 22`; verify the migration tests pass
+- [x] 2.6 `slayer/cli.py` export-osi YAML writer: one dumper quoting every string PyYAML or the YAML 1.2 core schema would retype; verify the quoting test passes
+- [x] 2.7 Migrate `docs/examples/13_osi_import/shop.osi.yaml` to the new key and re-execute both notebooks (`jupyter nbconvert --to notebook --execute --inplace`), saving the outputs
 
 ## 3. Docs and tracker
 
-- [ ] 3.1 Update `docs/osi/osi_import.md`, `docs/osi/osi_export.md`, `docs/reference/cli.md` (`--no-extensions` wording) and `docs/examples/13_osi_import/osi_import.md` to `nonportable_extensions` with object `data`; verify `grep -rn custom_extensions docs/` lists only the legacy-key mentions
+- [x] 3.1 Update `docs/osi/osi_import.md`, `docs/osi/osi_export.md`, `docs/reference/cli.md` (`--no-extensions` wording) and `docs/examples/13_osi_import/osi_import.md` to `nonportable_extensions` with object `data`; verify `grep -rn custom_extensions docs/` lists only the legacy-key mentions
 - [ ] 3.2 Merge `origin/main`; `docs/upgrading/2.0.md` must exist (PR #590). If it does not, STOP and ask. Add a section on the exported document's `nonportable_extensions` and the legacy-key import; verify the page's nav entry in `zensical.toml`
 - [ ] 3.3 Full unit suite, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs the baseline) and the enforcement bundle (`poetry run la-arch-check`) green

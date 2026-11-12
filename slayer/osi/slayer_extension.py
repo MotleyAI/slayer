@@ -1,4 +1,4 @@
-"""The versioned ``SLAYER`` custom-extension payload: per Ossie entity, the SLayer content Ossie has no place for.
+"""The versioned ``SLAYER`` non-portable-extension payload: per Ossie entity, the SLayer content Ossie has no place for.
 
 Each payload carries a fingerprint over the Ossie content it was written with
 and over its own content; the importer restores what duplicates Ossie content
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from typing import Annotated, Any, Literal, Union
 
 import sqlglot
@@ -20,7 +21,7 @@ from slayer.core.format import NumberFormat
 from slayer.core.granularity import GranularitySpec
 from slayer.core.models import Aggregation, Column, ModelJoin, ModelMeasure
 from slayer.osi.dialects import PORTABLE_READER, reader_for
-from slayer.osi.models import OSICustomExtension, OSIExpression
+from slayer.osi.models import OSIExpression, OSINonportableExtension
 
 VENDOR = "SLAYER"
 PAYLOAD_VERSION = 1
@@ -143,22 +144,52 @@ def fingerprint(payload: _Payload, *, ossie: Any) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def encode(payload: _Payload, *, ossie: Any) -> OSICustomExtension:
-    """``payload`` fingerprinted against ``ossie`` as a ``SLAYER`` custom extension."""
+def encode(payload: _Payload, *, ossie: Any) -> dict[str, Any]:
+    """``payload`` fingerprinted against ``ossie`` as a ``SLAYER`` non-portable extension entry."""
     stamped = payload.model_copy(update={"fingerprint": fingerprint(payload, ossie=ossie)})
-    data = json.dumps(stamped.model_dump(mode="json", exclude_none=True), sort_keys=True, separators=(",", ":"))
-    return OSICustomExtension(vendor_name=VENDOR, data=data)
+    return {"vendor_name": VENDOR, "data": stamped.model_dump(mode="json", exclude_none=True)}
 
 
-def decode(data: str) -> Payload:
+def decode(data: dict[str, Any]) -> Payload:
     """The payload in ``data``; raises ``ValueError`` when malformed or of an unknown version or kind."""
-    return _ADAPTER.validate_json(data)
+    return _ADAPTER.validate_python(data)
 
 
 def matches(payload: _Payload, *, ossie: Any) -> bool:
     return payload.fingerprint == fingerprint(payload, ossie=ossie)
 
 
-def is_slayer(extension: OSICustomExtension | dict[str, Any]) -> bool:
+def is_slayer(extension: OSINonportableExtension | dict[str, Any]) -> bool:
     vendor = extension.get("vendor_name") if isinstance(extension, dict) else extension.vendor_name
     return isinstance(vendor, str) and vendor.strip().upper() == VENDOR
+
+
+def _json_value(value: Any) -> bool:
+    if value is None or isinstance(value, (str, bool, int)):
+        return True
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if isinstance(value, list):
+        return all(_json_value(v) for v in value)
+    return isinstance(value, dict) and all(isinstance(k, str) and _json_value(v) for k, v in value.items())
+
+
+def _reject_constant(token: str) -> Any:
+    raise ValueError(f"{token} is not JSON")
+
+
+def decoded_legacy(data: Any) -> Any:
+    """A legacy entry's JSON-string ``data`` decoded; ``None`` when it does not decode; other ``data`` unchanged."""
+    if not isinstance(data, str):
+        return data
+    try:
+        return json.loads(data, parse_constant=_reject_constant)
+    except ValueError:
+        return None
+
+
+def checked(*, vendor_name: Any, data: Any) -> dict[str, Any] | None:
+    """The entry ``{vendor_name, data}`` when the vendor is a non-blank string and ``data`` a JSON object, else None."""
+    if not (isinstance(vendor_name, str) and vendor_name.strip() and isinstance(data, dict) and _json_value(data)):
+        return None
+    return {"vendor_name": vendor_name, "data": data}

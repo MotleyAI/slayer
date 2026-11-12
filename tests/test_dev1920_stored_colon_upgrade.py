@@ -65,7 +65,7 @@ def _fresh(**fields: Any) -> SlayerQuery:
 
 class TestVersions:
     def test_versions_bumped(self) -> None:
-        assert CURRENT_VERSIONS["SlayerModel"] == 21
+        assert CURRENT_VERSIONS["SlayerModel"] == 22
         assert CURRENT_VERSIONS["SlayerQuery"] == 13
         assert CURRENT_VERSIONS["DatasourceConfig"] == 3
         assert CURRENT_VERSIONS["Memory"] == 9

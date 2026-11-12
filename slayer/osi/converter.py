@@ -15,7 +15,7 @@ from __future__ import annotations
 import itertools
 import logging
 from collections.abc import Callable
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, TypeVar
 
 import sqlglot
 from pydantic import BaseModel, ConfigDict, Field
@@ -50,11 +50,11 @@ from slayer.osi.models import (
     OSSIE_DATATYPES,
     TEMPORAL_DATATYPES,
     OSIAIContext,
-    OSICustomExtension,
     OSIDataset,
     OSIDocument,
     OSIField,
     OSIMetric,
+    OSINonportableExtension,
     OSIRelationship,
     ai_context_to_dict,
     render_description,
@@ -202,23 +202,84 @@ def _bottom_up(tree: exp.Expr, fn: Callable[[exp.Expr], exp.Expr]) -> exp.Expr:
     return tree
 
 
+def _foreign(extensions: Optional[list[OSINonportableExtension]]) -> list[dict[str, Any]]:
+    return [{"vendor_name": e.vendor_name, "data": e.data} for e in extensions or [] if not ext.is_slayer(e)]
+
+
 def _build_meta(
     ctx: Optional[OSIAIContext],
-    custom_extensions: Optional[list[OSICustomExtension]],
+    extensions: Optional[list[OSINonportableExtension]],
     extra: Optional[dict[str, Any]] = None,
 ) -> Optional[dict[str, Any]]:
     meta: dict[str, Any] = dict(extra or {})
     ctx_dict = ai_context_to_dict(ctx)
     if ctx_dict:
         meta["osi_ai_context"] = ctx_dict
-    foreign = [e.model_dump() for e in custom_extensions or [] if not ext.is_slayer(e)]
+    foreign = _foreign(extensions)
     if foreign:
-        meta["osi_custom_extensions"] = foreign
+        meta["osi_nonportable_extensions"] = foreign
     return meta or None
 
 
+_T = TypeVar("_T")
+_E = TypeVar("_E", OSIDocument, OSIDataset, OSIField, OSIMetric, OSIRelationship)
+
+
+class _ExtensionCheck:
+    """A document with every extension entry checked: legacy strings decoded, non-objects dropped and reported."""
+
+    def __init__(self, doc: OSIDocument) -> None:
+        self.notes: list[ConversionWarning] = []
+        self._legacy = False
+        datasets = [self._dataset(ds) for ds in doc.datasets]
+        self.document = self._entity(doc, label=f"document {doc.name!r}", update={
+            "datasets": datasets,
+            "relationships": self._each(doc.relationships, lambda r: self._entity(
+                r, label=f"relationship {r.name!r}")),
+            "metrics": self._each(doc.metrics, lambda m: self._entity(
+                m, label=f"metric {m.name!r}", metric_name=m.name)),
+        })
+        if self._legacy:
+            self.notes.append(ConversionWarning(
+                message=f"Document {doc.name!r} carries non-portable extensions under the legacy key "
+                        f"custom_extensions; they were read as nonportable_extensions.",
+                category=_EXTENSION, severity="info", suggestion=_REEXPORT_CURRENT))
+
+    @staticmethod
+    def _each(items: Optional[list[_T]], fn: Callable[[_T], _T]) -> Optional[list[_T]]:
+        return None if items is None else [fn(x) for x in items]
+
+    def _dataset(self, ds: OSIDataset) -> OSIDataset:
+        of = f"of dataset {ds.name!r}"
+        return self._entity(ds, label=f"dataset {ds.name!r}", model_name=ds.name, update={
+            "fields": self._each(ds.fields, lambda f: self._entity(
+                f, label=f"field {f.name!r} {of}", model_name=ds.name)),
+            "metrics": self._each(ds.metrics, lambda m: self._entity(
+                m, label=f"metric {m.name!r} {of}", model_name=ds.name, metric_name=m.name)),
+        })
+
+    def _entity(
+            self, entity: _E, *, label: str, model_name: str | None = None, metric_name: str | None = None,
+            update: Optional[dict[str, Any]] = None) -> _E:
+        kept: list[OSINonportableExtension] = []
+        for entry in entity.nonportable_extensions or []:
+            self._legacy = self._legacy or entry.legacy
+            data = ext.decoded_legacy(entry.data) if entry.legacy else entry.data
+            if ext.checked(vendor_name=entry.vendor_name, data=data) is None:
+                self.notes.append(ConversionWarning(
+                    model_name=model_name, metric_name=metric_name, category=_EXTENSION, severity="dropped",
+                    message=f"The {entry.vendor_name!r} non-portable extension on the {label} is dropped: its "
+                            f"data is not a JSON object (dates, timestamps, non-finite numbers and non-string "
+                            f"keys are not JSON).",
+                    suggestion="Fix the entry's data in the document."))
+                continue
+            kept.append(OSINonportableExtension(vendor_name=entry.vendor_name, data=data))
+        return entity.model_copy(update={**(update or {}), "nonportable_extensions": kept or None})
+
+
 _EXTENSION = "extension"
-_EDITED = "The Ossie content was edited after export, so it wins; re-export from SLayer to restore the rest."
+_REEXPORT_CURRENT = "Re-export the document from SLayer to write the current key."
+_EDITED ="The Ossie content was edited after export, so it wins; re-export from SLayer to restore the rest."
 _REEXPORT = "Re-export the document from SLayer."
 _IMPORT_INPUTS = "Import every model it reads."
 
@@ -257,7 +318,9 @@ class OsiToSlayerConverter:
         dialect: str | None = None,
         target_dialect: str | None = None,
     ) -> None:
-        self.documents = documents
+        checks = [_ExtensionCheck(doc) for doc in documents]
+        self.documents = [c.document for c in checks]
+        self._extension_notes = [n for c in checks for n in c.notes]
         self.data_source = data_source
         self.dialect = dialect
         self.target_dialect = target_dialect
@@ -278,7 +341,7 @@ class OsiToSlayerConverter:
         # Introspected source columns per model, for field validation.
         self._physical: dict[str, dict[str, Column]] = {}
         self._live: dict[str, LiveSource | None] = {}
-        self._warnings: list[ConversionWarning] = []
+        self._warnings: list[ConversionWarning] = list(self._extension_notes)
         self._unconverted: list[ConversionWarning] = []
         # (model, column) -> the introspected Column a legacy derived overlay replaced,
         # so an invalidated overlay reverts to the physical column.
@@ -399,13 +462,13 @@ class OsiToSlayerConverter:
 
     def _metric(self, metric: OSIMetric, *, doc: OSIDocument, home: str | None, doc_models: list[str]) -> None:
         """Restore ``metric``'s SLayer measure when its payload matches, else convert its SQL."""
-        found = self._payload(metric.custom_extensions, kind="metric", entity=metric.name,
+        found = self._payload(metric.nonportable_extensions, kind="metric", entity=metric.name,
                               label=f"metric {metric.name!r}", model_name=home,
                               ossie=ext.expression_digest(metric.expression))
         if found is not None and found[1]:
             payload = found[0]
             assert isinstance(payload, ext.MetricPayload)
-            built = _build_meta(ctx=metric.ai_context, custom_extensions=metric.custom_extensions,
+            built = _build_meta(ctx=metric.ai_context, extensions=metric.nonportable_extensions,
                                 extra={"osi_datatype": metric.datatype} if metric.datatype else None)
             measure = payload.measure.model_copy(update={"meta": {**(built or {}), **(payload.measure.meta or {})}
                                                          or None})
@@ -495,7 +558,7 @@ class OsiToSlayerConverter:
         self._drop_unreadable_fields(base)
         self._apply_dataset_metadata(base, ds, doc)
         self._models[ds.name] = base
-        found = self._payload(ds.custom_extensions, kind="dataset", entity=ds.name, label=f"dataset {ds.name!r}",
+        found = self._payload(ds.nonportable_extensions, kind="dataset", entity=ds.name, label=f"dataset {ds.name!r}",
                               model_name=ds.name, ossie=ext.source_digest(ds.source, reader=self._target))
         if found is not None:
             payload, matched = found
@@ -671,7 +734,7 @@ class OsiToSlayerConverter:
                 model_name=ds.name, category="datatype", severity="info",
             )
         self._apply_field_metadata(col=col, field=field)
-        found = self._payload(field.custom_extensions, kind="field", entity=field.name,
+        found = self._payload(field.nonportable_extensions, kind="field", entity=field.name,
                               label=f"field {field.name!r} of {ds.name!r}", model_name=ds.name,
                               ossie=ext.expression_digest(field.expression))
         if found is not None:
@@ -750,7 +813,7 @@ class OsiToSlayerConverter:
         explicit = field.dimension.is_time if field.dimension is not None else None
         if explicit is not None or _is_time_role(field):
             extra["osi_is_time"] = _is_time_role(field)
-        meta = _build_meta(ctx=field.ai_context, custom_extensions=field.custom_extensions, extra=extra)
+        meta = _build_meta(ctx=field.ai_context, extensions=field.nonportable_extensions, extra=extra)
         if meta:
             col.meta = {**(col.meta or {}), **meta}
 
@@ -777,15 +840,15 @@ class OsiToSlayerConverter:
         for col in model.columns:
             col.unique = col.unique or col.name in single
         doc_ctx = ai_context_to_dict(doc.ai_context)
-        doc_ext = [e.model_dump() for e in doc.custom_extensions or []]
+        doc_ext = _foreign(doc.nonportable_extensions)
         if doc_ctx or doc.description or doc_ext:
             extra["osi_semantic_model"] = {
                 "name": doc.name,
                 "description": doc.description,
                 "ai_context": doc_ctx,
-                **({"custom_extensions": doc_ext} if doc_ext else {}),
+                **({"nonportable_extensions": doc_ext} if doc_ext else {}),
             }
-        meta = _build_meta(ctx=ds.ai_context, custom_extensions=ds.custom_extensions, extra=extra)
+        meta = _build_meta(ctx=ds.ai_context, extensions=ds.nonportable_extensions, extra=extra)
         if meta:
             model.meta = {**(model.meta or {}), **meta}
 
@@ -841,7 +904,7 @@ class OsiToSlayerConverter:
             )
             return
 
-        found = self._payload(rel.custom_extensions, kind="relationship", entity=rel.name,
+        found = self._payload(rel.nonportable_extensions, kind="relationship", entity=rel.name,
                               label=f"relationship {rel.name!r}", model_name=src,
                               ossie=ext.relationship_digest(from_dataset=src, to=rel.to, from_columns=rel.from_columns,
                                                             to_columns=rel.to_columns))
@@ -868,7 +931,7 @@ class OsiToSlayerConverter:
             # OSI relationships are direction-implied: from = many, to = one.
             cardinality=JoinCardinality.MANY_TO_ONE,
             description=render_description(explicit=None, ctx=rel.ai_context),
-            meta=_build_meta(ctx=rel.ai_context, custom_extensions=rel.custom_extensions),
+            meta=_build_meta(ctx=rel.ai_context, extensions=rel.nonportable_extensions),
         ))
 
     def _validate_cross_model_field_refs(self) -> None:
@@ -1205,7 +1268,7 @@ class OsiToSlayerConverter:
                 formula=result.formula,
                 name=metric.name,
                 description=render_description(explicit=metric.description, ctx=metric.ai_context),
-                meta=_build_meta(ctx=metric.ai_context, custom_extensions=metric.custom_extensions,
+                meta=_build_meta(ctx=metric.ai_context, extensions=metric.nonportable_extensions,
                                  extra={"osi_datatype": metric.datatype} if metric.datatype else None),
             )
         except Exception as exc:  # noqa: BLE001 — any parse/validation error -> report
@@ -1329,7 +1392,7 @@ class OsiToSlayerConverter:
 
     # ---- SLAYER extension restore ----
 
-    def _payload(self, extensions: Optional[list[OSICustomExtension]], *, kind: str, entity: str, label: str,
+    def _payload(self, extensions: Optional[list[OSINonportableExtension]], *, kind: str, entity: str, label: str,
                  model_name: str | None, ossie: Any) -> tuple[ext.Payload, bool] | None:
         """The entity's decoded ``SLAYER`` payload and whether its fingerprint matches; ``None`` (reported) otherwise."""
         entries = [e for e in extensions or [] if ext.is_slayer(e)]
@@ -1356,7 +1419,7 @@ class OsiToSlayerConverter:
     def _restore_declarations(self, rel: OSIRelationship, *, payload: ext.Payload) -> bool:
         """Add the SLayer joins ``rel`` stands for, when every endpoint and key validates."""
         assert isinstance(payload, ext.RelationshipPayload)
-        built = _build_meta(ctx=rel.ai_context, custom_extensions=rel.custom_extensions)
+        built = _build_meta(ctx=rel.ai_context, extensions=rel.nonportable_extensions)
         joins: list[tuple[SlayerModel, ModelJoin]] = []
         for declaration in payload.declarations:
             model, join = self._models.get(declaration.model), declaration.join

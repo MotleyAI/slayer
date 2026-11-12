@@ -8,7 +8,7 @@ wrapper by the parser.
 
 from typing import Any, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from slayer.core.enums import DataType
 
@@ -35,13 +35,34 @@ class OSIAIContextObject(BaseModel):
 OSIAIContext = Union[str, OSIAIContextObject]
 
 
-class OSICustomExtension(BaseModel):
-    """Vendor-specific metadata as a serialized JSON string."""
+class OSINonportableExtension(BaseModel):
+    """Vendor-specific state; ``data`` is raw (checked by the importer), ``legacy`` when read from ``custom_extensions``."""
 
     model_config = ConfigDict(extra="ignore")
 
     vendor_name: str
-    data: str
+    data: Any
+    legacy: bool = False
+
+
+class _Extensible(BaseModel):
+    """An entity carrying ``nonportable_extensions``; legacy ``custom_extensions`` entries are appended, marked."""
+
+    nonportable_extensions: Optional[list[OSINonportableExtension]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _read_legacy_key(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or "custom_extensions" not in data:
+            return data
+        data = dict(data)
+        legacy = data.pop("custom_extensions")
+        current = data.get("nonportable_extensions") or []
+        if not isinstance(legacy, list) or not isinstance(current, list):
+            raise ValueError("custom_extensions and nonportable_extensions must be lists")
+        marked = [{**e, "legacy": True} if isinstance(e, dict) else e for e in legacy]
+        data["nonportable_extensions"] = [*current, *marked]
+        return data
 
 
 class OSIDialectExpression(BaseModel):
@@ -77,7 +98,7 @@ class OSIDimension(BaseModel):
     is_time: Optional[bool] = None
 
 
-class OSIField(BaseModel):
+class OSIField(_Extensible):
     """Row-level attribute for grouping, filtering, and metric expressions."""
 
     model_config = ConfigDict(extra="ignore")
@@ -89,10 +110,9 @@ class OSIField(BaseModel):
     description: Optional[str] = None
     datatype: Optional[str] = None
     ai_context: Optional[OSIAIContext] = None
-    custom_extensions: Optional[list[OSICustomExtension]] = None
 
 
-class OSIMetric(BaseModel):
+class OSIMetric(_Extensible):
     """Quantitative measure defined on business data (raw SQL aggregation)."""
 
     model_config = ConfigDict(extra="ignore")
@@ -102,10 +122,9 @@ class OSIMetric(BaseModel):
     description: Optional[str] = None
     datatype: Optional[str] = None
     ai_context: Optional[OSIAIContext] = None
-    custom_extensions: Optional[list[OSICustomExtension]] = None
 
 
-class OSIDataset(BaseModel):
+class OSIDataset(_Extensible):
     """Logical dataset representing a business entity (fact or dimension table)."""
 
     model_config = ConfigDict(extra="ignore")
@@ -118,10 +137,9 @@ class OSIDataset(BaseModel):
     ai_context: Optional[OSIAIContext] = None
     fields: Optional[list[OSIField]] = None
     metrics: Optional[list[OSIMetric]] = None
-    custom_extensions: Optional[list[OSICustomExtension]] = None
 
 
-class OSIRelationship(BaseModel):
+class OSIRelationship(_Extensible):
     """Foreign key relationship between datasets (``from`` = many, ``to`` = one)."""
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
@@ -132,10 +150,9 @@ class OSIRelationship(BaseModel):
     from_columns: list[str]
     to_columns: list[str]
     ai_context: Optional[OSIAIContext] = None
-    custom_extensions: Optional[list[OSICustomExtension]] = None
 
 
-class OSIDocument(BaseModel):
+class OSIDocument(_Extensible):
     """One semantic model; ``legacy`` is set by the parser for wrapper-split models."""
 
     model_config = ConfigDict(extra="ignore")
@@ -147,7 +164,6 @@ class OSIDocument(BaseModel):
     datasets: list[OSIDataset]
     relationships: Optional[list[OSIRelationship]] = None
     metrics: Optional[list[OSIMetric]] = None
-    custom_extensions: Optional[list[OSICustomExtension]] = None
     legacy: bool = False
 
     @field_validator("version", mode="before")
