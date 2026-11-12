@@ -11,19 +11,19 @@
 
 ## 2. Storage
 
-- [ ] 2.1 Add `JoinTargetCaseError(SlayerError, ValueError)` to `slayer/core/errors.py`; verify tests 1.1 import it
-- [ ] 2.2 Forward and reverse case-only target checks, the ambiguity refusal and the spine-join refusal in `validate_for_save`; verify 1.1 and 1.7 pass
-- [ ] 2.3 Make the reserved-name check case-insensitive for names not already stored, and emit the name-collision warning on load and save of a stored spine variant; verify the save/load parts of 1.6 pass
-- [ ] 2.4 Order the case-only check before the unknown-join-target check in `AccessFilteredStorage.save_model`; verify 1.2 passes
-- [ ] 2.5 Bump `SlayerModel` to 22 with a stored-only no-op registry entry at 21, and add the async target respelling and spine-join drop in `_migrate_and_refine_on_load` (`pre_version < 22`) before the join-key repairs; verify 1.3 passes
+- [x] 2.1 Add `JoinTargetCaseError(SlayerError, ValueError)` to `slayer/core/errors.py`; verify tests 1.1 import it
+- [x] 2.2 Forward and reverse case-only target checks, the ambiguity refusal and the spine-join refusal in `validate_for_save`; verify 1.1 and 1.7 pass
+- [x] 2.3 Make the reserved-name check case-insensitive for names not already stored, and emit the name-collision warning on load and save of a stored spine variant; verify the save/load parts of 1.6 pass
+- [x] 2.4 Order the case-only check before the unknown-join-target check in `AccessFilteredStorage.save_model`; verify 1.2 passes
+- [x] 2.5 Bump `SlayerModel` to 22 with a stored-only no-op registry entry at 21, and add the async target respelling and spine-join drop in `_migrate_and_refine_on_load` (`pre_version < 22`) before the join-key repairs; verify 1.3 passes
 
 ## 3. Query side
 
-- [ ] 3.1 Add the `core.syntax` path-head rewriter; verify 1.8 passes
-- [ ] 3.2 Respell spine spellings once per query of the list at the engine entry, before population inference, applying stage precedence and recording the rewritten spellings; verify the non-ambiguous parts of 1.5 pass
-- [ ] 3.3 In the bundle build, check recorded spellings against the effective datasource's stored spine variants (ambiguity), emit the collision warning on responses reading a stored variant, and raise `AmbiguousReferenceError` for an ambiguous stored join target; verify 1.4 and 1.6 pass
+- [x] 3.1 Add the `core.syntax` path-head rewriter; verify 1.8 passes
+- [x] 3.2 Respell spine spellings once per query of the list at the engine entry, before population inference, applying stage precedence and recording the rewritten spellings; verify the non-ambiguous parts of 1.5 pass
+- [x] 3.3 In the bundle build, check recorded spellings against the effective datasource's stored spine variants (ambiguity), emit the collision warning on responses reading a stored variant, and raise `AmbiguousReferenceError` for an ambiguous stored join target; verify 1.4 and 1.6 pass
 
 ## 4. Docs and gates
 
-- [ ] 4.1 One-sentence updates to the `docs/concepts/` models (join targets) and time-spine pages; verify `zensical.toml` nav is unchanged or updated
-- [ ] 4.2 Run `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline) and `poetry run la-arch-check`; verify all pass
+- [x] 4.1 One-sentence updates to the `docs/concepts/` models (join targets) and time-spine pages; verify `zensical.toml` nav is unchanged or updated
+- [x] 4.2 Run `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline) and `poetry run la-arch-check`; verify all pass

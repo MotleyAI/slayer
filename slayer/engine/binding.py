@@ -833,6 +833,7 @@ def _walk_join_chain(
     assert miss is not None
     if miss.kind == "unloaded":
         assert miss.target is not None
+        match_name(name=miss.target, declared=models_by_name, quoted=False)  # raises when several match by case
         raise _target_not_in_bundle(parts=parts, target=miss.target)
     _reject_opaque_elements(
         host=host, hop_path=hop_path, index=miss.index, parts=parts, models_by_name=models_by_name, quoted=quoted,

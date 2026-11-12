@@ -6,13 +6,13 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, cast
 
-from slayer.core.errors import ModelNotFoundError, QueryBackedCycleError
+from slayer.core.errors import AmbiguousReferenceError, ModelNotFoundError, QueryBackedCycleError
 from slayer.core.join_walker import incident_model_names
 from slayer.core.names import match_name
 from slayer.core.models import SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
 from slayer.core.scope import StageDisplay
-from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine, query_host, spine_model
+from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine, is_spine_spelling, query_host, spine_model
 from slayer.engine.column_dependency import definition_heads
 from slayer.engine.cardinality.unrelated import first_hop_names
 from slayer.ir.source_bundle import (
@@ -67,6 +67,7 @@ async def build_resolved_source_bundle(
     splice_chain: Tuple[str, ...] = (),
     now: Optional[datetime] = None,
     failures: Optional[DocumentLoadFailures] = None,
+    respelled_spine: frozenset[str] = frozenset(),
 ) -> ResolvedSourceBundle:
     """Eagerly assemble the :class:`ResolvedSourceBundle` for one execution (P11).
 
@@ -74,7 +75,8 @@ async def build_resolved_source_bundle(
     purely. Variable precedence (highest first): runtime > query (stage) >
     outer > source-model defaults. Stored query-backed models are collected as
     splice placeholders, never as referenced models. ``now`` is the execution's
-    clock reading (default: the host clock); ``failures`` records skipped unloadable peers.
+    clock reading (default: the host clock); ``failures`` records skipped unloadable peers;
+    ``respelled_spine`` are the query's spellings of the spine respelled to ``time_spine``.
     """
     failures = failures or DocumentLoadFailures()
     named_queries = named_queries or {}
@@ -90,6 +92,7 @@ async def build_resolved_source_bundle(
     # Joins never cross datasource boundaries: scope the walk by the source
     # model's own data_source, falling back to the hint only when it carries none.
     walk_ds = source_model.data_source or data_source or None
+    await _check_spine_spellings(storage=storage, spellings=respelled_spine, data_source=walk_ds)
     spine_clash = walk_ds is not None and (
         await storage.get_model(TIME_SPINE_MODEL, data_source=walk_ds)
     ) is not None
@@ -131,6 +134,23 @@ async def build_resolved_source_bundle(
         granularities=ds.granularity_definitions if ds else {},
         spine_clash=spine_clash,
     )
+
+
+async def _check_spine_spellings(
+    *, storage: "StorageBackend", spellings: frozenset[str], data_source: Optional[str],
+) -> None:
+    """A spelling respelled to the spine is ambiguous in a datasource storing a model named like it in another case."""
+    if not spellings or data_source is None:
+        return
+    variants = sorted(
+        n for ds, n in await storage._list_all_model_identities()
+        if ds == data_source and n != TIME_SPINE_MODEL and is_spine_spelling(n)
+    )
+    if variants:
+        raise AmbiguousReferenceError(
+            min(spellings), [TIME_SPINE_MODEL, *variants],
+            suggestion=f"Spell the built-in spine {TIME_SPINE_MODEL!r} or the stored model exactly.",
+        )
 
 
 async def _resolve_root(
@@ -404,7 +424,21 @@ async def _bfs_connected_component(
             n for n in incident_model_names(model=model, models_by_name={**universe, name: model})
             if n not in visited
         )
+        frontier.extend(_case_ambiguous_targets(model=model, universe=universe))
     return collected
+
+
+def _case_ambiguous_targets(*, model: SlayerModel, universe: Dict[str, SlayerModel]) -> List[str]:
+    """The models a join target of ``model`` equals only case-insensitively, when several: a hop through it then
+    fails as ambiguous instead of unknown."""
+    out: List[str] = []
+    for join in model.joins:
+        if join.target_model in universe:
+            continue
+        folded = join.target_model.casefold()
+        hits = [n for n in universe if n.casefold() == folded]
+        out.extend(hits if len(hits) > 1 else [])
+    return out
 
 
 async def _collect_referenced_models(

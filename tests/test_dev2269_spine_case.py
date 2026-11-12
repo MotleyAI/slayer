@@ -122,9 +122,10 @@ class TestSpineInAnyCase:
         assert await outcome(engine, stages("Time_Spine")) == await outcome(engine, stages("time_spine"))
 
     async def test_a_quoted_spelling_is_exact(self, engine) -> None:
+        quoted = SlayerQuery.model_validate(
+            {"source_model": "time_spine", "time_dimensions": [td('"TIME_SPINE"')], **sum_orders()})
         with pytest.raises(UnknownReferenceError):
-            await engine.execute(SlayerQuery.model_validate(
-                {"source_model": "time_spine", "time_dimensions": [td('"TIME_SPINE"')], **sum_orders()}))
+            await engine.execute(quoted)
         assert await outcome(engine, {"time_dimensions": [td('"time_spine"')], **sum_orders()}) == \
             await outcome(engine, {"time_dimensions": [td("time_spine")], **sum_orders()})
 
@@ -161,8 +162,9 @@ async def variant_engine(request) -> AsyncIterator[SlayerQueryEngine]:
 class TestReservedName:
     @pytest.mark.parametrize("name", ["time_spine", "Time_Spine", "TIME_SPINE"])
     async def test_a_new_model_in_any_case_is_refused(self, engine, name: str) -> None:
+        model = _variant(name)
         with pytest.raises(ReservedModelNameError) as err:
-            await engine.storage.save_model(_variant(name))
+            await engine.storage.save_model(model)
         assert "time_spine" in str(err.value)
         assert await engine.storage.get_model(name, data_source="test") is None
 
@@ -188,9 +190,9 @@ class TestReservedName:
 
     @pytest.mark.parametrize("variant_engine", BACKENDS, indirect=True)
     async def test_other_spellings_are_ambiguous(self, variant_engine) -> None:
+        query = spine_query(measures=TWO_FACTS, source_model="TIME_SPINE", time_dimensions=[td("TIME_SPINE")])
         with pytest.raises(AmbiguousReferenceError) as err:
-            await variant_engine.execute(spine_query(measures=TWO_FACTS, source_model="TIME_SPINE",
-                                                     time_dimensions=[td("TIME_SPINE")]))
+            await variant_engine.execute(query)
         assert {"time_spine", "Time_Spine"} <= set(err.value.candidates)
 
     @pytest.mark.parametrize("variant_engine", BACKENDS, indirect=True)
@@ -225,8 +227,9 @@ def _joined_to(target: str) -> SlayerModel:
 class TestNoStoredJoinToTheSpine:
     @pytest.mark.parametrize("target", ["time_spine", "TIME_SPINE", "Time_Spine"])
     async def test_refused_in_any_spelling(self, storage: StorageBackend, target: str) -> None:
+        model = _joined_to(target)
         with pytest.raises(TimeSpineError) as err:
-            await storage.save_model(_joined_to(target))
+            await storage.save_model(model)
         assert "orders" in str(err.value)
         assert "spine_link" in str(err.value)
         assert await storage.get_model("orders", data_source="test") is None

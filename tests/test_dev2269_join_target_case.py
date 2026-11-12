@@ -102,16 +102,18 @@ def test_the_error_is_typed() -> None:
 class TestSaveRefusals:
     async def test_a_case_only_target_is_refused_naming_the_declared_spelling(self, storage: StorageBackend) -> None:
         await storage.save_model(customers())
+        model = orders()
         with pytest.raises(JoinTargetCaseError) as err:
-            await storage.save_model(orders())
+            await storage.save_model(model)
         for needle in ("orders", "buyer", "'customers'", "Customers"):
             assert needle in _text(err)
         assert await storage.get_model("orders", data_source="test") is None
 
     async def test_the_target_saved_second_is_refused(self, storage: StorageBackend) -> None:
         await storage.save_model(orders())
+        model = customers()
         with pytest.raises(JoinTargetCaseError) as err:
-            await storage.save_model(customers())
+            await storage.save_model(model)
         for needle in ("orders", "buyer", "'customers'"):
             assert needle in _text(err)
         assert await storage.get_model("Customers", data_source="test") is None
@@ -130,14 +132,16 @@ class TestSaveRefusals:
         await storage.save_model(customers("CUSTOMERS"), _validate=False)
         if already_stored:
             await storage.save_model(orders(), _validate=False)
+        model = orders()
         with pytest.raises(AmbiguousReferenceError) as err:
-            await storage.save_model(orders())
+            await storage.save_model(model)
         assert {"Customers", "CUSTOMERS"} <= set(err.value.candidates)
 
     async def test_a_unicode_case_fold_is_a_case_only_target(self, storage: StorageBackend) -> None:
         await storage.save_model(customers("straße"))
+        model = orders("STRASSE")
         with pytest.raises(JoinTargetCaseError) as err:
-            await storage.save_model(orders("STRASSE"))
+            await storage.save_model(model)
         assert "STRASSE" in _text(err)
         assert "straße" in _text(err)
 
@@ -165,28 +169,32 @@ def _as_fin(storage: StorageBackend, *, bypass: bool = False) -> AccessFilteredS
 class TestAccessFilteredSaves:
     async def test_the_case_only_error_precedes_the_unknown_target_error(self, storage: StorageBackend) -> None:
         await storage.save_model(customers())
+        view, model = _as_fin(storage), orders()
         with pytest.raises(JoinTargetCaseError) as err:
-            await _as_fin(storage).save_model(orders())
+            await view.save_model(model)
         assert "Customers" in _text(err)
 
     async def test_a_hidden_peers_case_only_target_is_not_revealed(self, storage: StorageBackend) -> None:
         await storage.save_model(orders(tags=("hr",)))
+        view, model = _as_fin(storage), customers()
         with pytest.raises(HiddenContentConflictError) as err:
-            await _as_fin(storage).save_model(customers())
+            await view.save_model(model)
         assert "orders" not in _text(err)
         assert "buyer" not in _text(err)
         assert await storage.get_model("Customers", data_source="test") is None
 
     async def test_a_hidden_target_is_unknown_to_the_caller(self, storage: StorageBackend) -> None:
         await storage.save_model(customers(tags=("hr",)))
+        view, model = _as_fin(storage), orders()
         with pytest.raises(UnknownJoinTargetError) as err:
-            await _as_fin(storage).save_model(orders())
+            await view.save_model(model)
         assert "Customers" not in _text(err)
 
     async def test_bypass_behaves_as_the_inner_store(self, storage: StorageBackend) -> None:
         await storage.save_model(customers(tags=("hr",)))
+        view, model = _as_fin(storage, bypass=True), orders()
         with pytest.raises(JoinTargetCaseError) as err:
-            await _as_fin(storage, bypass=True).save_model(orders())
+            await view.save_model(model)
         assert "Customers" in _text(err)
 
 

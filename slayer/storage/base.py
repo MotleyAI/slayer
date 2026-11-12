@@ -16,17 +16,20 @@ from collections.abc import Callable, Hashable, Iterable
 
 from slayer.core.enums import RESERVED_NAMES, DataType, JoinCardinality, TimeGranularity, invert_cardinality
 from slayer.core.granularity import resolve_granularity, unknown_granularity_message
-from slayer.core.time_spine import TIME_SPINE_MODEL, spine_model
+from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine_spelling, spine_model, spine_variant_warnings
 from slayer.core.errors import (
     AmbiguousModelError,
+    AmbiguousReferenceError,
     CaseCollisionError,
     ColonSpellingError,
     IdCollisionError,
+    JoinTargetCaseError,
     MemoryNotFoundError,
     DefaultTimeDimensionTypeError,
     ReservedFunctionNameError,
     ReservedModelNameError,
     StoredDocumentLoadError,
+    TimeSpineError,
     UnknownGranularityError,
 )
 from slayer.engine.column_dependency import check_model_filters, validate_derived_columns, warn_broken_dependents
@@ -49,6 +52,8 @@ from slayer.core.warnings import (
     LibraryNameShadowWarning,
     SlayerLibraryNameShadowWarning,
     SlayerNameCollisionWarning,
+    SlayerSpineJoinDroppedWarning,
+    SpineJoinDroppedWarning,
     caller_announces,
 )
 from slayer.embeddings.models import Embedding
@@ -100,6 +105,8 @@ _TO_ONE_CARDINALITIES = {"many_to_one", "one_to_one"}
 _LIVE_REFINEMENT_BELOW_VERSION = 8
 _MODEL_LOAD_CONCURRENCY = 8
 _MEMORY_FILTER_REPAIR_BELOW_VERSION = 4
+# Below v22 a stored join target may reach its model only by case, or target the spine.
+_JOIN_TARGET_REPAIR_BELOW_VERSION = 22
 # Raw document reads of the enclosing ``load_models`` pass, by ``(backend, data_source, name)``.
 _RAW_PASS: ContextVar[dict[tuple[object, str, str], asyncio.Future[dict | None]] | None] = ContextVar(
     "_RAW_PASS", default=None)
@@ -236,6 +243,26 @@ def _stored_counterpart(*, join: dict, name: str, peer: dict | None, columns: An
     )
 
 
+def _repaired_target(target: str, *, names: set[str]) -> str:
+    """``target`` respelled to the one model of ``names`` it reaches only by case, else unchanged."""
+    if target in names:
+        return target
+    hits = [n for n in names if n.casefold() == target.casefold()]
+    return hits[0] if len(hits) == 1 else target
+
+
+def _with_repaired_targets(raw: Any, *, names: set[str]) -> Any:
+    """A raw peer document's joins as its pre-v22 target repair will read them."""
+    joins = raw.get("joins") if isinstance(raw, dict) else None
+    if not isinstance(joins, list) or int(raw.get("version", 1)) >= _JOIN_TARGET_REPAIR_BELOW_VERSION:
+        return raw
+    return {**raw, "joins": [
+        {**j, "target_model": _repaired_target(j["target_model"], names=names)}
+        if isinstance(j, dict) and isinstance(j.get("target_model"), str) else j
+        for j in joins
+    ]}
+
+
 def _checked_join_names(model: SlayerModel) -> list[str]:
     """Names of ``model``'s named edges; raises on duplicates."""
     names = [j.name for j in model.joins if j.name]
@@ -343,6 +370,37 @@ def _check_list_hop_collisions(*, model: SlayerModel, peers: dict[str, SlayerMod
                 f"'{join.target_model}', which collides with the list column '{join.target_model}.{token}'; "
                 "name the edge differently."
             )
+
+
+def check_join_target_spellings(
+    model: SlayerModel, *, names: Iterable[str], peers: dict[str, SlayerModel],
+) -> None:
+    """Refuse a join of ``model`` whose target reaches a model of ``names`` (its datasource's) only by case or targets
+    the spine, and a name of ``model`` that a join of ``peers`` reaches only by case."""
+    declared = {*names, model.name}
+    for join in model.joins:
+        target = join.target_model
+        if target in declared:
+            continue
+        edge = f"join {join.name!r}" if join.name else f"the unnamed join to {target!r}"
+        if is_spine_spelling(target):
+            raise TimeSpineError(
+                summary=f"Model {model.name!r}: {edge} targets the built-in time spine.",
+                suggestion="Remove the join: the spine joins each dataset through its time axis, so a declared join "
+                "to it is never needed.",
+            )
+        hits = sorted(n for n in declared if n.casefold() == target.casefold())
+        if len(hits) > 1:
+            raise AmbiguousReferenceError(target, hits, suggestion="Write the join target exactly as one of them.")
+        if hits:
+            raise JoinTargetCaseError(model=model.name, join=join.name, target=target, declared=hits[0])
+    for peer in sorted(peers.values(), key=lambda p: p.name):
+        for join in peer.joins:
+            target = join.target_model
+            if target not in declared and target.casefold() == model.name.casefold():
+                raise JoinTargetCaseError(
+                    model=peer.name, join=join.name, target=target, declared=model.name, saving=True,
+                )
 
 
 def _warn_unnamed_parallel_edges(
@@ -540,7 +598,8 @@ class StorageBackend(ABC):
 
     async def validate_for_save(self, model: SlayerModel, *, failures: DocumentLoadFailures | None = None) -> None:
         """Reserved-name and case-collision rejection, derived-column and model-filter well-formedness (reference arity + cycles) and join-edge validation against this store's peers; then a warning per dependent the save breaks, unless ``failures`` is unreported."""
-        if model.name == TIME_SPINE_MODEL:
+        identities = await self._list_all_model_identities()
+        if is_spine_spelling(model.name) and (model.data_source, model.name) not in identities:
             raise ReservedModelNameError(name=model.name)
         _refuse_colon_measures(model)
         if self._ids_collide_as_filenames:
@@ -550,9 +609,10 @@ class StorageBackend(ABC):
         failures = failures or DocumentLoadFailures()
         loaded, unloaded = await self.load_models(data_source=model.data_source, exclude=model.name)
         peers = {m.name: m for m in failures.skip((loaded, unloaded))}
+        check_join_target_spellings(model, names=[n for ds, n in identities if ds == model.data_source], peers=peers)
         validate_derived_columns(model=model, peers=peers, unloaded=frozenset(e.name for e in unloaded))
         check_model_filters(model=model, reachable=peers)
-        self._validate_join_edges(model, peers=peers, identities=await self._list_all_model_identities())
+        self._validate_join_edges(model, peers=peers, identities=identities)
         await self._validate_aggregations(model)
         await self._validate_column_granularities(model)
         _validate_default_time_dimension(model)
@@ -576,7 +636,7 @@ class StorageBackend(ABC):
         for where, group in case_collisions(model):
             if (where, tuple(group)) not in held:
                 raise CaseCollisionError(names=group, namespace=f"model {model.name!r}'s {where}")
-        for payload in name_collision_warnings(model):
+        for payload in [*name_collision_warnings(model), *spine_variant_warnings(model)]:
             warnings.warn(SlayerNameCollisionWarning(payload), stacklevel=4)
 
     async def _validate_column_granularities(self, model: SlayerModel) -> None:
@@ -985,6 +1045,8 @@ class StorageBackend(ABC):
             data = await self._rewrite_legacy_join_aliases(
                 name=name, data=data, data_source=data_source,
             )
+            if pre_version < _JOIN_TARGET_REPAIR_BELOW_VERSION:
+                await self._repair_join_targets(name=name, data=data, data_source=data_source)
             await self._canonicalize_join_key_spellings(data=data, data_source=data_source)
             await self._declare_join_keys(name=name, data=data, data_source=data_source)
             await self._repair_source_query_filters(data=data, data_source=data_source)
@@ -1000,13 +1062,38 @@ class StorageBackend(ABC):
         model = SlayerModel.model_validate(data)
         if not caller_announces():
             warn_library_shadows(model)
-            for payload in name_collision_warnings(model):
+            for payload in [*name_collision_warnings(model), *spine_variant_warnings(model)]:
                 warnings.warn(SlayerNameCollisionWarning(payload), stacklevel=2)
         if write_back:
             # Write-back must not re-validate: legacy models may hold cycles or
             # fanning refs a user needs to load to repair.
             await self.save_model(model, _validate=False)
         return model
+
+    async def _model_names(self, data_source: str) -> set[str]:
+        return {n for ds, n in await self._list_all_model_identities() if ds == data_source}
+
+    async def _repair_join_targets(self, *, name: str, data: dict, data_source: str) -> None:
+        """Respell each join target of ``data`` naming no model exactly but one by case to that model; drop each join
+        into the spine, with a warning."""
+        joins = data.get("joins")
+        if not isinstance(joins, list):
+            return
+        names = await self._model_names(data_source) | {name}
+        kept: list = []
+        for join in joins:
+            target = join.get("target_model") if isinstance(join, dict) else None
+            if not isinstance(target, str) or target in names:
+                kept.append(join)
+                continue
+            if is_spine_spelling(target):
+                warnings.warn(SlayerSpineJoinDroppedWarning(SpineJoinDroppedWarning(
+                    model=name, join=str(join.get("name") or target),
+                )), stacklevel=2)
+                continue
+            join["target_model"] = _repaired_target(target, names=names)
+            kept.append(join)
+        data["joins"] = kept
 
     async def _canonicalize_join_key_spellings(self, *, data: dict, data_source: str) -> None:
         """Rewrite stored physical join-key spellings in ``data`` to ``Column.name``, both sides."""
@@ -1049,10 +1136,12 @@ class StorageBackend(ABC):
     async def _sibling_keys_into(self, *, name: str, columns: list, data_source: str) -> list[tuple[Any, str | None]]:
         """Target-side keys of every same-datasource sibling's joins into ``name``."""
         keys: list[tuple[Any, str | None]] = []
-        for ds, sibling_name in await self._list_all_model_identities():
-            if ds != data_source or sibling_name == name:
-                continue
-            sibling = await self._cached_raw_model_dict(name=sibling_name, data_source=ds)
+        identities = await self._list_all_model_identities()
+        names = {n for ds, n in identities if ds == data_source}
+        for sibling_name in [n for ds, n in identities if ds == data_source and n != name]:
+            sibling = _with_repaired_targets(
+                await self._cached_raw_model_dict(name=sibling_name, data_source=data_source), names=names,
+            )
             if sibling is not None:
                 keys.extend(_incoming_keys(sibling=sibling, target=name, target_columns=columns))
         return keys
@@ -1138,11 +1227,12 @@ class StorageBackend(ABC):
         if not isinstance(joins, list) or not joins:
             return data
         cache: dict[str, dict | None] = {}
+        names = await self._model_names(data_source)
         kept = [
             join for join in joins
             if await self._survives_stored_inverse(
                 join=join, name=name, data_source=data_source, cache=cache,
-                columns=data.get("columns"),
+                columns=data.get("columns"), names=names,
             )
         ]
         if len(kept) != len(joins):
@@ -1151,7 +1241,7 @@ class StorageBackend(ABC):
 
     async def _survives_stored_inverse(
         self, *, join, name: str, data_source: str,
-        cache: dict[str, dict | None], columns: Any,
+        cache: dict[str, dict | None], columns: Any, names: set[str],
     ) -> bool:
         """True when ``join`` has no stored exact-inverse counterpart, or wins
         against it."""
@@ -1159,9 +1249,9 @@ class StorageBackend(ABC):
         if not isinstance(peer_name, str) or peer_name == name:
             return True
         if peer_name not in cache:
-            cache[peer_name] = await self._cached_raw_model_dict(
+            cache[peer_name] = _with_repaired_targets(await self._cached_raw_model_dict(
                 name=peer_name, data_source=data_source,
-            )
+            ), names=names)
         counterpart = _stored_counterpart(
             join=join, name=name, peer=cache[peer_name], columns=columns,
         )
