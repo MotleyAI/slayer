@@ -13,7 +13,6 @@ from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema import ingestion
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._engine_helpers import owned_query_engine
 from tests._dev2215_fixtures import (
     DS_FIELDS,
     EXTRACTIONS,
