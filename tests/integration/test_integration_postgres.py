@@ -12,7 +12,7 @@ import pytest
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import ColumnRef, ComputedDimension, OrderItem, SlayerQuery, TimeDimension
 from slayer.live_schema import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.client import SlayerSQLClient
@@ -533,11 +533,8 @@ class TestCrossModelAndMultistage:
     async def test_sql_dimension(self, pg_cross_model_env: SlayerQueryEngine) -> None:
         """SQL expression dimension via ModelExtension with Postgres."""
         query = SlayerQuery(
-            source_model=ModelExtension.model_validate({
-                "source_name": "orders",
-                "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
-            }),
-            dimensions=[ColumnRef(name="tier")],
+            source_model="orders",
+            dimensions=[ComputedDimension(expression="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", name="tier")],
             measures=[ModelMeasure(formula="count(*)")],
         )
         result = await pg_cross_model_env.execute(query=query)

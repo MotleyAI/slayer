@@ -439,27 +439,30 @@ class TestNonReadOnlySqlRejected:
             await engine.save_model(model)
         assert await storage.get_model("into_model", data_source=_DS) is None
 
-    async def test_parameterized_identifier_placeholder_skipped(
+    async def test_parameterized_identifier_placeholder_rejected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # An identifier-position placeholder renders to an unparseable probe
-        # (SELECT * FROM 0) yet is functional once filled — so it is skipped and
-        # saved, not rejected.
+        # A placeholder binds only as a literal, so an identifier position is refused.
         engine, storage = await _make_engine(tmp_path)
-        monkeypatch.setattr(
-            SlayerSQLClient, "get_result_column_types",
-            _raise(_op_error("probe must not run")),
-        )
-        await engine.save_model(_sql_model("SELECT * FROM {table}", name="param_ident"))
-        assert await storage.get_model("param_ident", data_source=_DS) is not None
+        executed: list[str] = []
 
-    async def test_optional_block_after_predicate_skipped(self, tmp_path: Path) -> None:
-        # `{? AND ... ?}` after a predicate renders to an unparseable probe
-        # (WHERE 1=1 (1=1)); it is parameterized, so skipped rather than rejected.
+        async def _spy(self, probe: TypeProbe) -> dict[str, ResultColumnType]:
+            executed.append(probe.sql)
+            return {}
+
+        monkeypatch.setattr(SlayerSQLClient, "get_result_column_types", _spy)
+        model = _sql_model("SELECT * FROM {table}", name="param_ident")
+        with pytest.raises(ValueError, match="literal values"):
+            await engine.save_model(model)
+        assert executed == []
+        assert await storage.get_model("param_ident", data_source=_DS) is None
+
+    async def test_optional_block_after_predicate_rejected(self, tmp_path: Path) -> None:
         engine, storage = await _make_engine(tmp_path)
         model = _sql_model(
             "SELECT id FROM orders WHERE 1=1 {? AND status = {status} ?}",
             name="cube_style",
         )
-        await engine.save_model(model)
-        assert await storage.get_model("cube_style", data_source=_DS) is not None
+        with pytest.raises(ModelSqlValidationError):
+            await engine.save_model(model)
+        assert await storage.get_model("cube_style", data_source=_DS) is None

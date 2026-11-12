@@ -2569,8 +2569,7 @@ class TestRunByNamePlanFlagsMCP:
 
 
 class TestQueryAcceptsInlineSourceModel:
-    """The MCP ``query`` tool accepts ``source_model`` as a name, an inline
-    ModelExtension dict, or an inline SlayerModel dict."""
+    """The MCP ``query`` tool accepts ``source_model`` as a name and refuses extension columns and inline models."""
     async def _setup_orders(self, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
@@ -2602,22 +2601,20 @@ class TestQueryAcceptsInlineSourceModel:
         self, mcp_server, storage: YAMLStorage
     ) -> None:
         await self._setup_orders(storage)
-        result = await _call(mcp_server, name="query", arguments={
-            "query": {
-                "source_model": {
-                    "source_name": "orders",
-                    "columns": [
-                        {"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"},
-                    ],
+        with pytest.raises(ToolError, match="columns"):
+            await _call(mcp_server, name="query", arguments={
+                "query": {
+                    "source_model": "orders",
+                    "extensions": [{
+                        "source_name": "orders",
+                        "columns": [
+                            {"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"},
+                        ],
+                    }],
+                    "measures": [{"formula": "sum(double_amount)"}],
                 },
-                "measures": [{"formula": "sum(double_amount)"}],
-            },
-            "dry_run": True,
-        })
-        assert "Invalid model name" not in result
-        assert "SQL:" in result
-        # The inline column's SQL expression must surface in the generated SQL.
-        assert "amount * 2" in result.lower() or "amount*2" in result.lower()
+                "dry_run": True,
+            })
 
     async def test_inline_slayer_model_dict(
         self, mcp_server, storage: YAMLStorage
@@ -2626,23 +2623,21 @@ class TestQueryAcceptsInlineSourceModel:
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
-        result = await _call(mcp_server, name="query", arguments={
-            "query": {
-                "source_model": {
-                    "name": "ad_hoc",
-                    "sql_table": "things",
-                    "data_source": "test",
-                    "columns": [
-                        {"name": "x", "sql": "x", "type": "DOUBLE"},
-                    ],
+        with pytest.raises(ToolError, match="(?i)inline"):
+            await _call(mcp_server, name="query", arguments={
+                "query": {
+                    "source_model": {
+                        "name": "ad_hoc",
+                        "sql_table": "things",
+                        "data_source": "test",
+                        "columns": [
+                            {"name": "x", "sql": "x", "type": "DOUBLE"},
+                        ],
+                    },
+                    "measures": [{"formula": "sum(x)"}],
                 },
-                "measures": [{"formula": "sum(x)"}],
-            },
-            "dry_run": True,
-        })
-        assert "Invalid model name" not in result
-        assert "SQL:" in result
-        assert "things" in result.lower()
+                "dry_run": True,
+            })
 
 
 class TestQueryListMultiStage:

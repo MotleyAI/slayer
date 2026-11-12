@@ -1551,7 +1551,7 @@ def _bound_value_text(
     name = match.group(1)
     value = variables[name]
     if in_string:
-        return _value_text(name, value).replace("'", "''")
+        return value_text(name, value).replace("'", "''")
     position = next(ordinal)
     if position in in_slots:
         return whole
@@ -1559,10 +1559,11 @@ def _bound_value_text(
         return _literal_text(name, value)
     if isinstance(value, (list, tuple)):
         return "[" + ", ".join(_literal_text(name, v) for v in value) + "]"
-    return _bare_literal_text(name, value)
+    return bare_literal_text(name, value)
 
 
-def _value_text(name: str, value: Any) -> str:
+def value_text(name: str, value: Any) -> str:
+    """A scalar variable value's text inside a string literal."""
     if isinstance(value, bool):
         return str(value)
     if isinstance(value, str):
@@ -1584,10 +1585,11 @@ def _literal_text(name: str, value: Any) -> str:
         return "'" + value.replace("'", "''") + "'"
     if isinstance(value, (list, tuple)):
         raise ValueError(f"{_LITERAL_VALUES}: variable '{name}' holds a nested list; a list's elements are scalars.")
-    return _value_text(name, value)
+    return value_text(name, value)
 
 
-def _bare_literal_text(name: str, value: Any) -> str:
+def bare_literal_text(name: str, value: Any) -> str:
+    """A variable value spelled for a bare literal slot: a number or boolean, a numeric string as its number."""
     if isinstance(value, str):
         stripped = value.strip()
         if _NUMBER_TEXT_RE.fullmatch(stripped):
@@ -1596,7 +1598,7 @@ def _bare_literal_text(name: str, value: Any) -> str:
             f"{_LITERAL_VALUES}: variable '{name}' holds the text {value!r} in a number or boolean slot; "
             f"put the placeholder inside quotes ('{{{name}}}') to use it as a string."
         )
-    return _value_text(name, value)
+    return value_text(name, value)
 
 
 # ---------------------------------------------------------------------------
@@ -1853,6 +1855,25 @@ def _onto_path_node(node: Any, *, path: Tuple[str, ...], memo: Dict[int, Any]) -
     if isinstance(node, BoolOp):
         return node.model_copy(update={"operands": tuple(_onto_path(o, path=path, memo=memo) for o in node.operands)})
     return node
+
+
+def map_refs(node: Any, fn: Callable[[Ref | DottedRef], Any]) -> Any:
+    """``node`` with each reference replaced by ``fn(ref)``; ``fn`` returns the reference itself to keep it."""
+    if isinstance(node, (Ref, DottedRef)):
+        return fn(node)
+    if isinstance(node, (tuple, list)):
+        mapped = [map_refs(n, fn) for n in node]
+        return node if all(a is b for a, b in zip(mapped, node)) else type(node)(mapped)
+    if not isinstance(node, _BaseNode):
+        return node
+    update = {f: map_refs(getattr(node, f), fn) for f in type(node).model_fields}
+    changed = {f: v for f, v in update.items() if v is not getattr(node, f)}
+    return node.model_copy(update=changed) if changed else node
+
+
+def onto_path(node: Any, path: Sequence[str]) -> Any:
+    """``node`` with every reference read under the join ``path``."""
+    return map_refs(node, lambda ref: _onto_path_node(ref, path=tuple(path), memo={})) if path else node
 
 
 def _is_literal_arg(node: Any) -> bool:
@@ -2657,9 +2678,9 @@ __all__ = [
     "CallSpan", "DateTrunc", "NamedArg", "DATE_TRUNC_FORM", "call_spans", "legacy_spans",
     "aggregation_reading", "bind_variables", "call_keywords", "call_source", "canonical_measure_text",
     "classify_arguments", "colon_twin", "comparison_hint",
-    "dotted_quoting", "drop_root_hop", "drop_root_qualifier", "has_bindings", "keyword_spelling",
-    "legacy_result_name_seed", "measure_dependency_problems", "measure_text_at_path",
+    "bare_literal_text", "dotted_quoting", "drop_root_hop", "drop_root_qualifier", "has_bindings", "keyword_spelling",
+    "legacy_result_name_seed", "map_refs", "measure_dependency_problems", "measure_text_at_path", "onto_path",
     "parse_bound_expr", "parse_expr", "parse_template", "placeholder_names", "positional_hint", "referenced_paths",
     "rewrite_colon_spans", "root_relative", "split_entity_agg_ref",
-    "text_paths", "variable_names", "walk_parsed", "walk_parsed_refs",
+    "text_paths", "value_text", "variable_names", "walk_parsed", "walk_parsed_refs",
 ]

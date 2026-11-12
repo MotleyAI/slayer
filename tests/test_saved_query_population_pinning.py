@@ -119,15 +119,18 @@ class TestPinnedOnSave:
     async def test_every_rootless_stage_pinned_and_rooted_stages_verbatim(
         self, sqlite_engine: SlayerQueryEngine,
     ) -> None:
-        extension = {"source_name": "orders", "columns": [{"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"}]}
+        extension = {"source_name": "orders", "measures": [{"formula": "sum(amount * 2)", "name": "double_amount"}]}
         await sqlite_engine.create_model_from_query(query=[
             {"name": "per_customer", **BY_CUSTOMER},
-            {"name": "ext", "source_model": extension, "measures": [{"formula": "sum(double_amount)", "name": "d"}]},
+            {"name": "ext", "source_model": "orders", "extensions": [extension],
+             "measures": [{"formula": "double_amount", "name": "d"}]},
             {"source_model": "per_customer", "measures": [{"formula": "sum(revenue)", "name": "total"}]},
         ], name="staged")
         stages = {s.name: s for s in await stored_stages(sqlite_engine, "staged")}
         assert stages["per_customer"].source_model == "customers"
-        assert stages["ext"].source_model == SlayerQuery.model_validate({"source_model": extension}).source_model
+        assert stages["ext"].source_model == "orders"
+        assert stages["ext"].extensions == SlayerQuery.model_validate(
+            {"source_model": "orders", "extensions": [extension]}).extensions
         assert stages[None].source_model == "per_customer"
 
 

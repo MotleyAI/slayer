@@ -236,7 +236,12 @@ class TestModelMeasurePosition:
 class TestExtensionPositions:
     async def test_model_extension_measure(self) -> None:
         ext = ModelExtension(source_name="orders", measures=[ModelMeasure(name="rev", formula="sum(revenue)")])
-        f = await _dry(SlayerQuery.model_validate({"source_model": ext, "measures": ["rev"], "dimensions": ["status"]}))
+        f = await _dry(SlayerQuery.model_validate({
+            "source_model": "orders",
+            "extensions": [ext],
+            "measures": ["rev"],
+            "dimensions": ["status"],
+        }))
         assert "orders.rev" in f.columns
 
     async def test_inline_source_model_measure(self) -> None:
@@ -245,7 +250,8 @@ class TestExtensionPositions:
             "measures": [{"name": "rev", "formula": "sum(revenue)"}],
         })
         f = await _dry(SlayerQuery.model_validate({
-            "source_model": inline,
+            "source_model": "orders",
+            "extensions": [inline],
             "measures": ["rev"],
             "dimensions": ["status"],
         }))

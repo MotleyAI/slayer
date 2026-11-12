@@ -27,7 +27,7 @@ Every datasource SHALL expose a model named `time_spine` with exactly one column
 ## ADDED Requirements
 
 ### Requirement: The spine is reached in any case
-Every model-name position a query writes — `source_model`, an extension's model, the join targets of an inline source or an extension, and the first segment of every dotted path in its dimensions, time dimensions, measures, filters and order — SHALL reach the built-in `time_spine` when its unquoted spelling equals `time_spine` case-insensitively, exactly as `time_spine` would, in every query of a query list. A stage of the list whose name the spelling matches SHALL take precedence; a spelling that names a stored model exactly SHALL reach that model. When the datasource the query runs against stores a model whose name differs from `time_spine` only in case, any other spelling that is not exactly `time_spine` SHALL fail with the typed ambiguity error naming `time_spine` and that model. A quoted spelling SHALL reach the spine only when it is exactly `"time_spine"`. String literals and the rest of every text SHALL be left unchanged.
+Every model-name position a query writes — `source_model`, an extension's model, the join targets of an extension, and the first segment of every dotted path in its dimensions, time dimensions, measures, filters and order — SHALL reach the built-in `time_spine` when its unquoted spelling equals `time_spine` case-insensitively, exactly as `time_spine` would, in every query of a query list. A stage of the list whose name the spelling matches SHALL take precedence; a spelling that names a stored model exactly SHALL reach that model. When the datasource the query runs against stores a model whose name differs from `time_spine` only in case, any other spelling that is not exactly `time_spine` SHALL fail with the typed ambiguity error naming `time_spine` and that model. A quoted spelling SHALL reach the spine only when it is exactly `"time_spine"`. String literals and the rest of every text SHALL be left unchanged.
 
 #### Scenario: Upper-case spine root
 - **WHEN** a query has `source_model: TIME_SPINE`, the time dimension `TIME_SPINE.timestamp` by month over Jan–Feb, and the measure `sum(orders.amount)`
@@ -54,12 +54,12 @@ Every model-name position a query writes — `source_model`, an extension's mode
 - **THEN** it reads datasource `b`'s built-in spine
 
 ### Requirement: A stored join never targets the spine
-Saving a model SHALL be refused with a typed error naming the model and the join when a join's `target_model` equals `time_spine` case-insensitively and no stored model of its datasource is named exactly as written; the error SHALL state that the spine joins each dataset through its time axis, so a declared join to it is never needed. On load, a stored model below schema version 22 SHALL have each such join removed, with a structured warning naming the model and the join, and SHALL be written back at the current version.
+Saving a model SHALL be refused with a typed error naming the model and the join when a join's `target_model` equals `time_spine` case-insensitively and no stored model of its datasource is named exactly as written; the error SHALL state that the spine joins each dataset through its time axis, so a declared join to it is never needed. On load, a stored model below schema version 23 SHALL have each such join removed, with a structured warning naming the model and the join, and SHALL be written back at the current version.
 
 #### Scenario: A join to the spine is refused in any spelling
 - **WHEN** a model `orders` is saved with a join to `time_spine` on `created_at = timestamp`, and again with the join target `TIME_SPINE`
 - **THEN** each save fails with the typed error naming `orders` and the join, and nothing is stored
 
 #### Scenario: A stored join to the spine is dropped on load
-- **WHEN** a store written before schema version 22 holds a model `ev` without a time axis whose join targets `time_spine`, and a query groups by `time_spine.timestamp` month over Jan–Mar and sums `ev.amount`
+- **WHEN** a store written before schema version 23 holds a model `ev` without a time axis whose join targets `time_spine`, and a query groups by `time_spine.timestamp` month over Jan–Mar and sums `ev.amount`
 - **THEN** `ev` loads without that join, with the warning naming `ev` and the join, is written back at the current version, and the query returns the monthly sums

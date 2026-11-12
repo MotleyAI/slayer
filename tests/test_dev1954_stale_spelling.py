@@ -215,7 +215,7 @@ class TestDownstreamStageStaleReference:
 
     async def test_extension_over_the_sibling_stage(self, engine) -> None:
         def ext(dim: str) -> SlayerQuery:
-            return slayer_query(source_model={"source_name": "s1"}, dimensions=[dim],
+            return slayer_query(source_model="s1", extensions=[{"source_name": "s1"}], dimensions=[dim],
                                 measures=["sum(amount_sum)"])
 
         stale = await engine.execute([_stage1(), ext(STALE)])

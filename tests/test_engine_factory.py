@@ -24,7 +24,9 @@ import signal
 import sqlite3
 import sys
 import threading
+import tempfile
 import warnings
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -40,6 +42,16 @@ from slayer.database import engine_factory
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.drivers import load_driver
 from tests._engine_helpers import disposable_engine
+
+
+def _existing_db(path: str | Path) -> str:
+    """``path`` as an existing SQLite file: a missing local database file is refused."""
+    Path(path).touch()
+    return str(path)
+
+
+def _tmp_db(name: str) -> str:
+    return _existing_db(Path(tempfile.gettempdir()) / name)
 
 
 class TestGetEngine:
@@ -287,7 +299,7 @@ class TestCacheBounding:
 
     @staticmethod
     def _lite(n: int) -> DatasourceConfig:
-        return DatasourceConfig(name=f"lite{n}", type="sqlite", database=f"/tmp/slayer-cache-{n}.db")
+        return DatasourceConfig(name=f"lite{n}", type="sqlite", database=_tmp_db(f"slayer-cache-{n}.db"))
 
     def test_cache_evicts_least_recently_used_over_limit(self, monkeypatch) -> None:
         engine_factory.reset_cache()
@@ -406,7 +418,7 @@ class TestInvalidateEngine:
 
     @staticmethod
     def _lite() -> DatasourceConfig:
-        return DatasourceConfig(name="lite", type="sqlite", database="/tmp/slayer-invalidate.db")
+        return DatasourceConfig(name="lite", type="sqlite", database=_tmp_db("slayer-invalidate.db"))
 
     def test_invalidate_removes_and_disposes(self) -> None:
         engine_factory.reset_cache()
@@ -490,8 +502,8 @@ class TestResetCacheDisposal:
     def test_reset_always_disposes(self) -> None:
         """Every held engine is disposed exactly once and the cache ends empty."""
         engine_factory.reset_cache()
-        a = DatasourceConfig(name="a", type="sqlite", database="/tmp/slayer-reset-a.db")
-        b = DatasourceConfig(name="b", type="sqlite", database="/tmp/slayer-reset-b.db")
+        a = DatasourceConfig(name="a", type="sqlite", database=_tmp_db("slayer-reset-a.db"))
+        b = DatasourceConfig(name="b", type="sqlite", database=_tmp_db("slayer-reset-b.db"))
         ea, eb = engine_factory.get_engine(a), engine_factory.get_engine(b)
         assert ea is not eb
         with patch.object(ea, "dispose") as ea_disposed, \
@@ -509,7 +521,7 @@ class TestResetCacheDisposal:
         ``invalidate()`` closes the DBAPI connection there and then.
         """
         engine_factory.reset_cache()
-        ds = DatasourceConfig(name="lite", type="sqlite", database="/tmp/slayer-reset-live.db")
+        ds = DatasourceConfig(name="lite", type="sqlite", database=_tmp_db("slayer-reset-live.db"))
         conn = engine_factory.get_engine(ds).connect()
         try:
             engine_factory.reset_cache()
@@ -540,7 +552,7 @@ class TestReleaseIdle:
 
     def test_release_closes_idle_connections_and_keeps_the_engine_usable(self, tmp_path) -> None:
         engine_factory.reset_cache()
-        engine = engine_factory.get_engine(DatasourceConfig(name="f", type="sqlite", database=str(tmp_path / "f.db")))
+        engine = engine_factory.get_engine(DatasourceConfig(name="f", type="sqlite", database=_existing_db(tmp_path / "f.db")))
         try:
             with engine.connect() as conn:
                 idle = conn.connection.driver_connection
@@ -554,7 +566,7 @@ class TestReleaseIdle:
     def test_drift_release_mid_checkout_leaves_no_orphaned_connection(self, tmp_path) -> None:
         """A drift probe releasing the shared engine while another caller holds a connection must not orphan it."""
         engine_factory.reset_cache()
-        ds = DatasourceConfig(name="f", type="sqlite", database=str(tmp_path / "f.db"))
+        ds = DatasourceConfig(name="f", type="sqlite", database=_existing_db(tmp_path / "f.db"))
         engine = engine_factory.get_engine(ds)
         try:
             with engine.connect() as conn:
@@ -586,7 +598,7 @@ class TestCacheConcurrency:
 
     @staticmethod
     def _lite(n: int) -> DatasourceConfig:
-        return DatasourceConfig(name=f"lite{n}", type="sqlite", database=f"/tmp/slayer-conc-{n}.db")
+        return DatasourceConfig(name=f"lite{n}", type="sqlite", database=_tmp_db(f"slayer-conc-{n}.db"))
 
     @staticmethod
     def _join_all(threads: list[threading.Thread], *, timeout: float = 10.0) -> None:
@@ -961,7 +973,7 @@ class TestInMemoryFactoryCoherence:
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX fork")
 @pytest.mark.filterwarnings("ignore:.*fork.*:DeprecationWarning")
 def test_a_child_forked_while_the_cache_lock_is_held_can_build_engines(tmp_path) -> None:
-    ds = DatasourceConfig(name="f", type="sqlite", database=str(tmp_path / "fork.db"))
+    ds = DatasourceConfig(name="f", type="sqlite", database=_existing_db(tmp_path / "fork.db"))
     read_fd, write_fd = os.pipe()
     with engine_factory._cache_lock:
         pid = os.fork()

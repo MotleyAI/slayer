@@ -13,7 +13,7 @@ When a target's uniqueness is composite (several primary-key columns, or a multi
 - THEN a join on both columns is provably many-to-one, and a join on only one of them is unproven
 
 ### Requirement: Stage outputs carry their provable uniqueness
-Every stage output that another model or stage reads as a model — a model created from a query, and a named sibling stage read by a later stage of the same query (as its source, through a `ModelExtension` over it, or as a join target) — SHALL declare its result grain's uniqueness when the stage provably deduplicates that grain: it aggregates, or is a dimension-only stage with distinct dimension values. The grain is the stage's dimension and time-dimension columns — including computed dimensions whose value derives from an aggregate or a transform — and never a column in measure position. A single-column grain SHALL be declared unique; a multi-column grain SHALL be declared as one composite key, provable only when fully covered. A stage that preserves duplicates, or has no dimensions, MUST NOT have uniqueness stamped.
+Every stage output that another model or stage reads as a model — a model created from a query, and a named sibling stage read by a later stage of the same query (as its source, extended by that stage or not, or as a join target) — SHALL declare its result grain's uniqueness when the stage provably deduplicates that grain: it aggregates, or is a dimension-only stage with distinct dimension values. The grain is the stage's dimension and time-dimension columns — including computed dimensions whose value derives from an aggregate or a transform — and never a column in measure position. A single-column grain SHALL be declared unique; a multi-column grain SHALL be declared as one composite key, provable only when fully covered. A stage that preserves duplicates, or has no dimensions, MUST NOT have uniqueness stamped.
 
 #### Scenario: Aggregated backing query proves N:1 joins onto it
 - WHEN a model is created from an aggregating query and another model joins onto its complete grain columns
@@ -29,15 +29,15 @@ Every stage output that another model or stage reads as a model — a model crea
 
 #### Scenario: A join covering part of a sibling's composite grain stays unproven
 - WHEN a sibling stage has dimensions `["id", "tier"]` and a later stage joins it on `id` alone
-- THEN the join is unproven and a metric across it is unattributable — associated by default, broadcast under `to_many_handling: "broadcast"`, with a warning either way
+- THEN the join is unproven and a metric across it broadcasts with a warning
 
 #### Scenario: An extension over a sibling keeps the sibling's grain
-- WHEN a stage's source is a `ModelExtension` over a sibling stage and adds columns or joins
+- WHEN a stage reads a sibling stage as its source and extends it with measures or joins
 - THEN a join onto the extended sibling's complete grain is still provably many-to-one
 
 #### Scenario: An aggregate-valued computed dimension is part of the grain
 - WHEN a model is created from a query with dimensions `["status", {"expression": "sum(amount, partition_by=city)", "name": "ct"}]`, and another model joins onto it on `status` alone
-- THEN the join is unproven — a metric across it is unattributable (associated by default, broadcast under `to_many_handling: "broadcast"`), warned, and never multiplied
+- THEN the join is unproven — a metric across it broadcasts with a warning and is never multiplied
 
 #### Scenario: A measure is never part of the grain
 - WHEN a query's dimensions are `["status", "city"]` and its measure is `{"formula": "sum(amount, partition_by=status)", "name": "st"}`

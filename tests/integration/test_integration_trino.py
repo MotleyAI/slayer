@@ -25,7 +25,7 @@ from sqlglot import exp
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import ColumnRef, ComputedDimension, OrderItem, SlayerQuery, TimeDimension
 from slayer.live_schema import ingestion
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -286,21 +286,19 @@ class TestTrinoQueries:
 
     async def test_regex_literal_extension_column(self, trino_env: SlayerQueryEngine) -> None:
         """A ``(?:...)`` regex literal and a ``%`` LIKE pattern execute verbatim."""
+        orders = await trino_env.storage.get_model("orders")
+        assert orders is not None
+        await trino_env.storage.save_model(orders.model_copy(update={"name": "orders_rx", "columns": [
+            *orders.columns, Column(name="rx", sql="CASE WHEN status LIKE '%pend%' "
+                        "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END", type=DataType.DOUBLE),
+        ]}))
         query = SlayerQuery(
-            source_model=ModelExtension(
-                source_name="orders",
-                columns=[Column(
-                    name="rx",
-                    sql="CASE WHEN status LIKE '%pend%' "
-                        "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END",
-                    type=DataType.DOUBLE,
-                )],
-            ),
+            source_model="orders_rx",
             dimensions=[ColumnRef(name="rx")],
             measures=[ModelMeasure(formula="count(*)")],
         )
         result = await trino_env.execute(query=query)
-        assert {int(r["orders.rx"]): r["orders._count"] for r in result.data} == {1: 2, 0: 4}
+        assert {int(r["orders_rx.rx"]): r["orders_rx._count"] for r in result.data} == {1: 2, 0: 4}
 
     async def test_sum_measure(self, trino_env: SlayerQueryEngine) -> None:
         result = await trino_env.execute(query=SlayerQuery.model_validate({
@@ -695,11 +693,8 @@ class TestCrossModelAndMultistageTrino:
 
     async def test_sql_dimension(self, trino_cross_model_env: SlayerQueryEngine) -> None:
         result = await trino_cross_model_env.execute(query=SlayerQuery(
-            source_model=ModelExtension.model_validate({
-                "source_name": "orders",
-                "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
-            }),
-            dimensions=[ColumnRef(name="tier")],
+            source_model="orders",
+            dimensions=[ComputedDimension(expression="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", name="tier")],
             measures=[ModelMeasure(formula="count(*)")],
         ))
         assert {r["orders.tier"]: r["orders._count"] for r in result.data} == {"high": 3, "low": 3}

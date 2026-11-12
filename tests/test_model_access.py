@@ -195,14 +195,13 @@ class TestModelsReadBy:
         assert {"fin", "hr"} <= self.reads(SlayerQuery.model_validate(MIXED_QUERY), models)
 
     @pytest.mark.parametrize("stage", [
-        {"source_model": {"source_name": "hr", "columns": [{"name": "x", "sql": "salary * 2"}]}},
-        {"source_model": {"source_name": "pub", "joins": [{"target_model": "hr", "join_pairs": [["id", "id"]]}]}},
-        {"source_model": {"name": "inline", "sql_table": "pub_items", "data_source": DS,
-                          "columns": [{"name": "id", "type": "number", "primary_key": True}],
-                          "joins": [{"target_model": "hr", "join_pairs": [["id", "id"]]}]}},
+        {"source_model": "hr", "extensions": [{"source_name": "hr", "measures": [{"name": "x", "formula": "sum(salary * 2)"}]}]},
+        {"source_model": "pub", "extensions": [
+            {"source_name": "pub", "joins": [{"target_model": "hr", "join_pairs": [["id", "id"]]}]}]},
+        {"source_model": "pub_link", "dimensions": [f"{PRUNED_EDGE}.dept"]},
         {"source_model": "fin", "time_dimensions": [{"dimension": "hr.hired_at", "granularity": "month"}]},
         {"source_model": "fin", "measures": [{"formula": "sum(amount)"}], "filters": ["hr.dept = 'eng'"]},
-    ], ids=["extension-base", "extension-join", "inline-model-join", "time-dimension-hop", "filter-hop"])
+    ], ids=["extension-base", "extension-join", "model-join", "time-dimension-hop", "filter-hop"])
     async def test_query_fields_read_hr(self, models: dict[str, SlayerModel], stage: dict) -> None:
         assert "hr" in self.reads(SlayerQuery.model_validate(stage), models)
 
@@ -214,16 +213,6 @@ class TestModelsReadBy:
         reads = self.reads(chained, models)
         assert "hr" in reads
         assert "s1" not in reads
-
-    async def test_overlays_defining_one_column_name_differently_are_each_read(self, models: dict[str, SlayerModel]) -> None:
-        def stage(sql: str, **extra) -> SlayerQuery:
-            return SlayerQuery.model_validate({
-                "source_model": {"source_name": "pub_link", "columns": [{"name": "extra", "sql": sql}]},
-                "dimensions": ["extra"], **extra,
-            })
-
-        dual = SlayerModel(name="dual", source_queries=[stage("label", name="s1"), stage(f"{PRUNED_EDGE}.dept")])
-        assert "hr" in self.reads(dual, models)
 
     async def test_saved_measure_reads_are_followed_recursively(self, models: dict[str, SlayerModel]) -> None:
         relay = models["pub"].model_copy(update={

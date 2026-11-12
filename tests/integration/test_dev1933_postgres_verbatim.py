@@ -14,7 +14,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery
+from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 import sqlglot
 
@@ -123,20 +123,18 @@ class TestPostgresVerbatimExecution:
         rows = pg_client.execute_sync(_HAZARD_SQL).rows
         assert [r["status"] for r in rows] == ["pending", "pending"]
 
-    async def test_regexp_replace_extension_end_to_end(self, pg_env: SlayerQueryEngine) -> None:
+    async def test_regexp_replace_column_end_to_end(self, pg_env: SlayerQueryEngine) -> None:
+        orders = await pg_env.storage.get_model("orders")
+        assert orders is not None
+        await pg_env.storage.save_model(orders.model_copy(update={"name": "orders_rx", "columns": [
+            *orders.columns, Column(name="rx", sql=f"REGEXP_REPLACE(status, '{_REGEX_LITERAL}', 'X')", type=DataType.TEXT),
+        ]}))
         query = SlayerQuery(
-            source_model=ModelExtension(
-                source_name="orders",
-                columns=[Column(
-                    name="rx",
-                    sql=f"REGEXP_REPLACE(status, '{_REGEX_LITERAL}', 'X')",
-                    type=DataType.TEXT,
-                )],
-            ),
+            source_model="orders_rx",
             dimensions=[ColumnRef(name="rx")],
             measures=[ModelMeasure(formula="count(*)")],
         )
         result = await pg_env.execute(query=query)
         # No status matches the pattern, so REGEXP_REPLACE returns each unchanged.
-        by_rx = {r["orders.rx"]: r["orders._count"] for r in result.data}
+        by_rx = {r["orders_rx.rx"]: r["orders_rx._count"] for r in result.data}
         assert by_rx == {"completed": 1, "pending": 2, "cancelled": 1}

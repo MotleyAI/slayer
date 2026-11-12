@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, 
 
 from slayer.core.enums import DataType, JoinCardinality, JoinType
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, ComputedDimension, ModelExtension, OrderItem, SlayerQuery, SourceSpec
+from slayer.core.query import ColumnRef, ComputedDimension, ModelExtension, OrderItem, SlayerQuery
 from slayer.core.syntax import respell_path_heads, text_paths
 from slayer.core.warnings import NameCollisionWarning
 
@@ -83,17 +83,11 @@ class _SpineRespeller:
     def joins(self, joins: List[ModelJoin]) -> List[ModelJoin]:
         return [j.model_copy(update={"target_model": self.name(j.target_model) or j.target_model}) for j in joins]
 
-    def source(self, spec: SourceSpec | None) -> SourceSpec | None:
-        if isinstance(spec, str):
-            return self.name(spec) or spec
-        if isinstance(spec, ModelExtension):
-            return spec.model_copy(update={
-                "source_name": self.name(spec.source_name) or spec.source_name,
-                "joins": self.joins(spec.joins) if spec.joins is not None else None,
-            })
-        if isinstance(spec, SlayerModel):
-            return spec.model_copy(update={"joins": self.joins(spec.joins)})
-        return spec
+    def extension(self, ext: ModelExtension) -> ModelExtension:
+        return ext.model_copy(update={
+            "source_name": self.name(ext.source_name) or ext.source_name,
+            "joins": self.joins(ext.joins) if ext.joins is not None else None,
+        })
 
     def dimension(self, dim: ColumnRef | ComputedDimension) -> ColumnRef | ComputedDimension:
         if isinstance(dim, ColumnRef):
@@ -112,7 +106,11 @@ def respell_spine(query: SlayerQuery, *, keep: Callable[[str], bool]) -> Tuple[S
     """``query`` with each unquoted spelling of the spine in a model-name position, bar those ``keep`` holds, spelled
     ``time_spine``; and the spellings respelled."""
     r = _SpineRespeller(keep)
-    update: Dict[str, Any] = {"source_model": r.source(query.source_model)}
+    update: Dict[str, Any] = {}
+    if query.source_model is not None:
+        update["source_model"] = r.name(query.source_model) or query.source_model
+    if query.extensions is not None:
+        update["extensions"] = [r.extension(e) for e in query.extensions]
     if query.dimensions is not None:
         update["dimensions"] = [r.dimension(d) for d in query.dimensions]
     if query.time_dimensions is not None:

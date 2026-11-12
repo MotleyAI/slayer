@@ -105,6 +105,9 @@ _CH_CORRELATED_SETTING = "allow_experimental_correlated_subqueries"
 _CORRELATED_MIN_VERSION = (25, 4, 0)
 _CORRELATED_DEFAULT_ON_VERSION = (25, 8, 0)
 _TIMEOUT_SETTING = "max_execution_time"
+# Reads, plus the settings SLayer sends with them.
+_READONLY_SETTING = "readonly"
+_READS_AND_SETTINGS = 2
 _ABSENT = object()
 _BOOL_SETTING_VALUES = {"1": True, "true": True, "0": False, "false": False}
 _BOOL_TYPES = frozenset({"Bool", "Nullable(Bool)"})
@@ -403,6 +406,8 @@ class ClickhouseDialect(SqlDialect):
     global_in_subqueries: bool = True
     url_scheme: str | None = "clickhouse+http"
     install_extra: str | None = "clickhouse"
+    supported_drivers: ClassVar[frozenset[str] | None] = frozenset({"http"})
+    read_only_reads_profile: ClassVar[bool] = True
 
     def column_comments_query(self, location: TableLocation) -> exp.Select:
         return self._system_columns(location, field=col("comment"))
@@ -440,6 +445,11 @@ class ClickhouseDialect(SqlDialect):
         prior = settings.get(_TIMEOUT_SETTING, _ABSENT)
         settings[_TIMEOUT_SETTING] = timeout_seconds
         return prior
+
+    def make_connection_read_only(self, dbapi_connection: Any, *, profile: ServerProfile) -> None:
+        """A per-request setting for an unrestricted user; a user at 1 or 2 may not change it."""
+        if profile.readonly == 0:
+            dbapi_connection.transport.ch_settings[_READONLY_SETTING] = _READS_AND_SETTINGS
 
     def restore_connection_timeout(self, dbapi_connection: Any, prior: object) -> None:
         settings = dbapi_connection.transport.ch_settings

@@ -1,6 +1,6 @@
-"""An inline ``SlayerModel`` carrying ``source_queries`` is rejected as a ``source_model``.
+"""An inline ``SlayerModel`` is rejected as a ``source_model``, with or without ``source_queries``.
 
-Spec: openspec …/specs/queries/multi-stage — "Inline query-backed sources are rejected".
+Spec: queries/population › A population is named, and typed at construction.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
+from slayer.core.errors import StoredDocumentLoadError
 from slayer.core.models import SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -55,7 +56,7 @@ class TestConstructionRejects:
     def test_object_form(self) -> None:
         inline = SlayerModel.model_validate(INLINE_QB)
         with pytest.raises(ValueError) as exc:
-            SlayerQuery(source_model=inline, **OUTER)
+            SlayerQuery(source_model=inline, **OUTER)  # pyright: ignore[reportArgumentType]  # the removed form must fail
         _assert_ban(exc.value)
 
     def test_dict_form(self) -> None:
@@ -102,24 +103,24 @@ class TestStoredModelsReject:
             with open(path, "w") as fh:
                 yaml.safe_dump(raw, fh)
             reloaded = YAMLStorage(base_dir=tmp)
-            with pytest.raises(ValueError) as exc:
+            with pytest.raises(StoredDocumentLoadError, match="(?i)inline") as exc:
                 await reloaded.get_model("rev_by_status", data_source="test")
-        _assert_ban(exc.value)
+        assert "rev_by_status" in str(exc.value)
 
 
-class TestOtherInlineSourcesAccepted:
-    async def test_inline_table_backed(self, engine) -> None:
+class TestOtherInlineSourcesRejected:
+    def test_inline_table_backed(self) -> None:
         inline = {
             "name": "orders_inline", "data_source": "test", "sql_table": "orders",
             "columns": [{"name": "id", "type": "INT", "primary_key": True},
                         {"name": "customer_id", "type": "INT"},
                         {"name": "amount", "type": "DOUBLE"}],
         }
-        resp = await engine.execute(query(
-            source_model=inline, dimensions=["customer_id"], measures=[m("sum(amount)", "a")]))
-        assert rows_by(resp.data, key="orders_inline.customer_id", value="orders_inline.a") == CUST_REV
+        measures = [m("sum(amount)", "a")]
+        with pytest.raises(ValueError, match="(?i)inline"):
+            query(source_model=inline, dimensions=["customer_id"], measures=measures)
 
-    async def test_inline_sql_backed(self, engine) -> None:
+    def test_inline_sql_backed(self) -> None:
         inline = {
             "name": "orders_sql", "data_source": "test",
             "sql": "SELECT id, customer_id, amount FROM orders",
@@ -127,14 +128,15 @@ class TestOtherInlineSourcesAccepted:
                         {"name": "customer_id", "type": "INT"},
                         {"name": "amount", "type": "DOUBLE"}],
         }
-        resp = await engine.execute(query(
-            source_model=inline, dimensions=["customer_id"], measures=[m("sum(amount)", "a")]))
-        assert rows_by(resp.data, key="orders_sql.customer_id", value="orders_sql.a") == CUST_REV
+        measures = [m("sum(amount)", "a")]
+        with pytest.raises(ValueError, match="(?i)inline"):
+            query(source_model=inline, dimensions=["customer_id"], measures=measures)
 
+
+class TestExtensionsAccepted:
     async def test_extension_over_a_stored_query_backed_model(self, engine) -> None:
-        ext = {"source_name": "cust_rev",
-               "columns": [{"name": "rev2", "sql": "rev * 2", "type": "DOUBLE"}]}
+        ext = {"source_name": "cust_rev", "measures": [m("sum(rev * 2)", "r2")]}
         resp = await engine.execute(query(
-            source_model=ext, dimensions=["customer_id"], measures=[m("sum(rev2)", "r2")]))
+            source_model="cust_rev", extensions=[ext], dimensions=["customer_id"], measures=["r2"]))
         assert rows_by(resp.data, key="cust_rev.customer_id", value="cust_rev.r2") == {
             c: 2 * v for c, v in CUST_REV.items()}

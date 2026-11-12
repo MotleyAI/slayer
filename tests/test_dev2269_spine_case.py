@@ -61,15 +61,6 @@ async def outcome(engine: SlayerQueryEngine, query: Any) -> tuple:
     return ("ok", resp.columns, sorted(map(str, resp.data)), sorted(map(str, resp.warnings or [])))
 
 
-def _inline_returns(target: str) -> dict[str, Any]:
-    return {
-        "name": "ret", "sql_table": "returns", "data_source": "test",
-        "columns": [{"name": "id", "type": "INT", "primary_key": True}, {"name": "return_date", "type": "DATE"},
-                    {"name": "amount", "type": "DOUBLE"}],
-        "joins": [{"target_model": target, "join_pairs": [["return_date", "timestamp"]]}],
-    }
-
-
 #: Each query-written model-name position: a query builder over the spine spelling, and the canonical outcome.
 POSITIONS = {
     "source-model": (lambda s: {"source_model": s, "time_dimensions": [td(s)], **sum_orders()}, "ok"),
@@ -81,13 +72,11 @@ POSITIONS = {
                           **sum_orders()}, "ok"),
     "order": (lambda s: {"time_dimensions": [td("time_spine")],
                          "order": [{"column": f"{s}.timestamp", "direction": "desc"}], **sum_orders()}, "ok"),
-    "extension-model": (lambda s: {"source_model": {"source_name": s}, "time_dimensions": [td("time_spine")],
-                                   **sum_orders()}, "ModelNotFoundError"),
+    "extension-model": (lambda s: {"source_model": "time_spine", "extensions": [{"source_name": s}],
+                                   "time_dimensions": [td("time_spine")], **sum_orders()}, "TimeSpineError"),
     "extension-join": (lambda s: {"source_model": {"source_name": "returns", "joins": [
         {"target_model": s, "join_pairs": [["return_date", "timestamp"]]}]},
         "time_dimensions": [td("time_spine")], "measures": [m("sum(amount)", "r")]}, "AmbiguousJoinPathError"),
-    "inline-join": (lambda s: {"source_model": _inline_returns(s), "time_dimensions": [td("time_spine")],
-                               "measures": [m("sum(amount)", "r")]}, "AmbiguousJoinPathError"),
 }
 
 

@@ -168,14 +168,6 @@ class TestExtensionOverlay:
         with pytest.raises(ValueError, match="join orders → regions key 'region_id'"):
             apply_extension_overlay(base, ext)
 
-    def test_extension_declaring_the_key_is_accepted(self):
-        ext = ModelExtension(
-            source_name="orders",
-            columns=[Column(name="region_id", sql="region_fk", type=DataType.INT)],
-            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])])
-        merged = apply_extension_overlay(orders_model(), ext)
-        assert [j.target_model for j in merged.joins] == ["customers", "regions"]
-
     async def test_query_extension_fails_before_sql(self):
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)
@@ -184,8 +176,9 @@ class TestExtensionOverlay:
                 await storage.save_model(m)
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery.model_validate({
-                "source_model": ModelExtension(source_name="orders", joins=[
-                    ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])]),
+                "source_model": "orders",
+                "extensions": [ModelExtension(source_name="orders", joins=[
+                    ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])])],
                 "measures": [{"formula": "sum(amount)", "name": "amt"}],
                 "dimensions": ["regions.name"]})
             with pytest.raises(ValueError, match="key 'region_id'"):

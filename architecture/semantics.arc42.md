@@ -262,6 +262,7 @@ principles every layer obeys.
     fail loudly). [enforced: test:tests/test_dev1840_execution.py]
     [enforced: test:tests/test_dev1909_population_pushdown.py]
     [enforced: test:tests/test_dev1935_boolean_lowering.py]
+    A query-declared INNER join `J` is the field filter `matched(r.J)` — some row is reached along `r.J`, `r` the route from the population to `J`'s declaring dataset — and never changes how `J` is traversed. [enforced: test:tests/test_dev2102_query_inner_joins.py]
 15. **Time spine**: the spine is the dataset of all instants, keyed by its
     instant. A dataset's axis — its declared default time column, else its
     sole one — joins it to-one; an expression is never an axis, so a spine
@@ -333,6 +334,7 @@ All code, old and new, MUST obey these.
    - **2.2** A dialect without its own translation of a Mode B construct
      refuses it with a typed error; a base-class default is never another
      dialect's SQL. [enforced: test:tests/test_dev2169_dialect_library_support.py]
+   - **2.3** A query carries no Mode A: Mode A is written only in a stored model's definition, and a value a query supplies enters it only as a literal. [enforced: test:tests/test_dev2021_queries_carry_no_mode_a.py]
 3. **Logical names, physical once**: every model-level column reference —
    query fields, `join_pairs`, unique-key sets — names a column by
    `Column.name`; the physical spelling (`Column.physical_name`: a base

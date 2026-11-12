@@ -351,17 +351,21 @@ class TestUserSurfacesExempt:
         sql = await _dry_sql([model], query)
         assert PHYS_TBL in sql
 
-    async def test_extension_added_column_survives(self) -> None:
+    async def test_extension_measure_survives(self) -> None:
+        model = self._orders(extra_columns=[
+            Column(name="wide", sql=f'"{PHYS_COL}"', type=DataType.DOUBLE),
+        ])
         ext = ModelExtension(
             source_name="orders",
-            columns=[Column(name="extwide", sql=f'"{PHYS_COL}"', type=DataType.DOUBLE)],
+            measures=[ModelMeasure(name="extwide", formula="sum(wide)")],
         )
         query = SlayerQuery(
-            source_model=ext,
+            source_model="orders",
+            extensions=[ext],
             dimensions=[ColumnRef(name="region")],
-            measures=[ModelMeasure(formula="sum(extwide)", name="w")],
+            measures=[ModelMeasure(formula="extwide", name="w")],
         )
-        sql = await _dry_sql([self._orders()], query)
+        sql = await _dry_sql([model], query)
         assert f'"{PHYS_COL}"' in sql
 
     async def test_non_root_named_stage_model_survives(self) -> None:
@@ -401,15 +405,15 @@ class TestUserSurfacesExempt:
         assert f'"{PHYS_COL}"' in sql
 
     async def test_inline_model_survives(self) -> None:
-        inline = self._orders(name="inline_orders", extra_columns=[
+        stored = self._orders(name="inline_orders", extra_columns=[
             Column(name="wide", sql=f'"{PHYS_COL}"', type=DataType.DOUBLE),
         ])
         query = SlayerQuery(
-            source_model=inline,
+            source_model="inline_orders",
             dimensions=[ColumnRef(name="region")],
             measures=[ModelMeasure(formula="sum(wide)", name="w")],
         )
-        sql = await _dry_sql([], query)
+        sql = await _dry_sql([stored], query)
         assert f'"{PHYS_COL}"' in sql
 
     async def test_referenced_model_column_survives(self) -> None:

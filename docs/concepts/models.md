@@ -39,7 +39,7 @@ A query then asks for `sum(revenue)` (aggregate the `revenue` column), `aov` (th
 | `hidden` | bool | No | Hide from listings (still queryable by name and joinable). Set automatically at ingest for recognised ELT/migration internals — see [Recognised internals](../reference/cli.md#recognised-internals) |
 | `access_tags` | list[str] | No | Access groups: through an [access-filtered store](../configuration/storage.md#access-filtered-storage) a caller sees the model only if it is untagged or shares a tag, else it reads as deleted (unlike `hidden`, which curates listings for everyone) |
 | `meta` | dict | No | Arbitrary JSON metadata for caller bookkeeping. Ingestion writes `internal_table: <tool>` on auto-hidden internals |
-| `version` | int | No | Schema version stamp (currently `18`) |
+| `version` | int | No | Schema version stamp (currently `19`) |
 
 ## Source modes
 
@@ -66,7 +66,7 @@ Only the `__slayer_` prefix is reserved for SLayer-internal identifiers.
 
 ## Columns
 
-A column is the unit of structure on the model. The same column entry can serve as a group-by key in one query and as input to an aggregation in another — the role is decided per query, not declared up front. A list column is the exception: it is never a group-by key and aggregates only with `count` and `count_distinct`; its elements group and aggregate through `<column>.value`. What the column *carries* is its identity (name), how to compute it from the source (`sql`), what data type to expect, and a handful of policy fields (which aggregations are allowed, whether it's a primary key, whether it's hidden).
+A column is the unit of structure on the model. The same column entry can serve as a group-by key in one query and as input to an aggregation in another — the role is decided per query, not declared up front. A [list column](queries.md#list-columns) is the exception. What the column *carries* is its identity (name), how to compute it from the source (`sql`), what data type to expect, and a handful of policy fields (which aggregations are allowed, whether it's a primary key, whether it's hidden).
 
 ### Fields
 
@@ -108,7 +108,7 @@ A column's `sql` is rendered into the executed statement, which reaches the data
 | `TIMESTAMP` | Date and time | TIMESTAMP, DATETIME |
 | `DATE` | Date only | DATE |
 | `UNKNOWN` | Opaque: stored and displayed, never grouped, aggregated or cast | Postgres `point`, `json`, range types |
-| `ARRAY` | A list of scalars, its elements its non-NULL elements; re-ingest re-types a `TEXT` column whose live type is a list, keeping its other attributes | `TEXT[]`, BigQuery `REPEATED STRING`, `Array(String)` |
+| `ARRAY` | A list of `element_type` values, see [list columns](queries.md#list-columns); re-ingest re-types a `TEXT` column whose live type is a list, keeping its other attributes | `TEXT[]`, BigQuery `REPEATED STRING`, `Array(String)` |
 
 ### Aggregation eligibility
 
@@ -120,7 +120,7 @@ A column with no explicit `allowed_aggregations` whitelist gets a default set ba
 | `TEXT` | count, count_distinct, count_distinct_approx, first, last, min, max, collect |
 | `BOOLEAN` | the `INT` set |
 | `DATE` / `TIMESTAMP` | count, count_distinct, count_distinct_approx, first, last, min, max, collect |
-| `ARRAY` | count (non-NULL lists), count_distinct; aggregate its elements through `skills.value`, see [list columns](queries.md#list-columns) |
+| `ARRAY` | count (non-NULL lists), count_distinct (distinct element sets) |
 | `UNKNOWN` | none |
 
 A boolean is its integer (true 1, false 0, NULL ignored) inside every numeric aggregation, so `sum` counts the true rows, `avg` is their share (formatted as a percentage), and `min` / `max` stay boolean.
@@ -289,7 +289,7 @@ Aggregations are the operators that turn a column expression into a value: `sum`
 | `var_samp` / `var_pop` | `var_samp(latency)` | Sample / population variance |
 | `corr` | `corr(price, other=quantity)` | Pearson correlation between two columns |
 | `covar_samp` / `covar_pop` | `covar_samp(price, other=quantity)` | Sample / population covariance |
-| `collect` | `collect(name)` | The distinct non-NULL values as a sorted list; `[]` when there are none |
+| `collect` | `collect(name)` | The values as a list, see [list columns](queries.md#list-columns) |
 
 `count(*)` is always available with no measure definition. `*` means "all rows" and is **only** valid with `count` — `sum(*)` and friends are rejected. Detailed NULL / N=1 semantics for the statistical aggregations are documented in [database-support.md](../database-support.md).
 
@@ -500,21 +500,21 @@ The four substituted surfaces are:
 }
 ```
 
-Querying this model with `variables={"floor": 100}` renders `WHERE amount >= 100` before the body reaches sqlglot.
+Querying this model with `variables={"floor": 100}` binds `100` as the literal of `WHERE amount >= 100`. Every placeholder binds as a literal node of the parsed SQL, never as spliced text: inside a string literal (`'{region}'`), in a bare literal slot (a number, numeric string or boolean), or as the whole list of `IN ({regions})`. A placeholder in any other position — an identifier, a quoted identifier, a function or type name, a comment, part of an `IN` list — is rejected with the error stating that variables supply literal values, when the model is saved and again when a query binds it, and so is a value that is no literal in its slot (`"0 AND EXISTS (...)"` for `{floor}`).
 
 Rules:
 
 - **Same precedence** as everywhere else (runtime kwarg > stage > outer query > `model.query_variables`), and the same `{{`/`}}` literal-brace escaping.
 - **Raise on missing — once any variable is in play.** As soon as at least one variable is supplied (a `query_variables` default, or a caller/stage/runtime value), every `{var}` placeholder must resolve or execution raises `Undefined variable` — a parameterized model is meant to fail without its value, not silently render a neutral predicate.
 - **Variable-free executions treat braces as literals.** When there is *no* variable in play at all (no `query_variables` and no caller variables), the four surfaces are left untouched: a raw brace literal (e.g. a Postgres array `'{1,2,3}'`) survives verbatim, and a placeholder-shaped token like `'{status}'` is emitted as-is rather than raising. This is the deliberate contract that lets brace-bearing SQL coexist with the feature. If a model *does* use variables, escape any literal braces as `{{`/`}}`. Two kinds of model are exempt and always run substitution — one carrying an optional `{? ... ?}` block (so the block collapses), and a **generated** model that declares its variables in `meta.cube_variables` (an importer wrote the template, so there is no brace-literal ambiguity to protect and a missing variable raises normally).
-- **String escaping is Mode-A- and dialect-aware.** Write the surrounding quotes yourself (`WHERE region = '{region}'`); a string value's embedded single quotes are escaped so it stays inside that literal. The regime follows the datasource dialect: standard backends (SQLite, Postgres, DuckDB, …) double the quote (`''`); backslash-escaping backends (MySQL, ClickHouse, Snowflake, Redshift, BigQuery, Databricks, Spark) also escape backslashes, so a value like `a\'b` can't break out of the literal. Numbers (including booleans) insert verbatim; non-finite floats are rejected.
+- **String escaping is dialect-aware.** Write the surrounding quotes yourself (`WHERE region = '{region}'`); the value is spelled into that literal in the datasource dialect's own escaping, so a value like `a\'b` stays exactly that text. An unquoted placeholder takes a number, a numeric string or a boolean; non-finite floats are rejected.
 - **List values render an `IN`-list.** A `list` (or `tuple`) variable renders a comma-separated, injection-safe `IN`-list body. Write the parentheses yourself and **omit** per-element quotes — each string element is auto-quoted for you (the opposite of the scalar-string rule above, because a single placeholder can't carry per-element quotes):
 
     ```json
     { "filters": ["region IN ({regions})"] }
     ```
 
-    with `variables={"regions": ["US", "CA"]}` renders `region IN ('US', 'CA')`. Elements must be strings or numbers; an **empty list raises** (`IN ()` is invalid SQL — for "no filter" semantics use a sentinel default rather than an empty list). Passing a bare scalar here (`{"regions": "US"}`) renders `IN (US)` — unquoted, per the scalar rule above — so wrap single values in a one-element list: `{"regions": ["US"]}`. (The exception is a variable a *generated* model declares list-valued: see [importing Cube](../cube/cube_import.md#scalars-are-accepted-for-the-string-form), where the template is machine-written and a scalar is normalized for you.)
+    with `variables={"regions": ["US", "CA"]}` renders `region IN ('US', 'CA')`. Elements must be strings or numbers; an **empty list raises** (`IN ()` is invalid SQL — for "no filter" semantics use a sentinel default rather than an empty list). A scalar there binds as a one-element list.
 - **Optional blocks `{? ... ?}` — a filter that disappears when its variable is absent.** Wrap a predicate in `{? ... ?}` (Mode-A surfaces only): when every `{var}` inside is supplied, the block renders parenthesised; when any is missing, the whole block collapses to the neutral `(1=1)`. This is the SLayer form of a Cube `FILTER_PARAMS` optional pushdown. Put the `AND` outside the block so the collapse leaves valid SQL (open your `WHERE` with `1=1`):
 
     ```json
@@ -528,7 +528,7 @@ Rules:
 
 **Saved measure formulas** (`ModelMeasure.formula`) on those same models take variables too, bound as literals like any Mode-B expression and with no optional blocks, and inspection lists their placeholders as required unless defaulted.
 
-**Trusted input.** Substituted values are still treated as trusted, not attacker-controlled — prefer not to feed untrusted end-user input through `variables`. The Mode-A escaping is dialect-aware: it keeps a string value inside the quoted literal you wrote on every supported dialect, including backslash-escaping backends like MySQL and ClickHouse. Two residual caveats: a `{var}` placed in an **unquoted** position is still raw substitution (only *quoted* string literals are escaped); and the backslash-dialect escaping assumes the server's **default** string mode — a MySQL server running with `sql_mode=NO_BACKSLASH_ESCAPES` treats backslash as an ordinary char, which the whole sqlglot dialect layer (not just this feature) assumes is off.
+**Literals only.** No value a query, a stage or a `query_variables` default supplies can change the structure of the SQL it binds into. The backslash-dialect escaping assumes the server's **default** string mode — a MySQL server running with `sql_mode=NO_BACKSLASH_ESCAPES` treats backslash as an ordinary char, which the whole sqlglot dialect layer (not just this feature) assumes is off.
 
 ### Variable precedence
 
@@ -594,7 +594,7 @@ Query results use `model_name.column_name` keys. Aggregations map to keys: `sum(
 
 ## Schema versioning
 
-Every persisted SLayer entity (`SlayerModel`, `SlayerQuery`, `DatasourceConfig`, `Memory`) carries a `version: int` field — currently `18` for `SlayerModel`, `9` for `SlayerQuery`, `3` for `DatasourceConfig`, `7` for `Memory`. Behaviour:
+Every persisted SLayer entity (`SlayerModel`, `SlayerQuery`, `DatasourceConfig`, `Memory`) carries a `version: int` field — currently `19` for `SlayerModel`, `11` for `SlayerQuery`, `3` for `DatasourceConfig`, `8` for `Memory`. Behaviour:
 
 - **On save**, SLayer always writes the current schema version.
 - **On load**, an older `version` triggers a chain of pure dict→dict converters before Pydantic validation. Hand-edited and older files keep working as the schema evolves.

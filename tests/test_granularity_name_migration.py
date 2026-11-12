@@ -381,10 +381,6 @@ QUERY_POSITIONS: dict[str, Callable[[str], dict]] = {
     "inline-extension-measure": lambda g: {
         "source_model": {"source_name": "events", "measures": [{"name": "n", "formula": f"count_distinct({g}(created_at))"}]},
         "measures": ["n"]},
-    "inline-extension-column-granularity": lambda g: {
-        "source_model": {"source_name": "events", "columns": [
-            {"name": "bucketed_at", "sql": "created_at", "type": "TIMESTAMP", "granularity": g}]},
-        "dimensions": ["bucketed_at"], "measures": [SUM]},
 }
 
 # Every position of a stored model that accepts a granularity name: (model document, query over it).
@@ -450,21 +446,6 @@ class TestEveryPosition:
         assert "left_granularity" in dumped, dumped
         assert not _mentions(dumped, "left"), dumped
         assert _rows(await run(store.storage, query_fn("left_granularity"))) == expected
-
-
-@pytest.mark.parametrize("backend", BACKENDS)
-async def test_memory_over_an_inline_model_is_renamed(tmp_path: Any, backend: str) -> None:
-    inline = {k: v for k, v in events_doc(name="inline_events").items() if k != "version"}
-    query = stage_doc(source_model=inline, time_dimensions=[{"dimension": "created_at", "granularity": "left"}],
-                      measures=[SUM])
-    store = await _store(tmp_path=tmp_path, backend=backend, granularities=[granularity_definition("left")],
-                         models=[events_doc()], memories=[memory_doc(memory_id="m", query=query)])
-    await store.storage.get_datasource(DS)
-    assert "left_granularity" in store.raw()["memories/m"]
-    mem_query = await _memory_query(store.storage, "m")
-    assert _td_granularity(mem_query) == "left_granularity"
-    rows = (await run(store.storage, mem_query)).data
-    assert {str(r["inline_events.created_at"])[:10]: float(r["inline_events.s"]) for r in rows} == EXPECTED_BUCKETS
 
 
 @pytest.mark.parametrize("backend", BACKENDS)

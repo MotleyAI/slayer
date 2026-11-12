@@ -46,9 +46,10 @@ from slayer.core.models import (
     physical_column_sql,
     shadows_library_function,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import SlayerQuery, mode_a_texts
 from slayer.core.syntax import parse_expr
 from slayer.core.warnings import (
+    DeprecatedSpellingWarning,
     LibraryNameShadowWarning,
     SlayerLibraryNameShadowWarning,
     SlayerNameCollisionWarning,
@@ -87,6 +88,8 @@ from slayer.storage.legacy_alias_rewrite import (
 )
 from slayer.database.client import SqlClient
 from slayer.sql.dialects import dialect_for_ds_type
+from slayer.sql.mode_a_variables import check_placeholders
+from slayer.storage.extension_columns import holds_removed_forms, inline_extension_columns
 from slayer.sql.sql_template import check_aggregation_definition
 from slayer.live_schema.type_refinement import (
     has_refineable_columns,
@@ -105,13 +108,15 @@ _TO_ONE_CARDINALITIES = {"many_to_one", "one_to_one"}
 _LIVE_REFINEMENT_BELOW_VERSION = 8
 _MODEL_LOAD_CONCURRENCY = 8
 _MEMORY_FILTER_REPAIR_BELOW_VERSION = 4
-# Below v22 a stored join target may reach its model only by case, or target the spine.
-_JOIN_TARGET_REPAIR_BELOW_VERSION = 22
+# Below v23 a stored join target may reach its model only by case, or target the spine.
+_JOIN_TARGET_REPAIR_BELOW_VERSION = 23
 # Raw document reads of the enclosing ``load_models`` pass, by ``(backend, data_source, name)``.
 _RAW_PASS: ContextVar[dict[tuple[object, str, str], asyncio.Future[dict | None]] | None] = ContextVar(
     "_RAW_PASS", default=None)
 # Inside the one-time granularity settle, whose own loads must not wait on it.
 _SETTLING: ContextVar[bool] = ContextVar("_SETTLING", default=False)
+# The stored models whose extension columns are being inlined (their own loads must not recurse into them).
+_INLINING: ContextVar[frozenset[tuple[str, str]]] = ContextVar("_INLINING", default=frozenset())
 # The loading query engine's client source, set by its storage view around each call it delegates.
 CLIENT_SOURCE: ContextVar[ClientSource | None] = ContextVar("CLIENT_SOURCE", default=None)
 
@@ -206,6 +211,14 @@ def _stored_type(*, key: Any, columns: Any) -> str | None:
         return None
 
 
+def _extended(*, key: str, model: dict, extensions: list[dict]) -> list:
+    """``model[key]`` plus the ``key`` entries of each of ``extensions`` that extends ``model``."""
+    own = model.get(key)
+    added = [x for e in extensions if e.get("source_name") == model.get("name") and isinstance(e.get(key), list)
+             for x in e[key]]
+    return [*(own if isinstance(own, list) else []), *added]
+
+
 def _key_pairs(join: Any) -> list[tuple[Any, Any]]:
     pairs = join.get("join_pairs") if isinstance(join, dict) else None
     return [(p[0], p[1]) for p in pairs if isinstance(p, list) and len(p) == 2] if isinstance(pairs, list) else []
@@ -252,7 +265,7 @@ def _repaired_target(target: str, *, names: set[str]) -> str:
 
 
 def _with_repaired_targets(raw: Any, *, names: set[str]) -> Any:
-    """A raw peer document's joins as its pre-v22 target repair will read them."""
+    """A raw peer document's joins as its pre-v23 target repair will read them."""
     joins = raw.get("joins") if isinstance(raw, dict) else None
     if not isinstance(joins, list) or int(raw.get("version", 1)) >= _JOIN_TARGET_REPAIR_BELOW_VERSION:
         return raw
@@ -451,15 +464,14 @@ def _write_sample_fields(
 _CUSTOM_BUCKET_CALLS_BELOW = {"SlayerModel": 20, "Memory": 9}
 
 
-def with_canonical_spellings(model: SlayerModel) -> SlayerModel:
-    """``model`` with each deprecated spelling in its Mode-B texts replaced by its twin, warning once per spelling."""
+def with_canonical_spellings(model: SlayerModel) -> tuple[SlayerModel, list[DeprecatedSpellingWarning]]:
+    """``model`` with each deprecated spelling in its Mode-B texts replaced by its twin, and one warning per spelling."""
     found: dict[str, LegacySpan] = {}
     dumped = model.model_dump(mode="json", exclude_none=True)
     rewritten = rewrite_model_doc(dumped, lambda text: canonical_spellings(text, found=found))
     if not found:
-        return model
-    emit_deprecations(found)
-    return SlayerModel.model_validate(rewritten)
+        return model, []
+    return SlayerModel.model_validate(rewritten), emit_deprecations(found)
 
 
 def warn_library_shadows(model: SlayerModel) -> None:
@@ -590,7 +602,7 @@ class StorageBackend(ABC):
         """Persist a model after ``validate_for_save`` (skipped by ``_validate=False``, migration write-back only), each
         deprecated Mode-B spelling stored as its twin. Backends must NOT override this."""
         if _validate:
-            model = with_canonical_spellings(model)
+            model, _ = with_canonical_spellings(model)
             await self.validate_for_save(model, failures=failures)
             warn_library_shadows(model)
         await self._save_model_impl(model)
@@ -610,6 +622,7 @@ class StorageBackend(ABC):
         loaded, unloaded = await self.load_models(data_source=model.data_source, exclude=model.name)
         peers = {m.name: m for m in failures.skip((loaded, unloaded))}
         check_join_target_spellings(model, names=[n for ds, n in identities if ds == model.data_source], peers=peers)
+        await self._validate_mode_a_placeholders(model)
         validate_derived_columns(model=model, peers=peers, unloaded=frozenset(e.name for e in unloaded))
         check_model_filters(model=model, reachable=peers)
         self._validate_join_edges(model, peers=peers, identities=identities)
@@ -638,6 +651,10 @@ class StorageBackend(ABC):
                 raise CaseCollisionError(names=group, namespace=f"model {model.name!r}'s {where}")
         for payload in [*name_collision_warnings(model), *spine_variant_warnings(model)]:
             warnings.warn(SlayerNameCollisionWarning(payload), stacklevel=4)
+
+    async def _validate_mode_a_placeholders(self, model: SlayerModel) -> None:
+        ds = await self.get_datasource(model.data_source) if model.data_source else None
+        check_placeholders(mode_a_texts(model), dialect=dialect_for_ds_type(ds.type if ds else None))
 
     async def _validate_column_granularities(self, model: SlayerModel) -> None:
         named = [(c, c.granularity) for c in model.columns if c.granularity is not None and not isinstance(c.granularity, TimeGranularity)]
@@ -1050,6 +1067,7 @@ class StorageBackend(ABC):
             await self._canonicalize_join_key_spellings(data=data, data_source=data_source)
             await self._declare_join_keys(name=name, data=data, data_source=data_source)
             await self._repair_source_query_filters(data=data, data_source=data_source)
+            data = await self._inlined_source_queries(name=name, data=data, data_source=data_source)
             # Collapse stored exact-inverse mirror pairs.
             data = await self._dedup_exact_inverse_joins(
                 name=name, data=data, data_source=data_source,
@@ -1146,6 +1164,39 @@ class StorageBackend(ABC):
                 keys.extend(_incoming_keys(sibling=sibling, target=name, target_columns=columns))
         return keys
 
+    async def _inlined_source_queries(self, *, name: str, data: dict, data_source: str) -> dict:
+        """``data`` with its stages' extension columns inlined (``extension_columns``)."""
+        queries = data.get("source_queries")
+        if not isinstance(queries, list) or not all(isinstance(q, dict) for q in queries):
+            return data
+        token = _INLINING.set(_INLINING.get() | {(data_source, name)})
+        try:
+            inlined = await self._inlined_queries(queries=queries, data_source=data_source, document=name)
+        finally:
+            _INLINING.reset(token)
+        return data if inlined is None else {**data, "source_queries": inlined}
+
+    async def _inlined_queries(self, *, queries: list[dict], data_source: str | None, document: str) -> list | None:
+        """Raw stored ``queries`` with their extension columns inlined; ``None`` when none holds a removed form."""
+        migrated = [_mig.migrate("SlayerQuery", _mig.stamp_stored(q)) for q in queries]
+        if not any(holds_removed_forms(q) for q in migrated):
+            return None
+        models_by_ds: dict[str, dict[str, SlayerModel]] = {}
+        for ds, model_name in await self._list_all_model_identities():
+            if (data_source is not None and ds != data_source) or (ds, model_name) in _INLINING.get():
+                continue
+            try:
+                model = await self.get_model(model_name, data_source=ds)
+            except StoredDocumentLoadError:
+                continue
+            if model is not None:
+                models_by_ds.setdefault(ds, {})[model.name] = model
+        converted = inline_extension_columns(
+            migrated, models_by_ds=models_by_ds, data_source=data_source,
+            priority=await self.get_datasource_priority(), document=document,
+        )
+        return [without_none(q.model_dump(mode="json")) for q in converted]
+
     async def _repair_source_query_filters(self, *, data: dict, data_source: str) -> None:
         queries = data.get("source_queries")
         if not isinstance(queries, list):
@@ -1173,13 +1224,16 @@ class StorageBackend(ABC):
         host = await self._query_host(source=query.get("source_model"), data_source=data_source, stage_names=stage_names)
         if host is None:
             return
+        extensions = query.get("extensions")
+        extensions = [e for e in extensions if isinstance(e, dict)] if isinstance(extensions, list) else []
         for i, pairs in enumerate(found):
             if pairs is None:
                 continue
             temporal = [
                 literal for literal, column in pairs
-                if await self._stored_column_type(host=host, parts=[p.name for p in column.parts])
-                in (DataType.DATE.value, DataType.TIMESTAMP.value)
+                if await self._stored_column_type(
+                    host=host, parts=[p.name for p in column.parts], extensions=extensions,
+                ) in (DataType.DATE.value, DataType.TIMESTAMP.value)
             ]
             if temporal:
                 filters[i] = repaired_filter(filters[i], temporal)
@@ -1190,7 +1244,7 @@ class StorageBackend(ABC):
         """The raw stored model a stored query reads and its datasource; ``None`` for a stage or an unresolvable source."""
         if isinstance(source, dict) and isinstance(source.get("columns"), list):
             return source, str(source.get("data_source") or data_source)
-        name = source.get("source_name") if isinstance(source, dict) else source
+        name = source
         if not isinstance(name, str) or name in stage_names:
             return None
         if data_source is None:
@@ -1202,22 +1256,23 @@ class StorageBackend(ABC):
         raw = await self._cached_raw_model_dict(name=name, data_source=data_source) if data_source else None
         return (raw, data_source) if isinstance(raw, dict) and data_source else None
 
-    async def _stored_column_type(self, *, host: tuple[dict, str], parts: list[str]) -> str | None:
-        """The stored type of the column ``parts`` names from ``host``, walking its stored joins."""
+    async def _stored_column_type(
+        self, *, host: tuple[dict, str], parts: list[str], extensions: list[dict],
+    ) -> str | None:
+        """The stored type of the column ``parts`` names from ``host``, walking its stored joins plus the query's ``extensions``."""
         current, data_source = host
         quals, leaf = parts[:-1], parts[-1]
         if quals and quals[0] == current.get("name"):
             quals = quals[1:]
         for hop in quals:
-            joins = current.get("joins")
-            joins = [j for j in joins if isinstance(j, dict)] if isinstance(joins, list) else []
+            joins = [j for j in _extended(key="joins", model=current, extensions=extensions) if isinstance(j, dict)]
             target = next((j.get("target_model") for j in joins if j.get("name") == hop), None) or next(
                 (hop for j in joins if not j.get("name") and j.get("target_model") == hop), None)
             peer = await self._cached_raw_model_dict(name=target, data_source=data_source) if isinstance(target, str) else None
             if peer is None:
                 return None
             current = peer
-        return _stored_type(key=leaf, columns=current.get("columns"))
+        return _stored_type(key=leaf, columns=_extended(key="columns", model=current, extensions=extensions))
 
     async def _dedup_exact_inverse_joins(
         self, *, name: str, data: dict, data_source: str,
@@ -1472,6 +1527,11 @@ class StorageBackend(ABC):
             # Memories are never written back, so the repair repeats on every load of a pre-v4 document.
             if isinstance(data, dict) and int(data["version"]) < _MEMORY_FILTER_REPAIR_BELOW_VERSION:
                 await self._repair_query_filters(query=data.get("query"), data_source=None)
+            # ...and so does the extension-column inlining, on every load of a pre-v10 document.
+            if isinstance(data, dict) and int(data["version"]) < _mig.CURRENT_VERSIONS["Memory"] and isinstance(
+                    data.get("query"), dict):
+                inlined = await self._inlined_queries(queries=[data["query"]], data_source=None, document=memory_id)
+                data = data if inlined is None else {**data, "query": inlined[0]}
             return Memory.model_validate(data)
 
     @abstractmethod

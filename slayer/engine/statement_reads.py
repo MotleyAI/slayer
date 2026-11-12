@@ -38,11 +38,16 @@ def statement_reads(
         if root is None:
             continue
         models = with_list_children({**own.models_by_name, root.name: root})
+        # Closed in the plan's own universe: a stored model and another stage's inline namesake never mix.
+        local = StatementReads()
         for root_name, root_key in plan_value_keys_by_root(plan):
             key_root = models.get(root_name, root) if root_name else root
             for key in walk_value_keys(root_key):
-                _add_key(reads, key=key, root=key_root, models=models)
-    _close_columns(reads, models=_all_models(plans, bundle=bundle))
+                _add_key(local, key=key, root=key_root, models=models)
+        _close_columns(local, models=models)
+        reads.columns |= local.columns
+        reads.joins |= local.joins
+        reads.aggregations |= local.aggregations
     return reads
 
 
@@ -74,21 +79,13 @@ def _add_path(reads: StatementReads, *, path: tuple[str, ...], root: SlayerModel
         reads.columns.update((target, t) for _, t in pairs)
 
 
-def _all_models(plans: list, *, bundle: ResolvedSourceBundle) -> dict[str, SlayerModel]:
-    models = dict(bundle.models_by_name)
-    for plan in plans:
-        if plan.stage_bundle is not None:
-            models.update(plan.stage_bundle.models_by_name)
-    return models
-
-
 def _close_columns(reads: StatementReads, *, models: dict[str, SlayerModel]) -> None:
     """Add every column a read derived column's definition reads, transitively."""
     pending = list(reads.columns)
     while pending:
         model_name, column_name = pending.pop()
         host = models.get(model_name)
-        column = host.get_column(column_name) if host is not None else None
+        column = host.get_column(column_name, quoted=True) if host is not None else None
         if host is None or column is None:
             continue
         for read in definition_reads(column=column, host=host, reachable=models):

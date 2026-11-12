@@ -50,8 +50,9 @@ async def engine48(request) -> AsyncIterator[SlayerQueryEngine]:
         yield e
 
 
-def _b_over(dim: str, source) -> SlayerQuery:
-    return query(name="b", source_model=source, dimensions=[dim], measures=[m("sum(amount)", "amt")])
+def _b_over(dim: str, source, **kw) -> SlayerQuery:
+    return query(name="b", source_model=source, dimensions=[dim], measures=[m("sum(amount)", "amt")],
+                 **kw)
 
 
 def _root_over_b(flat_dim: str) -> SlayerQuery:
@@ -72,10 +73,10 @@ class TestStoredDefinitionsNeverSeeStages:
     ) -> None:
         customers_stage = query(name="customers", source_model="orders", dimensions=["customer_id"],
                                 measures=[m("max(status)", "tier")])
-        b = _b_over("customers.tier", {
+        b = _b_over("customers.tier", "orders", extensions=[{
             "source_name": "orders",
             "joins": [{"target_model": "customers", "join_pairs": [["customer_id", "customer_id"]]}],
-        })
+        }])
         resp = await engine.execute([customers_stage, b, _root_over_b("customers__tier")])
         assert rows_by(resp.data, key="b.customers__tier", value="b.total") == {"ok": 105.0, "new": 40.0}
 
@@ -102,8 +103,9 @@ class TestQueryBackedPrivateStageNames:
         s = query(name="s", source_model="qb_shadow", dimensions=["customers__tier"],
                   measures=[m("sum(amt)", "t")])
         root = query(
-            source_model={"source_name": "customers", "joins": [
-                {"target_model": "s", "join_pairs": [["tier", "customers__tier"]]}]},
+            source_model="customers",
+            extensions=[{"source_name": "customers", "joins": [
+                {"target_model": "s", "join_pairs": [["tier", "customers__tier"]]}]}],
             dimensions=["tier", "s.t"], measures=[m("sum(spend)", "sp")])
         resp = await engine.execute([s, root])
         assert resp.columns == ["customers.tier", "customers.s.t", "customers.sp"]
@@ -226,8 +228,9 @@ class TestReverseHopSpelling:
     async def test_reverse_hop_out_of_a_stage_is_spelled_by_its_name(self, engine) -> None:
         s = query(name="s", source_model="customers", dimensions=["id", "tier"],
                   measures=[m("sum(spend)", "sp")], to_many_handling="broadcast")
-        root = query(source_model={"source_name": "s", "joins": [
-                         {"target_model": "orders", "join_pairs": [["id", "customer_id"]]}]},
+        root = query(source_model="s",
+                     extensions=[{"source_name": "s", "joins": [
+                         {"target_model": "orders", "join_pairs": [["id", "customer_id"]]}]}],
                      dimensions=["tier"], measures=[m("sum(orders.amount)", "a")], to_many_handling="broadcast")
         with pytest.warns(UserWarning):
             resp = await engine.execute([s, root])
@@ -239,8 +242,9 @@ class TestReverseHopSpelling:
     async def test_producer_rooted_at_a_stage_aliases_its_host_by_model(self, engine) -> None:
         k = query(name="kpis", source_model="orders", dimensions=["customer_id"],
                   measures=[m("sum(amount)", "amt")])
-        root = query(source_model={"source_name": "customers", "joins": [
-                         {"target_model": "kpis", "join_pairs": [["id", "customer_id"]]}]},
+        root = query(source_model="customers",
+                     extensions=[{"source_name": "customers", "joins": [
+                         {"target_model": "kpis", "join_pairs": [["id", "customer_id"]]}]}],
                      dimensions=["tier"], measures=[m("sum(kpis.amt)", "t")])
         resp = await engine.execute([k, root])
         assert rows_by(resp.data, key="customers.tier", value="customers.t") == AMOUNT_BY_TIER

@@ -46,7 +46,7 @@ Each entry of a join's `join_pairs` SHALL name a column of the model on its side
 
 #### Scenario: An extension join with an undeclared source key is rejected
 
-- **WHEN** a query's `source_model` extension adds a join whose source-side key is not a column of the extended model or of the extension
+- **WHEN** a query extension adds a join whose source-side key is not a column of the extended model
 - **THEN** the query fails with the same construction error, before any SQL is generated
 
 ### Requirement: The physical spelling is applied once, at emission

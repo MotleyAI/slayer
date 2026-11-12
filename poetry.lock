@@ -3552,14 +3552,14 @@ utils = ["numpydoc"]
 
 [[package]]
 name = "living-architecture"
-version = "0.4.0"
-description = "Keep coding agents from eroding your architecture: a Claude Code plugin and CLI that enforce a LikeC4 model as the import law for Python and TypeScript, with a spec-driven PR flow and verified refactoring."
+version = "0.6.0"
+description = "A Claude Code plugin for Python and TypeScript code that agents write: normative principles attached to a LikeC4 architecture model, which also serves as an import whitelist. Enforced by a complete PR workflow that generates OpenSpec changes, whose archives double as ADRs."
 optional = false
 python-versions = ">=3.11"
 groups = ["dev"]
 files = [
-    {file = "living_architecture-0.4.0-py3-none-any.whl", hash = "sha256:09a29d18ab82818edd05110b8eae5caaa28717e0191d53724869b9be3b3325d9"},
-    {file = "living_architecture-0.4.0.tar.gz", hash = "sha256:2ec5461e386bf4a9597cd16f9702088b385448ebcc191a3cfb4fb7d0dd36539d"},
+    {file = "living_architecture-0.6.0-py3-none-any.whl", hash = "sha256:a701c81344d694cefc297726bf5610ec8dd6c2a4eff53bd161270e583c01be36"},
+    {file = "living_architecture-0.6.0.tar.gz", hash = "sha256:ab8f68d83c0b29436a6eff2ab90c98331e321e6709334f62904d70a1fe92dc0e"},
 ]
 
 [package.dependencies]
@@ -3568,6 +3568,7 @@ pydantic = ">=2.6"
 pyyaml = ">=6"
 referencing = ">=0.28.4"
 rope = ">=1.15"
+typing-extensions = ">=4.4"
 
 [package.extras]
 verify = ["basedpyright (>=1.20)"]
@@ -5861,22 +5862,22 @@ dev = ["argcomplete", "attrs (>=19.2)", "hypothesis (>=3.56)", "mock", "requests
 
 [[package]]
 name = "pytest-asyncio"
-version = "1.3.0"
+version = "1.4.1.post1"
 description = "Pytest support for asyncio"
 optional = false
 python-versions = ">=3.10"
 groups = ["dev"]
 files = [
-    {file = "pytest_asyncio-1.3.0-py3-none-any.whl", hash = "sha256:611e26147c7f77640e6d0a92a38ed17c3e9848063698d5c93d5aa7aa11cebff5"},
-    {file = "pytest_asyncio-1.3.0.tar.gz", hash = "sha256:d7f52f36d231b80ee124cd216ffb19369aa168fc10095013c6b014a34d3ee9e5"},
+    {file = "pytest_asyncio-1.4.1.post1-py3-none-any.whl", hash = "sha256:0755e488cc0a2b9bd2eab7292cc6390d4cbb8390f1020745647bae5a708e0165"},
+    {file = "pytest_asyncio-1.4.1.post1.tar.gz", hash = "sha256:f582d9ea4a1c082195abe8bd29a1fe106aeb1cd435e3dad2d3bc2749935c36a2"},
 ]
 
 [package.dependencies]
-pytest = ">=8.2,<10"
+pytest = ">=8.4"
 typing-extensions = {version = ">=4.12", markers = "python_version < \"3.13\""}
 
 [package.extras]
-docs = ["sphinx (>=5.3)", "sphinx-rtd-theme (>=1)"]
+docs = ["sphinx (>=5.3)", "sphinx-rtd-theme (>=1)", "sphinx-tabs (>=3.5)"]
 testing = ["coverage (>=6.2)", "hypothesis (>=5.7.1)"]
 
 [[package]]
@@ -8393,4 +8394,4 @@ trino = ["trino"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "8a27c22fe3e69ac8736354f4a112634d1f7be8e5e0727e8ae5b94c25baaa6c36"
+content-hash = "1979199ddad6de67289e23bdaa5d41978cc797f629c6331f8d460501c4cf2b60"

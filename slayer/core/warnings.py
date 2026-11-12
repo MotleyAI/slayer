@@ -239,6 +239,20 @@ def _single_line(text: str) -> str:
     return text.replace("\r", "\\r").replace("\n", "\\n")
 
 
+class ExtensionColumnInlinedWarning(SlayerWarning):
+    """A stored query's extension column was inlined where it is used; its text now reads as Mode B."""
+
+    kind: Literal["extension_column_inlined"] = "extension_column_inlined"
+    document: str
+    column: str
+
+    def human_message(self) -> str:
+        return _single_line(
+            f"stored document {self.document!r}: extension column {self.column!r} was inlined where it is used; "
+            f"its text is now read as a SLayer expression"
+        )
+
+
 class UnloadableDocumentWarning(SlayerWarning):
     """A stored model or memory that could not be loaded was skipped; ``data_source`` is ``None`` for a memory."""
 
@@ -322,6 +336,18 @@ class WholeListWarning(SlayerWarning):
                 f"elements; count_distinct({self.list}.value) counts distinct elements")
 
 
+class DeprecatedInputWarning(SlayerWarning):
+    """The input form ``old`` was converted to ``new``; ``old`` stops being accepted in SLayer ``removal``."""
+
+    kind: Literal["deprecated_input"] = "deprecated_input"
+    old: str
+    new: str
+    removal: str
+
+    def human_message(self) -> str:
+        return f"{self.old} is deprecated and will be removed in SLayer {self.removal}; use {self.new} instead"
+
+
 class NameCollisionWarning(SlayerWarning):
     """Stored model ``model`` holds ``names`` in one ``namespace``, differing only in case; each resolves only when
     spelled exactly (or double-quoted)."""
@@ -377,10 +403,12 @@ AnySlayerWarning = Annotated[
         StatementTimeoutSkippedWarning,
         WholePeriodsNonNestingWarningPayload,
         UnloadableDocumentWarning,
+        ExtensionColumnInlinedWarning,
         NarrowedAccessWarning,
         LibraryNameShadowWarning,
         BrokenDependentWarning,
         WholeListWarning,
+        DeprecatedInputWarning,
         DeprecatedSpellingWarning,
         NameCollisionWarning,
         SpineJoinDroppedWarning,
@@ -426,6 +454,17 @@ class SlayerUnloadableDocumentWarning(UserWarning):
     """Carrier ``UserWarning`` for an ``UnloadableDocumentWarning`` payload — one wording on both channels."""
 
     def __init__(self, payload: UnloadableDocumentWarning) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerExtensionColumnInlinedWarning(UserWarning):
+    """Carrier ``UserWarning`` for an ``ExtensionColumnInlinedWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: ExtensionColumnInlinedWarning) -> None:
         super().__init__(payload)
         self.payload = payload
 

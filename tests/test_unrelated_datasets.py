@@ -416,7 +416,8 @@ class TestRowLevelRefusal:
     def test_empty_join_pairs_name_the_aggregate_remedy(self) -> None:
         with pytest.raises(pydantic.ValidationError) as exc:
             SlayerQuery.model_validate({
-                "source_model": {"source_name": "customers", "joins": [{"target_model": "events", "join_pairs": []}]},
+                "source_model": "customers",
+                "extensions": [{"source_name": "customers", "joins": [{"target_model": "events", "join_pairs": []}]}],
                 "measures": ["count(*)"],
             })
         msg = str(exc.value)

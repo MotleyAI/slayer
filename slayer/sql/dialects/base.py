@@ -676,6 +676,29 @@ class ExplainStatements(BaseModel):
         return self
 
 
+# Makes the current transaction read-only (a fixed driver-level statement).
+SET_TRANSACTION_READ_ONLY = "SET TRANSACTION READ ONLY"
+
+
+class LocalDatabase(BaseModel):
+    """Where a connection URL keeps its database: in memory, in the local file at ``path``, or elsewhere."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["memory", "file", "remote"] = "remote"
+    path: str | None = None
+
+
+class ReadOnlyEngineArgs(BaseModel):
+    """Engine arguments making a dialect's connections read-only: connect arguments to set (each already merged
+    with the caller's), and engine execution options."""
+
+    model_config = ConfigDict(frozen=True)
+
+    connect_args: dict[str, Any] = Field(default_factory=dict)
+    execution_options: dict[str, Any] = Field(default_factory=dict)
+
+
 class DriverFacts(BaseModel):
     """The URL scheme, drivers and pip extra one datasource type connects with."""
 
@@ -799,6 +822,15 @@ class SqlDialect(BaseModel):
     identifier_folding: ClassVar[IdentifierFolding] = "none"
 
     transaction_mode: ClassVar[TransactionMode] = "driver"
+
+    # The only drivers SLayer serves this type through (``None``: any), by URL ``+driver`` part.
+    supported_drivers: ClassVar[frozenset[str] | None] = None
+
+    # ``make_connection_read_only`` reads the server profile, filled on the connection's engine first.
+    read_only_reads_profile: ClassVar[bool] = False
+
+    # The statement making the current transaction read-only, guarding type probes; ``None`` without one.
+    read_only_transaction_sql: ClassVar[str | None] = None
 
     def unquoted_identifier(self, name: str) -> str:
         """The exact name the database resolves ``name``, written unquoted, to."""
@@ -1951,13 +1983,53 @@ class SqlDialect(BaseModel):
         """Hook: session setup on every new pooled connection (e.g. ``USE WAREHOUSE``)."""
         return None
 
+    def local_database(self, url: URL) -> LocalDatabase:  # NOSONAR(S1172) — no-op hook default
+        """Hook: where ``url`` keeps its database; elsewhere by default."""
+        return LocalDatabase()
+
+    def missing_database_error(self, exc: BaseException) -> bool:  # NOSONAR(S1172) — no-op hook default
+        """Hook: whether ``exc`` is the driver refusing to open a database file that does not exist."""
+        return False
+
+    def read_only_engine_args(
+        self,
+        *,
+        url: URL,  # NOSONAR(S1172) — no-op hook default; overrides use it
+        datasource: "DatasourceConfig",  # NOSONAR(S1172) — no-op hook default; overrides use it
+        connect_args: Mapping[str, Any],  # NOSONAR(S1172) — no-op hook default; overrides use it
+    ) -> ReadOnlyEngineArgs:
+        """Hook: engine arguments making ``url``'s connections read-only, merged with the caller's
+        ``connect_args``; none by default."""
+        return ReadOnlyEngineArgs()
+
+    def make_connection_read_only(
+        self, dbapi_connection: Any, *, profile: ServerProfile,  # NOSONAR(S1172) — no-op hook default
+    ) -> None:
+        """Hook: make a new connection to a non-memory database read-only, given its server's profile."""
+        return None
+
+    def begins_read_only(
+        self,
+        *,
+        url: URL,  # NOSONAR(S1172) — no-op hook default; overrides use it
+        datasource: "DatasourceConfig",  # NOSONAR(S1172) — no-op hook default; overrides use it
+    ) -> bool:
+        """Hook: whether ``begin_read_only`` starts each transaction of ``url``'s connections."""
+        return False
+
+    def begin_read_only(self, dbapi_connection: Any) -> None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: start the connection's next transaction read-only, in place of the driver's own start."""
+        return None
+
     @property
     def needs_sync_connections(self) -> bool:
-        """Whether a per-connection hook (UDFs, session overrides) runs, which an async driver's connections cannot take."""
+        """Whether a per-connection hook (UDFs, session overrides, read-only setup) runs, which an async driver's
+        connections cannot take."""
         cls = type(self)
         return (
             cls.register_udfs is not SqlDialect.register_udfs
             or cls.apply_session_overrides is not SqlDialect.apply_session_overrides
+            or cls.make_connection_read_only is not SqlDialect.make_connection_read_only
         )
 
     def statement_timeout(self, timeout_seconds: int) -> Expression | None:  # NOSONAR(S1172) — no-op hook default

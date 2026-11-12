@@ -362,7 +362,7 @@ def test_backslash_escapes_strings_matches_sqlglot_for_all_dialects() -> None:
 
 def test_backslash_escapes_strings_is_bool() -> None:
     # Contract: a plain bool (not a truthy set/other), so callers can pass it
-    # straight into substitute_variables(backslash_escapes=...).
+    # straight into a dialect check.
     assert isinstance(MysqlDialect().backslash_escapes_strings, bool)
     assert isinstance(SqliteDialect().backslash_escapes_strings, bool)
 

@@ -181,7 +181,8 @@ class TestNonFinalStage:
     def _banded_stages(**stage2_kwargs) -> list:
         stage1 = q(name="banded", dimensions=["region", BAND],
                    measures=[ModelMeasure(formula="sum(amount)", name="bt")])
-        stage2 = SlayerQuery(source_model=ModelExtension(source_name="banded"),
+        stage2 = SlayerQuery(source_model="banded",
+                             extensions=[ModelExtension(source_name="banded")],
                              **stage2_kwargs)
         return [stage1, stage2]
 
@@ -212,7 +213,7 @@ class TestNonFinalStage:
               measures=[ModelMeasure(formula="sum(amount)", name="m"),
                         ModelMeasure(formula="sum(amount, partition_by=[])",
                                      name="gt")]),
-            SlayerQuery(source_model=ModelExtension(source_name="s1"),
+            SlayerQuery(source_model="s1", extensions=[ModelExtension(source_name="s1")],
                         dimensions=["region"],
                         measures=[ModelMeasure(formula="sum(m)", name="ms"),
                                   ModelMeasure(formula="max(gt)", name="gts")]),
@@ -235,7 +236,7 @@ class TestNonFinalStage:
               measures=[ModelMeasure(formula="sum(amount)", name="m"),
                         ModelMeasure(formula="sum(amount, window='1y')",
                                      name="w")]),
-            SlayerQuery(source_model=ModelExtension(source_name="s1"),
+            SlayerQuery(source_model="s1", extensions=[ModelExtension(source_name="s1")],
                         dimensions=["region"],
                         measures=[ModelMeasure(formula="max(w)", name="wm")]),
         ]
@@ -260,7 +261,7 @@ class TestNestingIsCardinalityNeutral:
             return [
                 q(name="s1", dimensions=dims,
                   measures=[ModelMeasure(formula="sum(amount)", name="bt")]),
-                SlayerQuery(source_model=ModelExtension(source_name="s1"),
+                SlayerQuery(source_model="s1", extensions=[ModelExtension(source_name="s1")],
                             dimensions=["region"],
                             measures=[ModelMeasure(formula="sum(bt)", name="t")]),
             ]

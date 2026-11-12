@@ -11,8 +11,7 @@ aggregations.
 The system SHALL accept the functional spelling in every position that accepts
 an aggregation: query measures, query filters (both row-level and
 post-aggregation phases), order, model measure formulas (saved via the API and
-hand-authored in YAML storage), model-extension measures, inline source-model
-measures, multi-stage source-query formulas, computed-dimension expressions,
+hand-authored in YAML storage), model-extension measures, multi-stage source-query formulas, computed-dimension expressions,
 and inside transform or arithmetic expressions (including mixed-grain
 arithmetic over partitioned aggregates).
 
@@ -30,7 +29,7 @@ arithmetic over partitioned aggregates).
 - **THEN** queries against it succeed and return the summed revenue
 
 #### Scenario: Model-extension and inline-model measures
-- **WHEN** a `ModelExtension` measure or an inline `source_model` measure uses the functional spelling
+- **WHEN** a `ModelExtension` measure uses the functional spelling
 - **THEN** the query succeeds and returns the aggregation's executed values
 
 #### Scenario: Multi-stage source-query formulas
@@ -476,7 +475,7 @@ stay separate producers; equal keys, however spelled, SHALL share one.
 
 ### Requirement: The colon spelling is refused
 
-Fresh input using the colon aggregation spelling `<source>:<name>[(<args>)]` — a column, a join-path column, `*` or `<path>.*` source — or the colon granularity spelling `<column>:<granularity>` SHALL be rejected with a typed error naming the colon span and its twin, in every Mode-B position (query measures, filters, order keys, dimensions, time dimensions, `main_time_dimension`, computed-dimension expressions, model measure formulas, model-extension and inline-model measures, stage formulas), when a model or saved query is saved, and in entity references (`recommend_root_model` items, memory `linked_entities`). The twin SHALL be `date_trunc('<name>', <source>)` when `<name>` is a built-in granularity, and `<name>(<source>[, <args>])` otherwise, with the source and arguments as written. A colon inside a string literal, a quoted identifier or a `::` cast SHALL NOT be refused.
+Fresh input using the colon aggregation spelling `<source>:<name>[(<args>)]` — a column, a join-path column, `*` or `<path>.*` source — or the colon granularity spelling `<column>:<granularity>` SHALL be rejected with a typed error naming the colon span and its twin, in every Mode-B position (query measures, filters, order keys, dimensions, time dimensions, `main_time_dimension`, computed-dimension expressions, model measure formulas, model-extension measures, stage formulas), when a model or saved query is saved, and in entity references (`recommend_root_model` items, memory `linked_entities`). The twin SHALL be `date_trunc('<name>', <source>)` when `<name>` is a built-in granularity, and `<name>(<source>[, <args>])` otherwise, with the source and arguments as written. A colon inside a string literal, a quoted identifier or a `::` cast SHALL NOT be refused.
 
 #### Scenario: Measure
 

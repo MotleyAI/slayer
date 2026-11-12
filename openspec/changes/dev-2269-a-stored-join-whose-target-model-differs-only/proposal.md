@@ -5,10 +5,10 @@ Unquoted model names match case-insensitively (`queries/identifier-case`), yet a
 ## What Changes
 
 - A save is refused when a join target reaches a stored model only by case (naming the declared spelling), when it reaches several by case, and when the saved model's name differs only in case from a peer's join target.
-- Stored models below version 22 have each join target respelled to the one stored model it reaches by case, on load.
+- Stored models below version 23 have each join target respelled to the one stored model it reaches by case, on load.
 - A query's model-name positions reach the built-in `time_spine` in any case unless quoted; a stored model whose name differs from `time_spine` only in case makes the other spellings ambiguous.
 - **BREAKING** A new model whose name equals `time_spine` in any case is refused; one already stored keeps working by its exact spelling and warns wherever it is loaded, saved or read.
-- **BREAKING** A join targeting the built-in `time_spine` in any spelling is refused at save; on load (below version 22) such a join is dropped with a warning.
+- **BREAKING** A join targeting the built-in `time_spine` in any spelling is refused at save; on load (below version 23) such a join is dropped with a warning.
 
 ## Capabilities
 
@@ -20,7 +20,7 @@ Unquoted model names match case-insensitively (`queries/identifier-case`), yet a
 
 ## Impact
 
-- `slayer/storage/base.py` (save validation, load-time upgrade), `slayer/storage/migrations.py` (`SlayerModel` version 22), `slayer/storage/access_filtered.py` (check order in the view).
+- `slayer/storage/base.py` (save validation, load-time upgrade), `slayer/storage/migrations.py` (`SlayerModel` version 23), `slayer/storage/access_filtered.py` (check order in the view).
 - `slayer/core/syntax.py` (path-head respelling), `slayer/core/errors.py` (`JoinTargetCaseError`), `slayer/core/time_spine.py`.
 - `slayer/engine/query_engine.py` (respelling at the entry), `slayer/engine/bundle_builder.py` (spine ambiguity, ambiguous-target backstop, warnings).
 - Docs: `docs/concepts/` model joins and time spine pages.

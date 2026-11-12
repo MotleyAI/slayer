@@ -54,7 +54,7 @@ An aggregation is written `agg(col)` or `agg(col, args)` — for example
 rows: `count(*)`, `count(customers.*)`, and a bare column counts non-null
 values: `count(customers.regions.name)`. This holds in **every** position that
 accepts aggregations (query measures, filters, order, model measures, model
-extensions, inline models, multi-stage formulas, computed-dimension
+extensions, multi-stage formulas, computed-dimension
 expressions, transform and arithmetic operands) and for **every** aggregation
 — builtin, aliased (`countD(x)` = `count_distinct(x)`), and model-defined
 custom aggregations. Declared parameters may be passed positionally in
@@ -258,7 +258,7 @@ Arithmetic on TEXT is typed DOUBLE, a `CAST` you write is never rewritten (it fa
 
 ### Lists
 
-Over a [list column](queries.md#list-columns) `contains(skills, 'go')`, `contains_any(skills, ['go', 'rust'])`, `contains_all(skills, {wanted})` and `length(skills)` (the number of distinct elements) read only its non-NULL elements and are `NULL` only for a `NULL` argument, an array literal's elements are literals or `{variable}`s of one type family (`[]` takes the type of its context), and on SQLite, MySQL, MariaDB, SQL Server, Redshift, Databricks, Spark and Oracle every list construct is a plan-time error.
+Over a [list column](queries.md#list-columns) `contains(skills, 'go')`, `contains_any(skills, ['go', 'rust'])`, `contains_all(skills, {wanted})` and `length(skills)` (the number of distinct elements) read only its non-NULL elements and are `NULL` only for a `NULL` argument, and an array literal's elements are literals or `{variable}`s of one type family (`[]` takes the type of its context). [Database support](../database-support.md) names the databases that run lists.
 
 ## Date and time functions
 

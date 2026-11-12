@@ -246,14 +246,14 @@ class TestFacadeDynamicJoin:
         # ON joins to stores.id (the PK) -> target is unique -> many_to_one.
         sql = _metabase_join_sql('"public"."orders"."store_id" = "Stores"."id"')
         result = translate(sql=sql, catalog=_dyn_catalog(), dialect="postgres")
-        ext = result.query.source_model
+        ext = result.query.extensions[0]
         assert ext.joins[0].cardinality is JoinCardinality.MANY_TO_ONE
 
     def test_dynamic_join_none_when_target_not_unique(self) -> None:
         # ON joins to stores.tax_rate (not PK/unique) -> undetermined -> None.
         sql = _metabase_join_sql('"public"."orders"."store_id" = "Stores"."tax_rate"')
         result = translate(sql=sql, catalog=_dyn_catalog(), dialect="postgres")
-        ext = result.query.source_model
+        ext = result.query.extensions[0]
         assert ext.joins[0].cardinality is None
 
     def test_dynamic_join_none_for_composite_pk_member(self) -> None:
@@ -289,7 +289,7 @@ class TestFacadeDynamicJoin:
             'ON "public"."orders"."store_id" = "Stores"."id"'
         )
         result = translate(sql=sql, catalog=catalog, dialect="postgres")
-        ext = result.query.source_model
+        ext = result.query.extensions[0]
         assert ext.joins[0].cardinality is None
 
     def test_dynamic_join_many_to_one_for_non_pk_unique_target(self) -> None:
@@ -324,5 +324,5 @@ class TestFacadeDynamicJoin:
             'ON "public"."orders"."store_code" = "Stores"."code"'
         )
         result = translate(sql=sql, catalog=catalog, dialect="postgres")
-        ext = result.query.source_model
+        ext = result.query.extensions[0]
         assert ext.joins[0].cardinality is JoinCardinality.MANY_TO_ONE

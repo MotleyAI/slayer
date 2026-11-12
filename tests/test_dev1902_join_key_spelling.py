@@ -219,8 +219,9 @@ class TestQueryBackedJoinKeys:
             **_customer_totals().model_dump(exclude={"joins"}), "joins": []})
         await all_renamed.save_model(base)
         resp = await all_renamed.execute(_query(
-            source_model={"source_name": "customer_totals", "joins": [
-                {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}]},
+            source_model="customer_totals",
+            extensions=[{"source_name": "customer_totals", "joins": [
+                {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}]}],
             dimensions=["customers.name"],
             measures=[{"formula": "sum(amt)", "name": "total"}]))
         assert cells(resp, dim_suffix="customers.name", measure="total") == AMOUNT_BY_CUSTOMER

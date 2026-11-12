@@ -119,7 +119,7 @@ nbformat = ">=5.10"
 ipykernel = ">=6.0"
 pre-commit = "^4.5.1"
 notebook = "^7.5.5"
-pytest-asyncio = "^1.3.0"
+pytest-asyncio = "^1.4.1"
 pyinstrument = "^5.1.2"
 # Flight SQL facade test fixtures drive the upstream Apache flight-sql-jdbc-driver
 # JAR from Python so the capture corpus + integration tests exercise the exact
@@ -133,7 +133,7 @@ jpype1 = "^1.5.0"
 testcontainers = {extras = ["mysql", "clickhouse", "mssql", "trino"], version = "^4.0"}
 basedpyright = "^1.39.10"
 pytest-xdist = ">=3.6"
-living-architecture = "0.4.0"
+living-architecture = "0.6.0"
 jsonschema = "^4.23"
 filelock = ">=3.12,<4"
 pg8000 = "^1.31.6"

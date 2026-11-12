@@ -195,18 +195,6 @@ def test_list_children_are_not_counted() -> None:
     assert Counter(found.aggregations) == Counter(["count"])
 
 
-@pytest.mark.parametrize("source_model", [
-    {"source_name": "orders", "measures": [{"name": "m2", "formula": "max(round(amount))"}]},
-    {"name": "orders_inline", "data_source": "test", "sql_table": "orders",
-     "columns": [{"name": "id", "type": "INT", "primary_key": True}, {"name": "amount", "type": "DOUBLE"}],
-     "measures": [{"name": "m2", "formula": "max(round(amount))"}]},
-])
-def test_inline_model_measure_formulas_are_read(source_model: dict[str, Any]) -> None:
-    found = query_features({"source_model": source_model, "measures": ["count(*)"]})
-    assert Counter(found.functions) == Counter(["round"])
-    assert Counter(found.aggregations) == Counter(["count", "max"])
-
-
 # --------------------------------------------------------------------------- #
 # Vocabulary and privacy
 # --------------------------------------------------------------------------- #

@@ -10,8 +10,8 @@ reporting, and the aligned root-recommendation surface.
 
 ### Requirement: Population may be omitted
 
-`SlayerQuery.source_model` SHALL be optional. A query naming it — as a model name,
-an inline model, or a model extension — SHALL behave exactly as before, and the named
+`SlayerQuery.source_model` SHALL be optional. A query naming it — as a stored model or stage name,
+with or without `extensions` — SHALL behave exactly as before, and the named
 population MAY be a bridge model owning none of the queried items. Population
 inference SHALL run only when the field is absent.
 
@@ -329,90 +329,6 @@ warnings with the remedy to name its edges.
   `count(events.id)`
 - **THEN** no root is recommended, exactly as before this change
 
-### Requirement: Population specs are typed at construction
-
-A query's `source_model` SHALL accept exactly three forms — a saved model name (a string),
-an inline model extension (an object carrying `source_name` plus optional `columns`,
-`measures`, `joins`), and an inline model (an object without `source_name`) — and SHALL
-validate each into its typed form when the query is constructed, before any engine
-resolution. An object carrying `source_name` SHALL always be validated as an extension,
-never as an inline model. An extension object carrying any other key SHALL be rejected at
-construction. A value that is none of the three forms SHALL be rejected at construction.
-Validation errors SHALL name the offending keys of the one form the object was classified
-as. The query's JSON schema SHALL list the three forms for `source_model`.
-
-#### Scenario: Extension object validates as a typed extension
-
-- **WHEN** a query is constructed with `source_model` =
-  `{"source_name": "orders", "columns": [{"name": "double_amount", "sql": "amount * 2"}]}`
-- **THEN** the query's `source_model` is a typed extension whose `columns` (and `joins`)
-  are typed objects, and the query executes exactly as before
-
-#### Scenario: Inline model object validates as a typed model
-
-- **WHEN** a query is constructed with `source_model` =
-  `{"name": "ad_hoc", "sql_table": "things", "data_source": "ds", "columns": [...]}`
-- **THEN** the query's `source_model` is a typed model and the query executes exactly as
-  before
-
-#### Scenario: Typed instances pass through
-
-- **WHEN** a query (or a REST query body model) is constructed with a `ModelExtension` or
-  `SlayerModel` instance as `source_model`
-- **THEN** the same instance is held, and copying the query (without re-validation)
-  with a replacement `source_model` that is a string or a typed instance keeps it one
-  of the three typed forms, with `source_model_name` following the replacement
-
-#### Scenario: Unknown extension key is rejected
-
-- **WHEN** a query is constructed with `source_model` =
-  `{"source_name": "orders", "filters": ["subtotal > tax_paid * 5"]}`
-- **THEN** construction fails with a validation error naming `filters` as an unexpected
-  key, and nothing is silently dropped
-
-#### Scenario: Object with source_name plus model keys is an extension, never a model
-
-- **WHEN** a query is constructed with `source_model` =
-  `{"source_name": "orders", "name": "x", "sql_table": "t", "data_source": "ds"}`
-- **THEN** construction fails with a validation error naming `name`, `sql_table`, and
-  `data_source` as unexpected extension keys; the object is never accepted as an inline
-  model
-
-#### Scenario: Non-spec value is rejected
-
-- **WHEN** a query is constructed with `source_model` = `42` or `[1, 2]`
-- **THEN** construction fails with a validation error
-
-#### Scenario: Legacy inline shapes still migrate before validation
-
-- **WHEN** a stored version-1 query carries an extension object spelled with `dimensions`
-  (the pre-v2 key), directly or inside a stored query-backed model's stages
-- **THEN** the migration rewrites it to `columns` and the query validates into a typed
-  extension
-
-#### Scenario: Typed spec round-trips through serialization
-
-- **WHEN** a query holding a typed extension or inline model is dumped (python or JSON
-  mode) and validated again
-- **THEN** the result equals the original; dumping with none-valued fields excluded adds
-  no null-valued keys, and an extension carrying only non-defaulted values dumps back to
-  exactly the object the author supplied (an inline model dumps with its own version and
-  list defaults, as when persisted)
-
-#### Scenario: Schema advertises the three forms
-
-- **WHEN** the query's JSON schema is generated
-- **THEN** `source_model` is described as one of a string, a `ModelExtension` reference, or
-  a `SlayerModel` reference, or null — and the MCP query tool's input schema carries the
-  same definitions
-
-#### Scenario: REST body rejects a malformed spec at validation
-
-- **WHEN** `POST /query` carries a `source_model` that is not one of the three forms (for
-  example an extension with an unknown key)
-- **THEN** the request is rejected with HTTP 422 by body validation, before the query
-  reaches the engine; well-formed extension and inline-model bodies still execute
-
 ### Requirement: A saved query's inferred populations are pinned at save
 
 Saving a query-backed model — through `save_model`, `create_model_from_query`, or an edit of its
@@ -445,3 +361,84 @@ same name collision; run without a refinement it SHALL execute as before.
 - **THEN** the population is the one inferred from the unrefined stage
 - **WHEN** it runs by name without a refinement
 - **THEN** it returns the same result as before this change
+
+### Requirement: A population is named, and typed at construction
+
+A query's `source_model` SHALL accept exactly one form — a saved model or stage name (a
+string) — or be omitted, and SHALL be validated when the query is constructed, before any
+engine resolution. An object without `source_name` SHALL be rejected at construction with an
+error stating that inline models are not accepted and that `source_model` names a stored
+model or stage, with `extensions` for query-local measures and joins. An object carrying
+`source_name` is a legacy root extension: it SHALL be converted into `extensions` as the
+`queries/extensions` capability specifies. Any other value SHALL be rejected at construction. Validation errors SHALL name the
+offending keys of the form the object was classified as. The query's JSON schema SHALL describe `source_model` as a
+string or null.
+
+#### Scenario: Extension object validates as a typed extension
+
+- **WHEN** a query is constructed without a version with `source_model` =
+  `{"source_name": "orders", "measures": [{"name": "double_amount", "formula": "sum(amount * 2)"}]}`
+- **THEN** the query's `source_model` is `orders`, its `extensions` hold one typed extension
+  of `orders` whose `measures` are typed objects, and the query executes exactly as before
+
+#### Scenario: Inline model object is rejected
+
+- **WHEN** a query is constructed with `source_model` =
+  `{"name": "ad_hoc", "sql_table": "things", "data_source": "ds", "columns": [...]}`, as a
+  dict or as a `SlayerModel` instance, directly, via REST or via the MCP query tool
+- **THEN** construction fails with the inline-model error, and nothing executes
+
+#### Scenario: Copies keep the name form
+
+- **WHEN** a query is copied (without re-validation) with a replacement `source_model` string
+- **THEN** `source_model_name` follows the replacement
+
+#### Scenario: Unknown extension key is rejected
+
+- **WHEN** a query is constructed with an extension
+  `{"source_name": "orders", "filters": ["subtotal > tax_paid * 5"]}`, in `extensions` or
+  in the legacy `source_model` form
+- **THEN** construction fails with a validation error naming `filters` as an unexpected
+  key, and nothing is silently dropped
+
+#### Scenario: Object with source_name plus model keys is an extension, never a model
+
+- **WHEN** a query is constructed with `source_model` =
+  `{"source_name": "orders", "name": "x", "sql_table": "t", "data_source": "ds"}`
+- **THEN** construction fails with a validation error naming `name`, `sql_table`, and
+  `data_source` as unexpected extension keys
+
+#### Scenario: Non-spec value is rejected
+
+- **WHEN** a query is constructed with `source_model` = `42` or `[1, 2]`
+- **THEN** construction fails with a validation error
+
+#### Scenario: Legacy inline shapes still migrate before validation
+
+- **WHEN** a stored version-1 query carries an extension object spelled with `dimensions`
+  (the pre-v2 key), directly or inside a stored query-backed model's stages
+- **THEN** the migrations rewrite it to `columns`, move it into `extensions`, and inline its
+  columns as `models/stored-upgrade` › Stored extension columns are inlined specifies, and
+  the query validates with a typed extension
+
+#### Scenario: Typed spec round-trips through serialization
+
+- **WHEN** a query holding extensions is dumped (python or JSON mode) and validated again
+- **THEN** the result equals the original; dumping with none-valued fields excluded adds
+  no null-valued keys, and an extension carrying only non-defaulted values dumps back to
+  exactly the object the author supplied
+
+#### Scenario: Schema advertises a name or null
+
+- **WHEN** the query's JSON schema is generated
+- **THEN** `source_model` is described as a string or null, with no `SlayerModel`
+  reference, `extensions` as a list of `ModelExtension` references — and the MCP query tool's
+  input schema carries the same definitions
+
+#### Scenario: REST body rejects a malformed spec at validation
+
+- **WHEN** `POST /query` carries a `source_model` that is neither a name nor a legacy
+  extension, or an extension with an unknown key
+- **THEN** the request is rejected with HTTP 422 by body validation, before the query
+  reaches the engine; an inline-model body is rejected the same way, and well-formed
+  extension bodies still execute

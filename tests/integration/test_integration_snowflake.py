@@ -34,7 +34,7 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery, TimeDimension
+from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.live_schema import ingestion
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.live_schema.schema_drift import IdempotentIngestResult
@@ -393,24 +393,24 @@ def test_query_with_dimension(sf_storage_with_models) -> None:
     assert statuses == {"completed", "pending", "cancelled"}
 
 
-def test_dev1933_regex_literal_extension_column(sf_storage_with_models) -> None:
-    """An ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
+def test_dev1933_regex_literal_model_column(sf_storage_with_models) -> None:
+    """A model column holding a ``(?:...)`` regex literal and a ``%``
     LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
     engine = SlayerQueryEngine(storage=sf_storage_with_models)
+    orders = run_sync(sf_storage_with_models.get_model("orders"))
+    assert orders is not None
+    run_sync(sf_storage_with_models.save_model(orders.model_copy(update={"name": "orders_rx", "columns": [
+        *orders.columns,
+        Column(name="rx", sql="CASE WHEN status LIKE '%pend%' "
+                              "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END",
+               type=DataType.DOUBLE),
+    ]})))
     result = run_sync(engine.execute(SlayerQuery(
-        source_model=ModelExtension(
-            source_name="orders",
-            columns=[Column(
-                name="rx",
-                sql="CASE WHEN status LIKE '%pend%' "
-                    "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END",
-                type=DataType.DOUBLE,
-            )],
-        ),
+        source_model="orders_rx",
         dimensions=[ColumnRef(name="rx")],
         measures=[ModelMeasure(formula="count(*)")],
     )))
-    by_rx = {int(r["orders.rx"]): r["orders._count"] for r in result.data}
+    by_rx = {int(r["orders_rx.rx"]): r["orders_rx._count"] for r in result.data}
     assert by_rx == {1: 2, 0: 4}
 
 

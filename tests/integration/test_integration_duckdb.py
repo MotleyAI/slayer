@@ -10,7 +10,7 @@ import pytest
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.live_schema import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.client import SlayerSQLClient
@@ -120,23 +120,21 @@ class TestDuckDBQueries:
         assert result.data[0]["orders._count"] == 6
 
     async def test_dev1933_regex_literal_extension_column(self, duckdb_env: SlayerQueryEngine) -> None:
-        """An ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
+        """A model column holding a ``(?:...)`` regex literal and a ``%``
         LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
+        orders = await duckdb_env.storage.get_model("orders")
+        assert orders is not None
+        await duckdb_env.storage.save_model(orders.model_copy(update={"name": "orders_rx", "columns": [
+            *orders.columns, Column(name="rx", sql="CASE WHEN status LIKE '%pend%' "
+                        "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END", type=DataType.DOUBLE),
+        ]}))
         query = SlayerQuery(
-            source_model=ModelExtension(
-                source_name="orders",
-                columns=[Column(
-                    name="rx",
-                    sql="CASE WHEN status LIKE '%pend%' "
-                        "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END",
-                    type=DataType.DOUBLE,
-                )],
-            ),
+            source_model="orders_rx",
             dimensions=[ColumnRef(name="rx")],
             measures=[ModelMeasure(formula="count(*)")],
         )
         result = await duckdb_env.execute(query=query)
-        by_rx = {int(r["orders.rx"]): r["orders._count"] for r in result.data}
+        by_rx = {int(r["orders_rx.rx"]): r["orders_rx._count"] for r in result.data}
         assert by_rx == {1: 2, 0: 4}
 
     async def test_sum_measure(self, duckdb_env: SlayerQueryEngine) -> None:
