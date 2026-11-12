@@ -151,6 +151,17 @@ class TestEachRouteIsRefused:
         with pytest.raises(ValidationError, match="columns"):
             SlayerQuery.model_validate({"source_model": legacy, "measures": ["count(*)"]})
 
+    @pytest.mark.parametrize(("column", "replacement"), [
+        ({"name": "q", "sql": "amount", "filter": "status = 'ok'", "type": "DOUBLE"},
+         "q → CAST(iif(orders.status = 'ok', orders.amount, NULL) AS DOUBLE)"),
+        ({"name": "t", "sql": "upper(orders.status)"}, "t → upper(orders.status)"),
+    ])
+    def test_the_suggested_replacement_keeps_the_columns_meaning(self, column: dict, replacement: str) -> None:
+        with pytest.raises(ValidationError) as exc:
+            SlayerQuery.model_validate({"source_model": "orders", "measures": ["count(*)"],
+                                        "extensions": [{"source_name": "orders", "columns": [column]}]})
+        assert replacement in str(exc.value)
+
     def test_a_slayer_model_instance_is_refused(self) -> None:
         inline = SlayerModel(name="s", sql_table="secrets", data_source=DS, columns=[Column(name="pw", type=DataType.TEXT)])
         with pytest.raises(ValidationError, match="inline"):

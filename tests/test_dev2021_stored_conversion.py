@@ -13,8 +13,9 @@ from typing import Any
 import pytest
 import yaml
 
+from slayer.core.enums import DataType
 from slayer.core.errors import StoredDocumentLoadError
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import ComputedDimension, ModelMeasure, SlayerQuery
 from slayer.database import engine_factory
 from slayer.storage.base import StorageBackend
@@ -37,6 +38,7 @@ from tests._stored_upgrade_fixtures import (
 
 #: Stored versions written before this change.
 _MODEL_V, _QUERY_V, _MEMORY_V = 21, 13, 9
+_OTHER_DS = "archive"
 _REV = {"formula": "sum(amount)", "name": "rev"}
 
 
@@ -209,6 +211,28 @@ class TestQualification:
                                    "measures": [{"formula": "sum(rev)", "name": "t"}]})
         assert _rows(resp, "by_alias.cust__region_label", "by_alias.t") == [("north", 120.0), ("south", 90.0)]
 
+    async def test_an_owner_qualified_reference_reads_the_owners_column(self, tmp_path, shop_ds) -> None:
+        stage = _stage(extensions=[_ext("customers", {"name": "tier_label", "sql": "upper(customers.region)"})],
+                       dimensions=["customers.tier_label"], measures=[_REV])
+        storage = await _store(tmp_path, shop_ds, "yaml", _qb("qualified", stage))
+        model, _ = await _load(storage, "qualified")
+        assert ComputedDimension(expression="upper(customers.region)", name="customers__tier_label") in (
+            _stage_of(model).dimensions or [])
+
+    @pytest.mark.parametrize("written", ["customers.tier_label", "Customers.TIER_LABEL"])
+    async def test_an_unquoted_reference_matches_the_column_in_any_case(self, tmp_path, shop_ds, written: str) -> None:
+        stage = _stage(extensions=[_ext("customers", {"name": "Tier_Label", "sql": "upper(region)"})],
+                       dimensions=[written], measures=[_REV], filters=[f"{written} = 'NORTH'"])
+        storage = await _store(tmp_path, shop_ds, "yaml", _qb("cased", stage))
+        model, _ = await _load(storage, "cased")
+        loaded = _stage_of(model)
+        # A hop keeps its written spelling, which resolves the same.
+        assert [d.expression.casefold() for d in loaded.dimensions or [] if isinstance(d, ComputedDimension)] == [
+            "upper(customers.region)"]
+        assert [f.casefold() for f in loaded.filters or []] == ["upper(customers.region) = 'north'"]
+        resp = await run(storage, loaded)
+        assert [r["orders.rev"] for r in resp.data] == [120.0]
+
 
 _Q_AMOUNT = "iif(status = 'ok', amount, NULL)"
 _SHAPES = _stage(
@@ -324,6 +348,8 @@ _UNCONVERTIBLE = {
     "array": _stage(extensions=[_ext("orders", {"name": "arr", "sql": "amount", "type": "ARRAY"})],
                     dimensions=["status"], measures=[_REV]),
     "hidden-sql-less": _stage(extensions=[_ext("orders", {"name": "nope"})], dimensions=["nope"], measures=[_REV]),
+    "filtered-sql-less": _stage(extensions=[_ext("orders", {"name": "status", "filter": "amount > 25"})],
+                                dimensions=["status"], measures=[_REV]),
     "shadowing": _stage(extensions=[_ext("orders", {"name": "status", "sql": "upper(status)"})],
                         dimensions=["status"], measures=[_REV]),
     "cycle": _stage(extensions=[_ext("orders", {"name": "a", "sql": "b + 1"}, {"name": "b", "sql": "a + 1"})],
@@ -397,6 +423,53 @@ class TestMemories:
         with pytest.raises(StoredDocumentLoadError) as exc:
             await storage.get_memory("m_bad")
         assert "m_bad" in str(exc.value)
+
+    @pytest.mark.parametrize("backend", BACKENDS)
+    @pytest.mark.parametrize(("priority", "converts"), [
+        ([DS], True), ([DS, _OTHER_DS], True), ([_OTHER_DS, DS], False), ([], False),
+    ])
+    async def test_a_memory_converts_in_the_datasource_priority_resolves(
+        self, tmp_path, shop_ds, backend: str, priority: list[str], converts: bool,
+    ) -> None:
+        storage = await self._two_datasources(tmp_path, shop_ds, backend=backend, clash=True)
+        await storage.set_datasource_priority(priority)
+        if not converts:
+            with pytest.raises(StoredDocumentLoadError):
+                await storage.get_memory("m_tier")
+            return
+        loaded = await storage.get_memory("m_tier")
+        assert loaded.query is not None
+        assert ComputedDimension(expression="upper(customers.region)", name="customers__tier_label") in (
+            loaded.query.dimensions or [])
+
+    @pytest.mark.parametrize("backend", BACKENDS)
+    async def test_a_memory_whose_datasources_agree_converts_without_priority(
+        self, tmp_path, shop_ds, backend: str,
+    ) -> None:
+        storage = await self._two_datasources(tmp_path, shop_ds, backend=backend, clash=False)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            loaded = await storage.get_memory("m_tier")
+        assert loaded.query is not None
+        assert ComputedDimension(expression="upper(customers.region)", name="customers__tier_label") in (
+            loaded.query.dimensions or [])
+        assert len(_conversion_warnings(list(caught), document="m_tier", column="tier_label")) == 1
+
+    @staticmethod
+    async def _two_datasources(tmp_path, shop_ds: DatasourceConfig, *, backend: str, clash: bool) -> StorageBackend:
+        """``m_tier`` over ``shop`` and a copy datasource sorting first; ``clash`` makes ``tier_label`` a column there."""
+        storage = await _store(tmp_path, shop_ds, backend,
+                               memories=(memory_v2(memory_id="m_tier", query=_TIER, version=_MEMORY_V),))
+        await storage.save_datasource(shop_ds.model_copy(update={"name": _OTHER_DS}))
+        orders = await storage.get_model("orders", data_source=DS)
+        customers = await storage.get_model("customers", data_source=DS)
+        assert orders is not None
+        assert customers is not None
+        extra = [Column(name="tier_label", sql="region", type=DataType.TEXT)] if clash else []
+        await storage.save_model(orders.model_copy(update={"data_source": _OTHER_DS}))
+        await storage.save_model(customers.model_copy(update={
+            "data_source": _OTHER_DS, "columns": [*customers.columns, *extra]}))
+        return storage
 
 
 class TestFreshInputIsNeverConverted:

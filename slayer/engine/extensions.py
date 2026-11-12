@@ -92,12 +92,12 @@ def respelled_stages(
     models = list(models)
 
     def one(stage: SlayerQuery) -> SlayerQuery:
-        return respelled(stage, tiers=_stage_tiers(stage, stages=named_queries, models=models))
+        return respelled(stage, tiers=_stage_tiers(stages=named_queries, models=models))
 
     return one(query), {name: one(stage) for name, stage in named_queries.items()}
 
 
-def _stage_tiers(stage: SlayerQuery, *, stages: Iterable[str], models: Iterable[str]) -> List[List[str]]:
+def _stage_tiers(*, stages: Iterable[str], models: Iterable[str]) -> List[List[str]]:
     return [list(stages), list(models)]
 
 
@@ -286,7 +286,7 @@ def _respelled_leniently(queries: Sequence[SlayerQuery], *, stored: Mapping[str,
     out: List[SlayerQuery] = []
     for query in queries:
         try:
-            out.append(respelled(query, tiers=_stage_tiers(query, stages=stages, models=stored)))
+            out.append(respelled(query, tiers=_stage_tiers(stages=stages, models=stored)))
         except AmbiguousReferenceError:
             out.append(query)
     return out

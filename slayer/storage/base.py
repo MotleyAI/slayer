@@ -1103,7 +1103,8 @@ class StorageBackend(ABC):
             if model is not None:
                 models_by_ds.setdefault(ds, {})[model.name] = model
         converted = inline_extension_columns(
-            migrated, models_by_ds=models_by_ds, data_source=data_source, document=document,
+            migrated, models_by_ds=models_by_ds, data_source=data_source,
+            priority=await self.get_datasource_priority(), document=document,
         )
         return [without_none(q.model_dump(mode="json")) for q in converted]
 

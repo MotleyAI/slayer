@@ -11,6 +11,7 @@ import duckdb
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.errors import AggregationNotAllowedError
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.profiling import ensure_samples_fresh
@@ -116,3 +117,22 @@ async def test_profiling_sends_no_extension(run: _Run, monkeypatch: pytest.Monke
     _, log = await _profile(run, monkeypatch)
     assert log, "profiling ran no query"
     assert [q for q in log if q.extensions] == []
+
+
+def _restricted_model() -> SlayerModel:
+    """``_model`` with most range columns' ``allowed_aggregations`` excluding ``min`` / ``max``."""
+    whitelist = {"amount": ["sum"], "double_amount": ["sum"], "qty": ["sum"], "ordered_at": ["count"]}
+    model = _model(arrays=False)
+    return model.model_copy(update={"columns": [
+        c.model_copy(update={"allowed_aggregations": whitelist[c.name]}) if c.name in whitelist else c
+        for c in model.columns]})
+
+
+@pytest.mark.parametrize("dialect", ["sqlite", "duckdb"])
+async def test_a_column_whitelist_does_not_stop_its_range(dialect: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    async with seeded_exec_engine(dialect=dialect, seed=_seed, models=[_restricted_model()]) as (engine, _db):
+        sampled, _ = await _profile(_Run(engine=engine, dialect=dialect), monkeypatch)
+        assert {k: sampled[k] for k in _EXPECTED} == _EXPECTED
+        authored = SlayerQuery.model_validate({"source_model": "t", "measures": ["min(amount)"]})
+        with pytest.raises(AggregationNotAllowedError):
+            await engine.execute(query=authored)

@@ -71,25 +71,27 @@ def _slots(tree: exp.Expr, *, masked: _Masked, field: str) -> Dict[int, _Slot]:
     found: Dict[int, _Slot] = {}
     for node in tree.walk():
         if isinstance(node, exp.Literal) and node.is_string:
-            for sentinel, i in by_sentinel.items():
-                if sentinel in node.this:
-                    found[i] = _Slot(name=masked.names[i], kind="string")
+            found.update({i: _Slot(name=masked.names[i], kind="string")
+                          for sentinel, i in by_sentinel.items() if sentinel in node.this})
         elif isinstance(node, exp.Column) and node.name in by_sentinel:
             i = by_sentinel[node.name]
-            name = masked.names[i]
-            if node.this.quoted or node.table:
-                raise _refused(field, name, "an identifier position")
-            parent = node.parent
-            if isinstance(parent, exp.In) and node.arg_key == "expressions":
-                if len(parent.expressions) != 1:
-                    raise _refused(field, name, "part of an IN list")
-                found[i] = _Slot(name=name, kind="in")
-            else:
-                found[i] = _Slot(name=name, kind="bare")
-    for i, name in enumerate(masked.names):
-        if i not in found:
-            raise _refused(field, name, "an identifier, function, type, comment or other non-literal position")
+            found[i] = _column_slot(node, name=masked.names[i], field=field)
+    missing = next((name for i, name in enumerate(masked.names) if i not in found), None)
+    if missing is not None:
+        raise _refused(field, missing, "an identifier, function, type, comment or other non-literal position")
     return found
+
+
+def _column_slot(node: exp.Column, *, name: str, field: str) -> _Slot:
+    """The slot of a placeholder parsed as a bare column."""
+    if node.this.quoted or node.table:
+        raise _refused(field, name, "an identifier position")
+    parent = node.parent
+    if not (isinstance(parent, exp.In) and node.arg_key == "expressions"):
+        return _Slot(name=name, kind="bare")
+    if len(parent.expressions) != 1:
+        raise _refused(field, name, "part of an IN list")
+    return _Slot(name=name, kind="in")
 
 
 def check_mode_a_placeholders(text: str, *, dialect: SqlDialect, field: str) -> None:

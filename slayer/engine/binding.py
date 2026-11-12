@@ -158,6 +158,20 @@ def collect_bind_records() -> Iterator[BindRecords]:
         _bind_records.reset(token)
 
 
+_RANGE_READ: ContextVar[bool] = ContextVar("slayer_range_read", default=False)
+_RANGE_AGGREGATIONS = frozenset({"min", "max"})
+
+
+@contextmanager
+def range_read() -> Iterator[None]:
+    """Inside the block, ``min`` / ``max`` pass a column's ``allowed_aggregations`` (sample profiling's range)."""
+    token = _RANGE_READ.set(True)
+    try:
+        yield
+    finally:
+        _RANGE_READ.reset(token)
+
+
 _DEFAULT_MEASURE_DEPTH = 32
 _MEASURE_DEPTH_ENV_VAR = "SLAYER_MEASURE_EXPANSION_DEPTH"
 _NO_ANCHOR_SCOPE_SUMMARY = "(no source_model anchor; anchor-less mode not implemented)"
@@ -1907,7 +1921,7 @@ def _column_agg_refusal(*, col, columns, agg: str, custom: bool) -> Optional[str
             return None
         return f"primary-key column {leaf!r} restricted to {sorted(PRIMARY_KEY_AGGREGATIONS)}; got {agg!r}."
     if col.allowed_aggregations is not None:
-        if agg in col.allowed_aggregations:
+        if agg in col.allowed_aggregations or (agg in _RANGE_AGGREGATIONS and _RANGE_READ.get()):
             return None
         return (f"column {leaf!r} restricts allowed_aggregations to "
                 f"{sorted(col.allowed_aggregations)}; got {agg!r}.")

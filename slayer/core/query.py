@@ -21,7 +21,7 @@ from pydantic import (
 
 from slayer.core.deprecation import warn_deprecated
 from slayer.core.direction import normalize_direction
-from slayer.core.enums import TimeGranularity
+from slayer.core.enums import DataType, TimeGranularity, _coerce_legacy_datatype
 from slayer.core.errors import (
     ColonSpellingError,
     DistinctDimensionValuesError,
@@ -44,6 +44,7 @@ from slayer.core.syntax import (
     DottedRef,
     Placeholder,
     Ref,
+    TransformCall,
     call_source,
     canonical_measure_text,
     dotted_quoting,
@@ -54,6 +55,7 @@ from slayer.core.syntax import (
     parse_template,
     root_relative,
     variable_names,
+    walk_parsed,
 )
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import (
@@ -986,14 +988,47 @@ DimensionsField = Annotated[list[ColumnRef | ComputedDimension] | None, BeforeVa
 OrderField = Annotated[list[OrderItem] | None, BeforeValidator(_coerce_order)]
 
 
-def _column_expression(column: Any, *, model: Any) -> str | None:
-    """A removed extension column as the expression written where it is used; ``None`` when it is not Mode B."""
-    if not isinstance(column, dict) or not isinstance(model, str):
-        return None
-    text = column.get("sql") or column.get("name")
+_UNCAST = (DataType.TEXT, DataType.UNKNOWN)
+
+
+def extension_column_text(column: dict, *, owner: str, what: str) -> str:
+    """A removed extension column as one Mode-B row expression relative to ``owner``: its name when it has no ``sql``,
+    else ``sql`` wrapped as ``iif(<filter>, <sql>, NULL)`` and cast to a declared type other than TEXT / UNKNOWN.
+    Raises ``ValueError`` naming ``what`` when nothing preserves its meaning."""
+    data_type = DataType(_coerce_legacy_datatype(column.get("type") or DataType.TEXT.value) or DataType.TEXT.value)
+    if data_type is DataType.ARRAY:
+        raise ValueError(f"{what}, a list column")
+    sql, row_filter = column.get("sql"), column.get("filter")
+    if sql is None:
+        if row_filter is not None:
+            raise ValueError(f"{what}, a filtered column without sql")
+        return str(column["name"])
+    text = canonical_measure_text(_row_expression(sql, what=what))
+    if row_filter is not None:
+        text = f"iif({canonical_measure_text(_row_expression(row_filter, what=f'{what} filter'))}, {text}, NULL)"
+    if data_type not in _UNCAST:
+        text = f"CAST({text} AS {data_type.value})"
+    return canonical_measure_text(root_relative(parse_expr(text), owner))
+
+
+def _row_expression(text: Any, *, what: str) -> Any:
     if not isinstance(text, str):
+        raise ValueError(f"{what} without text")
+    try:
+        parsed = parse_expr(text)
+    except ValueError as exc:
+        raise ValueError(f"{what} {text!r}, which is not valid Mode B ({exc})") from exc
+    if any(isinstance(node, (AggCall, TransformCall)) for node in walk_parsed(parsed)):
+        raise ValueError(f"{what} {text!r}, which is not a Mode-B row expression")
+    return parsed
+
+
+def _column_expression(column: Any, *, model: Any) -> str | None:
+    """A removed extension column as the expression written where it is used; ``None`` when nothing preserves it."""
+    if not isinstance(column, dict) or not isinstance(model, str) or not isinstance(column.get("name"), str):
         return None
     try:
+        text = extension_column_text(column, owner=model, what=f"extension column {column['name']}")
         return measure_text_at_path(text, path=(model,))
     except ValueError:
         return None

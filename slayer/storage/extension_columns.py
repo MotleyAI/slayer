@@ -9,9 +9,9 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.enums import DataType, _coerce_legacy_datatype
-from slayer.core.errors import UnconvertibleStoredQueryError
+from slayer.core.errors import AmbiguousReferenceError, UnconvertibleStoredQueryError
 from slayer.core.models import SlayerModel
+from slayer.core.names import match_name
 from slayer.core.query import (
     ColumnRef,
     ComputedDimension,
@@ -21,24 +21,22 @@ from slayer.core.query import (
     SlayerQuery,
     TimeDimension,
     computed_dimension_name,
+    extension_column_text,
 )
 from slayer.core.syntax import (
-    AggCall,
     DottedRef,
     Ref,
-    TransformCall,
     canonical_measure_text,
+    dotted_quoting,
     map_refs,
     onto_path,
     parse_expr,
-    walk_parsed,
 )
 from slayer.core.warnings import ExtensionColumnInlinedWarning, SlayerExtensionColumnInlinedWarning
 from slayer.engine.extensions import QueryScope, query_scopes
 from slayer.sql.naming import formula_text_alias
 from slayer.storage.migrations import migrating_document
 
-_UNCAST = (DataType.TEXT, DataType.UNKNOWN)
 Key = Tuple[str, str]
 
 
@@ -65,7 +63,7 @@ class _Column(BaseModel):
 
 def inline_extension_columns(
     stages: Sequence[dict], *, models_by_ds: Mapping[str, Mapping[str, SlayerModel]], data_source: Optional[str],
-    document: str,
+    priority: Sequence[str], document: str,
 ) -> List[SlayerQuery]:
     """The raw stored ``stages`` (migrated, one query list) with every extension column inlined where it is used."""
     for stage in stages:
@@ -82,9 +80,28 @@ def inline_extension_columns(
         scopes = query_scopes(queries, models_by_ds=models_by_ds, data_source=data_source)[i]
         if not scopes:
             raise UnconvertibleStoredQueryError("extension columns over models the store does not hold")
-        out.append(_Stage(query=query, raw=raw_columns[i], scope=scopes[0], document=document).converted(
-            extensions=[e for e in stages[i].get("extensions") or [] if isinstance(e, dict)]))
+        extensions = [e for e in stages[i].get("extensions") or [] if isinstance(e, dict)]
+        runs = [_Stage(query=query, raw=raw_columns[i], scope=scope, document=document)
+                for scope in _running_scopes(scopes, priority=priority)]
+        converted = [run.converted(extensions=extensions) for run in runs]
+        if any(c != converted[0] for c in converted[1:]):
+            raise UnconvertibleStoredQueryError("extension columns that convert differently in each datasource "
+                                                "holding their models")
+        for owner, name in runs[0].columns:
+            warnings.warn(SlayerExtensionColumnInlinedWarning(ExtensionColumnInlinedWarning(
+                document=document, column=f"{owner}.{name}",
+            )), stacklevel=2)
+        out.append(converted[0])
     return out
+
+
+def _running_scopes(scopes: Sequence[QueryScope], *, priority: Sequence[str]) -> List[QueryScope]:
+    """The scope the query runs in, as bare-name resolution picks it; every one when no priority entry decides."""
+    if len(scopes) == 1:
+        return list(scopes)
+    by_ds = {s.data_source: s for s in scopes}
+    preferred = next((by_ds[ds] for ds in priority if ds in by_ds), None)
+    return [preferred] if preferred is not None else list(scopes)
 
 
 def _extension_columns(stage: dict) -> List[Tuple[dict, List[Any]]]:
@@ -101,18 +118,6 @@ def _without_columns(stage: dict) -> dict:
         return stage
     stripped = [{k: v for k, v in e.items() if k != "columns"} if isinstance(e, dict) else e for e in extensions]
     return {**stage, "extensions": [e for e in stripped if not isinstance(e, dict) or set(e) - {"source_name"}]}
-
-
-def _mode_b(text: Any, *, what: str) -> Any:
-    if not isinstance(text, str):
-        raise UnconvertibleStoredQueryError(f"{what} without text")
-    try:
-        parsed = parse_expr(text)
-    except ValueError as exc:
-        raise UnconvertibleStoredQueryError(f"{what} {text!r}, which is not valid Mode B ({exc})") from exc
-    if any(isinstance(node, (AggCall, TransformCall)) for node in walk_parsed(parsed)):
-        raise UnconvertibleStoredQueryError(f"{what} {text!r}, which is not a Mode-B row expression")
-    return parsed
 
 
 class _Stage:
@@ -147,24 +152,18 @@ class _Stage:
             raise UnconvertibleStoredQueryError(f"an unnamed extension column of {owner!r}")
         name = raw["name"]
         what = f"extension column {owner}.{name}"
-        data_type = DataType(_coerce_legacy_datatype(raw.get("type") or DataType.TEXT.value) or DataType.TEXT.value)
-        if data_type is DataType.ARRAY:
-            raise UnconvertibleStoredQueryError(f"{what}, a list column")
+        try:
+            text = extension_column_text(raw, owner=owner, what=what)
+        except ValueError as exc:
+            raise UnconvertibleStoredQueryError(str(exc)) from exc
         model = self.scope.models[owner]
         stored = owner not in self.scope.siblings
-        sql = raw.get("sql")
-        if sql is None:
-            visible = model.get_column(name) if stored else None
-            if stored and (visible is None or visible.hidden):
+        if raw.get("sql") is None:
+            if stored and not _visible(model, name):
                 raise UnconvertibleStoredQueryError(f"{what}, which names no visible column of {owner!r}")
             return _Column(owner=owner, name=name, tree=Ref(name=name), derived=False, label=raw.get("label"))
         if stored and model.get_column(name) is not None:
             raise UnconvertibleStoredQueryError(f"{what}, named like a column of {owner!r}")
-        text = canonical_measure_text(_mode_b(sql, what=what))
-        if raw.get("filter") is not None:
-            text = f"iif({canonical_measure_text(_mode_b(raw['filter'], what=f'{what} filter'))}, {text}, NULL)"
-        if data_type not in _UNCAST:
-            text = f"CAST({text} AS {data_type.value})"
         return _Column(owner=owner, name=name, tree=parse_expr(text), derived=True, label=raw.get("label"))
 
     def _check_join_keys(self, extension: dict) -> None:
@@ -178,27 +177,50 @@ class _Stage:
                     raise UnconvertibleStoredQueryError(f"an extension join of {owner!r} keyed on an extension column")
 
     # -- resolution ----------------------------------------------------------
-    def _hit(self, parts: Sequence[str], *, root: Optional[SlayerModel]) -> Optional[Tuple[Tuple[str, ...], Key]]:
+    def _hit(self, ref: Any, *, root: Optional[SlayerModel]) -> Optional[Tuple[Tuple[str, ...], Key]]:
         """The qualifying path and extension column a reference resolves to; ``None`` for anything else."""
+        parts, quoted = _parts(ref), _quoting(ref)
         hops, leaf = tuple(parts[:-1]), parts[-1]
-        if root is None:
-            head = self.scope.models.get(hops[0]) if hops else None
-            if head is None:
-                if not hops and any(k[1] == leaf for k in self.columns):
-                    raise UnconvertibleStoredQueryError(f"a reference to the extension column {leaf!r} without a "
-                                                        f"population to attribute it to")
-                return None
-            resolved = self.scope.resolve(hops[1:], root=head) if hops[1:] else ((), [])
-            prefix: Tuple[str, ...] = (hops[0],)
-            start = head
-        else:
-            resolved = self.scope.resolve(hops, root=root) if hops else ((), [])
-            prefix, start = (), root
+        start = self._start(hops, leaf=leaf, quoted=quoted, root=root)
+        if start is None:
+            return None
+        prefix, model, rest = start
+        resolved = self.scope.resolve(rest, root=model) if rest else ((), [])
         if resolved is None:
             return None
         path, chain = resolved
-        key = (chain[-1].target_model if chain else start.name, leaf)
-        return ((*prefix, *path), key) if key in self.columns else None
+        owner = chain[-1].target_model if chain else model.name
+        name = self._column_named(owner, leaf=leaf, quoted=quoted[-1])
+        return ((*prefix, *path), (owner, name)) if name is not None else None
+
+    def _column_named(self, owner: str, *, leaf: str, quoted: bool) -> Optional[str]:
+        """The extension column of ``owner`` that ``leaf`` names, matched as the engine matches a column name."""
+        own = [n for o, n in self.columns if o == owner]
+        if not own:
+            return None
+        model = self.scope.models.get(owner)
+        try:
+            found = match_name(name=leaf, declared=[*own, *(c.name for c in model.columns)] if model else own,
+                               quoted=quoted)
+        except AmbiguousReferenceError as exc:
+            raise UnconvertibleStoredQueryError(f"a reference {leaf!r} that matches several columns of "
+                                                f"{owner!r}") from exc
+        return found if found in own else None
+
+    def _start(
+        self, hops: Tuple[str, ...], *, leaf: str, quoted: Tuple[bool, ...], root: Optional[SlayerModel],
+    ) -> Optional[Tuple[Tuple[str, ...], SlayerModel, Tuple[str, ...]]]:
+        """The qualifying prefix, model and remaining hops a reference resolves from."""
+        if root is not None:
+            return (), root, hops
+        head_name = match_name(name=hops[0], declared=self.scope.models, quoted=quoted[0]) if hops else None
+        if head_name is not None:
+            return (head_name,), self.scope.models[head_name], hops[1:]
+        if not hops and any(k[1] == leaf or (not quoted[0] and k[1].casefold() == leaf.casefold())
+                            for k in self.columns):
+            raise UnconvertibleStoredQueryError(f"a reference to the extension column {leaf!r} without a "
+                                                f"population to attribute it to")
+        return None
 
     def expansion(self, key: Key) -> Any:
         """Column ``key``'s expression with every extension column it reads expanded, read from its owner."""
@@ -217,7 +239,7 @@ class _Stage:
 
     def _inlined(self, tree: Any, *, root: Optional[SlayerModel]) -> Any:
         def _replace(ref: Ref | DottedRef) -> Any:
-            hit = self._hit(_parts(ref), root=root)
+            hit = self._hit(ref, root=root)
             return ref if hit is None else onto_path(self.expansion(hit[1]), hit[0])
 
         return map_refs(tree, _replace)
@@ -252,9 +274,6 @@ class _Stage:
             update["main_time_dimension"] = self._reference_or_text(q.main_time_dimension, root=host)
         for key in self.columns:
             self.expansion(key)
-            warnings.warn(SlayerExtensionColumnInlinedWarning(ExtensionColumnInlinedWarning(
-                document=self.document, column=f"{key[0]}.{key[1]}",
-            )), stacklevel=2)
         data = {f: getattr(q, f) for f in q.model_fields_set | {"version"}} | {
             f: v for f, v in update.items() if v is not None or f in q.model_fields_set}
         with migrating_document(self.document, stored=True):
@@ -262,7 +281,7 @@ class _Stage:
 
     def _reference_or_text(self, text: str, *, root: Optional[SlayerModel]) -> str:
         parsed = _parsed(text)
-        hit = self._hit(_parts(parsed), root=root) if isinstance(parsed, (Ref, DottedRef)) else None
+        hit = self._hit(parsed, root=root) if isinstance(parsed, (Ref, DottedRef)) else None
         if hit is not None:
             return self._expression(hit)
         return self._text(text, root=root) or text
@@ -271,14 +290,14 @@ class _Stage:
         if isinstance(dim, ComputedDimension):
             text = self._text(dim.expression, root=root)
             return dim if text is None else ComputedDimension(expression=text, name=dim.name)
-        hit = self._hit(dim.parts, root=root) if isinstance(dim, ColumnRef) else None
+        hit = self._hit(dim, root=root) if isinstance(dim, ColumnRef) else None
         if hit is None:
             return dim
         return ComputedDimension(expression=self._expression(hit), name="__".join([*hit[0], hit[1][1]]))
 
     def _time_dimension(self, td: TimeDimension, *, root: Optional[SlayerModel]) -> TimeDimension:
         parsed = _parsed(td.dimension)
-        hit = self._hit(_parts(parsed), root=root) if isinstance(parsed, (Ref, DottedRef)) else None
+        hit = self._hit(parsed, root=root) if isinstance(parsed, (Ref, DottedRef)) else None
         if hit is not None:
             text, name = self._expression(hit), td.name or "__".join([*hit[0], hit[1][1]])
             label = td.label or self.columns[hit[1]].label
@@ -302,7 +321,7 @@ class _Stage:
         if item.raw_formula:
             text = self._text(item.raw_formula, root=root)
             return item if text is None else item.model_copy(update={"raw_formula": text})
-        hit = self._hit(item.column.parts, root=root)
+        hit = self._hit(item.column, root=root)
         if hit is None:
             return item
         return OrderItem.model_validate({"column": self._expression(hit), "direction": item.direction,
@@ -315,8 +334,20 @@ class _Stage:
         return extension.model_copy(update={"measures": [self._measure(m, root=root) for m in extension.measures]})
 
 
+def _visible(model: SlayerModel, name: str) -> bool:
+    column = model.get_column(name)
+    return column is not None and not column.hidden
+
+
 def _parts(ref: Any) -> Tuple[str, ...]:
     return (ref.name,) if isinstance(ref, Ref) else tuple(ref.parts)
+
+
+def _quoting(ref: Any) -> Tuple[bool, ...]:
+    """Each segment's quoted flag of a ``Ref``, ``DottedRef`` or ``ColumnRef``."""
+    if isinstance(ref, ColumnRef):
+        return tuple(ref.quoted) if ref.quoted else (False,) * len(ref.parts)
+    return dotted_quoting(ref)
 
 
 def _parsed(text: str) -> Any:

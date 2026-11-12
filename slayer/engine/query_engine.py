@@ -2962,17 +2962,7 @@ class SlayerQueryEngine:
     ) -> SlayerModel:
         # Save preserves the author's formula spelling — no slack
         # rewriting; both aggregation spellings are first-class parser input.
-        # Capture the previous data_source so a moved query-backed model's stale
-        # storage entry can be cleaned up below.
-        prior_data_source: Optional[str] = None
-        if model.source_queries:
-            try:
-                identity = await self.storage.resolve_model_identity(model.name)
-                if identity is not None:
-                    prior_data_source = identity[0]
-            except AmbiguousModelError:
-                # Multiple entries for this name — don't silently mass-delete.
-                prior_data_source = None
+        prior_data_source = await self._prior_data_source(model)
         # Fail fast before any trial run / expansion; storage re-checks in the saved dialect.
         _reject_formulas_unparseable_everywhere(model)
         if model.source_queries:
@@ -3011,6 +3001,17 @@ class SlayerQueryEngine:
         for payload in payloads:
             _warnings_module.warn(SlayerNarrowedAccessWarning(payload), stacklevel=2)
         return model
+
+    async def _prior_data_source(self, model: SlayerModel) -> Optional[str]:
+        """A query-backed model's stored datasource, so a move cleans up its stale entry; ``None`` when ambiguous, so
+        nothing is mass-deleted."""
+        if not model.source_queries:
+            return None
+        try:
+            identity = await self.storage.resolve_model_identity(model.name)
+        except AmbiguousModelError:
+            return None
+        return identity[0] if identity is not None else None
 
     async def _narrowed_access(
         self, *, model: SlayerModel, prior: Optional[SlayerModel],

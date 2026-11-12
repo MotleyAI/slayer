@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel, is_identifier
 from slayer.core.query import SlayerQuery
+from slayer.engine.binding import range_read
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
@@ -189,7 +190,8 @@ async def _profile_numeric_temporal(
         for c in columns for agg in ("min", "max")
     ]
     q = SlayerQuery.model_validate({"source_model": model.name, "measures": measures})
-    r = await engine.execute(query=q, data_source=model.data_source or None)
+    with range_read():
+        r = await engine.execute(query=q, data_source=model.data_source or None)
     row = r.data[0] if r.data else {}
     out: list[_Sample] = []
     for c in columns:

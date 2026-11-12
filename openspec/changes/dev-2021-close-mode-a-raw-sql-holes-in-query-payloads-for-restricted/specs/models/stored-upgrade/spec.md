@@ -17,7 +17,8 @@ A stored query SHALL be unconvertible, and the document holding it SHALL fail to
 - an extension column whose text is not valid Mode B;
 - an extension column of type `ARRAY`;
 - an extension column without `sql` whose name is not a visible column of the extended model;
-- an extension column named like a column of the extended model;
+- an extension column without `sql` that has a `filter`;
+- an extension column with `sql` named like a column of the extended model;
 - a dependency cycle among extension columns;
 - an extension join whose `join_pairs` names an extension column on either side;
 - a reference to an extension column in a position that holds no expression, or one the binder cannot attribute.
@@ -144,12 +145,12 @@ On load, every Mode-B surface of a stored model, saved query or memory written b
 #### Scenario: Granularity spans
 
 - **WHEN** a stored query orders by `created_at:month` and a stored computed dimension buckets `created_at:fiscal_quarter` on a datasource defining `fiscal_quarter`
-- **THEN** they load as `date_trunc('month', created_at)` and `fiscal_quarter(created_at)` and return the rows they returned before
+- **THEN** they load as `date_trunc('month', created_at)` and `date_trunc('fiscal_quarter', created_at)` and return the rows they returned before
 
 #### Scenario: A granularity renamed on load
 
 - **WHEN** a stored datasource defines the granularity `left`, and a stored model's source query and a memory's query bucket by `created_at:left`
-- **THEN** after load they read `left_granularity(created_at)` and return the rows they returned before
+- **THEN** after load they read `date_trunc('left_granularity', created_at)` and return the rows they returned before
 
 #### Scenario: Result keys and computed-dimension names are kept
 
