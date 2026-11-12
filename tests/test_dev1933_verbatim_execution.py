@@ -18,7 +18,7 @@ import sqlglot
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.query import ComputedDimension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import client as sql_client
 from slayer.database import engine_factory
@@ -314,10 +314,8 @@ class TestRegexExpressionDimensionEndToEnd:
         engine = await self._seed_engine(tmp_path)
         query = SlayerQuery(
             source_model="orders",
-            dimensions=[{
-                "expression": f"CASE WHEN status = '{_REGEX_LITERAL}' THEN 1 ELSE 0 END",
-                "name": "rx",
-            }],
+            dimensions=[ComputedDimension(expression=f"CASE WHEN status = '{_REGEX_LITERAL}' THEN 1 ELSE 0 END",
+                                          name="rx")],
             measures=[ModelMeasure(formula="count(*)")],
         )
         result = await engine.execute(query=query)

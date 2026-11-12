@@ -54,7 +54,7 @@ An aggregation is written `agg(col)` or `agg(col, args)` — for example
 rows: `count(*)`, `count(customers.*)`, and a bare column counts non-null
 values: `count(customers.regions.name)`. This holds in **every** position that
 accepts aggregations (query measures, filters, order, model measures, model
-extensions, inline models, multi-stage formulas, computed-dimension
+extensions, multi-stage formulas, computed-dimension
 expressions, transform and arithmetic operands) and for **every** aggregation
 — builtin, aliased (`countD(x)` = `count_distinct(x)`), and model-defined
 custom aggregations. Declared parameters may be passed positionally in

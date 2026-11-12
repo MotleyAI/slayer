@@ -7,8 +7,8 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | No | Name for this query — used to reference it from other queries in a list |
-| `source_model` | string or SlayerModel | No | The population (query root): a model name or inline model. Omit it to infer the population — see [Population](#population). |
-| `extensions` | list[ModelExtension] | No | Query-scoped columns, measures and joins added to any model the query reads — see [Query extensions](#query-extensions). |
+| `source_model` | string | No | The population (query root): a stored model or stage name. Omit it to infer the population — see [Population](#population). |
+| `extensions` | list[ModelExtension] | No | Query-scoped measures and joins added to any model the query reads — see [Query extensions](#query-extensions). |
 | `measures` | list[ModelMeasure] | No | Computed/aggregated values — formulas, arithmetic, transforms. Aggregations are function calls (`sum(revenue)`, incl. expressions like `sum(amount - cost)`) — see [Formulas](formulas.md) and [Aggregation syntax](references.md#aggregation-syntax). |
 | `dimensions` | list[str \| ColumnRef \| ComputedDimension] | No | Columns to group by — bare strings (`"status"`) or `{"name": "status"}` dicts, dotted names for joined models (`customers.name`), or `{"expression": …, "name": …}` for a [computed expression](#expression-dimensions). |
 | `time_dimensions` | list[TimeDimension] | No | Time dimensions with granularity |
@@ -513,8 +513,8 @@ This produces the filter `status = 'completed' AND amount > 100`.
 - Undefined variables raise an error
 - The same `{variable}` mechanism also works in the **raw-SQL (Mode A) surfaces** of a model — see [Variables in model SQL](models.md#variables-in-model-sql).
 
-!!! note "Trusted input"
-    In query fields a value is always bound as a literal, but in a model's raw-SQL (Mode A) surfaces it is substituted as text, so do not feed untrusted end-user input through `variables` there.
+!!! note "Literals only"
+    A query carries no raw SQL: every value it supplies, in query fields and in a model's raw-SQL (Mode A) surfaces alike, binds as a literal, and a value that would change the SQL's structure is rejected.
 
 #### Variables passed as a runtime kwarg
 
@@ -881,7 +881,7 @@ You can also join named queries to models:
 ]
 ```
 
-The main query's `extensions` entry adds a join from `orders` to the named sub-query. Queries can also be saved as permanent models — see [Query-backed models](models.md#query-backed-models). An inline `source_model` carrying `source_queries` is rejected — write those queries as named stages of the list instead.
+The main query's `extensions` entry adds a join from `orders` to the named sub-query. Queries can also be saved as permanent models — see [Query-backed models](models.md#query-backed-models). `source_model` names a stored model or stage; an inline model is rejected — write a query-backed model's queries as named stages of the list instead.
 
 Sibling stages can also reference each other — any non-final stage may use a *prior* named stage as `source_model` or as `joins.target_model`, so a query list forms a DAG, not just a chain. For example, two parallel rollups feeding a single final stage:
 
@@ -922,7 +922,7 @@ A grouped stage is unique on its dimensions, so a join onto a sibling stage that
 
 ### Query extensions
 
-`extensions` adds columns, measures and joins to any model a query object reads — its population, a joined model, or a stage — without modifying the stored model:
+`extensions` adds measures and joins to any model a query object reads — its population, a joined model, or a stage — without modifying the stored model:
 
 ```json
 {
@@ -930,17 +930,16 @@ A grouped stage is unique on its dimensions, so a join onto a sibling stage that
   "extensions": [
     {
       "source_name": "orders",
-      "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
       "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]
     },
-    {"source_name": "customers", "columns": [{"name": "tier_label", "sql": "upper(tier)"}]}
+    {"source_name": "customers", "measures": [{"name": "credit_total", "formula": "sum(credit)"}]}
   ],
-  "dimensions": ["tier", "customers.tier_label"],
-  "measures": ["count(*)"]
+  "dimensions": [{"expression": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", "name": "tier"}],
+  "measures": ["count(*)", "customers.credit_total"]
 }
 ```
 
-Each entry's fields are `source_name` (required — the model or stage to extend), `columns`, `measures` and `joins` (all optional — merged with the model's own); any other key, or a second entry for one model, is rejected when the query is constructed.
+Each entry's fields are `source_name` (required — the model or stage to extend), `measures` and `joins` (both optional — merged with the model's own); any other key, or a second entry for one model, is rejected when the query is constructed. A per-query column is an expression in the position that uses it (a computed dimension, a filter, an aggregation's argument); `columns` is rejected.
 
 An extension is visible only in the query object that declares it: other stages see that stage's output, and stored joins, columns, measures and query-backed models never see it.
 

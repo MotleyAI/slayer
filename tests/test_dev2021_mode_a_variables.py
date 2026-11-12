@@ -159,15 +159,17 @@ class TestHostileValuesAreRefused:
         build, formula, variables = case
         model = build()
         await env.storage.save_model(model)
+        query = _query(model.name, formula, variables=variables)
         with pytest.raises(ValueError, match=_LITERAL_VALUES):
-            await env.engine.execute(_query(model.name, formula, variables=variables))
+            await env.engine.execute(query)
         assert not any("users" in sql for sql in executed)
 
     async def test_a_model_default_is_bound_as_a_literal_too(self, env: _Env, executed: list[str]) -> None:
         model = _table_model(extra=(_SCALED,)).model_copy(update={"query_variables": {"k": _HOSTILE_SCALAR}})
         await env.storage.save_model(model)
+        query = _query("orders", "sum(scaled)")
         with pytest.raises(ValueError, match=_LITERAL_VALUES):
-            await env.engine.execute(_query("orders", "sum(scaled)"))
+            await env.engine.execute(query)
         assert not any("users" in sql for sql in executed)
 
 
@@ -210,16 +212,14 @@ class TestLiteralValuesBind:
 #: (field, model) pairs whose placeholder stands in a non-literal position.
 _NON_LITERAL = {
     "model-sql-table": _sql_model("SELECT * FROM {table}"),
-    "column-identifier": _table_model(extra=(Column(name="c", sql="{col} * 2", type=DataType.DOUBLE),)),
     "column-function-name": _table_model(extra=(Column(name="c", sql="{f}(amount)", type=DataType.DOUBLE),)),
     "column-quoted-identifier": _table_model(extra=(Column(name="c", sql='"{c}"', type=DataType.DOUBLE),)),
     "column-comment": _table_model(extra=(Column(name="c", sql="amount /* {c} */", type=DataType.DOUBLE),)),
     "column-type-name": _table_model(extra=(Column(name="c", sql="CAST(amount AS {t})", type=DataType.DOUBLE),)),
     "column-partial-in-list": _table_model(extra=(Column(name="c", sql="status IN ('x', {s})", type=DataType.BOOLEAN),)),
-    "column-filter-identifier": _table_model(
-        extra=(Column(name="c", sql="amount", filter="{col} > 0", type=DataType.DOUBLE),)),
-    "model-filter-identifier": _table_model(filters=["{col} = 1"]),
 }
+#: A bare slot is a literal position: saved, and refused at query time when its value is no number or boolean.
+_BARE_SLOT = _table_model(extra=(Column(name="c", sql="{col} * 2", type=DataType.DOUBLE),))
 
 
 class TestNonLiteralPositionsAreRefused:
@@ -230,7 +230,7 @@ class TestNonLiteralPositionsAreRefused:
         assert await env.storage.get_model(model.name, data_source=DS) is None
 
     @pytest.mark.parametrize(("model", "formula", "variables"), [
-        pytest.param(_NON_LITERAL["column-identifier"], "sum(c)", {"col": "amount"}, id="identifier"),
+        pytest.param(_BARE_SLOT, "sum(c)", {"col": "amount"}, id="identifier"),
         pytest.param(_NON_LITERAL["column-partial-in-list"], "count(*)", {"s": "ok"}, id="partial-in-list"),
         pytest.param(_NON_LITERAL["model-sql-table"], "count(*)", {"table": "users"}, id="table-name"),
     ])
@@ -238,8 +238,9 @@ class TestNonLiteralPositionsAreRefused:
         self, env: _Env, executed: list[str], model: SlayerModel, formula: str, variables: dict[str, Any],
     ) -> None:
         await env.storage.save_model(model, _validate=False)
+        query = _query(model.name, formula, variables=variables)
         with pytest.raises(ValueError, match=_LITERAL_VALUES):
-            await env.engine.execute(_query(model.name, formula, variables=variables))
+            await env.engine.execute(query)
         assert not any("users" in sql for sql in executed)
 
 
@@ -255,8 +256,9 @@ class TestOptionalBlocks:
     async def test_a_hostile_value_inside_a_block_stays_a_literal(self, env: _Env) -> None:
         model = _table_model(filters=["{? amount >= {floor} ?}"])
         await env.storage.save_model(model)
+        query = _query("orders", "sum(amount)", variables={"floor": _HOSTILE_PREDICATE})
         with pytest.raises(ValueError, match=_LITERAL_VALUES):
-            await env.engine.execute(_query("orders", "sum(amount)", variables={"floor": _HOSTILE_PREDICATE}))
+            await env.engine.execute(query)
 
     async def test_escaped_braces_render_one_brace(self, env: _Env) -> None:
         tag = Column(name="tag", sql="'{{x}}' || '{suffix}'", type=DataType.TEXT)
@@ -279,10 +281,11 @@ class TestPostgres:
 
     async def test_a_hostile_value_is_refused(self, pg_env: _Env, executed: list[str]) -> None:
         await pg_env.storage.save_model(_table_model(extra=(_SCALED,)))
+        query = _query("orders", "sum(scaled)", variables={"k": _HOSTILE_SCALAR})
         with pytest.raises(ValueError, match=_LITERAL_VALUES):
-            await pg_env.engine.execute(_query("orders", "sum(scaled)", variables={"k": _HOSTILE_SCALAR}))
+            await pg_env.engine.execute(query)
         assert not any("users" in sql for sql in executed)
 
     async def test_a_non_literal_position_is_refused_at_save(self, pg_env: _Env) -> None:
         with pytest.raises(ValueError, match=_LITERAL_VALUES):
-            await pg_env.storage.save_model(_NON_LITERAL["column-identifier"])
+            await pg_env.storage.save_model(_NON_LITERAL["column-function-name"])

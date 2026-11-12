@@ -260,13 +260,15 @@ class TestColumnShapes:
         model, _ = await _load(storage, "typed")
         assert ComputedDimension(expression=expected, name="c") in (_stage_of(model).dimensions or [])
 
-    async def test_label_and_format_carry_over(self, tmp_path, shop_ds) -> None:
-        column = {"name": "dbl", "sql": "amount * 2", "type": "DOUBLE", "label": "Double", "format": {"type": "currency"}}
-        stage = _stage(extensions=[_ext("orders", column)], dimensions=["dbl"], measures=[_REV])
+    async def test_a_label_carries_over_where_the_position_holds_one(self, tmp_path, shop_ds) -> None:
+        column = {"name": "stamp", "sql": "ordered_at", "type": "TIMESTAMP", "label": "Stamp",
+                  "format": {"type": "currency"}}
+        stage = _stage(extensions=[_ext("orders", column)], measures=[_REV],
+                       time_dimensions=[{"dimension": {"name": "stamp"}, "granularity": "year"}])
         storage = await _store(tmp_path, shop_ds, "yaml", _qb("labelled", stage))
         model, _ = await _load(storage, "labelled")
-        [dim] = [d for d in _stage_of(model).dimensions or [] if isinstance(d, ComputedDimension)]
-        assert dim.label == "Double"
+        [td] = _stage_of(model).time_dimensions or []
+        assert td.label == "Stamp"
 
 
 _STAMP = {"name": "stamp", "sql": "ordered_at", "type": "TIMESTAMP"}
@@ -403,5 +405,6 @@ class TestFreshInputIsNeverConverted:
             SlayerQuery.model_validate(_TIER)
 
     def test_a_versioned_model_document_outside_storage_is_refused(self) -> None:
+        document = yaml.safe_load(yaml.safe_dump(_qb("rev_by_tier", _TIER)))
         with pytest.raises(ValueError, match="columns"):
-            SlayerModel.model_validate(yaml.safe_load(yaml.safe_dump(_qb("rev_by_tier", _TIER))))
+            SlayerModel.model_validate(document)

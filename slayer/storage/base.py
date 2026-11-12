@@ -43,7 +43,7 @@ from slayer.core.models import (
     physical_column_sql,
     shadows_library_function,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import SlayerQuery, mode_a_texts
 from slayer.core.syntax import parse_expr
 from slayer.core.warnings import (
     LibraryNameShadowWarning,
@@ -82,6 +82,8 @@ from slayer.storage.legacy_alias_rewrite import (
 )
 from slayer.database.client import SqlClient
 from slayer.sql.dialects import dialect_for_ds_type
+from slayer.sql.mode_a_variables import check_placeholders
+from slayer.storage.extension_columns import holds_removed_forms, inline_extension_columns
 from slayer.sql.sql_template import check_aggregation_definition
 from slayer.live_schema.type_refinement import (
     has_refineable_columns,
@@ -105,6 +107,8 @@ _RAW_PASS: ContextVar[dict[tuple[object, str, str], asyncio.Future[dict | None]]
     "_RAW_PASS", default=None)
 # Inside the one-time granularity settle, whose own loads must not wait on it.
 _SETTLING: ContextVar[bool] = ContextVar("_SETTLING", default=False)
+# The stored models whose extension columns are being inlined (their own loads must not recurse into them).
+_INLINING: ContextVar[frozenset[tuple[str, str]]] = ContextVar("_INLINING", default=frozenset())
 # The loading query engine's client source, set by its storage view around each call it delegates.
 CLIENT_SOURCE: ContextVar[ClientSource | None] = ContextVar("CLIENT_SOURCE", default=None)
 
@@ -558,6 +562,7 @@ class StorageBackend(ABC):
         failures = failures or DocumentLoadFailures()
         loaded, unloaded = await self.load_models(data_source=model.data_source, exclude=model.name)
         peers = {m.name: m for m in failures.skip((loaded, unloaded))}
+        await self._validate_mode_a_placeholders(model)
         validate_derived_columns(model=model, peers=peers, unloaded=frozenset(e.name for e in unloaded))
         check_model_filters(model=model, reachable=peers)
         self._validate_join_edges(model, peers=peers, identities=await self._list_all_model_identities())
@@ -586,6 +591,10 @@ class StorageBackend(ABC):
                 raise CaseCollisionError(names=group, namespace=f"model {model.name!r}'s {where}")
         for payload in name_collision_warnings(model):
             warnings.warn(SlayerNameCollisionWarning(payload), stacklevel=4)
+
+    async def _validate_mode_a_placeholders(self, model: SlayerModel) -> None:
+        ds = await self.get_datasource(model.data_source) if model.data_source else None
+        check_placeholders(mode_a_texts(model), dialect=dialect_for_ds_type(ds.type if ds else None))
 
     async def _validate_column_granularities(self, model: SlayerModel) -> None:
         named = [(c, c.granularity) for c in model.columns if c.granularity is not None and not isinstance(c.granularity, TimeGranularity)]
@@ -996,6 +1005,7 @@ class StorageBackend(ABC):
             await self._canonicalize_join_key_spellings(data=data, data_source=data_source)
             await self._declare_join_keys(name=name, data=data, data_source=data_source)
             await self._repair_source_query_filters(data=data, data_source=data_source)
+            data = await self._inlined_source_queries(name=name, data=data, data_source=data_source)
             # Collapse stored exact-inverse mirror pairs.
             data = await self._dedup_exact_inverse_joins(
                 name=name, data=data, data_source=data_source,
@@ -1064,6 +1074,38 @@ class StorageBackend(ABC):
             if sibling is not None:
                 keys.extend(_incoming_keys(sibling=sibling, target=name, target_columns=columns))
         return keys
+
+    async def _inlined_source_queries(self, *, name: str, data: dict, data_source: str) -> dict:
+        """``data`` with its stages' extension columns inlined (``extension_columns``)."""
+        queries = data.get("source_queries")
+        if not isinstance(queries, list) or not all(isinstance(q, dict) for q in queries):
+            return data
+        token = _INLINING.set(_INLINING.get() | {(data_source, name)})
+        try:
+            inlined = await self._inlined_queries(queries=queries, data_source=data_source, document=name)
+        finally:
+            _INLINING.reset(token)
+        return data if inlined is None else {**data, "source_queries": inlined}
+
+    async def _inlined_queries(self, *, queries: list[dict], data_source: str | None, document: str) -> list | None:
+        """Raw stored ``queries`` with their extension columns inlined; ``None`` when none holds a removed form."""
+        migrated = [_mig.migrate("SlayerQuery", _mig.stamp_stored(q)) for q in queries]
+        if not any(holds_removed_forms(q) for q in migrated):
+            return None
+        models_by_ds: dict[str, dict[str, SlayerModel]] = {}
+        for ds, model_name in await self._list_all_model_identities():
+            if (data_source is not None and ds != data_source) or (ds, model_name) in _INLINING.get():
+                continue
+            try:
+                model = await self.get_model(model_name, data_source=ds)
+            except StoredDocumentLoadError:
+                continue
+            if model is not None:
+                models_by_ds.setdefault(ds, {})[model.name] = model
+        converted = inline_extension_columns(
+            migrated, models_by_ds=models_by_ds, data_source=data_source, document=document,
+        )
+        return [without_none(q.model_dump(mode="json")) for q in converted]
 
     async def _repair_source_query_filters(self, *, data: dict, data_source: str) -> None:
         queries = data.get("source_queries")
@@ -1394,6 +1436,11 @@ class StorageBackend(ABC):
             # Memories are never written back, so the repair repeats on every load of a pre-v4 document.
             if isinstance(data, dict) and int(data["version"]) < _MEMORY_FILTER_REPAIR_BELOW_VERSION:
                 await self._repair_query_filters(query=data.get("query"), data_source=None)
+            # ...and so does the extension-column inlining, on every load of a pre-v10 document.
+            if isinstance(data, dict) and int(data["version"]) < _mig.CURRENT_VERSIONS["Memory"] and isinstance(
+                    data.get("query"), dict):
+                inlined = await self._inlined_queries(queries=[data["query"]], data_source=None, document=memory_id)
+                data = data if inlined is None else {**data, "query": inlined[0]}
             return Memory.model_validate(data)
 
     @abstractmethod

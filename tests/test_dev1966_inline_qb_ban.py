@@ -56,7 +56,7 @@ class TestConstructionRejects:
     def test_object_form(self) -> None:
         inline = SlayerModel.model_validate(INLINE_QB)
         with pytest.raises(ValueError) as exc:
-            SlayerQuery(source_model=inline, **OUTER)
+            SlayerQuery(source_model=inline, **OUTER)  # pyright: ignore[reportArgumentType]  # the removed form must fail
         _assert_ban(exc.value)
 
     def test_dict_form(self) -> None:
@@ -116,8 +116,9 @@ class TestOtherInlineSourcesRejected:
                         {"name": "customer_id", "type": "INT"},
                         {"name": "amount", "type": "DOUBLE"}],
         }
+        measures = [m("sum(amount)", "a")]
         with pytest.raises(ValueError, match="(?i)inline"):
-            query(source_model=inline, dimensions=["customer_id"], measures=[m("sum(amount)", "a")])
+            query(source_model=inline, dimensions=["customer_id"], measures=measures)
 
     def test_inline_sql_backed(self) -> None:
         inline = {
@@ -127,8 +128,9 @@ class TestOtherInlineSourcesRejected:
                         {"name": "customer_id", "type": "INT"},
                         {"name": "amount", "type": "DOUBLE"}],
         }
+        measures = [m("sum(amount)", "a")]
         with pytest.raises(ValueError, match="(?i)inline"):
-            query(source_model=inline, dimensions=["customer_id"], measures=[m("sum(amount)", "a")])
+            query(source_model=inline, dimensions=["customer_id"], measures=measures)
 
 
 class TestExtensionsAccepted:

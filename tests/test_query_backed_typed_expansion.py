@@ -932,8 +932,7 @@ class TestNestedQueryBackedExpansion:
 
     async def test_modelextension_overlay_over_query_backed_base(self) -> None:
         """A query-backed model used as a ``ModelExtension`` base preserves
-        the overlay's extra measure after expansion (bundle.inline_extensions
-        re-application).
+        the overlay's extra measure after expansion.
         """
         qb = SlayerModel(
             name="qb_base",

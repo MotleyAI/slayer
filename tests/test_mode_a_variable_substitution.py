@@ -874,7 +874,8 @@ class TestSubstituteVariablesHardened:
     def test_bool_value_accepted(self) -> None:
         bound = _bind(template="flag = {v}", variables={"v": True})
         node = _parse(bound).expression
-        assert isinstance(node, exp.Boolean) and node.this is True, bound
+        assert isinstance(node, exp.Boolean), bound
+        assert node.this is True, bound
 
     def test_nan_value_raises(self) -> None:
         nan = float("nan")

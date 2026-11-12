@@ -18,7 +18,7 @@ A placeholder in any other position — an identifier, a quoted identifier, a fu
 - **THEN** each executes with the hand-computed values, the string literal's value being exactly `O'Brien`
 
 #### Scenario: A placeholder in a non-literal position is refused at save
-- **WHEN** a model is saved whose `sql` is `SELECT * FROM {table}`, or whose column `sql` is `{col} * 2`, `{f}(amount)` or `"{c}"`
+- **WHEN** a model is saved whose `sql` is `SELECT * FROM {table}`, or whose column `sql` is `{f}(amount)`, `"{c}"` or `amount /* {c} */`
 - **THEN** the save fails with the literal-values error naming the field
 
 #### Scenario: Optional blocks keep their meaning

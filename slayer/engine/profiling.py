@@ -184,20 +184,11 @@ async def _profile_numeric_temporal(
     *, model: SlayerModel, columns: list[Column], engine: SlayerQueryEngine,
 ) -> list[_Sample]:
     """One batched min/max query (a list's over its elements); raises on query failure."""
-    # Untyped on purpose: a typed CAST coerces SQLite date strings to NUMERIC.
-    ext_columns = [
-        {"name": f"_slayer_range_{c.name}", "sql": c.sql or c.name} for c in columns if c.type is not DataType.ARRAY
-    ]
     measures = [
-        {"formula": f"{agg}({_values_ref(c) if c.type is DataType.ARRAY else f'_slayer_range_{c.name}'})",
-         "name": f"_slayer_range_{c.name}_{agg}"}
+        {"formula": f"{agg}({_values_ref(c)})", "name": f"_slayer_range_{c.name}_{agg}"}
         for c in columns for agg in ("min", "max")
     ]
-    q = SlayerQuery.model_validate({
-        "source_model": model.name,
-        "extensions": [{"source_name": model.name, "columns": ext_columns}],
-        "measures": measures,
-    })
+    q = SlayerQuery.model_validate({"source_model": model.name, "measures": measures})
     r = await engine.execute(query=q, data_source=model.data_source or None)
     row = r.data[0] if r.data else {}
     out: list[_Sample] = []

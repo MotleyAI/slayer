@@ -12,6 +12,7 @@ import tempfile
 import warnings as _warnings_module
 from collections.abc import AsyncGenerator
 from datetime import datetime
+from functools import partial
 from typing import Any, Callable, Coroutine, Dict, Iterator, List, Optional, Set, Tuple, TypeVar, Unpack
 
 from sqlglot import exp
@@ -67,6 +68,7 @@ from slayer.core.query import (
     QueryRefinement,
     SlayerQuery,
     extract_variable_refs,
+    mode_a_texts,
     refine_query,
     render_probe_text,
 )
@@ -152,7 +154,7 @@ from slayer.engine.extensions import with_own_extension
 from slayer.engine.plan import plan_stages
 from slayer.ir.variables import (
     apply_variables_to_query,
-    substitute_extension_surfaces,
+    bind_extension_measures,
     model_needs_substitution_pass,
     substitute_model_sql_surfaces,
 )
@@ -173,6 +175,7 @@ from slayer.database.client import (
     sql_model_trial_query,
 )
 from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, get_dialect
+from slayer.sql.mode_a_variables import bind_mode_a, check_mode_a_placeholders, check_placeholders
 from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.render.library import check_library_support
 from slayer.sql.naming import key_identifier
@@ -373,13 +376,11 @@ def _with_default_order(query: SlayerQuery) -> SlayerQuery:
     return query.model_copy(update={"order": [OrderItem.model_validate({"column": c, "implied": True}) for c in columns]})
 
 
-def _sql_safety_reject_reason(safety: str, *, parameterized: bool) -> str | None:
-    """Save-time reject reason for a classified ``model.sql``, or None to admit
-    it. Unparseable blocks only when static (a parameterized source may parse
-    only once its identifiers are filled)."""
+def _sql_safety_reject_reason(safety: str) -> str | None:
+    """Save-time reject reason for a classified ``model.sql``, or None to admit it."""
     if safety == "modifying":
         return "model SQL must be a read-only query; it is not a plain SELECT"
-    if safety == "unparseable" and not parameterized:
+    if safety == "unparseable":
         return "model SQL could not be parsed for a read-only check"
     return None
 
@@ -387,10 +388,9 @@ def _sql_safety_reject_reason(safety: str, *, parameterized: bool) -> str | None
 def _substitute_model_sql_surfaces(
     *, model: SlayerModel, variables: dict[str, Any], dialect: SqlDialect
 ) -> SlayerModel:
-    """Copy of ``model`` with ``{var}`` substituted into its four Mode-A surfaces (no-op when unneeded; never mutates input)."""
-    return substitute_model_sql_surfaces(
-        model=model, variables=variables, backslash_escapes=dialect.backslash_escapes_strings,
-    )
+    """Copy of ``model`` with ``{var}`` bound as literals into its four Mode-A surfaces (no-op when unneeded; never
+    mutates input)."""
+    return substitute_model_sql_surfaces(model=model, variables=variables, bind_mode_a=partial(bind_mode_a, dialect=dialect))
 
 
 def _render_probe_model(model: SlayerModel, *, dialect: SqlDialect) -> SlayerModel:
@@ -1311,10 +1311,9 @@ class SlayerQueryEngine:
 
         # Substitute variables into every Mode-B surface. Root uses the bundle's
         # merged variables; each sibling re-merges its own stage layer.
-        backslash_escapes = dialect_for_ds_type(datasource.type).backslash_escapes_strings
-        query = substitute_extension_surfaces(
+        query = bind_extension_measures(
             query=apply_variables_to_query(query=query, variables=bundle.query_variables),
-            variables=bundle.query_variables, backslash_escapes=backslash_escapes,
+            variables=bundle.query_variables,
         )
         root_vars = query.variables
         # Sibling-sourced stages fall back to the root model's defaults (a
@@ -1330,9 +1329,8 @@ class SlayerQueryEngine:
                 **(nq.variables or {}),
                 **(runtime_kwarg or {}),
             }
-            normed_named[nm] = substitute_extension_surfaces(
-                query=apply_variables_to_query(query=nq, variables=stage_vars),
-                variables=stage_vars, backslash_escapes=backslash_escapes,
+            normed_named[nm] = bind_extension_measures(
+                query=apply_variables_to_query(query=nq, variables=stage_vars), variables=stage_vars,
             )
             if source is not None:
                 stage_sources[nm] = _substitute_model_sql_surfaces(
@@ -2007,7 +2005,6 @@ class SlayerQueryEngine:
         # Render a template model's Mode-A {var} surfaces from its own
         # defaults before probe SQL; an undefaulted {var} degrades to {}.
         model = _render_probe_model(model, dialect=dialect_for_ds_type(datasource.type))
-        probe_query = probe_query.model_copy(update={"source_model": model})
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=probe_query,
             storage=self.storage,
@@ -2017,7 +2014,10 @@ class SlayerQueryEngine:
             now=self._clock(),
         )
         dialect = self._dialect_for_type(datasource.type)
-        bundle = bundle.model_copy(update={"dialect": dialect, "datasource_type": datasource.type})
+        bundle = bundle.model_copy(update={
+            "dialect": dialect, "datasource_type": datasource.type, "source_model": model,
+            "referenced_models": [model if m.name == model.name else m for m in bundle.referenced_models],
+        })
         planned = plan_stages(queries=[probe_query], bundle=bundle)
         root = planned[-1]
         built = build_planned_statement(
@@ -2986,6 +2986,8 @@ class SlayerQueryEngine:
         failures = DocumentLoadFailures()
         loaded = await self._preload_join_targets(model, failures=failures)
         _validate_join_keys(model=model, loaded=loaded)
+        ds = await self.storage.get_datasource(model.data_source) if model.data_source else None
+        check_placeholders(mode_a_texts(model), dialect=dialect_for_ds_type(ds.type if ds else None))
         await self._validate_mode_a_join_paths(model, loaded=loaded)
         await self.validate_sql_model_source(model)
         try:
@@ -3031,10 +3033,9 @@ class SlayerQueryEngine:
         ]
 
     async def validate_sql_model_source(self, model: SlayerModel) -> None:
-        """Statically classify a raw-``sql`` source, then trial-execute it: a
-        non-read-only or unparseable source is rejected with no DB call; a
-        reachable backend's rejection also blocks. Parameterized SQL is still
-        classified (so a parameterized DML is caught) but not trial-run."""
+        """Statically classify a raw-``sql`` source, then trial-execute it: a placeholder outside a literal
+        position, a non-read-only or an unparseable source is rejected with no DB call; a reachable backend's
+        rejection also blocks. Parameterized SQL is classified with its placeholders as literals, not trial-run."""
         if not model.sql or model.sql_table or model.source_queries:
             return
         ds = (
@@ -3045,12 +3046,12 @@ class SlayerQueryEngine:
         sqlglot_name = dialect_for_ds_type(ds.type).sqlglot_name if ds else None
         bare, blocked = extract_variable_refs(model.sql)
         parameterized = bool(bare or blocked)
-        # render_probe_text is SLayer's canonical Mode-A probe render (blocks →
-        # (1=1), {var} → 0), so classification matches how model.sql parses.
-        # Unparseable blocks the save only when there are no placeholders — a
-        # parameterized source may parse only once its identifiers are filled.
+        check_mode_a_placeholders(
+            model.sql, dialect=dialect_for_ds_type(ds.type if ds else None), field=f"Model {model.name!r} sql",
+        )
+        # render_probe_text is SLayer's canonical Mode-A probe render (blocks → (1=1), {var} → 0).
         safety = classify_model_sql(render_probe_text(model.sql), dialect=sqlglot_name)
-        reject_reason = _sql_safety_reject_reason(safety, parameterized=parameterized)
+        reject_reason = _sql_safety_reject_reason(safety)
         if reject_reason:
             raise ModelSqlValidationError(
                 model_name=model.name,

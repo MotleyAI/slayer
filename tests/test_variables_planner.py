@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from functools import partial
+
 import pytest
 
 from slayer.core.enums import DataType
@@ -16,6 +18,8 @@ from slayer.core.query import (
     refine_query,
 )
 from slayer.core.syntax import BoundVariable, Cmp, parse_bound_expr
+from slayer.sql.dialects import MysqlDialect, SqliteDialect
+from slayer.sql.mode_a_variables import bind_mode_a
 from slayer.ir.variables import (
     apply_variables_to_query,
     extract_placeholder_names,
@@ -23,10 +27,10 @@ from slayer.ir.variables import (
     model_needs_substitution_pass,
     model_placeholder_names,
     substitute_model_sql_surfaces,
-    substitute_variables,
 )
-from slayer.core.query import substitute_variables as core_sv
 from slayer.core.query import extract_placeholder_names as core_epn
+
+_SQLITE_BIND = partial(bind_mode_a, dialect=SqliteDialect())
 
 
 
@@ -529,7 +533,7 @@ class TestSavedMeasureSubstitution:
 
     def test_saved_measure_formula_substituted(self) -> None:
         out = substitute_model_sql_surfaces(
-            model=_model_with_measure("sum(amount) * {k}"), variables={"k": 10}, backslash_escapes=False,
+            model=_model_with_measure("sum(amount) * {k}"), variables={"k": 10}, bind_mode_a=_SQLITE_BIND,
         )
         assert out.measures[0].formula == "sum(amount) * 10"
         assert out.measures[0].name == "scaled"
@@ -538,28 +542,25 @@ class TestSavedMeasureSubstitution:
     def test_saved_measure_uses_sql_quoting(self, backslash_escapes: bool) -> None:
         out = substitute_model_sql_surfaces(
             model=_model_with_measure("sum(CASE WHEN status == '{n}' THEN 1 ELSE 0 END)"),
-            variables={"n": "O'Brien"}, backslash_escapes=backslash_escapes,
+            variables={"n": "O'Brien"},
+            bind_mode_a=partial(bind_mode_a, dialect=MysqlDialect() if backslash_escapes else SqliteDialect()),
         )
         assert out.measures[0].formula == "sum(CASE WHEN status == 'O''Brien' THEN 1 ELSE 0 END)"
 
     def test_saved_measure_optional_block_rejected(self) -> None:
         model = _model_with_measure("sum(amount) * {? {k} ?}")
         with pytest.raises(ValueError, match="Optional blocks"):
-            substitute_model_sql_surfaces(model=model, variables={"k": 1}, backslash_escapes=False)
+            substitute_model_sql_surfaces(model=model, variables={"k": 1}, bind_mode_a=_SQLITE_BIND)
 
     def test_saved_measure_undefined_variable_raises(self) -> None:
         model = _model_with_measure("sum(amount) * {k}")
         with pytest.raises(ValueError, match="Undefined variable 'k'"):
-            substitute_model_sql_surfaces(model=model, variables={"j": 1}, backslash_escapes=False)
+            substitute_model_sql_surfaces(model=model, variables={"j": 1}, bind_mode_a=_SQLITE_BIND)
 
 
 class TestReExportsMatchCoreQuery:
     """Re-exported helpers stay symbolically identical to the originals
     so callers can import either path."""
-
-    def test_substitute_variables_is_core_query_re_export(self) -> None:
-
-        assert substitute_variables is core_sv
 
     def test_extract_placeholder_names_is_core_query_re_export(self) -> None:
 

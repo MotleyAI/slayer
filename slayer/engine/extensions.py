@@ -29,7 +29,7 @@ from slayer.ir.source_bundle import (
     InnerRestriction,
     ResolvedSourceBundle,
     follow_sibling_chain,
-    overlay_columns_and_measures,
+    overlay_measures,
 )
 
 __all__ = [
@@ -57,8 +57,8 @@ def extension_of(query: SlayerQuery, name: str) -> Optional[ModelExtension]:
 
 
 def respelled(query: SlayerQuery, *, tiers: Sequence[Iterable[str]]) -> SlayerQuery:
-    """``query`` with each model name it writes — its source, its inline source's join targets, its extensions' models
-    — spelled as the first of ``tiers`` that declares it (``slayer.core.names.match_name``); an undeclared name stays
+    """``query`` with each model name it writes — its source and its extensions' models — spelled as the first of
+    ``tiers`` that declares it (``slayer.core.names.match_name``); an undeclared name stays
     as written."""
     declared = [list(dict.fromkeys(tier)) for tier in tiers]
 
@@ -77,10 +77,8 @@ def respelled(query: SlayerQuery, *, tiers: Sequence[Iterable[str]]) -> SlayerQu
 
     update: Dict[str, object] = {}
     spec = query.source_model
-    if isinstance(spec, str) and spell(spec) != spec:
+    if spec is not None and spell(spec) != spec:
         update["source_model"] = spell(spec)
-    elif isinstance(spec, SlayerModel) and joins(spec.joins) is not spec.joins:
-        update["source_model"] = spec.model_copy(update={"joins": joins(spec.joins)})
     extensions = [extension(e) for e in query.extensions or []]
     if any(new is not old for new, old in zip(extensions, query.extensions or [])):
         update["extensions"] = extensions
@@ -90,7 +88,7 @@ def respelled(query: SlayerQuery, *, tiers: Sequence[Iterable[str]]) -> SlayerQu
 def respelled_stages(
     query: SlayerQuery, named_queries: Mapping[str, SlayerQuery], *, models: Iterable[str],
 ) -> Tuple[SlayerQuery, Dict[str, SlayerQuery]]:
-    """``respelled`` per stage: its own inline source and the stages shadow ``models``."""
+    """``respelled`` per stage: the stages shadow ``models``."""
     models = list(models)
 
     def one(stage: SlayerQuery) -> SlayerQuery:
@@ -100,14 +98,13 @@ def respelled_stages(
 
 
 def _stage_tiers(stage: SlayerQuery, *, stages: Iterable[str], models: Iterable[str]) -> List[List[str]]:
-    spec = stage.source_model
-    return [[*([spec.name] if isinstance(spec, SlayerModel) else []), *stages], list(models)]
+    return [list(stages), list(models)]
 
 
 def with_own_extension(model: Optional[SlayerModel], query: SlayerQuery) -> Optional[SlayerModel]:
-    """``model`` with the columns and measures ``query`` extends it with."""
+    """``model`` with the measures ``query`` extends it with."""
     extension = extension_of(query, model.name) if model is not None else None
-    return overlay_columns_and_measures(model, extension) if model is not None and extension is not None else model
+    return overlay_measures(model, extension) if model is not None and extension is not None else model
 
 
 def query_field_texts(query: SlayerQuery) -> Iterator[Tuple[FieldKind, str]]:
@@ -150,7 +147,7 @@ def extend_models(
     for extension in query.extensions or []:
         model = lookup(extension.source_name, out)
         if model is not None:
-            out[model.name] = overlay_columns_and_measures(model, extension)
+            out[model.name] = overlay_measures(model, extension)
     merge = EdgeMerge(models=out, reserved_names=reserved_names, stored_edge_names=stored_edge_names)
     inner = [
         (extension.source_name, join)
@@ -236,12 +233,12 @@ class QueryScope(BaseModel):
     data_source: str
     # The query's source as bound; ``None`` when inferred.
     host: Optional[SlayerModel] = None
-    # The stored model a sibling stage's chain ends on (``None``: inline or unresolved); ``""`` keys the host's own.
+    # The stored model a sibling stage's chain ends on (``None``: unresolved); ``""`` keys the host's own.
     bases: Dict[str, Optional[str]] = Field(default_factory=dict)
     models: Dict[str, SlayerModel] = Field(default_factory=dict)
     # Each INNER extension join's population filter reference from the host: hops, edge token, target key.
     inner_refs: Tuple[Tuple[str, ...], ...] = ()
-    # Stored model names a sibling stage or the inline source stands in for.
+    # Stored model names a sibling stage stands in for.
     shadowed: FrozenSet[str] = frozenset()
     # The query object with its extension model names respelled (``respelled``).
     query: Optional[SlayerQuery] = None
@@ -295,21 +292,18 @@ def _respelled_leniently(queries: Sequence[SlayerQuery], *, stored: Mapping[str,
     return out
 
 
-def _chain_base(spec, *, named: Mapping[str, SlayerQuery]) -> Tuple[bool, Optional[str], Optional[SlayerModel]]:
-    """``(resolved, base name, inline base)`` of a sibling chain; a cycle does not resolve."""
+def _chain_base(spec, *, named: Mapping[str, SlayerQuery]) -> Tuple[bool, Optional[str]]:
+    """``(resolved, base name)`` of a sibling chain; a cycle does not resolve."""
     try:
-        base = follow_sibling_chain(spec=spec, named_queries=dict(named))
+        return True, follow_sibling_chain(spec=spec, named_queries=dict(named))
     except ValueError:
-        return False, None, None
-    if isinstance(base, SlayerModel):
-        return True, base.name, base
-    return True, base, None
+        return False, None
 
 
 def _stored_base(spec, *, named: Mapping[str, SlayerQuery]) -> Optional[str]:
-    """The stored model a sibling chain ends on; ``None`` for an inline end or a cycle."""
-    resolved, base, inline = _chain_base(spec, named=named)
-    return base if resolved and inline is None else None
+    """The stored model a sibling chain ends on; ``None`` for a cycle."""
+    resolved, base = _chain_base(spec, named=named)
+    return base if resolved else None
 
 
 def _chain(query: SlayerQuery, *, named: Mapping[str, SlayerQuery]) -> Iterator[SlayerQuery]:
@@ -329,11 +323,9 @@ def _data_sources(
 ) -> List[str]:
     """The datasources ``query`` may read: ``data_source`` when it holds a model the query's chain names, else every
     datasource that does."""
-    resolved, base, inline = _chain_base(query.source_model, named=named)
+    resolved, base = _chain_base(query.source_model, named=named)
     if not resolved:
         return [data_source] if data_source is not None else []
-    if inline is not None:
-        return [inline.data_source or data_source or ""]
     names = {base} if base is not None else {
         n for q in _chain(query, named=named)
         for n in [*extension_model_names(q), *(p[0] for p in query_reference_parts(q) if len(p) > 1)]
@@ -356,18 +348,13 @@ def _scope(
     spec = query.source_model
     models: Dict[str, SlayerModel] = {
         **stored, **{n: _sibling_host(n, query=query, data_source=data_source) for n in siblings}}
-    resolved = _chain_base(spec, named=named)[0]
-    host_name = spec if isinstance(spec, str) and resolved else None
-    if isinstance(spec, SlayerModel):
-        models[spec.name] = spec
-        host_name = spec.name
+    host_name = spec if _chain_base(spec, named=named)[0] else None
     models, restrictions = extend_models(
         query, models, lookup=lambda name, universe: universe.get(name), on_conflict=lambda _exc: None)
     host = models.get(host_name) if host_name is not None else None
     bases = {"": _stored_base(spec, named=named), **{n: _stored_base(n, named=named) for n in siblings}}
-    inline = {spec.name} if isinstance(spec, SlayerModel) else set()
     return QueryScope.model_construct(
-        data_source=data_source, host=host, bases=bases, models=models, shadowed=frozenset({*siblings, *inline}),
+        data_source=data_source, host=host, bases=bases, models=models, shadowed=frozenset(siblings),
         query=query,
         inner_refs=tuple(r for r in (_inner_ref(x, host=host, models=models) for x in restrictions) if r is not None),
     )
@@ -375,15 +362,13 @@ def _scope(
 
 def _sibling_host(name: str, *, query: SlayerQuery, data_source: str) -> SlayerModel:
     """Sibling stage ``name`` as ``query`` reads it: the output fields its extension joins name, on either side."""
-    extension = extension_of(query, name)
-    defined = {c.name for c in extension.columns or []} if extension is not None else set()
     keys = [
         pair[0 if e.source_name == name else 1]
         for e in query.extensions or [] for j in e.joins or [] if name in (e.source_name, j.target_model)
         for pair in j.join_pairs
     ]
     return SlayerModel.model_construct(
-        name=name, data_source=data_source, columns=[Column(name=k) for k in dict.fromkeys(keys) if k not in defined])
+        name=name, data_source=data_source, columns=[Column(name=k) for k in dict.fromkeys(keys)])
 
 
 def _inner_ref(
@@ -425,8 +410,8 @@ def _reserved_names(models: Dict[str, SlayerModel], bundle: ResolvedSourceBundle
 def apply_query_extensions(
     *, query: SlayerQuery, scope: "ModelScope | StageSchema | None", bundle: ResolvedSourceBundle,
 ) -> "Tuple[ModelScope | StageSchema | None, ResolvedSourceBundle]":
-    """``query``'s extensions applied to the stage's models: columns and measures overlaid, joins merged into the
-    join graph, and each INNER join recorded as a population filter."""
+    """``query``'s extensions applied to the stage's models: measures overlaid, joins merged into the join graph,
+    and each INNER join recorded as a population filter."""
     if not query.extensions:
         return scope, bundle
     display = bundle.stage_displays.get(query.name) if query.name else None

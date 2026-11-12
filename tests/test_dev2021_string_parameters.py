@@ -135,8 +135,9 @@ class TestStringArgumentIsModeB:
         self, engine: SlayerQueryEngine, executed: list[str], text: str, marker: str,
     ) -> None:
         literal = "'" + text.replace("'", "''") + "'"
+        query = _q(f"wsum(amount, w={literal})")
         with pytest.raises(UnanalyzableAggregationParameterError) as exc:
-            await engine.execute(_q(f"wsum(amount, w={literal})"))
+            await engine.execute(query)
         message = str(exc.value)
         assert "wsum" in message
         assert "w" in message
@@ -159,8 +160,9 @@ class TestDefaultStaysModeA:
 
     async def test_the_same_text_as_an_argument_is_refused(self) -> None:
         async with seeded_exec_engine(dialect="sqlite", seed=_seed, models=_models(_USUM)) as (engine, _db):
+            query = _q("usum(amount, w='unicode(status) - unicode(status) + quantity')")
             with pytest.raises(UnanalyzableAggregationParameterError):
-                await engine.execute(_q("usum(amount, w='unicode(status) - unicode(status) + quantity')"))
+                await engine.execute(query)
 
 
 _TRICKY = "a'b\\c"

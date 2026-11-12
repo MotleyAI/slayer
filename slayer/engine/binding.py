@@ -72,7 +72,7 @@ from slayer.core.models import (
 from slayer.core.warnings import LibraryNameShadowWarning
 from slayer.engine.population import dimension_routing
 from slayer.engine.key_metadata import bundle_dialect, scope_column_type
-from slayer.engine.param_binding import bind_aggregation_params
+from slayer.engine.param_binding import QuotedArgumentRefused, bind_aggregation_params
 from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope, StageSchema, peek_model_column, resolve_generated_column, root_spelling
 from slayer.core.time_points import is_time_point, parse_temporal_value
@@ -108,6 +108,7 @@ from slayer.core.syntax import (
     parse_bound_expr,
     parse_expr,
     placeholder_names,
+    walk_parsed,
     positional_hint,
 )
 from slayer.core.scalar_args import (
@@ -1183,7 +1184,7 @@ def _resolve_saved_measure(
             chain=_fmt_measure_chain(child.chain), limit=measure_ctx.depth_limit,
         )
     records = _bind_records.get()
-    if records is not None and not terminal_model.inline:
+    if records is not None:
         records.measures[(terminal_model.name, measure.name)] = None
     parsed = parse_bound_expr(measure.formula, measure.bound_variables)
     _reject_placeholders(parsed, text=measure.formula)
@@ -1638,10 +1639,7 @@ def _bind_agg(
         )
     kwargs = bind_aggregation_params(
         agg=effective_agg, source=source, kwargs=kwargs, bundle=bundle,
-        resolve_query_ref=lambda parts: _bind(
-            Ref(name=parts[0]) if len(parts) == 1 else DottedRef(parts=parts),
-            scope=scope, bundle=bundle, in_filter=False,
-        ),
+        bind_quoted=lambda text: _bind_quoted_arg(text, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map),
     )
     owner, _leaf = _resolve_agg_owner(source, bundle)
     return AggregateKey(
@@ -1917,6 +1915,20 @@ def _column_agg_refusal(*, col, columns, agg: str, custom: bool) -> Optional[str
         remedy = f" {leaf!r} is a list; aggregate its elements: {agg}({leaf}.value)."
     return (f"aggregation {agg!r} is not applicable to {col.type} column {leaf!r}; "
             f"default aggregations are {sorted(allowed)}.{remedy}")
+
+
+def _bind_quoted_arg(
+    text: str, *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
+):
+    """A quoted aggregation argument read as Mode B and bound as its unquoted spelling; a row expression only."""
+    try:
+        parsed = parse_expr(text)
+    except ValueError as exc:
+        raise QuotedArgumentRefused(f"it is not a SLayer expression: {exc}") from exc
+    if any(isinstance(node, (AggCall, TransformCall)) for node in walk_parsed(parsed)):
+        raise QuotedArgumentRefused("it contains an aggregate")
+    return _bind_agg_arg(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
 
 
 def _bind_agg_arg(

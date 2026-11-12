@@ -325,7 +325,7 @@ def _build_backing_query_info(model: SlayerModel) -> dict | None:
     # Required = no default in model.query_variables nor in the stage's own variables.
     defaulted: set = set(model.query_variables.keys())
     for q in model.source_queries:
-        all_placeholders |= extract_placeholder_names(q) | extension_variable_refs(q)[0]
+        all_placeholders |= extract_placeholder_names(q) | extension_variable_refs(q)
         if q.variables:
             defaulted |= set(q.variables.keys())
         stage_dicts.append(q.model_dump(mode="json", exclude_none=True))
@@ -363,12 +363,8 @@ def _render_stage_field_list(key: str, val: list) -> str:
 
 
 def _render_source_model(src: Any) -> str | None:
-    """Render a stage's ``source_model`` (a name or an inline model dict)."""
-    if isinstance(src, str):
-        return f"- source_model: `{src}`"
-    if isinstance(src, dict) and src.get("name"):
-        return f"- source_model: `{src['name']}` (inline model)"
-    return None
+    """Render a stage's ``source_model``."""
+    return f"- source_model: `{src}`" if isinstance(src, str) else None
 
 
 def _render_extensions(extensions: Any) -> str | None:

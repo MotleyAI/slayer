@@ -47,7 +47,7 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.policy import JoinFilterRule, JoinFilterRuleset, SessionPolicy
-from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import ColumnRef, ComputedDimension, OrderItem, SlayerQuery, TimeDimension
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
 from slayer.live_schema import ingestion
 from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine
@@ -299,24 +299,21 @@ class TestClickHouseQueries:
         assert result.data[0]["orders._count"] == 6
 
     async def test_dev1933_regex_literal_extension_column(self, clickhouse_env: SlayerQueryEngine) -> None:
-        """An ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
+        """A model column holding a ``(?:...)`` regex literal and a ``%``
         LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
+        orders = await clickhouse_env.storage.get_model("orders")
+        assert orders is not None
+        await clickhouse_env.storage.save_model(orders.model_copy(update={"name": "orders_rx", "columns": [
+            *orders.columns, Column(name="rx", sql="CASE WHEN status LIKE '%pend%' "
+                        "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END", type=DataType.DOUBLE),
+        ]}))
         query = SlayerQuery(
-            source_model="orders",
-            extensions=[ModelExtension(
-                source_name="orders",
-                columns=[Column(
-                    name="rx",
-                    sql="CASE WHEN status LIKE '%pend%' "
-                        "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END",
-                    type=DataType.DOUBLE,
-                )],
-            )],
+            source_model="orders_rx",
             dimensions=[ColumnRef(name="rx")],
             measures=[ModelMeasure(formula="count(*)")],
         )
         result = await clickhouse_env.execute(query=query)
-        by_rx = {int(r["orders.rx"]): r["orders._count"] for r in result.data}
+        by_rx = {int(r["orders_rx.rx"]): r["orders_rx._count"] for r in result.data}
         assert by_rx == {1: 2, 0: 4}
 
     async def test_sum_measure(self, clickhouse_env: SlayerQueryEngine) -> None:
@@ -685,11 +682,7 @@ class TestCrossModelAndMultistageClickHouse:
     async def test_sql_dimension(self, clickhouse_cross_model_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            extensions=[ModelExtension.model_validate({
-                "source_name": "orders",
-                "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
-            })],
-            dimensions=[ColumnRef(name="tier")],
+            dimensions=[ComputedDimension(expression="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", name="tier")],
             measures=[ModelMeasure(formula="count(*)")],
         )
         result = await clickhouse_cross_model_env.execute(query=query)
