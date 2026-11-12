@@ -108,8 +108,12 @@ def _record(*, engine: SlayerQueryEngine, monkeypatch) -> list[SlayerQuery]:
     return log
 
 
+def _is_numeric_batch(q: SlayerQuery) -> bool:
+    return any((m.name or "").startswith("_slayer_range_") for m in q.measures or [])
+
+
 def _numeric_batches(log: list[SlayerQuery]) -> list[SlayerQuery]:
-    return [q for q in log if bool(q.extensions)]
+    return [q for q in log if _is_numeric_batch(q)]
 
 
 def _categorical(log: list[SlayerQuery]) -> list[SlayerQuery]:
@@ -117,7 +121,7 @@ def _categorical(log: list[SlayerQuery]) -> list[SlayerQuery]:
 
 
 def _probes(log: list[SlayerQuery]) -> list[SlayerQuery]:
-    return [q for q in log if not q.dimensions and not bool(q.extensions)]
+    return [q for q in log if not q.dimensions and not _is_numeric_batch(q)]
 
 
 def _count_persists(*, storage: StorageBackend, monkeypatch) -> list[str]:

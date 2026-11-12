@@ -18,7 +18,7 @@ import sqlglot
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery
+from slayer.core.query import ComputedDimension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import client as sql_client
 from slayer.database import engine_factory
@@ -279,13 +279,13 @@ class TestSyncPathsUseVerbatimDoor:
 
 
 # ---------------------------------------------------------------------------
-# 3.4 End to end: an ad-hoc ModelExtension regex column
+# 3.4 End to end: an ad-hoc regex expression dimension
 # ---------------------------------------------------------------------------
 
 
-class TestModelExtensionRegexColumnEndToEnd:
-    """The reported path: a query extends its model with a column whose SQL holds
-    the regex literal, then runs through the engine. The rendered SQL carries
+class TestRegexExpressionDimensionEndToEnd:
+    """The reported path: a query's expression dimension holds the regex
+    literal, then runs through the engine. The rendered SQL carries
     ``:too``; text() failed it, the verbatim door runs it."""
 
     async def _seed_engine(self, tmp_path) -> SlayerQueryEngine:
@@ -310,19 +310,12 @@ class TestModelExtensionRegexColumnEndToEnd:
         ))
         return SlayerQueryEngine(storage=storage)
 
-    async def test_regex_extension_column_as_dimension(self, tmp_path) -> None:
+    async def test_regex_expression_dimension(self, tmp_path) -> None:
         engine = await self._seed_engine(tmp_path)
         query = SlayerQuery(
             source_model="orders",
-            extensions=[ModelExtension(
-                source_name="orders",
-                columns=[Column(
-                    name="rx",
-                    sql=f"CASE WHEN status = '{_REGEX_LITERAL}' THEN 1 ELSE 0 END",
-                    type=DataType.DOUBLE,
-                )],
-            )],
-            dimensions=[ColumnRef(name="rx")],
+            dimensions=[ComputedDimension(expression=f"CASE WHEN status = '{_REGEX_LITERAL}' THEN 1 ELSE 0 END",
+                                          name="rx")],
             measures=[ModelMeasure(formula="count(*)")],
         )
         result = await engine.execute(query=query)

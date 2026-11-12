@@ -334,6 +334,7 @@ All code, old and new, MUST obey these.
    - **2.2** A dialect without its own translation of a Mode B construct
      refuses it with a typed error; a base-class default is never another
      dialect's SQL. [enforced: test:tests/test_dev2169_dialect_library_support.py]
+   - **2.3** A query carries no Mode A: Mode A is written only in a stored model's definition, and a value a query supplies enters it only as a literal. [enforced: test:tests/test_dev2021_queries_carry_no_mode_a.py]
 3. **Logical names, physical once**: every model-level column reference —
    query fields, `join_pairs`, unique-key sets — names a column by
    `Column.name`; the physical spelling (`Column.physical_name`: a base

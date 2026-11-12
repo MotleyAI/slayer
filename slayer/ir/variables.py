@@ -5,9 +5,9 @@
 - :func:`apply_variables_to_query` binds ``{var}`` as literals into a query's
   filters, measure formulas, computed- and time-dimension expressions and
   order expressions, and substitutes its ``date_range`` bounds.
-- :func:`substitute_model_sql_surfaces` substitutes a model's four Mode-A
-  surfaces (SQL regime) and binds its saved measure formulas;
-  :func:`substitute_extension_surfaces` does the same for a query's extensions.
+- :func:`substitute_model_sql_surfaces` binds a model's four Mode-A
+  surfaces (as literals, by the caller's dialect binder) and its saved measure formulas;
+  :func:`bind_extension_measures` binds a query's extension measures.
 """
 
 from __future__ import annotations
@@ -30,7 +30,6 @@ from slayer.core.query import (
     extract_placeholder_names,
     extract_variable_refs,
     list_valued_variable_names,
-    substitute_variables,
 )
 
 
@@ -202,40 +201,42 @@ def model_placeholder_names(model: SlayerModel) -> set:
     return out
 
 
+#: Binds one Mode-A text: ``bind(text, variables, field=...)``.
+ModeABind = Callable[..., str]
+
+
 def substitute_model_sql_surfaces(
-    *, model: SlayerModel, variables: Dict[str, Any], backslash_escapes: bool,
+    *, model: SlayerModel, variables: Dict[str, Any], bind_mode_a: ModeABind,
 ) -> SlayerModel:
-    """Copy of ``model`` with ``{var}`` substituted into its four Mode-A surfaces
-    and bound into its saved measure formulas; no-op when unneeded."""
+    """Copy of ``model`` with ``{var}`` bound as literals into its four Mode-A surfaces by ``bind_mode_a``
+    and into its saved measure formulas; no-op when unneeded."""
     if not variables and not model_needs_substitution_pass(model):
         return model
     variables = coerce_declared_list_variables(
         variables, list_valued=list_valued_variable_names(model)
     )
 
-    def _sub(text: str) -> str:
-        return substitute_variables(
-            filter_str=text, variables=variables, backslash_escapes=backslash_escapes,
-        )
+    def _sub(text: str, field: str) -> str:
+        return bind_mode_a(text, variables, field=field)
 
     update: Dict[str, Any] = {"columns": _substituted_columns(model.columns, _sub)}
     if model.sql is not None:
-        update["sql"] = _sub(model.sql)
+        update["sql"] = _sub(model.sql, f"Model {model.name!r} sql")
     if model.filters:
-        update["filters"] = [_sub(f) for f in model.filters]
+        update["filters"] = [_sub(f, f"Model {model.name!r} filters[{i}]") for i, f in enumerate(model.filters)]
     if model.measures:
         update["measures"] = _substituted_measures(model.measures, variables)
     return model.model_copy(update=update)
 
 
-def _substituted_columns(columns: List[Column], sub: Callable[[str], str]) -> List[Column]:
+def _substituted_columns(columns: List[Column], sub: Callable[[str, str], str]) -> List[Column]:
     out = []
     for col in columns:
         updates: Dict[str, Any] = {}
         if col.sql is not None:
-            updates["sql"] = sub(col.sql)
+            updates["sql"] = sub(col.sql, f"Column {col.name!r} sql")
         if col.filter is not None:
-            updates["filter"] = sub(col.filter)
+            updates["filter"] = sub(col.filter, f"Column {col.name!r} filter")
         out.append(col.model_copy(update=updates) if updates else col)
     return out
 
@@ -247,22 +248,13 @@ def _substituted_measures(measures: List[ModelMeasure], variables: Dict[str, Any
     ]
 
 
-def substitute_extension_surfaces(
-    *, query: SlayerQuery, variables: Dict[str, Any], backslash_escapes: bool,
-) -> SlayerQuery:
-    """``query`` with ``{var}`` substituted into its extensions' column SQL and bound into their measures."""
-    if not query.extensions:
+def bind_extension_measures(*, query: SlayerQuery, variables: Dict[str, Any]) -> SlayerQuery:
+    """``query`` with ``{var}`` bound into its extensions' measures."""
+    if not any(e.measures for e in query.extensions or []):
         return query
-
-    def _sub(text: str) -> str:
-        return substitute_variables(filter_str=text, variables=variables, backslash_escapes=backslash_escapes)
-
     extensions = [
-        e.model_copy(update={
-            "columns": _substituted_columns(e.columns, _sub) if e.columns else e.columns,
-            "measures": _substituted_measures(e.measures, variables) if e.measures else e.measures,
-        })
-        for e in query.extensions
+        e.model_copy(update={"measures": _substituted_measures(e.measures, variables)}) if e.measures else e
+        for e in query.extensions or []
     ]
     return query.model_copy(update={"extensions": extensions})
 
@@ -271,9 +263,8 @@ __all__ = [
     "apply_variables_to_query",
     "model_needs_substitution_pass",
     "model_placeholder_names",
-    "substitute_extension_surfaces",
+    "bind_extension_measures",
     "substitute_model_sql_surfaces",
     "extract_placeholder_names",
     "merge_query_variables",
-    "substitute_variables",
 ]

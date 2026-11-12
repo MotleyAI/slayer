@@ -144,9 +144,9 @@ class TestExecution:
         resp = await exec_engine.execute([*(by_name[n] for n in order), root_over_b()])
         assert rows_by(resp.data, key="b.c__tr", value="b.total") == AMOUNT_BY_TIER
 
-    async def test_inline_model_joins_a_sibling(self, exec_engine) -> None:
-        resp = await exec_engine.execute(inline_join_list())
-        assert rows_by(resp.data, key="b.c__tr", value="b.total") == AMOUNT_BY_TIER
+    def test_inline_model_joining_a_sibling_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="(?i)inline"):
+            inline_join_list()
 
     async def test_one_stage_reads_three_siblings(self, exec_engine) -> None:
         resp = await exec_engine.execute(three_reads_list())
@@ -171,7 +171,7 @@ class TestExecution:
     def test_nested_source_queries_rejected(self) -> None:
         outer = {"name": "outer", "source_queries": [
             {"source_model": "x", "dimensions": ["tier"], "measures": [{"formula": "sum(total_spend)", "name": "s"}]}]}
-        with pytest.raises(ValueError, match=r"(?is)outer.*named stages?|named stages?.*outer"):
+        with pytest.raises(ValueError, match=r"(?is)inline.*named stages?|named stages?.*inline"):
             SlayerQuery.model_validate({
                 "name": "n", "source_model": outer, "dimensions": ["tier"],
                 "measures": [{"formula": "sum(s)", "name": "s3"}]})
@@ -182,7 +182,6 @@ class TestExecution:
 # --------------------------------------------------------------------------- #
 _READS_CASES = {
     "chain": (chain_list, {"x": [], "c": ["x"], "b": ["c"], "<root>": ["b"]}),
-    "inline_join": (inline_join_list, {"x": [], "c": ["x"], "b": ["c"], "<root>": ["b"]}),
     "three_reads": (three_reads_list,
                     {"o": [], "x": [], "c": ["x"], "p": ["o", "x", "c"], "<root>": ["p"]}),
     "semi_join": (semi_join_list, {"x": [], "c": ["x"], "b": ["c"], "<root>": ["b"]}),

@@ -19,7 +19,7 @@ from slayer.storage.sqlite_conn import transaction
 from tests._stored_upgrade_fixtures import BACKENDS, DS, memory_v2, raw_store, run
 
 #: The versions this change introduces; a concurrent bump renumbers only this line.
-UPGRADED_AT = {"SlayerModel": 22, "SlayerQuery": 14, "Memory": 10}
+UPGRADED_AT = {"SlayerModel": 23, "SlayerQuery": 15, "Memory": 11}
 PRE = {entity: version - 1 for entity, version in UPGRADED_AT.items()}
 
 # (id, created_at); order_date is its day, amount is id * 10.

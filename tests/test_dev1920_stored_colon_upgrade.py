@@ -65,10 +65,10 @@ def _fresh(**fields: Any) -> SlayerQuery:
 
 class TestVersions:
     def test_versions_bumped(self) -> None:
-        assert CURRENT_VERSIONS["SlayerModel"] == 22
-        assert CURRENT_VERSIONS["SlayerQuery"] == 14
+        assert CURRENT_VERSIONS["SlayerModel"] == 23
+        assert CURRENT_VERSIONS["SlayerQuery"] == 15
         assert CURRENT_VERSIONS["DatasourceConfig"] == 3
-        assert CURRENT_VERSIONS["Memory"] == 10
+        assert CURRENT_VERSIONS["Memory"] == 11
 
 
 #: (stored measure formula, the formula it loads as).
@@ -140,12 +140,6 @@ class TestQueryPositions:
     @pytest.mark.parametrize(("field", "stored", "functional"), QUERY_POSITIONS)
     def test_loads_as_the_fresh_functional_query(self, field: str, stored: Any, functional: Any) -> None:
         assert _stored(**{field: stored}).model_dump() == _fresh(**{field: functional}).model_dump()
-
-    def test_inline_model_measure(self) -> None:
-        inline = {k: v for k, v in orders_doc(measures=_measures(["amount:sum"])).items() if k != "version"}
-        query = _stored(source_model=inline, measures=["m0"])
-        assert isinstance(query.source_model, SlayerModel)
-        assert [m.formula for m in query.source_model.measures] == ["sum(amount)"]
 
     def test_saved_query_stage(self) -> None:
         model = SlayerModel.model_validate(query_backed_doc(

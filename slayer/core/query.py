@@ -2,23 +2,19 @@
 from __future__ import annotations
 
 import json
-import math
 import re
-from collections.abc import Callable, Iterable
-from typing import Annotated, Any, Literal, Union
+from collections.abc import Callable, Container, Iterable
+from typing import Annotated, Any, Literal
 
 from pydantic import (
-    AfterValidator,
     AliasChoices,
     BaseModel,
     BeforeValidator,
     ConfigDict,
-    Discriminator,
     Field,
     ModelWrapValidatorHandler,
     PrivateAttr,
     SerializerFunctionWrapHandler,
-    Tag,
     field_validator,
     model_serializer,
     model_validator,
@@ -26,7 +22,7 @@ from pydantic import (
 
 from slayer.core.deprecation import deprecated_input
 from slayer.core.direction import normalize_direction
-from slayer.core.enums import TimeGranularity
+from slayer.core.enums import DataType, TimeGranularity, _coerce_legacy_datatype
 from slayer.core.errors import (
     ColonSpellingError,
     DistinctDimensionValuesError,
@@ -35,7 +31,6 @@ from slayer.core.errors import (
 )
 from slayer.core.granularity import GranularitySpec, granularity_key
 from slayer.core.models import (
-    Column,
     ModelJoin,
     ModelMeasure,
     SlayerModel,
@@ -52,15 +47,18 @@ from slayer.core.syntax import (
     DottedRef,
     Placeholder,
     Ref,
+    TransformCall,
     call_source,
     canonical_measure_text,
     dotted_quoting,
     drop_root_qualifier,
     legacy_result_name_seed,
+    measure_text_at_path,
     parse_expr,
     parse_template,
     root_relative,
     variable_names,
+    walk_parsed,
 )
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import (
@@ -269,60 +267,6 @@ def _validate_query_filter_string(formula: str) -> None:
         raise ValueError(f"Filter '{formula}' {WINDOW_IN_FILTER_ERROR}")
 
 
-def _escape_string_value(value: str, *, backslash_escapes: bool) -> str:
-    """Escape a string value for a SQL literal; double quote deliberately left untouched."""
-    if backslash_escapes:
-        # order matters: double the backslash before escaping the quote.
-        return value.replace("\\", "\\\\").replace("'", "\\'")
-    return value.replace("'", "''")
-
-
-def _render_list_value(name: str, value: "list | tuple", *, backslash_escapes: bool) -> str:
-    """Render a ``list``/``tuple`` into an ``IN``-list body: template writes
-    the parens (``col IN ({var})``), string elements auto-quoted; empty list raises (``IN ()`` invalid)."""
-    if len(value) == 0:
-        raise ValueError(
-            f"Variable '{name}' cannot be an empty list; 'IN ()' is invalid SQL. "
-            f"For 'no filter' semantics, use a sentinel default."
-        )
-    rendered: list[str] = []
-    for element in value:
-        if isinstance(element, str):
-            rendered.append(
-                "'" + _escape_string_value(value=element, backslash_escapes=backslash_escapes) + "'"
-            )
-        # bool is an int subclass and is accepted (renders True/False).
-        elif isinstance(element, (int, float)):
-            if isinstance(element, float) and not math.isfinite(element):
-                raise ValueError(
-                    f"Variable '{name}' list element must be finite, got {element!r}"
-                )
-            rendered.append(str(element))
-        else:
-            raise ValueError(
-                f"Variable '{name}' list element must be a string, number, or bool, "
-                f"got {type(element).__name__}"
-            )
-    return ", ".join(rendered)
-
-
-def _render_variable_value(name: str, value: Any, *, backslash_escapes: bool) -> str:
-    """Render one resolved variable value into substitution text (see the two helpers)."""
-    # list/tuple first, so the scalar path only ever sees a single value.
-    if isinstance(value, (list, tuple)):
-        return _render_list_value(name=name, value=value, backslash_escapes=backslash_escapes)
-    if isinstance(value, str):
-        return _escape_string_value(value=value, backslash_escapes=backslash_escapes)
-    if isinstance(value, (int, float)):
-        if isinstance(value, float) and not math.isfinite(value):
-            raise ValueError(f"Variable '{name}' must be finite, got {value!r}")
-        return str(value)
-    raise ValueError(
-        f"Variable '{name}' must be a string, number, or list/tuple, "
-        f"got {type(value).__name__}"
-    )
-
-
 _BLOCK_OPEN = "{?"
 _BLOCK_CLOSE = "?}"
 
@@ -400,77 +344,36 @@ def _contains_block_delimiter(text: str) -> bool:
     return _BLOCK_OPEN in text or _BLOCK_CLOSE in text
 
 
-def _make_var_replacer(filter_str: str, variables: dict, backslash_escapes: bool):
-    """Build the ``re.sub`` replacement callable for ``{var}`` / ``{{`` / ``}}`` tokens."""
-
-    def _replace(match: re.Match) -> str:
-        full = match.group(0)
-        if full == "{{":
-            return "{"
-        if full == "}}":
-            return "}"
-        valid_name = match.group(1)
-        if valid_name is not None:
-            if valid_name not in variables:
-                raise ValueError(
-                    f"Undefined variable '{valid_name}' in filter: {filter_str!r}. "
-                    f"Available variables: {sorted(variables.keys())}"
-                )
-            return _render_variable_value(
-                name=valid_name,
-                value=variables[valid_name],
-                backslash_escapes=backslash_escapes,
-            )
-        bad_name = match.group(2)
-        raise ValueError(
-            f"Invalid variable name '{bad_name}' in filter: {filter_str!r}. "
-            f"Variable names must contain only letters, digits, and underscores."
-        )
-
-    return _replace
-
-
-def substitute_variables(
-    filter_str: str,
-    variables: dict[str, Any],
-    *,
-    backslash_escapes: bool | None = None,
-) -> str:
-    """Substitute ``{var}`` placeholders in a raw-SQL string (``{{``/``}}`` → literal braces).
-    ``backslash_escapes`` is the fail-closed dialect signal. A ``list``/``tuple`` renders an
-    auto-quoted ``IN``-list body."""
-    if backslash_escapes is None:
-        raise ValueError(
-            "substitute_variables requires backslash_escapes to be specified: True on "
-            "backslash-escaping dialects (MySQL, ClickHouse, Snowflake, "
-            "Redshift, BigQuery, Databricks, Spark), False on standard dialects "
-            "(SQLite, Postgres, DuckDB, ...). Derive it from "
-            "SqlDialect.backslash_escapes_strings."
-        )
-    _replace = _make_var_replacer(
-        filter_str=filter_str, variables=variables, backslash_escapes=backslash_escapes
-    )
-
-    # Fast path: no blocks -> single-pass regex sub.
-    if not _contains_block_delimiter(filter_str):
-        return _VAR_PATTERN.sub(_replace, filter_str)
-
-    return _render_block_segments(filter_str, variables, _replace)
-
-
-def _render_block_segments(filter_str: str, variables: dict, replace_fn) -> str:
-    """Render a Mode-A string with ``{? ?}`` blocks: parenthesised when every inner ``{var}`` is supplied, else ``(1=1)``."""
+def resolve_optional_blocks(text: str, supplied: Container[str] | None) -> str:
+    """``text`` with each ``{? ?}`` block parenthesised when ``supplied`` holds every variable it reads (always, given
+    ``None``), else ``(1=1)``; placeholders and escaped braces are kept."""
+    if not _contains_block_delimiter(text):
+        return text
     out: list[str] = []
-    for kind, segment in _split_blocks(filter_str):
+    for kind, segment in _split_blocks(text):
         if kind == "text":
-            out.append(_VAR_PATTERN.sub(replace_fn, segment))
-            continue
-        names = _block_var_names(segment, filter_str)
-        if all(name in variables for name in names):
-            out.append("(" + _VAR_PATTERN.sub(replace_fn, segment).strip() + ")")
+            out.append(segment)
+        elif supplied is None or all(name in supplied for name in _block_var_names(segment, text)):
+            out.append("(" + segment.strip() + ")")
         else:
             out.append("(1=1)")
     return "".join(out)
+
+
+def mask_placeholders(text: str, mask: Callable[[str], str]) -> str:
+    """``text`` with each ``{name}`` replaced by ``mask(name)`` and ``{{`` / ``}}`` read as braces; an invalid name
+    raises."""
+    def _replace(match: re.Match) -> str:
+        if match.group(0) in ("{{", "}}"):
+            return match.group(0)[0]
+        if match.group(1) is None:
+            raise ValueError(
+                f"Invalid variable name '{match.group(2)}' in {text!r}. "
+                f"Variable names must contain only letters, digits, and underscores."
+            )
+        return mask(match.group(1))
+
+    return _VAR_PATTERN.sub(_replace, text)
 
 
 def _mode_b_surfaces(query: "SlayerQuery") -> list[str]:
@@ -534,7 +437,7 @@ def extract_variable_refs(text: str) -> tuple[set[str], set[str]]:
         parts = _split_blocks(text)
     except ValueError:
         # Malformed delimiters: classify as block-free so read-only inspection
-        # doesn't break; execution still raises through substitute_variables.
+        # doesn't break; execution still raises when it binds.
         parts = [("text", text)]
     for kind, segment in parts:
         target = bare if kind == "text" else blocked
@@ -546,17 +449,19 @@ def extract_variable_refs(text: str) -> tuple[set[str], set[str]]:
     return bare, blocked
 
 
-def extension_variable_refs(query: "SlayerQuery") -> tuple[set[str], set[str]]:
-    """``(bare_names, blocked_names)`` of ``query``'s extensions: column SQL and filters, and measure formulas."""
-    bare: set[str] = set()
-    blocked: set[str] = set()
-    for extension in query.extensions or []:
-        for text in (t for c in extension.columns or [] for t in (c.sql, c.filter) if t):
-            text_bare, text_blocked = extract_variable_refs(text)
-            bare |= text_bare
-            blocked |= text_blocked
-        bare |= {name for m in extension.measures or [] for name in variable_names(m.formula)}
-    return bare, blocked
+def extension_variable_refs(query: "SlayerQuery") -> set[str]:
+    """The variables ``query``'s extension measures read."""
+    return {name for e in query.extensions or [] for m in e.measures or [] for name in variable_names(m.formula)}
+
+
+def mode_a_texts(model: SlayerModel) -> list[tuple[str, str]]:
+    """``(field, text)`` of each of ``model``'s Mode-A surfaces."""
+    out = [(f"Model {model.name!r} sql", model.sql)] if model.sql else []
+    out += [(f"Model {model.name!r} filters[{i}]", f) for i, f in enumerate(model.filters or []) if f]
+    for column in model.columns:
+        out += [(f"Column {column.name!r} {field}", text)
+                for field, text in (("sql", column.sql), ("filter", column.filter)) if text]
+    return out
 
 
 def extract_model_variables(model: SlayerModel) -> ModelVariables:
@@ -1114,19 +1019,84 @@ DimensionsField = Annotated[list[ColumnRef | ComputedDimension] | None, BeforeVa
 OrderField = Annotated[list[OrderItem] | None, BeforeValidator(_coerce_order)]
 
 
+_UNCAST = (DataType.TEXT, DataType.UNKNOWN)
+
+
+def extension_column_text(column: dict, *, owner: str, what: str) -> str:
+    """A removed extension column as one Mode-B row expression relative to ``owner``: its name when it has no ``sql``,
+    else ``sql`` wrapped as ``iif(<filter>, <sql>, NULL)`` and cast to a declared type other than TEXT / UNKNOWN.
+    Raises ``ValueError`` naming ``what`` when nothing preserves its meaning."""
+    data_type = DataType(_coerce_legacy_datatype(column.get("type") or DataType.TEXT.value) or DataType.TEXT.value)
+    if data_type is DataType.ARRAY:
+        raise ValueError(f"{what}, a list column")
+    sql, row_filter = column.get("sql"), column.get("filter")
+    if sql is None:
+        if row_filter is not None:
+            raise ValueError(f"{what}, a filtered column without sql")
+        return str(column["name"])
+    text = canonical_measure_text(_row_expression(sql, what=what))
+    if row_filter is not None:
+        text = f"iif({canonical_measure_text(_row_expression(row_filter, what=f'{what} filter'))}, {text}, NULL)"
+    if data_type not in _UNCAST:
+        text = f"CAST({text} AS {data_type.value})"
+    return canonical_measure_text(root_relative(parse_expr(text), owner))
+
+
+def _row_expression(text: Any, *, what: str) -> Any:
+    if not isinstance(text, str):
+        raise ValueError(f"{what} without text")
+    try:
+        parsed = parse_expr(text)
+    except ValueError as exc:
+        raise ValueError(f"{what} {text!r}, which is not valid Mode B ({exc})") from exc
+    if any(isinstance(node, (AggCall, TransformCall)) for node in walk_parsed(parsed)):
+        raise ValueError(f"{what} {text!r}, which is not a Mode-B row expression")
+    return parsed
+
+
+def _column_expression(column: Any, *, model: Any) -> str | None:
+    """A removed extension column as the expression written where it is used; ``None`` when nothing preserves it."""
+    if not isinstance(column, dict) or not isinstance(model, str) or not isinstance(column.get("name"), str):
+        return None
+    try:
+        text = extension_column_text(column, owner=model, what=f"extension column {column['name']}")
+        return measure_text_at_path(text, path=(model,))
+    except ValueError:
+        return None
+
+
+def _extension_columns_removed(data: dict) -> str:
+    columns = data.get("columns")
+    written = [
+        f"{column['name']} → {expression}" for column in columns if isinstance(columns, list)
+        for expression in [_column_expression(column, model=data.get("source_name"))]
+        if expression is not None and isinstance(column.get("name"), str)
+    ] if isinstance(columns, list) else []
+    example = f" ({'; '.join(written)})" if written else ""
+    return (
+        "Extension columns were removed: write a per-query column as an expression in the position that uses "
+        f"it — a computed dimension, a filter, an aggregation's argument{example}."
+    )
+
+
 class ModelExtension(BaseModel):
-    """Query-scoped columns, measures and joins added to one model a query object reads."""
+    """Query-scoped measures and joins added to one model a query object reads."""
 
     model_config = ConfigDict(extra="forbid")
 
     source_name: str                                # Model/stage to extend
-    columns: list[Column] | None = None
     measures: list[ModelMeasure] | None = None
     joins: list[ModelJoin] | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_columns(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "columns" in data:
+            raise ValueError(_extension_columns_removed(data))
+        return data
 
-def _source_spec_tag(value: Any) -> str:
-    return "model" if isinstance(value, (SlayerModel, dict)) else "name"
+
+
 
 
 def convert_legacy_root_extension(data: dict) -> tuple[dict, DeprecatedInputWarning | None]:
@@ -1155,25 +1125,20 @@ def prepare_query_input(data: dict) -> tuple[dict, DeprecatedInputWarning | None
     return {**_migrate_schema(entity="SlayerQuery", data=rest), "strict": data["strict"]}, payload
 
 
-def _reject_inline_query_backed(value: Any) -> Any:
-    if isinstance(value, SlayerModel) and value.source_queries:
+def _refuse_inline_model(value: Any) -> Any:
+    if isinstance(value, (SlayerModel, dict)):
+        name = value.name if isinstance(value, SlayerModel) else value.get("name")
+        named = f" {name!r}" if isinstance(name, str) else ""
         raise ValueError(
-            f"Inline model {value.name!r} carries source_queries; an inline query-backed "
-            f"source is not supported — write those queries as named stages of the "
-            f"query list instead."
+            f"`source_model` cannot be an inline model{named}: it names a stored model or stage. Write a "
+            f"query-backed model's queries as named stages of the query list, and put query-local measures and joins "
+            f"in `extensions`."
         )
     return value
 
 
-# Anything accepted as ``SlayerQuery.source_model``; validated at construction.
-SourceSpec = Annotated[
-    Union[
-        Annotated[str, Tag("name")],
-        Annotated[SlayerModel, Tag("model")],
-    ],
-    Discriminator(_source_spec_tag),
-    AfterValidator(_reject_inline_query_backed),
-]
+# ``SlayerQuery.source_model``: a stored model or stage name.
+SourceSpec = Annotated[str, BeforeValidator(_refuse_inline_model)]
 
 
 def extension_model_names(query: "SlayerQuery") -> list[str]:
@@ -1188,8 +1153,8 @@ def check_unique_extensions(extensions: list[ModelExtension] | None) -> None:
     for extension in extensions or ():
         if extension.source_name in seen:
             raise ValueError(
-                f"Model {extension.source_name!r} is extended twice; merge its columns, measures "
-                f"and joins into one `extensions` entry."
+                f"Model {extension.source_name!r} is extended twice; merge its measures and joins into one "
+                f"`extensions` entry."
             )
         seen.add(extension.source_name)
 
@@ -1250,7 +1215,7 @@ class SlayerQuery(BaseModel):
             "over no rows is 0, any other aggregate NULL). Always name a conditional aggregate. "
             "Otherwise root where the facts are (rows without facts then drop out), or omit to "
             "infer the smallest model determining every dimension and row-level condition column "
-            "(reported in the response). A saved model or stage name, or a full inline model. "
+            "(reported in the response). A saved model or stage name. "
             "Write a per-query column as an expression in the position that uses it (a "
             "dimension, a filter, an aggregation's argument)."
         ),
@@ -1258,14 +1223,14 @@ class SlayerQuery(BaseModel):
     extensions: list[ModelExtension] | None = Field(
         default=None,
         description=(
-            "Query-scoped columns, measures and joins added to any model this query object reads "
+            "Query-scoped measures and joins added to any model this query object reads "
             "(its population, a joined model, or a stage), at most one entry per model, visible "
             "only in this query object. A join repeating a stored relationship, in either "
             "direction, is that edge, and its name is a local alias. An `inner` join keeps only "
             "the rows with a match; it never multiplies rows. Rooted at orders: "
-            '[{"source_name": "customers", "columns": [{"name": "tier_label", "sql": '
-            '"upper(tier)"}], "joins": [{"target_model": "vip_list", "join_pairs": '
-            '[["id", "customer_id"]], "join_type": "inner"}]}] adds customers.tier_label and '
+            '[{"source_name": "customers", "measures": [{"name": "credit_total", "formula": '
+            '"sum(credit)"}], "joins": [{"target_model": "vip_list", "join_pairs": '
+            '[["id", "customer_id"]], "join_type": "inner"}]}] adds customers.credit_total and '
             "keeps only the orders of customers on the vip list."
         ),
     )
@@ -1338,8 +1303,7 @@ class SlayerQuery(BaseModel):
         if isinstance(data, dict):
             if is_legacy_root_extension(data.get("source_model")):
                 raise ValueError(
-                    "`source_model` names a model or holds an inline model; put a query-scoped "
-                    "extension in `extensions`."
+                    "`source_model` names a model; put a query-scoped extension in `extensions`."
                 )
             data = _rewrite_functional_granularity(data)
         query = handler(data)
@@ -1595,13 +1559,7 @@ class SlayerQuery(BaseModel):
     @property
     def source_model_name(self) -> str | None:
         """The population's model name before resolution."""
-        match self.source_model:
-            case str() as name:
-                return name
-            case SlayerModel(name=name):
-                return name
-            case _:
-                return None
+        return self.source_model
 
 
 def _refinement_field(name: str) -> Any:

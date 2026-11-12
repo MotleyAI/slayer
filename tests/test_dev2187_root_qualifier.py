@@ -15,7 +15,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 
 from tests._dev1866_fixtures import DS_FAN, make_inference_storage
 from tests._dev2137_fixtures import list_engine, measure
-from tests._dev2187_fixtures import BACKENDS, assert_same, canonical_rows, inline_model, orders_engine, orders_model
+from tests._dev2187_fixtures import BACKENDS, assert_same, canonical_rows, orders_engine, orders_model
 from tests._saved_query_refinement_fixtures import MONTHLY, REVENUE, by_month, refine_engine
 from tests._unrelated_datasets_fixtures import m, main_engine, query
 
@@ -146,15 +146,13 @@ async def test_expression_time_dimension_auto_name_keeps_its_text(engine: Slayer
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(("root", "qualifier"), [
     ({"source_model": "orders", "extensions": [{"source_name": "orders"}]}, "orders"),
-    ("inline", "ad_hoc"),
     ({"source_model": "qb"}, "qb"),
-], ids=["extension", "inline-model", "query-backed"])
-async def test_every_root_kind_takes_its_own_name(engine: SlayerQueryEngine, root: Any, qualifier: str) -> None:
-    source = {"source_model": inline_model()} if root == "inline" else root
+], ids=["extension", "query-backed"])
+async def test_every_root_kind_takes_its_own_name(engine: SlayerQueryEngine, root: dict[str, Any], qualifier: str) -> None:
     await assert_same(
         engine,
-        {**source, "dimensions": [f"{qualifier}.status"], "measures": ["count(*)"]},
-        {**source, "dimensions": ["status"], "measures": ["count(*)"]},
+        {**root, "dimensions": [f"{qualifier}.status"], "measures": ["count(*)"]},
+        {**root, "dimensions": ["status"], "measures": ["count(*)"]},
     )
 
 

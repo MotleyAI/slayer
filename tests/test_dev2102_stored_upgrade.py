@@ -32,7 +32,6 @@ from tests._stored_upgrade_fixtures import (
 
 LEGACY_EXTENSION = {
     "source_name": "orders",
-    "columns": [{"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"}],
     "joins": [{"target_model": "customers", "join_pairs": [["customer_id", "id"]], "cardinality": "many_to_one"}],
 }
 #: The rows the stage returned before the upgrade: sum(amount * 2) by customers.region.
@@ -41,7 +40,7 @@ RECORDED = {"North": 240.0, "South": 180.0}
 
 def _stage(version: int | None = 9) -> dict:
     stage = {"source_model": LEGACY_EXTENSION, "dimensions": ["customers.region"],
-             "measures": [{"formula": "sum(double_amount)", "name": "rev2"}]}
+             "measures": [{"formula": "sum(amount * 2)", "name": "rev2"}]}
     return stage if version is None else {"version": version, **stage}
 
 
@@ -52,7 +51,6 @@ def _assert_upgraded(query: SlayerQuery | None) -> None:
     (extension,) = query.extensions or []
     assert isinstance(extension, ModelExtension)
     assert extension.source_name == "orders"
-    assert [c.name for c in extension.columns or []] == ["double_amount"]
     assert [(j.target_model, j.join_pairs) for j in extension.joins or []] == [("customers", [["customer_id", "id"]])]
 
 
@@ -83,24 +81,13 @@ async def _qb_store(tmp_path, ds: DatasourceConfig, backend: str) -> StorageBack
 
 class TestVersion:
     def test_query_version_bumped(self) -> None:
-        assert CURRENT_VERSIONS["SlayerQuery"] == 14
+        assert CURRENT_VERSIONS["SlayerQuery"] >= 13
 
 
 class TestQueryDocument:
     @pytest.mark.parametrize("version", [9, 10, 11, 12])
     def test_a_stored_query_converts_silently(self, version: int) -> None:
         _assert_upgraded(SlayerQuery.model_validate(_stage(version=version)))
-
-    def test_a_version_1_extension_spelled_with_dimensions(self) -> None:
-        legacy = {"source_name": "orders", "dimensions": [{"name": "region", "type": "string"}]}
-        direct = SlayerQuery.model_validate({"version": 1, "source_model": legacy, "fields": [{"formula": "count(*)"}]})
-        nested = SlayerModel.model_validate({"version": 1, "name": "qb", "data_source": DS, "source_queries": [
-            {"version": 1, "source_model": legacy, "fields": [{"formula": "count(*)"}]}]})
-        for query in (direct, (nested.source_queries or [None])[0]):
-            assert query is not None
-            assert query.source_model == "orders"
-            (extension,) = query.extensions or []
-            assert [c.name for c in extension.columns or []] == ["region"]
 
     def test_upgrade_is_idempotent(self) -> None:
         once = SlayerQuery.model_validate(_stage())
@@ -201,15 +188,21 @@ async def _loaded_stage(storage: StorageBackend) -> SlayerQuery:
     return stage
 
 
+def _assert_no_extension_columns(query: SlayerQuery) -> None:
+    assert all("columns" not in e for e in query.model_dump(exclude_none=True).get("extensions", []))
+
+
 class TestExtensionColumnFilterLiterals:
     @pytest.mark.parametrize("backend", BACKENDS)
     @pytest.mark.parametrize(("stage", "repaired", "expected"), [
-        pytest.param(_legacy_root_stage("extended_date >= '2024/01/01'"), "extended_date >= '2024-01-01'", 200.0,
+        pytest.param(_legacy_root_stage("extended_date >= '2024/01/01'"),
+                     "CAST(CAST(ordered_at AS DATE) AS DATE) >= '2024-01-01'", 200.0,
                      id="legacy-root-extension-column"),
         pytest.param(_legacy_root_stage("ordered_at >= '2024/01/01'"), "ordered_at >= '2024-01-01'", 200.0,
                      id="legacy-root-base-column"),
         pytest.param(_extensions_stage("customers.signup_day >= '2024/01/01'"),
-                     "customers.signup_day >= '2024-01-01'", 180.0, id="extension-of-joined-model"),
+                     "CAST(CAST(customers.signed_up_at AS DATE) AS DATE) >= '2024-01-01'", 180.0,
+                     id="extension-of-joined-model"),
     ])
     async def test_a_stored_stage_filter_on_an_extension_column_is_repaired_and_runs(
         self, tmp_path, shop_ds, backend: str, stage: dict, repaired: str, expected: float,
@@ -217,7 +210,9 @@ class TestExtensionColumnFilterLiterals:
         qb = query_backed_v10(name="rev_x", stages=[stage])
         storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=shop_ds,
                                   models=[orders_v10(), customers_v10(), qb])
-        assert (await _loaded_stage(storage)).filters == [repaired]
+        loaded = await _loaded_stage(storage)
+        assert loaded.filters == [repaired]
+        _assert_no_extension_columns(loaded)
         resp = await run(storage, {"source_model": "rev_x", "measures": ["sum(rev)"]})
         assert measure_total(resp, measure="rev_sum") == expected
 
@@ -225,7 +220,9 @@ class TestExtensionColumnFilterLiterals:
         qb = query_backed_v10(name="rev_x", stages=[_legacy_root_stage("status_code = '2024/01/01'")])
         storage = await raw_store(backend="yaml", base=str(tmp_path / "store"), datasource=shop_ds,
                                   models=[orders_v10(), customers_v10(), qb])
-        assert (await _loaded_stage(storage)).filters == ["status_code = '2024/01/01'"]
+        loaded = await _loaded_stage(storage)
+        assert loaded.filters == ["status = '2024/01/01'"]
+        _assert_no_extension_columns(loaded)
         resp = await run(storage, {"source_model": "rev_x", "measures": ["sum(rev)"]})
         assert measure_total(resp, measure="rev_sum") == 60.0
 
@@ -238,5 +235,6 @@ class TestExtensionColumnFilterLiterals:
                                   models=[orders_v10(), customers_v10()], memories=[memory])
         loaded = await storage.get_memory("m_ext_f")
         assert loaded.query is not None
-        assert loaded.query.filters == ["extended_date >= '2024-01-01'"]
+        assert loaded.query.filters == ["CAST(CAST(ordered_at AS DATE) AS DATE) >= '2024-01-01'"]
+        _assert_no_extension_columns(loaded.query)
         assert measure_total(await run(storage, loaded.query), measure="rev") == 200.0

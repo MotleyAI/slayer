@@ -1,4 +1,4 @@
-"""SlayerModel v22 / SlayerQuery v14 / Memory v10: a stored date-only comparison keeps its whole-day meaning.
+"""SlayerModel v23 / SlayerQuery v15 / Memory v11: a stored date-only comparison keeps its whole-day meaning.
 
 Stored-only, and gated by each nested document's own version. Whether an operand is a TIMESTAMP is read from the
 datasource's stored models, which the storage load path provides (``typing_with``); a comparison whose operand cannot be
@@ -20,7 +20,7 @@ from slayer.storage.migrations import document_label, register_migration, stamp_
 from slayer.storage.rank_direction_migration import rewrite_query_fields, stamp_memory_query
 
 #: The first versions whose date-only comparisons are midnight.
-UPGRADED_AT = {"SlayerModel": 22, "SlayerQuery": 14, "Memory": 10}
+UPGRADED_AT = {"SlayerModel": 23, "SlayerQuery": 15, "Memory": 11}
 
 _logger = logging.getLogger(__name__)
 
@@ -166,6 +166,6 @@ def upgrade_query(data: dict) -> dict:
     return data
 
 
-register_migration(entity="SlayerModel", source_version=21, stored_only=True)(upgrade_model)
-register_migration(entity="SlayerQuery", source_version=13, stored_only=True)(upgrade_query)
-register_migration(entity="Memory", source_version=9, stored_only=True)(stamp_memory_query)
+register_migration(entity="SlayerModel", source_version=22, stored_only=True)(upgrade_model)
+register_migration(entity="SlayerQuery", source_version=14, stored_only=True)(upgrade_query)
+register_migration(entity="Memory", source_version=10, stored_only=True)(stamp_memory_query)

@@ -9,7 +9,7 @@ is ordered and validated so every stage can read the siblings it references.
 ### Requirement: Stages are ordered by every sibling reference
 A multi-stage query list SHALL be ordered so each stage follows every sibling it
 references — as its `source_model`, as an extension's `source_name`, or as a
-`joins[].target_model` of its inline source model or of one of its extensions —
+`joins[].target_model` of one of its extensions —
 regardless of the order the non-root stages were supplied in. The last entry SHALL stay
 the root. Duplicate stage names, an unnamed non-root stage, a self-reference, a non-root
 stage referencing the root, and a cycle SHALL each be rejected with an error
@@ -25,11 +25,11 @@ naming the offending stages.
 
 #### Scenario: Sibling reached through an inline model
 - **WHEN** a stage's source is an inline model whose joins reference a sibling stage
-- **THEN** that stage is ordered after the sibling and executes correctly
+- **THEN** the list is rejected at construction with the inline-model error, and the sibling is reached instead through an extension of a named source joining it
 
 #### Scenario: Sibling referenced inside nested `source_queries`
 - **WHEN** a stage's source is an inline model carrying `source_queries` (which could only reach a sibling through nested `source_queries`)
-- **THEN** the query is rejected at construction as an inline query-backed source, with a hint to write those queries as named stages
+- **THEN** the query is rejected at construction with the inline-model error, with a hint to write those queries as named stages
 
 #### Scenario: One stage reading several siblings
 - **WHEN** a stage's source is one sibling and its extensions join two other siblings, or extend a third
@@ -42,7 +42,7 @@ naming the offending stages.
 ### Requirement: Stage names are query-local
 A stage name SHALL be visible only within its own query list, where a name the
 query writes (`source_model`, an extension's `source_name`, the `joins[].target_model`
-of an inline model or extension) SHALL resolve to the stage in preference to a
+of an extension) SHALL resolve to the stage in preference to a
 same-named model. A stored definition — a stored model's joins, a stored
 query-backed model's `source_queries` — SHALL never see a stage name: its
 references resolve against stored models (and, inside a stored query-backed model,
@@ -75,26 +75,6 @@ name only.
 #### Scenario: An inferred population is never a stage
 - **WHEN** a rootless stage's population is inferred to a model that shares its name with a stage in the list
 - **THEN** the stage reads the model
-
-### Requirement: Inline query-backed sources are rejected
-A `source_model` given as an inline model carrying `source_queries` SHALL be
-rejected at construction — as an object or a dict, at any position, including
-inside any `source_queries` — with an error naming the model and advising named
-stages. A persisted model containing one SHALL fail to load with that error. Inline
-table-backed and `sql`-backed models, and an extension of a stored query-backed model,
-SHALL remain accepted.
-
-#### Scenario: Inline query-backed source rejected
-- **WHEN** a query's `source_model` is an inline model with `source_queries`, as an object, as a dict, or via REST
-- **THEN** construction fails naming the model and the named-stages remedy (REST responds 422)
-
-#### Scenario: Rejected inside a stored model's stages
-- **WHEN** `create_model_from_query` receives a stage whose `source_model` is an inline query-backed model, or a persisted model containing one is loaded
-- **THEN** it fails with the same error
-
-#### Scenario: Other inline sources still accepted
-- **WHEN** a query's `source_model` is an inline table-backed or `sql`-backed model, or a query extends a stored query-backed model
-- **THEN** it executes as before
 
 ### Requirement: Stage errors name the stage
 An error about a query stage's output schema SHALL name the stage by its user-facing name (its name in the query list, or the query-backed model's name), never by the stage's source model.
