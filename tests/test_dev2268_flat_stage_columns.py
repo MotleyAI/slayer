@@ -21,18 +21,14 @@ from tests._dev2102_fixtures import DIALECTS, DS, customers, ext, join, orders, 
 _N = {"formula": "count(*)", "name": "n"}
 _S = {"name": "s", "source_model": "orders", "dimensions": ["customers.name"], "measures": [_N]}
 _ISSUE_PAIRS = [["id", "n"]]
-_INLINE_CUSTOMERS = {"name": "customers", "data_source": DS, "sql_table": "addresses", "columns": [
-    {"name": "id", "type": "INT", "primary_key": True}, {"name": "city", "type": "TEXT"},
-    {"name": "customer_id", "type": "INT"}]}
 _REGION_PAIRS = [["region_id", "id"]]
 
 
-def _joined(root: str | dict, ref: str, *, stage: dict | None = None, pairs: list[list[str]] | None = None,
+def _joined(root: str, ref: str, *, stage: dict | None = None, pairs: list[list[str]] | None = None,
             leading: str = "id") -> list[SlayerQuery | dict]:
     """Stage ``s``, then a query rooted at ``root`` that joins ``s`` and selects ``ref``."""
-    name = root if isinstance(root, str) else root["name"]
     return [q(**(stage or _S)), q(source_model=root, dimensions=[leading, ref],
-                                  extensions=[ext(name, joins=[join("s", pairs or _ISSUE_PAIRS)])])]
+                                  extensions=[ext(root, joins=[join("s", pairs or _ISSUE_PAIRS)])])]
 
 
 async def _refused(payload: Any, *, models: list[SlayerModel] | None = None,
@@ -53,6 +49,7 @@ def _hint(err: Exception) -> str:
 _KEYED = {**_S, "dimensions": ["customer_id", "customers.name"]}
 _BY_REGION = {**_S, "dimensions": ["customers.region_id", "customers.name"]}
 _BY_CUSTOMER = [(11, "Ann"), (12, "Bob"), (13, "Eve"), (14, "Bob")]
+_CUSTOMER_PAIRS = [["id", "customer_id"]]
 
 
 @pytest.mark.parametrize("dialect", DIALECTS)
@@ -62,10 +59,9 @@ _BY_CUSTOMER = [(11, "Ann"), (12, "Bob"), (13, "Eve"), (14, "Bob")]
     pytest.param(_joined("regions", "s.customers__name", stage=_BY_REGION, pairs=[["id", "customers__region_id"]]),
                  ("regions.id", "regions.s.customers__name"), [(1, "Ann"), (2, "Bob"), (3, "Eve")],
                  id="stored-regions"),
-    pytest.param(_joined(_INLINE_CUSTOMERS, "s.customers__name", stage=_KEYED,
-                         pairs=[["customer_id", "customer_id"]], leading="city"),
-                 ("customers.city", "customers.s.customers__name"),
-                 [("Kiev", "Eve"), ("Lima", "Bob"), ("Oslo", "Ann"), ("Rome", "Bob")], id="inline-customers"),
+    pytest.param(_joined("customers", "s.customers__name", stage=_KEYED, pairs=_CUSTOMER_PAIRS),
+                 ("customers.id", "customers.s.customers__name"),
+                 [(1, "Ann"), (2, "Bob"), (3, "Cid"), (4, "Dee"), (5, "Eve")], id="stored-customers"),
     pytest.param([q(name="s", source_model="orders", dimensions=["customer_id"]),
                   q(source_model="addresses", dimensions=["id", "s.customers.name"], extensions=[
                       ext("addresses", joins=[join("s", [["customer_id", "customer_id"]])]),
@@ -98,7 +94,7 @@ async def test_a_routable_target_does_not_override_the_flat_column() -> None:
 
 
 async def test_a_hop_back_to_the_root_is_not_a_circular_join() -> None:
-    err = await _refused(_joined(_INLINE_CUSTOMERS, "s.customers.name", leading="city"))
+    err = await _refused(_joined("customers", "s.customers.name", stage=_KEYED, pairs=_CUSTOMER_PAIRS))
     assert "s.customers__name" in err.suggestion
 
 

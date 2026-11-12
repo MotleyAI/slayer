@@ -60,8 +60,8 @@ return the same results as on an unlimited dialect.
 ### Requirement: User-authored identifiers pass through byte-identical
 
 Identifiers originating from user-authored surfaces — model `sql`, `sql_table`, model
-`filters`, column `name`, column `sql`, column `filter`, on stored models, inline
-models, `ModelExtension`-added columns, and per-stage source models — SHALL never be
+`filters`, column `name`, column `sql`, column `filter`, on stored models and
+per-stage source models — SHALL never be
 rewritten by the length-fitting pass, even when they exceed the dialect limit (the
 target database resolves them by its own truncation, as today). When one spelling is
 both user-authored and SLayer-minted, exemption SHALL win: the name passes through

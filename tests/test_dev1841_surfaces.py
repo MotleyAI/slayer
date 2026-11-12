@@ -73,7 +73,7 @@ class TestRestSurface:
         assert len(deprecated_in(resp.json()["warnings"])) == warned
 
     async def test_fresh_strict_keeps_the_rest_of_a_versioned_payload_migrated(self, storage) -> None:
-        body = {**_STRICT_BODY, "version": 3.9, "source_model": {"source_name": "orders", "columns": []}}
+        body = {**_STRICT_BODY, "version": 3.9, "source_model": {"source_name": "orders", "joins": []}}
         client = TestClient(create_app(storage=storage))
         with recorded():
             resp = client.post("/query", json=body)

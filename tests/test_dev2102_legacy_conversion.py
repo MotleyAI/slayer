@@ -31,7 +31,7 @@ from tests._deprecated_input_helpers import SAVED, deprecated_in, deprecations, 
 
 LEGACY = {
     "source_name": "orders",
-    "columns": [{"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"}],
+    "measures": [{"name": "double_amount", "formula": "sum(amount * 2)"}],
     "joins": [{"target_model": "customers", "join_pairs": [["customer_id", "id"]]}],
 }
 
@@ -50,7 +50,7 @@ def recorded() -> Iterator[list[warnings.WarningMessage]]:
 class TestFreshInputConverts:
     def test_dict_converts_with_a_deprecation_warning(self) -> None:
         with pytest.warns(FutureWarning) as caught:
-            q = SlayerQuery.model_validate({"source_model": LEGACY, "measures": ["sum(double_amount)"]})
+            q = SlayerQuery.model_validate({"source_model": LEGACY, "measures": ["double_amount"]})
         message = " ".join(str(w.message) for w in caught)
         assert "extensions" in message, message
         assert "3.0" in message, message
@@ -58,7 +58,7 @@ class TestFreshInputConverts:
         (extension,) = q.extensions or []
         assert isinstance(extension, ModelExtension)
         assert extension.source_name == "orders"
-        assert [c.name for c in extension.columns or []] == ["double_amount"]
+        assert [m.name for m in extension.measures or []] == ["double_amount"]
         assert [j.target_model for j in extension.joins or []] == ["customers"]
 
     def test_python_instance_converts_with_a_deprecation_warning(self) -> None:
@@ -72,13 +72,13 @@ class TestFreshInputConverts:
     def test_a_stage_of_a_fresh_model_warns(self) -> None:
         with pytest.warns(FutureWarning, match="extensions"):
             model = SlayerModel.model_validate({"name": "qb", "data_source": "shop", "source_queries": [
-                {"source_model": LEGACY, "measures": ["sum(double_amount)"]}]})
+                {"source_model": LEGACY, "measures": ["double_amount"]}]})
         assert [q.source_model for q in model.source_queries or []] == ["orders"]
 
     def test_the_query_of_a_fresh_memory_warns(self) -> None:
         with pytest.warns(FutureWarning, match="extensions"):
             memory = Memory.model_validate({"id": "m", "learning": "x", "entities": [], "query": {
-                "source_model": LEGACY, "measures": ["sum(double_amount)"]}})
+                "source_model": LEGACY, "measures": ["double_amount"]}})
         assert memory.query is not None
         assert memory.query.source_model == "orders"
 
@@ -197,7 +197,7 @@ class TestInternalProducers:
         loaded = await storage.get_model("t", data_source="ds")
         assert loaded is not None
         assert next(c for c in loaded.columns if c.name == "amount").sampled == "10.0 .. 20.0"
-        assert [q.source_model for q in sent if q.extensions] == ["t"]
+        assert [q for q in sent if q.extensions] == []
         assert _future_warnings(recorded) == []
 
     def test_facade_dynamic_join_emits_the_current_form(self, recorded) -> None:

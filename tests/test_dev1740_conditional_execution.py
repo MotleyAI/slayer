@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.enums import DataType
+from slayer.core.models import Column
 from slayer.core.query import ModelExtension, ModelMeasure, SlayerQuery
 
 from tests._dev1740_fixtures import (
@@ -19,6 +21,7 @@ from tests._dev1740_fixtures import (
     make_exec_engine,
     month_key,
     month_td,
+    orders_model,
     rows_by,
 )
 
@@ -287,16 +290,13 @@ class TestCaseInColumnSql:
         # A CASE in Column.sql (raw SQL) grouped as a dimension — the existing
         # escape hatch, pinned against Part A regressions. Row 9 (amount 6000)
         # is the only per-row band 1; everything else bands 0.
-        resp = await exec_engine.execute(SlayerQuery(
-            source_model="orders",
-            extensions=[ModelExtension.model_validate({
-                "source_name": "orders",
-                "columns": [{
-                    "name": "row_band",
-                    "sql": "CASE WHEN amount > 5000 THEN 1 ELSE 0 END",
-                    "type": "INT",
-                }],
-            })],
+        base = orders_model()
+        await exec_engine.storage.save_model(base.model_copy(update={"columns": [
+            *base.columns,
+            Column(name="row_band", sql="CASE WHEN amount > 5000 THEN 1 ELSE 0 END",
+                   type=DataType.INT),
+        ]}))
+        resp = await exec_engine.execute(_q(
             dimensions=["row_band"],
             measures=[ModelMeasure(formula="sum(amount)", name="rev")],
         ))

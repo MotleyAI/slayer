@@ -6,7 +6,6 @@ from typing import Any
 
 import pytest
 
-from slayer.core.join_walker import LIST_CHILD_PREFIX
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
@@ -20,7 +19,6 @@ from tests._dev2102_fixtures import (
 )
 
 _HARNESS_QB = "harness_qb"
-_TIER_LABEL = {"name": "tier_label", "sql": "upper(tier)", "type": "TEXT"}
 _AMOUNT = {"formula": "sum(amount)", "name": "a"}
 _REGION_PAIRS = [["region_id", "id"]]
 _SPENT_BY_CUSTOMER = {"source_model": "orders", "dimensions": ["customer_id"],
@@ -34,25 +32,29 @@ def _models() -> list[SlayerModel]:
     replaced = {"customers": customers(home), "regions": regions().model_copy(update={"joins": [country]})}
     cust_spend = SlayerModel(name="cust_spend", data_source=DS,
                              source_queries=[SlayerQuery.model_validate(_SPENT_BY_CUSTOMER)])
-    return [replaced.get(m.name, m) for m in base_models()] + [cust_spend]
+    return [replaced.get(m.name, m) for m in base_models()] + [cust_spend, _cities()]
 
 
-_INLINE_CUSTOMERS = {"name": "customers", "data_source": DS, "sql_table": "customers", "columns": [
-    {"name": "id", "type": "INT", "primary_key": True}, {"name": "credit", "type": "DOUBLE"},
-    {"name": "tier", "type": "TEXT"}]}
+def _cities(*extra: dict, name: str = "cities_src") -> SlayerModel:
+    """A stored model over ``addresses``."""
+    return SlayerModel.model_validate({"name": name, "data_source": DS, "sql_table": "addresses", "columns": [
+        {"name": "id", "type": "INT", "primary_key": True}, {"name": "city", "type": "TEXT"}, *extra]})
 
 _CORPUS: list[Any] = [
     pytest.param(q(source_model="orders", dimensions=["regions.name"], measures=[_AMOUNT],
                    extensions=[ext("orders", joins=[join("regions", [["ship_region_id", "id"]], name="ship_region")])]),
                  id="root-extension-join"),
-    pytest.param(q(source_model="orders", dimensions=["customers.tier_label"], measures=[_AMOUNT],
-                   extensions=[ext("customers", columns=[_TIER_LABEL])]), id="joined-extension-column"),
+    pytest.param(q(source_model="orders", dimensions=[{"expression": "upper(customers.tier)", "name": "tier_label"}],
+                   measures=[_AMOUNT]), id="joined-computed-dimension"),
     pytest.param(q(source_model="orders", measures=[{"formula": "customers.credit_total", "name": "ct"}],
                    extensions=[ext("customers", measures=[{"name": "credit_total", "formula": "sum(credit)"}])]),
                  id="joined-extension-measure"),
     pytest.param(q(source_model="orders", dimensions=["status", "customers.regions.countries.name"],
-                   extensions=[ext("regions", columns=[{"name": "nm", "sql": "upper(name)", "type": "TEXT"}])]),
+                   extensions=[ext("regions", measures=[{"name": "nm", "formula": "max(upper(name))"}])]),
                  id="multi-hop-stored-path"),
+    pytest.param(q(source_model="orders", measures=[{"formula": "customers.regions.nm", "name": "nm"}],
+                   extensions=[ext("regions", measures=[{"name": "nm", "formula": "max(upper(name))"}])]),
+                 id="multi-hop-extension-measure"),
     pytest.param([q(name="s", source_model="orders", dimensions=["customer_id"], measures=[_AMOUNT]),
                   q(source_model="s", dimensions=["customers.tier"], measures=[{"formula": "sum(a)", "name": "t"}],
                     extensions=[ext("s", joins=[join("customers", [["customer_id", "id"]])])])],
@@ -69,13 +71,13 @@ _CORPUS: list[Any] = [
                  id="join-into-the-sibling-source"),
     pytest.param([q(name="customers", source_model="orders", dimensions=["customer_id"],
                     measures=[{"formula": "sum(amount)", "name": "spent"}]),
-                  q(source_model="customers", measures=[{"formula": "sum(double_spent)", "name": "t"}],
-                    extensions=[ext("customers", columns=[
-                        {"name": "double_spent", "sql": "spent * 2", "type": "DOUBLE"}])])],
+                  q(source_model="customers", measures=[{"formula": "double_spent", "name": "t"}],
+                    extensions=[ext("customers", measures=[{"name": "double_spent", "formula": "sum(spent * 2)"}])])],
                  id="sibling-shadows-stored"),
-    pytest.param(q(source_model="orders", dimensions=["cust_spend.spent2"], measures=[_AMOUNT], extensions=[
+    pytest.param(q(source_model="orders", dimensions=["customer_id"],
+                   measures=[_AMOUNT, {"formula": "cust_spend.spent2", "name": "s2"}], extensions=[
                      ext("orders", joins=[join("cust_spend", [["customer_id", "customer_id"]])]),
-                     ext("cust_spend", columns=[{"name": "spent2", "sql": "spent * 2", "type": "DOUBLE"}])]),
+                     ext("cust_spend", measures=[{"name": "spent2", "formula": "sum(spent * 2)"}])]),
                  id="query-backed-join-target-extension"),
     pytest.param(q(source_model="cust_spend", dimensions=["customer_id"], measures=["mm"],
                    extensions=[ext("cust_spend", measures=[{"name": "mm", "formula": "sum(spent)"}])]),
@@ -83,9 +85,9 @@ _CORPUS: list[Any] = [
     pytest.param(q(source_model="orders", dimensions=["regions.name"], measures=[_AMOUNT]), id="short-form-route"),
     pytest.param(q(source_model="orders", dimensions=["status"],
                    measures=[{"formula": "count(countries.id)", "name": "n"}]), id="product-read"),
-    pytest.param(q(source_model=_INLINE_CUSTOMERS, dimensions=["tier"], measures=[{"formula": "c10", "name": "t"}],
+    pytest.param(q(source_model="customers", dimensions=["tier"], measures=[{"formula": "c10", "name": "t"}],
                    extensions=[ext("customers", measures=[{"name": "c10", "formula": "sum(credit)"}])]),
-                 id="inline-source"),
+                 id="root-extension-measure"),
     pytest.param(q(source_model="customers", dimensions=["tier"], measures=[{"formula": "count(*)", "name": "n"}],
                    extensions=[ext("customers", joins=[join("vip_list", [["id", "customer_id"]], join_type="inner")])]),
                  id="inner-root-join"),
@@ -105,10 +107,9 @@ _CORPUS: list[Any] = [
                   q(source_model="s", dimensions=["customer_id", "customers.regions.name"],
                     extensions=[ext("s", joins=[join("customers", [["customer_id", "id"]])])])],
                  id="rootless-sibling"),
-    pytest.param([q(name="s", source_model="orders", dimensions=["customer_id"]),
+    pytest.param([q(name="s", source_model="orders", dimensions=[{"expression": "customer_id", "name": "customer_key"}]),
                   q(source_model="s", dimensions=["customers.regions.name"], extensions=[ext(
-                      "s", columns=[{"name": "customer_key", "sql": "customer_id", "type": "INT"}],
-                      joins=[join("customers", [["customer_key", "id"]])])])],
+                      "s", joins=[join("customers", [["customer_key", "id"]])])])],
                  id="sibling-extension-defined-join-key"),
     pytest.param(q(source_model="orders", dimensions=["status"], measures=[_AMOUNT],
                    filters=["customers.regions.name = 'North'"]), id="filter-through-a-path"),
@@ -191,44 +192,10 @@ async def test_static_readers_cover_the_planned_statement(payload: Any) -> None:
     assert not undetected, f"drift misses {_HARNESS_QB} as a dependent of {sorted(undetected)}"
 
 
-_INLINE_OVER_ADDRESSES = {"name": "customers", "data_source": DS, "sql_table": "addresses", "columns": [
-    {"name": "id", "type": "INT", "primary_key": True}, {"name": "city", "type": "TEXT"}]}
-
-
-async def test_an_inline_source_is_not_a_read_of_its_stored_namesake() -> None:
-    async with shop("sqlite", _models()) as engine:
-        touched, reads = await _planned(engine, q(source_model=_INLINE_OVER_ADDRESSES, dimensions=["city"]))
-    assert touched == set()
-    assert not {m for m, _ in reads.columns} & {"customers"}
-
-
-async def test_an_inline_stage_source_is_not_a_read_of_its_stored_namesake() -> None:
-    stages = [q(name="s", source_model=_INLINE_OVER_ADDRESSES, dimensions=["city"]),
-              q(source_model="s", dimensions=["city"])]
-    async with shop("sqlite", _models()) as engine:
-        touched, reads = await _planned(engine, stages)
-    assert touched == set()
-    assert not {m for m, _ in reads.columns} & {"customers"}
-
-
-@pytest.mark.parametrize("stages", [
-    [q(name="s", source_model=_INLINE_OVER_ADDRESSES, dimensions=["city"]),
-     q(source_model="customers", dimensions=["name"], measures=[{"formula": "count(*)", "name": "n"}])],
-    [q(name="s", source_model="customers", dimensions=["name"]),
-     q(source_model=_INLINE_OVER_ADDRESSES, dimensions=["city"])],
-], ids=["stored-root", "stored-stage"])
-async def test_a_stage_sourced_from_the_stored_namesake_still_reads_it(stages: list[SlayerQuery]) -> None:
-    async with shop("sqlite", _models()) as engine:
-        touched, reads = await _planned(engine, stages)
-    assert touched == {"customers"}
-    assert ("customers", "name") in reads.columns
-    assert ("customers", "city") not in reads.columns
-
-
-async def test_a_stage_extension_reaches_the_stored_model_beside_an_inline_root_of_another_case() -> None:
-    stage = q(name="s", source_model="orders", dimensions=["Customers.tier2"], measures=[{"formula": "count(*)", "name": "n"}],
-              extensions=[ext("customers", columns=[{"name": "tier2", "sql": "tier", "type": "TEXT"}])])
-    stages = [stage, q(source_model=_INLINE_OVER_ADDRESSES, dimensions=["city"])]
+async def test_a_stage_extension_reaches_the_stored_model_beside_a_root_of_another_source() -> None:
+    stage = q(name="s", source_model="orders", measures=[{"formula": "Customers.tier2", "name": "n"}],
+              extensions=[ext("customers", measures=[{"name": "tier2", "formula": "max(tier)"}])])
+    stages = [stage, q(source_model="cities_src", dimensions=["city"])]
     async with shop("sqlite", respelled_model(_models(), name="customers", spelling="Customers")) as engine:
         touched, reads = await _planned(engine, stages)
     assert "Customers" in touched
@@ -266,44 +233,15 @@ def test_a_sibling_shadows_a_stored_model_whatever_the_case() -> None:
     assert _root_source_and_base(stages, _models(), data_source=DS) == ("Customers", "orders")
 
 
-async def test_an_inline_sources_saved_measure_is_not_a_read_of_its_stored_namesake() -> None:
-    inline = {**_INLINE_OVER_ADDRESSES, "measures": [{"name": "n_city", "formula": "count_distinct(city)"}]}
-    async with shop("sqlite", _models()) as engine:
-        _, reads = await _planned(engine, q(source_model=inline, measures=["n_city"]))
-    assert not reads.measures
-
-
-async def test_a_spliced_stage_with_an_inline_source_is_not_a_read_of_its_stored_namesake() -> None:
-    async with shop("sqlite", _models()) as engine:
-        await engine.create_model_from_query(
-            query=q(source_model=_INLINE_OVER_ADDRESSES, dimensions=["city"]), name="cities")
-        touched, reads = await _planned(engine, q(source_model="cities", dimensions=["city"]))
-    assert "customers" not in touched
-    assert not {m for m, _ in reads.columns} & {"customers"}
-
-
-async def test_a_list_child_of_an_inline_source_is_not_a_persisted_read() -> None:
-    inline = {"name": "customers", "data_source": DS, "sql": "SELECT 1 AS id, ['a', 'b'] AS tags", "columns": [
-        {"name": "id", "type": "INT", "primary_key": True},
-        {"name": "tags", "type": "ARRAY", "element_type": "TEXT"}]}
-    async with shop("duckdb", _models()) as engine:
-        _, reads = await _planned(engine, q(source_model=inline, dimensions=["tags.value"]))
-    assert not {m for m, _ in reads.columns if m.startswith(LIST_CHILD_PREFIX)}
-
-
 _CUSTOMER_NAMES = {"source_model": "orders", "dimensions": ["customers.name"],
                    "measures": [{"formula": "count(*)", "name": "n"}]}
 
 
 @pytest.mark.parametrize(("stages", "column"), [
-    pytest.param([q(name="s", source_model=_INLINE_OVER_ADDRESSES, dimensions=["city"]), q(**_CUSTOMER_NAMES)],
-                 "orders.customers.name", id="inline-stage"),
-    pytest.param([q(name="s", **_CUSTOMER_NAMES),
-                  q(source_model=_INLINE_OVER_ADDRESSES, dimensions=["city", "s.customers__name"],
-                    extensions=[ext("customers", joins=[join("s", [["id", "n"]])])])],
-                 "customers.s.customers__name", id="inline-root"),
+    pytest.param([q(name="s", source_model="cities_src", dimensions=["city"]), q(**_CUSTOMER_NAMES)],
+                 "orders.customers.name", id="other-stage"),
 ])
-async def test_an_inline_source_is_local_to_its_own_stage(stages: list[SlayerQuery | dict], column: str) -> None:
+async def test_a_stage_source_is_local_to_its_own_stage(stages: list[SlayerQuery | dict], column: str) -> None:
     async with shop("sqlite", _models()) as engine:
         touched, reads = await _planned(engine, stages)
         resp = await engine.execute(stages)
@@ -312,22 +250,21 @@ async def test_an_inline_source_is_local_to_its_own_stage(stages: list[SlayerQue
     assert {row[column] for row in resp.data} - {None} <= {"Ann", "Bob", "Cid", "Dee", "Eve"}
 
 
-_INLINE_LABEL = {**_INLINE_OVER_ADDRESSES, "columns": [
-    *_INLINE_OVER_ADDRESSES["columns"], {"name": "label", "sql": "city", "type": "TEXT"}]}
+_LABELS = _cities({"name": "label", "sql": "city", "type": "TEXT"}, name="labels_src")
 _STORED_LABEL_READ = {"source_model": "orders", "dimensions": ["customers.label"],
                       "measures": [{"formula": "count(*)", "name": "n"}]}
 
 
 @pytest.mark.parametrize("stages", [
-    [q(name="s", source_model=_INLINE_LABEL, dimensions=["label"]), q(**_STORED_LABEL_READ)],
-    [q(name="s", **_STORED_LABEL_READ), q(source_model=_INLINE_LABEL, dimensions=["label"])],
-], ids=["inline-stage", "inline-root"])
-async def test_a_stored_derived_column_closes_over_its_own_definition_beside_an_inline_namesake(
+    [q(name="s", source_model="labels_src", dimensions=["label"]), q(**_STORED_LABEL_READ)],
+    [q(name="s", **_STORED_LABEL_READ), q(source_model="labels_src", dimensions=["label"])],
+], ids=["other-stage", "other-root"])
+async def test_a_stored_derived_column_closes_over_its_own_definition_beside_another_source(
     stages: list[SlayerQuery | dict],
 ) -> None:
     labelled = customers(ModelJoin(target_model="regions", join_pairs=_REGION_PAIRS)).model_copy(update={"columns": [
         *customers().columns, Column(name="label", sql="upper(name)", type=DataType.TEXT)]})
-    async with shop("sqlite", [labelled if m.name == "customers" else m for m in _models()]) as engine:
+    async with shop("sqlite", [labelled if m.name == "customers" else m for m in _models()] + [_LABELS]) as engine:
         _, reads = await _planned(engine, stages)
     assert {("customers", "label"), ("customers", "name")} <= reads.columns
     assert ("customers", "city") not in reads.columns

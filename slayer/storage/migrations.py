@@ -20,10 +20,10 @@ from slayer.core.strict_flag import without_strict
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
-    "SlayerModel": 21,
-    "SlayerQuery": 13,
+    "SlayerModel": 22,
+    "SlayerQuery": 14,
     "DatasourceConfig": 3,
-    "Memory": 9,
+    "Memory": 10,
     "Embedding": 1,
 }
 
@@ -241,3 +241,4 @@ from slayer.storage import distinct_column_migration  # noqa: E402, F401  # ALLO
 from slayer.storage import colon_spelling_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import ossie_alignment_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import many_handling_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import extension_columns_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here

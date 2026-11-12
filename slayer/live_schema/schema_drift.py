@@ -834,8 +834,7 @@ def _stage_scopes(qb_model: SlayerModel, *, models_by_name: dict[str, SlayerMode
 
 
 def _terminal_base(name: str, *, scope: QueryScope) -> str | None:
-    """The stored model a reference landing on ``name`` reads: a sibling stage's chain end, none for the inline
-    source, else ``name``."""
+    """The stored model a reference landing on ``name`` reads: a sibling stage's chain end, else ``name``."""
     if name in scope.siblings:
         return scope.bases.get(name)
     return None if name in scope.shadowed else name
@@ -928,10 +927,8 @@ def _refs_on_base(*, refs: list[_FramedRef], base_name: str, scope: QueryScope) 
 
 
 def _stage_join_targets(stage: SlayerQuery, *, scope: QueryScope) -> set[str]:
-    """The stored models a stage's inline source joins and its extensions name."""
-    source = stage.source_model
-    inline = {j.target_model for j in source.joins} if isinstance(source, SlayerModel) else set()
-    return (inline | set(extension_model_names(stage))) - scope.shadowed
+    """The stored models a stage's extensions name."""
+    return set(extension_model_names(stage)) - scope.shadowed
 
 
 def _check_stage_against_base(
