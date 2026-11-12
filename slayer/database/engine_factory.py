@@ -280,7 +280,7 @@ def _attach_read_only_listeners(
     local = local_database(connection_string)
     if local.kind != "memory" and type(dialect).make_connection_read_only is not SqlDialect.make_connection_read_only:
 
-        @sa_event.listens_for(engine, "connect")
+        @sa_event.listens_for(engine, "connect", insert=True)  # ahead of the dialect's own first-connect statements
         def _slayer_read_only(dbapi_connection, _connection_record):
             def _apply(profile: ServerProfile) -> None:
                 dialect.make_connection_read_only(dbapi_connection, profile=profile)

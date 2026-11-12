@@ -11,6 +11,7 @@ from typing import Any
 
 import duckdb
 import pytest
+from sqlalchemy.dialects.sqlite.pysqlite import SQLiteDialect_pysqlite
 from sqlalchemy.exc import DBAPIError
 
 from slayer.core.models import DatasourceConfig
@@ -85,6 +86,25 @@ def test_a_sqlite_connection_refuses_writes_to_every_database(tmp_path: Path, wr
             median = conn.exec_driver_sql("SELECT median(x) FROM (SELECT 1 AS x UNION ALL SELECT 3)").scalar()
     assert median == 2
     assert _sqlite_rows(main) == _sqlite_rows(other) == [(1,)]
+
+
+def test_a_connection_is_read_only_before_the_dialects_first_statements(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "main.db"
+    _seed_sqlite(path)
+    seen: list[int] = []
+    initialize = SQLiteDialect_pysqlite.initialize
+
+    def _initialize(self: Any, connection: Any) -> None:
+        seen.append(connection.exec_driver_sql("PRAGMA query_only").scalar())
+        initialize(self, connection)
+
+    monkeypatch.setattr(SQLiteDialect_pysqlite, "initialize", _initialize)
+    with _datasource(type="sqlite", database=str(path)) as ds:
+        with engine_factory.get_engine(ds).connect():
+            pass
+    assert seen == [1]
 
 
 # ---------------------------------------------------------------------------
