@@ -51,9 +51,7 @@ class StoredModels(BaseModel):
     models: dict[str, dict] = Field(default_factory=dict)
 
     def host(self, source: Any) -> dict | None:
-        """The raw model a stored query's ``source_model`` reads: an inline model, else a stored one by name."""
-        if isinstance(source, dict) and isinstance(source.get("columns"), list) and "source_name" not in source:
-            return source
+        """The raw stored model named ``source``."""
         return self.models.get(source) if isinstance(source, str) else None
 
     def column_type(self, *, host: dict, parts: list[str] | tuple[str, ...], extensions: list[dict]) -> str | None:
@@ -95,8 +93,7 @@ def below_upgrade(entity: str, data: Any) -> bool:
     if entity == "Memory":
         return below_upgrade("SlayerQuery", data.get("query"))
     if entity == "SlayerQuery":
-        source = data.get("source_model")
-        return isinstance(source, dict) and "source_name" not in source and below_upgrade("SlayerModel", source)
+        return False
     return any(below_upgrade("SlayerQuery", q) for q in data.get("source_queries") or [])
 
 
@@ -146,7 +143,7 @@ def upgrade_model(data: dict) -> dict:
 
 
 def upgrade_query(data: dict) -> dict:
-    """Upgrade every Mode-B field and each extension's measures and column filters; mark an inline model as stored."""
+    """Upgrade every Mode-B field and each extension's measures and column filters."""
     models = _typing.get()
     label = document_label(data)
     raw = data.get("extensions")
@@ -160,9 +157,6 @@ def upgrade_query(data: dict) -> dict:
             if isinstance(e, dict) else e
             for e in data["extensions"]
         ]
-    source = data.get("source_model")
-    if isinstance(source, dict) and "source_name" not in source:
-        data["source_model"] = stamp_stored(source)
     return data
 
 

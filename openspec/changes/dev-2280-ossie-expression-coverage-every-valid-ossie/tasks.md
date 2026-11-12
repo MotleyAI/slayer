@@ -2,7 +2,7 @@
 
 - [x] 1.1 Before writing tests, find every existing test whose assertions pin the whole-day reading of a date-only literal in a comparison (`<=`, `>`, `=`, `!=`, `BETWEEN` against a temporal operand), the dropping of instant comparisons on export, and the tripwire's pinned site set. Search tests, notebooks, docs examples run by `tests/test_doc_examples.py`, and agent help. List them by file with what changes, and get the owner's per-test approval before aligning them.
 - [x] 1.2 Write failing tests for every scenario in this change's delta specs. They are unit tests on in-process SQLite and DuckDB, plus Tier-1 matrix entries for the numeric pins and SQLite emission for the casts. Use the orders fixture of `tests/_dev2215_fixtures.py` where it fits (order 2 at `2024-04-10 09:30`). Verify each new test fails on `main` for the intended reason.
-- [x] 1.3 Migration tests: each operator, `BETWEEN` / `NOT BETWEEN` in each layout and nested under `and` / `or`, literal on the left; every walked field (query measures, filters, dimensions, time dimensions, order, `main_time_dimension`, saved-measure formulas, Mode-B `Column.filter` direct, inline, nested and extension-contained, memory queries); TEXT, untypable and variable comparisons untouched (untypable logged); a current parent with an older nested query, inline model, extension and memory query; idempotence; a post-bump document untouched; YAML and SQLite backends. Verify each fails before implementation.
+- [x] 1.3 Migration tests: each operator, `BETWEEN` / `NOT BETWEEN` in each layout and nested under `and` / `or`, literal on the left; every walked field (query measures, filters, dimensions, time dimensions, order, `main_time_dimension`, saved-measure formulas, Mode-B `Column.filter` direct, nested and extension-contained, memory queries); TEXT, untypable and variable comparisons untouched (untypable logged); a current parent with an older nested query, extension and memory query; idempotence; a post-bump document untouched; YAML and SQLite backends. Verify each fails before implementation.
 - [x] 1.4 Tripwire pin: the new marker's site appears in `PINNED` with removal 3.0, and `warn_deprecated` remains the only `FutureWarning` emitter. Verify it fails before implementation.
 
 ## 2. Date-only literals are instants
@@ -14,7 +14,7 @@
 
 ## 3. Stored upgrade
 
-- [x] 3.1 Bump SlayerModel 21→22, SlayerQuery 13→14 and Memory 9→10 in `storage/migrations.py` (renumber if a concurrent bump has landed). Gate the rewrite on each nested document's own stored version. Verify with the current-parent / old-child tests.
+- [x] 3.1 Bump SlayerModel 22→23, SlayerQuery 14→15 and Memory 10→11 in `storage/migrations.py` (renumber if a concurrent bump has landed). Gate the rewrite on each nested document's own stored version. Verify with the current-parent / old-child tests.
 - [x] 3.2 Extend DEV-2215's Mode-B walker to Mode-B `Column.filter`. Add the context-aware rewrite in the storage load path: type each candidate operand against the datasource's models with the one Mode-B reader, and rewrite through the shared span rewriter per `design.md` › Stored upgrade. Leave and log untypable operands; leave TEXT and variable comparisons untouched. Verify with the `Stored date-only comparisons keep their whole-day meaning` scenarios on YAML and SQLite storage.
 - [x] 3.3 Verify each upgraded fixture returns its pre-change rows by executing it before and after the upgrade.
 

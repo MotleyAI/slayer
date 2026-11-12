@@ -44,9 +44,9 @@ No arc42 or `.c4` edit is needed, and no new capability is added, so no spec att
 
 - **Classification.** `core.time_points` reads `YYYY-MM-DD` as an instant (midnight) in a comparison (`=`, `!=`, `<`, `<=`, `>`, `>=`, `BETWEEN`, `NOT BETWEEN`) and as a day period only as a `date_range` element or the right-hand side of single-string `in` / `not in`. A variable-bound literal goes through the same reader. Instant comparisons keep their existing key and lowering, so frame-bound detection treats date-only range comparisons as instants.
 - **Notice.** Binding records a notice when a date-only literal (or a variable bound to one) meets a TIMESTAMP operand under `<=`, `>`, `=`, `!=`, `BETWEEN` or `NOT BETWEEN`. It is emitted once per spelling per query or save as a structured warning through the existing warning collector (core P6). The emission site is marked through a new tripwire-read marker in `core.deprecation` that records `removal="3.0"` and emits no `FutureWarning`. `warn_deprecated` stays the only `FutureWarning` emitter, and the tripwire scanner and its pinned site set include the new marker.
-- **Stored upgrade.** One bump: SlayerModel 21→22, SlayerQuery 13→14, Memory 9→10 (renumbered if a concurrent bump lands first).
+- **Stored upgrade.** One bump: SlayerModel 22→23, SlayerQuery 14→15, Memory 10→11 (renumbered after DEV-2021's bump).
   - The rewrite runs in the storage load path with the datasource's models, like DEV-2215's custom-granularity step.
-  - It is gated per nested entity on that entity's own stored version, so a current parent with an older nested query, inline model, extension or memory query is upgraded where it nests.
+  - It is gated per nested entity on that entity's own stored version, so a current parent with an older nested query, extension or memory query is upgraded where it nests.
   - The walker is DEV-2215's, extended to Mode-B `Column.filter`.
   - Each candidate comparison is parsed by the one Mode-B reader, its operand typed against the models, and rewritten by the shared span rewriter, leaving the rest of the text byte-identical. Untypable operands are logged and left.
   - Rewrites, with `<D+1>` the next calendar day:
@@ -78,10 +78,10 @@ No arc42 or `.c4` edit is needed, and no new capability is added, so no spec att
 13. The facade is unchanged; it already sends midnight instants. (default)
 14. SQLite timestamp casts reuse the `TRY_CAST` conversion, and `TIME`, time-zone modifiers and precision parameters are refused, through one family check. This refines the approved "timestamp normaliser, refuse precision above 3": the `TRY_CAST` conversion keeps microseconds and gives one SQLite reading for both cast forms. (default)
 15. Window NULL ordering goes with `OVER` to DEV-2282. (user, via 1)
-16. Context-aware rewrites are gated per nested document's own stored version, with current-parent / old-child tests for source queries, inline models, extensions and memories. (codex)
+16. Context-aware rewrites are gated per nested document's own stored version, with current-parent / old-child tests for source queries, extensions and memories (DEV-2021 removed inline models from queries). (codex)
 17. The notice marker is an explicit MODIFIED of the removal-tripwire requirement, with the scanner and the exact-site set updated. (codex)
 18. The `BETWEEN` rewrite has exact parenthesised forms, other layouts are left and logged, and tests cover each position and nesting under `and` / `or`. (codex)
-19. The stored-text walker is explicitly extended to Mode-B `Column.filter`, tested direct, inline, nested and extension-contained. (codex)
+19. The stored-text walker is explicitly extended to Mode-B `Column.filter`, tested direct, nested and in an extension column of a query stored before DEV-2021, which converts it after this upgrade. (codex)
 20. Cast tests cover `CAST`, `::` and `TRY_CAST`, plus the refusals for `TIME`, time-zone modifiers and precision parameters. (codex)
 21. The numeric pins use declared DECIMAL columns with the planned type asserted, positive and negative ties at scales 0 and 2, and float ties kept separate. (codex)
 

@@ -205,29 +205,19 @@ class TestRewrites:
         assert "iif(created_at < '2024-04-11', created_at, NULL)" in text
         assert "iif(created_at in '2024-04-10', 0, 1)" in text
 
-    async def test_column_filter_inline_nested_and_extension(self, tmp_path: Path, shop_ds: DatasourceConfig,
-                                                             backend: str) -> None:
-        inline = {"version": PRE["SlayerModel"], "name": "orders_x", "sql_table": "orders", "data_source": DS,
-                  "columns": [*COLUMNS, LATE_AMOUNT]}
-        extension = {"source_name": "orders", "columns": [LATE_AMOUNT]}
-        inline_q = {**query(), "source_model": inline, "measures": [{"formula": "sum(late_amount)", "name": "s"}]}
-        extended_q = {**query(), "extensions": [extension],
+    async def test_column_filter_in_an_extension(self, tmp_path: Path, shop_ds: DatasourceConfig,
+                                                 backend: str) -> None:
+        # Stored before extension columns were removed: the load-time conversion inlines it after this upgrade.
+        extended_q = {**query(version=13), "extensions": [{"source_name": "orders", "columns": [LATE_AMOUNT]}],
                       "measures": [{"formula": "sum(late_amount)", "name": "s"}]}
-        nested = saved_query_doc("nested", {"source_model": inline, "dimensions": ["id"],
-                                            "measures": [{"formula": "sum(late_amount)", "name": "s"}]})
-        storage = await store(tmp_path, shop_ds, backend=backend, models=(nested,), memories=(
-            memory("m_inline", inline_q), memory("m_ext", extended_q)))
-        loaded = [(await storage.get_memory("m_inline")).query, (await storage.get_memory("m_ext")).query,
-                  await storage.get_model("nested", data_source=DS)]
-        for obj in loaded:
-            assert obj is not None
-            text = dumped(obj)
-            assert LATE_AMOUNT_UPGRADED in text, text
-            assert "created_at > '2024-04-10'" not in text, text
-        for mem_query in loaded[:2]:
-            assert mem_query is not None
-            resp = await run(storage, mem_query.model_copy(update={"dimensions": [], "measures": mem_query.measures}))
-            assert float(resp.data[0][next(iter(resp.data[0]))]) == pytest.approx(220.0)
+        storage = await store(tmp_path, shop_ds, backend=backend, memories=(memory("m_ext", extended_q, version=9),))
+        mem_query = (await storage.get_memory("m_ext")).query
+        assert mem_query is not None
+        text = dumped(mem_query)
+        assert LATE_AMOUNT_UPGRADED in text, text
+        assert "created_at > '2024-04-10'" not in text, text
+        resp = await run(storage, mem_query.model_copy(update={"dimensions": []}))
+        assert float(resp.data[0][next(iter(resp.data[0]))]) == pytest.approx(220.0)
 
     async def test_between_with_one_instant_bound(self, tmp_path: Path, shop_ds: DatasourceConfig,
                                                   backend: str) -> None:
@@ -329,43 +319,15 @@ class TestVersionGating:
         assert mem.query is not None
         assert mem.query.filters == ["created_at < '2025-01-01'"]
 
-    async def test_current_query_with_an_older_inline_model(self, tmp_path: Path, shop_ds: DatasourceConfig,
-                                                            backend: str) -> None:
-        inline = {"version": PRE["SlayerModel"], "name": "orders_x", "sql_table": "orders", "data_source": DS,
-                  "columns": [*COLUMNS, LATE_AMOUNT], "measures": [{"name": "early", "formula": EARLY_COUNT}]}
-        body = {**query(version=CURRENT_VERSIONS["SlayerQuery"]), "source_model": inline}
-        storage = await store(tmp_path, shop_ds, backend=backend,
-                              memories=(memory("m_inline_old", body, version=CURRENT_VERSIONS["Memory"]),))
-        mem = await storage.get_memory("m_inline_old")
-        assert mem.query is not None
-        text = dumped(mem.query)
-        assert EARLY_COUNT_UPGRADED in text, text
-        assert LATE_AMOUNT_UPGRADED in text, text
-
     async def test_current_memory_with_an_older_query_holding_an_extension(
         self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
     ) -> None:
-        body = query(extensions=[{"source_name": "orders", "columns": [LATE_AMOUNT]}])
+        body = query(extensions=[{"source_name": "orders", "measures": [{"name": "early", "formula": EARLY_COUNT}]}])
         storage = await store(tmp_path, shop_ds, backend=backend,
                               memories=(memory("m_ext_old", body, version=CURRENT_VERSIONS["Memory"]),))
         mem = await storage.get_memory("m_ext_old")
         assert mem.query is not None
-        assert [c.filter for e in mem.query.extensions or [] for c in e.columns or []] == [LATE_AMOUNT_UPGRADED]
-
-    async def test_current_query_with_a_current_inline_model_is_untouched(
-        self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
-    ) -> None:
-        inline = {"version": CURRENT_VERSIONS["SlayerModel"], "name": "orders_x", "sql_table": "orders",
-                  "data_source": DS, "columns": [*COLUMNS, LATE_AMOUNT],
-                  "measures": [{"name": "early", "formula": EARLY_COUNT}]}
-        body = {**query(version=CURRENT_VERSIONS["SlayerQuery"]), "source_model": inline}
-        storage = await store(tmp_path, shop_ds, backend=backend,
-                              memories=(memory("m_inline_cur", body, version=CURRENT_VERSIONS["Memory"]),))
-        mem = await storage.get_memory("m_inline_cur")
-        assert mem.query is not None
-        text = dumped(mem.query)
-        assert EARLY_COUNT in text, text
-        assert "created_at > '2024-04-10'" in text, text
+        assert [m.formula for e in mem.query.extensions or [] for m in e.measures or []] == [EARLY_COUNT_UPGRADED]
 
     async def test_upgrade_is_idempotent(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str) -> None:
         storage = await store(tmp_path, shop_ds, backend=backend, memories=(
