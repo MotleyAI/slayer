@@ -570,12 +570,12 @@ def test_metric_ai_context_into_description_and_meta(shop_engine):
     assert meas.meta["osi_ai_context"]["instructions"] == "Sum of gross order value."
 
 
-def test_field_custom_extensions_into_meta(shop_engine):
+def test_field_nonportable_extensions_into_meta(shop_engine):
     orders = _by_name(_shop_result(shop_engine))["orders"]
     amount = {c.name: c for c in orders.columns}["amount"]
-    exts = amount.meta["osi_custom_extensions"]
+    exts = amount.meta["osi_nonportable_extensions"]
     assert exts[0]["vendor_name"] == "SNOWFLAKE"
-    assert exts[0]["data"] == '{"unit": "usd"}'
+    assert exts[0]["data"] == {"unit": "usd"}
 
 
 def test_join_meta_carries_ai_context(shop_engine):

@@ -137,6 +137,7 @@ living-architecture = "0.6.0"
 jsonschema = "^4.23"
 filelock = ">=3.12,<4"
 pg8000 = "^1.31.6"
+ruamel-yaml = "^0.19.1"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
