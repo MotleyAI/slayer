@@ -67,8 +67,16 @@ def _detects_autocommit(url: str | URL, *, is_async: bool) -> bool:
 def engine_kwargs(
     *, url: str | URL, dialect: SqlDialect, datasource: DatasourceConfig, is_async: bool = False, **own: Any,
 ) -> dict[str, Any]:
-    """``own`` engine arguments plus the dialect's transaction mode for ``datasource`` and this policy's listeners."""
+    """``own`` engine arguments plus the dialect's read-only arguments and transaction mode for ``datasource``,
+    and this policy's listeners."""
     kwargs = {**own, "plugins": [*own.get("plugins", []), _PLUGIN], _DIALECT_KWARG: dialect}
+    read_only = dialect.read_only_engine_args(
+        url=make_url(url), datasource=datasource, connect_args=own.get("connect_args") or {},
+    )
+    if read_only.connect_args:
+        kwargs["connect_args"] = {**(own.get("connect_args") or {}), **read_only.connect_args}
+    if read_only.execution_options:
+        kwargs["execution_options"] = {**(own.get("execution_options") or {}), **read_only.execution_options}
     if datasource.transaction_pooler:
         return kwargs
     if dialect.transaction_mode == "driver_autocommit" and _detects_autocommit(url, is_async=is_async):

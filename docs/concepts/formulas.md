@@ -21,10 +21,10 @@ corr(price, other=quantity)  — Pearson correlation between two columns (named 
 covar_samp(price, other=quantity)  — sample covariance (Bessel-corrected)
 covar_pop(price, other=quantity)   — population covariance
 avg(customers.score)  — cross-model: AVG of "score" from the joined "customers" model
-collect(name)         — the distinct non-NULL names as a sorted list ([] when none), usable by the list functions
+collect(name)         — the names as a list
 ```
 
-Aggregations are used everywhere measures appear: in `measures`, in arithmetic expressions, in transform function arguments, and in filters. The same call is valid in every position, with the author's text preserved on save. The `first`/`last` disambiguation rules are in [Reference semantics → Aggregation syntax](references.md#aggregation-syntax). `count(distinct x)` is the same as `count_distinct(x)`. The pre-2.0 colon spelling of aggregations and granularities is refused with its functional twin; stored text written in it is upgraded on load.
+Aggregations are used everywhere measures appear: in `measures`, in arithmetic expressions, in transform function arguments, and in filters. The same call is valid in every position, with the author's text preserved on save. The `first`/`last` disambiguation rules are in [Reference semantics → Aggregation syntax](references.md#aggregation-syntax). `count(distinct x)` is the same as `count_distinct(x)`. `collect` is specified in [List columns](queries.md#list-columns). The pre-2.0 colon spelling of aggregations and granularities is refused with its functional twin; stored text written in it is upgraded on load.
 
 A measure may combine query-dimension values with aggregates (`quantity * count(*)` by `quantity`, `iif(region == 'North', sum(amount), 0)` by `region`), reading each dimension's value per result row; a row-level column that is not a query dimension (`amount + sum(amount)` by `region`) is a typing error.
 

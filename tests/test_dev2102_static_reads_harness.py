@@ -299,11 +299,9 @@ _CUSTOMER_NAMES = {"source_model": "orders", "dimensions": ["customers.name"],
     pytest.param([q(name="s", source_model=_INLINE_OVER_ADDRESSES, dimensions=["city"]), q(**_CUSTOMER_NAMES)],
                  "orders.customers.name", id="inline-stage"),
     pytest.param([q(name="s", **_CUSTOMER_NAMES),
-                  q(source_model=_INLINE_OVER_ADDRESSES, dimensions=["city", "s.customers.name"],
+                  q(source_model=_INLINE_OVER_ADDRESSES, dimensions=["city", "s.customers__name"],
                     extensions=[ext("customers", joins=[join("s", [["id", "n"]])])])],
-                 "customers.s.customers.name", id="inline-root",
-                 marks=pytest.mark.xfail(strict=True, reason="DEV-2268: a joined stage's dotted output field "
-                                                             "is unresolvable from a model-scoped root")),
+                 "customers.s.customers__name", id="inline-root"),
 ])
 async def test_an_inline_source_is_local_to_its_own_stage(stages: list[SlayerQuery | dict], column: str) -> None:
     async with shop("sqlite", _models()) as engine:

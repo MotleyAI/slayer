@@ -442,7 +442,7 @@ A negated condition on a joined model does not mean "has none": `not orders.stat
 
 ### List columns
 
-A list column `skills` is also a join hop to its elements, one row per non-NULL element with the single column `skills.value`, so `skills.value = 'go'` keeps the contractors having a `go` element, `skills.value` groups by element with `count(skills.*)` counting occurrences, `count(*)` by `skills.value` is the number of contractors per skill (no key needed), every `skills.value` condition in one query reads the same element (so require several with `contains_all(skills, ['go', 'sql'])`, not `AND`), and absence is `NOT contains(skills, 'go')`, since `NOT (skills.value = 'go')` keeps rows with some other element.
+A list column `skills` (type `ARRAY`, see [Data types](models.md#data-types)) is also a join hop to its elements: one row per non-NULL element, with the single column `skills.value`. So `skills.value = 'go'` keeps the contractors having a `go` element, `skills.value` groups by element with `count(skills.*)` counting occurrences, and `count(*)` by `skills.value` is the number of contractors per skill (no key needed). Every `skills.value` condition in one query reads the same element, so require several with `contains_all(skills, ['go', 'sql'])`, not `AND`; absence is `NOT contains(skills, 'go')`, since `NOT (skills.value = 'go')` keeps rows with some other element.
 
 ```json
 {"source_model": "contractors", "dimensions": ["skills.value"], "measures": ["count(*)"]}
@@ -455,7 +455,7 @@ A whole list groups (a dimension or `partition_by=`), compares (`=`, `<>`, `IS [
 What a list can't do, each a typed error naming the remedy:
 
 - be compared with a scalar (use `contains` / `contains_any`, or compare `skills.value`), or ordered (`<`, `>`, `BETWEEN`, an `order` key); `IS NULL` / `IS NOT NULL` work;
-- take any aggregation but `count` (non-NULL lists) and `count_distinct` (distinct element sets), including `collect` and custom aggregations;
+- take an aggregation that [Aggregation eligibility](models.md#aggregation-eligibility) does not allow a list, `collect` and custom aggregations included;
 - hold a NULL element in a list literal (`['go', NULL]`);
 - have `UNKNOWN` elements and still be grouped, compared, counted distinctly, measured by `length` or read element by element: such a list supports only NULL tests and `count`.
 
@@ -464,6 +464,10 @@ A text value against a numeric list is converted like any mixed-type comparison,
 Element access composes like any join hop: through a to-one join (`contractors.skills.value` from a model joined to `contractors`), on a derived list column, and on a list column of a query stage, including a stage's `collect` result. One query may aggregate the parent's rows (`count(*)`) and the elements (`count(skills.value)`), each over its own rows. Saving a model whose list column has the name of a hop reachable from it (an edge or joined-model name) fails.
 
 `inspect`, `search` and `models_summary` show a list column's type as `ARRAY<TEXT>` with its operations, and its element samples once profiled.
+
+`collect(x)` goes the other way: the distinct non-NULL values of `x` in each cell, sorted, and `[]` for a cell with none. `x` is a column, a list's elements or an expression, of the query's model or a joined one (`collect(orders.status)` by customer is each customer's order statuses), and a collected list stays a list in a later stage, with the same functions and elements.
+
+The [list functions](references.md#lists) test a whole list, and [Database support](../database-support.md) names the databases that run lists.
 
 ### Window functions in filters
 
@@ -905,7 +909,7 @@ Sibling stages can also reference each other — any non-final stage may use a *
 ]
 ```
 
-A grouped stage is unique on its dimensions, so a join onto a sibling stage that covers all of them (here `customer_scores` on `id`) is provably many-to-one and keeps exact per-dimension values.
+A grouped stage is unique on its dimensions, so a join onto a sibling stage that covers all of them (here `customer_scores` on `id`) is provably many-to-one and keeps exact per-dimension values. A joined stage's columns keep their flat names: a stage `s` with the dimension `customers.name` is read as `s.customers__name`, and the dotted `s.customers.name` is refused with that flat name as its suggestion.
 
 **Order doesn't matter for runtime lists.** Stages can be submitted in any order — the engine auto-sorts them topologically so every stage appears after the siblings it references. The **last entry** of the input list is always the entry point / DAG root (its result is what's returned); only the non-final entries are reordered. Cycles and self-references are rejected with a clear error naming the offending stages. A non-final stage may not reference the root (the root must be the dependency sink). Stages that aren't reachable from the root are accepted as utility sub-queries — they're silently dropped from the emitted SQL.
 

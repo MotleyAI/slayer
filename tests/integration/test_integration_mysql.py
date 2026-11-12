@@ -24,6 +24,7 @@ from typing import Any
 import pytest
 
 import sqlalchemy as sa
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.engine.url import make_url
 from tests._dev1737_fixtures import (
     DateCase,
@@ -1851,3 +1852,92 @@ def test_warm_statement_costs_one_request(
     )
     assert_one_request_each(mysql_general_log(rows[0][0]["cid"]))
     assert mysql_pings == []
+
+
+# ---------------------------------------------------------------------------
+# Read-only sessions (MySQL and MariaDB)
+# ---------------------------------------------------------------------------
+
+_RO_ERROR = "(?i)read only transaction"
+
+_SESSION_TIMEOUT = {"mysql": "SELECT @@SESSION.max_execution_time AS t", "mariadb": "SELECT @@SESSION.max_statement_time AS t"}
+
+_TIMEOUT_SET = {"mysql": 7000, "mariadb": 7}
+
+
+@pytest.fixture(scope="session")
+def mariadb_container():
+    """Session-scoped MariaDB 11 container."""
+    container = MySqlContainer(
+        "mariadb:11.4",
+        username="slayer",
+        password="slayer",  # NOSONAR(S2068) — testcontainer credentials, not real secrets
+        dbname="slayer_root",
+        root_password="root",  # NOSONAR(S2068) — testcontainer credentials, not real secrets
+    )
+    with container as c:
+        yield c
+
+
+@pytest.fixture(params=["mysql", "mariadb"])
+def read_only_ds(request: pytest.FixtureRequest):
+    """A seeded datasource of each type, reached through pymysql."""
+    container = request.getfixturevalue(f"{request.param}_container")
+    db_name = _create_module_db(container)
+    conn = _admin_connect(container, dbname=db_name)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("CREATE TABLE t (x INT)")
+            cur.execute("INSERT INTO t VALUES (1)")
+    finally:
+        conn.close()
+    yield _ds_config(container, db_name).model_copy(update={"type": request.param})
+    _drop_module_db(container, db_name)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("after_reconnect", [False, True])
+def test_a_write_through_the_sync_engine_fails(read_only_ds: DatasourceConfig, after_reconnect: bool) -> None:
+    engine = engine_factory.get_engine(read_only_ds)
+    if after_reconnect:
+        with engine.connect() as conn:
+            conn.invalidate()
+    with engine.connect() as conn:
+        with pytest.raises(DBAPIError, match=_RO_ERROR):
+            conn.exec_driver_sql("INSERT INTO t VALUES (2)")
+
+
+@pytest.mark.integration
+async def test_a_write_through_the_async_engine_fails(read_only_ds: DatasourceConfig) -> None:
+    client = SlayerSQLClient(datasource=_aiomysql(read_only_ds).model_copy(update={"type": read_only_ds.type}))
+    try:
+        async with client._get_async_engine().connect() as conn:
+            with pytest.raises(DBAPIError, match=_RO_ERROR):
+                await conn.exec_driver_sql("INSERT INTO t VALUES (2)")
+    finally:
+        await client.aclose()
+        client.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("path", PATHS)
+def test_queries_keep_their_timeout_on_a_read_only_session(read_only_ds: DatasourceConfig, path: str) -> None:
+    ds_type = read_only_ds.type or "mysql"
+    client = SlayerSQLClient(datasource=read_only_ds)
+    sql = _SESSION_TIMEOUT[ds_type]
+    try:
+        if path == "async":
+            async def _go() -> list[dict[str, Any]]:
+                try:
+                    await client.execute("SELECT x FROM t", timeout_seconds=7)
+                    return (await client.execute(sql, timeout_seconds=7)).rows
+                finally:
+                    await client.aclose()
+
+            rows = run_sync(_go())
+        else:
+            client.execute_sync("SELECT x FROM t", timeout_seconds=7)
+            rows = client.execute_sync(sql, timeout_seconds=7).rows
+    finally:
+        client.close()
+    assert [float(r["t"]) for r in rows] == [_TIMEOUT_SET[ds_type]]

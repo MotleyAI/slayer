@@ -93,6 +93,7 @@ from slayer.core.keys import (
     temporal_type,
     type_date_values,
     column_leaf,
+    column_path,
     value_arg_positions,
     value_type,
     source_anchor_path,
@@ -103,7 +104,7 @@ from slayer.core.keys import (
 from slayer.core.models import SlayerModel
 from slayer.core.names import folded_collisions
 from slayer.core.refs import bucket_remedy, dotted_key_display, key_display
-from slayer.core.scope import ModelScope, StageSchema
+from slayer.core.scope import ModelScope, StageSchema, peek_model_column
 from slayer.core.time_points import (
     TIME_POINT_FORMS, Instant, add_units, ceil_to, floor_to, is_relative_token, is_time_point, resolve_time_point,
 )
@@ -893,18 +894,31 @@ _SPINE_REMEDY = (
 
 
 def check_unrelated_row_read(
-    *, reference: Optional[ValueKey], dataset: str, population: str, location: str,
+    *, reference: Optional[ValueKey], dataset: str, population: SlayerModel, location: str,
 ) -> None:
     """A row-level read of a dataset no join path reaches, outside an aggregation's inputs, raises."""
     if reference is None:
         return
-    ref = key_display(reference.source if isinstance(reference, TimeTruncKey) else reference)
+    column = reference.source if isinstance(reference, TimeTruncKey) else reference
+    ref = key_display(column)
+    spelling = population.spelling
     raise UnrelatedDatasetError(
         summary=f"{ref} reads {dataset}, which no join path reaches from the population "
-        f"{population}: it meets {population} as a product, so it is read only through aggregates.",
+        f"{spelling}: it meets {spelling} as a product, so it is read only through aggregates.",
         location=location,
-        suggestion=f"Aggregate it, e.g. max({ref}).",
+        suggestion=_unrelated_read_remedy(column, ref=ref, population=population),
     )
+
+
+def _unrelated_read_remedy(column: ValueKey, *, ref: str, population: SlayerModel) -> str:
+    """Aggregate the read, led by the population's column its tokens spell when joined with ``__``."""
+    aggregate = f"Aggregate it, e.g. max({ref})."
+    if not isinstance(column, (ColumnKey, ColumnSqlKey)):
+        return aggregate
+    flat = peek_model_column(model=population, name="__".join((*column_path(column), column_leaf(column))))
+    if flat is None:
+        return aggregate
+    return f"Read the population's column {flat.name!r}, or aggregate it, e.g. max({ref})."
 
 
 def check_unrelated_filter_sides(
