@@ -56,13 +56,15 @@ def extension_of(query: SlayerQuery, name: str) -> Optional[ModelExtension]:
     return next((e for e in query.extensions or [] if e.source_name == name), None)
 
 
-def respelled(query: SlayerQuery, *, declared: Iterable[str]) -> SlayerQuery:
+def respelled(query: SlayerQuery, *, tiers: Sequence[Iterable[str]]) -> SlayerQuery:
     """``query`` with each model name it writes — its source, its inline source's join targets, its extensions' models
-    — spelled as ``declared`` spells it (``slayer.core.names.match_name``); an undeclared name stays as written."""
-    names = list(dict.fromkeys(declared))
+    — spelled as the first of ``tiers`` that declares it (``slayer.core.names.match_name``); an undeclared name stays
+    as written."""
+    declared = [list(dict.fromkeys(tier)) for tier in tiers]
 
     def spell(name: str) -> str:
-        return match_name(name=name, declared=names, quoted=False) or name
+        found = (match_name(name=name, declared=names, quoted=False) for names in declared)
+        return next((f for f in found if f is not None), name)
 
     def joins(written: Optional[List[ModelJoin]]) -> Optional[List[ModelJoin]]:
         if not any(spell(j.target_model) != j.target_model for j in written or []):
@@ -88,14 +90,18 @@ def respelled(query: SlayerQuery, *, declared: Iterable[str]) -> SlayerQuery:
 def respelled_stages(
     query: SlayerQuery, named_queries: Mapping[str, SlayerQuery], *, models: Iterable[str],
 ) -> Tuple[SlayerQuery, Dict[str, SlayerQuery]]:
-    """``respelled`` per stage, over ``models``, the stages and the stage's own inline source."""
-    shared = [*models, *named_queries]
+    """``respelled`` per stage: its own inline source and the stages shadow ``models``."""
+    models = list(models)
 
     def one(stage: SlayerQuery) -> SlayerQuery:
-        spec = stage.source_model
-        return respelled(stage, declared=[*([spec.name] if isinstance(spec, SlayerModel) else []), *shared])
+        return respelled(stage, tiers=_stage_tiers(stage, stages=named_queries, models=models))
 
     return one(query), {name: one(stage) for name, stage in named_queries.items()}
+
+
+def _stage_tiers(stage: SlayerQuery, *, stages: Iterable[str], models: Iterable[str]) -> List[List[str]]:
+    spec = stage.source_model
+    return [[*([spec.name] if isinstance(spec, SlayerModel) else []), *stages], list(models)]
 
 
 def with_own_extension(model: Optional[SlayerModel], query: SlayerQuery) -> Optional[SlayerModel]:
@@ -259,20 +265,21 @@ def query_scopes(
     data_source: Optional[str],
 ) -> List[List[QueryScope]]:
     """Per query of a query list (the root last), its scope in each datasource it may read (lenient: conflicts skip)."""
-    named = {q.name: q for q in queries[:-1] if q.name}
+    staged = _respelled_leniently(queries, stored={})
+    named = {q.name: q for q in staged[:-1] if q.name}
     respelled_by_ds: Dict[str, List[SlayerQuery]] = {}
 
     def scope(index: int, ds: str) -> QueryScope:
         stored = models_by_ds.get(ds, {})
         if ds not in respelled_by_ds:
-            respelled_by_ds[ds] = _respelled_leniently(queries, stored=stored)
+            respelled_by_ds[ds] = _respelled_leniently(staged, stored=stored)
         stages = respelled_by_ds[ds]
         own = {q.name: q for q in stages[:-1] if q.name}
         return _scope(stages[index], data_source=ds, named=own, stored=stored)
 
     return [
         [scope(i, ds) for ds in _data_sources(query, named=named, models_by_ds=models_by_ds, data_source=data_source)]
-        for i, query in enumerate(queries)
+        for i, query in enumerate(staged)
     ]
 
 
@@ -281,9 +288,8 @@ def _respelled_leniently(queries: Sequence[SlayerQuery], *, stored: Mapping[str,
     stages = [q.name for q in queries[:-1] if q.name]
     out: List[SlayerQuery] = []
     for query in queries:
-        spec = query.source_model
         try:
-            out.append(respelled(query, declared=[*([spec.name] if isinstance(spec, SlayerModel) else []), *stored, *stages]))
+            out.append(respelled(query, tiers=_stage_tiers(query, stages=stages, models=stored)))
         except AmbiguousReferenceError:
             out.append(query)
     return out

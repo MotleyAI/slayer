@@ -6,7 +6,7 @@ from collections import Counter
 
 import pytest
 
-from slayer.core.errors import AmbiguousReferenceError, ModelNotFoundError, SlayerError, UnknownReferenceError
+from slayer.core.errors import ModelNotFoundError, SlayerError, UnknownReferenceError
 from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.stage_ordering import topologically_order_stages
@@ -183,13 +183,15 @@ class TestModelNameCase:
             resp = await engine.execute(q(source_model=inline, dimensions=["customers.name"]))
         assert {r[resp.columns[0]] for r in resp.data} == {"Ann", "Bob", "Cid", "Dee", "Eve", None}
 
-    async def test_an_extension_matching_two_spellings_is_ambiguous(self, dialect) -> None:
+    async def test_the_inline_source_shadows_a_stored_model_whatever_the_case(self, dialect) -> None:
         inline = {"name": "customers", "data_source": DS, "sql_table": "addresses", "columns": [
             {"name": "id", "type": "INT", "primary_key": True}, {"name": "city", "type": "TEXT"}]}
-        query = q(source_model=inline, dimensions=["city"], extensions=[ext("CUSTOMERS", columns=[TIER_LABEL])])
+        shout = {"name": "shout", "sql": "upper(city)", "type": "TEXT"}
+        query = q(source_model=inline, dimensions=["city", "shout"], extensions=[ext("CUSTOMERS", columns=[shout])])
         async with shop(dialect, respelled_model(base_models(), name="customers", spelling="Customers")) as engine:
-            with pytest.raises(AmbiguousReferenceError):
-                await engine.execute(query)
+            resp = await engine.execute(query)
+        assert resp.data
+        assert all(r["customers.shout"] == r["customers.city"].upper() for r in resp.data if r["customers.city"])
 
 
 class TestRejectedTargets:
