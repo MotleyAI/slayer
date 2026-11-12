@@ -74,7 +74,7 @@
 
   Verify with `tests/test_doc_examples.py` and `tests/test_docs_guards.py`.
 - [x] 5.3 Re-execute every edited notebook with `jupyter nbconvert --to notebook --execute --inplace`, and verify the outputs are fresh.
-- [ ] 5.4 Full unit suite `poetry run pytest -m "not integration"`, the integration suite with the CI invocation, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs the baseline), and the enforcement bundle (`la-arch-check`, `npx -y likec4@1.47.0 validate architecture`). All green.
+- [x] 5.4 Full unit suite `poetry run pytest -m "not integration"`, the integration suite with the CI invocation, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs the baseline), and the enforcement bundle (`la-arch-check`, `npx -y likec4@1.47.0 validate architecture`). All green.
 
 ## 6. One static query scope (review round 3)
 
