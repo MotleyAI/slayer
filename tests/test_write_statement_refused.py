@@ -169,7 +169,7 @@ def test_parsed_reads_are_admitted(ds_type: str, sql: str) -> None:
     [
         ("postgres", "TABLE t"), ("duckdb", "SUMMARIZE t"), ("postgres", "SELECT FROM WHERE"),
         ("mysql", "SHOW TABLES INTO OUTFILE '/tmp/x'"), ("clickhouse", "SHOW TABLES INTO OUTFILE 'x'"),
-        ("mysql", "EXPLAIN SELECT 1"), ("mysql", "DESCRIBE SELECT 1"),
+        ("mysql", "EXPLAIN SELECT 1"), ("mysql", "DESCRIBE SELECT 1"), ("mysql", "EXPLAIN t"),
         ("mysql", "/*! SET SESSION TRANSACTION READ WRITE */"), ("mysql", "/*! DELETE FROM t */"),
         ("mysql", "SELECT 1 /*!, (SELECT 2) */"), ("mysql", "/*M! DELETE FROM t */"),
         ("postgres", "-- nothing"), ("postgres", ""),
@@ -179,6 +179,13 @@ def test_texts_not_parsed_as_reads_are_refused(ds_type: str, sql: str) -> None:
     dialect, refused = dialect_for_ds_type(ds_type), _write_refused()
     with pytest.raises(refused):
         sql_client.admit_statement(sql, dialect=dialect)
+
+
+@pytest.mark.parametrize("ds_type", ["sqlite", "duckdb"])
+def test_explain_is_refused_on_an_in_memory_database(ds_type: str) -> None:
+    dialect, refused = dialect_for_ds_type(ds_type), _write_refused()
+    with pytest.raises(refused, match="EXPLAIN"):
+        sql_client.admit_statement("EXPLAIN SELECT 1", dialect=dialect, writes_allowed=True)
 
 
 # ---------------------------------------------------------------------------

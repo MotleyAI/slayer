@@ -155,6 +155,8 @@ def admit_statement(sql: str, *, dialect: SqlDialect, writes_allowed: bool = Fal
                 f"The SQL client refuses {' '.join(refused)} statements: session state and transactions "
                 "are managed by SLayer.",
             )
+    if any(lead[0] == "EXPLAIN" for lead in leads):  # MySQL parses EXPLAIN <table> as a DESCRIBE
+        raise WriteStatementRefused("The SQL client refuses EXPLAIN statements: a plan goes through explain().")
     refusal = _non_read_refusal(sql, tokens=tokens, leads=leads, glot=glot)
     if refusal is not None and not writes_allowed:
         raise WriteStatementRefused(f"The SQL client refuses this text: {refusal}.")
