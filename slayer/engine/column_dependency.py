@@ -1,4 +1,4 @@
-"""Save-time well-formedness of a model's derived columns (arity + cycles).
+"""Save-time well-formedness of a model's derived columns (arity + cycles) and filters.
 
 A derived ``Column.sql`` / ``Column.filter`` reference must be a function of its
 declaring model's row (Axiom 1): it may cross only provably to-one hops. Called
@@ -8,7 +8,9 @@ early-failure layer rejects a path that revisits a model already on it
 warns on an unproven hop (query-time input-safety gate is the backstop), and
 rejects a derived-column cycle (``ColumnCycleError``). A reference crossing an ambiguous hop is rejected
 (``DerivedColumnAmbiguousError``); a save that changes the model's edges warns
-about other models' definitions it breaks. Best-effort, same-datasource;
+about other models' definitions it breaks. Model filters naming a measure or a
+windowed column, or reading their own dataset (``ModelFilterCycleError``), are
+refused here and, for every model a query reads, at query time. Best-effort, same-datasource;
 unresolved/unloaded targets are skipped and the compile-time/query-time guards
 remain authoritative.
 """
@@ -26,12 +28,15 @@ from slayer.core.errors import (
     DerivedColumnAmbiguousError,
     DerivedColumnCircularError,
     DerivedColumnFanningError,
+    ModelFilterCycleError,
     UnreachableDefinitionError,
 )
 from slayer.core.join_search import unreachable_target
-from slayer.core.join_walker import provably_to_one, walk, walk_miss, walk_terminal
+from slayer.core.join_walker import OrientedJoin, provably_to_one, walk, walk_miss, walk_terminal
 from slayer.core.models import Column, SlayerModel
-from slayer.engine.join_safety import provably_fans
+from slayer.core.syntax import drop_root_hop
+from slayer.engine.elaborate_env import validate_model_filter
+from slayer.engine.cardinality.join_safety import provably_fans
 from slayer.sql.column_expansion import (
     is_trivial_base,
     reference_sites,
@@ -70,6 +75,20 @@ def _fragment_refs(sql: str):
     ]
 
 
+def definition_reads(
+    *, column: Column, host: SlayerModel, reachable: dict[str, SlayerModel],
+) -> list[tuple[str, str]]:
+    """Every ``(model, column)`` the ``Column.sql`` / ``Column.filter`` of ``column`` names, base columns included."""
+    out: list[tuple[str, str]] = []
+    texts = [] if column.sql is None or is_trivial_base(column=column) else [column.sql]
+    for text in [*texts, *([column.filter] if column.filter else [])]:
+        for quals, leaf in _fragment_refs(text) or []:
+            target = resolve_ref_target(qualifiers=quals, source_model=host, models_by_name=reachable)
+            if target is not None and target.get_column(leaf, quoted=True) is not None:
+                out.append((target.name, leaf))
+    return out
+
+
 def _column_dependencies(
     *,
     column: Column,
@@ -103,7 +122,7 @@ def _sql_dependencies(
         )
         if target is None:
             continue
-        col = target.get_column(leaf)
+        col = target.get_column(leaf, quoted=True)
         if col is not None and col.needs_expansion:
             deps.append((target.name, col.name))
     return deps
@@ -125,7 +144,7 @@ def _filter_dependencies(
         )
         if target is None:
             continue  # a real join hop whose target is not loaded here — skip
-        col = target.get_column(leaf)
+        col = target.get_column(leaf, quoted=True)
         if col is None or not col.needs_expansion:
             continue
         if (
@@ -177,7 +196,7 @@ def _node_dependencies(
     host = reachable.get(model_name)
     if host is None:
         return []
-    col = host.get_column(col_name)
+    col = host.get_column(col_name, quoted=True)
     if col is None:
         return []
     return _column_dependencies(
@@ -236,11 +255,8 @@ def _detect_cycle_dfs(
 
 
 def _hop_path(*, quals, host: SlayerModel) -> tuple[str, ...]:
-    """A reference's join-hop tokens with ``host``'s own name stripped; empty = host-local."""
-    q = list(quals)
-    if q and q[0] == host.name:
-        q = q[1:]
-    return tuple(q)
+    """A reference's join-hop tokens with ``host``'s own name dropped; empty = host-local."""
+    return drop_root_hop(quals, host.spelling, head_quoted=True)
 
 
 def _classify_hop_path(
@@ -284,8 +300,8 @@ def _unproven_arity_message(*, column: str, model: str, hop: str) -> str:
     return (
         f"Derived column {column!r} on model {model!r} has a reference crossing "
         f"an unproven join hop to {hop!r} (cardinality not declared to-one and no "
-        f"covering unique key): it broadcasts if aggregated as a column of "
-        f"{model!r}. Declare the hop's cardinality, or aggregate the target column "
+        f"covering unique key): aggregating it as a column of {model!r} fails "
+        f"at query time. Declare the hop's cardinality, or aggregate the target column "
         f"(<aggregation>({hop}.<column>)) instead."
     )
 
@@ -485,3 +501,93 @@ def validate_derived_columns(
         )
         if cycle is not None:
             raise ColumnCycleError(cycle=cycle)
+
+
+def filter_references(
+    fragment: str, *, host: SlayerModel, reachable: dict[str, SlayerModel],
+) -> Iterator[tuple[SlayerModel, str, tuple[str, ...]]]:
+    """``(owner, leaf, models on its path)`` for each reference ``fragment`` makes from ``host``,
+    recursing through the derived columns it names; unresolvable references are skipped."""
+    yield from _references(fragment, host=host, reachable=reachable, via=(), seen=set())
+
+
+def _resolve_owner(
+    *, quals, host: SlayerModel, reachable: dict[str, SlayerModel],
+) -> tuple[SlayerModel, list[OrientedJoin]] | None:
+    """The model owning a reference and the chain reaching it, else ``None`` when unresolvable."""
+    path = _hop_path(quals=quals, host=host)
+    try:
+        chain = walk(root=host, path=path, models_by_name=reachable) if path else []
+    except (AmbiguousJoinPathError, CircularJoinPathError):
+        return None
+    if chain is None:
+        return None
+    owner = reachable.get(chain[-1].target_model) if chain else host
+    return None if owner is None else (owner, chain)
+
+
+def _references(
+    fragment: str, *, host: SlayerModel, reachable: dict[str, SlayerModel], via: tuple[str, ...],
+    seen: set[tuple[str, str]],
+) -> Iterator[tuple[SlayerModel, str, tuple[str, ...]]]:
+    for quals, leaf in _fragment_refs(fragment) or []:
+        resolved = _resolve_owner(quals=quals, host=host, reachable=reachable)
+        if resolved is None:
+            continue
+        owner, chain = resolved
+        on_path = (*via, *(edge.target_model for edge in chain))
+        yield owner, leaf, on_path
+        column = owner.get_column(leaf, quoted=True)
+        if column is None or (owner.name, leaf) in seen:
+            continue
+        seen.add((owner.name, leaf))
+        for inner in _arity_reference_sources(column):
+            yield from _references(inner, host=owner, reachable=reachable, via=on_path, seen=seen)
+
+
+def _filtered_reads(model: SlayerModel, *, reachable: dict[str, SlayerModel]) -> list[str]:
+    """The models whose datasets ``model``'s filters read: every model on every path they cross."""
+    return list(dict.fromkeys(
+        name
+        for fragment in model.filters
+        for _owner, _leaf, path in filter_references(fragment, host=model, reachable=reachable)
+        for name in path
+    ))
+
+
+def _filter_cycle(*, model: SlayerModel, reachable: dict[str, SlayerModel]) -> list[str] | None:
+    """The first chain of filtered datasets from ``model`` back to itself, else ``None``."""
+    stack = [model.name]
+    done: set[str] = set()
+
+    def visit(name: str) -> list[str] | None:
+        current = reachable.get(name)
+        for dep in _filtered_reads(current, reachable=reachable) if current is not None else ():
+            if dep == model.name:
+                return [*stack, dep]
+            if dep in done or dep in stack:
+                continue
+            stack.append(dep)
+            found = visit(dep)
+            stack.pop()
+            if found is not None:
+                return found
+            done.add(dep)
+        return None
+
+    return visit(model.name)
+
+
+def check_model_filters(*, model: SlayerModel, reachable: dict[str, SlayerModel]) -> None:
+    """Refuse ``model``'s filters naming a measure or windowed column (``ModelFilterError``) or
+    reading its own dataset (:class:`ModelFilterCycleError`, only a cycle through ``model``)."""
+    if not model.filters:
+        return
+    models = {**reachable, model.name: model}
+    for fragment in model.filters:
+        validate_model_filter(mf=fragment, references=(
+            (owner, leaf) for owner, leaf, _path in filter_references(fragment, host=model, reachable=models)
+        ))
+    cycle = _filter_cycle(model=model, reachable=models)
+    if cycle is not None:
+        raise ModelFilterCycleError(cycle)

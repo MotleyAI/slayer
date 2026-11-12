@@ -188,6 +188,10 @@ class TestDialectReservedKeywords:
         ]
         assert not bare
 
+    @pytest.mark.parametrize("word", ["sample", "trigger"])
+    def test_snowflake_live_probed_words_are_quoted(self, word: str) -> None:
+        assert exp.to_identifier(word).sql(dialect="snowflake") == f'"{word}"'
+
     def test_dialect_words_stay_bare_elsewhere(self) -> None:
         assert exp.to_identifier("index").sql(dialect="postgres") == "index"
 
@@ -217,7 +221,7 @@ class TestReservedAliasQuoting:
     @pytest.mark.parametrize("dialect", _EMIT_DIALECTS)
     async def test_grant_alias_and_qualifier_quoted(self, dialect: str) -> None:
         install_reserved_keywords(SQLGLOT_NAMES)
-        q = SlayerQuery(source_model="grant", dimensions=["namespace"], measures=["*:count"])
+        q = SlayerQuery.model_validate({"source_model": "grant", "dimensions": ["namespace"], "measures": ["count(*)"]})
         sql = _norm(await _gen(q, _grant_model(), dialect=dialect))
         qg = _q("grant", dialect)
         # FROM "Grant" AS "grant"  (table name already quoted; alias now quoted)
@@ -236,7 +240,7 @@ class TestReservedAliasQuoting:
                 Column(name="label", sql="label", type=DataType.TEXT),
             ],
         )
-        q = SlayerQuery(source_model=name, dimensions=["label"], measures=["*:count"])
+        q = SlayerQuery.model_validate({"source_model": name, "dimensions": ["label"], "measures": ["count(*)"]})
         sql = await _gen(q, model, dialect="postgres")
         assert f'AS "{name}"' in _norm(sql), sql
         assert f'"{name}".label' in _norm(sql), sql
@@ -251,7 +255,7 @@ class TestReservedAliasQuoting:
                 Column(name="label", sql="label", type=DataType.TEXT),
             ],
         )
-        q = SlayerQuery(source_model="Order", dimensions=["label"], measures=["*:count"])
+        q = SlayerQuery.model_validate({"source_model": "Order", "dimensions": ["label"], "measures": ["count(*)"]})
         sql = _norm(await _gen(q, model, dialect="postgres"))
         # alias and qualifier both quoted identically -> they match
         assert 'AS "Order"' in sql, sql
@@ -267,7 +271,7 @@ class TestReservedAliasQuoting:
                 Column(name="revenue", sql="amount", type=DataType.DOUBLE),
             ],
         )
-        q = SlayerQuery(source_model="orders", dimensions=["revenue"], measures=["*:count"])
+        q = SlayerQuery.model_validate({"source_model": "orders", "dimensions": ["revenue"], "measures": ["count(*)"]})
         sql = _norm(await _gen(q, model, dialect="postgres"))
         assert "AS orders" in sql, sql
         assert '"orders"' not in sql, sql
@@ -282,7 +286,7 @@ class TestReservedAliasQuoting:
                 Column(name="order", sql="order", type=DataType.TEXT),  # reserved column
             ],
         )
-        q = SlayerQuery(source_model="events", dimensions=["order"], measures=["*:count"])
+        q = SlayerQuery.model_validate({"source_model": "events", "dimensions": ["order"], "measures": ["count(*)"]})
         sql = _norm(await _gen(q, model, dialect="postgres"))
         assert '"order"' in sql, sql
         _assert_parses(sql)
@@ -295,7 +299,11 @@ class TestReservedAliasQuoting:
 class TestReservedStringReparsePaths:
     async def test_join_from_reserved_model(self) -> None:
         install_reserved_keywords(SQLGLOT_NAMES)
-        q = SlayerQuery(source_model="grant", dimensions=["merchant.name"], measures=["*:count"])
+        q = SlayerQuery.model_validate({
+            "source_model": "grant",
+            "dimensions": ["merchant.name"],
+            "measures": ["count(*)"],
+        })
         sql = _norm(await _gen(
             q, _grant_model(with_join=True), extra_models=[_merchant_model()],
         ))
@@ -311,52 +319,59 @@ class TestReservedStringReparsePaths:
         and each reference is checked directly, which is the stronger claim —
         a star hides whether the individual refs were quoted at all."""
         install_reserved_keywords(SQLGLOT_NAMES)
-        q = SlayerQuery(
-            source_model="grant", dimensions=["namespace"],
-            measures=[{"formula": "amount:last"}],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "grant",
+            "dimensions": ["namespace"],
+            "measures": [{"formula": "last(amount)"}],
+        })
         sql = _norm(await _gen(q, _grant_model(), extra_models=[_merchant_model()]))
         assert 'FROM "Grant" AS "grant"' in sql, sql
         assert '"grant".amount' in sql, sql
-        assert 'ORDER BY "grant".created_at' in sql, sql
+        assert 'ORDER BY CASE WHEN "grant".created_at IS NULL THEN 1 ELSE 0 END, "grant".created_at' in sql, sql
         _assert_parses(sql)
 
     async def test_where_filter_on_reserved_model(self) -> None:
         install_reserved_keywords(SQLGLOT_NAMES)
-        q = SlayerQuery(
-            source_model="grant", dimensions=["namespace"],
-            measures=["*:count"], filters=["amount > 0"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "grant",
+            "dimensions": ["namespace"],
+            "measures": ["count(*)"],
+            "filters": ["amount > 0"],
+        })
         sql = _norm(await _gen(q, _grant_model(), extra_models=[_merchant_model()]))
         assert '"grant".amount' in sql, sql
         _assert_parses(sql)
 
     async def test_order_by_base_column_on_reserved_model(self) -> None:
         install_reserved_keywords(SQLGLOT_NAMES)
-        q = SlayerQuery(
-            source_model="grant", dimensions=["namespace"],
-            measures=["*:count"], order=[OrderItem(column="namespace")],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "grant",
+            "dimensions": ["namespace"],
+            "measures": ["count(*)"],
+            "order": [OrderItem.model_validate({"column": "namespace"})],
+        })
         sql = await _gen(q, _grant_model(), extra_models=[_merchant_model()])
         _assert_parses(sql)
 
     async def test_time_shift_with_filter_on_reserved_model(self) -> None:
         install_reserved_keywords(SQLGLOT_NAMES)
-        q = SlayerQuery(
-            source_model="grant",
-            time_dimensions=[TimeDimension(dimension="created_at", granularity="month")],
-            measures=[{"formula": "change(amount:sum)"}],
-            filters=["amount > 0"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "grant",
+            "time_dimensions": [TimeDimension(dimension="created_at", granularity="month")],
+            "measures": [{"formula": "change(sum(amount))"}],
+            "filters": ["amount > 0"],
+        })
         sql = await _gen(q, _grant_model(), extra_models=[_merchant_model()])
         _assert_parses(sql)
 
     async def test_where_filter_byte_level(self) -> None:
         install_reserved_keywords(SQLGLOT_NAMES)
-        q = SlayerQuery(
-            source_model="grant", dimensions=["namespace"],
-            measures=["*:count"], filters=["amount > 0"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "grant",
+            "dimensions": ["namespace"],
+            "measures": ["count(*)"],
+            "filters": ["amount > 0"],
+        })
         sql = _norm(await _gen(q, _grant_model(), extra_models=[_merchant_model()]))
         assert '"grant".amount > 0' in sql, sql
 
@@ -368,20 +383,23 @@ class TestReservedStringReparsePaths:
         model = _grant_model(
             extra_cols=(Column(name="big", sql="amount", type=DataType.DOUBLE, filter="amount > 100"),),
         )
-        q = SlayerQuery(
-            source_model="grant", dimensions=["namespace"],
-            measures=[{"formula": "big:sum"}],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "grant",
+            "dimensions": ["namespace"],
+            "measures": [{"formula": "sum(big)"}],
+        })
         sql = _norm(await _gen(q, model))
         assert 'CASE WHEN "grant".amount > 100' in sql, sql
         _assert_parses(sql)
 
     async def test_having_on_reserved_model(self) -> None:
         install_reserved_keywords(SQLGLOT_NAMES)
-        q = SlayerQuery(
-            source_model="grant", dimensions=["namespace"],
-            measures=[{"formula": "amount:sum"}], filters=["amount:sum > 100"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "grant",
+            "dimensions": ["namespace"],
+            "measures": [{"formula": "sum(amount)"}],
+            "filters": ["sum(amount) > 100"],
+        })
         sql = _norm(await _gen(q, _grant_model(), extra_models=[_merchant_model()]))
         assert 'HAVING SUM("grant".amount) > 100' in sql, sql
         _assert_parses(sql)
@@ -433,7 +451,11 @@ class TestReservedJoinedFromNonReservedRoot:
     async def test_reserved_join_alias_in_projection_and_on(self) -> None:
         install_reserved_keywords(SQLGLOT_NAMES)
         orders, grant = _orders_joined_to_grant()
-        q = SlayerQuery(source_model="orders", dimensions=["grant.status"], measures=["*:count"])
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": ["grant.status"],
+            "measures": ["count(*)"],
+        })
         sql = _norm(await _gen(q, orders, extra_models=[grant]))
         assert '"grant".status' in sql, sql
         _assert_parses(sql)
@@ -441,10 +463,12 @@ class TestReservedJoinedFromNonReservedRoot:
     async def test_where_on_reserved_joined_qualifier(self) -> None:
         install_reserved_keywords(SQLGLOT_NAMES)
         orders, grant = _orders_joined_to_grant()
-        q = SlayerQuery(
-            source_model="orders", dimensions=["grant.status"],
-            measures=["*:count"], filters=["grant.status == 'active'"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": ["grant.status"],
+            "measures": ["count(*)"],
+            "filters": ["grant.status == 'active'"],
+        })
         sql = _norm(await _gen(q, orders, extra_models=[grant]))
         # joined reserved qualifier quoted in BOTH the ON clause and the WHERE
         assert '"grant".status' in sql, sql
@@ -454,10 +478,11 @@ class TestReservedJoinedFromNonReservedRoot:
     async def test_first_last_referencing_reserved_joined(self) -> None:
         install_reserved_keywords(SQLGLOT_NAMES)
         orders, grant = _orders_joined_to_grant()
-        q = SlayerQuery(
-            source_model="orders", dimensions=["grant.status"],
-            measures=[{"formula": "amount:last"}],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": ["grant.status"],
+            "measures": [{"formula": "last(amount)"}],
+        })
         sql = _norm(await _gen(q, orders, extra_models=[grant]))
         # the reserved join alias appears quoted in the ranked subquery's join
         assert 'AS "grant"' in sql, sql
@@ -552,7 +577,7 @@ def _orders_derived_grant_models() -> tuple[SlayerModel, SlayerModel]:
 
 
 def _bumped_query() -> SlayerQuery:
-    return SlayerQuery.model_validate({"source_model": "orders", "dimensions": ["bumped"], "measures": ["*:count"]})
+    return SlayerQuery.model_validate({"source_model": "orders", "dimensions": ["bumped"], "measures": ["count(*)"]})
 
 
 class TestReservedInComputedPaths:
@@ -607,6 +632,6 @@ class TestGeneratedSqlAlwaysParses:
     @pytest.mark.parametrize("dialect", ["postgres", "sqlite", "duckdb", "mysql", "tsql"])
     async def test_standalone_reserved_parses_all_dialects(self, dialect: str) -> None:
         install_reserved_keywords(SQLGLOT_NAMES)
-        q = SlayerQuery(source_model="grant", dimensions=["namespace"], measures=["*:count"])
+        q = SlayerQuery.model_validate({"source_model": "grant", "dimensions": ["namespace"], "measures": ["count(*)"]})
         sql = await _gen(q, _grant_model(), dialect=dialect)
         _assert_parses(sql, dialect)

@@ -31,11 +31,11 @@ def _daily() -> SlayerModel:
     return SlayerModel(
         name="daily", data_source="test",
         source_queries=[
-            SlayerQuery(
-                source_model="orders",
-                dimensions=["created_at"],
-                measures=[{"formula": "amount:sum", "name": "rev"}],
-            )
+            SlayerQuery.model_validate({
+                "source_model": "orders",
+                "dimensions": ["created_at"],
+                "measures": [{"formula": "sum(amount)", "name": "rev"}],
+            })
         ],
     )
 
@@ -64,12 +64,12 @@ class TestOneSidedRangePlans:
 
     @pytest.mark.parametrize(("date_range", "bound"), ONE_SIDED)
     async def test_plain_model(self, date_range, bound) -> None:
-        query = _query(source_model="orders", measure="amount:sum", date_range=date_range)
+        query = _query(source_model="orders", measure="sum(amount)", date_range=date_range)
         _assert_one_sided(await _engine_generate(query=query, model=_orders()), bound)
 
     @pytest.mark.parametrize(("date_range", "bound"), ONE_SIDED)
     async def test_source_queries_model(self, date_range, bound) -> None:
-        query = _query(source_model="daily", measure="rev:max", date_range=date_range)
+        query = _query(source_model="daily", measure="max(rev)", date_range=date_range)
         sql = await _engine_generate(query=query, model=_orders(), extra_models=[_daily()])
         _assert_one_sided(sql, bound)
 
@@ -78,7 +78,7 @@ class TestBothBoundsMissing:
 
     def test_rejected_at_construction_naming_the_dimension(self) -> None:
         with pytest.raises(pydantic.ValidationError) as exc_info:
-            _query(source_model="orders", measure="amount:sum", date_range=[None, None])
+            _query(source_model="orders", measure="sum(amount)", date_range=[None, None])
         assert "created_at" in str(exc_info.value), exc_info.value
 
 
@@ -86,7 +86,7 @@ class TestWellFormedRangeStillPlans:
 
     async def test_two_string_bounds_emit_the_half_open_range(self) -> None:
         query = _query(
-            source_model="orders", measure="amount:sum",
+            source_model="orders", measure="sum(amount)",
             date_range=["2024-01-01", "2024-12-31"],
         )
         sql = await _engine_generate(query=query, model=_orders())

@@ -46,14 +46,16 @@ bucket, a date, a random ID or a count. Anything SLayer does not recognise is re
 |-------|---------|
 | `schema` | Report format version. |
 | `install_id` | Random UUID created on first use, replaced every 11 months. |
+| `first_query_ok` | The **date** of the install ID's first successful query (MCP `query`, `slayer query`, REST `/query`, Flight SQL, PostgreSQL wire; dry runs and probes excluded), or `null`. |
 | `batch_id` | Random UUID per send (lets the backend drop duplicates). |
 | `period` | First and last **date** covered (no times). |
 | `env` | SLayer version, Python `major.minor`, OS family, CPU architecture, whether it runs in a container, installed SLayer extras (read from package metadata). |
 | `usage` | Per action — CLI command (except `slayer usage-reporting …`), MCP tool name, REST route template (e.g. `/models/{name}`), Flight SQL / PostgreSQL query or probe — the count of successes and of failures per error kind (a fixed list such as `value_error`, `schema_drift`, `http_4xx`). |
-| `features` | Per query: counts of multistage queries, inline source models, time dimensions, filters, computed dimensions, saved-query runs, non-default `to_many_handling`; counts of each built-in aggregation and transform (`sum`, `time_shift`, …), user-defined ones as `custom`. |
+| `features` | Per query: counts of multistage queries, inline source models, time dimensions, filters, computed dimensions, saved-query runs, a named `to_many_handling`; counts of each built-in aggregation and transform (`sum`, `time_shift`, …), user-defined ones as `custom`; counts of each built-in library function (`functions`: `lower`, `coalesce`, …) and of casts (`cast`, `try_cast`), aggregation `FILTER (WHERE …)` clauses (`aggregate_filter`) and list literals (`list_literal`). |
 | `dialects` | Queries per SQL dialect; datasources per dialect in buckets `0` / `1` / `2-5` / `6+`. |
 | `context` | Per process: storage backend (`yaml` / `sqlite` / `other`), model count in buckets `0` / `1-10` / `11-50` / `51-200` / `200+`, whether the bundled demo database was queried. |
 | `mcp_clients` | MCP sessions per client (Claude Code, Claude Desktop, Cursor, VS Code, Windsurf, Codex, Zed, Cline, Goose, Continue; anything else `other`) with its major version. |
+| `mcp_sessions` | MCP sessions counted by their successful and failed `query` calls (dry runs excluded), each in buckets `0` / `1` / `2-5` / `6-20` / `21+`, reported once when their process ends. |
 
 ## How and when it is sent
 
@@ -62,14 +64,15 @@ network at that point. A report is sent at most **once per 24 hours**, and only 
 running anyway (no heartbeat): when a `slayer` process starts, or a running server records an
 action, and the last successful send was 24 hours ago or more. The send merges all spool files
 and runs in a background thread; at exit SLayer waits for it at most about one second. Unsent
-data stays in the spool (capped at about 100 files / 1 MB) for a later try.
+data stays in the spool (capped at about 100 files / 1 MB) for a later try. A server stopped by
+SIGTERM or SIGINT counts as a normal, successful run.
 
 Usage reporting never changes a command's output or exit code: every usage reporting failure is ignored.
 
 Files live in the platform config directory, not in SLayer's model storage:
 `$XDG_CONFIG_HOME/slayer` (default `~/.config/slayer`) on Linux,
 `~/Library/Application Support/slayer` on macOS, `%APPDATA%\slayer` on Windows —
-`usage-reporting.json` (setting, install ID, notice and send bookkeeping), `usage-reporting-spool/`
+`usage-reporting.json` (setting, install ID, first successful query date, notice and send bookkeeping), `usage-reporting-spool/`
 and two small lock files that keep concurrent `slayer` processes from overwriting each other.
 
 ## Destination

@@ -50,14 +50,14 @@ from tests._dev1859_fixtures import (
     ungrained_wsum_row_by_region,
 )
 
-_HEADLINE = ("customers.spend:weighted_avg("
+_HEADLINE = ("weighted_avg(customers.spend, "
              "weight=sum(amount, partition_by=customers.regions.name))")
 _ORDINARY = "weighted_avg(amount, weight=sum(amount, partition_by=region))"
 _MIXED_PARAM = ("weighted_avg(quantity * avg(unit_price, partition_by=product), "
                 "weight=sum(amount, partition_by=region))")
-_CROSS = ("amount:weighted_avg("
-          "weight=sum(customers.spend, partition_by=customers.regions.name))")
-_TARGET_SIDE = ("customers.spend:weighted_avg("
+_CROSS = ("weighted_avg("
+          "amount, weight=sum(customers.spend, partition_by=customers.regions.name))")
+_TARGET_SIDE = ("weighted_avg(customers.spend, "
                 "weight=sum(customers.spend, partition_by=customers.regions.name))")
 
 
@@ -122,12 +122,12 @@ class TestAssociateHeadline:
 
 
 class TestDefaultAndErrorModeTwins:
-    async def test_default_mode_broadcasts_the_global_value(self, orders_engine):
-        """Scenario: Default-mode twin — the OMITTED (default) to_many_handling
-        roots the parameter's producer at orders inside the customers-rooted
-        producer and broadcasts the global weighted value identically to both
-        status cells, with the broadcast warning."""
-        resp = await orders_engine.execute(orders_q(
+    async def test_broadcast_mode_broadcasts_the_global_value(self, orders_engine):
+        """Scenario: Broadcast-mode twin — an explicit broadcast roots the parameter's
+        producer at orders inside the customers-rooted producer and broadcasts the
+        global weighted value identically to both status cells, with the broadcast
+        warning."""
+        resp = await orders_engine.execute(bcast_q(
             dimensions=["status"],
             measures=[ModelMeasure(formula=_HEADLINE, name="w")]))
         by = status_key(resp)
@@ -210,7 +210,7 @@ class TestUngrainedParameterThreeKernels:
         resp = await orders_wsum_engine.execute(assoc_q(
             dimensions=["status"],
             measures=[ModelMeasure(
-                formula="customers.spend:wsum(weight=sum(amount))", name="w")]))
+                formula="wsum(customers.spend, weight=sum(amount))", name="w")]))
         by = status_key(resp)
         for status, expected in ungrained_wsum_assoc_by_status().items():
             assert float(by[(status,)]["orders.w"]) == pytest.approx(expected)
@@ -261,7 +261,7 @@ class TestCrossModelParameterOnLocalRoot:
         q = orders_q(
             dimensions=["status"],
             measures=[ModelMeasure(
-                formula=("amount:weighted_avg(weight="
+                formula=("weighted_avg(amount, weight="
                          "sum(customers.spend, partition_by=customers.plans.level))"),
                 name="w")])
         with pytest.raises((SlayerError, ValueError)) as ei:
@@ -280,7 +280,7 @@ class TestUndeterminedParameterRejected:
         q = assoc_q(
             dimensions=["status"],
             measures=[ModelMeasure(
-                formula=("customers.spend:weighted_avg("
+                formula=("weighted_avg(customers.spend, "
                          "weight=sum(amount, partition_by=status))"),
                 name="w")])
         with pytest.raises(SlayerError) as ei:
@@ -298,10 +298,10 @@ class TestFilterAndOrderPositions:
         filter types as a measure, pruning rows with survivors unchanged."""
         full = await sales_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:sum", name="tot")]))
+            measures=[ModelMeasure(formula="sum(amount)", name="tot")]))
         pruned = await sales_engine.execute(sales_q(
             dimensions=["region"], filters=[f"{self._FILT} > 10000"],
-            measures=[ModelMeasure(formula="amount:sum", name="tot")]))
+            measures=[ModelMeasure(formula="sum(amount)", name="tot")]))
         kept = {k[0] for k in region_key(pruned)}
         assert kept == {"South", "East"}  # 19600, 32400 > 10000
         full_tot = _region_vals(full, "sales.tot")
@@ -322,7 +322,7 @@ class TestFilterAndOrderPositions:
         """Scenario: appears only as a raw ORDER BY formula (no projection)."""
         resp = await sales_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:sum", name="tot")],
+            measures=[ModelMeasure(formula="sum(amount)", name="tot")],
             order=[{"column": _ORDINARY, "direction": "desc"}]))
         by_val = ordinary_wavg_by_region()
         present = [r["sales.region"] for r in resp.data
@@ -349,10 +349,10 @@ class TestSqlHygiene:
     async def test_adding_parameter_measure_is_cardinality_neutral(self, sales_engine):
         base = await sales_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:sum", name="tot")]))
+            measures=[ModelMeasure(formula="sum(amount)", name="tot")]))
         withp = await sales_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:sum", name="tot"),
+            measures=[ModelMeasure(formula="sum(amount)", name="tot"),
                       ModelMeasure(formula=_ORDINARY, name="w")]))
         assert len(withp.data) == len(base.data)
         a = {k: v["sales.tot"] for k, v in region_key(base).items()}

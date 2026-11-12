@@ -17,15 +17,15 @@ A bare identifier in a measure formula or computed-dimension expression that mat
 - THEN every suite passes unchanged, and golden SQL for non-dotted queries stays byte-identical
 
 ### Requirement: Dotted cross-model resolution
-A dotted reference whose join path resolves through the host's join graph and whose terminal segment matches a saved measure on the terminal model (`customers.aov` from an `orders`-rooted query) SHALL resolve by binding the target measure's formula in the target's frame and re-anchoring every reference into the host's coordinate system. Whenever the hand-written host-prefixed formula is itself legal, the result MUST be bound-tree-identical to it, so generated SQL, executed values, broadcast metadata, `strict` behavior, and warnings are all identical to that hand-written form. When the host-prefixed spelling would revisit a model within the query's own frame, it is not an equivalent: the dotted reference composes (see "Saved measures compose across frames") while the hand-written spelling stays refused as circular.
+A dotted reference whose join path resolves through the host's join graph and whose terminal segment matches a saved measure on the terminal model (`customers.aov` from an `orders`-rooted query) SHALL resolve by binding the target measure's formula in the target's frame and re-anchoring every reference into the host's coordinate system. Whenever the hand-written host-prefixed formula is itself legal, the result MUST be bound-tree-identical to it, so generated SQL, executed values, broadcast and association metadata, `to_many_handling` behavior, and warnings are all identical to that hand-written form. When the host-prefixed spelling would revisit a model within the query's own frame, it is not an equivalent: the dotted reference composes (see "Saved measures compose across frames") while the hand-written spelling stays refused as circular.
 
 #### Scenario: Dotted measure equals hand-expanded formula
 - WHEN an `orders`-rooted query selects `customers.aov` (saved on `customers` as `sum(spend) / count(*)`) and an otherwise-identical query selects `sum(customers.spend) / count(customers.*)`
 - THEN both produce identical SQL and identical executed values on SQLite and DuckDB
 
 #### Scenario: Broadcast and strict semantics are inherited
-- WHEN a dotted saved-measure reference expands to aggregates that broadcast over an unattributable dimension
-- THEN the response carries the same broadcast warnings as the hand-expanded form, and with `strict=true` the query fails with the same error
+- WHEN a dotted saved-measure reference expands to aggregates that broadcast over an unattributable dimension under `to_many_handling: "broadcast"`
+- THEN the response carries the same broadcast warnings as the hand-expanded form, and with `to_many_handling: "error"` the query fails with the same error
 
 #### Scenario: Composite, partitioned, and transform forms re-anchor
 - WHEN the target's saved formula contains arithmetic, a `partition_by=` over target-local dimensions (including `[]`), or a transform such as `cumsum`, and the host query references it dotted
@@ -125,8 +125,8 @@ still be refused with the circular error.
 
 #### Scenario: An unattributable host dimension broadcasts or associates
 - **WHEN** the same measure is selected with the dimension `id` instead
-- **THEN** in the default mode every row carries `35` with the broadcast warning, and in associate mode the
-  rows are `11 → 30`, `12 → 30` and `21 → 5`
+- **THEN** under `to_many_handling: "broadcast"` every row carries `35` with the broadcast warning, and omitting
+  the mode or in associate mode the rows are `11 → 30`, `12 → 30` and `21 → 5`
 
 #### Scenario: A measure through a pointer back to the host composes
 - **WHEN** `customers` also joins `orders` by the many-to-one edge `last_order` (ann's latest order is `12`,

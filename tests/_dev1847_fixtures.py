@@ -103,12 +103,12 @@ def source_queries_equiv_model() -> SlayerModel:
             SlayerQuery(
                 name="city_region_total", source_model="sales",
                 dimensions=[ColumnRef(name="region"), ColumnRef(name="city")],
-                measures=[ModelMeasure(formula="amount:sum", name="city_total")],
+                measures=[ModelMeasure(formula="sum(amount)", name="city_total")],
             ),
             SlayerQuery(
                 source_model="city_region_total",
                 dimensions=[ColumnRef(name="region")],
-                measures=[ModelMeasure(formula="city_total:avg", name="acr")],
+                measures=[ModelMeasure(formula="avg(city_total)", name="acr")],
             ),
         ],
     )
@@ -202,7 +202,7 @@ SHAPE_B_ACR = {
 }
 SHAPE_B_BAND_THRESHOLD = 45.0
 SPEND_BAND_EXPR = (
-    f"CASE WHEN amount:sum(partition_by=[city, region]) > {SHAPE_B_BAND_THRESHOLD} "
+    f"CASE WHEN sum(amount, partition_by=[city, region]) > {SHAPE_B_BAND_THRESHOLD} "
     f"THEN 'hi' ELSE 'lo' END"
 )
 

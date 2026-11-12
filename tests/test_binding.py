@@ -33,7 +33,7 @@ from slayer.engine.binding import (
     bind_filter,
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.syntax import Ref, parse_expr
+from slayer.core.syntax import Ref, parse_expr
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +210,7 @@ class TestSelfPrefixStripping:
 class TestAggregations:
     def test_local_aggregation(self):
         bound = bind_expr(
-            parse_expr("amount:sum"), scope=_scope(), bundle=_bundle(),
+            parse_expr("sum(amount)"), scope=_scope(), bundle=_bundle(),
         )
         assert bound.value_key == AggregateKey(
             source=ColumnKey(path=(), leaf="amount"), agg="sum",
@@ -218,7 +218,7 @@ class TestAggregations:
 
     def test_star_count(self):
         bound = bind_expr(
-            parse_expr("*:count"), scope=_scope(), bundle=_bundle(),
+            parse_expr("count(*)"), scope=_scope(), bundle=_bundle(),
         )
         assert bound.value_key == AggregateKey(
             source=StarKey(), agg="count",
@@ -226,7 +226,7 @@ class TestAggregations:
 
     def test_cross_model_aggregation(self):
         bound = bind_expr(
-            parse_expr("customers.revenue:sum"),
+            parse_expr("sum(customers.revenue)"),
             scope=_scope(), bundle=_bundle(),
         )
         assert bound.value_key == AggregateKey(
@@ -236,7 +236,7 @@ class TestAggregations:
 
     def test_aggregation_with_kwarg(self):
         bound = bind_expr(
-            parse_expr("amount:weighted_avg(weight=customer_id)"),
+            parse_expr("weighted_avg(amount, weight=customer_id)"),
             scope=_scope(), bundle=_bundle(),
         )
         key = bound.value_key
@@ -249,7 +249,7 @@ class TestAggregations:
 
     def test_aggregation_phase_is_aggregate(self):
         bound = bind_expr(
-            parse_expr("amount:sum"), scope=_scope(), bundle=_bundle(),
+            parse_expr("sum(amount)"), scope=_scope(), bundle=_bundle(),
         )
         assert bound.value_key.phase == Phase.AGGREGATE
 
@@ -262,7 +262,7 @@ class TestAggregations:
 class TestTransforms:
     def test_cumsum(self):
         bound = bind_expr(
-            parse_expr("cumsum(amount:sum)"),
+            parse_expr("cumsum(sum(amount))"),
             scope=_scope(), bundle=_bundle(),
         )
         key = bound.value_key
@@ -292,7 +292,7 @@ class TestComposite:
     def test_arithmetic_phase_max(self):
         # amount + amount:sum → phase = AGGREGATE.
         bound = bind_expr(
-            parse_expr("amount + amount:sum"),
+            parse_expr("amount + sum(amount)"),
             scope=_scope(), bundle=_bundle(),
         )
         assert bound.value_key.phase == Phase.AGGREGATE
@@ -323,7 +323,7 @@ class TestComposite:
         # the equivalent guarantee is that BOTH aggregates survive binding as
         # AggregateKeys in their original positions.
         bound = bind_expr(
-            parse_expr("*:count / nullif(amount:max, 0)"),
+            parse_expr("count(*) / nullif(max(amount), 0)"),
             scope=_scope(), bundle=_bundle(),
         )
         key = bound.value_key
@@ -341,10 +341,10 @@ class TestComposite:
         assert key.phase == Phase.AGGREGATE
 
     def test_coalesce_wrapped_aggregate_plus_outside_aggregate(self):
-        # DEV-1484 backfill: ``coalesce(amount:sum, 0) + amount:avg`` — one
+        # DEV-1484 backfill: ``coalesce(sum(amount), 0) + avg(amount)`` — one
         # aggregate wrapped by a scalar, one outside it. Both must bind.
         bound = bind_expr(
-            parse_expr("coalesce(amount:sum, 0) + amount:avg"),
+            parse_expr("coalesce(sum(amount), 0) + avg(amount)"),
             scope=_scope(), bundle=_bundle(),
         )
         key = bound.value_key
@@ -455,14 +455,14 @@ class TestFilterBinder:
 
     def test_aggregate_phase_filter(self):
         bound = bind_filter(
-            parse_expr("amount:sum >= 100"),
+            parse_expr("sum(amount) >= 100"),
             scope=_scope(), bundle=_bundle(),
         )
         assert bound.phase == Phase.AGGREGATE
 
     def test_post_phase_filter(self):
         bound = bind_filter(
-            parse_expr("cumsum(amount:sum) > 100"),
+            parse_expr("cumsum(sum(amount)) > 100"),
             scope=_scope(), bundle=_bundle(),
         )
         assert bound.phase == Phase.POST
@@ -470,14 +470,14 @@ class TestFilterBinder:
     def test_filter_max_phase(self):
         # row + aggregate → AGGREGATE.
         bound = bind_filter(
-            parse_expr("status == 'paid' and amount:sum > 100"),
+            parse_expr("status == 'paid' and sum(amount) > 100"),
             scope=_scope(), bundle=_bundle(),
         )
         assert bound.phase == Phase.AGGREGATE
 
     def test_referenced_keys_set(self):
         bound = bind_filter(
-            parse_expr("status == 'paid' and amount:sum > 100"),
+            parse_expr("status == 'paid' and sum(amount) > 100"),
             scope=_scope(), bundle=_bundle(),
         )
         refs = set(bound.referenced_keys)
@@ -489,13 +489,13 @@ class TestFilterBinder:
     def test_referenced_keys_include_aggregate_inside_scalar_call(self):
         # DEV-1484 backfill from the deleted
         # test_formula.py::TestPlaceholderLeakRegression::
-        # test_predicate_with_nullif_wrapper — ``nullif(*:count, 0) > 5`` is a
+        # test_predicate_with_nullif_wrapper — ``nullif(count(*), 0) > 5`` is a
         # predicate whose aggregate is buried inside a scalar call. It must
         # still be discovered as a referenced key (the legacy failure mode was
         # a lost registration leaking an ``__aggN__`` placeholder) and drive
         # the filter's phase.
         bound = bind_filter(
-            parse_expr("nullif(*:count, 0) > 5"),
+            parse_expr("nullif(count(*), 0) > 5"),
             scope=_scope(), bundle=_bundle(),
         )
         assert bound.phase == Phase.AGGREGATE

@@ -128,7 +128,7 @@ def q(**kw) -> SlayerQuery:
 
 def month_td(column: str = "created_at") -> List[TimeDimension]:
     return [TimeDimension(
-        dimension=ColumnRef(name=column),
+        dimension=column,
         granularity=TimeGranularity.MONTH,
     )]
 
@@ -169,12 +169,10 @@ TRIMMED_MEAN_150_350_90D = {"2024-01": 200.0, "2024-02": 250.0, "2024-03": 266.6
 TRIMMED_MEAN_DEFAULT_90D = AVG_90D
 FIRST_90D = {"2024-01": 100.0, "2024-02": 100.0, "2024-03": 200.0}
 LAST_90D = {"2024-01": 200.0, "2024-02": 300.0, "2024-03": 300.0}
-#: last(updated_at): the NULL-keyed row 3 is skipped under descending native
-#: ordering on both backends (Feb picks row 2's 200, not the later NULL key).
+#: last(updated_at): the NULL-keyed row 3 is never picked (Feb → row 2's 200).
 LAST_UPDATED_90D = {"2024-01": 200.0, "2024-02": 200.0, "2024-03": 400.0}
-#: first(updated_at) February is pinned to the dialect's native NULL ordering:
-#: SQLite sorts NULLs first (the NULL-keyed row 3 wins → 300), DuckDB last (row 1 → 100).
-FIRST_UPDATED_FEB = {"sqlite": 300.0, "duckdb": 100.0}
+#: first(updated_at) February skips the NULL-keyed row 3 on every backend (row 1 → 100).
+FIRST_UPDATED_FEB = 100.0
 FIRST_UPDATED_JAN = 100.0
 
 #: partition_by=region, keyed by (region, month) — only populated cells exist.

@@ -56,8 +56,8 @@ These databases are verified by integration tests and runnable Docker examples. 
 | Type | Install Extra | Connection String |
 |------|---------------|-------------------|
 | `sqlite` | (built-in, no extra needed) | `sqlite:///path/to/db.sqlite` |
-| `postgres` / `postgresql` | `motley-slayer[postgres]` | `postgresql://user:pass@localhost:5432/db` |
-| `mysql` / `mariadb` | `motley-slayer[mysql]` | `mysql+pymysql://user:pass@localhost:3306/db` |
+| `postgres` / `postgresql` | `motley-slayer[postgres]` (psycopg, the default driver) | `postgresql://user:pass@localhost:5432/db` |
+| `mysql` / `mariadb` | `motley-slayer[mysql]` (pymysql, the default driver) | `mysql+pymysql://user:pass@localhost:3306/db` |
 | `clickhouse` | `motley-slayer[clickhouse]` | `clickhouse+http://user:pass@localhost:8123/db` |
 | `duckdb` | (built-in, no extra needed) | `duckdb:///path/to/db.duckdb` |
 | `snowflake` | `motley-slayer[snowflake]` | `snowflake://?connection_name=default` (TOML-driven) or `snowflake://user:pw@account/db/schema?warehouse=wh&role=role` (inline). See [Snowflake](#snowflake) below. |
@@ -65,8 +65,9 @@ These databases are verified by integration tests and runnable Docker examples. 
 | `bigquery` | `motley-slayer[bigquery]` | `bigquery://project/dataset` |
 | `trino` | `motley-slayer[trino]` | `trino://user@host:8080/catalog/schema` |
 
-A `connection_string` naming no driver (`postgresql://`, `mysql://`) uses the driver from SLayer's extra; name one explicitly to use another.
-A driver you name yourself in `connection_string` (e.g. `postgresql+psycopg`) is not in any extra, so install it separately; SLayer keeps it on the async path when it can run async.
+A `connection_string` naming no driver (`postgresql://`, `mysql://`) uses the type's default driver (psycopg for Postgres, pymysql for MySQL/MariaDB); name one explicitly to use another.
+SLayer runs every statement and metadata read on the driver your `connection_string` names, and the extras install only the default driver, so install any other (psycopg2, asyncpg, aiomysql) yourself.
+On BigQuery the dataset in `bigquery://project/dataset` is the default schema, so a bare `sql_table` resolves there however many datasets the project holds.
 
 `duckdb` has no install extra because `duckdb` and `duckdb-engine` are core
 dependencies — the bundled demo datasource and the SQL API both need
@@ -100,7 +101,7 @@ SQL generation is covered by unit tests, but not verified against live instances
     BigQuery, ClickHouse, and similar analytical warehouses typically don't have foreign keys, so auto-ingestion won't discover joins. Define joins manually in your model YAML. Snowflake is an exception — it stores declarative (non-enforced) FK constraints AND exposes them via the Inspector, so auto-ingestion discovers joins like Postgres / MySQL / SQLite.
 
 !!! note "Statement timeouts"
-    SLayer sends ClickHouse's timeout as a per-request `max_execution_time` setting (a `SETTINGS` clause in your SQL wins), skips it for a `readonly = 1` user with a `statement_timeout_skipped` warning (grant `readonly = 2` to keep it), sets MariaDB's timeout with `max_statement_time`, and sends Trino's as the `query_max_run_time` session property of the query alone.
+    SLayer sends ClickHouse's timeout as a per-request `max_execution_time` setting (a `SETTINGS` clause in your SQL wins), skips it for a `readonly = 1` user with a `statement_timeout_skipped` warning (grant `readonly = 2` to keep it), sets MariaDB's timeout with `max_statement_time`, and sends Trino's as the `query_max_run_time` session property of the query alone. A timeout set by a statement (Postgres, MySQL, MariaDB, Snowflake) is sent once per connection, and again only when the value a query needs changes (a `transaction_pooler` datasource sets it in each statement's transaction instead).
 
 ### Snowflake
 
@@ -141,8 +142,8 @@ warehouse: COMPUTE_WH
 role: PUBLIC
 ```
 
-Both forms flow through a shared engine factory that wires a per-connection
-`USE WAREHOUSE / USE ROLE / USE DATABASE / USE SCHEMA` listener when those
+Both forms flow through a shared engine factory that sends
+`USE ROLE / USE WAREHOUSE / USE DATABASE / USE SCHEMA` once, when each connection opens, when those
 typed fields are set. The `connection_name` profile's defaults are overridden
 by anything you set on the DatasourceConfig.
 
@@ -174,6 +175,7 @@ Statement-level timeout is enforced via
 | `credentials_json` | string | No | BigQuery service-account key JSON |
 | `oauth_credentials_json` | string | No | BigQuery OAuth authorized-user grant JSON |
 | `schema_name` | string | No | Default schema name |
+| `transaction_pooler` | bool | No | Postgres only: set it when the datasource is reached through a transaction-mode pooler (e.g. PgBouncer `pool_mode = transaction`), so the statement timeout is set per transaction instead of once per connection (default `false`) |
 | `granularities` | list | No | [Custom granularities](../concepts/time.md#custom-granularities) `{name, base, multiple, origin}` |
 
 !!! note

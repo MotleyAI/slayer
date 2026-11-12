@@ -7,7 +7,8 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | No | Name for this query — used to reference it from other queries in a list |
-| `source_model` | string, SlayerModel, or ModelExtension | No | The population (query root): a model name, inline model, or model extension. Omit it to infer the population — see [Population](#population). |
+| `source_model` | string or SlayerModel | No | The population (query root): a model name or inline model. Omit it to infer the population — see [Population](#population). |
+| `extensions` | list[ModelExtension] | No | Query-scoped columns, measures and joins added to any model the query reads — see [Query extensions](#query-extensions). |
 | `measures` | list[ModelMeasure] | No | Computed/aggregated values — formulas, arithmetic, transforms. Aggregations are function calls (`sum(revenue)`, incl. expressions like `sum(amount - cost)`) — see [Formulas](formulas.md) and [Aggregation syntax](references.md#aggregation-syntax). |
 | `dimensions` | list[str \| ColumnRef \| ComputedDimension] | No | Columns to group by — bare strings (`"status"`) or `{"name": "status"}` dicts, dotted names for joined models (`customers.name`), or `{"expression": …, "name": …}` for a [computed expression](#expression-dimensions). |
 | `time_dimensions` | list[TimeDimension] | No | Time dimensions with granularity |
@@ -18,7 +19,7 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 | `limit` | int | No | Maximum rows to return |
 | `offset` | int | No | Number of rows to skip |
 | `whole_periods_only` | bool | No | Snap time bounds to bucket boundaries and exclude the current incomplete bucket — see [Time](time.md#whole_periods_only) |
-| `to_many_handling` | str | No | How an aggregate resolves query dimensions [unattributable from its root](#cross-model-measures): `broadcast` (default; repeat the safe-grain value across the cells and warn), `associate` (per-cell value over the distinct associated entities), or `error` (refuse). Semi-join-pushed filters are always applied and never error; the retired `strict` flag is rejected with this remedy. |
+| `to_many_handling` | str | No | How an aggregate resolves query dimensions [unattributable from its root](#cross-model-measures). Omitted (the default): per-cell value over the distinct associated rows, falling back to broadcast with a warning where association is unsupported; `associate` (the same, refusing what it cannot associate), `broadcast` (repeat the safe-grain value across the cells and warn), or `error` (refuse). Semi-join-pushed filters are always applied and never error; the retired `strict` flag is rejected with this remedy. |
 
 You can pass a single query or a **list of queries** to `execute()`. When passing a list, earlier queries are named sub-queries that later queries can reference. The last query in the list is the main one whose results are returned. See [Query Lists](#query-lists) for examples.
 
@@ -41,6 +42,7 @@ Each entry in `dimensions` is either a bare string (the canonical short form for
 |-------|------|-------------|
 | `name` | string | Column name. Supports dotted paths for joined models. |
 | `label` | string | Optional human-readable display name |
+| `quoted` | list[bool] | Optional, one flag per path segment: a flagged segment matches its declared name exactly. A double-quoted string (`"\"Revenue\""`, `orders."status"`) is read as this column reference, named like its unquoted spelling. |
 
 ### Expression dimensions
 
@@ -92,7 +94,7 @@ measures like `avg` / `count_distinct` reconcile correctly, and a `NULL`
 partition value keeps its own group). The `partition_by` grain may be any
 groupable key: a query dimension, a finer local column (`city`), a joined path
 (`customers.region_id`), a time bucket, or `[]` for the grand total. A base-row
-filter (`status == 'ok'`) also constrains the partition aggregate; a filter on
+filter (`status = 'ok'`) also constrains the partition aggregate; a filter on
 the computed dimension name (`band == 1`) applies after regrouping.
 
 A dimension expression may band a windowed partitioned aggregate
@@ -141,7 +143,7 @@ A query with no measures and at least one dimension or time-dimension returns th
 {"source_model": "orders", "dimensions": ["status"], "limit": 100}
 ```
 
-Emits `SELECT orders.status FROM orders GROUP BY orders.status LIMIT 100`.
+Emits `SELECT orders.status FROM orders GROUP BY orders.status ORDER BY orders.status LIMIT 100`.
 
 ### Raw rows (`distinct_dimension_values`)
 
@@ -172,7 +174,9 @@ Emits roughly `SELECT orders.status, orders.amount FROM orders WHERE orders.amou
 
 ## TimeDimension
 
-A time dimension with a required granularity and an optional date range. Supports an optional `label` for human-readable output. To use a time column without truncation, add it as a regular dimension instead. The column may also be given under the key `column` as an alias of `dimension`; the object always serializes with `dimension`.
+A time dimension with a required granularity and an optional date range. Supports an optional `label` for human-readable output. To use a time column without truncation, add it as a regular dimension instead. The column may also be given under the key `column` as an alias of `dimension`; the object always serializes with `dimension` as a string, and the legacy object form `{"name": "created_at", "model": "orders"}` is read as `orders.created_at`.
+
+`dimension` may be any row-level expression typed DATE or TIMESTAMP (`"coalesce(shipped_at, created_at)"`, `"CAST(created_txt AS DATE)"`, also as `date_trunc('month', coalesce(shipped_at, created_at))`), and an optional `name` sets its result key and lets `main_time_dimension` and `partition_by=` refer to it (an unnamed expression is named like a computed dimension). Names are unique across a query's dimensions and time dimensions. A named time dimension's key never carries a granularity suffix; unnamed time dimensions sharing one source at different granularities get one each (`orders.created_at.month`, `orders.created_at.year`).
 
 ```json
 {
@@ -185,9 +189,9 @@ A time dimension with a required granularity and an optional date range. Support
 
 **Granularities**: `second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`, `quarter`, `year`
 
-A `dimensions` or `time_dimensions` entry may also be written functionally as the string `gran(col)` (e.g. `"month(created_at)"`) — equivalent to a `TimeDimension` with that dimension and granularity (use the dict form above to add `date_range` or `label`), and usable as an `order` key too.
+A `dimensions` or `time_dimensions` entry may also be written as the string `date_trunc('<unit>', expr)` (e.g. `"date_trunc('month', created_at)"`) — equivalent to a `TimeDimension` with that dimension and granularity (use the dict form above to add `date_range` or `label`), and usable as an `order` key too, where it must match a projected time dimension on the same expression at that granularity or the query fails. A `time_dimensions` string in any other form is an error naming its `date_trunc` spelling.
 
-A downstream stage of a multi-stage query may declare a time dimension on any DATE/TIMESTAMP column of its upstream stage — re-bucketing a column the upstream already truncated only at the same or a nesting-coarser granularity (e.g. `month` → `year`). The same rule applies to a model column that carries a `granularity` (a query-backed model's bucketed cache column, or a hand-set one): a finer or non-nesting time dimension over it is the same typed error.
+A downstream stage of a multi-stage query may declare a time dimension on any DATE/TIMESTAMP column of its upstream stage — re-bucketing a column the upstream already truncated only at the same or a nesting-coarser granularity (e.g. `month` → `year`). The same rule applies to a model column that carries a `granularity` (a query-backed model's bucketed cache column, or a hand-set one): a finer or non-nesting time dimension over it is the same typed error, judged for every bucketed column an expression time dimension reads (`CAST(month_col AS DATE)` at `day` fails).
 
 `week` is Monday-anchored (ISO-8601); `week_sunday` is Sunday-anchored (weeks start Sunday, end Saturday) for tools that use Sunday weeks. Both are model granularities you set on a `TimeDimension` — `week_sunday` is the SLayer value, not a wire keyword sent by a BI tool.
 
@@ -196,12 +200,15 @@ A downstream stage of a multi-stage query may declare a time dimension on any DA
 ## OrderItem
 
 A sort specification: `column` names a dimension (`status`), a declared measure's short alias (`revenue_sum`), or a formula (`count(*)`); `direction` is `asc` or `desc`.
+An optional `nulls` (`first` or `last`) places NULL values first or last on every dialect; without it the database's default placement applies.
 
 ```json
 {"column": "count(*)", "direction": "desc"}
 ```
 
 Via MCP: `{"column": "count(*)", "direction": "desc"}`
+
+A query (or the final stage of a query list) with no `order` that projects dimensions is ordered by its dimensions and time dimensions ascending, in result-column order, exactly as if it listed them in `order`; raw-row queries and inner stages are left unordered.
 
 The object form `{"column": {"name": "sum(amount)"}}` with an expression as its only key is the same as the string form `{"column": "sum(amount)"}`.
 
@@ -225,7 +232,7 @@ What each shape of an *undeclared* order target does:
 | An inline **composite** (`sum(revenue) / sum(cnt)`, `abs(sum(amount))`, `change(sum(amount)) / 2`) | Computed hidden, sorted on, stripped. |
 | A **windowed** aggregate (`sum(amount, window='90d')`), alone or inside a composite | Computed hidden in its own rolling-window CTE, sorted on, stripped. |
 | A raw row column, in a **raw-rows** query (`distinct_dimension_values: false`, no measures) | Sorted on directly (`ORDER BY orders.created_at`). Applies to a **joined** column (`customers.regions.name`) and to a derived column whose `sql` reaches through a join — the join is pulled in for the sort. |
-| A raw row column, in an **aggregated / dedup** query | Sorted on **per group**: ASC by each group's minimum, DESC by each group's maximum. The wrap is implicit — you do not write `min(created_at)`. |
+| A raw row column or row-level expression (`amount - fee`), in an **aggregated / dedup** query | Sorted on **per group**: ASC by each group's minimum, DESC by each group's maximum. The wrap is implicit — you do not write `min(created_at)`. |
 | A **joined** row column (`customers.regions.name`) in an aggregated query | Same per-group wrap, computed in a CTE rooted at the source model with the join pulled inside, so each group gets its own extreme rather than one global value. |
 
 Ordering by an undeclared row column in a grouped query is **not** the same as
@@ -238,17 +245,14 @@ NULLs sort **last** in both directions, on every database, so the same query
 returns the same row order regardless of backend. (SQL Server is the one
 exception: its native ordering is used because the portable emulation makes the
 statement fail there.)
+An explicit `nulls` (`first` or `last`) places NULLs there on every database, SQL Server included.
 
 An order target that names nothing SLayer can resolve is an error, never a
 silently unsorted result.
 
 Transform and composite order targets accept the full formula syntax, so
 `{"column": "sum(revenue) / sum(cnt)"}` and `{"column": "change(sum(revenue))"}` both
-work without declaring a measure. One limit: the operands must be written as
-formulas, not as the *names* of measures you declared in the same query —
-`{"column": "rev / cnt"}` is rejected at validation, because referencing a
-declared measure by its alias inside an expression is not supported anywhere in
-SLayer. Write `{"column": "sum(revenue) / sum(cnt)"}` instead.
+work without declaring a measure, and their operands may also be the names of measures declared in the same query (`{"column": "rev / cnt"}`), as in filters.
 
 Windowed measures work in declared composites and transforms too — see [formulas](formulas.md#windowed-aggregations).
 
@@ -263,7 +267,7 @@ Query results are returned as a `SlayerResponse`:
 | `row_count` | int | Number of rows |
 | `sql` | string | The generated SQL (useful for debugging) |
 | `attributes` | ResponseAttributes | Field metadata split by type: `attributes.dimensions` and `attributes.measures`, each a dict of column alias → FieldMetadata (label, format) |
-| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a [cross-model measure broadcast](#cross-model-measures) (`"broadcast"` — `measure`, `location`, and per-dimension `dimensions[].reason`), a distinct-entity attribution over an unattributable dimension (`"associated"` — `measure`, `location`, `dimensions`; cells overlap and are not additive), an aggregate over a model no join path reaches (`"unrelated_dataset"` — `dataset`, `population`, `measures`, `location`), a semi-join-pushed filter (`"semi_join_pushed"` — `measure` (`null` for a population-level push), `location`, `filter_text`), a query run without its statement timeout (`"statement_timeout_skipped"` — `datasource`, `timeout_seconds`, `reason`: `readonly_user` or `timeout_rejected`), and [`whole_periods_only`](time.md#whole_periods_only) over non-nesting granularities (`"whole_periods_non_nesting"` — `column`, `granularities`, `location`) |
+| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a [cross-model measure broadcast](#cross-model-measures) (`"broadcast"` — `measure`, `location`, per-dimension `dimensions[].reason`, and `association_unsupported` when the default fell back to it), a distinct-entity attribution over an unattributable dimension (`"associated"` — `measure`, `location`, `dimensions`; cells overlap and are not additive), an aggregate over a model no join path reaches (`"unrelated_dataset"` — `dataset`, `population`, `measures`, `location`), a semi-join-pushed filter (`"semi_join_pushed"` — `measure` (`null` for a population-level push), `location`, `filter_text`), a query run without its statement timeout (`"statement_timeout_skipped"` — `datasource`, `timeout_seconds`, `reason`: `readonly_user` or `timeout_rejected`), [`whole_periods_only`](time.md#whole_periods_only) over non-nesting granularities (`"whole_periods_non_nesting"` — `column`, `granularities`, `location`), and a [list](#list-columns) read as its element set (`"whole_list"` — `operation`: `group` or `count_distinct`, `list`) |
 
 `columns` — and the key order of each row in `data` — follows the order you
 declared fields in the query: dimensions, then time dimensions, then measures,
@@ -319,13 +323,19 @@ Filter formulas define conditions for the query. They go in the `filters` parame
 | `IS NOT NULL` | `"discount IS NOT NULL"` |
 | `like` | `"name like '%acme%'"` |
 | `not like` | `"name not like '%test%'"` |
+| `ilike` | `"name ilike '%acme%'"` |
+| `between` | `"amount between 100 and 1000"` |
+| `is distinct from` | `"discount is distinct from 0"` (NULL-safe `<>`) |
+| `is not distinct from` | `"discount is not distinct from 0"` (NULL-safe `=`) |
+| `IS TRUE` / `IS FALSE` | `"is_paid IS TRUE"` (NULL is neither) |
+| `IS NOT TRUE` / `IS NOT FALSE` | `"is_paid IS NOT TRUE"` (keeps false and NULL) |
 
 The right-hand side of `in` / `not in` must be a non-empty tuple of literal
 values (strings, numbers, or booleans) — references and expressions on the
 RHS are not supported. Both `(...)` and `[...]` syntax are accepted.
 
 A string compared with a DATE / TIMESTAMP expression is a [time point](time.md#time-points):
-`"created_at >= 'last month'"`, `"created_at in '2025-Q1'"` and `"month(created_at) = '2025-03'"`
+`"created_at >= 'last month'"`, `"created_at in '2025-Q1'"` and `"date_trunc('month', created_at) = '2025-03'"`
 all work, and a date-only string means the whole day.
 
 ### Boolean Logic
@@ -356,16 +366,14 @@ by.
 
 ### Scalar Functions in Filters
 
-Filters in `SlayerQuery.filters` accept the closed Mode-B scalar
-allowlist: string hygiene (`lower`, `upper`, `trim`, `ltrim`,
-`rtrim`, `replace`, `substr`, `substring`, `instr`, `length`, `concat`),
-null handling (`coalesce`, `nullif`, `ifnull`), math (`round`, `abs`,
-`ceil`, `floor`, `sign`, `trunc`, `mod`, `log10`, …), scalar min/max
-(`greatest`, `least`), and [date functions](references.md#date-and-time-functions)
-(`date_part`, `date_diff`, `date_add`, `current_date`, `now`). The SQL `||` concat operator is
-rewritten to `concat(...)` automatically. See
-[references](references.md#scalar-functions-and-dialect-semantics) for the
-full list and per-dialect semantics.
+Filters in `SlayerQuery.filters` accept the
+[portable function library](references.md#the-portable-function-library) — strings
+(`lower`, `left`, `split_part`, `concat_ws`, …), math (`round`, `div`, `atan2`, …), null
+handling, `greatest` / `least`, regex (`regexp_like`, `x ~ 'p'`), JSON (`json_value`,
+`payload ->> 'key'`), the [list functions](#list-columns) `contains`, `contains_any`,
+`contains_all` and `length`, and [date functions](references.md#date-and-time-functions) — each with
+one meaning on every database that translates it. The SQL `||` concat operator is rewritten to `concat(...)`
+automatically.
 
 ```json
 "filters": [
@@ -374,16 +382,15 @@ full list and per-dialect semantics.
   "replace(category, ',', '') = 'books'",
   "substr(s, 1, instr(s, ',') - 1) = 'first_token'",
   "coalesce(nickname, name) = 'Ada'",
-  "first || ' ' || last = 'jane doe'"
+  "first || ' ' || last = 'jane doe'",
+  "regexp_like(sku, '^[A-Z]{3}-[0-9]+$')",
+  "json_value(payload, '$.plan') = 'pro'"
 ]
 ```
 
-Names are matched case-insensitively — `LOWER(...)` and `lower(...)` both bind.
-sqlglot translates each call to the target dialect's preferred spelling at SQL-generation
-time (`instr` → `POSITION` / `LOCATE` / `STRPOS`, `substr` →
-`SUBSTRING`, `concat` → `||` on SQLite). Raw SQL functions outside the
-allowlist (`json_extract`, `date_trunc`, `CASE WHEN`, …) belong in
-`Column.sql` / `Column.filter` / `SlayerModel.filters` (Mode A SQL).
+Names are matched case-insensitively — `LOWER(...)` and `lower(...)` both bind — and raw SQL
+functions outside the library (`initcap`, `to_date`, …) belong in `Column.sql` /
+`Column.filter` / `SlayerModel.filters` (Mode A SQL).
 
 ### Filtering on Computed Columns
 
@@ -433,6 +440,31 @@ A query filter that reaches the population root only across a fanning (not prova
 
 A negated condition on a joined model does not mean "has none": `not orders.status = 'bad'` keeps a customer with at least one non-bad order, while a customer with no orders fails it (the comparison is NULL) — include those with `or orders.id is null`.
 
+### List columns
+
+A list column `skills` is also a join hop to its elements, one row per non-NULL element with the single column `skills.value`, so `skills.value = 'go'` keeps the contractors having a `go` element, `skills.value` groups by element with `count(skills.*)` counting occurrences, `count(*)` by `skills.value` is the number of contractors per skill (no key needed), every `skills.value` condition in one query reads the same element (so require several with `contains_all(skills, ['go', 'sql'])`, not `AND`), and absence is `NOT contains(skills, 'go')`, since `NOT (skills.value = 'go')` keeps rows with some other element.
+
+```json
+{"source_model": "contractors", "dimensions": ["skills.value"], "measures": ["count(*)"]}
+```
+
+With `to_many_handling: "broadcast"`, a parent aggregate sliced by `skills.value` repeats its total on every element with a `broadcast` warning instead.
+
+A whole list groups (a dimension or `partition_by=`), compares (`=`, `<>`, `IS [NOT] DISTINCT FROM`, `skills IN (['go'], ['sql'])`) and counts distinctly (`count_distinct(skills)`) as its element set, its distinct non-NULL elements in ascending order (`['go', 'sql', 'go']` and `['sql', 'go']` are one group, shown as `['go', 'sql']`, and `[NULL]` equals `[]`), with a `whole_list` warning naming `skills.value` for grouping and distinct counting, while a raw-rows query shows each list as stored.
+
+What a list can't do, each a typed error naming the remedy:
+
+- be compared with a scalar (use `contains` / `contains_any`, or compare `skills.value`), or ordered (`<`, `>`, `BETWEEN`, an `order` key); `IS NULL` / `IS NOT NULL` work;
+- take any aggregation but `count` (non-NULL lists) and `count_distinct` (distinct element sets), including `collect` and custom aggregations;
+- hold a NULL element in a list literal (`['go', NULL]`);
+- have `UNKNOWN` elements and still be grouped, compared, counted distinctly, measured by `length` or read element by element: such a list supports only NULL tests and `count`.
+
+A text value against a numeric list is converted like any mixed-type comparison, so `contains(scores, '5')` tests for the element `5`.
+
+Element access composes like any join hop: through a to-one join (`contractors.skills.value` from a model joined to `contractors`), on a derived list column, and on a list column of a query stage, including a stage's `collect` result. One query may aggregate the parent's rows (`count(*)`) and the elements (`count(skills.value)`), each over its own rows. Saving a model whose list column has the name of a hop reachable from it (an edge or joined-model name) fails.
+
+`inspect`, `search` and `models_summary` show a list column's type as `ARRAY<TEXT>` with its operations, and its element samples once profiled.
+
 ### Window functions in filters
 
 Window functions (`OVER (...)`) are not allowed inside the inner WHERE on SQLite or most dialects. Query filters reject them in two ways:
@@ -450,7 +482,7 @@ Use one of:
 
 Filters support `{variable_name}` placeholders, substituted from the query's `variables` dict. This keeps filter templates reusable and avoids string concatenation in client code.
 
-The same placeholders work in measure formulas, computed-dimension expressions, `order` expressions and `date_range` bounds (`"measures": ["sum(amount) * {k} / 100"]`), and an unnamed entry is named from its template (`amount_sum_k_100`), so result keys never depend on the values; `{? ... ?}` blocks and placeholders in a time dimension's granularity or column are rejected.
+The same placeholders work in measure formulas, computed- and time-dimension expressions, `order` expressions and `date_range` bounds, where a placeholder is written unquoted (`"date_range": ["{start}", "{end}"]`; `"measures": ["sum(amount) * {k} / 100"]`), and an unnamed entry is named from its template (`amount_sum_k_100`), so result keys never depend on the values; `{? ... ?}` blocks and a placeholder naming a time dimension's granularity or standing for its whole dimension is rejected.
 
 ```json
 {
@@ -464,7 +496,7 @@ The same placeholders work in measure formulas, computed-dimension expressions, 
 This produces the filter `status = 'completed' AND amount > 100`.
 
 - Variable names must be alphanumeric + underscore (`[a-zA-Z_][a-zA-Z0-9_]*`)
-- Values must be strings, numbers, or **lists**. **You write the surrounding quotes** in the template (`status = '{status}'`); the string value is then automatically escaped so an embedded quote (e.g. `O'Brien`), backslash, or control character (newline, tab) can't break out of that literal or the filter parser (DEV-1727). Numbers (including booleans) are inserted verbatim; non-finite floats (`nan`/`inf`) are rejected.
+- Values must be strings, numbers, booleans or **lists**, and every value binds as a literal: **you write the surrounding quotes** for a string (`status = '{status}'`, an embedded `'` is doubled), an unquoted placeholder takes a number (a numeric string included) or a boolean, and a placeholder in a name position (`sum({col})`, `customers.{c}`, `{f}(x)`, `partition_by={x}`) is rejected, so no value can change the expression's structure; non-finite floats (`nan`/`inf`) are rejected.
 - **List values render an `IN`-list.** A list variable powers an `in` / `not in` filter — write the parentheses and omit per-element quotes (each string element is auto-quoted):
 
     ```json
@@ -476,13 +508,13 @@ This produces the filter `status = 'completed' AND amount > 100`.
     }
     ```
 
-    An empty list raises (`IN ()` is invalid SQL). Under the hood a list renders as a Python tuple (with a trailing comma, e.g. `('US',)`) so that even a single-element list is treated as membership rather than a bare value — you may see that trailing comma in `show_sql` output; it is not a typo.
-- `{{` and `}}` produce literal `{` and `}`
+    An empty list there raises, and a literal `x IN []` is rejected; an empty list binds only as a list-function argument (`contains_all(tags, {wanted})`).
+- `{{` and `}}` produce literal `{` and `}`; a brace pair holding only digits, commas and spaces (`'{1,2}'`, `'{}'`, `'[0-9]{3}'`) is literal text in any string
 - Undefined variables raise an error
 - The same `{variable}` mechanism also works in the **raw-SQL (Mode A) surfaces** of a model — see [Variables in model SQL](models.md#variables-in-model-sql).
 
 !!! note "Trusted input"
-    Substituted values are treated as trusted. The automatic escaping keeps a string value inside the quoted literal you wrote, but a `{var}` placed in an **unquoted** position is still raw SQL/expression substitution — do not feed untrusted end-user input through `variables`.
+    In query fields a value is always bound as a literal, but in a model's raw-SQL (Mode A) surfaces it is substituted as text, so do not feed untrusted end-user input through `variables` there.
 
 #### Variables passed as a runtime kwarg
 
@@ -543,12 +575,12 @@ await engine.execute("monthly_revenue", refine={"order": [{"column": "revenue", 
 
 - `dimensions` and `measures` are appended; an entry identical to a saved one (`region` ≡ `orders.region`) collapses, and a same-named entry that differs raises `RefinementConflictError`.
 - `time_dimensions` merge per (column, granularity): a refinement may add a `date_range` or `label` the saved one lacks, but a different value conflicts — narrow a saved window with a filter on the time column instead.
-- `filters` AND with the saved filters; `order`, `limit`, `offset`, `main_time_dimension`, `whole_periods_only`, `distinct_dimension_values` and `to_many_handling` replace the saved value (`{"limit": null}` clears a saved limit).
+- `filters` AND with the saved filters; `order`, `limit`, `offset`, `main_time_dimension`, `whole_periods_only`, `distinct_dimension_values` and `to_many_handling` replace the saved value (`{"limit": null}` clears a saved limit; a null `to_many_handling` keeps the saved mode).
 - `source_model`, `name` and `variables` are not refinable; `refine` with a query object or list is an error.
 
 For a multi-stage saved query only the final stage is refined, so it can use only what the earlier stages project: refining `[{"name": "per_customer", ...}, {"source_model": "per_customer", "measures": [{"formula": "avg(revenue)", "name": "avg_revenue"}]}]` with `{"dimensions": ["region"]}` averages per region, provided `per_customer` projects `region`.
 
-Adding a second granularity of a saved time column (`{"time_dimensions": ["year(ordered_at)"]}` on a monthly query) renames the saved key `orders.ordered_at` to `orders.ordered_at.month`, as in any query with two granularities. A saved query's population is fixed when it is saved (see [Population](#population)), so a refinement never changes it.
+Adding a second granularity of a saved time column (`{"time_dimensions": ["date_trunc('year', ordered_at)"]}` on a monthly query) renames the saved key `orders.ordered_at` to `orders.ordered_at.month`, as in any query with two granularities. A saved query's population is fixed when it is saved (see [Population](#population)), so a refinement never changes it.
 
 ---
 
@@ -714,7 +746,7 @@ partition in its suffix (`orders.revenue_sum_partition_by_region`,
 `orders.revenue_sum_partition_by` for the grand total) — name the measure to
 control the key.
 
-A `partition_by` element may also be a time bucket the query groups by, so with time dimension `ordered_at` at month, `partition_by=[month(ordered_at)]` means `partition_by=[ordered_at]`.
+A `partition_by` element may also be a time bucket the query groups by, so with time dimension `ordered_at` at month, `partition_by=[date_trunc('month', ordered_at)]` means `partition_by=[ordered_at]`.
 
 ### Cross-model measures
 
@@ -741,11 +773,11 @@ The method-call spelling `order_items.count(*)` or `order_items.sum(price * qty)
 The sub-query groups by the subset of your dimensions the engine can **prove
 safe** — those reachable from the measure's model over join hops that are
 provably many-to-one (a primary key on the far side, or a declared
-[join `cardinality`](models.md#join-cardinality)). Each remaining dimension gets
-the **broadcast** value (the total over the safe grain, repeated across that
-dimension), and the response carries a `warnings` entry (`kind: "broadcast"`)
-naming the metric and each broadcast dimension with the reason. Declare the
-missing join cardinality (or primary key) to make such a dimension exact.
+[join `cardinality`](models.md#join-cardinality)). Each remaining dimension is
+**associated**: each cell aggregates over the distinct rows of the measure's model
+reaching it, and the response carries a `warnings` entry (`kind: "associated"`)
+because the cells may overlap and are not additive. Declare the missing join
+cardinality (or primary key) to make such a dimension partition the rows.
 
 Query **filters** still restrict the metric: a conjunct the sub-query can only
 reach across an unproven hop is pushed down as a correlated `EXISTS` semi-join —
@@ -767,15 +799,17 @@ fail with a clear error, as does a `readonly = 1` user whose profile leaves
 `allow_experimental_correlated_subqueries` off (the 25.4–25.7 default) — enable it
 in the user's profile, use `readonly = 2`, or upgrade to 25.8+.
 
-`to_many_handling` chooses how a broadcast dimension resolves — `broadcast` (the
-default above), `associate` (each cell aggregates over the distinct entities
-associated with it, warned as `kind: "associated"` because the cells overlap and
-are not additive), or `error` (refuse) — where a stored query's retired
-`strict: true` migrates to `error` (fresh input carrying `strict` is rejected),
-and a semi-join-pushed filter is applied, never erroring, in every mode.
-Example: `{"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "sum(customers.spend)"}], "to_many_handling": "associate"}`.
+`to_many_handling` chooses how such a dimension resolves — omitted (association,
+the default above), `associate`, `broadcast` (the total over the safe grain,
+repeated across the dimension, with a `kind: "broadcast"` warning naming the
+metric and each broadcast dimension with the reason), or `error` (refuse) — where
+a stored query's retired `strict: true` migrates to `error` (fresh input carrying
+`strict` is rejected), a stored query saved with the old `"broadcast"` default
+loads with the mode omitted, and a semi-join-pushed filter is applied, never
+erroring, in every mode.
+Example: `{"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "sum(customers.spend)"}]}` gives each status the spend of the distinct customers with an order in it.
 
-`associate` resolves only *eligible* aggregates — a plain scalar aggregate whose root declares a unique key; an unsupported combination (`window=`/`first`/`last`, a root without a unique key, or an input crossing an unproven hop) returns a typed error rather than a value, so `associate` does not turn every broadcast case exact. Each cell aggregates over the metric's own home rows by the home's join path, so an entity with no population row still counts in the cells its path reaches. An aggregate reads like a field of a model keyed by its grain, so an entity with no related row counts in the NULL cell whenever the result has one, however the query is rooted. A pushed filter binds to the same related row as a dimension it shares a hop with. An attached (aggregate- or transform-valued) parameter or source constituent is computed at its own home and attached per home row in every mode, so `weighted_avg(customers.spend, weight=sum(amount, partition_by=customers.regions.name))` weights each customer by its region's order total under `broadcast`, `associate` and `error` alike.
+Association serves every plain scalar aggregate; a model without a primary or unique key is told apart row by row, so duplicate rows count separately while join copies count once. `window=` and `first`/`last` cannot associate yet: by default they broadcast with a `broadcast` warning whose `association_unsupported` names the reason, while an explicit `associate` (or an explicit `partition_by=` needing association) returns a typed error. An input crossing an unproven hop fails with a typed error in every mode. Each cell aggregates over the metric's own home rows by the home's join path, so an entity with no population row still counts in the cells its path reaches. An aggregate reads like a field of a model keyed by its grain, so an entity with no related row counts in the NULL cell whenever the result has one, however the query is rooted. A pushed filter binds to the same related row as a dimension it shares a hop with. An attached (aggregate- or transform-valued) parameter or source constituent is computed at its own home and attached per home row in every mode, so `weighted_avg(customers.spend, weight=sum(amount, partition_by=customers.regions.name))` weights each customer by its region's order total under `broadcast`, `associate` and `error` alike.
 
 Every input of an aggregate — its source, arguments (`weight=`), definition defaults, and its column-level `filter=` — is traced recursively through derived-column definitions, and an input whose expansion crosses a fanning (not provably to-one) hop fails closed with a typed error instead of silently multiplying rows.
 
@@ -786,12 +820,11 @@ restricts the result rows, uniformly with local aggregate filters — groups tha
 fail the predicate are dropped, not returned with `NULL`.
 
 Cross-model aggregates also support `window=`, `partition_by=`, and `first` /
-`last` when associate-mode resolution is not required (an aggregate that needs
-association cannot use `window=` or `first` / `last`), inside
+`last` (broadcast, as above, where a dimension would need association), inside
 [dimension expressions](#expression-dimensions), and as hidden
 [order-only fields](#ordering-by-something-you-dont-project).
 
-An [aggregated expression](formulas.md#expression-aggregation) may mix host and joined-model columns (`sum(amount - customers.discount)`); it is homed at the deepest dataset that determines every operand, so the join hop's cardinality decides exact-grain vs broadcast exactly as for a single cross-model measure.
+An [aggregated expression](formulas.md#expression-aggregation) may mix host and joined-model columns (`sum(amount - customers.discount)`); it is homed at the deepest dataset that determines every operand, so the join hop's cardinality decides exact grain vs association exactly as for a single cross-model measure.
 
 A cross-model **parametric** aggregate keeps its kwarg signature in the result key, so two variants on the same target column do not collide:
 
@@ -840,14 +873,15 @@ You can also join named queries to models:
     "measures": ["avg(score)"]
   },
   {
-    "source_model": {"source_name": "orders", "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]},
+    "source_model": "orders",
+    "extensions": [{"source_name": "orders", "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]}],
     "measures": ["count(*)", "avg(customer_scores.score_avg)"],
     "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
   }
 ]
 ```
 
-The main query uses a `ModelExtension` to add a join to the named sub-query. Queries can also be saved as permanent models — see [Query-backed models](models.md#query-backed-models). An inline `source_model` carrying `source_queries` is rejected — write those queries as named stages of the list instead.
+The main query's `extensions` entry adds a join from `orders` to the named sub-query. Queries can also be saved as permanent models — see [Query-backed models](models.md#query-backed-models). An inline `source_model` carrying `source_queries` is rejected — write those queries as named stages of the list instead.
 
 Sibling stages can also reference each other — any non-final stage may use a *prior* named stage as `source_model` or as `joins.target_model`, so a query list forms a DAG, not just a chain. For example, two parallel rollups feeding a single final stage:
 
@@ -861,7 +895,8 @@ Sibling stages can also reference each other — any non-final stage may use a *
   },
   {
     "name": "tagged_orders",
-    "source_model": {"source_name": "orders", "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]},
+    "source_model": "orders",
+    "extensions": [{"source_name": "orders", "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]}],
     "dimensions": ["customer_scores.score_avg"],
     "measures": ["count(*)"]
   },
@@ -885,23 +920,35 @@ A grouped stage is unique on its dimensions, so a join onto a sibling stage that
 - MCP: the `query` tool with `query=[...]` (a list of stage objects); the same tool also accepts a model name or a single query object.
 - REST: `POST /query` with body `{"queries": [...], "variables": {...}, "dry_run": ..., "explain": ...}` (the single-query body shape is also still accepted).
 
-### ModelExtension
+### Query extensions
 
-Extend a model inline with extra columns, measures, or joins — without modifying the stored model:
+`extensions` adds columns, measures and joins to any model a query object reads — its population, a joined model, or a stage — without modifying the stored model:
 
 ```json
 {
-  "source_model": {
-    "source_name": "orders",
-    "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
-    "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]
-  },
-  "dimensions": ["tier"],
+  "source_model": "orders",
+  "extensions": [
+    {
+      "source_name": "orders",
+      "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
+      "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]
+    },
+    {"source_name": "customers", "columns": [{"name": "tier_label", "sql": "upper(tier)"}]}
+  ],
+  "dimensions": ["tier", "customers.tier_label"],
   "measures": ["count(*)"]
 }
 ```
 
-`ModelExtension` fields: `source_name` (required — model to extend), `columns`, `measures`, `joins` (all optional — merged with the source model's). Any other key is rejected when the query is constructed.
+Each entry's fields are `source_name` (required — the model or stage to extend), `columns`, `measures` and `joins` (all optional — merged with the model's own); any other key, or a second entry for one model, is rejected when the query is constructed.
+
+An extension is visible only in the query object that declares it: other stages see that stage's output, and stored joins, columns, measures and query-backed models never see it.
+
+A join repeating an edge between its two models — declared on either model, with the same `join_pairs` in either direction — is that edge, and its `name` becomes a local alias; a name, pairs or cardinality that conflicts with an existing edge is an error.
+
+`"join_type": "inner"` keeps only the population rows with a match along the extended model's path, without multiplying rows; a `left` join (the default) never restricts, and a new edge is always traversed as LEFT.
+
+An extension object in `source_model` (`{"source_name": ...}`) still works with a deprecation warning, and is removed in SLayer 3.0.
 
 ### Multi-hop dimensions
 

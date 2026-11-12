@@ -1,4 +1,4 @@
-"""Stage 7a.4 (DEV-1450) — Mode-A sqlglot wrapper.
+"""Stage 7a.4 — Mode-A sqlglot wrapper.
 
 Canonicalises Mode-A SQL to a sqlglot-normalised string and detects window
 functions uniformly.
@@ -35,8 +35,10 @@ from typing import Optional
 import sqlglot
 from sqlglot import exp
 
+from slayer.core.enums import DataType
 from slayer.core.errors import IllegalWindowInFilterError
 from slayer.sql.dialects import get_dialect
+from slayer.sql.dialects.base import cast_target, cast_type_of
 from slayer.sql.dialects.sqlite import rewrite_sqlite_json_extract
 from slayer.sql.render.parse import rewrite_log_aliases
 from slayer.sql.window_detect import has_window_function as _has_window_function
@@ -60,9 +62,8 @@ def _parse_inner(text: str, *, dialect: Optional[str]) -> exp.Expression:
     ``SELECT 1 WHERE ...`` for predicate parsing; the ``SELECT (...) AS _``
     form handles both predicates and expressions uniformly.
     """
-    wrapper = f"SELECT ({text}) AS __slayer_inner__"
     try:
-        select = sqlglot.parse_one(wrapper, dialect=dialect)
+        select = sqlglot.parse_one(f"SELECT ({text}) AS __slayer_inner__", dialect=dialect)
     except Exception as e:
         raise ValueError(f"Invalid Mode-A SQL expression {text!r}: {e}")
     expressions = select.args.get("expressions") or []
@@ -92,7 +93,7 @@ def canonicalize_sql(text: str, *, dialect: Optional[str] = None) -> str:
     if dialect == "sqlite":
         parsed = rewrite_sqlite_json_extract(parsed)
 
-    # DEV-1784: single log-alias policy — the same rewrite the parser and
+    # Single log-alias policy — the same rewrite the parser and
     # generator apply, keyed on ``SqlDialect.should_use_native_log`` rather than
     # a local allowlist. ``dialect=None``, or a name sqlglot parses but SLayer's
     # registry does not carry, skips the rewrite (matching the old allowlist's
@@ -139,3 +140,20 @@ def assert_no_window_in_filter(text: str, *, source: str) -> None:
                 "into an earlier multi-stage source_query."
             ),
         )
+
+
+
+def build_cast_type(type_text: str, *, dialect: str) -> exp.DataType:
+    """The author's cast type as ``dialect``'s ``DataType``; ``ValueError`` when it cannot express it."""
+    return cast_target(type_text, dialect=get_dialect(dialect))
+
+
+def cast_slayer_type(type_text: str, *, dialect: str) -> tuple[DataType, Optional[DataType]]:
+    """SLayer's type of a cast to ``type_text`` on ``dialect``, with its elements' for an array."""
+    return cast_type_of(type_text, dialect=get_dialect(dialect))
+
+
+def native_json_type(db_type: str, *, dialect: str) -> Optional[str]:
+    """``db_type``'s leading word when it is one of ``dialect``'s JSON types (``JSONB``, ``VARIANT``, …)."""
+    word = db_type.split("(")[0].strip().upper()
+    return word if word in get_dialect(dialect).json_db_types else None

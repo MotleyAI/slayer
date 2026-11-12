@@ -1,4 +1,4 @@
-"""Tests for the two-mode reference semantics introduced by DEV-1369.
+"""Tests for the two-mode reference semantics.
 
 Mode A — SQL expression: Column.sql, Column.filter, SlayerModel.filters.
     Free SQL via sqlglot. Bare names = underlying-table columns; ``__``-paths
@@ -25,7 +25,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
 
-from tests._engine_helpers import _engine_generate, _where_text
+from tests._engine_helpers import _dataset_where_text, _engine_generate
 
 
 def _make_planets_model(*, with_window_column: bool = False) -> SlayerModel:
@@ -141,10 +141,10 @@ class TestSqlModeAcceptance:
 
 
 class TestSqlModeRuntime:
-    """DEV-1378: Mode A SQL filters (``Column.filter`` /
+    """Mode A SQL filters (``Column.filter`` /
     ``SlayerModel.filters``) must not just construct cleanly — they
     have to flow through enrichment without the DSL parser rejecting
-    arbitrary SQL function calls. Before DEV-1378 the construction
+    arbitrary SQL function calls. Once, the construction
     tests passed but the engine failed at first query against any
     such model.
     """
@@ -162,13 +162,13 @@ class TestSqlModeRuntime:
         )
         query = SlayerQuery(
             source_model="m",
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
         )
-        # Bug under DEV-1378: this raised "Unknown filter function
-        # 'json_extract'" at enrichment time. Post-fix, it renders — the
-        # Mode A model filter survives into the emitted WHERE clause.
+        # This once raised "Unknown filter function 'json_extract'" at enrichment
+        # time; it renders — the Mode A model filter survives into the WHERE of
+        # the model's filtered dataset.
         sql = await _engine_generate(query=query, model=model)
-        assert "json_extract" in _where_text(sql).lower(), (
+        assert "json_extract" in _dataset_where_text(sql).lower(), (
             f"model filter dropped from WHERE clause:\n{sql}"
         )
 
@@ -190,7 +190,7 @@ class TestSqlModeRuntime:
         )
         query = SlayerQuery(
             source_model="m",
-            measures=[ModelMeasure(formula="active_amount:sum")],
+            measures=[ModelMeasure(formula="sum(active_amount)")],
         )
         sql = await _engine_generate(query=query, model=model)
         # The Column.filter goes onto the measure as a CASE WHEN wrapper
@@ -235,7 +235,7 @@ class TestSqlModeRuntime:
         )
         query = SlayerQuery(
             source_model="m",
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         sql = await _engine_generate(
             query=query, model=model, extra_models=[customers, regions],
@@ -271,40 +271,37 @@ class TestSqlModeRejection:
             )
 
     def test_model_filter_rejects_aggregation_colon(self) -> None:
+        columns = [Column(name="id", sql="id", type=DataType.INT, primary_key=True)]
         with pytest.raises(ValueError, match="(?i)aggregat|colon|measure|DSL"):
             SlayerModel(
                 name="m",
                 sql_table="t",
                 data_source="test",
                 filters=["revenue:sum > 100"],
-                columns=[
-                    Column(name="id", sql="id", type=DataType.INT, primary_key=True)
-                ],
+                columns=columns,
             )
 
     def test_model_filter_rejects_transform_call(self) -> None:
+        columns = [Column(name="id", sql="id", type=DataType.INT, primary_key=True)]
         with pytest.raises(ValueError, match="(?i)transform|cumsum|DSL"):
             SlayerModel(
                 name="m",
                 sql_table="t",
                 data_source="test",
-                filters=["cumsum(revenue:sum) > 0"],
-                columns=[
-                    Column(name="id", sql="id", type=DataType.INT, primary_key=True)
-                ],
+                filters=["cumsum(sum(revenue)) > 0"],
+                columns=columns,
             )
 
     def test_model_filter_rejects_raw_over(self) -> None:
         """Raw OVER (...) in a model filter is rejected (existing behavior preserved)."""
+        columns = [Column(name="id", sql="id", type=DataType.INT, primary_key=True)]
         with pytest.raises(ValueError, match="(?i)window function|OVER"):
             SlayerModel(
                 name="m",
                 sql_table="t",
                 data_source="test",
                 filters=["row_number() over (order by mass desc) <= 3"],
-                columns=[
-                    Column(name="id", sql="id", type=DataType.INT, primary_key=True)
-                ],
+                columns=columns,
             )
 
     def test_column_filter_rejects_raw_over(self) -> None:
@@ -325,26 +322,26 @@ class TestSqlModeRejection:
 class TestDslModeAcceptance:
     """DSL constructs work as before. Ensures the new validators don't over-reject."""
 
-    def test_query_filter_accepts_aggregation_colon(self) -> None:
+    def test_query_filter_accepts_aggregation(self) -> None:
         q = SlayerQuery(
             source_model="orders",
-            filters=["revenue:sum > 100"],
+            filters=["sum(revenue) > 100"],
         )
-        assert q.filters == ["revenue:sum > 100"]
+        assert q.filters == ["sum(revenue) > 100"]
 
     def test_query_filter_accepts_transform_predicate(self) -> None:
         q = SlayerQuery(
             source_model="orders",
-            filters=["change(revenue:sum) > 0"],
+            filters=["change(sum(revenue)) > 0"],
         )
-        assert q.filters == ["change(revenue:sum) > 0"]
+        assert q.filters == ["change(sum(revenue)) > 0"]
 
     def test_query_filter_accepts_nested_transform(self) -> None:
         q = SlayerQuery(
             source_model="orders",
-            filters=["last(change(revenue:sum)) < 0"],
+            filters=["last(change(sum(revenue))) < 0"],
         )
-        assert q.filters == ["last(change(revenue:sum)) < 0"]
+        assert q.filters == ["last(change(sum(revenue))) < 0"]
 
     def test_query_filter_accepts_dotted_join_path(self) -> None:
         q = SlayerQuery(
@@ -363,8 +360,8 @@ class TestDslModeAcceptance:
 
     def test_model_measure_accepts_cross_model_dotted_ref(self) -> None:
         """Cross-model dotted refs in ModelMeasure formulas remain supported (per spec)."""
-        m = ModelMeasure(name="cust_rev", formula="customers.revenue:sum")
-        assert m.formula == "customers.revenue:sum"
+        m = ModelMeasure(name="cust_rev", formula="sum(customers.revenue)")
+        assert m.formula == "sum(customers.revenue)"
 
 
 class TestDslModeRejection:
@@ -377,10 +374,9 @@ class TestDslModeRejection:
     """
 
     async def test_query_filter_rejects_raw_sql_function_at_enrichment(self) -> None:
-        """If a user needs json_extract/coalesce/etc. they must define a Column
-        on the model and reference it from the DSL. The rejection fires at
-        enrichment time, where the DSL parser has full custom-aggregation
-        context and can produce an accurate ``Unknown filter function`` error.
+        """A function outside the Mode-B library (``initcap``) must be a Column on the model,
+        referenced from the DSL. The rejection fires at enrichment time, where the DSL parser has
+        full custom-aggregation context and can produce an accurate ``Unknown filter function`` error.
         """
         model = SlayerModel(
             name="orders",
@@ -394,9 +390,9 @@ class TestDslModeRejection:
         query = SlayerQuery(
             source_model="orders",
             dimensions=["id"],
-            filters=["json_extract(data, '$.x') > 5"],
+            filters=["initcap(data) = 'X'"],
         )
-        with pytest.raises(Exception, match="(?i)function|json_extract|raw SQL|unknown|transform"):
+        with pytest.raises(Exception, match="(?i)function|initcap|raw SQL|unknown|transform"):
             await _engine_generate(query=query, model=model)
 
     async def test_query_filter_rejects_unknown_double_underscore_at_enrichment(self) -> None:
@@ -494,7 +490,7 @@ class TestStrictResolution:
                 await _engine_generate(query=query, model=model)
 
     async def test_filter_referencing_unjoined_model_raises(self) -> None:
-        """DEV-1367: a filter like ``transportation_assets.total_vehicles >= 3``
+        """A filter like ``transportation_assets.total_vehicles >= 3``
         where ``transportation_assets`` is **not** in the source model's
         ``joins`` used to silently render SQL with an unbound table reference
         in the WHERE clause and fail at execution with a cryptic database
@@ -515,7 +511,7 @@ class TestStrictResolution:
             dimensions=["housenum"],
             filters=["transportation_assets.total_vehicles >= 3"],
         )
-        # DEV-1856: an unreachable short form is route-aware-rejected (a ValueError) — still a loud raise, never silent unbound SQL (the DEV-1367 contract).
+        # An unreachable short form is route-aware-rejected (a ValueError) — still a loud raise, never silent unbound SQL.
         with pytest.raises(
             ValueError,
             match=(
@@ -526,7 +522,7 @@ class TestStrictResolution:
         ):
             await _engine_generate(query=query, model=households)
 
-    # DEV-1484 Stage C: the two former lenient-drop tests moved to producer filter
+    # The two former lenient-drop tests moved to producer filter
     # inheritance (tests/test_dev1836_filter_inheritance, test_dev1747_reroot_filter_routing).
 
     async def test_known_filter_name_passes(self) -> None:
@@ -550,7 +546,7 @@ class TestStrictResolution:
 
 
 # ---------------------------------------------------------------------------
-# Predicate-promotion drop (DEV-1336 reversal)
+# Predicate-promotion drop (reversed)
 # ---------------------------------------------------------------------------
 
 

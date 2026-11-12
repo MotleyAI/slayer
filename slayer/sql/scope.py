@@ -29,19 +29,22 @@ from sqlglot.errors import ParseError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ModeASqlParseError, UnknownReferenceError, UnreachableDefinitionError
-from slayer.core.join_walker import model_column_type, resolved_terminal
+from slayer.core.join_walker import model_column, model_column_element, model_column_type, resolved_terminal
 from slayer.core.keys import (
     REGROUP_LEAF_PREFIX,
     ArithmeticKey,
+    ArrayLiteralKey,
+    CastKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
+    ListSetKey,
     LiteralKey,
     ScalarCallKey,
     SqlFragmentKey,
     TimeTruncKey,
 )
-from slayer.core.models import SlayerModel
+from slayer.core.models import Column, SlayerModel
 from slayer.sql.column_expansion import (
     collect_root_scope_joined_paths,
     expand_column_definition_sync,
@@ -71,7 +74,10 @@ _Grammar = Literal["predicate", "expression"]
 # A ref that can enter a scope: structural column refs, derived columns, bound
 # parameter expressions, free Mode-A / predicate text, and row-level expression
 # composites — an aggregate's same-model expression source anchors through the same door.
-Ref = Union[ColumnKey, ColumnSqlKey, SqlFragmentKey, ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey, InKey, str]
+Ref = Union[
+    ColumnKey, ColumnSqlKey, SqlFragmentKey, ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey, InKey, CastKey,
+    ListSetKey, str,
+]
 
 
 class _OrderedPathSet:
@@ -130,6 +136,8 @@ class ScopeFrame(BaseModel):
     attached_columns: Dict[ColumnKey, exp.Expression] = Field(default_factory=dict)
     #: Temporal types of placeholders substituted for attached aggregates.
     placeholder_types: Dict[Any, DataType] = Field(default_factory=dict)
+    #: Element types of the list-valued ones.
+    placeholder_elements: Dict[Any, DataType] = Field(default_factory=dict)
 
     # ---- Law 1 -------------------------------------------------------------
     def resolve(self, ref: Ref, *, consumer: "ScopeFrame | None" = None) -> exp.Expression:
@@ -405,10 +413,14 @@ class ScopeFrame(BaseModel):
                 limit=self.dialect.max_identifier_bytes,
             )
             self._register_path_prefixes(ref.path)
-            return quote_mixed_case_identifiers(exp.Column(
+            column = quote_mixed_case_identifiers(exp.Column(
                 this=exp.to_identifier(ref.leaf),
                 table=exp.to_identifier(alias),
             ))
+            declared = model_column(model=self.root_model, models_by_name=self._models_by_name(), key=ref)
+            return self.dialect.read_column(
+                column, zoned=self.dialect.is_zoned_db_type(getattr(declared, "db_type", None)),
+            )
         if isinstance(ref, ColumnSqlKey):
             model = self._model_for(ref.model)
             col = next(
@@ -451,19 +463,20 @@ class ScopeFrame(BaseModel):
                 alias_resolver=self._alias_resolver(),
                 crossed_paths=self.join_paths,
             )
-            return self._parse(expanded)
+            return self.dialect.read_column(self._parse(expanded), zoned=self.dialect.is_zoned_db_type(col.db_type))
         if isinstance(ref, SqlFragmentKey):
             # A bound parameter expression: each typed ref anchors (and registers
             # its joins) here, substituted into the parsed template.
             template = sql_template(text=ref.template, dialect=self.dialect.sqlglot_name)
             return template.render({f"r{i}": self._anchor(r) for i, r in enumerate(ref.refs)})
-        if isinstance(ref, (ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey, InKey)):
+        if isinstance(ref, (
+                ArithmeticKey, ScalarCallKey, LiteralKey, ArrayLiteralKey, TimeTruncKey, InKey, CastKey, ListSetKey)):
             # An aggregate's row-level expression source — column
             # leaves anchor recursively through this scope, so join
             # registration and derived expansion apply per leaf.
             return render_row_expression(
                 key=ref, dialect=self.dialect, resolve_column=self._anchor,
-                column_type=self.column_type,
+                column_type=self.column_type, column_element=self.column_element,
             )
         if isinstance(ref, str):
             prequoted = prequote_reserved_identifiers(
@@ -489,6 +502,16 @@ class ScopeFrame(BaseModel):
         if ref in self.placeholder_types:
             return self.placeholder_types[ref]
         return model_column_type(model=self.root_model, models_by_name=self._models_by_name())(ref)
+
+    def column_element(self, ref: Ref) -> Optional[DataType]:
+        """The element type of the list column ``ref`` names, or ``None`` when unknown."""
+        if ref in self.placeholder_types:
+            return self.placeholder_elements.get(ref)
+        return model_column_element(model=self.root_model, models_by_name=self._models_by_name())(ref)
+
+    def column(self, ref: ColumnKey | ColumnSqlKey) -> Optional[Column]:
+        """The model column ``ref`` names, or ``None`` when unresolvable."""
+        return model_column(model=self.root_model, models_by_name=self._models_by_name(), key=ref)
 
     def _model_for(self, name: str) -> SlayerModel:
         """Resolve a model name against the scope root, then the bundle.

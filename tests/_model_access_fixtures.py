@@ -36,7 +36,7 @@ from slayer.embeddings import client as embedding_client
 from slayer.embeddings.models import Embedding, EntityKind
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage

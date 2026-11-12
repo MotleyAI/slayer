@@ -1,4 +1,4 @@
-"""The one dependency closure (engine.arc42 principle 10).
+"""The one dependency closure (python.engine.arc42.md principle 10).
 
 A reference's *dependency closure* is its own join path plus every join path the
 definition of any derived column it names crosses, recursively. Every planner
@@ -8,9 +8,6 @@ closure, so a derived reference behaves exactly like a structural one in every
 position. The closure is tri-state: ``None`` when a definition cannot be
 analysed (no dialect parses it, or the expansion fails), and every consumer
 treats ``None`` as unsafe, never as "crosses nothing".
-
-Absorbs the former ``aggregate_input_paths`` and ``column_filter_paths`` modules
-and the key-tree ``_child_keys`` dispatch that lived in ``filter_reachability``.
 """
 
 from __future__ import annotations
@@ -24,9 +21,12 @@ from sqlglot import exp
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
+    CastKey,
+    ListSetKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
+    ArrayLiteralKey,
     LiteralKey,
     ScalarCallKey,
     SqlFragmentKey,
@@ -207,7 +207,7 @@ def _prefixes(path: Path) -> List[Path]:
 
 # Values a key tree carries INLINE — plain data, never references.
 _INLINE_SCALARS = (str, int, float, bool, Decimal)
-_LEAF_KINDS = (LiteralKey, StarKey, ColumnKey, ColumnSqlKey)
+_LEAF_KINDS = (LiteralKey, ArrayLiteralKey, StarKey, ColumnKey, ColumnSqlKey)
 
 
 class UnhandledValueKindError(SlayerError, TypeError):
@@ -232,11 +232,11 @@ def _child_keys(node, *, descend_aggregates: bool = True) -> List:
     if isinstance(node, _LEAF_KINDS) or isinstance(node, _INLINE_SCALARS):
         return []
     if isinstance(node, TimeTruncKey):
-        return [node.column]
+        return [node.source]
     if isinstance(node, AggregateKey):
         if not descend_aggregates:
             return []
-        return [node.source, *node.args, *(v for _name, v in node.kwargs)]
+        return [node.source, *node.args, *(v for _name, v in node.kwargs), *([node.filter] if node.filter else [])]
     if isinstance(node, TransformKey):
         return [node.input, *sorted(node.partition_keys, key=repr), node.time_key]
     if isinstance(node, ArithmeticKey):
@@ -249,6 +249,8 @@ def _child_keys(node, *, descend_aggregates: bool = True) -> List:
         return [node.operand]
     if isinstance(node, SqlFragmentKey):
         return list(node.refs)
+    if isinstance(node, (CastKey, ListSetKey)):
+        return [node.source]
     raise UnhandledValueKindError(node)
 
 

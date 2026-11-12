@@ -130,7 +130,7 @@ def _two_branch_by_status() -> dict:
 class TestSameModelExpressions:
     async def test_arithmetic_expression(self, exec_backend):
         got = await _val(exec_backend, "sum(amount - cost)")
-        twin = await _val(exec_backend, "amount:sum - cost:sum")
+        twin = await _val(exec_backend, "sum(amount) - sum(cost)")
         assert got == pytest.approx(twin)
 
     async def test_scalar_function_inside(self, exec_backend):
@@ -205,19 +205,19 @@ class TestCrossModelExpressions:
 
     async def test_window_is_cardinality_neutral_and_valued_every_bucket(self, exec_backend):
         base = await exec_backend.execute(orders_q(
-            time_dimensions=month_td(), measures=[ModelMeasure(formula="amount:sum", name="a")]))
+            time_dimensions=month_td(), measures=[ModelMeasure(formula="sum(amount)", name="a")]))
         withw = await exec_backend.execute(orders_q(
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="amount:sum", name="a"),
+            measures=[ModelMeasure(formula="sum(amount)", name="a"),
                       ModelMeasure(formula="sum(amount - customers.discount, window='90d')", name="m")]))
         assert len(withw.data) == len(base.data)
         # Every bucket has orders, so the trailing-window measure is non-NULL throughout.
         assert all(row["orders.m"] is not None for row in withw.data)
 
     async def test_filter_position_prunes_only(self, exec_backend):
-        base = await _val(exec_backend, "amount:sum")
+        base = await _val(exec_backend, "sum(amount)")
         resp = await exec_backend.execute(orders_q(
-            dimensions=["status"], measures=[ModelMeasure(formula="amount:sum", name="m")],
+            dimensions=["status"], measures=[ModelMeasure(formula="sum(amount)", name="m")],
             filters=["sum(amount - customers.discount) > 45"]))
         kept = _cells(resp, "status", "m")
         for cell, v in kept.items():
@@ -226,7 +226,7 @@ class TestCrossModelExpressions:
     async def test_order_position_sorts_by_the_expression(self, exec_backend):
         # host-discount sums are new=50 > ok=39, so desc order is [new, ok].
         resp = await exec_backend.execute(orders_q(
-            dimensions=["status"], measures=[ModelMeasure(formula="amount:sum", name="m")],
+            dimensions=["status"], measures=[ModelMeasure(formula="sum(amount)", name="m")],
             order=[{"column": "sum(amount - customers.discount)", "direction": "desc"}]))
         assert [row["orders.status"] for row in resp.data] == ["new", "ok"]
 
@@ -236,7 +236,7 @@ class TestCrossModelExpressions:
             dimensions=[{"expression": "CASE WHEN sum(amount - customers.discount, "
                          "partition_by=status) > 0 THEN 'hi' ELSE 'lo' END", "name": "band"},
                         "status"],
-            measures=[ModelMeasure(formula="amount:sum", name="a")]))
+            measures=[ModelMeasure(formula="sum(amount)", name="a")]))
         assert {row["orders.band"] for row in resp.data} == {"hi"}
 
     async def test_custom_aggregation_resolves_on_the_anchor(self, exec_backend):
@@ -308,12 +308,10 @@ class TestExpressionSourceTyping:
             await gen(query, models=models)
         assert "unparseable" in str(ei.value)
 
-    async def test_first_over_expression_keeps_its_error(self):
+    async def test_first_over_expression_is_the_ranked_aggregate(self):
         query = orders_q(measures=[
             ModelMeasure(formula="first(amount - customers.discount, ordered_at)", name="m")])
-        with pytest.raises(ValueError, match="not supported over an expression") as ei:
-            await gen(query)
-        assert "cross-model" not in str(ei.value).lower()
+        assert "ROW_NUMBER" in (await gen(query)).upper()
 
     async def test_fully_attached_source_accepted(self, exec_backend):
         # Regression guard (DEV-1847): the expression gate must not reject it.
@@ -333,7 +331,7 @@ class TestExpressionSourceTyping:
                if v["sales.m"] is not None}
         assert got == pytest.approx(MIXED_SUM_BY_REGION)
 
-    _ATTACHED_PARAM = ("customers.spend:weighted_avg("
+    _ATTACHED_PARAM = ("weighted_avg(customers.spend, "
                        "weight=sum(amount, partition_by=customers.regions.name))")
 
     async def test_attached_parameter_accepted_under_associate(self, exec_backend):
@@ -374,11 +372,11 @@ class TestCrossModelCardinality:
     async def test_joined_sum_not_multiplied(self, exec_backend):
         # Regression guard: each customer's spend counted once regardless of order count.
         alone = await exec_backend.execute(orders_q(
-            dimensions=["customers.tier"], measures=[ModelMeasure(formula="customers.spend:sum", name="s")]))
+            dimensions=["customers.tier"], measures=[ModelMeasure(formula="sum(customers.spend)", name="s")]))
         withm = await exec_backend.execute(orders_q(
             dimensions=["customers.tier"],
-            measures=[ModelMeasure(formula="customers.spend:sum", name="s"),
-                      ModelMeasure(formula="amount:sum", name="a")]))
+            measures=[ModelMeasure(formula="sum(customers.spend)", name="s"),
+                      ModelMeasure(formula="sum(amount)", name="a")]))
         a = {k[0]: v["orders.s"] for k, v in rows_by(alone, "orders.customers.tier").items()}
         b = {k[0]: v["orders.s"] for k, v in rows_by(withm, "orders.customers.tier").items()}
         assert a == pytest.approx(b)
@@ -398,10 +396,10 @@ class TestCrossModelCardinality:
 
     async def test_adding_cross_model_measure_is_cardinality_neutral(self, exec_backend):
         base = await exec_backend.execute(orders_q(
-            dimensions=["status"], measures=[ModelMeasure(formula="amount:sum", name="a")]))
+            dimensions=["status"], measures=[ModelMeasure(formula="sum(amount)", name="a")]))
         withm = await exec_backend.execute(orders_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="amount:sum", name="a"),
+            measures=[ModelMeasure(formula="sum(amount)", name="a"),
                       ModelMeasure(formula="sum(amount - customers.discount)", name="m")]))
         a = {k[0]: v["orders.a"] for k, v in rows_by(base, "orders.status").items()}
         b = {k[0]: v["orders.a"] for k, v in rows_by(withm, "orders.status").items()}

@@ -10,7 +10,7 @@ SQL-shape assertions.
 Model shape
 -----------
 ``orders`` (host) carries the LOCAL partition dimensions ``region`` / ``city`` /
-``channel`` directly, so ``revenue:sum(partition_by=region)`` is a purely-local
+``channel`` directly, so ``sum(revenue, partition_by=region)`` is a purely-local
 coarser aggregate. ``ok_amount`` / ``nomatch`` are filtered columns (CASE-WHEN at
 aggregation time) for the filtered-share and zero-surviving-input cases.
 ``orders → customers → regions`` gives the cross-model + rerooted shapes:
@@ -142,7 +142,7 @@ async def gen(query: SlayerQuery, *, dialect: str = "duckdb", validate: bool = F
 
 def month_td(column: str = "ordered_at") -> List[TimeDimension]:
     return [TimeDimension(
-        dimension=ColumnRef(name=column),
+        dimension=column,
         granularity=TimeGranularity.MONTH,
     )]
 

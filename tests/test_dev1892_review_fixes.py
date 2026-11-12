@@ -13,7 +13,7 @@ from slayer.core.errors import (
 )
 from slayer.core.keys import ColumnKey, Grain
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.engine.join_safety import grain_determines
+from slayer.engine.cardinality.join_safety import grain_determines
 
 from tests._dev1841_fixtures import (
     ModelMeasure,
@@ -137,7 +137,7 @@ class TestPickedParamDoesNotInheritSourceFilter:
             query=assoc_q(
                 dimensions=["channel"],
                 measures=[ModelMeasure(
-                    formula="customers.north_spend:weighted_avg(weight=customers.spend)",
+                    formula="weighted_avg(customers.north_spend, weight=customers.spend)",
                     name="w")]),
             model=orders, extra_models=extra, dialect="sqlite", validate=False,
         )
@@ -231,7 +231,7 @@ class TestExprDefaultQualifiedRefs:
         # default was neither lifted nor rejected.
         resp = await qual_expr_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.spend:wsum6", name="w")]))
+            measures=[ModelMeasure(formula="wsum6(customers.spend)", name="w")]))
         vals = _status_vals(resp, "orders.w")
         for status, expected in ASSOC_WSUM6_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -240,7 +240,7 @@ class TestExprDefaultQualifiedRefs:
         # ``spend * regions.pop``: owner and qualified refs in one expression.
         resp = await mixed_expr_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.spend:wsum7", name="w")]))
+            measures=[ModelMeasure(formula="wsum7(customers.spend)", name="w")]))
         vals = _status_vals(resp, "orders.w")
         for status, expected in ASSOC_WSUM7_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -250,7 +250,7 @@ class TestExprDefaultQualifiedRefs:
         # self-reference, not a hop (and not opaque) — SUM(spend * spend).
         resp = await self_qual_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.spend:wsum8", name="w")]))
+            measures=[ModelMeasure(formula="wsum8(customers.spend)", name="w")]))
         vals = _status_vals(resp, "orders.w")
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -260,7 +260,7 @@ class TestExprDefaultQualifiedRefs:
         # the owner-anchored entry alongside the qualified ref.
         resp = await derived_local_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.spend:wsum9", name="w")]))
+            measures=[ModelMeasure(formula="wsum9(customers.spend)", name="w")]))
         vals = _status_vals(resp, "orders.w")
         for status, expected in ASSOC_WSUM9_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -270,7 +270,7 @@ class TestExprDefaultQualifiedRefs:
         # model columns, exactly as its explicit spelling must.
         q = assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.spend:wphys", name="w")])
+            measures=[ModelMeasure(formula="wphys(customers.spend)", name="w")])
         with pytest.raises(UnknownReferenceError, match="tier"):
             await phys_expr_engine.execute(q)
 
@@ -325,7 +325,7 @@ class TestExprDefaultLiteralsAndResidue:
         # ``nosuch.col`` resolves no join walk -> the default fails at binding.
         q = assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.spend:wopq", name="w")])
+            measures=[ModelMeasure(formula="wopq(customers.spend)", name="w")])
         with pytest.raises(UnresolvableDimensionJoinError, match="nosuch.col"):
             await opaque_expr_engine.execute(q)
 
@@ -334,7 +334,7 @@ class TestExprDefaultLiteralsAndResidue:
         # level-2 render, and never the parser's own diagnostics.
         q = assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.spend:wugly", name="w")])
+            measures=[ModelMeasure(formula="wugly(customers.spend)", name="w")])
         with pytest.raises(UnanalyzableAggregationParameterError, match="weight") as ei:
             await unparseable_engine.execute(q)
         assert "\x1b" not in str(ei.value)
@@ -348,7 +348,7 @@ class TestExprDefaultLiteralsAndResidue:
         resp = await root_named_expr_engine.execute(assoc_q(
             dimensions=["status"],
             measures=[
-                ModelMeasure(formula="customers.spend:wroot", name="w"),
+                ModelMeasure(formula="wroot(customers.spend)", name="w"),
                 ModelMeasure(
                     formula="sum(customers.spend * (orders.amount + 0))", name="oracle"),
             ]))

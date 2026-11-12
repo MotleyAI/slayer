@@ -42,30 +42,30 @@ def _cases() -> dict:
         # spine shape when the predicate can hold on the hop's null-extended row.
         "mixed_or/structural": {
             "source": "customers",
-            "kw": {"measures": [{"formula": "spend:sum", "name": "sp"}],
+            "kw": {"measures": [{"formula": "sum(spend)", "name": "sp"}],
                    "filters": [OR_MIX_LOCAL]}},
         "mixed_or/gold_null_extended": {
             "source": "customers",
-            "kw": {"measures": [{"formula": "spend:sum", "name": "sp"}],
+            "kw": {"measures": [{"formula": "sum(spend)", "name": "sp"}],
                    "filters": [GOLD_OR_OK]}},
         "mixed_or/negation": {
             "source": "customers",
-            "kw": {"measures": [{"formula": "spend:sum", "name": "sp"}],
+            "kw": {"measures": [{"formula": "sum(spend)", "name": "sp"}],
                    "filters": [NOT_GOLD_AND_OK]}},
         # is_null/* — a null-test on a related column reads as absence (spine).
         "is_null/absence": {
             "source": "customers",
-            "kw": {"measures": [{"formula": "spend:sum", "name": "sp"}],
+            "kw": {"measures": [{"formula": "sum(spend)", "name": "sp"}],
                    "filters": [NO_ORDERS]}},
         # multi_branch/* — cross-path refs spanning several branches, or an atom
         # comparing two branches — judged on the product.
         "multi_branch/or": {
             "source": "customers",
-            "kw": {"measures": [{"formula": "spend:sum", "name": "sp"}],
+            "kw": {"measures": [{"formula": "sum(spend)", "name": "sp"}],
                    "filters": [NEW_OR_EVENT]}},
         "multi_branch/atom": {
             "source": "customers",
-            "kw": {"measures": [{"formula": "spend:sum", "name": "sp"}],
+            "kw": {"measures": [{"formula": "sum(spend)", "name": "sp"}],
                    "filters": [ATOM_TWO_BRANCH]}},
         # materialised/host_base — a materialised branch (orders.id dimension) binds
         # to the outer query; only the regions branch is quantified.
@@ -81,7 +81,7 @@ def _cases() -> dict:
         "producer/mixed_or_partitioned": {
             "source": "customers",
             "kw": {"dimensions": ["tier"],
-                   "measures": [{"formula": "spend:sum(partition_by=tier)",
+                   "measures": [{"formula": "sum(spend, partition_by=tier)",
                                  "name": "pt"}],
                    "filters": [OR_MIX_LOCAL]}},
     }

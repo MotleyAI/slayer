@@ -53,16 +53,14 @@ class TestSpineListedWithItsWiredModels:
         server = create_mcp_server(storage=storage)
         summary = await _call(server, name="models_summary", arguments={"datasource_name": "test"})
         assert "time_spine" in summary
-        for tool, args in (
-            ("inspect", {"entity_type": "model", "reference": "time_spine", "compact": False}),
-            ("inspect_model", {"model_name": "time_spine", "compact": False}),
-        ):
-            text = await _call(server, name=tool, arguments=args)
-            assert "timestamp" in text, tool
-            assert "built-in" in text.lower(), tool
-            for model, axis in (("orders", "order_date"), ("returns", "return_date")):
-                assert model in text, (tool, model)
-                assert axis in text, (tool, model)
+        text = await _call(server, name="inspect", arguments={
+            "entity_type": "model", "reference": "time_spine", "compact": False,
+        })
+        assert "timestamp" in text
+        assert "built-in" in text.lower()
+        for model, axis in (("orders", "order_date"), ("returns", "return_date")):
+            assert model in text, model
+            assert axis in text, model
 
     async def test_listing_marks_it_built_in_and_points_at_inspect(self) -> None:
         storage = await _spine_storage(tempfile.mkdtemp())
@@ -180,7 +178,7 @@ class TestDeclaredDefaultTimeDimensionType:
         path.write_text(yaml.safe_dump(_bad_default(name).model_dump(mode="json")))
         result = run_cli_in_process(["models", "--storage", base, "create", str(path)])
         assert result.returncode == 1, result.stdout + result.stderr
-        assert name in result.stdout
+        assert name in result.stderr
         if name != "time_spine":
             assert _stored_default(storage, name) is None
 
@@ -297,14 +295,14 @@ class TestDbtImporter:
         result = DbtToSlayerConverter(project=_dbt_project("fill_nulls_with", 0), data_source="test").convert()
         measure = _converted_measure(result, "gap_filled_rev")
         assert measure is not None
-        assert measure.formula.replace(" ", "") in {"coalesce(amount:sum,0)", "coalesce(sum(amount),0)"}
+        assert measure.formula.replace(" ", "") == "coalesce(sum(amount),0)"
         assert not any(e.metric_name == "gap_filled_rev" for e in result.unconverted_metrics)
 
     def test_join_to_timespine_is_accepted_with_a_note(self) -> None:
         result = DbtToSlayerConverter(project=_dbt_project("join_to_timespine", True), data_source="test").convert()
         measure = _converted_measure(result, "gap_filled_rev")
         assert measure is not None
-        assert measure.formula.replace(" ", "") in {"amount:sum", "sum(amount)"}
+        assert measure.formula.replace(" ", "") == "sum(amount)"
         notes = [e for e in (*result.unconverted_metrics, *result.warnings) if e.metric_name == "gap_filled_rev"]
         assert notes
         assert all(e.severity == "info" for e in notes)

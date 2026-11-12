@@ -28,11 +28,11 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from slayer.core.enums import DataType, JoinType, RANKED_AGGREGATIONS
+from slayer.core.enums import DataType, JoinCardinality, JoinType
 from slayer.core.errors import AmbiguousJoinPathError
-from slayer.core.keys import SLOT_COMPOSITE_KINDS, AggregateKey, Grain, ArithmeticKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_kernel_requiring, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, VALUE_KEY_TYPES
-from slayer.core.models import Column, SlayerModel, aggregation_definition, empty_value
-from slayer.core.refs import key_display
+from slayer.core.keys import SLOT_COMPOSITE_KINDS, AggregateKey, AggregateSource, Grain, ArithmeticKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_kernel_requiring, is_ranked, restricts_own_rows, input_masked, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, NULL_SAFE_COMPARISON_OPS, NON_IDENTITY_KEY_FIELDS, OPTIONAL_KEY_FIELDS, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, value_type, VALUE_KEY_TYPES
+from slayer.core.models import Column, EmptyValue, SlayerModel, aggregation_definition, empty_value
+from slayer.core.refs import EXPRESSION_SOURCE_KINDS, first_bucket_remedy, key_display
 from slayer.engine.reference_closure import (
     aggregate_input_closure,
     column_default_key,
@@ -48,11 +48,12 @@ from slayer.core.join_walker import (
     aggregation_owner,
     canonical_token,
     follow,
-    physical_join_pairs,
+    join_key_columns,
+    model_column_type,
     reverse_token,
     unique_key_sets,
 )
-from slayer.engine.join_safety import (
+from slayer.engine.cardinality.join_safety import (
     UNREACHABLE_NO_PATH,
     attributable_from_root,
     broadcast_reason,
@@ -72,18 +73,19 @@ from slayer.engine.join_safety import (
 from slayer.core.query import (
     SlayerQuery,
 )
-from slayer.sql.naming import canonical_aggregate_alias, flat_name, pick_slot_alias, slot_result_key
+from slayer.sql.naming import (
+    ROW_IDENTITY_COLUMN, canonical_aggregate_alias, flat_name, pick_slot_alias, slot_result_key, with_row_identity,
+)
 from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.scope import ModelScope, StageColumn, StageSchema, host_model_name
 from slayer.engine.elaborate_env import (
     check_reserved_regroup_prefix,
     ConsumerPosition,
+    row_refs_off_grain,
     is_dimension_transform_root,
     position_classes,
     check_stage_flatten_collision,
-    validate_model_filter,
-    check_association_root_unique_key,
     check_association_windowed_ranked,
     check_cross_model_inputs_safe,
     check_cross_model_partition_keys_attributable,
@@ -103,11 +105,11 @@ from slayer.engine.elaborate_env import (
     check_windowed_time_dimension,
 )
 from slayer.engine.elaborate import elaborate_synthesized
-from slayer.ir.bound import BoundExpr, BoundFilter, DeclaredMeasure, OrderSpec, bound_filter_from_key
+from slayer.ir.bound import BoundExpr, BoundFilter, DeclaredMeasure, OrderSpec, bound_filter_from_key, row_restriction_from_key
 from slayer.engine.compile.discovery import RootDisposition, discover_roots, row_attach_inputs
 from slayer.ir.elaborated import ConjunctTyping, ElaboratedProducer, ElaboratedQuery, ElaboratedStage
 from slayer.ir.terms import Aggregate
-from slayer.engine.filter_reachability import (
+from slayer.engine.population.filter_reachability import (
     key_has_host_local_ref,
 )
 from slayer.ir.planned import (
@@ -116,7 +118,6 @@ from slayer.ir.planned import (
     FilterReachability,
     MaskEntry,
     MaskTyping,
-    ModeAFilter,
     OrderEntry,
     PickedParam,
     PlannedQuery,
@@ -133,7 +134,7 @@ from slayer.ir.planned import (
     ValueSlot,
 )
 from slayer.engine.ranked_planner import (
-    explicit_ranking_time_arg,
+    explicit_ranking_key,
     ordered_row_keys,
     resolve_ranking_time_key,
 )
@@ -147,15 +148,17 @@ from slayer.engine.compile.spine import (
     spine_column,
 )
 from slayer.engine.compile.shift import carried_placeholders
-from slayer.engine.unrelated import crosses_product_hop
+from slayer.engine.cardinality.unrelated import crosses_product_hop
 from slayer.engine.compile.staging import stage_slots
 from slayer.engine.key_metadata import (
     dimension_key_metadata,
+    key_element_type,
     measure_key_format_description,
     measure_key_preserves_native_type,
     measure_key_type,
 )
 from slayer.ir.prebound import (
+    ModePolicy,
     PreboundQuery,
     StrictQueryCarrier,
     partition_declared_measures,
@@ -177,10 +180,23 @@ __all__ = [
 ]
 
 
-def _row_key_path(key: ValueKey) -> tuple:
+def _order_wrap_source(key: ValueKey, *, dim_keys: frozenset) -> Optional[Tuple[AggregateSource, tuple]]:
+    """(source, join path) of the MIN/MAX wrap a grouped ORDER BY row value needs, else ``None``."""
     if isinstance(key, TimeTruncKey):
-        return _row_key_path(key.column)
-    return tuple(getattr(key, "path", ()))
+        # Not a legal aggregate source; wrap its untruncated source (DATE_TRUNC is monotonic).
+        return _order_wrap_source(key.source, dim_keys=dim_keys)
+    if isinstance(key, (ColumnKey, ColumnSqlKey)):
+        return key, key.path
+    if not isinstance(key, EXPRESSION_SOURCE_KINDS) or any(
+        isinstance(k, (AggregateKey, TransformKey))
+        or (isinstance(k, ColumnKey) and k.leaf.startswith(REGROUP_LEAF_PREFIX))
+        for k in walk_value_keys(key)
+    ):
+        return None
+    off_grain = row_refs_off_grain(key, dim_keys)
+    if not off_grain:
+        return None
+    return key, next((p for p in map(source_anchor_path, off_grain) if p), ())
 
 
 # Duration-windowed measures (``window='90d'``).
@@ -215,7 +231,7 @@ def _guard_windowed_measures(
         for key in _windowed_agg_keys(vk):
             selected_windowed.setdefault(key, True)
 
-    check_windowed_time_dimension(resolved=active_td_key is not None)
+    check_windowed_time_dimension(resolved=active_td_key is not None, remedy=first_bucket_remedy(measure_vks))
     return selected_windowed
 
 
@@ -249,7 +265,10 @@ def _windowed_slot_id_set(
 def _stable_text(obj: Any) -> str:
     """A process-independent spelling of a key (sets sorted, never hash order)."""
     if isinstance(obj, BaseModel):
-        fields = ",".join(_stable_text(getattr(obj, f)) for f in type(obj).model_fields)
+        fields = ",".join(
+            _stable_text(getattr(obj, f)) for f in type(obj).model_fields
+            if f not in NON_IDENTITY_KEY_FIELDS and not (f in OPTIONAL_KEY_FIELDS and getattr(obj, f) is None)
+        )
         return f"{type(obj).__name__}({fields})"
     if isinstance(obj, (set, frozenset)):
         return "{" + ",".join(sorted(_stable_text(x) for x in obj)) + "}"
@@ -261,7 +280,7 @@ def _stable_text(obj: Any) -> str:
 def _regroup_grain_name(pk: ValueKey) -> str:
     """A column's path/leaf spelling; any other key a key-derived identifier."""
     if isinstance(pk, TimeTruncKey):
-        return f"{_regroup_grain_name(pk.column)}_{pk.granularity}"
+        return f"{_regroup_grain_name(pk.source)}_{pk.granularity}"
     if isinstance(pk, (ColumnKey, ColumnSqlKey)):
         return "__".join([*pk.path, column_leaf(pk)])
     return f"grain_{hashlib.sha1(_stable_text(pk).encode()).hexdigest()[:8]}"
@@ -288,7 +307,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
     explicit_types: Optional[Mapping[ValueKey, DataType]] = None,
     grain_name_by_key: Optional[Mapping[ValueKey, str]] = None,
     window_td_key: Optional[TimeTruncKey] = None,
-    to_many_handling: Literal["broadcast", "associate", "error"] = "broadcast",
+    mode_policy: ModePolicy,
 ) -> Tuple[PreboundQuery, List[ValueKey]]:
     """The producer's bind product: grain from partition keys, one measure per consumed aggregate, inherited base-row filters; returns prebound + ordered grain keys."""
     public_alias_by_agg = public_alias_by_agg or {}
@@ -326,6 +345,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
             bound=BoundExpr(value_key=pk),
             declared_name=name, public_name=name,
             type=d_type, format=d_fmt, description=d_desc,
+            element_type=None if model is None else key_element_type(pk, scope=ModelScope(source_model=model), bundle=bundle),
             # A grain key is a dimension the producer GROUPS BY; marking a computed one makes its inner aggregate a ROW attach.
             is_dimension=True,
         ))
@@ -353,6 +373,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
             bound=BoundExpr(value_key=agg),
             declared_name=canonical, public_name=canonical,
             type=explicit_types.get(agg, a_type), format=a_fmt, description=a_desc,
+            element_type=None if model is None else key_element_type(agg, scope=ModelScope(source_model=model), bundle=bundle),
             type_is_explicit=agg in explicit_types,
             preserve_native_type=(
                 model is not None
@@ -370,9 +391,18 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
         n_dims=len(dims),
         n_time_dimensions=len(tds),
         distinct_dimension_values=True,
-        to_many_handling=to_many_handling,
+        mode_policy=mode_policy,
     )
     return prebound, [*dims, *tds]
+
+
+def _population_filters(
+    prebound: PreboundQuery, filter_typings: Sequence[ConjunctTyping],
+) -> Iterator[Tuple[int, BoundFilter, ConjunctTyping]]:
+    """``(index, filter, typing)`` per population filter; a producer's FILTER row restriction is not one."""
+    for idx, (bf, ct) in enumerate(zip(prebound.bound_filters, filter_typings)):
+        if not bf.row_restriction:
+            yield idx, bf, ct
 
 
 def _regroup_inherited_filters(
@@ -381,7 +411,7 @@ def _regroup_inherited_filters(
     """Stratum-0 field masks define every producer's population; nothing else inherits."""
     date_bounds: List[BoundFilter] = []
     others: List[BoundFilter] = []
-    for idx, (bf, ct) in enumerate(zip(prebound.bound_filters, filter_typings)):
+    for idx, bf, ct in _population_filters(prebound, filter_typings):
         if ct.typing != MaskTyping.FIELD or ct.stratum != 0:
             continue
         if idx < prebound.n_date_range:
@@ -454,16 +484,14 @@ def _windowed_or_ranked_identity(agg: ValueKey):
     """A hashable, partition-free identity for a windowed / ranked aggregate (own producer each); ``None`` for a plain aggregate."""
     if not is_kernel_requiring(agg):
         return None
-    return (
-        "windowed" if window_kwarg_of(agg) is not None else "ranked",
-        agg.source, agg.agg, tuple(agg.args), tuple(agg.kwargs),
-    )
+    return ("windowed" if window_kwarg_of(agg) is not None else "ranked", _partition_free_identity(agg))
 
 
-def _partition_free_identity(agg: ValueKey):  # NOSONAR(S8495) — distinct-shape identity tuples are intentional dict keys: a plain aggregate's 4-field identity and an "other" 2-tuple never collide (different lengths compare unequal)
+def _partition_free_identity(agg: ValueKey) -> ValueKey:
+    """``agg`` without its ``partition_by=`` grain."""
     if not isinstance(agg, AggregateKey):
-        return ("other", agg)
-    return (agg.source, agg.agg, tuple(agg.args), tuple(agg.kwargs))
+        return agg
+    return agg.model_copy(update={"partition_keys": None})
 
 
 def _cross_model_input_paths(
@@ -510,18 +538,18 @@ def _first_unattributable_arg_leaf(
             host_model=host_model, host_name=host_name,
         )
         if reason is not None:
-            leaf = column_leaf(arg.column if isinstance(arg, TimeTruncKey) else arg)
+            leaf = column_leaf(arg)
             return [(leaf if arg is value or name is None else name, reason)]
     return []
 
 
 def _param_row_columns(
     agg: AggregateKey,
-) -> Iterator[Tuple[Optional[str], object, ColumnKey | ColumnSqlKey | TimeTruncKey]]:
+) -> Iterator[Tuple[Optional[str], object, ColumnKey | ColumnSqlKey]]:
     """``(parameter name or None, parameter value, column row leaf)`` per argument."""
     for name, value in [*((None, a) for a in agg.args), *agg.kwargs]:
         for arg in parameter_row_leaves(value):
-            if isinstance(arg, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+            if isinstance(arg, (ColumnKey, ColumnSqlKey)):
                 yield name, value, arg
 
 
@@ -737,19 +765,21 @@ def _ranking_key_crossing(
     """The ``(leaf, hop)`` a ranked aggregate's ordering key crosses unsafely from
     ``root_model``, judged by its dependency closure (engine P10); ``None`` when every
     path is provably to-one. An unanalysable definition fails closed through
-    ``check_input_dependencies_analyzable`` naming the column (Axiom 2.8)."""
-    leaf = column_leaf(key) if isinstance(key, (ColumnKey, ColumnSqlKey)) else str(key)
-    closure = key_closure(
-        key=key, anchor_model=root_model, anchor_relation=root_model.name, bundle=bundle,
-    )
-    if closure is None:
-        check_input_dependencies_analyzable(alias=alias, column=leaf)
-        closure = ()
-    for path in closure:
-        if not safe_reachable(
-            root=root_model, path=path, models_by_name=bundle.models_by_name,
-        ):
-            return leaf, path[-1]
+    ``check_input_dependencies_analyzable`` naming the column (Axiom 2.8). An expression
+    key is judged per leaf, naming the crossing one."""
+    for leaf_key in source_row_leaves(key) or [key]:
+        leaf = column_leaf(leaf_key) if isinstance(leaf_key, (ColumnKey, ColumnSqlKey)) else key_display(leaf_key)
+        closure = key_closure(
+            key=leaf_key, anchor_model=root_model, anchor_relation=root_model.name, bundle=bundle,
+        )
+        if closure is None:
+            check_input_dependencies_analyzable(alias=alias, column=leaf)
+            closure = ()
+        for path in closure:
+            if not safe_reachable(
+                root=root_model, path=path, models_by_name=bundle.models_by_name,
+            ):
+                return leaf, path[-1]
     return None
 
 
@@ -770,7 +800,7 @@ def _assert_local_producer_inputs_safe(
     # Role: crossed ranking argument, explicitly named (a first/last ranking arg),
     # judged by its closure so a derived argument names itself (D1).
     ranked_crossings: List[Tuple[str, str]] = []
-    ranking_arg = explicit_ranking_time_arg(agg)
+    ranking_arg = explicit_ranking_key(agg)
     if ranking_arg is not None:
         crossing = _ranking_key_crossing(
             key=ranking_arg, root_model=host_model, bundle=bundle, alias=alias,
@@ -904,7 +934,7 @@ def _trailing_window_kernel(
             producer_plan=producer_plan, agg_key=agg_key, root_model=root_model,
             bundle=bundle, alias=alias, target_rooted=target_rooted,
         )
-        if agg_key.agg in RANKED_AGGREGATIONS else None
+        if is_ranked(agg_key) else None
     )
     # Reference-bearing parameters read per interval row, each key remapped through
     # the sub-plan's regroup substitutions so an attached-aggregate parameter reads
@@ -973,7 +1003,7 @@ def _kernel_decision(
         return _KernelDecision(kind="association", answer=answer)
     if windowed and window_kwarg_of(answer) is not None:
         return _KernelDecision(kind="trailing_window", answer=answer)
-    if answer.agg in RANKED_AGGREGATIONS:
+    if is_ranked(answer):
         return _KernelDecision(kind="ranked", answer=answer)
     return None
 
@@ -998,14 +1028,19 @@ def _decided_kernel(
     )}
 
 
-def _empty_value(key: ValueKey, *, bundle: ResolvedSourceBundle) -> Optional[int]:
+def _empty_value(key: ValueKey, *, bundle: ResolvedSourceBundle) -> EmptyValue:
     """An attached aggregate's empty value, its definition read on the owning model."""
     if not isinstance(key, AggregateKey):
         return None
-    owner = aggregation_owner(
-        root=bundle.source_model, source=key.source, models_by_name=bundle.models_by_name,
+    models = bundle.models_by_name
+    owner = aggregation_owner(root=bundle.source_model, source=key.source, models_by_name=models)
+    root = bundle.source_model
+    element = None if root is None else value_type(
+        key.source, column_type=model_column_type(model=root, models_by_name=models),
     )
-    return empty_value(agg=key.agg, definition=aggregation_definition(owner=owner, agg=key.agg))
+    return empty_value(
+        agg=key.agg, definition=aggregation_definition(owner=owner, agg=key.agg), element_type=element,
+    )
 
 
 def _synthesize_wrap_attach(
@@ -1059,7 +1094,7 @@ def _synthesize_wrap_attach(
             pks, key=lambda k: consumer_order.get(k, len(consumer_order)),
         ),
         grain_name_by_key=grain_name_by_key,
-        to_many_handling=prebound.to_many_handling,
+        mode_policy=prebound.mode_policy,
     )
     producer_plan = compile_synthesized(
         prebound=producer_prebound,
@@ -1118,7 +1153,7 @@ def _frame_free_filters(
 ) -> List[BoundFilter]:
     """Every field mask of the population (any stratum) minus every frame bound."""
     out: List[BoundFilter] = []
-    for idx, (bf, ct) in enumerate(zip(prebound.bound_filters, filter_typings)):
+    for idx, bf, ct in _population_filters(prebound, filter_typings):
         if ct.typing != MaskTyping.FIELD or idx < prebound.n_date_range:
             continue
         residual = strip_frame_bounds(key=bf.value_key, time_columns=time_columns)
@@ -1169,7 +1204,7 @@ def _plan_shifted_attaches(
     }
     inherited = _frame_free_filters(
         prebound=prebound, filter_typings=filter_typings,
-        time_columns=frozenset(k.column for k in td_keys if isinstance(k, TimeTruncKey)),
+        time_columns=frozenset(k.source for k in td_keys if isinstance(k, TimeTruncKey)),
     )
     producer_model = scope.source_model if isinstance(scope, ModelScope) else None
     kernel_root = producer_model or bundle.source_model
@@ -1209,7 +1244,7 @@ def _plan_shifted_attaches(
             public_alias_by_agg=aliases,
             grain_name_by_key=grain_name_by_key,
             window_td_key=window_td,
-            to_many_handling=prebound.to_many_handling,
+            mode_policy=prebound.mode_policy,
         )
         decision = _kernel_decision(
             answer=answer, windowed=window_td is not None,
@@ -1413,13 +1448,15 @@ def _path_edges_exist(
 
 def _register_hop(
     nodes: Dict[Tuple[str, ...], SemiJoinHop], *, node_path: Tuple[str, ...],
-    target_model: str, pairs: List[Tuple[str, str]], declared_left: bool,
+    target_model: str, keys: List[Tuple[Column, Column]], declared_left: bool, lateral: Optional[str] = None,
 ) -> None:
     nodes.setdefault(node_path, SemiJoinHop(
         target_model=target_model,
-        join_pairs=tuple((s, t) for s, t in pairs),
+        join_pairs=tuple((s.physical_name, t.physical_name) for s, t in keys),
+        quoted=tuple((s.physical_quoted, t.physical_quoted) for s, t in keys),
         node_path=node_path,
         declared_left=declared_left,
+        lateral=lateral,
     ))
 
 
@@ -1446,14 +1483,31 @@ def _forward_hops(
         )
     node_path = base_node_path
     for edge in chain:
+        own_row = not node_path and _is_parent_hop(edge)
         node_path = (*node_path, canonical_token(edge))
+        if own_row:
+            continue  # the root list child's parent row is already in the producer's FROM
         _register_hop(
             nodes, node_path=node_path, target_model=edge.target_model,
-            pairs=physical_join_pairs(edge=edge, source=models[edge.source_model],
-                                      target=models[edge.target_model]),
+            keys=join_key_columns(edge=edge, source=models[edge.source_model], target=models[edge.target_model]),
             declared_left=edge.join_type == JoinType.LEFT,
+            lateral=_forward_lateral(edge),
         )
     return node_path
+
+
+def _is_parent_hop(edge) -> bool:
+    """A list child's hop back to its parent."""
+    return edge.lateral is not None and edge.cardinality is not JoinCardinality.ONE_TO_MANY
+
+
+def _forward_lateral(edge) -> Optional[str]:
+    """A list child hop's list column; a parent hop below the producer root cannot be correlated (fail closed)."""
+    if edge.lateral is None:
+        return None
+    if _is_parent_hop(edge):
+        raise _PushBlocked("a list child's hop back to its parent is its own row")
+    return edge.lateral
 
 
 def _reverse_hops(
@@ -1477,24 +1531,21 @@ def _reverse_hops(
     by_name = {**models_by_name, host_model.name: host_model}
     for edge in reversed(fwd):
         node_path = (*node_path, reverse_token(edge))
-        physical = physical_join_pairs(
-            edge=edge, source=by_name[edge.source_model], target=by_name[edge.target_model],
-        )
+        keys = join_key_columns(edge=edge, source=by_name[edge.source_model], target=by_name[edge.target_model])
+        # A list child's parent is its own row, already in the producer's FROM: no hop.
+        if edge.lateral is not None:
+            continue
         # A reverse hop is the population correlation, not a declared join:
         # never null-extended.
         _register_hop(
             nodes, node_path=node_path, target_model=edge.source_model,
-            pairs=[(tgt, src) for src, tgt in physical],
+            keys=[(tgt, src) for src, tgt in keys],
             declared_left=False,
         )
     return node_path
 
 
 def _remap_ref_path(r: ValueKey, node_path: Tuple[str, ...]) -> ValueKey:
-    if isinstance(r, TimeTruncKey):
-        return r.model_copy(update={
-            "column": r.column.model_copy(update={"path": node_path}),
-        })
     return r.model_copy(update={"path": node_path})
 
 
@@ -1585,6 +1636,7 @@ _T, _F, _U, _D = "T", "F", "U", "D"
 _AND_ORDER = (_F, _U, _D, _T)
 _OR_ORDER = (_T, _D, _U, _F)
 _NOT_VALUE = {_T: _F, _F: _T, _U: _U, _D: _D}
+_IS_NOT = "is not"
 
 #: null-source paths per ref: nulling any hop on/above one nulls the ref.
 _NullSources = Dict[ValueKey, "frozenset[Tuple[str, ...]]"]
@@ -1602,7 +1654,9 @@ def _operand_null(k: Any, *, h: Tuple[str, ...], srcs: _NullSources) -> bool:
     """Is value operand ``k`` NULL when hop ``h`` and its descendants are NULL?
     A leaf's null-source paths decide it; arithmetic over a null operand is null;
     a predicate is null iff UNKNOWN; a ScalarCall / Star is data-dependent."""
-    if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
+    if isinstance(k, TimeTruncKey):
+        return _operand_null(k.source, h=h, srcs=srcs)
+    if isinstance(k, (ColumnKey, ColumnSqlKey, StarKey)):
         return any(_is_prefix(h, p) for p in srcs.get(k, frozenset()))
     if isinstance(k, InKey) or (
         isinstance(k, ArithmeticKey) and k.op.lower() in _PREDICATE_OPS
@@ -1648,10 +1702,12 @@ def _pred_value(cj: ValueKey, *, h: Tuple[str, ...], srcs: _NullSources) -> str:
         return _fold(vals=vals, order=_AND_ORDER if op == "and" else _OR_ORDER)
     if op == "not":
         return _NOT_VALUE[_pred_value(cj.operands[0], h=h, srcs=srcs)]
-    if op in ("is", "is not"):
+    if op in ("is", _IS_NOT):
         return _is_value(
-            a=cj.operands[0], b=cj.operands[1], negated=op == "is not", h=h, srcs=srcs,
+            a=cj.operands[0], b=cj.operands[1], negated=op == _IS_NOT, h=h, srcs=srcs,
         )
+    if op in NULL_SAFE_COMPARISON_OPS:
+        return _D
     if op in PREDICATE_COMPARISON_OPS:
         return _unknown_if_null(cj.operands, h=h, srcs=srcs)
     return _D
@@ -1701,10 +1757,9 @@ def _conjunct_push_plan(
     srcs: Dict[ValueKey, "frozenset[Tuple[str, ...]]"] = {}
     host_node: Optional[Tuple[str, ...]] = None
     for r in walk_value_keys(cj):
-        if not isinstance(r, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
+        if not isinstance(r, (ColumnKey, ColumnSqlKey, StarKey)):
             continue
-        col = r.column if isinstance(r, TimeTruncKey) else r
-        hp = tuple(getattr(col, "path", ()) or ())
+        hp = tuple(r.path)
         base_model, base_node, rel, host_node = _resolve_ref_anchor(
             hp, tp=tp, root_model=root_model, host_model=host_model,
             lookup=lookup, nodes=nodes, host_name=host_name,
@@ -1715,7 +1770,7 @@ def _conjunct_push_plan(
             models_by_name=lookup, nodes=nodes,
         )
         dep_terminals = _register_dep_hops(
-            col, node_path=node_path, host_model=host_model, lookup=lookup,
+            r, node_path=node_path, host_model=host_model, lookup=lookup,
             bundle=bundle, nodes=nodes,
         )
         remapped = _remap_ref_path(r, node_path)
@@ -1723,7 +1778,7 @@ def _conjunct_push_plan(
         # dependency terminal is — unless data-dependent (a star, a
         # non-propagating derived definition).
         if isinstance(r, StarKey) or not _ref_null_propagates(
-            col, host_model=host_model, models_by_name=lookup, bundle=bundle,
+            r, host_model=host_model, models_by_name=lookup, bundle=bundle,
         ):
             srcs[remapped] = frozenset()
         else:
@@ -1950,7 +2005,7 @@ def dispose_population_filters(
     models_by_name = bundle.models_by_name
     texts = prebound.bound_filter_texts
     out: List[_DisposedConjunct] = []
-    for i, (bf, ct) in enumerate(zip(prebound.bound_filters, filter_typings)):
+    for i, bf, ct in _population_filters(prebound, filter_typings):
         if (bf.phase != Phase.ROW or ct.typing != MaskTyping.FIELD
                 or ct.stratum != 0):
             continue
@@ -2039,6 +2094,14 @@ class _ProducerSynthesisContext(BaseModel):
     def dim_display(self, key: ValueKey) -> str:
         return _query_dim_display(self.prebound, key)
 
+    def endpoints_source(self) -> "_EndpointsSource":
+        return _EndpointsSource(
+            host_model=self.host_model, bundle=self.bundle, scope=self.scope,
+            stage_schemas=self.stage_schemas, population=self.population,
+            population_filters=self.population_filters, n_population_date=self.n_population_date,
+            mode_policy=self.prebound.mode_policy,
+        )
+
 
 def _query_dim_display(prebound: PreboundQuery, key: ValueKey) -> str:
     """A key's query name: its first explicitly declared dimension name, else its formula text."""
@@ -2089,13 +2152,18 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         requested = list(agg.partition_keys)
         explicit = True
     else:
-        requested = [*projected_dim_keys, *projected_td_keys]
+        # A member the rest of the grain determines is redundant to group by: it neither associates nor broadcasts.
+        kept = _prune_functionally_determined_grain(Grain.of([*projected_dim_keys, *projected_td_keys]))
+        requested = [g for g in [*projected_dim_keys, *projected_td_keys] if g in kept]
         explicit = False
 
-    mode = context.prebound.to_many_handling
+    policy = context.prebound.mode_policy
     # Host included so the reverse (fanning) hop resolves for the broadcast
     # reason; attributability/filter routing keep the host-free map unchanged.
     models_with_host = {**models_by_name, host_model.name: host_model}
+    base_filters_with_text = [*base_filters_with_text, *_host_membership(
+        host_model=host_model, target_path=target_path, models_by_name=models_with_host, bundle=bundle,
+    )]
 
     # Safe grain S (attributable from R) vs unattributable.
     safe_pairs: List[Tuple[ValueKey, ValueKey]] = []  # (host_key, rerooted_key)
@@ -2137,15 +2205,30 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     )
     product = crosses_product_hop(host=host_model, path=target_path, models_by_name=models_by_name)
     # Across a product hop every cell associates all home rows: the broadcast producer, warned as associated.
-    product_associate = mode == "associate" and product
+    product_associate = policy.associates and product
     # Association only when a DIMENSION is unattributable; attached inputs never need it.
-    associate = mode == "associate" and bool(unattributable) and not product_associate
+    associate = policy.associates and bool(unattributable) and not product_associate
+    entity: Optional[_AssociationEntity] = None
+    association_unsupported: Optional[str] = None
+    if associate:
+        entity = _association_entity(
+            root_model=root_model, target_path=target_path, unattributable=unattributable,
+            host_model=host_model, models_by_name=models_by_name,
+        )
+        # The default broadcasts an ineligible implicit grain; requested grain is never broadcast.
+        if policy.fallback and not explicit:
+            association_unsupported = _association_unsupported(
+                agg=agg, entity=entity, target_path=target_path, host_model=host_model,
+                models_by_name=models_by_name, bundle=bundle,
+            )
+            associate = association_unsupported is None
     window_td_key: Optional[TimeTruncKey] = None
     semi_joins: List[SemiJoinFilter] = []
     broadcast: List[Tuple[str, str]] = []
     picked_params: List[PickedParam] = []
     restricted_texts: List[str] = []
     entity_keys_root: List[ValueKey] = []
+    list_rows = False
     associated_measure: Optional[str] = None
     associated_dimensions: List[str] = []
 
@@ -2154,17 +2237,16 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         # rerooted grain member joined back on the host key, and dedup per home
         # entity via the association kernel — a home entity absent from the
         # population still counts in the cells its own path reaches.
+        assert entity is not None
         agg_rooted = agg_rooted.model_copy(update={"locus": "host"})
-        picked_params, entity_keys_root, assoc_pairs = (
-            _association_arm(
-                agg=agg, agg_rooted=agg_rooted, alias=alias, root_model=root_model,
-                target_path=target_path, unattributable=unattributable,
-                host_model=host_model, models_by_name=models_by_name,
-                bundle=bundle,
-            )
+        picked_params, entity_keys_root = _association_arm(
+            agg=agg, agg_rooted=agg_rooted, alias=alias, entity=entity,
+            target_path=target_path, host_model=host_model,
+            models_by_name=models_by_name, bundle=bundle,
         )
+        list_rows = entity.list_rows
         # The unattributable dims join back on the host key exactly like safe_pairs.
-        safe_pairs = [*safe_pairs, *assoc_pairs]
+        safe_pairs = [*safe_pairs, *entity.assoc_pairs]
         inherited, restricted_texts = _association_inline_filters(
             base_filters=base_filters_with_text, target_path=target_path,
             root_model=root_model, models_by_name=models_by_name,
@@ -2224,12 +2306,18 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         )
 
     # SHARED TAIL: root at the home, compile the producer, attach on the host key.
+    condition, unfiltered = _group_row_restriction([agg_rooted])
+    if condition is not None:
+        inherited = [*inherited, row_restriction_from_key(condition)]
+        agg_rooted = unfiltered[agg_rooted]
     _check_attached_params_determined(
         agg=agg, alias=alias, target_path=target_path, root_model=root_model,
         host_model=host_model, models_by_name=models_by_name, bundle=bundle,
         projected_dim_keys=projected_dim_keys, projected_td_keys=projected_td_keys,
         active_bucket=prebound.main_time_key,
     )
+    if associate and entity is not None:
+        root_model = entity.root_model
     root_bundle = bundle.rerooted(root_model)
     root_scope = (
         ModelScope(source_model=root_model)
@@ -2248,7 +2336,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         explicit_types=(
             {agg_rooted: declared_type} if declared_type is not None else None
         ),
-        to_many_handling=prebound.to_many_handling,
+        mode_policy=prebound.mode_policy,
     )
     decision = _kernel_decision(
         answer=agg_rooted, windowed=window_td_key is not None, associate=associate,
@@ -2308,7 +2396,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     )
     cm_attach_kwargs: Dict[str, Any] = (
         {"kernel": AssociationProducerKernel(
-            entity_keys=entity_keys_root, picked_params=picked_params,
+            entity_keys=entity_keys_root, picked_params=picked_params, list_rows=list_rows,
         )}
         if decision is not None and decision.kind == "association"
         else _decided_kernel(
@@ -2322,7 +2410,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     if isinstance(kernel, TrailingWindowProducerKernel):
         cm_attach_kwargs["kernel"] = kernel.model_copy(update={
             "endpoints": _window_endpoints(
-                host_keys=[host_by_rerooted[rr] for rr in ordered_pks], context=context,
+                host_keys=[host_by_rerooted[rr] for rr in ordered_pks], source=context.endpoints_source(),
                 producer_registry=producer_registry,
             ),
             "endpoint_keys": list(ordered_pks),
@@ -2343,6 +2431,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         semi_join_measure=alias,
         broadcast_measure=alias if broadcast else None,
         broadcast_dimensions=broadcast,
+        association_unsupported=association_unsupported if broadcast else None,
         associated_measure=associated_measure,
         associated_dimensions=associated_dimensions,
         association_restricted_filter_texts=restricted_texts,
@@ -2367,25 +2456,40 @@ def _unrelated_attach_fields(
     }
 
 
+class _EndpointsSource(BaseModel):
+    """The host state a windowed producer's population cells are planned from."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    host_model: SlayerModel
+    bundle: ResolvedSourceBundle
+    scope: ModelScope | StageSchema
+    stage_schemas: Dict[str, StageSchema]
+    population: Population | None
+    population_filters: List[BoundFilter]
+    n_population_date: int
+    mode_policy: ModePolicy
+
+
 def _window_endpoints(
-    *, host_keys: List[ValueKey], context: _ProducerSynthesisContext,
+    *, host_keys: List[ValueKey], source: _EndpointsSource,
     producer_registry: Optional[Dict[Hashable, PlannedQuery]],
 ) -> Optional[PlannedQuery]:
     """The population's cells at a windowed producer's grain, in host coordinates, host keys' order."""
-    if context.population is None or not isinstance(context.scope, ModelScope):
+    if source.population is None or not isinstance(source.scope, ModelScope):
         return None
     prebound, _ = _regroup_producer_prebound(
-        pks=Grain.of(host_keys), aggs=[], model=context.host_model, bundle=context.bundle,
-        inherited=context.population_filters, n_date_range=context.n_population_date,
+        pks=Grain.of(host_keys), aggs=[], model=source.host_model, bundle=source.bundle,
+        inherited=source.population_filters, n_date_range=source.n_population_date,
         partition_order=lambda _pks: list(host_keys),
-        to_many_handling=context.prebound.to_many_handling,
+        mode_policy=source.mode_policy,
     )
     plan = compile_synthesized(
-        prebound=prebound, source_model=context.host_model.name, bundle=context.bundle,
-        scope=context.scope, stage_schemas=context.stage_schemas,
-        producer_registry=producer_registry, population=context.population,
+        prebound=prebound, source_model=source.host_model.name, bundle=source.bundle,
+        scope=source.scope, stage_schemas=source.stage_schemas,
+        producer_registry=producer_registry, population=source.population,
     )
-    return plan.model_copy(update={"stage_bundle": context.bundle})
+    return plan.model_copy(update={"stage_bundle": source.bundle})
 
 
 def _param_values(agg: AggregateKey) -> List[Tuple[str, ValueKey]]:
@@ -2491,27 +2595,96 @@ def _check_attached_params_determined(
         )
 
 
+def _reached_by_root_lists(key: ValueKey, *, root_model: SlayerModel, models_by_name: Dict[str, SlayerModel]) -> bool:
+    """``key`` (root coordinates) reads only the root's own list children."""
+    paths = [tuple(k.path) for k in walk_value_keys(key) if isinstance(k, (ColumnKey, ColumnSqlKey, StarKey))]
+    if not paths:
+        return False
+    for path in paths:
+        chain = follow(root=root_model, path=path, models_by_name=models_by_name) if path else None
+        if not chain or len(chain) != 1 or chain[0].lateral is None \
+                or chain[0].cardinality is not JoinCardinality.ONE_TO_MANY:
+            return False
+    return True
+
+
+class _AssociationEntity(NamedTuple):
+    """The entities an association producer deduplicates: the home (numbered when it has no unique key),
+    each unattributable dimension rerooted into it, and its entity key columns."""
+
+    root_model: SlayerModel
+    assoc_pairs: List[Tuple[ValueKey, ValueKey]]
+    list_rows: bool
+    entity_columns: List[str]
+
+    def models_by_name(self, models_by_name: Dict[str, SlayerModel]) -> Dict[str, SlayerModel]:
+        return {**models_by_name, self.root_model.name: self.root_model}
+
+    def host_grain(self, target_path: Tuple[str, ...]) -> Grain:
+        return Grain.of(
+            column_default_key(path=target_path, leaf=col, base=self.root_model) for col in self.entity_columns
+        )
+
+
+def _association_entity(
+    *, root_model: SlayerModel, target_path: Tuple[str, ...],
+    unattributable: List[_UnattributableDim], host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel],
+) -> _AssociationEntity:
+    assoc_pairs = [
+        (u.key, reroot_from_root(
+            key=u.key, target_path=target_path, root_model=root_model,
+            models_by_name=models_by_name, host_name=host_model.name,
+        ))
+        for u in unattributable
+    ]
+    # A list child's rows are its root row's own elements: association needs no key (design D6).
+    if assoc_pairs and all(
+        _reached_by_root_lists(rerooted, root_model=root_model, models_by_name=models_by_name)
+        for _key, rerooted in assoc_pairs
+    ):
+        return _AssociationEntity(root_model=root_model, assoc_pairs=assoc_pairs, list_rows=True, entity_columns=[])
+    key_sets = unique_key_sets(root_model)
+    if not key_sets:
+        root_model = with_row_identity(root_model)
+        key_sets = [[ROW_IDENTITY_COLUMN]]
+    return _AssociationEntity(
+        root_model=root_model, assoc_pairs=assoc_pairs, list_rows=False, entity_columns=key_sets[0],
+    )
+
+
+def _association_unsupported(
+    *, agg: AggregateKey, entity: _AssociationEntity, target_path: Tuple[str, ...],
+    host_model: SlayerModel, models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+) -> Optional[str]:
+    """Why the association arm cannot serve ``agg``, else ``None``."""
+    if window_kwarg_of(agg) is not None:
+        return "window="
+    if is_ranked(agg):
+        return f"{agg.agg}()"
+    grain = entity.host_grain(target_path)
+    for name, value in _param_values(agg):
+        if not isinstance(value, (AggregateKey, TransformKey)) and not _param_is_determined(
+            value=value, grain=grain, host_model=host_model,
+            models_by_name=entity.models_by_name(models_by_name), bundle=bundle,
+        ):
+            return f"a {name}= parameter the associated entity does not determine"
+    return None
+
+
 def _association_arm(
     *, agg: AggregateKey, agg_rooted: AggregateKey, alias: str,
-    root_model: SlayerModel, target_path: Tuple[str, ...],
-    unattributable: List[_UnattributableDim], host_model: SlayerModel,
+    entity: _AssociationEntity, target_path: Tuple[str, ...], host_model: SlayerModel,
     models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
-) -> Tuple[
-    List[PickedParam], List[ValueKey], List[Tuple[ValueKey, ValueKey]],
-]:
+) -> Tuple[List[PickedParam], List[ValueKey]]:
     """The home-rooted association arm: eligibility + mode-invariant
     input safety on the rerooted host-locus aggregate (compiled inline at its fanning
     grain, its level-1 dedup removing the fan-out); the kernel entity keys in ROOT
-    coordinates and the parameters the entity grain picks, rerooted into the home;
-    and each unattributable dimension rerooted to join back on the host key exactly
-    like ``safe_pairs``."""
+    coordinates and the parameters the entity grain picks, rerooted into the home."""
+    root_model = entity.root_model
     check_association_windowed_ranked(
         alias=alias,
         windowed_or_ranked=is_kernel_requiring(agg),
-    )
-    key_sets = unique_key_sets(root_model)
-    check_association_root_unique_key(
-        alias=alias, root_name=root_model.name, has_unique_key=bool(key_sets),
     )
     _assert_cross_model_inputs_safe(
         agg=agg, agg_rooted=agg_rooted, root_model=root_model,
@@ -2524,14 +2697,10 @@ def _association_arm(
     # one is judged by the shared home-determination rule. Lift every parameter,
     # rerooted into the home so the level-1 pick reads it there; the kernel dedups
     # by the entity key in ROOT coordinates.
-    host_entity_keys: List[ValueKey] = [
-        column_default_key(path=target_path, leaf=col, base=root_model)
-        for col in key_sets[0]
-    ]
+    entity_grain = entity.host_grain(target_path)
     entity_keys_root: List[ValueKey] = [
-        column_default_key(path=(), leaf=col, base=root_model) for col in key_sets[0]
+        column_default_key(path=(), leaf=col, base=root_model) for col in entity.entity_columns
     ]
-    entity_grain = Grain.of(host_entity_keys)
     picked_params: List[PickedParam] = []
     for name, value in _param_values(agg):
         # Attached kinds (aggregate- and transform-valued) are judged by the shared
@@ -2542,21 +2711,14 @@ def _association_arm(
                 grain_display=_grain_display(entity_grain),
                 determined=_param_is_determined(
                     value=value, grain=entity_grain, host_model=host_model,
-                    models_by_name=models_by_name, bundle=bundle,
+                    models_by_name=entity.models_by_name(models_by_name), bundle=bundle,
                 ),
             )
         picked_params.append(PickedParam(name=name, key=reroot_from_root(
             key=value, target_path=target_path, root_model=root_model,
             models_by_name=models_by_name, host_name=host_model.name,
         )))
-    assoc_pairs = [
-        (u.key, reroot_from_root(
-            key=u.key, target_path=target_path, root_model=root_model,
-            models_by_name=models_by_name, host_name=host_model.name,
-        ))
-        for u in unattributable
-    ]
-    return picked_params, entity_keys_root, assoc_pairs
+    return picked_params, entity_keys_root
 
 
 def _association_inline_filters(
@@ -2744,8 +2906,8 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
             constituents.append(_value)
 
     # Attributable iff the operand grain determines it (Axiom 7); the rest resolve
-    # per to_many_handling, exactly as for model-rooted aggregates.
-    mode = prebound.to_many_handling
+    # per the mode policy, exactly as for model-rooted aggregates.
+    policy = prebound.mode_policy
     attributable: List[ValueKey] = []
     witness_of: Dict[ValueKey, ValueKey] = {}
     for g in requested:
@@ -2762,7 +2924,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     # An explicit outer key is judged here only — never against the query root.
     if root.partition_keys is not None:
         check_reaggregation_outer_keys_determined(
-            alias=alias, mode=mode,
+            alias=alias, policy=policy,
             undetermined_keys=[context.dim_display(g) for g in unattributable],
             grain_display=_grain_display(union_grain, display=context.dim_display),
         )
@@ -2770,10 +2932,10 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     broadcast_dims: List[Tuple[str, str]] = []
     if unattributable:
         check_reaggregation_dims_attributable(
-            alias=alias, mode=mode,
+            alias=alias, policy=policy,
             unattributable_names=[context.dim_display(g) for g in unattributable],
         )
-        if mode == "associate":
+        if policy.associates:
             associate_dims = unattributable
         else:
             broadcast_dims = [
@@ -2815,6 +2977,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         active_bucket=prebound.main_time_key,
         population=population,
         population_semi_join_measures=semi_join_names,
+        mode_policy=policy,
     )
 
     # The outer producer: OUTER_AGG over the constituent composite (placeholders),
@@ -2853,7 +3016,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         # reserved __regroup__ prefix into the emitted alias).
         public_alias_by_agg={outer_agg: alias},
         explicit_types={outer_agg: declared_type} if declared_type is not None else None,
-        to_many_handling=mode,
+        mode_policy=policy,
     )
     outer_plan = compile_synthesized(
         prebound=outer_prebound,
@@ -2952,6 +3115,7 @@ def _build_carrier_attach(
     producer_registry: Optional[Dict[Hashable, PlannedQuery]],
     active_bucket: Optional[TimeTruncKey],
     population: "Population",
+    mode_policy: ModePolicy,
     population_semi_join_measures: Optional[List[str]] = None,
 ) -> RegroupAttachPlan:
     """A row-attach producer at the union grain carrying every constituent (coarser
@@ -2968,6 +3132,7 @@ def _build_carrier_attach(
         pks=union_grain, aggs=constituents, model=host_model, bundle=bundle,
         inherited=inherited, n_date_range=n_date_range,
         window_td_key=active_bucket if carrier_windowed else None,
+        mode_policy=mode_policy,
     )
     carrier_plan = compile_synthesized(
         prebound=carrier_prebound,
@@ -3229,8 +3394,8 @@ def _local_regroup_groups(
     projected_td_keys: List[ValueKey], active_bucket: Optional[ValueKey],
     crossing: Callable[[ValueKey], bool],
 ) -> List[Tuple[Grain, bool, List[ValueKey]]]:
-    """``(grain, windowed, roots)`` per producer: one per grain and, for a windowed /
-    ranked / crossing-input root, per partition-free identity."""
+    """``(grain, windowed, roots)`` per producer: one per grain and row restriction and, for a
+    windowed / ranked / crossing-input root, per partition-free identity."""
     groups: Dict[Tuple, List[ValueKey]] = {}
     meta: Dict[Tuple, Tuple[Grain, bool]] = {}
     for agg in roots:
@@ -3241,8 +3406,8 @@ def _local_regroup_groups(
         ident = _windowed_or_ranked_identity(agg)
         # A crossing-input root needs its OWN producer, else another aggregate's crossed joins fan its rows.
         if ident is None and isinstance(agg, AggregateKey) and crossing(agg):
-            ident = ("crossing", agg.source, agg.agg, tuple(agg.args), tuple(agg.kwargs))
-        gkey = (grain, ident)
+            ident = ("crossing", _partition_free_identity(agg))
+        gkey = (grain, ident, agg.filter if restricts_own_rows(agg) else None)
         groups.setdefault(gkey, []).append(agg)
         meta[gkey] = (grain, windowed)
     return [(*meta[g], aggs) for g, aggs in groups.items()]
@@ -3264,6 +3429,16 @@ class _LocalRegroupContext(BaseModel):
     mapping: Dict[ValueKey, ValueKey]
     inherited: List[Any]
     n_inherited_date: int
+
+
+def _group_row_restriction(
+    aggs: Sequence[ValueKey],
+) -> Tuple[Optional[ValueKey], Dict[ValueKey, AggregateKey]]:
+    """A producer group's shared FILTER row restriction and each restricted root's unfiltered key."""
+    restricted = [a for a in aggs if restricts_own_rows(a)]
+    conditions = {a.filter for a in restricted}
+    assert len(conditions) <= 1 and len(restricted) in (0, len(aggs)), conditions
+    return next(iter(conditions), None), {a: a.model_copy(update={"filter": None}) for a in restricted}
 
 
 def _canonical_producer_aggs(
@@ -3347,6 +3522,35 @@ def _local_regroup_kernel(
     )
 
 
+def _judged_as_masked(
+    aggs: Sequence[ValueKey], *, condition: Optional[ValueKey],
+) -> Dict[ValueKey, ValueKey]:
+    """Each producer aggregate by the key its reads are judged as: under a row restriction, the built-in input mask."""
+    if condition is None:
+        return {a: a for a in aggs}
+    return {(input_masked(a, condition=condition) if isinstance(a, AggregateKey) else a): a for a in aggs}
+
+
+def _with_population_endpoints(
+    attach_kwargs: Dict[str, Any], *, ctx: "_LocalRegroupContext", ordered_pks: List[ValueKey],
+) -> Dict[str, Any]:
+    """A row-restricted windowed producer's buckets: the population's cells, never its own restricted rows."""
+    kernel = attach_kwargs.get("kernel")
+    if not isinstance(kernel, TrailingWindowProducerKernel) or ctx.producer_model is None:
+        return attach_kwargs
+    source = _EndpointsSource(
+        host_model=ctx.producer_model, bundle=ctx.bundle, scope=ctx.scope, stage_schemas=ctx.stage_schemas,
+        population=ctx.population, population_filters=ctx.inherited,
+        n_population_date=ctx.n_inherited_date, mode_policy=ctx.prebound.mode_policy,
+    )
+    return {**attach_kwargs, "kernel": kernel.model_copy(update={
+        "endpoints": _window_endpoints(
+            host_keys=list(ordered_pks), source=source, producer_registry=ctx.producer_registry,
+        ),
+        "endpoint_keys": list(ordered_pks),
+    })}
+
+
 def _synthesize_local_regroup(
     *, ctx: "_LocalRegroupContext", phase: Literal["row", "combined"], pks: Grain,
     windowed: bool, aggs: List[ValueKey], order_fn: Callable[[Grain], List[ValueKey]],
@@ -3357,26 +3561,34 @@ def _synthesize_local_regroup(
     producer_model, mapping = ctx.producer_model, ctx.mapping
     inherited, n_inherited_date = ctx.inherited, ctx.n_inherited_date
     pks = _prune_functionally_determined_grain(pks)
-    producer_aggs, canonical_of = _canonical_producer_aggs(aggs)
+    # A row-restricted group shares one condition: the producer aggregates the unfiltered keys over its rows.
+    condition, unfiltered = _group_row_restriction(aggs)
+    if condition is not None:
+        inherited = [*inherited, row_restriction_from_key(condition)]
+    producer_alias = {unfiltered.get(k, k): v for k, v in alias_map.items()}
+    producer_aggs, canonical_of = _canonical_producer_aggs([unfiltered.get(a, a) for a in aggs])
+    canonical_of = {a: canonical_of[unfiltered.get(a, a)] for a in aggs}
     canon_index = {c: i for i, c in enumerate(producer_aggs)}
     if producer_model is not None:
+        judged = _judged_as_masked(producer_aggs, condition=condition)
         _assert_local_regroup_safe(
-            producer_aggs=producer_aggs, producer_model=producer_model, bundle=bundle,
-            active_td=prebound.main_time_key if windowed else None, alias_map=alias_map,
+            producer_aggs=list(judged), producer_model=producer_model, bundle=bundle,
+            active_td=prebound.main_time_key if windowed else None,
+            alias_map={j: producer_alias[a] for j, a in judged.items() if a in producer_alias},
             display=functools.partial(_query_dim_display, prebound),
         )
     producer_prebound, ordered_pks = _regroup_producer_prebound(
         pks=pks, aggs=producer_aggs, model=producer_model, bundle=bundle,
         inherited=inherited, n_date_range=n_inherited_date,
-        partition_order=order_fn, public_alias_by_agg=alias_map,
+        partition_order=order_fn, public_alias_by_agg=producer_alias,
         explicit_types={
-            dm.bound.value_key: dm.type
+            unfiltered.get(dm.bound.value_key, dm.bound.value_key): dm.type
             for dm in prebound.declared_measures
             if phase == "combined" and dm.type_is_explicit and dm.type is not None
         },
         grain_name_by_key=grain_names,
         window_td_key=prebound.main_time_key if windowed else None,
-        to_many_handling=prebound.to_many_handling,
+        mode_policy=prebound.mode_policy,
     )
     decision = _kernel_decision(answer=producer_aggs[0], windowed=windowed)
     producer_plan = compile_synthesized(
@@ -3418,6 +3630,8 @@ def _synthesize_local_regroup(
     attach_kwargs = _local_regroup_kernel(
         decision, producer_plan=producer_plan, bundle=bundle,
     )
+    if condition is not None:
+        attach_kwargs = _with_population_endpoints(attach_kwargs, ctx=ctx, ordered_pks=ordered_pks)
     return RegroupAttachPlan(
         producer_plan=producer_plan,
         alias_hint=(
@@ -3481,6 +3695,7 @@ def _rewrite_regrouped_prebound(
                     value_key=substitute_value_keys(sp.bound.value_key, mapping),
                 ),
                 direction=sp.direction,
+                nulls=sp.nulls,
             )
             for sp in prebound.order_specs
         ],
@@ -3490,7 +3705,7 @@ def _rewrite_regrouped_prebound(
         limit=prebound.limit,
         offset=prebound.offset,
         distinct_dimension_values=prebound.distinct_dimension_values,
-        to_many_handling=prebound.to_many_handling,
+        mode_policy=prebound.mode_policy,
     )
 
 
@@ -3606,11 +3821,13 @@ def _plan_regroups(
     )
     assert host_model_for_cm is not None
     models_by_name_cm = bundle.models_by_name
-    base_filters_with_text = list(zip(
-        prebound.bound_filters,
-        prebound.bound_filter_texts
-        + [None] * (len(prebound.bound_filters) - len(prebound.bound_filter_texts)),
-    ))
+    base_filters_with_text = [
+        (bf, text) for bf, text in zip(
+            prebound.bound_filters,
+            prebound.bound_filter_texts
+            + [None] * (len(prebound.bound_filters) - len(prebound.bound_filter_texts)),
+        ) if not bf.row_restriction
+    ]
     synthesis_context = _ProducerSynthesisContext(
         prebound=prebound, bundle=bundle, host_model=host_model_for_cm,
         models_by_name=models_by_name_cm,
@@ -3867,7 +4084,7 @@ def _producer_nesting_rule(
     prebound: PreboundQuery, *, context: ProducerContext,
 ) -> Callable[[ValueKey, str], bool]:
     """A row root always nests. A combined root at exactly the producer grain nests
-    iff it is kernel-requiring and not the producer's kernel answer; off the
+    iff it is row-restricted, or kernel-requiring and not the producer's kernel answer; off the
     producer grain only the producer's own answers stay inline (their dropped
     members are the synthesizer's disposition)."""
     dim_dms, td_dms, _ = partition_declared_measures(
@@ -3889,7 +4106,7 @@ def _producer_nesting_rule(
         )
         if not grain.is_subgrain_of(context.enclosing_grain):
             return root not in answers
-        return grain != context.enclosing_grain or (
+        return grain != context.enclosing_grain or restricts_own_rows(root) or (
             is_kernel_requiring(root) and root != context.kernel_answer
         )
 
@@ -3933,14 +4150,6 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         env=env, measure_roots=_coh_measure_roots,
         attach_plans=regroup_attach_plans,
     )
-
-    # SlayerModel.filters — Mode-A SQL WHERE, scope-derived so a sub-plan gets its own.
-    mode_a_filters: List[ModeAFilter] = []
-    if isinstance(scope, ModelScope) and scope.source_model is not None:
-        for j, mf in enumerate(scope.source_model.filters or []):
-            mode_a_filters.append(validate_model_filter(
-                mf=mf, idx=j, model=scope.source_model,
-            ))
 
     source_col_names = _source_column_names(scope)
     host_name = host_model_name(scope)
@@ -3996,6 +4205,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
     host_model_for_wraps = (
         scope.source_model if isinstance(scope, ModelScope) else None
     )
+    grain_dim_keys = frozenset(dm.bound.value_key for dm in declared_measures[:n_dims + n_tds])
     for spec in order_specs:
         okey = spec.bound.value_key
         osid = projection.registry.find_by_key(okey)
@@ -4006,12 +4216,11 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         if isinstance(okey, ColumnKey) and okey.leaf.startswith(REGROUP_LEAF_PREFIX):
             # A combined regroup placeholder resolves via its producer, not a hidden MIN/MAX.
             continue
-        if isinstance(okey, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
-            if grain is None:
-                continue  # raw-rows query -> split emission, no wrap needed
-            path = _row_key_path(okey)
-            # A TimeTruncKey is not a legal aggregate source; wrap its underlying column (DATE_TRUNC is monotonic).
-            src = okey.column if isinstance(okey, TimeTruncKey) else okey
+        if grain is None:
+            continue  # raw-rows query -> split emission, no wrap needed
+        wrap = _order_wrap_source(okey, dim_keys=grain_dim_keys)
+        if wrap is not None:
+            src, path = wrap
             # ASC orders each group by its MIN, DESC by its MAX.
             wrap_key = AggregateKey(
                 source=src,
@@ -4126,7 +4335,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
                 phase=key.phase,
             )
         masks.append(MaskEntry(
-            slot_id=mask_sid, typing=ct.typing, stratum=ct.stratum,
+            slot_id=mask_sid, typing=ct.typing, stratum=ct.stratum, row_restriction=bf.row_restriction,
         ))
         mask_keys.append(key)
         if i < n_date_range:
@@ -4186,6 +4395,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
             slot_id=sid,
             direction=direction,
             phase=order_slot.key.phase,
+            nulls=spec.nulls,
         ))
 
     transform_layers = _emit_transform_layers(slots=projection.registry.slots)
@@ -4220,8 +4430,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         regroup_combined_slot_ids=regroup_combined_slot_ids,
         order_entries=order_entries,
         masks=masks,
-        mode_a_filters=mode_a_filters,
-        host_gated=host_population_gated,
+        host_gated=host_population_gated or _restricted_dataset(render_source_model, bundle=bundle),
     )
 
     regroup_attach_plans = [*regroup_attach_plans, *_plan_shifted_attaches(
@@ -4258,7 +4467,6 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         transform_layers=transform_layers,
         masks=masks,
         n_date_range_masks=surviving_date_range,
-        mode_a_filters=mode_a_filters,
         projection=projection.public_projection,
         order=order_entries,
         limit=prebound.limit,
@@ -4272,6 +4480,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         empty_base_plan=empty_base_plan,
         semi_join_filters=pop_semi_join_groups,
         spine=spine_factor,
+        mode_policy=prebound.mode_policy,
     )
     return planned
 
@@ -4304,6 +4513,31 @@ def _isolated_composites(*, slots: list, isolated: AbstractSet[SlotId], registry
     return {s.id for s in slots if isinstance(s.key, SLOT_COMPOSITE_KINDS) and composed(s.key)}
 
 
+def _host_membership(
+    *, host_model: SlayerModel, target_path: Tuple[str, ...], models_by_name: Dict[str, SlayerModel],
+    bundle: ResolvedSourceBundle,
+) -> List[Tuple[BoundFilter, Optional[str]]]:
+    """For a home beyond a restricted host, the row filter ``<host join column> IS NOT NULL`` on the
+    home's first hop from the host: re-rooted, it keeps only home rows associated with a host row."""
+    if not target_path or not _restricted_dataset(host_model, bundle=bundle):
+        return []
+    chain = follow(root=host_model, path=target_path[:1], models_by_name=models_by_name)
+    if not chain or not chain[0].join_pairs or chain[0].lateral is not None:
+        return []  # a product hop associates every row; a list child reads its parent's dataset
+    witness = ColumnKey(leaf=chain[0].join_pairs[0][0])
+    return [(bound_filter_from_key(ArithmeticKey(op=_IS_NOT, operands=(witness, LiteralKey(value=None)))), None)]
+
+
+def _restricted_dataset(model: Optional[SlayerModel], *, bundle: ResolvedSourceBundle) -> bool:
+    """Whether reading ``model`` reads only some of its rows: it, or the parent a list child reads, has filters."""
+    if model is None:
+        return False
+    if model.list_of is not None:
+        parent = bundle.models_by_name.get(model.list_of[0])
+        return parent is not None and bool(parent.filters)
+    return bool(model.filters)
+
+
 def _plan_empty_base_grain(
     *,
     projection: List[SlotId],
@@ -4311,11 +4545,10 @@ def _plan_empty_base_grain(
     windowed_slot_ids: AbstractSet[SlotId],
     order_entries: list,
     masks: List[MaskEntry],
-    mode_a_filters: List[ModeAFilter],
     regroup_combined_slot_ids: Optional[set] = None,
     host_gated: bool = False,
 ) -> "EmptyBaseGrainPlan | None":
-    """Decide the empty-base spine at plan time — the host base has nothing of its own exactly when every value asked for is an isolated aggregate. ``host_gated`` (D7) means a population semi-join gates the spine even with no field mask."""
+    """Decide the empty-base spine at plan time — the host base has nothing of its own exactly when every value asked for is an isolated aggregate. ``host_gated`` (D7) means a population semi-join or the host's own filters gate the spine even with no field mask."""
     isolated = set(windowed_slot_ids)
     isolated |= (regroup_combined_slot_ids or set())
     if not projection or any(sid not in isolated for sid in projection):
@@ -4325,23 +4558,21 @@ def _plan_empty_base_grain(
     if any(entry.slot_id not in isolated for entry in order_entries):
         return None
     # Field masks gate the host spine; measure masks resolve after attachment.
-    host_filter_ids = [
-        m.slot_id for m in masks if m.typing == MaskTyping.FIELD
-    ] + [mf.id for mf in mode_a_filters]
+    host_filter_ids = [m.slot_id for m in masks if m.typing == MaskTyping.FIELD]
     return EmptyBaseGrainPlan(host_filter_ids=host_filter_ids, host_gated=host_gated)
 
 
 def _frame_bound_columns(*, grain: Optional[List[SlotId]], registry) -> List[ValueKey]:
     """Raw columns of the grain's time dimensions — an explicit bound on one is a FRAME bound."""
     keys = (registry.get(sid).key for sid in grain or ())
-    return list(dict.fromkeys(k.column for k in keys if isinstance(k, TimeTruncKey)))
+    return list(dict.fromkeys(k.source for k in keys if isinstance(k, TimeTruncKey)))
 
 
 def _plan_src_row_filters(
     *,
     producer_plan: PlannedQuery,
 ) -> "Tuple[List[str], List[SrcFilterRewrite]]":
-    """Partition the producer's field masks for a windowed measure's ``_src`` scope into ``(where_filter_ids, src_filter_rewrites)`` by frame-bound membership (Mode-A model filters exempt, date-range masks are frame bounds)."""
+    """Partition the producer's field masks for a windowed measure's ``_src`` scope into ``(where_filter_ids, src_filter_rewrites)`` by frame-bound membership (row restrictions exempt, date-range masks are frame bounds)."""
     time_cols = frozenset(producer_plan.frame_bound_columns)
     slots_by_id = {
         s.id: s
@@ -4351,14 +4582,15 @@ def _plan_src_row_filters(
             *producer_plan.combined_expression_slots,
         )
     }
-    where_ids: List[str] = [mf.id for mf in producer_plan.mode_a_filters]
+    restricted = list(dict.fromkeys(m.slot_id for m in producer_plan.masks if m.row_restriction))
+    where_ids: List[str] = list(restricted)
     rewrites: List[SrcFilterRewrite] = []
     date_ids = {
         m.slot_id
         for m in producer_plan.masks[:producer_plan.n_date_range_masks]
     }
     for m in producer_plan.masks:
-        if m.typing != MaskTyping.FIELD or m.slot_id in date_ids:
+        if m.typing != MaskTyping.FIELD or m.slot_id in date_ids or m.slot_id in restricted:
             continue
         key = slots_by_id[m.slot_id].key
         residual = strip_frame_bounds(key=key, time_columns=time_cols)
@@ -4400,7 +4632,7 @@ def _bucket_slots(slots: List[ValueSlot]):
 def _value_anchor_path(key: ValueKey) -> Tuple[str, ...]:
     """The join path a path-derived output's auto-name is prefixed with."""
     if isinstance(key, TimeTruncKey):
-        key = key.column
+        key = key.source
     if isinstance(key, (ColumnKey, ColumnSqlKey, StarKey)):
         return tuple(key.path)
     if isinstance(key, AggregateKey):
@@ -4463,7 +4695,7 @@ def _leaf_variants(
     """``rest`` first, then ``rest`` with its source column's name swapped for
     each of that column's respellings."""
     if isinstance(key, TimeTruncKey):
-        key = key.column
+        key = key.source
     if isinstance(key, AggregateKey):
         key = key.source
     if not isinstance(key, (ColumnKey, ColumnSqlKey)):
@@ -4527,7 +4759,7 @@ def _surviving_default(*, projection, columns: List[StageColumn], root: Optional
     wanted = ColumnKey(path=(), leaf=default)
     visible = [projection.registry.get(sid) for sid in projection.public_projection]
     for slot, column in zip((s for s in visible if not s.hidden), columns):
-        key = slot.key.column if isinstance(slot.key, TimeTruncKey) else slot.key
+        key = slot.key.source if isinstance(slot.key, TimeTruncKey) else slot.key
         if key == wanted:
             return column.name
     return None
@@ -4540,7 +4772,7 @@ def _source_column(
     """The column a row-level stage output reads (a model column or an upstream stage
     column), for the metadata it carries downstream; ``None`` for anything else."""
     if isinstance(key, TimeTruncKey):
-        key = key.column
+        key = key.source
     if not isinstance(key, (ColumnKey, ColumnSqlKey)):
         return None
     leaf = column_leaf(key)
@@ -4573,6 +4805,7 @@ def _stage_column(
         sql_alias=flat,
         public_alias=alias,
         type=slot.type,
+        element_type=slot.element_type or (row.element_type if row is not None and slot.type is DataType.ARRAY else None),
         granularity=upstream_gran,
         label=slot.label or (row.label if row is not None else None),
         hidden=False,

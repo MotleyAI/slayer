@@ -11,7 +11,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
-from slayer.engine.schema_drift import (
+from slayer.live_schema.schema_drift import (
     LiveTable,
     _CascadeState,
     _column_is_base,

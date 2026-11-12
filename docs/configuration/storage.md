@@ -59,7 +59,7 @@ slayer_data/
   memories/                # agent memories, one <id>.md file each (optional)
     1.md
     help.intro.md
-  embeddings.db            # SQLite sidecar for embedding rows (DEV-1405)
+  embeddings.db            # SQLite sidecar for embedding rows
 ```
 
 **Layout note:** Models live under `models/<data_source>/<name>.yaml` so two datasources sharing a table name don't collide. Opening a `YAMLStorage` on a legacy flat directory migrates `models/<name>.yaml` files into the nested layout automatically. If a flat file has an empty `data_source` and exactly one datasource is registered, the migrator auto-fills it; otherwise it hard-fails so the user can edit `data_source` by hand before reopening.
@@ -68,9 +68,9 @@ slayer_data/
 
 **Name collisions:** Because names become filenames here, two ids differing only by letter case (`Orders` vs `orders`) would address the same file on macOS / Windows. Saving a datasource, model, or memory whose id differs only by case from an existing one therefore raises `IdCollisionError` — on every platform, so a YAML store created on Linux stays portable. Re-saving the exact same id is still a normal upsert. On the read side, lookups compare the exact filename, so `get_model("Orders")` when only `orders.yaml` exists returns "not found" instead of the wrong model (and a delete is a no-op). The layout migrations apply the same check up front and refuse to run — legacy files untouched — if migrating would collide. This is YAML-specific: SQLite keys are case-sensitive and store case-variant ids distinctly (which also means such a SQLite store cannot be exported to the YAML layout without renaming).
 
-**Embeddings sidecar (DEV-1405):** Embedding rows used by the optional dense-search channel live in a SQLite file at `<base_dir>/embeddings.db`, **not** in `embeddings.yaml`. Embeddings are derived artifacts (regeneratable by `slayer ingest` / `--ingest-on-startup`), not user-authored config, so the diffable-in-git property that drives the YAML choice for models doesn't apply. A pre-DEV-1405 `embeddings.yaml` or `counters.yaml` is silently renamed to `<name>.yaml.legacy` on first open and ignored thereafter; re-run `slayer ingest` to repopulate `embeddings.db`. The schema is identical to the `SQLiteStorage` embedding table — both backends delegate to a shared `SidecarEmbeddingStore` helper.
+**Embeddings sidecar:** Embedding rows used by the optional dense-search channel live in a SQLite file at `<base_dir>/embeddings.db`, **not** in `embeddings.yaml`. Embeddings are derived artifacts (regeneratable by `slayer ingest` / `--ingest-on-startup`), not user-authored config, so the diffable-in-git property that drives the YAML choice for models doesn't apply. A legacy `embeddings.yaml` or `counters.yaml` is silently renamed to `<name>.yaml.legacy` on first open and ignored thereafter; re-run `slayer ingest` to repopulate `embeddings.db`. The schema is identical to the `SQLiteStorage` embedding table — both backends delegate to a shared `SidecarEmbeddingStore` helper.
 
-**Memory id allocation (DEV-1658):** The next int-shaped memory id is derived by scanning the `memories/` directory of per-id `.md` files — `max(int-shaped id) + 1` — rather than a separate counter file. Non-int ids (e.g. `help.intro`, `kb.policy.42`) are ignored by the allocator. Ids of deleted memories may be reused by future saves; cascade-on-delete in `delete_memory` already removes the matching embedding row.
+**Memory id allocation:** The next int-shaped memory id is derived by scanning the `memories/` directory of per-id `.md` files — `max(int-shaped id) + 1` — rather than a separate counter file. Non-int ids (e.g. `help.intro`, `kb.policy.42`) are ignored by the allocator. Ids of deleted memories may be reused by future saves; cascade-on-delete in `delete_memory` already removes the matching embedding row.
 
 ### SQLiteStorage
 
@@ -153,9 +153,11 @@ class MyCustomStorage(StorageBackend):
     async def delete_embeddings_for_canonical(self, *, canonical_id_prefix: str) -> int: ...
 ```
 
-A backend written against 0.9.x that overrides `save_datasource` or returns a plain list from `_list_memories_rows` keeps working, with a `FutureWarning`, until 2.0 — move it to `_save_datasource_impl` and the `(memories, failed_rows)` return shape, and override only the hooks listed above.
+A backend implements `_save_datasource_impl` (not `save_datasource`), returns `(memories, failed_rows)` from `_list_memories_rows`, and overrides only the hooks listed above.
 
 If your backend stores ids as filenames (or another case-insensitive keyspace), set the class attribute `_ids_collide_as_filenames = True` — the base save templates then reject ids differing only by case — and call `await self.check_datasource_id_collision(datasource.name)` at the top of your `_save_datasource_impl`.
+
+Stored-document upgrades that rewrite raw documents, such as renaming a granularity a newer release reserves, run only on backends that expose their raw documents; a backend that builds its own datasource configs is never asked to list or load its datasources for them.
 
 Caches derived from stored content (the search graph, the SQL facade catalog) are keyed by `cache_identity()` (default: one per instance) and reused only while `graph_fingerprint()` returns the same string, so override it to report content changes — the default `None` means a cache is never reused.
 

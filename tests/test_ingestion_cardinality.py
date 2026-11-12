@@ -2,28 +2,69 @@
 
 from __future__ import annotations
 
-from slayer.storage.sqlite_conn import transaction
-from tests._engine_helpers import disposable_engine
 import tempfile
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 import sqlalchemy as sa
 
 from slayer.core.enums import JoinCardinality
 from slayer.core.models import DatasourceConfig
-from slayer.engine.ingestion import (
+from slayer.live_schema import ingestion
+from slayer.live_schema.ingestion import (
     _generate_joins,
-    _get_single_column_unique_names,
     _is_cross_schema_fk,
-    _is_partial_index,
-    _pk_key_sets,
-    _safe_get_pk_constraint,
-    _unique_index_key_sets,
     ingest_datasource_idempotent,
 )
+from slayer.live_schema.schema_drift import IdempotentIngestResult
+from slayer.database.client import DelegatingSqlClient, SlayerSQLClient, SqlClient
+from slayer.sql.dialects import PostgresDialect, SqliteDialect, TableKeys
+from slayer.sql.dialects.base import SqlDialect
+from slayer.sql.dialects.reflection import ReflectedForeignKey, TableLocation
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._engine_helpers import disposable_engine
+
+
+async def _ingest(*, datasource: DatasourceConfig, **kwargs: Any) -> IdempotentIngestResult:
+    client = SlayerSQLClient(datasource=datasource)
+    try:
+        return await ingest_datasource_idempotent(datasource=datasource, client=client, **kwargs)
+    finally:
+        await client.aclose()
+        client.close()
+
+
+class _KeysInspector:
+    """Inspector double: a fixed PK and index list, no FKs or UNIQUE constraints."""
+
+    def __init__(self, *, pk: object = None, indexes: list[dict] | None = None) -> None:
+        self._pk = {"constrained_columns": []} if pk is None else pk
+        self._indexes = indexes or []
+
+    def get_pk_constraint(self, table_name, schema=None):
+        if isinstance(self._pk, Exception):
+            raise self._pk
+        return self._pk
+
+    def get_foreign_keys(self, table_name, schema=None):
+        return []
+
+    def get_unique_constraints(self, table_name, schema=None):
+        return []
+
+    def get_indexes(self, table_name, schema=None):
+        return self._indexes
+
+
+def _base_keys(inspector: _KeysInspector) -> TableKeys:
+    """The base key hook over an empty SQLite database (its catalog PK fallback finds nothing)."""
+    with disposable_engine("sqlite://") as engine, engine.connect() as conn:
+        return SqlDialect().reflect_table_keys(
+            connection=conn, inspector=cast(sa.engine.Inspector, inspector),
+            table="t", schema=None, catalog=None,
+        )
 
 
 @pytest.fixture
@@ -89,7 +130,7 @@ async def _setup(workspace: Path) -> tuple:
     storage = YAMLStorage(base_dir=str(workspace / "storage"))
     ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
     await storage.save_datasource(ds)
-    await ingest_datasource_idempotent(datasource=ds, storage=storage)
+    await _ingest(datasource=ds, storage=storage)
     return storage, ds, db_path
 
 
@@ -120,8 +161,8 @@ class TestCompositeFk:
     async def test_generate_joins_groups_composite_fk(self, workspace: Path) -> None:
         db_path = str(workspace / "live.db")
         _create_schema(db_path)
-        with disposable_engine(f"sqlite:///{db_path}") as eng:
-            insp = sa.inspect(eng)
+        client = SlayerSQLClient(datasource=DatasourceConfig(name="ds", type="sqlite", database=db_path))
+        try:
             table_set = {
                 "customers",
                 "orders",
@@ -129,8 +170,8 @@ class TestCompositeFk:
                 "org_units",
                 "memberships",
             }
-            joins = _generate_joins(
-                inspector=insp,
+            joins = await _generate_joins(
+                client=client,
                 source_table="memberships",
                 schema=None,
                 table_set=table_set,
@@ -141,6 +182,64 @@ class TestCompositeFk:
                 ("org_id", "org_id"),
                 ("code", "code"),
             }
+        finally:
+            await client.aclose()
+            client.close()
+
+
+    async def test_a_scan_reads_the_default_schema_once(self, workspace: Path) -> None:
+        db_path = str(workspace / "live.db")
+        _create_schema(db_path)
+        client = _CountsDefaultSchema(SlayerSQLClient(datasource=DatasourceConfig(name="ds", type="sqlite", database=db_path)))
+        try:
+            models = await ingestion.ingest_datasource_async(client.datasource, client=client)
+        finally:
+            await client.aclose()
+            client.close()
+        assert len(models) > 1
+        assert client.default_schema_reads <= 2  # scope resolution + one per scanned schema
+
+
+    async def test_a_failed_scan_read_falls_back_to_per_object_reads(self, workspace: Path) -> None:
+        db_path = str(workspace / "live.db")
+        _create_schema(db_path)
+        client = _FailsFirstScanRead(SlayerSQLClient(datasource=DatasourceConfig(name="ds", type="sqlite", database=db_path)))
+        try:
+            models = await ingestion.ingest_datasource_async(client.datasource, client=client)
+        finally:
+            await client.aclose()
+            client.close()
+        assert client.failed
+        assert {m.name for m in models} >= {"customers", "orders", "memberships"}
+
+
+class _FailsFirstScanRead(DelegatingSqlClient):
+    """Fails the first default-schema read issued after the object listing."""
+
+    def __init__(self, inner: SqlClient) -> None:
+        super().__init__(inner)
+        self.listed = False
+        self.failed = False
+
+    async def list_objects(self, schema: str | None):
+        self.listed = True
+        return await self.inner.list_objects(schema)
+
+    async def default_schema(self) -> str | None:
+        if self.listed and not self.failed:
+            self.failed = True
+            raise RuntimeError("transient metadata failure")
+        return await self.inner.default_schema()
+
+
+class _CountsDefaultSchema(DelegatingSqlClient):
+    def __init__(self, inner: SqlClient) -> None:
+        super().__init__(inner)
+        self.default_schema_reads = 0
+
+    async def default_schema(self) -> str | None:
+        self.default_schema_reads += 1
+        return await self.inner.default_schema()
 
 
 # ---------------------------------------------------------------------------
@@ -214,26 +313,15 @@ class TestColumnUnique:
         Members reflect as ``None``, so compacting them would turn unique
         ``(email, lower(name))`` into a bogus claim on ``email``.
         """
-
-        class _FakeInspector:
-            def get_unique_constraints(self, table_name, schema=None):
-                return []
-
-            def get_indexes(self, table_name, schema=None):
-                return [
-                    # (email, <expression>) — unique on the PAIR, not on email.
-                    {"unique": True, "column_names": ["email", None]},
-                    # A genuine single-column unique index.
-                    {"unique": True, "column_names": ["slug"]},
-                    # Non-unique index is ignored entirely.
-                    {"unique": False, "column_names": ["region"]},
-                ]
-
-        insp = _FakeInspector()
-        assert _unique_index_key_sets(insp, "t", None) == [["slug"]]
-        assert _get_single_column_unique_names(
-            insp, "t", None, pk_cols=set()
-        ) == {"slug"}
+        keys = _base_keys(_KeysInspector(indexes=[
+            # (email, <expression>) — unique on the PAIR, not on email.
+            {"unique": True, "column_names": ["email", None]},
+            # A genuine single-column unique index.
+            {"unique": True, "column_names": ["slug"]},
+            # Non-unique index is ignored entirely.
+            {"unique": False, "column_names": ["region"]},
+        ]))
+        assert keys.unique_key_sets == [["slug"]]
 
     def test_partial_unique_index_is_not_a_uniqueness_claim(self) -> None:
         """A predicate-filtered unique index constrains only matching rows.
@@ -241,35 +329,64 @@ class TestColumnUnique:
         The soft-delete pattern: `UNIQUE INDEX ... WHERE deleted_at IS NULL`.
         """
 
-        class _FakeInspector:
-            def get_unique_constraints(self, table_name, schema=None):
-                return []
+        keys = _base_keys(_KeysInspector(indexes=[
+            {
+                "unique": True,
+                "column_names": ["email"],
+                "dialect_options": {"postgresql_where": "deleted_at IS NULL"},
+            },
+            {"unique": True, "column_names": ["slug"]},
+            # An empty predicate is not a predicate.
+            {
+                "unique": True,
+                "column_names": ["ref"],
+                "dialect_options": {"postgresql_where": None},
+            },
+        ]))
+        assert keys.unique_key_sets == [["slug"], ["ref"]]
 
-            def get_indexes(self, table_name, schema=None):
-                return [
-                    {
-                        "unique": True,
-                        "column_names": ["email"],
-                        "dialect_options": {"postgresql_where": "deleted_at IS NULL"},
-                    },
-                    {"unique": True, "column_names": ["slug"]},
-                    # An empty predicate is not a predicate.
-                    {
-                        "unique": True,
-                        "column_names": ["ref"],
-                        "dialect_options": {"postgresql_where": None},
-                    },
-                ]
 
-        insp = _FakeInspector()
-        assert _unique_index_key_sets(insp, "t", None) == [["slug"], ["ref"]]
-        assert _get_single_column_unique_names(
-            insp, "t", None, pk_cols=set()
-        ) == {"slug", "ref"}
+class _CaseFoldingDialect(SqliteDialect):
+    """Snowflake-like: reports unquoted identifiers normalised to lowercase."""
+
+    def normalize_reflected_name(self, name: str) -> str:
+        return name.lower() if name.upper() == name else name
+
+
+class _CrossSchemaFkClient:
+    """Client double: every table has an ``id`` PK and an FK into the ``archive`` schema."""
+
+    datasource = DatasourceConfig(name="ds", type="postgres")
+
+    async def reflect_table_keys(self, location: TableLocation) -> TableKeys:
+        return TableKeys(
+            primary_key=["id"],
+            foreign_keys=[ReflectedForeignKey(
+                columns=["customer_id"],
+                referred_schema="archive",  # NOT the ingested schema
+                referred_table="customers",
+                referred_columns=["id"],
+            )],
+        )
+
+    async def default_schema(self) -> str | None:
+        return None
 
 
 class TestCrossSchemaFk:
     """A cross-schema FK has no model to bind to and must not be guessed."""
+
+    def test_case_folding_dialect_matches_normalised_schema(self) -> None:
+        fk = {"referred_table": "customers", "referred_schema": "slayer_test_ab12"}
+        assert _is_cross_schema_fk(fk, "SLAYER_TEST_AB12", dialect=_CaseFoldingDialect()) is False
+
+    def test_case_folding_dialect_still_skips_another_schema(self) -> None:
+        fk = {"referred_table": "customers", "referred_schema": "archive"}
+        assert _is_cross_schema_fk(fk, "SLAYER_TEST_AB12", dialect=_CaseFoldingDialect()) is True
+
+    def test_case_sensitive_dialect_compares_verbatim(self) -> None:
+        fk = {"referred_table": "customers", "referred_schema": "myschema"}
+        assert _is_cross_schema_fk(fk, "MYSCHEMA", dialect=PostgresDialect()) is True
 
     def test_cross_schema_fk_is_skipped(self) -> None:
         fk = {
@@ -326,122 +443,58 @@ class TestCrossSchemaFk:
         fk = {"referred_table": "customers", "referred_schema": "archive"}
         assert _is_cross_schema_fk(fk, "archive", "public") is False
 
-    def test_cross_schema_fk_excluded_from_generated_joins(self) -> None:
+    async def test_cross_schema_fk_excluded_from_generated_joins(self) -> None:
         """End-to-end: the wrong same-named table is not joined to."""
-
-        class _FakeInspector:
-            def get_foreign_keys(self, table_name, schema=None):
-                return [
-                    {
-                        "referred_table": "customers",
-                        "referred_schema": "archive",  # NOT the ingested schema
-                        "constrained_columns": ["customer_id"],
-                        "referred_columns": ["id"],
-                    },
-                ]
-
-            def get_pk_constraint(self, table_name, schema=None):
-                return {"constrained_columns": ["id"]}
-
-            def get_unique_constraints(self, table_name, schema=None):
-                return []
-
-            def get_indexes(self, table_name, schema=None):
-                return []
-
-        joins = _generate_joins(
-            inspector=cast(sa.engine.Inspector, _FakeInspector()), source_table="orders", schema="public",
+        joins = await _generate_joins(
+            client=cast(SqlClient, _CrossSchemaFkClient()), source_table="orders", schema="public",
             table_set={"orders", "customers"},
         )
         assert joins == []
 
 
-class TestSafePkConstraintContract:
-    """`_safe_get_pk_constraint` is annotated `-> dict` and four of its five
-    callers do an unguarded `.get()`, so every path must honour that."""
+class TestBasePkReadContract:
+    """The base PK read tolerates any inspector result shape: no PK, never a bogus key-set."""
 
-    class _Eng:
-        class dialect:
-            name = "sqlite"
-
-    def _insp(self, result):
-        class _I:
-            def get_pk_constraint(self, table_name, schema=None):
-                if isinstance(result, Exception):
-                    raise result
-                return result
-
-        return _I()
-
-    def test_sqlite_none_result_normalized(self) -> None:
-        pk = _safe_get_pk_constraint(
-            self._insp(None), self._Eng(), "t", None
-        )
-        assert pk == {"constrained_columns": []}
-        assert pk.get("constrained_columns") == []  # caller pattern must work
-
-    def test_sqlite_non_mapping_result_normalized(self) -> None:
-        pk = _safe_get_pk_constraint(
-            self._insp(["not", "a", "mapping"]), self._Eng(), "t", None
-        )
-        assert pk == {"constrained_columns": []}
-
-    def test_sqlite_raising_inspector_normalized(self) -> None:
-        pk = _safe_get_pk_constraint(
-            self._insp(RuntimeError("boom")), self._Eng(), "t", None
-        )
-        assert pk == {"constrained_columns": []}
-
-    def test_sqlite_valid_mapping_passes_through(self) -> None:
-        pk = _safe_get_pk_constraint(
-            self._insp({"constrained_columns": ["id"]}), self._Eng(), "t", None
-        )
-        assert pk == {"constrained_columns": ["id"]}
-
-    def test_pk_key_sets_handles_bare_inspector_non_mapping(self) -> None:
-        # sa_engine=None path goes straight to the inspector, un-normalized.
-        assert _pk_key_sets(self._insp(None), "t", None, None) == []
-        assert _pk_key_sets(self._insp({"constrained_columns": ["id"]}), "t", None, None) == [["id"]]
-        # A bare string must NOT split into characters (``list("id")`` ==
-        # ``["i", "d"]``) — that bogus key-set would corrupt join cardinality.
-        assert _pk_key_sets(self._insp({"constrained_columns": "id"}), "t", None, None) == []
+    @pytest.mark.parametrize(
+        ("result", "expected"),
+        [
+            (None, []),
+            (["not", "a", "mapping"], []),
+            (RuntimeError("boom"), []),
+            ({"constrained_columns": ["id"]}, ["id"]),
+            # A bare string must NOT split into characters (``list("id")``).
+            ({"constrained_columns": "id"}, []),
+        ],
+    )
+    def test_pk_result_is_normalized(self, result: object, expected: list[str]) -> None:
+        keys = _base_keys(_KeysInspector(pk=result))
+        assert keys.primary_key == expected
+        assert keys.unique_key_sets == []
 
 
 class TestPartialIndexPredicateIsNeverEvaluated:
-    """`ColumnElement.__bool__` raises, and this runs outside _safe_introspect."""
+    """`ColumnElement.__bool__` raises; the predicate must be inspected without ``bool()``."""
 
     class _Raising:
         def __bool__(self):
             raise TypeError("Boolean value of this clause is not defined")
 
-    def test_expression_predicate_counts_as_partial_without_bool(self) -> None:
-        idx = {
-            "unique": True,
-            "column_names": ["email"],
-            "dialect_options": {"postgresql_where": self._Raising()},
-        }
-        # Must not raise, and must classify as partial.
-        assert _is_partial_index(idx) is True
+    def test_index_with_raising_predicate_is_partial_not_fatal(self) -> None:
+        keys = _base_keys(_KeysInspector(indexes=[
+            {
+                "unique": True,
+                "column_names": ["email"],
+                "dialect_options": {"postgresql_where": self._Raising()},
+            },
+            {"unique": True, "column_names": ["slug"]},
+        ]))
+        # Partial (skipped), and the index read did not fail as a whole.
+        assert keys.unique_key_sets == [["slug"]]
 
-    def test_index_with_raising_predicate_is_skipped_not_fatal(self) -> None:
-        class _I:
-            def get_indexes(self, table_name, schema=None):
-                return [
-                    {
-                        "unique": True,
-                        "column_names": ["email"],
-                        "dialect_options": {
-                            "postgresql_where": TestPartialIndexPredicateIsNeverEvaluated._Raising()
-                        },
-                    },
-                    {"unique": True, "column_names": ["slug"]},
-                ]
-
-        assert _unique_index_key_sets(_I(), "t", None) == [["slug"]]
-
-    def test_empty_string_predicate_is_not_partial(self) -> None:
-        assert _is_partial_index(
-            {"dialect_options": {"postgresql_where": "   "}}
-        ) is False
-        assert _is_partial_index({"dialect_options": {}}) is False
-        assert _is_partial_index({}) is False
+    def test_empty_or_absent_predicate_is_not_partial(self) -> None:
+        keys = _base_keys(_KeysInspector(indexes=[
+            {"unique": True, "column_names": ["a"], "dialect_options": {"postgresql_where": "   "}},
+            {"unique": True, "column_names": ["b"], "dialect_options": {}},
+            {"unique": True, "column_names": ["c"]},
+        ]))
+        assert keys.unique_key_sets == [["a"], ["b"], ["c"]]

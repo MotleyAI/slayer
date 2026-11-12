@@ -4,7 +4,7 @@ Defining a semantic layer manually — writing out every dimension, measure, and
 
 ## What auto-ingestion does
 
-Given a datasource configuration, `ingest_datasource()` introspects the database schema and produces one `SlayerModel` per table, complete with:
+Given a datasource configuration, `engine.ingest(ds)` (or `engine.ingest_sync(ds)`) introspects the database schema and produces one `SlayerModel` per table, complete with:
 
 - **Dimensions** for every column
 - **Measures** generated from column types (see rules below)

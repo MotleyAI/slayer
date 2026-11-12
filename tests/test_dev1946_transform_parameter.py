@@ -21,7 +21,7 @@ from slayer.core.refs import agg_kwarg_canonical_str
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
 from slayer.engine.plan import plan_query
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 from slayer.ir.planned import PlainProducerKernel
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
@@ -52,7 +52,6 @@ from tests._dev1919_fixtures import (
 )
 from tests._dev1946_fixtures import (
     DET_CUMSUM,
-    EXPR_ARG,
     LAST_PARAM,
     LAST_RANK_KEY,
     LOCAL_SALES,
@@ -92,7 +91,7 @@ from tests._dev1946_fixtures import (
     local_sales_global,
 )
 
-AMOUNT = ModelMeasure(formula="amount:sum", name="a")
+AMOUNT = ModelMeasure(formula="sum(amount)", name="a")
 
 
 def _m(formula: str) -> ModelMeasure:
@@ -197,19 +196,18 @@ class TestLocalRootSales:
 class TestCollapsingLast:
     """Scenario: Collapsing transform parameter drops the axis."""
 
-    async def test_default_mode_broadcasts_over_months(self, orders_engine):
-        resp = await orders_engine.execute(
-            mode_q(None, time_dimensions=ordered_month_td(), measures=[_m(LAST_PARAM)]))
+    async def test_broadcast_mode_broadcasts_over_months(self, orders_engine):
+        resp = await orders_engine.execute(mode_q(
+            "broadcast", time_dimensions=ordered_month_td(), measures=[_m(LAST_PARAM)]))
         vals = ordered_month_vals(resp)
         assert set(vals) == {"2024-01", "2024-02", "2024-03", "2024-04"}
         for value in vals.values():
             assert float(value) == pytest.approx(last_default_value())  # 8165/128
         assert broadcast_warnings(resp)  # broadcast over the unattributable month
 
-    @pytest.mark.parametrize("mode", [None, "broadcast"])
-    async def test_by_tier_and_month(self, orders_engine, mode):
+    async def test_by_tier_and_month(self, orders_engine):
         resp = await orders_engine.execute(mode_q(
-            mode, dimensions=["customers.tier"], time_dimensions=ordered_month_td(),
+            "broadcast", dimensions=["customers.tier"], time_dimensions=ordered_month_td(),
             measures=[_m(LAST_PARAM)]))
         assert_cells(tier_month_vals(resp), last_by_tier_month())
         assert broadcast_warnings(resp)
@@ -332,10 +330,9 @@ class TestRankedFilterAndOrder:
 class TestNestedParameter:
     """Scenario: Nested transform parameter inside an attached aggregate parameter."""
 
-    @pytest.mark.parametrize("mode", [None, "broadcast"])
-    async def test_broadcast_to_status(self, orders_engine, mode):
+    async def test_broadcast_to_status(self, orders_engine):
         resp = await orders_engine.execute(
-            mode_q(mode, dimensions=["status"], measures=[_m(NESTED)]))
+            mode_q("broadcast", dimensions=["status"], measures=[_m(NESTED)]))
         got = status_vals(resp)
         assert set(got) == {"ok", "new"}
         for value in got.values():
@@ -407,9 +404,10 @@ class TestPlanShape:
     error, the association / trailing-window kernels each carry ``weight``."""
 
     @pytest.mark.parametrize("mode, dims", [
-        (None, ["status"]), (None, ["customers.tier"]), ("error", ["customers.tier"]),
+        ("broadcast", ["status"]), (None, ["customers.tier"]),
+        ("error", ["customers.tier"]),
     ])
-    def test_plain_kernel_under_default_and_error(self, mode, dims):
+    def test_plain_kernel_outside_association(self, mode, dims):
         att = _customers_attach(plan_query(
             query=mode_q(mode, dimensions=dims, measures=[_m(RANKED)]),
             bundle=orders_bundle()))
@@ -526,14 +524,6 @@ class TestBindLevel:
         with pytest.raises(ValueError, match="ranks by a column"):
             bind_expr(parsed, scope=scope, bundle=bundle)
 
-    def test_expression_argument_still_refused(self):
-        """Non-goal: an expression parameter stays refused, and the reworded
-        message names grained transforms among the accepted kinds (D1)."""
-        scope, bundle = _sales_scope_bundle()
-        parsed = parse_expr(EXPR_ARG)
-        with pytest.raises(ValueError, match="grained transform"):
-            bind_expr(parsed, scope=scope, bundle=bundle)
-
     def test_time_bucketed_partition_key_granularity_in_fragment(self):
         """A rank parameter partitioned by the same column at different
         granularities gets distinct canonical fragments — the fragment keeps a
@@ -544,6 +534,6 @@ class TestBindLevel:
 
         def _ranked(gran: TimeGranularity) -> TransformKey:
             return TransformKey(op="rank", input=inner, partition_keys=Grain.of([
-                TimeTruncKey(column=ColumnKey(leaf="ordered_at"), granularity=gran)]))
+                TimeTruncKey(source=ColumnKey(leaf="ordered_at"), granularity=gran)]))
 
         assert agg_kwarg_canonical_str(_ranked(TimeGranularity.MONTH)) != agg_kwarg_canonical_str(_ranked(TimeGranularity.YEAR))

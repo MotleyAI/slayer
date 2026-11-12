@@ -26,9 +26,10 @@ from slayer.core.keys import (
     _FrozenKey,
     walk_value_keys,
 )
-from slayer.core.models import SlayerModel
+from slayer.core.models import EmptyValue, SlayerModel
 from slayer.core.scope import StageSchema, StaleSpelling
-from slayer.ir.bound import BoundExpr, GranularityConflict
+from slayer.ir.bound import BoundExpr, GranularityConflict, WholeListRead
+from slayer.ir.prebound import ModePolicy
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 SlotId = str
@@ -41,7 +42,6 @@ __all__ = [
     "FilterReachability",
     "MaskEntry",
     "MaskTyping",
-    "ModeAFilter",
     "OrderEntry",
     "PickedParam",
     "PlainProducerKernel",
@@ -132,6 +132,7 @@ class ValueSlot(BaseModel):
     series: Optional[bool] = None
     label: Optional[str] = None
     type: Optional[DataType] = None
+    element_type: Optional[DataType] = None
     type_is_explicit: bool = False
     preserve_native_type: bool = False
     is_dimension: bool = False
@@ -142,7 +143,7 @@ class ValueSlot(BaseModel):
     @property
     def cast_type(self) -> Optional[DataType]:
         """Return only casts that preserve the inferred database value."""
-        if not self.type_is_explicit and (
+        if self.type is DataType.ARRAY or not self.type_is_explicit and (
             self.preserve_native_type
             or (self.type == DataType.INT and self.phase != Phase.ROW)
         ):
@@ -215,13 +216,8 @@ class MaskEntry(BaseModel):
     slot_id: SlotId
     typing: MaskTyping
     stratum: int
-
-
-class ModeAFilter(BaseModel):
-    """A Mode-A model-filter text (model definition, not a query position); renders in the base WHERE."""
-
-    id: BoundFilterId
-    text: str
+    # Mirrors ``BoundFilter.row_restriction``.
+    row_restriction: bool = False
 
 
 class OrderEntry(BaseModel):
@@ -263,6 +259,8 @@ class SemiJoinHop(BaseModel):
 
     target_model: str
     join_pairs: Tuple[Tuple[str, str], ...]
+    #: Per pair, whether each key's stored SQL quotes its physical name (``Column.physical_quoted``).
+    quoted: Tuple[Tuple[bool, bool], ...] = ()
     node_path: Tuple[str, ...]
     #: The declared edge is LEFT (default) rather than INNER — the null-rejection
     #: analysis's input (a declared-INNER hop is never null-extended).
@@ -270,6 +268,8 @@ class SemiJoinHop(BaseModel):
     #: The hop renders LEFT-joined from a one-row spine (its NULL extension can
     #: satisfy the predicate); otherwise today's inner correlation.
     null_extended: bool = False
+    #: A list child hop: the parent node's list column, unnested from the parent's row.
+    lateral: Optional[str] = None
 
     @property
     def node_id(self) -> str:
@@ -287,6 +287,11 @@ class SemiJoinFilter(BaseModel):
     conjuncts: List[ValueKey]
     filter_texts: List[Optional[str]] = Field(default_factory=list)
 
+    @property
+    def outer_list_only(self) -> bool:
+        """A filter on the outer row's own list elements: it needs no correlated subquery of its own."""
+        return len(self.hops) == 1 and self.hops[0].lateral is not None
+
 
 class RegroupSubstitution(BaseModel):
     """One consumed aggregate: ``placeholder`` resolves to ``producer_slot_id``'s column,
@@ -297,7 +302,7 @@ class RegroupSubstitution(BaseModel):
     placeholder: ValueKey
     producer_slot_id: SlotId
     original_key: ValueKey
-    empty_value: int | None
+    empty_value: EmptyValue
 
 
 class PlainProducerKernel(BaseModel):
@@ -373,6 +378,9 @@ class AssociationProducerKernel(BaseModel):
     entity_keys: List[ValueKey] = Field(default_factory=list)
     null_safe: bool = False
     picked_params: List[PickedParam] = Field(default_factory=list)
+    #: Every associated dimension is a list child of the root: level 1 is each root row once per distinct
+    #: element combination, with no key to group by.
+    list_rows: bool = False
 
 
 ProducerKernel = Union[
@@ -404,6 +412,8 @@ class RegroupAttachPlan(BaseModel):
     producer_root_model: Optional[str] = None
     broadcast_measure: Optional[str] = None
     broadcast_dimensions: List[Tuple[str, str]] = Field(default_factory=list)
+    # Why the default mode broadcast instead of associating; ``None`` for a requested broadcast.
+    association_unsupported: Optional[str] = None
     # Associate-mode counterparts: the aggregate resolved by
     # distinct-entity association, and the unattributable dimensions its cells
     # are not additive across (empty for an explicit ``partition_by=`` grain).
@@ -454,10 +464,9 @@ class PlannedQuery(BaseModel):
     combined_expression_slots: List[ValueSlot] = Field(default_factory=list)
     transform_layers: List[TransformLayer] = Field(default_factory=list)
     # Typed filter conjuncts over hidden slots; the first ``n_date_range_masks``
-    # are synthesized date-range bounds (they render before the Mode-A texts).
+    # are synthesized date-range bounds.
     masks: List[MaskEntry] = Field(default_factory=list)
     n_date_range_masks: int = Field(default=0, ge=0)
-    mode_a_filters: List[ModeAFilter] = Field(default_factory=list)
     projection: List[SlotId] = Field(default_factory=list)
     order: List[OrderEntry] = Field(default_factory=list)
     limit: Optional[int] = None
@@ -473,6 +482,7 @@ class PlannedQuery(BaseModel):
     stale_spellings: List[StaleSpelling] = Field(default_factory=list)
     # ``whole_periods_only`` granularity pairs on one column that do not nest.
     granularity_conflicts: List[GranularityConflict] = Field(default_factory=list)
+    whole_list_reads: List[WholeListRead] = Field(default_factory=list)
     # Active-TD slot (None if none); time-needing transforms use it for the OVER ORDER BY.
     active_time_dimension_slot_id: Optional[SlotId] = None
     render_source_model: Optional[SlayerModel] = None
@@ -486,6 +496,8 @@ class PlannedQuery(BaseModel):
     semi_join_filters: List[SemiJoinFilter] = Field(default_factory=list)
     # The host of a spine population renders its spine as this bucket series.
     spine: Optional[SpineFactor] = None
+    # This stage's own resolved ``to_many_handling``.
+    mode_policy: ModePolicy = ModePolicy()
 
     @model_validator(mode="after")
     def _projection_is_public_and_well_formed(self) -> "PlannedQuery":
@@ -775,6 +787,21 @@ def plan_value_keys(planned) -> Iterator[ValueKey]:
     yield from _walk_plan_keys(planned, set())
 
 
+def plan_value_keys_by_root(planned, root: Optional[str] = None) -> Iterator[Tuple[Optional[str], ValueKey]]:
+    """``plan_value_keys`` paired with the model each key is rooted at: a target-rooted producer's keys at its
+    ``producer_root_model``, every other key at the enclosing plan's root (``None``: the plan's own)."""
+    attaches = list(getattr(planned, "regroup_attach_plans", ()) or ())
+    for key in _walk_plan_keys(planned, {id(a.producer_plan) for a in attaches}):
+        yield root, key
+    for attach in attaches:
+        yield from plan_value_keys_by_root(attach.producer_plan, attach.producer_root_model or root)
+
+
+def planned_keys(planned_list) -> Iterator[ValueKey]:
+    """Every key, nested ones included, that rendering ``planned_list`` reads."""
+    return (k for planned in planned_list for root in plan_value_keys(planned) for k in walk_value_keys(root))
+
+
 def plans_read_clock(planned_list) -> bool:
     """Whether any plan evaluates ``now()`` / ``current_date()``."""
     return any(
@@ -786,10 +813,11 @@ def plans_read_clock(planned_list) -> bool:
 
 
 def plan_has_semi_join_filters(planned) -> bool:
-    """Whether any (nested) plan carries a pushed semi-join filter."""
+    """Whether any (nested) plan carries a pushed semi-join filter needing a correlated subquery."""
     return any(
-        getattr(plan, "semi_join_filters", None)
+        not group.outer_list_only
         for plan in _iter_plans_with_producers([planned])
+        for group in getattr(plan, "semi_join_filters", None) or ()
     )
 
 

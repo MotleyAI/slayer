@@ -10,12 +10,10 @@ from collections.abc import Callable, Sequence
 from inspect import cleandoc
 from typing import TYPE_CHECKING, Annotated, Any
 
-import sqlalchemy as sa
 from pydantic import Discriminator, Field, Tag
 from sqlalchemy.exc import DatabaseError
 
 from slayer import __version__, usage_reporting
-
 from slayer.core.errors import (
     AmbiguousModelError,
     EntityResolutionError,
@@ -30,26 +28,29 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
+from slayer.core.format import encode_json, encode_text
 from slayer.core.granularity import CustomGranularity
 from slayer.core.join_edges import JoinEdgeRef, edge_reference, resolve_join_refs, without_joins
 from slayer.core.query import QueryRefinement, SlayerQuery
 from slayer.core.recommend import render_recommendation_markdown
 from slayer.core.warnings import NarrowedAccessWarning, ResponseTruncationWarning
 from slayer import async_utils
-from slayer.engine import ingestion as engine_ingestion
-from slayer.engine.ingestion import (
+from slayer.live_schema import ingestion as engine_ingestion
+from slayer.live_schema.ingestion import (
     _empty_ingest_message as _shared_empty_ingest_message,
     _friendly_db_error,
     _get_schemas,
     _hidden_internal_line,
     _unhide_hint,
     IngestableObject,
+    key_read_failure_line,
+    key_read_failures_header,
     list_ingestable_objects,
 )
-from slayer.engine.schema_scope import schema_ref_from_token, validate_scope_args
-from slayer.sql import engine_factory
+from slayer.live_schema.schema_scope import schema_ref_from_token, validate_scope_args
 from slayer.search.service import handle_edit_refresh
-from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
+from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine, SlayerResponse
+from slayer.database.client import SqlClient, SqlClientError
 from slayer.memories.help_seed import seed_help_memories
 from slayer.inspect.model_render import (  # noqa: F401 — re-exported for backward-compat (tests + other modules import these names from slayer.mcp.server)
     _build_sample_query_args,
@@ -184,31 +185,35 @@ def _counted(fastmcp_cls: "type[FastMCP]") -> "type[FastMCP]":
             self._usage_reporting_sessions: weakref.WeakSet = weakref.WeakSet()
 
         async def call_tool(self, name: str, arguments: dict[str, Any]):
-            self._observe_client()
-            try:
-                result = await super().call_tool(name, arguments)
-            except BaseException as exc:
-                # FastMCP re-raises a tool's exception as ToolError from the original.
-                usage_reporting.record(surface="mcp", token=name, error=exc.__cause__ or exc)
-                raise
-            usage_reporting.record(surface="mcp", token=name)
+            session = self._observe_session()
+            with usage_reporting.action() as action:
+                try:
+                    result = await super().call_tool(name, arguments)
+                except BaseException as exc:
+                    usage_reporting.record(
+                        surface="mcp", token=name, error=_counted_error(exc), dry_run=action.dry_run, session=session,
+                    )
+                    raise
+            usage_reporting.record(surface="mcp", token=name, dry_run=action.dry_run, session=session)
             return result
 
-        def _observe_client(self) -> None:
+        def _observe_session(self) -> object | None:
+            """The calling session (counting its client at its first call), or ``None``."""
             if not usage_reporting.is_active():
-                return
+                return None
             try:
                 session = self.get_context().session
                 if session in self._usage_reporting_sessions:
-                    return
+                    return session
                 self._usage_reporting_sessions.add(session)
                 info = session.client_params.clientInfo if session.client_params else None
             except Exception:
                 logger.debug("usage reporting: no MCP session to identify", exc_info=True)
-                return
+                return None
             usage_reporting.observe_mcp_client(
                 name=getattr(info, "name", None), version=getattr(info, "version", None),
             )
+            return session
 
     return CountedFastMCP
 
@@ -233,20 +238,37 @@ def _ambiguous_with_mcp_hint(exc: AmbiguousModelError) -> str:
     )
 
 
-def _test_connection(ds: DatasourceConfig) -> tuple[bool, str]:
+#: Failures rendered as a friendly database message.
+_DB_FAILURES = (DatabaseError, SqlClientError)
+
+
+class ToolFailure(Exception):
+    """A tool failure whose message is safe to show the client; raised from its cause."""
+
+
+def _db_tool_failure(exc: Exception) -> ToolFailure:
+    return ToolFailure(_friendly_db_error(exc))
+
+
+def _counted_error(exc: BaseException) -> BaseException:
+    """The failure to count: past FastMCP's ``ToolError`` wrapping and a ``ToolFailure``, to their cause."""
+    error = exc.__cause__ or exc  # FastMCP re-raises a tool's exception as ToolError from the original
+    if isinstance(error, ToolFailure) and error.__cause__ is not None:
+        return error.__cause__
+    return error
+
+
+async def _test_connection(client: SqlClient) -> tuple[bool, str]:
     """Test a datasource connection. Returns (success, message)."""
     try:
-        engine = engine_factory.get_engine(ds.resolve_env_vars())
-        with engine.connect() as conn:
-            conn.execute(sa.text("SELECT 1"))
-        # Cached engine — engine_factory owns lifecycle; don't dispose.
+        await client.ping()
         return True, "Connection successful."
     except Exception as e:
         return False, _friendly_db_error(e)
 
 
-def _fetch_tables(
-    ds: DatasourceConfig, schema_name: str | None = None,
+async def _fetch_tables(
+    client: SqlClient, schema_name: str | None = None,
 ) -> tuple[list[IngestableObject] | None, str | None]:
     """Inspect a datasource's table and view objects (name + kind).
 
@@ -254,33 +276,26 @@ def _fetch_tables(
     default schema. Views are always included so a views-only schema isn't empty.
     """
     try:
-        sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
-        inspector = sa.inspect(sa_engine)
         # Route through a SchemaRef so schema_name=None resolves to the
         # catalog-qualified default rather than sweeping every schema.
         ref = (
-            schema_ref_from_token(
-                schema_name, dialect_name=sa_engine.dialect.name,
-                requested=schema_name,
-            )
+            schema_ref_from_token(schema_name, dialect_name=client.datasource.type, requested=schema_name)
             if schema_name
             else None
         )
-        objects = list_ingestable_objects(
-            inspector=inspector, ref=ref, include_views=True
-        )
+        objects = await list_ingestable_objects(client=client, ref=ref, include_views=True)
         return sorted(objects, key=lambda o: o.name), None
     except Exception as e:
-        if isinstance(e, DatabaseError):
+        if isinstance(e, _DB_FAILURES):
             return None, _friendly_db_error(e)
         return None, str(e)
 
 
-def _empty_ingest_message(*, schema_name: str, ds: DatasourceConfig) -> str:
+async def _empty_ingest_message(*, schema_name: str, client: SqlClient) -> str:
     """Agent-facing wrapper over the shared engine renderer."""
-    return _shared_empty_ingest_message(
+    return await _shared_empty_ingest_message(
         schema_name=schema_name,
-        ds=ds,
+        client=client,
         retry_hint=(
             "Try: ingest_datasource_models with schema_name set to one of these."
         ),
@@ -382,6 +397,12 @@ def _render_skipped_schemas_section(skipped_schemas: list[Any]) -> list[str]:
     return out
 
 
+def _render_key_read_failures_section(lost: list[Any]) -> list[str]:
+    if not lost:
+        return []
+    return ["", key_read_failures_header(len(lost)), *(f"- {key_read_failure_line(entry)}" for entry in lost)]
+
+
 def _render_hidden_internals_section(
     hidden: list[Any], *, data_source: str | None = None
 ) -> list[str]:
@@ -402,6 +423,12 @@ def _render_hidden_internals_section(
     return out
 
 
+def _render_broken_dependents_section(broken: list[Any]) -> list[str]:
+    if not broken:
+        return []
+    return ["", f"Broken by a list re-type ({len(broken)}):", *(f"- {b.human_message()}" for b in broken)]
+
+
 def _render_errors_section(errors: list[Any]) -> list[str]:
     if not errors:
         return []
@@ -410,11 +437,12 @@ def _render_errors_section(errors: list[Any]) -> list[str]:
     return out
 
 
-def _render_ingest_result(
+async def _render_ingest_result(
     result: Any,
     *,
     schema_name: str,
     ds: DatasourceConfig,
+    client: SqlClient,
 ) -> str:
     """Render an ``IdempotentIngestResult`` for the MCP ``ingest_datasource_models`` tool."""
     additions = list(result.additions)
@@ -422,9 +450,13 @@ def _render_ingest_result(
     skipped = list(getattr(result, "skipped", None) or [])
     skipped_schemas = list(getattr(result, "skipped_schemas", None) or [])
     hidden_internals = list(getattr(result, "hidden_internals", None) or [])
+    broken = list(getattr(result, "broken_dependents", None) or [])
+    lost = list(getattr(result, "key_read_failures", None) or [])
     datasource_described = bool(getattr(result, "datasource_described", False))
     if (
-        not additions
+        not broken
+        and not lost
+        and not additions
         and not result.to_delete
         and not result.errors
         and not skipped
@@ -437,7 +469,7 @@ def _render_ingest_result(
         # which only sees the default schema) to tell the two apart.
         scanned_objects = getattr(result, "objects", None) or []
         if not scanned_objects:
-            return _empty_ingest_message(schema_name=schema_name, ds=ds)
+            return await _empty_ingest_message(schema_name=schema_name, client=client)
         return "Datasource already in sync — no additive changes."
 
     new_models = [a for a in additions if a.created]
@@ -456,40 +488,15 @@ def _render_ingest_result(
     # Same order as the CLI renderer, so the two surfaces read alike.
     lines.extend(_render_skipped_section(skipped))
     lines.extend(_render_skipped_schemas_section(skipped_schemas))
+    lines.extend(_render_key_read_failures_section(lost))
     lines.extend(
         _render_hidden_internals_section(hidden_internals, data_source=ds.name)
     )
+    lines.extend(_render_broken_dependents_section(broken))
     lines.extend(_render_errors_section(list(result.errors)))
     if not lines:
         lines.append("Datasource already in sync — no changes.")
     return "\n".join(lines)
-
-
-def _column_summary(c: Column) -> dict:
-    entry: dict = {"name": c.name, "type": str(c.type)}
-    if c.primary_key:
-        entry["primary_key"] = True
-    entry.update({k: v for k, v in (("label", c.label), ("description", c.description), ("filter", c.filter)) if v})
-    if c.allowed_aggregations is not None:
-        entry["allowed_aggregations"] = c.allowed_aggregations
-    return entry
-
-
-def _measure_summary(mm: ModelMeasure) -> dict:
-    entry = {"name": mm.name, "formula": mm.formula}
-    entry.update({k: v for k, v in (("label", mm.label), ("description", mm.description)) if v})
-    return entry
-
-
-def _model_to_summary(model: SlayerModel) -> dict:
-    """Convert a SlayerModel to a summary dict."""
-    return {
-        "name": model.name,
-        "description": model.description,
-        "source_type": _source_type_for(model),
-        "columns": [_column_summary(c) for c in model.columns if not c.hidden],
-        "measures": [_measure_summary(mm) for mm in model.measures],
-    }
 
 
 def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; complexity is the cumulative inline closure body of every @mcp.tool() handler. Splitting would require dependency-injecting the engine/storage/services into a separate module — out of scope for incremental PRs.
@@ -497,11 +504,12 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     *,
     ingest_on_startup: bool = False,
     always_load_query: bool = False,
+    client_factory: ClientFactory | None = None,
     _seed_help: bool = True,
 ):
     _check_budget(what="MCP server instructions", text=SERVER_INSTRUCTIONS)
     # Built first: an invalid SLAYER_NOW must fail before any side effect.
-    engine = SlayerQueryEngine(storage=storage)
+    engine = SlayerQueryEngine(storage=storage, client_factory=client_factory)
     # Seed conceptual-help memories (idempotent; _seed_help=False when
     # create_app already seeds). Best-effort — never abort the build on a
     # seed failure, and skip for metadata-only (non-StorageBackend) builds.
@@ -514,10 +522,12 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 "SLayer help-memory seeding skipped: %s", exc, exc_info=True
             )
 
+    # Every tool reads models, and the live database, through the server's engine.
+    storage = engine.storage
     if ingest_on_startup:
-        async_utils.run_sync(
+        engine.run_sync(
             engine_ingestion.ingest_all_datasources_idempotent(
-                storage=storage, stream=sys.stderr,
+                storage=storage, client_for=engine.client_for, stream=sys.stderr,
             )
         )
     FastMCP = _import_fastmcp()  # NOSONAR(S117) — holds a class object; CapWords matches the class it aliases
@@ -565,6 +575,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         First inspect the model and search for saved learnings. Then run the final query and check the row count, each aggregate's scope, NULLs and the sort. Without a `limit`, responses stop at 20 rows.
         """
+        if dry_run:
+            usage_reporting.mark_dry_run()
         try:
             fmt = format.lower().strip()
             if fmt not in ("json", "csv", "markdown"):
@@ -596,10 +608,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             if show_sql and result.sql:
                 output = f"SQL:\n{result.sql}\n\n{output}"
             return output
-        except Exception as e:
-            if isinstance(e, DatabaseError):
-                return _friendly_db_error(e)
-            raise
+        except _DB_FAILURES as e:
+            raise _db_tool_failure(e) from e
 
     # Model discovery
 
@@ -637,40 +647,6 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             datasource_name=datasource_name,
             models=matched,
             fmt=fmt,
-            compact=compact,
-        )
-
-    @tool()
-    async def inspect_model(
-        model_name: Annotated[str, Field(description="Model name.")],
-        num_rows: Annotated[int, Field(description="Sample rows.")] = 3,
-        show_sql: Annotated[bool, Field(description="Include generated SQL.")] = False,
-        format: Annotated[str, Field(description='"markdown" or "json".')] = "markdown",
-        sections: Annotated[list[str] | None, Field(description="Sections to render; default all.")] = None,
-        descriptions_max_chars: Annotated[int | None, Field(description="Truncate descriptions to this length.")] = None,
-        data_source: Annotated[str | None, Field(description="The model's datasource.")] = None,
-        compact: Annotated[bool, Field(description="Compact rendering.")] = True,
-    ) -> str:
-        """DEPRECATED: use `inspect` with entity_type="model"."""
-        try:
-            model = await storage.get_model_or_builtin(model_name, data_source=data_source)
-        except AmbiguousModelError as exc:
-            return _ambiguous_with_mcp_hint(exc)
-        if model is None:
-            available = sorted(
-                f"{m.data_source}.{m.name}"
-                for m in DocumentLoadFailures().skip(await storage.load_models()) if not m.hidden
-            )
-            return f"Model '{model_name}' not found. Available models: {', '.join(available)}"
-        return await render_model_inspection(
-            model=model,
-            storage=storage,
-            engine=engine,
-            num_rows=num_rows,
-            show_sql=show_sql,
-            format=format,
-            sections=sections,
-            descriptions_max_chars=descriptions_max_chars,
             compact=compact,
         )
 
@@ -739,9 +715,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         description: Annotated[str | None, Field(description="What one row of this model represents.")] = None,
         columns: Annotated[list[dict[str, Any]] | None, Field(
             description=(
-                'Column definitions: {"name", "sql", "type"} with type string, number, time, date or '
-                "boolean; optional primary_key, unique (single-column uniqueness other than the "
-                "primary key), allowed_aggregations, filter (a condition masking the column's value "
+                'Column definitions: {"name", "sql", "type"} with type TEXT, INT, DOUBLE, BOOLEAN, '
+                "DATE, TIMESTAMP, UNKNOWN, or ARRAY with element_type (one of the others); optional "
+                "primary_key, unique (single-column uniqueness other than the primary key), "
+                "allowed_aggregations, filter (a condition masking the column's value "
                 "inside aggregates), granularity (only for a column truly bucketed at that grain), "
                 "label, description, hidden, meta."
             ),
@@ -776,7 +753,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         Host a column or measure on the model whose row grain is 1:1 with what it describes, not merely one where its inputs live. Choose join keys by column Description (author intent); on ties take the shortest declared join path (long chains through lookup or log tables fan out rows). Define entities in dependency order and reference already-defined ones by name; in row-level SQL parenthesise weighted sums in comparisons ((a*w1 + b*w2) > t).
 
-        Example: create_model(name="orders", sql_table="public.orders", data_source="mydb", columns=[{"name": "amount", "sql": "amount", "type": "number"}], measures=[{"name": "aov", "formula": "sum(amount) / count(*)"}])
+        Example: create_model(name="orders", sql_table="public.orders", data_source="mydb", columns=[{"name": "amount", "sql": "amount", "type": "DOUBLE"}], measures=[{"name": "aov", "formula": "sum(amount) / count(*)"}])
 
         A custom aggregation named sum_sq is called like a built-in: sum_sq(column). Authoring guide: inspect(reference="memory:help.models", entity_type="memory").
         """
@@ -808,9 +785,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                     access_tags=access_tags,
                     warnings_out=notes,
                 )
+            except _DB_FAILURES as e:
+                raise _db_tool_failure(e) from e
             except Exception as e:
-                if isinstance(e, DatabaseError):
-                    return _friendly_db_error(e)
                 return f"Error creating model from query: {e}"
             cols = [c.name for c in model.columns]
             meas = [m.name for m in model.measures]
@@ -839,9 +816,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         # a raw-sql source against its datasource before it persists.
         try:
             await engine.save_model(model, warnings_out=notes)
+        except _DB_FAILURES as e:
+            raise _db_tool_failure(e) from e
         except Exception as e:
-            if isinstance(e, DatabaseError):
-                return _friendly_db_error(e)
             return f"Error creating model '{model.name}': {e}"
         verb = "replaced" if existed else "created"
         return f"Model '{model.name}' {verb}." + _warning_lines(notes)
@@ -947,9 +924,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         )] = None,
         columns: Annotated[list[dict[str, Any]] | None, Field(
             description=(
-                'Columns to upsert by name; only the given fields change. {"name", "type", "sql", '
+                'Columns to upsert by name; only the given fields change. {"name", "type", "element_type", "sql", '
                 '"description", "primary_key", "unique", "hidden", "allowed_aggregations", "filter", '
-                '"label", "granularity"}; type string, number, time, date or boolean; unique marks '
+                '"label", "granularity"}; type TEXT, INT, DOUBLE, BOOLEAN, DATE, TIMESTAMP, UNKNOWN, or '
+                'ARRAY with element_type (one of the others); unique marks '
                 "single-column uniqueness other than the primary key (used for join cardinality); set "
                 "granularity only for a column truly bucketed at that grain (null clears it)."
             ),
@@ -996,7 +974,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         Host a column or measure on the model whose row grain is 1:1 with what it describes, not merely one where its inputs live. Choose join keys by column Description (author intent); on ties take the shortest declared join path (long chains through lookup or log tables fan out rows). Define entities in dependency order and reference already-defined ones by name; in row-level SQL parenthesise weighted sums in comparisons ((a*w1 + b*w2) > t).
 
-        Example: edit_model(model_name="orders", columns=[{"name": "status", "type": "string"}], measures=[{"name": "aov", "formula": "sum(revenue) / count(*)"}], remove={"measures": ["old_metric"]})
+        Example: edit_model(model_name="orders", columns=[{"name": "status", "type": "TEXT"}], measures=[{"name": "aov", "formula": "sum(revenue) / count(*)"}], remove={"measures": ["old_metric"]})
         """
         try:
             model = await storage.get_model(model_name, data_source=data_source)
@@ -1329,8 +1307,11 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         except ValueError as exc:
             return f"Cannot create datasource: {exc}"
         verb = "replaced" if existed else "created"
+        # Re-read: storage resolves ${ENV_VAR} credentials.
+        ds = await storage.get_datasource(name) or ds
+        client = engine.client_for(ds)
 
-        ok, msg = _test_connection(ds)
+        ok, msg = await _test_connection(client)
         if not ok:
             return f"Datasource '{ds.name}' {verb}, but connection test failed.\n{msg}"
 
@@ -1342,14 +1323,15 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         # Auto-ingest models
         try:
             # Via the module so tests can monkeypatch the seam.
-            ingest_output = engine_ingestion.ingest_datasource_report(
+            ingest_output = await engine_ingestion.ingest_datasource_report_async(
                 datasource=ds,
+                client=client,
                 schema=schema_name or None,
                 schemas=schemas_list,
                 all_schemas=all_schemas,
             )
         except Exception as e:
-            if isinstance(e, DatabaseError):
+            if isinstance(e, _DB_FAILURES):
                 lines.append(f"Auto-ingestion failed: {_friendly_db_error(e)}")
                 return "\n".join(lines)
             raise
@@ -1378,7 +1360,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         if not models and not save_errors:
             lines.append("No tables found to ingest.")
-            available = _get_schemas(ds)
+            available = await _get_schemas(client)
             if available:
                 lines.append(f"Available schemas: {', '.join(available)}")
         elif models:
@@ -1391,6 +1373,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         if save_errors:
             lines.append(f"Failed to save {len(save_errors)} model(s):")
             lines.extend(save_errors)
+        lines.extend(_render_key_read_failures_section(ingest_output.key_read_failures))
 
         return "\n".join(lines)
 
@@ -1443,18 +1426,19 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         if ds.connection_string:
             lines.append("Connection string: (set)")
 
-        ok, msg = _test_connection(ds)
+        client = engine.client_for(ds)
+        ok, msg = await _test_connection(client)
         lines.append(f"\nConnection: {'OK' if ok else 'FAILED'}")
         if not ok:
             lines.append(msg)
             return "\n".join(lines)
 
-        schemas = _get_schemas(ds)
+        schemas = await _get_schemas(client)
         if schemas:
             lines.append(f"Available schemas: {', '.join(schemas)}")
 
         if list_tables:
-            tables, err = _fetch_tables(ds=ds, schema_name=schema_name or None)
+            tables, err = await _fetch_tables(client, schema_name=schema_name or None)
             schema_label = f" in schema '{schema_name}'" if schema_name else ""
             if err is not None:
                 lines.append(f"\nTables{schema_label}: (error — {err})")
@@ -1561,8 +1545,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         # disposed at teardown.
         try:
             entries = await engine.validate_models(data_source=data_source)
-        except DatabaseError as exc:
-            return _friendly_db_error(exc)
+        except _DB_FAILURES as exc:
+            raise _db_tool_failure(exc) from exc
         return json.dumps([e.model_dump(mode="json") for e in entries], indent=2)
 
     @tool()
@@ -1646,23 +1630,23 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         except ValueError as e:
             return f"Invalid scope: {e}"
 
+        client = engine.client_for(ds)
         try:
             include = [t.strip() for t in include_tables.split(",") if t.strip()] or None
             result = await engine_ingestion.ingest_datasource_idempotent(
                 datasource=ds,
                 storage=storage,
+                client=client,
                 include_tables=include,
                 schema=schema_name or None,
                 schemas=schemas_list,
                 all_schemas=all_schemas,
             )
-        except Exception as e:
-            if isinstance(e, DatabaseError):
-                return _friendly_db_error(e)
-            raise
+        except _DB_FAILURES as e:
+            raise _db_tool_failure(e) from e
 
-        return _render_ingest_result(
-            result, schema_name=schema_name, ds=ds
+        return await _render_ingest_result(
+            result, schema_name=schema_name, ds=ds, client=client,
         )
 
     @tool()
@@ -1829,7 +1813,7 @@ def _format_table(data: list[dict[str, Any]], columns: list[str], max_rows: int 
     separator = " | ".join("-" * len(c) for c in columns)
     body_lines = []
     for row in rows:
-        body_lines.append(" | ".join(str(row.get(c, "")) for c in columns))
+        body_lines.append(" | ".join(encode_text(row.get(c)) for c in columns))
 
     result = f"{header}\n{separator}\n" + "\n".join(body_lines)
     if truncated:
@@ -1849,7 +1833,7 @@ def _format_json(
     the whole response stays strict-``json.loads``-able — never trailing prose.
     """
     if not warnings and not attributes and population is None:
-        return json.dumps(data, default=str)
+        return encode_json(data)
     payload: dict[str, Any] = {"data": data}
     if warnings:
         payload["warnings"] = warnings
@@ -1858,7 +1842,7 @@ def _format_json(
     if population is not None:
         payload["population"] = population
         payload["population_inferred"] = True
-    return json.dumps(payload, default=str)
+    return encode_json(payload)
 
 
 def _format_csv(data: list[dict[str, Any]], columns: list[str]) -> str:
@@ -1869,7 +1853,7 @@ def _format_csv(data: list[dict[str, Any]], columns: list[str]) -> str:
     for row in data:
         values = []
         for c in columns:
-            v = str(row.get(c, ""))
+            v = encode_text(row.get(c))
             if "," in v or '"' in v or "\n" in v:
                 v = '"' + v.replace('"', '""') + '"'
             values.append(v)

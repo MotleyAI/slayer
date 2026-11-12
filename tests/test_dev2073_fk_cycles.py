@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy.engine.reflection import Inspector
 
 from slayer.core.models import ModelJoin
+from slayer.sql.dialects import SqliteDialect
 
 from tests._dev1853_fixtures import rows_set
 from tests._dev2073_fixtures import (
@@ -17,6 +17,7 @@ from tests._dev2073_fixtures import (
     TWO_CYCLE,
     live,
 )
+from tests._key_read_failure import fail_key_read
 
 
 class TestCyclesIngestVerbatim:
@@ -58,7 +59,7 @@ class TestCyclesIngestVerbatim:
             }
             resp = await lv.query(
                 source_model="stores", dimensions=["name"],
-                measures=[{"formula": "sales.total:sum", "name": "t"}],
+                measures=[{"formula": "sum(sales.total)", "name": "t"}],
             )
             assert {r["stores.name"]: r["stores.t"] for r in resp.data} == {"North": 25.0, "South": 4.0}
 
@@ -80,7 +81,7 @@ class TestCyclesIngestVerbatim:
             await lv.ingest()
             resp = await lv.query(
                 source_model="offices", dimensions=["city"],
-                measures=[{"formula": "depts.employees.salary:sum", "name": "s"}],
+                measures=[{"formula": "sum(depts.employees.salary)", "name": "s"}],
             )
             assert {r["offices.city"]: r["offices.s"] for r in resp.data} == {"Paris": 150.0, "Rome": 80.0}
 
@@ -142,14 +143,14 @@ class TestOneEdgePerFkRelationship:
 
 class TestNestedFieldColumns:
     async def test_struct_subfields_are_not_table_columns(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        original = Inspector.get_columns
+        original = SqliteDialect.reflect_columns
 
-        def with_subfield(self, table_name, schema=None, **kw):
-            cols = original(self, table_name, schema=schema, **kw)
+        def with_subfield(self, *, table, **kw):
+            cols = original(self, table=table, **kw)
             # BigQuery reflects a STRUCT's subfields as extra ``parent.child`` columns.
-            return [*cols, {**cols[-1], "name": f"{cols[-1]['name']}.city"}] if table_name == "orders" else cols
+            return [*cols, cols[-1].model_copy(update={"name": f"{cols[-1].name}.city"})] if table == "orders" else cols
 
-        monkeypatch.setattr(Inspector, "get_columns", with_subfield)
+        monkeypatch.setattr(SqliteDialect, "reflect_columns", with_subfield)
         async with live(CHAIN) as lv:
             for _ in range(2):
                 result = await lv.ingest()
@@ -160,14 +161,7 @@ class TestNestedFieldColumns:
 
 class TestFkReflectionFailure:
     async def test_failing_table_ingests_without_joins(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        original = Inspector.get_foreign_keys
-
-        def flaky(self, table_name, schema=None, **kw):
-            if table_name == "orders":
-                raise RuntimeError("FK reflection unavailable")
-            return original(self, table_name, schema=schema, **kw)
-
-        monkeypatch.setattr(Inspector, "get_foreign_keys", flaky)
+        fail_key_read(monkeypatch, table="orders", reads=("foreign keys",))
         async with live(CHAIN + SALES_CHAIN) as lv:
             result = await lv.ingest()
             assert all(s.table_name != "orders" for s in result.skipped)

@@ -1,4 +1,4 @@
-"""DEV-1745 — golden SQL baseline for the "SQL-identical refactor" claim.
+"""Golden SQL baseline for the "SQL-identical refactor" claim.
 
 Existing suites passing unchanged is supporting evidence, not proof: they cover
 the shapes someone already thought to test. This harness pins the emitted SQL
@@ -10,7 +10,7 @@ Workflow
 --------
 The golden file is the BEFORE state, generated against the pre-refactor code.
 When an implementation commit changes emitted SQL, this test fails with a diff.
-That diff is the per-test approval artifact required by the DEV-1742 protocol.
+That diff is the per-test approval artifact required by the golden-SQL approval protocol.
 
 Blessing a change is deliberately a four-step loop:
 
@@ -144,7 +144,7 @@ def _orders() -> SlayerModel:
             # column reference, therefore no join to discover. The BigQuery
             # baseline entry records exactly that, which is what the dialect
             # does with this input rather than a defect to fix here. Mode-A
-            # portability across quoting styles is noted on DEV-1746.
+            # portability across quoting styles is a separate concern.
             Column(name="quoted_cross", sql='"customers"."spend"',
                    type=DataType.DOUBLE),
             # derived-of-derived, two hops (currently BROKEN — see module doc)
@@ -174,56 +174,58 @@ def _cases() -> dict:
         # --- host scope, plain Mode-A surfaces ---
         "host/model_filter": _q(
             dimensions=dim_status,
-            measures=[{"formula": "amount:sum", "name": "m"}],
+            measures=[{"formula": "sum(amount)", "name": "m"}],
         ),
         "host/column_sql_derived": _q(
             dimensions=[{"formula": "doubled", "name": "doubled"}],
-            measures=[{"formula": "amount:sum", "name": "m"}],
+            measures=[{"formula": "sum(amount)", "name": "m"}],
         ),
         "host/column_filter_crossing": _q(
             dimensions=dim_status,
-            measures=[{"formula": "eu_amount:sum", "name": "m"}],
+            measures=[{"formula": "sum(eu_amount)", "name": "m"}],
         ),
         "host/const_expanding_ref": _q(
             dimensions=dim_status,
-            measures=[{"formula": "amount:sum", "name": "m"}],
+            measures=[{"formula": "sum(amount)", "name": "m"}],
             filters=["flag_const == 1"],
         ),
         "host/quoted_dotted_identifier": _q(
             dimensions=[{"formula": "quoted_cross", "name": "quoted_cross"}],
-            measures=[{"formula": "amount:sum", "name": "m"}],
+            measures=[{"formula": "sum(amount)", "name": "m"}],
         ),
         "host/statement_keyword_column": _q(
             dimensions=[{"formula": "select", "name": "select"}],
-            measures=[{"formula": "amount:sum", "name": "m"}],
+            measures=[{"formula": "sum(amount)", "name": "m"}],
         ),
         "host/same_named_column_and_model": _q(
             dimensions=dim_status,
-            measures=[{"formula": "amount:sum", "name": "m"}],
+            measures=[{"formula": "sum(amount)", "name": "m"}],
             filters=["status == 'x'"],
         ),
         # --- derived expansion ---
         "expand/derived_of_derived": _q(
             dimensions=[{"formula": "deep_pop", "name": "deep_pop"}],
-            measures=[{"formula": "amount:sum", "name": "m"}],
+            measures=[{"formula": "sum(amount)", "name": "m"}],
         ),
         "expand/multi_model_derived": _q(
             dimensions=[{"formula": "multi_model", "name": "multi_model"}],
-            measures=[{"formula": "amount:sum", "name": "m"}],
+            measures=[{"formula": "sum(amount)", "name": "m"}],
         ),
         # --- cross-model _cm_ scope ---
         "cm/joined_measure": _q(
+            to_many_handling="broadcast",
             dimensions=dim_status,
-            measures=[{"formula": "customers.spend:sum"}],
+            measures=[{"formula": "sum(customers.spend)"}],
         ),
         "cm/fragment_default_crossing": _q(
+            to_many_handling="broadcast",
             dimensions=dim_status,
-            measures=[{"formula": "customers.spend:wscaled_sum"}],
+            measures=[{"formula": "wscaled_sum(customers.spend)"}],
         ),
         "cm/outer_where_wrapper": _q(
             dimensions=dim_status,
-            measures=[{"formula": "eu_amount:sum", "name": "eu"}],
-            filters=["eu_amount:sum > 100"],
+            measures=[{"formula": "sum(eu_amount)", "name": "eu"}],
+            filters=["sum(eu_amount) > 100"],
         ),
         # --- windowed _src scope ---
         "windowed/src_scope": _q(
@@ -231,14 +233,14 @@ def _cases() -> dict:
                 "dimension": "created_at", "granularity": "month",
                 "date_range": ["2024-01-01", "2024-12-31"],
             }],
-            measures=[{"formula": "eu_amount:sum", "name": "m"}],
+            measures=[{"formula": "sum(eu_amount)", "name": "m"}],
         ),
         "windowed/date_range_filter": _q(
             time_dimensions=[{
                 "dimension": "created_at", "granularity": "month",
                 "date_range": ["2024-01-01", "2024-12-31"],
             }],
-            measures=[{"formula": "amount:sum", "name": "m"}],
+            measures=[{"formula": "sum(amount)", "name": "m"}],
         ),
     }
 
@@ -379,7 +381,7 @@ def test_error_entries_record_the_full_message(baseline) -> None:
 
     The baseline currently records NO exceptions: the five ``_cm_`` fragment-join
     entries were fixed by the one-Mode-A-door work, and the last three (BigQuery
-    dotted-alias corruption in the grain join-back) by DEV-1746 B2. So this now
+    dotted-alias corruption in the grain join-back) later. So this now
     guards the FORMAT rather than the existence of error entries — it is vacuous
     while the baseline is clean, and constrains the next entry that appears.
     """
@@ -393,7 +395,7 @@ def test_error_entries_record_the_full_message(baseline) -> None:
 
 
 def test_record_raise_redacts_volatile_paths_only() -> None:
-    """DEV-1786 — recorded exception messages embed volatile absolute paths
+    """Recorded exception messages embed volatile absolute paths
     (tempdir, repo root, CI checkout) that would differ run-to-run. They are
     redacted to ``<PATH>``; a URL and compact SQL division must survive intact
     so the message still pins the FAILURE, not where the test ran."""

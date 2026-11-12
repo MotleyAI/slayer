@@ -13,6 +13,7 @@ Covers the full spec:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import tempfile
@@ -20,12 +21,19 @@ from collections.abc import AsyncIterator
 
 import pytest
 import pytest_asyncio
+from fastapi.testclient import TestClient
 
 from tests.search_helpers import call_mcp_tool, seed_warehouse_models
 
+import slayer.search.service as svc_mod
+from slayer.api.server import create_app
+from slayer.cli import main
+from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType
+from slayer.core.errors import SlayerError
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
+from slayer.mcp.server import create_mcp_server
 from slayer.search import graph as _search_graph
 from slayer.search.service import (
     SearchHit,
@@ -65,7 +73,7 @@ async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
             entities=["warehouse.orders.amount_paid"],
             query=SlayerQuery(
                 source_model="orders",
-                measures=[ModelMeasure(formula="amount_paid:sum")],
+                measures=[ModelMeasure(formula="sum(amount_paid)")],
             ),
         )
         await storage.save_memory(
@@ -73,7 +81,7 @@ async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
             entities=["warehouse.customers.email"],
             query=SlayerQuery(
                 source_model="customers",
-                measures=[ModelMeasure(formula="*:count")],
+                measures=[ModelMeasure(formula="count(*)")],
             ),
         )
         yield storage
@@ -122,7 +130,6 @@ def test_search_hit_query_and_matched_entities_are_optional_with_defaults() -> N
 
 def test_search_hit_memory_hit_class_removed() -> None:
     """MemoryHit, ExampleQueryHit, EntityHit are no longer exported."""
-    import slayer.search.service as svc_mod
     assert not hasattr(svc_mod, "MemoryHit")
     assert not hasattr(svc_mod, "ExampleQueryHit")
     assert not hasattr(svc_mod, "EntityHit")
@@ -433,7 +440,6 @@ async def test_naive_cypher_unknown_label_raises_slayer_error(
     service: SearchService,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from slayer.core.errors import SlayerError
     monkeypatch.setattr(_search_graph, "is_available", lambda: False)
     with pytest.raises(SlayerError, match="(?i)unknown"):
         await service.search(
@@ -448,7 +454,6 @@ async def test_naive_cypher_complex_query_raises_slayer_error_with_install_hint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Complex Cypher raises SlayerError explaining the advanced_search requirement."""
-    from slayer.core.errors import SlayerError
     monkeypatch.setattr(_search_graph, "is_available", lambda: False)
     with pytest.raises(SlayerError, match="(?i)advanced_search"):
         await service.search(
@@ -465,7 +470,6 @@ async def test_naive_cypher_where_clause_raises_slayer_error(
     service: SearchService,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from slayer.core.errors import SlayerError
     monkeypatch.setattr(_search_graph, "is_available", lambda: False)
     with pytest.raises(SlayerError, match="(?i)advanced_search"):
         await service.search(
@@ -482,7 +486,6 @@ async def test_naive_cypher_missing_as_id_raises_slayer_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Without 'AS id' the Cypher is invalid even for the naive path."""
-    from slayer.core.errors import SlayerError
     monkeypatch.setattr(_search_graph, "is_available", lambda: False)
     with pytest.raises(SlayerError):
         await service.search(
@@ -497,8 +500,6 @@ async def test_naive_cypher_missing_as_id_raises_slayer_error(
 
 
 def _make_rest_client(tmp_path):
-    from slayer.api.server import create_app
-    import asyncio
     storage = resolve_storage(str(tmp_path / "storage"))
 
     async def _seed():
@@ -517,7 +518,6 @@ def _make_rest_client(tmp_path):
         )
 
     asyncio.run(_seed())
-    from fastapi.testclient import TestClient
     return TestClient(create_app(storage=storage))
 
 
@@ -587,7 +587,6 @@ _call_mcp_tool = call_mcp_tool
 async def test_mcp_search_tool_schema_has_max_results(
     storage_with_corpus: StorageBackend,
 ) -> None:
-    from slayer.mcp.server import create_mcp_server
     mcp = create_mcp_server(storage=storage_with_corpus)
     tools = await mcp.list_tools()
     search_tool = next(t for t in tools if t.name == "search")
@@ -600,7 +599,6 @@ async def test_mcp_search_tool_schema_has_max_results(
 async def test_mcp_search_tool_schema_does_not_have_old_params(
     storage_with_corpus: StorageBackend,
 ) -> None:
-    from slayer.mcp.server import create_mcp_server
     mcp = create_mcp_server(storage=storage_with_corpus)
     tools = await mcp.list_tools()
     search_tool = next(t for t in tools if t.name == "search")
@@ -615,7 +613,6 @@ async def test_mcp_search_tool_schema_does_not_have_old_params(
 async def test_mcp_search_response_has_results_key(
     storage_with_corpus: StorageBackend,
 ) -> None:
-    from slayer.mcp.server import create_mcp_server
     mcp = create_mcp_server(storage=storage_with_corpus)
     result_text = await _call_mcp_tool(
         mcp=mcp,
@@ -638,7 +635,6 @@ async def test_mcp_search_response_has_results_key(
 
 
 def _run_cli(args: list[str], monkeypatch, capsys) -> tuple[int, str]:
-    from slayer.cli import main
     monkeypatch.setattr(sys, "argv", ["slayer"] + args)
     try:
         main()
@@ -650,7 +646,6 @@ def _run_cli(args: list[str], monkeypatch, capsys) -> tuple[int, str]:
 
 
 def _seed_cli_storage(tmp_path) -> str:
-    import asyncio
     storage_dir = str(tmp_path / "storage")
     storage = resolve_storage(storage_dir)
 
@@ -711,8 +706,6 @@ def test_cli_search_json_output_has_results_key(tmp_path, monkeypatch, capsys) -
 async def test_client_search_returns_unified_response(
     storage_with_corpus: StorageBackend,
 ) -> None:
-    from slayer.client.slayer_client import SlayerClient
-
     client = SlayerClient(storage=storage_with_corpus)
     response = await client.search(
         entities=["warehouse.orders.amount_paid"],
@@ -730,7 +723,6 @@ async def test_client_search_returns_unified_response(
 async def test_client_search_old_max_params_raise_type_error(
     storage_with_corpus: StorageBackend,
 ) -> None:
-    from slayer.client.slayer_client import SlayerClient
     client = SlayerClient(storage=storage_with_corpus)
     with pytest.raises(TypeError):
         await client.search(**{"question": "x", "max_memories": 5})  # type: ignore[arg-type]

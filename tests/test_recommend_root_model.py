@@ -83,7 +83,7 @@ async def storage() -> AsyncIterator[StorageBackend]:
                 Column(name="product_id", type=DataType.INT, hidden=True),
                 Column(name="warehouse_id", type=DataType.INT, hidden=True),
             ],
-            measures=[ModelMeasure(formula="revenue:sum / *:count", name="aov")],
+            measures=[ModelMeasure(formula="sum(revenue) / count(*)", name="aov")],
             aggregations=[Aggregation(
                 name="trimmed_mean",
                 formula="avg(CASE WHEN {expr} BETWEEN {low} AND {high} THEN {expr} END)",
@@ -277,37 +277,37 @@ class TestRootSelection:
 # --------------------------------------------------------------------------
 class TestAggSuffix:
     async def test_simple_suffix_local(self, engine) -> None:
-        rec = await engine.recommend_root_model(["orders.revenue:sum"], data_source="mydb")
+        rec = await engine.recommend_root_model(["sum(orders.revenue)"], data_source="mydb")
         assert rec.root_model == "orders"
-        assert _paths(rec) == {"orders.revenue:sum": "sum(revenue)"}
+        assert _paths(rec) == {"sum(orders.revenue)": "sum(revenue)"}
 
     async def test_suffix_cross_model(self, engine) -> None:
-        rec = await engine.recommend_root_model(["products.price:sum", "orders.status"])
+        rec = await engine.recommend_root_model(["sum(products.price)", "orders.status"])
         assert rec.root_model == "orders"
-        assert _paths(rec)["products.price:sum"] == "sum(products.price)"
+        assert _paths(rec)["sum(products.price)"] == "sum(products.price)"
 
     async def test_kwarg_suffix_local(self, engine) -> None:
         rec = await engine.recommend_root_model(
-            ["orders.amount:weighted_avg(weight=qty)"], data_source="mydb"
+            ["weighted_avg(orders.amount, weight=qty)"], data_source="mydb"
         )
         assert _paths(rec) == {
-            "orders.amount:weighted_avg(weight=qty)": "weighted_avg(amount, weight=qty)"
+            "weighted_avg(orders.amount, weight=qty)": "weighted_avg(amount, weight=qty)"
         }
 
     async def test_kwarg_suffix_cross_model_preserved_verbatim(self, engine) -> None:
         rec = await engine.recommend_root_model(
-            ["products.price:weighted_avg(weight=price)", "orders.status"]
+            ["weighted_avg(products.price, weight=price)", "orders.status"]
         )
         assert rec.root_model == "orders"
         assert (
-            _paths(rec)["products.price:weighted_avg(weight=price)"]
+            _paths(rec)["weighted_avg(products.price, weight=price)"]
             == "weighted_avg(products.price, weight=price)"
         )
 
     async def test_dotted_kwarg_arg_preserved_verbatim(self, engine) -> None:
         # A dotted column arg is preserved as-is (engine resolves it in the
         # aggregated column's owning-model frame, invariant under root).
-        item = "products.price:weighted_avg(weight=products.price)"
+        item = "weighted_avg(products.price, weight=products.price)"
         rec = await engine.recommend_root_model([item, "orders.status"])
         assert rec.root_model == "orders"
         assert _paths(rec)[item] == "weighted_avg(products.price, weight=products.price)"
@@ -315,20 +315,17 @@ class TestAggSuffix:
     async def test_suffix_through_multi_hop_path(self, engine) -> None:
         # regions is 2 hops from orders (via customers); suffix rides along.
         rec = await engine.recommend_root_model(
-            ["orders.status", "regions.population:sum"]
+            ["orders.status", "sum(regions.population)"]
         )
         assert rec.root_model == "orders"
-        assert _paths(rec)["regions.population:sum"] == "sum(customers.regions.population)"
+        assert _paths(rec)["sum(regions.population)"] == "sum(customers.regions.population)"
 
     @pytest.mark.parametrize(
         ("item", "expected"),
         [
             ("sum(orders.amount)", "sum(amount)"),
-            ("orders.amount:sum", "sum(amount)"),
             ("percentile(orders.amount, p=0.9)", "percentile(amount, p=0.9)"),
-            ("orders.amount:percentile(p=0.9)", "percentile(amount, p=0.9)"),
             ("last(orders.amount, ordered_at)", "last(amount, ordered_at)"),
-            ("orders.amount:last(ordered_at)", "last(amount, ordered_at)"),
             ("weighted_avg(orders.amount, weight=qty)", "weighted_avg(amount, weight=qty)"),
         ],
     )
@@ -337,11 +334,10 @@ class TestAggSuffix:
         assert rec.root_model == "orders"
         assert _paths(rec) == {item: expected}
 
-    @pytest.mark.parametrize("item", ["sum(regions.population)", "regions.population:sum"])
-    async def test_cross_model_path_is_functional(self, engine, item: str) -> None:
-        rec = await engine.recommend_root_model(["orders.status", item])
+    async def test_cross_model_path_is_functional(self, engine) -> None:
+        rec = await engine.recommend_root_model(["orders.status", "sum(regions.population)"])
         assert rec.root_model == "orders"
-        assert _paths(rec)[item] == "sum(customers.regions.population)"
+        assert _paths(rec)["sum(regions.population)"] == "sum(customers.regions.population)"
 
 
 # --------------------------------------------------------------------------
@@ -406,9 +402,9 @@ class TestNoCommonRoot:
 
     async def test_attachment_only_disconnected_still_lists_coverage(self, engine) -> None:
         # Attachment-only items on disconnected models: coverage falls back to
-        # attachment reachability, so it is non-empty (orders.aov / logs.line:count).
+        # attachment reachability, so it is non-empty (orders.aov / count(logs.line)).
         rec = await engine.recommend_root_model(
-            ["orders.aov", "logs.line:count"], data_source="mydb"
+            ["orders.aov", "count(logs.line)"], data_source="mydb"
         )
         assert rec.reachable is False
         assert rec.item_paths == []
@@ -462,13 +458,13 @@ class TestNoCommonRoot:
 # --------------------------------------------------------------------------
 class TestUnrelatedAttachments:
     async def test_unrelated_attachment_is_reported_through_the_product_hop(self, engine) -> None:
-        rec = await engine.recommend_root_model(["customers.name", "logs.id:count"])
+        rec = await engine.recommend_root_model(["customers.name", "count(logs.id)"])
         assert rec.root_model == "customers"
         assert rec.reachable is True
         flags = {ip.input_item: (ip.path, ip.unrelated) for ip in rec.item_paths}
-        assert flags == {"customers.name": ("name", False), "logs.id:count": ("count(logs.id)", True)}
+        assert flags == {"customers.name": ("name", False), "count(logs.id)": ("count(logs.id)", True)}
         resp = await engine.execute(
-            SlayerQuery.model_validate({"source_model": "customers", "measures": [flags["logs.id:count"][0]]}),
+            SlayerQuery.model_validate({"source_model": "customers", "measures": [flags["count(logs.id)"][0]]}),
             dry_run=True,
         )
         assert resp.sql
@@ -476,18 +472,18 @@ class TestUnrelatedAttachments:
     async def test_unrelated_attachment_never_steers_the_choice(self, engine) -> None:
         items = ["customers.name", "regions.name"]
         without = await engine.recommend_root_model(items)
-        with_unrelated = await engine.recommend_root_model([*items, "logs.id:count", "agents.id:count"])
+        with_unrelated = await engine.recommend_root_model([*items, "count(logs.id)", "count(agents.id)"])
         assert with_unrelated.root_model == without.root_model == "customers"
         assert {ip.input_item for ip in with_unrelated.item_paths if ip.unrelated} == {
-            "logs.id:count", "agents.id:count",
+            "count(logs.id)", "count(agents.id)",
         }
 
     async def test_feasible_root_hint_reaches_an_unrelated_attachment(self, engine) -> None:
-        rec = await engine.recommend_root_model(["customers.name", "logs.id:count"], root_hint="orders")
+        rec = await engine.recommend_root_model(["customers.name", "count(logs.id)"], root_hint="orders")
         assert rec.root_model == "orders"
         assert rec.warnings == []
         assert {ip.input_item: ip.unrelated for ip in rec.item_paths} == {
-            "customers.name": False, "logs.id:count": True,
+            "customers.name": False, "count(logs.id)": True,
         }
 
     async def test_unrelated_column_stays_unreachable(self, engine) -> None:
@@ -497,13 +493,13 @@ class TestUnrelatedAttachments:
         assert rec.item_paths == []
 
     async def test_attachments_alone_keep_join_path_selection(self, engine) -> None:
-        rec = await engine.recommend_root_model(["customers.id:count", "logs.id:count"])
+        rec = await engine.recommend_root_model(["count(customers.id)", "count(logs.id)"])
         assert rec.root_model is None
         assert rec.reachable is False
         assert rec.item_paths == []
 
     async def test_connected_items_are_never_flagged(self, engine) -> None:
-        rec = await engine.recommend_root_model(["orders.status", "products.price:sum", "orders.aov"])
+        rec = await engine.recommend_root_model(["orders.status", "sum(products.price)", "orders.aov"])
         assert [ip.unrelated for ip in rec.item_paths] == [False, False, False]
 
 
@@ -833,13 +829,13 @@ class TestRootHint:
 
 class TestResultModels:
     def test_item_path_fields(self) -> None:
-        ip = ItemPath(input_item="orders.revenue:sum", path="customers.revenue:sum")
-        assert ip.input_item == "orders.revenue:sum"
-        assert ip.path == "customers.revenue:sum"
+        ip = ItemPath(input_item="sum(orders.revenue)", path="sum(customers.revenue)")
+        assert ip.input_item == "sum(orders.revenue)"
+        assert ip.path == "sum(customers.revenue)"
 
     def test_item_path_unrelated_defaults_false(self) -> None:
         assert ItemPath(input_item="orders.status", path="status").unrelated is False
-        assert ItemPath(input_item="logs.id:count", path="count(logs.id)", unrelated=True).unrelated is True
+        assert ItemPath(input_item="count(logs.id)", path="count(logs.id)", unrelated=True).unrelated is True
 
     def test_candidate_coverage_fields(self) -> None:
         cc = CandidateCoverage(

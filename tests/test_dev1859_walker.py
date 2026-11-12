@@ -53,7 +53,7 @@ class TestSharedRowLeafWalker:
     def test_time_key_is_not_a_row_leaf(self):
         key = TransformKey(
             op="rank", input=AGG,
-            time_key=TimeTruncKey(column=ColumnKey(leaf="ordered_at"),
+            time_key=TimeTruncKey(source=ColumnKey(leaf="ordered_at"),
                                   granularity=TimeGranularity.MONTH))
         assert _walk(key) is None
 

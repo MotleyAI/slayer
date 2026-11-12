@@ -29,10 +29,11 @@ _INDEX_YAML = pathlib.Path(__file__).parent.parent / "architecture" / "index.yam
 class TestGeneratorInvariant:
     def test_unspliced_query_backed_model_raises_a_non_deferral_value_error(self) -> None:
         qb = SlayerModel(name="qb_unspliced", data_source="test",
-                         source_queries=[query(source_model="orders", measures=[m("amount:sum", "a")])])
+                         source_queries=[query(source_model="orders", measures=[m("sum(amount)", "a")])])
         generator = SQLGenerator(dialect="postgres")
+        bundle = ResolvedSourceBundle(dialect="postgres", source_model=qb)
         with pytest.raises(ValueError) as exc:
-            generator._build_from_clause_from_planned(source_model=qb, source_relation="qb_unspliced")
+            generator._emit_relation(model=qb, alias="qb_unspliced", bundle=bundle)
         msg = str(exc.value)
         assert "qb_unspliced" in msg, msg
         assert "query-backed" in msg, msg
@@ -123,7 +124,7 @@ class TestStampedBundle:
     async def test_spliced_consumer(self, planned) -> None:
         async with dev1966_engine("sqlite") as e:
             await e.execute(query(source_model="clients", dimensions=["tier"],
-                                  measures=[m("cust_rev.rev:sum", "r")]), dry_run=True)
+                                  measures=[m("sum(cust_rev.rev)", "r")]), dry_run=True)
         assert len(planned) == 3
         _assert_no_later_stage(planned)
 
@@ -134,18 +135,18 @@ class TestEmissionLaw:
         seen: List[tuple] = []
         real = SQLGenerator._emit_relation
 
-        def spy(self, *, model, alias):
+        def spy(self, *, model, alias, bundle):
             seen.append((model.sql_table, frozenset(self._gen_stage_reads)))
-            return real(self, model=model, alias=alias)
+            return real(self, model=model, alias=alias, bundle=bundle)
 
         monkeypatch.setattr(SQLGenerator, "_emit_relation", spy)
         queries = {
-            "source": query(source_model="cust_rev", measures=[m("rev:sum", "t")]),
+            "source": query(source_model="cust_rev", measures=[m("sum(rev)", "t")]),
             "join_target": query(source_model="clients", dimensions=["tier"],
-                                 measures=[m("cust_rev.rev:sum", "r")]),
+                                 measures=[m("sum(cust_rev.rev)", "r")]),
             "stage_chain": [query(name="s", source_model="clients", dimensions=["tier"],
-                                  measures=[m("cust_rev.rev:sum", "r")]),
-                            query(source_model="s", measures=[m("r:sum", "t")])],
+                                  measures=[m("sum(cust_rev.rev)", "r")]),
+                            query(source_model="s", measures=[m("sum(r)", "t")])],
         }
         async with dev1966_engine("sqlite") as e:
             await e.execute(queries[consumer], dry_run=True)

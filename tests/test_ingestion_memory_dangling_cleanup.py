@@ -12,13 +12,16 @@ import os
 import sqlite3
 import tempfile
 from collections.abc import AsyncIterator
+from typing import Any
 
 import pytest
 from sqlalchemy.exc import OperationalError as SAOperationalError
 
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.live_schema.ingestion import ingest_datasource_idempotent
+from slayer.live_schema.schema_drift import IdempotentIngestResult
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.base import StorageBackend
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -30,6 +33,15 @@ from slayer.storage.yaml_storage import YAMLStorage
 # (and re-raise everything else, so assertion / logic regressions are
 # never masked — CodeRabbit review on PR #130).
 _EXPECTED_INGEST_FAILURES = (SAOperationalError, sqlite3.OperationalError)
+
+
+async def _ingest(*, datasource: DatasourceConfig, **kwargs: Any) -> IdempotentIngestResult:
+    client = SlayerSQLClient(datasource=datasource)
+    try:
+        return await ingest_datasource_idempotent(datasource=datasource, client=client, **kwargs)
+    finally:
+        await client.aclose()
+        client.close()
 
 
 @pytest.fixture
@@ -69,7 +81,7 @@ class TestIngestDanglingRefCleanup:
         try:
             ds = await storage.get_datasource("mydb")
             assert ds is not None
-            await ingest_datasource_idempotent(
+            await _ingest(
                 storage=storage, datasource=ds,
             )
         except _EXPECTED_INGEST_FAILURES:
@@ -103,7 +115,7 @@ class TestIngestDanglingRefCleanup:
 
         monkeypatch.setattr(storage, "get_model", _raise)
         try:
-            await ingest_datasource_idempotent(
+            await _ingest(
                 storage=storage, datasource=ds,
             )
         except (_EXPECTED_INGEST_FAILURES + (RuntimeError,)):
@@ -126,7 +138,7 @@ class TestIngestDanglingRefCleanup:
         # drop the column to make the query stale.
         attached = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
         )
         await storage.save_memory(
             learning="x",
@@ -146,7 +158,7 @@ class TestIngestDanglingRefCleanup:
         assert ds is not None
         # Capture the seeded memory id by listing — only one memory exists.
         seeded = (await storage.list_memories())[0]
-        result = await ingest_datasource_idempotent(
+        result = await _ingest(
             storage=storage, datasource=ds,
         )
         # An IngestionError tagged ``memory:<id>`` should be present.
@@ -163,4 +175,4 @@ class TestIngestDanglingRefCleanup:
         assert reloaded.query is not None
         assert reloaded.query.source_model == "orders"
         assert reloaded.query.measures is not None
-        assert reloaded.query.measures[0].formula == "amount:sum"
+        assert reloaded.query.measures[0].formula == "sum(amount)"

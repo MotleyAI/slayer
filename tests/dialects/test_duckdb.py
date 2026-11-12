@@ -7,6 +7,9 @@ translation), native CORR / COVAR_SAMP / COVAR_POP, native log10 / log2.
 
 from __future__ import annotations
 
+import tomllib
+from pathlib import Path
+
 import sqlglot
 from sqlglot import exp
 
@@ -79,3 +82,10 @@ def test_duckdb_build_date_add_quarter_normalizes_to_3_month() -> None:
         expr=col, count=exp.Literal.number(1), unit=TimeGranularity.QUARTER, operand=DataType.TIMESTAMP,
     )
     assert out.sql(dialect="duckdb").upper() == "CREATED_AT + INTERVAL 3 MONTH"
+
+
+def test_duckdb_floor_has_every_catalog_column_reflection_reads() -> None:
+    """``duckdb_constraints().referenced_table`` (foreign keys) first ships in DuckDB 1.1."""
+    pyproject = tomllib.loads((Path(__file__).parents[2] / "pyproject.toml").read_text())
+    floor = pyproject["tool"]["poetry"]["dependencies"]["duckdb"].removeprefix(">=")
+    assert tuple(int(p) for p in floor.split(".")) >= (1, 1)

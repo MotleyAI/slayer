@@ -48,7 +48,7 @@ Dynamic joins are what stitch a query-as-model back into a bigger query.
 Put queries-as-models together with inline joins and you get **[multistage queries](../06_multistage_queries/multistage_queries.md)** — not as a bolt-on with its own syntax, but as a natural consequence of the two features above. Two patterns this makes easy, both of which are genuinely awkward in most semantic layers:
 
 - **Nested aggregation**: sum revenue per store, then average those store totals across months or regions. A single SQL pass can't express this; SLayer expresses it as a **two-element query list** where the outer query references the inner by name.
-- **Grouping by a calculated dimension**: bucket customers by their total spend, then count how many fall in each bucket. The bucket depends on an aggregate — so the inner query computes the totals, and the outer query's `source_model` is a `ModelExtension` adding a `CASE WHEN` column over the inner query's output.
+- **Grouping by a calculated dimension**: bucket customers by their total spend, then count how many fall in each bucket. The bucket depends on an aggregate — so the inner query computes the totals, and the outer query extends the inner query's output with a `CASE WHEN` column.
 
 Each of these is **simple at the semantic level and non-trivial at the SQL level**. That's exactly the gap a good semantic layer should close — and SLayer closes it in the query, not the model, saving agent tokens and keeping the model small enough to fit.
 
@@ -66,7 +66,7 @@ Here is the nested-aggregation example, written out in full. The inner query com
   {
     "source_model": "monthly_store_revenue",
     "measures": ["avg(order_total_sum)"],
-    "dimensions": ["stores.name"]
+    "dimensions": ["stores__name"]
   }
 ]
 ```

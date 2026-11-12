@@ -14,7 +14,8 @@ from __future__ import annotations
 import logging
 import re
 from contextvars import ContextVar
-from collections.abc import Callable, Sequence, Set as AbstractSet
+from typing import Protocol
+from collections.abc import Callable, Mapping, Sequence, Set as AbstractSet
 
 import sqlglot
 import sqlglot.errors
@@ -25,15 +26,17 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType, JoinCardinality, JoinType, TimeGranularity
 from slayer.core.models import ModelJoin, SlayerModel
+from slayer.core.refs import functional_agg_text
 from slayer.core.query import (
     ColumnRef,
+    computed_dimension_name,
     ModelExtension,
     OrderItem,
     SlayerQuery,
-    SourceSpec,
     TimeDimension,
 )
-from slayer.engine.cardinality import declares_solo_unique
+from slayer.core.syntax import measure_text_at_path
+from slayer.engine.cardinality.inference import declares_solo_unique
 from slayer.facade.catalog import (
     CATALOG_NAME,
     FacadeCatalog,
@@ -243,15 +246,14 @@ _TIME_GRAIN_NAMES: dict[str, TimeGranularity] = {
     "second": TimeGranularity.SECOND,
 }
 
-# Unwrapped one-arg time functions parse to dedicated nodes (exp.Month, …).
-_TIME_GRAIN_CLASSES: dict[type, TimeGranularity] = {
-    exp.Year: TimeGranularity.YEAR,
-    exp.Quarter: TimeGranularity.QUARTER,
-    exp.Month: TimeGranularity.MONTH,
-    exp.Week: TimeGranularity.WEEK,
-    exp.Day: TimeGranularity.DAY,
-    # Hour/Minute/Second lack dedicated classes; accepted via exp.Anonymous.
+# One-arg date-part functions parse to dedicated nodes (exp.Month, …): integer extraction, never a bucket.
+_EXTRACTION_CLASSES: dict[type, str] = {
+    cls: part for name, part in (
+        ("Year", "year"), ("Quarter", "quarter"), ("Month", "month"), ("Week", "week"), ("Day", "day"),
+        ("Hour", "hour"), ("Minute", "minute"), ("Second", "second"),
+    ) if (cls := getattr(exp, name, None)) is not None
 }
+_EXTRACTION_PARTS = frozenset(_TIME_GRAIN_NAMES)
 
 # Aggregate AST classes → SLayer aggregation names. COUNT handled separately.
 _AGG_CLASS_TO_NAME: dict[type, str] = {
@@ -545,35 +547,39 @@ def _unwrap_signed_day_offset(
     return node
 
 
-def _detect_time_grain_single_arg(
-    node: Expression,
-) -> tuple[TimeGranularity, exp.Column] | None:
-    """Dedicated AST classes like ``exp.Month`` / ``exp.Year``."""
-    for cls, grain in _TIME_GRAIN_CLASSES.items():
-        if isinstance(node, cls):
-            target = node.this
-            if isinstance(target, exp.Column):
-                return grain, target
-            return None
+def _detect_extraction(node: Expression) -> tuple[str, exp.Column] | None:
+    """``(part, column)`` when ``node`` is ``MONTH(col)`` and its siblings, ``EXTRACT(<part> FROM col)`` or
+    ``date_part('<part>', col)`` for one of the eight date parts, else ``None``."""
+    if isinstance(node, exp.Paren):
+        return _detect_extraction(node.this)
+    part: str | None = None
+    target: Expression | None = None
+    cls_part = next((p for cls, p in _EXTRACTION_CLASSES.items() if isinstance(node, cls)), None)
+    if cls_part is not None:
+        part, target = cls_part, node.this
+    elif isinstance(node, exp.Extract):
+        part, target = str(node.this.name).lower(), node.expression
+    elif isinstance(node, exp.Anonymous):
+        name, args = str(node.this).lower(), node.args.get("expressions") or []
+        if name in _EXTRACTION_PARTS and len(args) == 1:
+            part, target = name, args[0]
+        elif name == "date_part" and len(args) == 2 and isinstance(args[0], exp.Literal) and args[0].is_string:
+            part, target = str(args[0].this).lower(), args[1]
+    if part in _EXTRACTION_PARTS and isinstance(target, exp.Column):
+        return part, target
     return None
 
 
-def _detect_time_grain_anonymous(
-    node: exp.Anonymous,
-) -> tuple[TimeGranularity, exp.Column] | None:
-    """``hour(col)`` / ``minute(col)`` / ``second(col)`` come through here."""
-    grain = _TIME_GRAIN_NAMES.get(str(node.this).lower())
-    if grain is None:
-        return None
-    args = node.args.get("expressions") or []
-    if len(args) == 1 and isinstance(args[0], exp.Column):
-        return grain, args[0]
-    return None
+def _alias_for_extraction(
+    part: str, col: exp.Column, *, strip_prefix: tuple[str, str] | None = None, alias_map: dict[str, str] | None = None,
+) -> str:
+    """The canonical projection name every spelling of one extraction shares."""
+    return f"date_part('{part}', {_column_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)})"
 
 
 def _detect_time_grain(node: Expression) -> tuple[TimeGranularity, exp.Column] | None:
-    """If ``node`` is ``<grain>(<column>)`` or ``date_trunc('<grain>', <column>)``,
-    return ``(granularity, column)``, else ``None``. Also unwraps an outer
+    """If ``node`` is ``date_trunc('<grain>', <column>)`` (or the Sunday-week wrapper), return
+    ``(granularity, column)``, else ``None``. Also unwraps an outer
     ``CAST(...)`` (Metabase casts DATE-typed trunc results back to DATE)."""
     if isinstance(node, exp.Cast):
         unwrapped = _detect_time_grain(node.this)
@@ -587,14 +593,7 @@ def _detect_time_grain(node: Expression) -> tuple[TimeGranularity, exp.Column] |
         if recur is not None:
             return recur
     if isinstance(node, (exp.DateTrunc, exp.TimestampTrunc)):
-        match = _detect_time_grain_date_trunc(node)
-        if match is not None:
-            return match
-    single = _detect_time_grain_single_arg(node)
-    if single is not None:
-        return single
-    if isinstance(node, exp.Anonymous):
-        return _detect_time_grain_anonymous(node)
+        return _detect_time_grain_date_trunc(node)
     return None
 
 
@@ -668,10 +667,10 @@ def _detect_aggregate(  # NOSONAR(S3776) — flat per-aggregate-kind dispatch; s
 
 
 def _agg_formula(call: _AggCall) -> str:
-    """The internal legacy colon-form measure formula for a recognised aggregate."""
+    """The functional measure formula for a recognised aggregate."""
     if call.is_count_star:
-        return "*:count"
-    return f"{call.inner_ref}:{call.agg}"
+        return "count(*)"
+    return functional_agg_text(source=call.inner_ref or "", suffix=call.agg)
 
 
 def _saved_measure_names(table: FacadeTable) -> set[str]:
@@ -843,6 +842,8 @@ class _ProjectionItem(BaseModel):
     dimension: FacadeDimension | None = None
     time_grain: TimeGranularity | None = None
     time_grain_underlying: FacadeDimension | None = None
+    # A date-part extraction of ``time_grain_underlying`` (``month``, …).
+    extraction: str | None = None
     # CAST(<column> AS <type>) target: overrides projection_types[i], leaving
     # the engine alias and SlayerQuery measure/dimension untouched.
     cast_target: DataType | None = None
@@ -877,6 +878,30 @@ def _resolve_time_grain_projection(
         dimension=dim,
         time_grain=grain,
         time_grain_underlying=dim,
+    )
+
+
+def _resolve_extraction_projection(
+    *,
+    part: str,
+    col: exp.Column,
+    alias_name: str | None,
+    table: FacadeTable,
+    dims_by_name: dict[str, FacadeDimension],
+    strip_prefix: tuple[str, str] | None = None,
+    alias_map: dict[str, str] | None = None,
+) -> _ProjectionItem:
+    dotted = _column_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)
+    dim = dims_by_name.get(dotted)
+    if dim is None or not dim.is_time:
+        raise TranslationError(
+            f"{part}() extracts a date part of a time column; {dotted!r} is not one on table {table.name!r}"
+        )
+    return _ProjectionItem(
+        projected_name=alias_name or _alias_for_extraction(part, col, strip_prefix=strip_prefix, alias_map=alias_map),
+        dimension=dim,
+        time_grain_underlying=dim,
+        extraction=part,
     )
 
 
@@ -1114,6 +1139,14 @@ def _resolve_projection(  # NOSONAR(S3776) — flat dispatch over projection-exp
                 strip_prefix=strip_prefix, alias_map=alias_map,
             ))
             continue
+        extraction = _detect_extraction(body)
+        if extraction is not None:
+            part, col = extraction
+            out.append(_resolve_extraction_projection(
+                part=part, col=col, alias_name=alias_name, table=table, dims_by_name=dims_by_name,
+                strip_prefix=strip_prefix, alias_map=alias_map,
+            ))
+            continue
 
         agg_call = _detect_aggregate(body, strip_prefix=strip_prefix, alias_map=alias_map)
         if agg_call is not None:
@@ -1210,60 +1243,72 @@ def _aggregate_alias_for_column(
     side: Expression,
     items_by_projected_name: dict[str, "_ProjectionItem"],
     *, strip_prefix: tuple[str, str] | None = None,
-) -> "_ProjectionItem | None":
-    """If ``side`` is a column reference whose dotted (strip_prefix-aware)
-    name matches an aggregate projection's ``projected_name``, return that
-    projection item; else ``None``.
+    alias_map: dict[str, str] | None = None,
+    metrics_by_name: Mapping[str, FacadeMetric] | None = None,
+) -> FacadeMetric | None:
+    """The metric a column reference names: a projected aggregate's alias, else a catalog metric by name.
 
-    Used by ``_try_aggregate_alias_filter`` to route Metabase-style
-    ``WHERE "<alias>" > <literal>`` and ``HAVING "<alias>" > <literal>``
-    conjuncts to aggregate filters. The ``item.metric`` guard
-    keeps dimension projections that happen to share a name with what
-    *would* be an aggregate alias from being treated as aggregates.
+    A projected dimension sharing the name wins, so it is never read as an aggregate.
     """
     if not isinstance(side, exp.Column):
         return None
-    name = _column_to_dotted(side, strip_prefix=strip_prefix)
+    name = _column_to_dotted(side, strip_prefix=strip_prefix, alias_map=alias_map)
     item = items_by_projected_name.get(name)
-    if item is None or item.metric is None:
-        return None
-    return item
+    if item is not None:
+        return item.metric
+    return (metrics_by_name or {}).get(name)
 
 
-def _try_aggregate_alias_filter(
+_FLIPPED_COMPARATOR: dict[type, type] = {
+    exp.GT: exp.LT, exp.LT: exp.GT, exp.GTE: exp.LTE, exp.LTE: exp.GTE, exp.EQ: exp.EQ, exp.NEQ: exp.NEQ,
+}
+
+
+def _is_literal_operand(node: Expression) -> bool:
+    return isinstance(node, exp.Literal) or (isinstance(node, exp.Neg) and isinstance(node.this, exp.Literal))
+
+
+def _literal_last(conj: Expression) -> Expression:
+    """``100 < x`` → ``x > 100``."""
+    flipped = _FLIPPED_COMPARATOR.get(type(conj))
+    if flipped is None or not _is_literal_operand(conj.this) or _is_literal_operand(conj.expression):
+        return conj
+    return flipped(this=conj.expression.copy(), expression=conj.this.copy())
+
+
+def _metric_filter(
     conj: Expression,
     items_by_projected_name: dict[str, "_ProjectionItem"],
     *, strip_prefix: tuple[str, str] | None = None,
+    alias_map: dict[str, str] | None = None,
+    metrics_by_name: Mapping[str, FacadeMetric] | None = None,
+    temporal_columns: AbstractSet[str] = frozenset(),
 ) -> str | None:
-    """If ``conj`` is ``<aggregate-alias-col> <cmp> <literal>`` (in either
-    order), return the aggregate filter string. If one side matches an
-    aggregate alias but the other side is not a literal, raise. Return
-    ``None`` if neither side matches an aggregate-alias column ref.
+    """``conj`` as an aggregate filter, each metric reference (projected aggregate alias or catalog metric) replaced
+    by its measure formula and each time bound's literals as instants; ``None`` when it names no metric.
 
-    Metabase compiles MBQL ``["aggregation", N]`` post-aggregation
-    references to alias-bearing SQL — ``WHERE "count" > 1`` for filters and
-    ``ORDER BY "count" DESC`` for sorts. This detector rewrites the filter
-    shapes to aggregate filters (``*:count > 1``, legacy colon form) so the engine classifies them
-    correctly as HAVING; ``_translate_order_by`` handles the ORDER BY side.
+    Metabase compiles post-aggregation filters to alias-bearing SQL (``WHERE "count" > 1``).
     """
-    op_sql = _COMPARATOR_SQL.get(type(conj))
-    if op_sql is None:
+    found: list[FacadeMetric] = []
+
+    def swap(node: Expression) -> Expression:
+        metric = _aggregate_alias_for_column(
+            node, items_by_projected_name, strip_prefix=strip_prefix, alias_map=alias_map,
+            metrics_by_name=metrics_by_name,
+        )
+        if metric is None:
+            return node
+        found.append(metric)
+        return exp.var(metric.measure_formula)
+
+    temporal = _temporal_predicate(temporal_columns, strip_prefix=strip_prefix, alias_map=alias_map)
+    instantized = conj.transform(lambda n: _instantized_time_bound(n, temporal) or n)
+    rewritten = _literal_last(instantized).transform(swap)
+    if not found:
         return None
-    lhs, rhs = conj.this, conj.expression
-    alias_lhs = _aggregate_alias_for_column(lhs, items_by_projected_name, strip_prefix=strip_prefix)
-    alias_rhs = _aggregate_alias_for_column(rhs, items_by_projected_name, strip_prefix=strip_prefix)
-    if alias_lhs is None and alias_rhs is None:
-        return None
-    if alias_lhs is not None and alias_rhs is None and isinstance(rhs, exp.Literal):
-        assert alias_lhs.metric is not None
-        return f"{alias_lhs.metric.measure_formula} {op_sql} {rhs.sql()}"
-    if alias_rhs is not None and alias_lhs is None and isinstance(lhs, exp.Literal):
-        assert alias_rhs.metric is not None
-        return f"{alias_rhs.metric.measure_formula} {_flip_comparator(op_sql)} {lhs.sql()}"
-    raise TranslationError(
-        f"Aggregate-alias filter expects a literal on the other side; "
-        f"got: {conj.sql()!r}"
-    )
+    normalised = _normalise_predicate_columns(
+        _expand_between(rewritten), strip_prefix=strip_prefix, alias_map=alias_map)
+    return _rewrite_neq(normalised.sql())
 
 
 _DATE_ONLY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -1310,6 +1355,17 @@ def _expand_between(node: Expression) -> Expression:
     return node.transform(expand)
 
 
+def _temporal_predicate(
+    temporal_columns: AbstractSet[str],
+    *, strip_prefix: tuple[str, str] | None, alias_map: dict[str, str] | None,
+) -> Callable[[Expression], bool]:
+    def temporal(node: Expression) -> bool:
+        return isinstance(node, exp.Column) and _column_to_dotted(
+            node, strip_prefix=strip_prefix, alias_map=alias_map,
+        ) in temporal_columns
+    return temporal
+
+
 def _classify_where_conjunct(
     conj: Expression, time_dim_names: set[str],
     *,
@@ -1333,11 +1389,7 @@ def _classify_where_conjunct(
     SlayerQuery.filters, not as the original 3-part-qualified form that
     the DSL parser would reject.
     """
-    def temporal(node: Expression) -> bool:
-        return isinstance(node, exp.Column) and _column_to_dotted(
-            node, strip_prefix=strip_prefix, alias_map=alias_map,
-        ) in temporal_columns
-
+    temporal = _temporal_predicate(temporal_columns, strip_prefix=strip_prefix, alias_map=alias_map)
     instantized = conj.transform(lambda n: _instantized_time_bound(n, temporal) or n)
     if isinstance(instantized, exp.Between):
         lifted = _lift_time_between(
@@ -1457,18 +1509,22 @@ def _apply_where(
     temporal_columns: AbstractSet[str] = frozenset(),
     strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
-) -> None:
-    """Walk the WHERE chain; route aggregate-alias refs to aggregate
-    filters, lift time-dim filters, append verbatim rest."""
+    metrics_by_name: Mapping[str, FacadeMetric] | None = None,
+) -> bool:
+    """Walk the WHERE chain; route conjuncts naming a metric to aggregate
+    filters, lift time-dim filters, append verbatim rest. True when any conjunct reads an aggregate."""
     if where is None:
-        return
+        return False
+    reads_aggregate = False
     time_dim_names = set(time_dims_built.keys())
     for conj in _split_and_chain(where.this):
-        colon_form = _try_aggregate_alias_filter(
-            conj, items_by_projected_name, strip_prefix=strip_prefix,
+        metric_form = _metric_filter(
+            conj, items_by_projected_name, strip_prefix=strip_prefix, alias_map=alias_map,
+            metrics_by_name=metrics_by_name, temporal_columns=temporal_columns | time_dim_names,
         )
-        if colon_form is not None:
-            filters_out.append(colon_form)
+        if metric_form is not None:
+            filters_out.append(metric_form)
+            reads_aggregate = True
             continue
         lifted, verbatim = _classify_where_conjunct(
             conj, time_dim_names, temporal_columns=temporal_columns | time_dim_names,
@@ -1479,6 +1535,7 @@ def _apply_where(
             time_dims_built[name].date_range = [lo, hi]
         elif verbatim is not None:
             filters_out.append(verbatim)
+    return reads_aggregate
 
 
 def _apply_having(
@@ -1490,10 +1547,11 @@ def _apply_having(
     strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
     extra_metrics_by_formula: dict[str, FacadeMetric] | None = None,
+    metrics_by_name: Mapping[str, FacadeMetric] | None = None,
+    temporal_columns: AbstractSet[str] = frozenset(),
 ) -> None:
-    """Map ``HAVING <agg(col)> <cmp> <literal>`` and
-    ``HAVING <agg-alias-col> <cmp> <literal>`` conjuncts to aggregate
-    filters, which the engine classifies as HAVING.
+    """Map HAVING conjuncts naming a metric, and ``HAVING <agg(col)> <cmp> <literal>``,
+    to aggregate filters, which the engine classifies as HAVING.
 
     ``extra_metrics_by_formula`` overlay covers dynamic-join
     targets whose metrics aren't yet in the catalog's projection.
@@ -1504,14 +1562,16 @@ def _apply_having(
     if extra_metrics_by_formula:
         metrics_by_formula.update(extra_metrics_by_formula)
     for conj in _split_and_chain(having.this):
-        # alias-ref form (``HAVING "rev" > 1000``). Symmetric with
-        # the WHERE pre-pass; tries first so it wins before the agg-call form.
-        colon_form = _try_aggregate_alias_filter(
-            conj, items_by_projected_name, strip_prefix=strip_prefix,
+        # Metric-name form (``HAVING "rev" > 1000``) wins before the agg-call form.
+        metric_form = _metric_filter(
+            conj, items_by_projected_name, strip_prefix=strip_prefix, alias_map=alias_map,
+            metrics_by_name=metrics_by_name, temporal_columns=temporal_columns,
         )
-        if colon_form is not None:
-            filters_out.append(colon_form)
+        if metric_form is not None:
+            filters_out.append(metric_form)
             continue
+        while isinstance(conj, exp.Paren):
+            conj = conj.this
         op_sql = _COMPARATOR_SQL.get(type(conj))
         if op_sql is None:
             raise TranslationError(
@@ -1521,10 +1581,10 @@ def _apply_having(
         lhs, rhs = conj.this, conj.expression
         agg_lhs = _detect_aggregate(lhs, strip_prefix=strip_prefix, alias_map=alias_map)
         agg_rhs = _detect_aggregate(rhs, strip_prefix=strip_prefix, alias_map=alias_map)
-        if agg_lhs is not None and agg_rhs is None and isinstance(rhs, exp.Literal):
+        if agg_lhs is not None and agg_rhs is None and _is_literal_operand(rhs):
             _metric_for_aggregate(call=agg_lhs, table=table, metrics_by_formula=metrics_by_formula)
             filters_out.append(f"{_agg_formula(agg_lhs)} {op_sql} {rhs.sql()}")
-        elif agg_rhs is not None and agg_lhs is None and isinstance(lhs, exp.Literal):
+        elif agg_rhs is not None and agg_lhs is None and _is_literal_operand(lhs):
             _metric_for_aggregate(call=agg_rhs, table=table, metrics_by_formula=metrics_by_formula)
             flipped = _flip_comparator(op_sql)
             filters_out.append(f"{_agg_formula(agg_rhs)} {flipped} {lhs.sql()}")
@@ -1647,6 +1707,7 @@ def _translate_order_by(
     order: exp.Order | None,
     item_by_projected_name: dict[str, _ProjectionItem],
     *,
+    items: Sequence[_ProjectionItem] = (),
     strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
 ) -> list[OrderItem]:
@@ -1668,14 +1729,20 @@ def _translate_order_by(
         if not isinstance(ord_expr, exp.Ordered):
             continue
         direction = "desc" if ord_expr.args.get("desc") else "asc"
-        item, name = _resolve_order_by_item(
-            ord_expr.this, item_by_projected_name, metric_item_by_formula,
-            strip_prefix=strip_prefix, alias_map=alias_map,
+        ordinal = _ordinal(ord_expr.this, count=len(items))
+        item, name = (items[ordinal - 1], items[ordinal - 1].projected_name) if ordinal is not None else (
+            _resolve_order_by_item(
+                ord_expr.this, item_by_projected_name, metric_item_by_formula,
+                strip_prefix=strip_prefix, alias_map=alias_map,
+            )
         )
         _reject_lossy_cast_or_pass(
             kind="ORDER BY", name=name, item=item,
             lossy_pairs=_LOSSY_ORDER_BY_CAST_PAIRS,
         )
+        if item.extraction is not None:
+            out.append(OrderItem.model_validate({"column": _extraction_expression(item), "direction": direction}))
+            continue
         if item.metric is not None:
             # use the projection's SELECT alias, not the catalog
             # ``FacadeMetric.name``. ``_record_metric`` registered the SLayer
@@ -1689,6 +1756,15 @@ def _translate_order_by(
             ref = ColumnRef.from_string(item.dimension.dimension_ref)
         out.append(OrderItem(column=ref, direction=direction))
     return out
+
+
+def _ordinal(node: Expression, *, count: int) -> int | None:
+    """A 1-based select-list position written as an integer literal (``ORDER BY 1``), else ``None``."""
+    if isinstance(node, exp.Literal) and not node.is_string and str(node.this).isdigit():
+        position = int(str(node.this))
+        if 1 <= position <= count:
+            return position
+    return None
 
 
 def _order_by_name(
@@ -1715,6 +1791,9 @@ def _order_by_name(
     if grain_match is not None:
         grain, col = grain_match
         return _alias_for_time_grain(grain, col, strip_prefix=strip_prefix, alias_map=alias_map)
+    extraction = _detect_extraction(body)
+    if extraction is not None:
+        return _alias_for_extraction(*extraction, strip_prefix=strip_prefix, alias_map=alias_map)
     return body.sql()
 
 
@@ -1748,6 +1827,10 @@ def _validate_group_by(  # NOSONAR(S3776) — single GROUP BY validation pass; e
                 user_items.append(_alias_for_time_grain(
                     grain, col, strip_prefix=strip_prefix, alias_map=alias_map,
                 ))
+                continue
+            extraction = _detect_extraction(g)
+            if extraction is not None:
+                user_items.append(_alias_for_extraction(*extraction, strip_prefix=strip_prefix, alias_map=alias_map))
                 continue
             user_items.append(g.sql())
     for u in user_items:
@@ -2188,13 +2271,12 @@ def _route_catalog_query(
 
 # Lightweight Protocol so the translator doesn't pull catalog_sql at import
 # time (which would create a duckdb-at-import dependency for Flight).
-class CatalogSqlExecutorProtocol:
+class CatalogSqlExecutorProtocol(Protocol):
     """Protocol the catalog SQL executor must satisfy. Defined here so
     ``translate`` can type-annotate its parameter without importing
     catalog_sql (which imports duckdb)."""
 
-    def execute(self, *, parsed: Expression, sql: str) -> RowBatch:
-        raise NotImplementedError
+    def execute(self, *, parsed: Expression, sql: str) -> RowBatch: ...
 
 
 class _ProjectionPlan(BaseModel):
@@ -2204,6 +2286,7 @@ class _ProjectionPlan(BaseModel):
 
     measures: list[dict]
     dimension_refs: list[ColumnRef]
+    expression_dims: list[str]
     time_dims: list[TimeDimension]
     time_dim_by_name: dict[str, TimeDimension]
     derived_dims: list[str]
@@ -2230,7 +2313,7 @@ def _record_time_grain(
 ) -> None:
     assert item.time_grain is not None and item.time_grain_underlying is not None
     dotted = item.time_grain_underlying.dimension_ref
-    td = TimeDimension.model_validate({"dimension": {"name": dotted}, "granularity": item.time_grain})
+    td = TimeDimension.model_validate({"dimension": dotted, "granularity": item.time_grain})
     plan.time_dims.append(td)
     plan.time_dim_by_name[dotted] = td
     plan.derived_dims.append(item.projected_name)
@@ -2246,6 +2329,24 @@ def _record_time_grain(
     engine_alias = f"{table.name}.{dotted}"
     plan.column_name_mapping.append((engine_alias, item.projected_name))
     plan.projection_types.append(item.time_grain_underlying.data_type)
+
+
+def _record_extraction(
+    *, plan: _ProjectionPlan, item: _ProjectionItem, table: FacadeTable,
+) -> None:
+    assert item.extraction is not None and item.time_grain_underlying is not None
+    expression = _extraction_expression(item)
+    plan.expression_dims.append(expression)
+    plan.derived_dims.append(item.projected_name)
+    if expression != item.projected_name:
+        plan.derived_dims.append(expression)
+    plan.column_name_mapping.append((f"{table.name}.{computed_dimension_name(expression)}", item.projected_name))
+    plan.projection_types.append(DataType.INT)
+
+
+def _extraction_expression(item: _ProjectionItem) -> str:
+    assert item.extraction is not None and item.time_grain_underlying is not None
+    return f"date_part('{item.extraction}', {item.time_grain_underlying.dimension_ref})"
 
 
 def _record_dimension(
@@ -2271,7 +2372,7 @@ def _build_projection_plan(
     items: Sequence[_ProjectionItem], table: FacadeTable,
 ) -> _ProjectionPlan:
     plan = _ProjectionPlan(
-        measures=[], dimension_refs=[], time_dims=[], time_dim_by_name={},
+        measures=[], dimension_refs=[], expression_dims=[], time_dims=[], time_dim_by_name={},
         derived_dims=[], column_name_mapping=[], projection_types=[],
     )
     for item in items:
@@ -2279,6 +2380,8 @@ def _build_projection_plan(
             _record_metric(plan=plan, item=item, table=table)
         elif item.time_grain is not None:
             _record_time_grain(plan=plan, item=item, table=table)
+        elif item.extraction is not None:
+            _record_extraction(plan=plan, item=item, table=table)
         else:
             _record_dimension(plan=plan, item=item, table=table)
     return plan
@@ -2311,6 +2414,8 @@ def _index_items_by_canonical_form(
                 f"{item.time_grain.value}({item.time_grain_underlying.dimension_ref})"
             )
             by_name.setdefault(canonical, item)
+        elif item.extraction is not None:
+            by_name.setdefault(_extraction_expression(item), item)
     return by_name
 
 
@@ -2386,6 +2491,44 @@ def _parse_left_join(
         path=(matched.name or target_table.name) if matched else target_table.name,
         warn_cardinality=matched is not None and matched.join_type != JoinType.LEFT,
     )
+
+
+def _join_subquery_columns(inner: exp.Select) -> frozenset[str] | None:
+    """The columns a join subquery exposes, each a plain column under its own name; ``None`` with a ``*``."""
+    names: set[str] = set()
+    star = False
+    for projected in inner.expressions:
+        if isinstance(projected, exp.Star) or (
+            isinstance(projected, exp.Column) and isinstance(projected.this, exp.Star)
+        ):
+            star = True
+            continue
+        source = projected.this if isinstance(projected, exp.Alias) else projected
+        if not isinstance(source, exp.Column) or projected.alias_or_name.casefold() != source.name.casefold():
+            raise TranslationError(
+                f"LEFT JOIN subquery must project plain columns under their own names; got {projected.sql()!r}."
+            )
+        names.add(source.name)
+    return None if star else frozenset(names)
+
+
+def _reject_unprojected_join_columns(parsed: exp.Select) -> None:
+    """Every ``<join alias>.<col>`` must name a column its subquery projects (case-insensitively, as ON resolves)."""
+    joins = parsed.args.get("joins") or []
+    if not joins:
+        return
+    subquery = joins[0].this
+    exposed = _join_subquery_columns(subquery.this)
+    if exposed is None:
+        return
+    exposed_folded = {name.casefold() for name in exposed}
+    alias = subquery.alias.casefold()
+    inner = {id(c) for c in subquery.find_all(exp.Column)}
+    for col in parsed.find_all(exp.Column):
+        if id(col) not in inner and col.table.casefold() == alias and col.name.casefold() not in exposed_folded:
+            raise TranslationError(
+                f"{subquery.alias}.{col.name} is not a column the LEFT JOIN subquery projects."
+            )
 
 
 def _reject_non_left_join(join: exp.Join) -> None:
@@ -2648,10 +2791,7 @@ def _materialise_dynamic_join_lookups(
             dimension_ref=ref,
         )
     for m in local_metrics:
-        if m.measure_formula == "*:count":
-            formula = f"{prefix}.*:count"
-        else:
-            formula = f"{prefix}.{m.measure_formula}"
+        formula = measure_text_at_path(m.measure_formula, path=[prefix])
         new_metric = FacadeMetric(
             name=f"{prefix}.{m.name}",
             description=m.description,
@@ -2663,17 +2803,14 @@ def _materialise_dynamic_join_lookups(
         extra_metrics_by_formula[formula] = new_metric
 
 
-def _build_source_model_from_join(
+def _extensions_from_join(
     *, parent_name: str, plan: _JoinPlan,
-) -> SourceSpec:
-    """``SlayerQuery.source_model`` value derived from the join plan:
-    the parent's bare name when an existing configured join matched, or a
-    ``ModelExtension`` carrying the dynamically-built ``ModelJoin`` when
-    not.
-    """
+) -> list[ModelExtension]:
+    """The query extensions the join plan needs: none when an existing configured join matched, else one
+    ``ModelExtension`` of the parent carrying the dynamically-built ``ModelJoin``."""
     if not plan.is_dynamic:
-        return parent_name
-    return ModelExtension(
+        return []
+    return [ModelExtension(
         source_name=parent_name,
         joins=[ModelJoin(
             target_model=plan.target_table.name,
@@ -2681,7 +2818,7 @@ def _build_source_model_from_join(
             join_type=JoinType.LEFT,
             cardinality=_dynamic_join_cardinality(plan),
         )],
-    )
+    )]
 
 
 def _dynamic_join_cardinality(plan: "_JoinPlan") -> JoinCardinality | None:
@@ -2714,6 +2851,13 @@ def _emit_join_warnings(plan: _JoinPlan, parent_name: str) -> None:
             "but cardinality semantics differ from the emitted SQL.",
             plan.target_table.name, parent_name,
         )
+
+
+def _metrics_by_name(table: FacadeTable, overlays: "_JoinOverlays") -> dict[str, FacadeMetric]:
+    """The catalog metrics a WHERE may name; a dimension of the same name shadows a metric."""
+    dims = {d.name for d in table.dimensions} | set(overlays.extra_dims_by_name)
+    metrics = {m.name: m for m in table.metrics} | overlays.extra_metrics_by_name
+    return {n: m for n, m in metrics.items() if n not in dims}
 
 
 class _JoinOverlays(BaseModel):
@@ -2772,6 +2916,8 @@ def _build_item_index(items: list[_ProjectionItem]) -> dict[str, _ProjectionItem
                 f"{item.time_grain.value}({item.time_grain_underlying.dimension_ref})"
             )
             out.setdefault(canonical, item)
+        elif item.extraction is not None:
+            out.setdefault(_extraction_expression(item), item)
         elif (
             item.dimension is not None
             and item.cast_target is None
@@ -2831,6 +2977,7 @@ def _translate_slayer_select(
         parent_table=table,
         catalog=catalog,
     )
+    _reject_unprojected_join_columns(parsed)
     data_source = _resolve_query_datasource(table=table, join_plan=join_plan)
     overlays = _prepare_join_overlays(join_plan, table.name)
 
@@ -2854,39 +3001,45 @@ def _translate_slayer_select(
     _reject_lossy_cast_in_implicit_grouping(group, items)
 
     filters: list[str] = []
-    _apply_where(
+    metrics_by_name = _metrics_by_name(table, overlays)
+    temporal_columns = _temporal_column_names(table, overlays)
+    where_reads_aggregate = _apply_where(
         parsed.args.get("where"), plan.time_dim_by_name,
         item_by_projected_name, filters,
-        temporal_columns=_temporal_column_names(table, overlays),
+        temporal_columns=temporal_columns,
         strip_prefix=strip_prefix, alias_map=overlays.alias_map,
+        metrics_by_name=metrics_by_name,
     )
     _apply_having(
         parsed.args.get("having"), table,
         item_by_projected_name, filters,
         strip_prefix=strip_prefix, alias_map=overlays.alias_map,
         extra_metrics_by_formula=overlays.extra_metrics_by_formula or None,
+        metrics_by_name=metrics_by_name, temporal_columns=temporal_columns,
     )
 
     order_items = _translate_order_by(
-        parsed.args.get("order"), _build_item_index(items),
+        parsed.args.get("order"), _build_item_index(items), items=items,
         strip_prefix=strip_prefix, alias_map=overlays.alias_map,
     )
 
-    source_model: SourceSpec = (
-        _build_source_model_from_join(parent_name=table.name, plan=join_plan)
-        if join_plan is not None
-        else table.name
-    )
+    extensions = _extensions_from_join(parent_name=table.name, plan=join_plan) if join_plan is not None else []
 
     query = SlayerQuery.model_validate({
-        "source_model": source_model,
+        "source_model": table.name,
+        "extensions": extensions or None,
         "measures": plan.measures or None,
-        "dimensions": plan.dimension_refs or None,
+        "dimensions": [*plan.dimension_refs, *plan.expression_dims] or None,
         "time_dimensions": plan.time_dims or None,
         "filters": filters or None,
         "order": order_items or None,
         "limit": _parse_int_literal(parsed.args.get("limit")),
         "offset": _parse_int_literal(parsed.args.get("offset")),
+        # SQL row semantics: only an aggregate, a metric, GROUP BY, HAVING or DISTINCT groups.
+        "distinct_dimension_values": bool(
+            plan.measures or group or parsed.args.get("having") or parsed.args.get("distinct")
+            or where_reads_aggregate
+        ),
     })
 
     return QueryResult(

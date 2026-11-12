@@ -1,0 +1,27 @@
+name: Ossie schema drift
+
+# Weekly: compare the vendored apache/ossie schema and examples (listed in
+# tests/fixtures/osi/ossie-schema.source.yaml) with upstream main. Never runs on PRs.
+# Exit 1 = upstream changed (re-vendor the files and update the .source.yaml); exit 2 = a fetch failed.
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PyYAML
+        run: 'python -m pip install --only-binary :all: "PyYAML==6.0.3"'
+      - name: Compare the vendored files with upstream
+        run: python scripts/ossie_schema_drift.py

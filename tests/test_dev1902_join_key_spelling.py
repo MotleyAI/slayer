@@ -1,5 +1,5 @@
 """Join keys name columns logically; the physical spelling is applied once, at
-emission (system P16). Executed on SQLite and DuckDB over a graph whose every
+emission (semantics Principle 3). Executed on SQLite and DuckDB over a graph whose every
 key column is renamed (``tests/_dev1902_fixtures.py``)."""
 
 from __future__ import annotations
@@ -12,8 +12,8 @@ from slayer.core.join_walker import edges_between, provably_to_one, unique_key_s
 from slayer.core.keys import ColumnKey, Grain
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.cardinality import CardinalityVerdict
-from slayer.engine.join_safety import grain_determines
+from slayer.engine.cardinality.inference import CardinalityVerdict
+from slayer.engine.cardinality.join_safety import grain_determines
 from slayer.engine.query_engine import SlayerQueryEngine
 
 from tests._dev1902_fixtures import (
@@ -30,6 +30,7 @@ from tests._dev1902_fixtures import (
     renamed_graph,
     warnings_of,
 )
+from slayer.sql.naming import key_identifier
 from tests._engine_helpers import models_bundle
 
 AMT = ModelMeasure(formula="sum(amount)", name="amt")
@@ -133,10 +134,17 @@ class TestDetectionProfilesRenamedKeys:
         assert finding.detected is JoinCardinality.MANY_TO_ONE
 
 
+def _side_stats_sql(**kwargs) -> tuple[str, str]:
+    """The two profiling statements, rendered as ``_side_stats`` executes them."""
+    rows, dist = SlayerQueryEngine._side_stats_sql(**kwargs)
+    dialect = kwargs["sqlglot_name"]
+    return rows.sql(dialect=dialect), dist.sql(dialect=dialect)
+
+
 class TestProfilingSql:
     def test_mixed_case_physical_key_is_quoted(self):
-        rows_sql, dist_sql = SlayerQueryEngine._side_stats_sql(
-            table="customers", key_cols=["CustPK"], sqlglot_name="postgres")
+        rows_sql, dist_sql = _side_stats_sql(
+            table="customers", key_cols=[key_identifier("CustPK", quoted=False)], sqlglot_name="postgres")
         assert '"CustPK"' in rows_sql
         assert '"CustPK"' in dist_sql
 
@@ -199,7 +207,6 @@ def _customer_totals(*, key: str = "customer_id") -> SlayerModel:
 
 
 class TestQueryBackedJoinKeys:
-    @pytest.mark.xfail(strict=True, reason="DEV-1918: joins on a query-backed model are not traversable")
     async def test_join_on_backing_output_column_executes(self, all_renamed):
         await all_renamed.save_model(_customer_totals())
         resp = await all_renamed.execute(_query(
@@ -212,8 +219,9 @@ class TestQueryBackedJoinKeys:
             **_customer_totals().model_dump(exclude={"joins"}), "joins": []})
         await all_renamed.save_model(base)
         resp = await all_renamed.execute(_query(
-            source_model={"source_name": "customer_totals", "joins": [
-                {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}]},
+            source_model="customer_totals",
+            extensions=[{"source_name": "customer_totals", "joins": [
+                {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}]}],
             dimensions=["customers.name"],
             measures=[{"formula": "sum(amt)", "name": "total"}]))
         assert cells(resp, dim_suffix="customers.name", measure="total") == AMOUNT_BY_CUSTOMER

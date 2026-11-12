@@ -11,7 +11,7 @@ from typing import Dict, Optional, Tuple
 import pytest
 
 from slayer.engine.bind_inputs import bind_query_inputs
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1840_fixtures import bundle as orders_bundle, q as orders_q
@@ -277,7 +277,6 @@ class TestRepeatedKeyword:
     @pytest.mark.parametrize(argnames="formula,call", argvalues=[
         ("rank(sum(amount), partition_by=region, partition_by=city, direction='desc')", "rank"),
         ("sum(amount, partition_by=region, partition_by=city)", "sum"),
-        ("amount:sum(partition_by=region, partition_by=city)", "sum"),
     ])
     def test_rejected_at_parse(self, formula, call):
         self._assert_rejected(formula=formula, call=call, kwarg="partition_by")

@@ -14,10 +14,11 @@ import pytest
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
-from slayer.sql.dialects.base import StatAgg1Name
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.database.engine_factory import client_cache_key
+from slayer.sql.dialects.base import ExplainStatements, StatAgg1Name
 from slayer.sql.dialects.tsql import TsqlDialect
-from slayer.sql.client import ExecutionResult
+from slayer.database.client import DelegatingSqlClient, ExecutionResult, SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1965_fixtures import (
@@ -37,10 +38,8 @@ def test_tsql_sqlglot_name() -> None:
     assert TsqlDialect().sqlglot_name == "tsql"
 
 
-def test_tsql_explain_prefix_and_postfix() -> None:
-    d = TsqlDialect()
-    assert d.explain_prefix == "SET SHOWPLAN_ALL ON;"
-    assert d.explain_postfix == "; SET SHOWPLAN_ALL OFF"
+def test_tsql_has_no_explain_prefix() -> None:
+    assert TsqlDialect().explain_prefix is None
 
 
 def test_tsql_log_native_flags() -> None:
@@ -183,16 +182,6 @@ def test_tsql_build_covar_2arg_covar_pop_uses_varp() -> None:
     assert "VARP" in sql
 
 
-# build_explain_sql — wraps in SHOWPLAN session toggle pair
-
-
-def test_tsql_build_explain_sql_wraps_in_showplan_pair() -> None:
-    d = TsqlDialect()
-    assert d.build_explain_sql("SELECT 1") == (
-        "SET SHOWPLAN_ALL ON; SELECT 1; SET SHOWPLAN_ALL OFF"
-    )
-
-
 # Outer wrap: T-SQL accepts WITH only as a statement prefix, so the chain's CTEs
 # sit on the statement and pagination is TOP / OFFSET … FETCH.
 
@@ -211,8 +200,8 @@ async def _tsql(query) -> str:
 
 def _plain_hidden_order(**kw) -> SlayerQuery:
     """A no-transform query whose hidden ORDER BY slot forces the outer trim wrap."""
-    return q(dimensions=["status"], measures=["amount:sum"],
-             order=[{"column": "amount:max", "direction": "desc"}], **kw)
+    return q(dimensions=["status"], measures=["sum(amount)"],
+             order=[{"column": "max(amount)", "direction": "desc"}], **kw)
 
 
 async def test_tsql_chain_ctes_are_hoisted_to_the_statement() -> None:
@@ -265,7 +254,7 @@ async def test_tsql_chain_with_order_and_offset() -> None:
 
 async def test_tsql_hidden_alias_in_order_by() -> None:
     """ORDER BY may name a carried alias that is not in the public projection."""
-    sql = await _tsql(cumsum_chain(order=[{"column": "amount:max", "direction": "desc"}]))
+    sql = await _tsql(cumsum_chain(order=[{"column": "max(amount)", "direction": "desc"}]))
     top = parse(sql, "tsql")
     assert [c.name for c in top.args["order"].find_all(exp.Column)] == ["orders___amount_max"]
     assert "orders___amount_max" in outer_derived(top).named_selects
@@ -274,8 +263,8 @@ async def test_tsql_hidden_alias_in_order_by() -> None:
 
 async def test_tsql_hoisted_ctes_keep_dependency_order() -> None:
     sql = await _tsql(cumsum_chain(measures=[
-        {"formula": "cumsum(amount:sum)", "name": "running"},
-        {"formula": "change(cumsum(amount:sum))", "name": "d"},
+        {"formula": "cumsum(sum(amount))", "name": "running"},
+        {"formula": "change(cumsum(sum(amount)))", "name": "d"},
     ]))
     names = cte_names(assert_single_top_level_with(sql, "tsql"))
     assert names[0] == "base", names
@@ -391,13 +380,17 @@ def test_tsql_round_trip_preserves_legitimate_underscores(original: str) -> None
 # issue, so the dialect-level decode round-trip is not enough.
 
 
-class _FakeTsqlClient:
+class _FakeTsqlClient(DelegatingSqlClient):
     """Stub SQL client that returns T-SQL-mangled row keys (``a___b`` form)."""
 
-    def __init__(self, rows: list[dict]) -> None:
+    def __init__(self, rows: list[dict], *, datasource: DatasourceConfig) -> None:
+        super().__init__(inner=SlayerSQLClient(datasource=datasource))
         self._rows = rows
 
-    async def execute(self, *, sql: str) -> ExecutionResult:  # noqa: ARG002 — stub signature  # NOSONAR(S7503) — must remain async to match SlayerSQLClient.execute (awaited by engine.execute)
+    async def execute(self, sql: str) -> ExecutionResult:  # noqa: ARG002 — stub signature  # NOSONAR(S7503) — must remain async to match SlayerSQLClient.execute (awaited by engine.execute)
+        return ExecutionResult(rows=[dict(row) for row in self._rows])
+
+    async def explain(self, statements: ExplainStatements) -> ExecutionResult:  # noqa: ARG002 — stub signature  # NOSONAR(S7503) — must remain async to match SlayerSQLClient.explain
         return ExecutionResult(rows=[dict(row) for row in self._rows])
 
 
@@ -422,7 +415,7 @@ async def _build_tsql_engine(rows: list[dict]) -> tuple[SlayerQueryEngine, tempf
     )
     await storage.save_model(model)
     engine = SlayerQueryEngine(storage=storage)
-    engine._sql_clients[_sql_client_cache_key(ds)] = _FakeTsqlClient(rows)
+    engine._sql_clients[client_cache_key(ds)] = _FakeTsqlClient(rows, datasource=ds)
     return engine, tmp, ds
 
 
@@ -431,16 +424,16 @@ class TestEngineTsqlDecodeIntegration:
 
     async def test_non_empty_rows_decoded_in_response(self) -> None:
         # ``orders.status`` encodes to ``orders___status``.
-        # ``*:count`` measure alias ``orders._count`` encodes to
+        # ``count(*)`` measure alias ``orders._count`` encodes to
         # ``orders____count`` (3 underscores from the dot + 1 leading).
         rows = [{"orders____count": 42, "orders___status": "paid"}]
         engine, tmp, _ = await _build_tsql_engine(rows)
         try:
-            query = SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "*:count"}],
-                dimensions=[ColumnRef(name="status")],
-            )
+            query = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "count(*)"}],
+                "dimensions": [ColumnRef(name="status")],
+            })
             resp = await engine.execute(query)
             assert resp.data == [{"orders._count": 42, "orders.status": "paid"}]
         finally:
@@ -449,11 +442,11 @@ class TestEngineTsqlDecodeIntegration:
     async def test_empty_rows_response_falls_back_to_expected_columns(self) -> None:
         engine, tmp, _ = await _build_tsql_engine(rows=[])
         try:
-            query = SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "*:count"}],
-                dimensions=[ColumnRef(name="status")],
-            )
+            query = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "count(*)"}],
+                "dimensions": [ColumnRef(name="status")],
+            })
             resp = await engine.execute(query)
             assert resp.data == []
             assert "orders._count" in resp.columns
@@ -485,7 +478,7 @@ async def _build_labeled_tsql_engine(
     )
     await storage.save_model(model)
     engine = SlayerQueryEngine(storage=storage)
-    engine._sql_clients[_sql_client_cache_key(ds)] = _FakeTsqlClient(rows)
+    engine._sql_clients[client_cache_key(ds)] = _FakeTsqlClient(rows, datasource=ds)
     return engine, tmp, ds
 
 
@@ -552,17 +545,17 @@ def _orders_model_tsql() -> SlayerModel:
 
 
 async def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
-    """``change_pct(total:sum)`` builds shifted/self-join/step CTEs."""
+    """``change_pct(sum(total))`` builds shifted/self-join/step CTEs."""
     q = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2024-03-01", "2024-03-31"],
         )],
         measures=[
-            ModelMeasure(formula="total:sum"),
-            ModelMeasure(formula="change_pct(total:sum)", name="pct"),
+            ModelMeasure(formula="sum(total)"),
+            ModelMeasure(formula="change_pct(sum(total))", name="pct"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )

@@ -18,25 +18,30 @@ from pathlib import Path
 import pytest
 
 from slayer import usage_reporting
-from slayer.usage_reporting import control, sender, settings, spool
+from slayer.usage_reporting import control, recorder, sender, settings, spool
+from slayer.usage_reporting.payload import Batch
 from tests._usage_reporting_helpers import (
     McpStdio,
     build_storage,
     cli,
     end_process,
+    free_port,
     is_posix,
     make_due,
     now_utc,
     quiet_config,
     config,
+    raw_config,
     run_python,
     run_slayer,
     show,
     spool_files,
     total,
     usage,
+    wait_for_port,
     wait_until,
     write_config,
+    write_raw_config,
 )
 
 posix_only = pytest.mark.skipif(not is_posix(), reason="POSIX signals / file modes")
@@ -49,8 +54,10 @@ def store(usage_reporting_env) -> str:
 
 
 def _spool_one(token: str = "query") -> None:
+    """Spool one record without sending."""
     usage_reporting.start()
     usage_reporting.record(surface="mcp", token=token)
+    assert recorder._recorder.sending is None
     end_process()
 
 
@@ -85,15 +92,26 @@ def _mcp_with_one_call(store: str, env: dict[str, str], *, argv: list[str] | Non
     return session
 
 
+def _assert_clean_stop(session: McpStdio, *, returncode: int, expected: int) -> None:
+    stderr = session.stderr_text()
+    assert returncode == expected, stderr
+    assert "Traceback" not in stderr
+    assert "unhandled exception" not in stderr.lower()
+    report = show()
+    assert usage(report, "mcp:list_datasources")["ok"] == 1
+    assert usage(report, "cli:mcp") == {"ok": 1, "errors": {}}
+
+
 @posix_only
-def test_stdio_mcp_sigterm_spools(store: str, usage_reporting_env) -> None:
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
+def test_stdio_mcp_signal_spools(store: str, usage_reporting_env, sig: signal.Signals) -> None:
     session = _mcp_with_one_call(store, usage_reporting_env.subprocess_env())
     try:
-        session.proc.send_signal(signal.SIGTERM)
-        session.wait()
+        session.proc.send_signal(sig)
+        returncode = session.wait()
     finally:
         session.kill()
-    assert usage(show(), "mcp:list_datasources")["ok"] == 1
+    _assert_clean_stop(session, returncode=returncode, expected=128 + sig)
 
 
 _CHAINED_HANDLER_SCRIPT = """
@@ -114,21 +132,11 @@ def test_stdio_mcp_sigterm_chains_existing_handler(store: str, usage_reporting_e
     session = _mcp_with_one_call(store, usage_reporting_env.subprocess_env(), argv=argv)
     try:
         session.proc.send_signal(signal.SIGTERM)
-        session.wait()
+        returncode = session.wait()
     finally:
         session.kill()
+    assert returncode == 128 + signal.SIGTERM, session.stderr_text()
     assert marker.read_text() == "called"
-    assert usage(show(), "mcp:list_datasources")["ok"] == 1
-
-
-@posix_only
-def test_stdio_mcp_sigint_spools(store: str, usage_reporting_env) -> None:
-    session = _mcp_with_one_call(store, usage_reporting_env.subprocess_env())
-    try:
-        session.proc.send_signal(signal.SIGINT)
-        session.wait()
-    finally:
-        session.kill()
     assert usage(show(), "mcp:list_datasources")["ok"] == 1
 
 
@@ -136,10 +144,13 @@ def test_stdio_mcp_end_of_input_spools(store: str, usage_reporting_env) -> None:
     session = _mcp_with_one_call(store, usage_reporting_env.subprocess_env())
     try:
         session.close_stdin()
-        session.wait()
+        returncode = session.wait()
     finally:
         session.kill()
-    assert usage(show(), "mcp:list_datasources")["ok"] == 1
+    assert returncode == 0, session.stderr_text()
+    report = show()
+    assert usage(report, "mcp:list_datasources")["ok"] == 1
+    assert usage(report, "cli:mcp") == {"ok": 1, "errors": {}}
 
 
 @posix_only
@@ -165,62 +176,65 @@ def test_stdio_mcp_broken_pipe_spools(store: str, usage_reporting_env) -> None:
         assert json.loads(stdout.readline())["id"] == 2
         stdout.close()
         send({"jsonrpc": "2.0", "id": 99, "method": "tools/call", "params": {"name": "list_datasources", "arguments": {}}})
-        stdin.close()
-        proc.wait(timeout=30)
+        # No EOF while a response is pending: EOF cancels it and the server exits cleanly instead.
+        deadline = time.monotonic() + 30
+        ping_id = 100
+        while proc.poll() is None and time.monotonic() < deadline:
+            try:
+                send({"jsonrpc": "2.0", "id": ping_id, "method": "ping"})
+            except BrokenPipeError:
+                break
+            ping_id += 1
+            time.sleep(0.1)
+        returncode = proc.wait(timeout=30)
     finally:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=10)
-    assert total(usage(show(), "mcp:list_datasources")) >= 1
-
-
-def _free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
-
-
-def _wait_for_port(port: int, *, timeout: float = 60.0) -> bool:
-    def listening() -> bool:
-        with socket.socket() as sock:
-            return sock.connect_ex(("127.0.0.1", port)) == 0
-    return wait_until(listening, timeout=timeout)
+    assert returncode not in (128 + signal.SIGTERM, 128 + signal.SIGINT)
+    report = show()
+    assert total(usage(report, "mcp:list_datasources")) >= 1
+    cli_mcp = usage(report, "cli:mcp")
+    assert cli_mcp["ok"] == 0
+    assert total(cli_mcp) == 1
 
 
 @posix_only
-@pytest.mark.parametrize(("command", "sig"), [
-    ("serve", signal.SIGTERM),
-    ("serve", signal.SIGINT),
-    ("pg-serve", signal.SIGINT),
-    ("flight-serve", signal.SIGINT),
-])
-def test_server_shutdown_spools(store: str, usage_reporting_env, command: str, sig: signal.Signals) -> None:
-    port = _free_port()
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "slayer", command, "--host", "127.0.0.1", "--port", str(port), "--storage", store],
-        env=usage_reporting_env.subprocess_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+@pytest.mark.parametrize("command", ["serve", "pg-serve", "flight-serve"])
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
+def test_server_shutdown_spools(
+    store: str, usage_reporting_env, tmp_path: Path, command: str, sig: signal.Signals,
+) -> None:
+    port = free_port()
+    stderr_path = tmp_path / "stderr"
+    with stderr_path.open("wb") as stderr:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "slayer", command, "--host", "127.0.0.1", "--port", str(port), "--storage", store],
+            env=usage_reporting_env.subprocess_env(), stdout=subprocess.DEVNULL, stderr=stderr,
+        )
     try:
-        assert _wait_for_port(port), f"{command} did not start (exit {proc.poll()})"
+        assert wait_for_port(port, pid=proc.pid), f"{command} did not start (exit {proc.poll()})"
         proc.send_signal(sig)
-        proc.wait(timeout=30)
+        returncode = proc.wait(timeout=30)
     finally:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=10)
-    cli_key = f"cli:{command}"
-    assert total(usage(show(), cli_key)) == 1
+    stderr_text = stderr_path.read_text(errors="replace")
+    assert returncode == 128 + sig, stderr_text
+    assert "Traceback" not in stderr_text
+    assert usage(show(), f"cli:{command}") == {"ok": 1, "errors": {}}
 
 
 @posix_only
 def test_serve_sigterm_spools_rest_counts(store: str, usage_reporting_env) -> None:
-    port = _free_port()
+    port = free_port()
     proc = subprocess.Popen(
         [sys.executable, "-m", "slayer", "serve", "--host", "127.0.0.1", "--port", str(port), "--storage", store],
         env=usage_reporting_env.subprocess_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     try:
-        assert _wait_for_port(port)
+        assert wait_for_port(port, pid=proc.pid)
         result = run_python(
             f"import urllib.request; urllib.request.urlopen('http://127.0.0.1:{port}/health').read()",
             env=usage_reporting_env.subprocess_env(),
@@ -233,6 +247,21 @@ def test_serve_sigterm_spools_rest_counts(store: str, usage_reporting_env) -> No
             proc.kill()
             proc.wait(timeout=10)
     assert usage(show(), "rest:/health")["ok"] == 1
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
+def test_wait_for_port_ignores_another_process_listener() -> None:
+    port = free_port()
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", port))
+        listener.listen()
+        other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            assert not wait_for_port(port, pid=other.pid, timeout=0.5)
+            assert wait_for_port(port, pid=os.getpid(), timeout=5)
+        finally:
+            other.kill()
+            other.wait(timeout=10)
 
 
 _FORK_SCRIPT = """
@@ -363,12 +392,14 @@ def test_due_at_start_sends_spool(usage_reporting_env) -> None:
 
 
 def test_last_send_in_the_future_counts_as_due(usage_reporting_env) -> None:
-    quiet_config(last_sent=_T0 + datetime.timedelta(days=30))
+    quiet_config(last_sent=_T0)
     usage_reporting_env.set_now(_T0)
     _spool_one()
+    write_config(last_sent=_T0 + datetime.timedelta(days=30))
     usage_reporting.start()
     assert len(usage_reporting_env.capture.wait_for(count=1)) == 1
     end_process()
+    assert len(usage_reporting_env.capture.requests) == 1
 
 
 def test_clock_jump_forward_is_due(usage_reporting_env) -> None:
@@ -477,7 +508,7 @@ def test_sender_crash_recovered_by_a_later_send(store: str, usage_reporting_env)
 
 
 def test_disable_racing_a_send_leaves_nothing_behind(store: str, usage_reporting_env) -> None:
-    usage_reporting_env.capture.behaviour.delay = 3.0
+    usage_reporting_env.capture.hold.clear()
     quiet_config()
     _spool_one()
     make_due()
@@ -486,6 +517,7 @@ def test_disable_racing_a_send_leaves_nothing_behind(store: str, usage_reporting
     disabled = run_slayer(["usage-reporting", "disable"], env=usage_reporting_env.subprocess_env())
     assert disabled.returncode == 0, disabled.stderr
     assert not usage_reporting_env.capture.requests
+    usage_reporting_env.capture.hold.set()
     assert usage_reporting_env.capture.wait_for(count=1, timeout=15)
     usage_reporting.shutdown()
     end_process()
@@ -537,7 +569,7 @@ def test_install_id_created_on_first_use(usage_reporting_env) -> None:
 def test_install_id_rotation(usage_reporting_env, age_days: int, rotated: bool) -> None:
     old = uuid.uuid4()
     write_config(install_id=old, install_id_created=_T0.date())
-    quiet_config(last_sent=_T0)
+    quiet_config(last_sent=_T0 + datetime.timedelta(days=age_days))
     usage_reporting_env.set_now(_T0 + datetime.timedelta(days=age_days))
     _spool_one()
     current = config()
@@ -610,3 +642,123 @@ def test_install_id_stored_in_config_dir_not_model_storage(store: str, usage_rep
             assert install_id not in path.read_text(errors="ignore")
     assert settings.config_path().is_relative_to(settings.config_dir())
     assert json.loads(settings.config_path().read_text())
+
+
+# --- spool files across report schema versions ---------------------------------------------------------------
+
+
+_LEGACY_BATCH = json.dumps({
+    "period": {"first": "2026-05-01", "last": "2026-05-01"},
+    "usage": {"mcp:search": {"ok": 1, "errors": {}}},
+})
+
+
+def _legacy_spool_file(*, prefix: str = "spool-", ns: int = 1, body: str = _LEGACY_BATCH) -> Path:
+    directory = settings.spool_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{prefix}{ns:020d}-{uuid.uuid4().hex[:12]}.json"
+    path.write_text(body)
+    return path
+
+
+def _schema_1_send(directory: Path) -> None:
+    """What a schema-1 sender does after a 2xx: claim ``spool-*.json``, then delete every ``claim-*.json``."""
+    for name in os.listdir(directory):
+        if name.startswith("spool-") and name.endswith(".json"):
+            (directory / name).rename(directory / ("claim-" + name.removeprefix("spool-")))
+    for name in os.listdir(directory):
+        if name.startswith("claim-") and name.endswith(".json"):
+            (directory / name).unlink()
+
+
+def test_spool_file_names_carry_the_schema_version(usage_reporting_env) -> None:
+    quiet_config()
+    _spool_one()
+    (path,) = spool_files()
+    assert path.name.startswith("v2-spool-")
+
+
+def test_legacy_spool_file_sent_and_deleted(usage_reporting_env) -> None:
+    quiet_config()
+    legacy = _legacy_spool_file()
+    _spool_one()
+    make_due()
+    usage_reporting.start()
+    (request,) = usage_reporting_env.capture.wait_for(count=1)
+    usage_reporting.shutdown()
+    end_process()
+    sent = request.json()["properties"]["usage"]
+    assert (sent["mcp:search"]["ok"], sent["mcp:query"]["ok"]) == (1, 1)
+    assert wait_until(lambda: spool_files() == [])
+    assert not legacy.exists()
+
+
+def test_schema_1_sender_leaves_newer_spool_files(usage_reporting_env) -> None:
+    quiet_config()
+    _spool_one()
+    _legacy_spool_file()
+    _schema_1_send(settings.spool_dir())
+    (survivor,) = spool_files()
+    assert survivor.name.startswith("v2-")
+    make_due()
+    usage_reporting.start()
+    (request,) = usage_reporting_env.capture.wait_for(count=1)
+    usage_reporting.shutdown()
+    end_process()
+    assert request.json()["properties"]["usage"]["mcp:query"]["ok"] == 1
+    assert "mcp:search" not in request.json()["properties"]["usage"]
+
+
+def test_sender_leaves_newer_schema_files_untouched(usage_reporting_env) -> None:
+    quiet_config()
+    newer = [_legacy_spool_file(prefix="v3-spool-", body="{}"), _legacy_spool_file(prefix="v3-claim-", body="{}")]
+    _spool_one()
+    make_due()
+    usage_reporting.start()
+    assert usage_reporting_env.capture.wait_for(count=1)
+    usage_reporting.shutdown()
+    end_process()
+    assert wait_until(lambda: [p.name for p in spool_files()] == sorted(p.name for p in newer))
+    assert all(p.read_text() == "{}" for p in newer)
+
+
+def test_disable_keeps_files_with_non_ascii_version_digits(usage_reporting_env) -> None:
+    quiet_config()
+    foreign = _legacy_spool_file(prefix="v2٢-spool-")
+    _spool_one()
+    assert cli(["usage-reporting", "disable"]).returncode == 0
+    assert spool_files() == [foreign]
+
+
+def test_cap_covers_every_schema_version(usage_reporting_env) -> None:
+    quiet_config()
+    for i in range(60):
+        _legacy_spool_file(ns=i + 1)
+    batch = Batch.model_validate({
+        "period": {"first": "2026-05-02", "last": "2026-05-02"}, "usage": {"mcp:query": {"ok": 1}},
+    })
+    for _ in range(60):
+        spool.write(settings.spool_dir(), batch)
+    files = spool_files()
+    assert len(files) <= 100
+    assert sum(name.startswith("v2-spool-") for name in (p.name for p in files)) == 60
+    report = show()
+    assert usage(report, "mcp:query")["ok"] == 60
+    assert usage(report, "mcp:search")["ok"] == len(files) - 60
+
+
+def test_disable_purges_every_schema_version(usage_reporting_env) -> None:
+    quiet_config()
+    _spool_one()
+    for prefix in ("spool-", "claim-", "v2-claim-", "v3-spool-", "v3-claim-"):
+        _legacy_spool_file(prefix=prefix)
+    assert cli(["usage-reporting", "disable"]).returncode == 0
+    assert spool_files() == []
+
+
+def test_unknown_config_field_survives_a_start(usage_reporting_env) -> None:
+    write_raw_config(future_field={"kept": [1, 2]}, last_sent=now_utc().isoformat(), notice_shown_schema=99)
+    _spool_one()
+    stored = raw_config()
+    assert stored["install_id"]
+    assert stored["future_field"] == {"kept": [1, 2]}

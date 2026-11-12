@@ -13,7 +13,8 @@ The leaf rule (§3.2):
 * For dotted paths through joins, only the leaf segment is tagged; the
   intermediates are discarded.
 * The named-entity SQL (``Column.sql`` or ``ModelMeasure.formula``) is
-  opaque — we never recurse into it.
+  opaque — we never recurse into it, except for a query's own extension
+  fields, which stand for the stored entities their definitions read.
 
 Two public entry points:
 
@@ -31,24 +32,32 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import (
+    AmbiguousJoinPathError,
     AmbiguousModelError,
+    ColonSpellingError,
     CircularJoinPathError,
     EntityResolutionError,
+    PopulationInferenceError,
     UnknownFunctionError,
 )
 from slayer.core.join_walker import walk_miss, walk_terminal
 from slayer.core.models import SlayerModel
-from slayer.core.query import ComputedDimension, ModelExtension, SlayerQuery
-from slayer.engine.model_reads import FieldKind, query_field_texts
-from slayer.engine.syntax import (
+from slayer.core.query import ComputedDimension, SlayerQuery, extension_model_names
+from slayer.core.time_spine import is_spine_query
+from slayer.engine.column_dependency import definition_reads
+from slayer.engine.extensions import FieldKind, QueryScope, query_field_texts, query_scopes
+from slayer.engine.population.inference import infer_population, infer_spine_population
+from slayer.core.syntax import (
     AggCall,
     DottedRef,
     ParsedExpr,
     Ref,
     StarSource,
+    drop_root_hop,
+    drop_root_qualifier,
     parse_expr,
     split_entity_agg_ref,
     walk_parsed_refs,
@@ -59,18 +68,6 @@ from slayer.memories.models import (
 )
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures, all_or_raise
-
-
-# SQL keywords / function names that look like identifiers — skip when
-# scanning filter expressions for entity refs.
-_FILTER_TOKEN_BLACKLIST: frozenset[str] = frozenset({
-    "and", "or", "not", "is", "null", "in", "like", "between", "true",
-    "false", "case", "when", "then", "else", "end", "exists",
-    # Common SQL functions agents might call — these aren't entities.
-    "coalesce", "nullif", "cast", "ln", "log", "log2", "log10", "exp",
-    "sqrt", "pow", "power", "abs", "round", "floor", "ceil", "ceiling",
-    "current_date", "current_timestamp", "now",
-})
 
 
 def canonical_id_rooted_at(canonical_id: str, datasource: str) -> bool:
@@ -154,19 +151,19 @@ async def _find_leaf_in_priority_winner(
     return None, []
 
 
-async def _resolve_join_path(
-    storage: StorageBackend,
-    starting_model: SlayerModel,
-    path: list[str],
-) -> SlayerModel:
-    """Walk a chain of join targets, returning the leaf model.
+async def _datasource_models(storage: StorageBackend, model: SlayerModel) -> dict[str, SlayerModel]:
+    """``model``'s datasource peers by name, ``model`` itself included; unloadable peers skipped."""
+    peers = DocumentLoadFailures().skip(await storage.load_models(data_source=model.data_source))
+    return {**{m.name: m for m in peers}, model.name: model}
 
-    Targets are looked up within the parent model's ``data_source``, per
-    the join-scoping rule. Raises ``EntityResolutionError`` when
-    a segment doesn't match any join on the current model.
+
+def _walk_join_path(
+    starting_model: SlayerModel, path: list[str], *, models_by_name: dict[str, SlayerModel],
+) -> SlayerModel:
+    """Walk a chain of join targets over ``models_by_name``, returning the leaf model.
+
+    Raises ``EntityResolutionError`` when a segment doesn't match any join on the current model.
     """
-    peers = DocumentLoadFailures().skip(await storage.load_models(data_source=starting_model.data_source))
-    models_by_name = {**{m.name: m for m in peers}, starting_model.name: starting_model}
     try:
         walked = walk_terminal(root=starting_model, path=path, models_by_name=models_by_name)
         miss = walk_miss(root=starting_model, path=path, models_by_name=models_by_name) if walked is None else None
@@ -182,10 +179,8 @@ async def _resolve_join_path(
     )
 
 
-async def _resolve_dotted_against_model(
-    storage: StorageBackend,
-    starting_model: SlayerModel,
-    rest: list[str],
+def _dotted_canonical(
+    starting_model: SlayerModel, rest: list[str], *, models_by_name: dict[str, SlayerModel],
 ) -> str:
     """Apply the leaf rule to a path ``[hop, hop, ..., leaf?]`` rooted at
     ``starting_model``. Returns the canonical form."""
@@ -194,29 +189,29 @@ async def _resolve_dotted_against_model(
     # Try interpreting the last segment as a leaf attribute on the
     # model reached by walking the rest.
     leaf_segment = rest[-1]
-    walk_segments = rest[:-1]
     try:
-        leaf_model = await _resolve_join_path(
-            storage, starting_model, walk_segments
-        )
+        leaf_model = _walk_join_path(starting_model, rest[:-1], models_by_name=models_by_name)
     except EntityResolutionError:
         # The walk failed before reaching the last segment — fall
         # through to the "every segment is a join" interpretation
         # below.
-        leaf_model = None  # type: ignore[assignment]
+        leaf_model = None
     if leaf_model is not None and _model_has_leaf(leaf_model, leaf_segment):
-        return (
-            f"{leaf_model.data_source}.{leaf_model.name}.{leaf_segment}"
-        )
+        return f"{leaf_model.data_source}.{leaf_model.name}.{leaf_segment}"
     # No leaf attribute — every segment must be a join target, with
     # the path terminating at the join'd model itself (§3.2 step 3).
-    final_model = await _resolve_join_path(
-        storage, starting_model, rest
-    )
+    final_model = _walk_join_path(starting_model, rest, models_by_name=models_by_name)
     return f"{final_model.data_source}.{final_model.name}"
 
 
-async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching the spec's resolution-case table; splitting per-case helpers would obscure the shared error-message style and warning aggregation
+async def _resolve_dotted_against_model(storage: StorageBackend, starting_model: SlayerModel, rest: list[str]) -> str:
+    """``_dotted_canonical`` over ``starting_model``'s stored datasource peers."""
+    if not rest:
+        return f"{starting_model.data_source}.{starting_model.name}"
+    return _dotted_canonical(starting_model, rest, models_by_name=await _datasource_models(storage, starting_model))
+
+
+async def resolve_entity(
     raw: str,
     *,
     storage: StorageBackend,
@@ -237,10 +232,8 @@ async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching 
     if not raw:
         raise EntityResolutionError("entity reference is empty")
 
-    # ``memory:<id>`` branch must run BEFORE ``_strip_agg_suffix``
-    # — otherwise ``memory:abc`` would be parsed as prefix ``memory`` plus
-    # agg ``abc``. Memory ids are opaque strings (with a small charset
-    # forbidden); the resolver checks existence via ``get_memory_row``.
+    # ``memory:<id>`` runs before the parser, which would refuse it as a colon spelling. Memory ids are
+    # opaque strings (with a small charset forbidden); the resolver checks existence via ``get_memory_row``.
     if raw.startswith(_MEMORY_PREFIX):
         memory_id = raw[len(_MEMORY_PREFIX):]
         try:
@@ -254,12 +247,22 @@ async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching 
             )
         return EntityResolution(canonical_forms=[raw])
 
-    # ``sum(a.b)`` and the legacy ``a.b:sum`` resolve identically; expression text is not an entity.
+    # Expression text is not an entity; a colon spelling is refused.
     try:
         prefix, suffix = split_entity_agg_ref(raw)
+    except ColonSpellingError:
+        raise
     except ValueError as exc:  # UnknownFunctionError is a ValueError subclass
         raise EntityResolutionError(str(exc)) from exc
     agg = suffix.split("(", 1)[0] if suffix is not None else None
+    return await _resolve_reference(
+        raw=raw, prefix=prefix, agg=agg, storage=storage, source_model=source_model)
+
+
+async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch matching the spec's resolution-case table; splitting per-case helpers would obscure the shared error-message style and warning aggregation
+    *, raw: str, prefix: str, agg: str | None, storage: StorageBackend, source_model: SlayerModel | None,
+) -> EntityResolution:
+    """Resolve the reference ``prefix`` (aggregated by ``agg``, if any) written as ``raw``."""
 
     # ``count(*)`` special case (§3.1): collapses to the source model.
     # Only ``count`` is valid for the wildcard; ``sum(*)`` etc. would
@@ -430,13 +433,17 @@ def _ref_token(node: Ref | DottedRef) -> str:
     return node.name if isinstance(node, Ref) else ".".join(node.parts)
 
 
-def _agg_call_tokens(node: AggCall) -> Iterable[str]:
+#: An entity token: a reference's text, or an aggregation's ``(source, agg)``.
+EntityToken = str | tuple[str, str]
+
+
+def _agg_call_tokens(node: AggCall) -> Iterable[EntityToken]:
     """Entity token(s) for one aggregation call."""
     source = node.source
     if isinstance(source, (Ref, DottedRef)):
-        yield f"{_ref_token(source)}:{node.agg}"
+        yield _ref_token(source), node.agg
     elif isinstance(source, StarSource):
-        yield f"*:{node.agg}"
+        yield "*", node.agg
     else:
         # Expression source (``sum(amount - cost)``): the expression
         # itself is not an entity — tag each operand ref.
@@ -445,15 +452,12 @@ def _agg_call_tokens(node: AggCall) -> Iterable[str]:
                 yield _ref_token(inner)
 
 
-def _formula_entity_tokens(parsed: ParsedExpr) -> Iterable[str]:
+def _formula_entity_tokens(parsed: ParsedExpr) -> Iterable[EntityToken]:
     """Yield every entity *token* referenced by a parsed Mode-B formula.
 
-    Aggregations surface as legacy colon tokens ``"<source>:<agg>"`` (``*:count``
-    included verbatim), bare and dotted refs surface as their textual form.
-    Each token is fed one-by-one into ``resolve_entity`` downstream, which
-    canonicalises it (stripping the agg suffix, collapsing ``*:count`` to the
-    model, walking dotted join paths). No binding — the resolver does its own
-    resolution.
+    Aggregations surface as ``(source, agg)`` (``("*", "count")`` included), bare and dotted refs as their
+    textual form. Each token is resolved downstream (the aggregation dropped, ``count(*)`` collapsed to the
+    model, dotted join paths walked). No binding — the resolver does its own resolution.
 
     Aggregation args / kwargs (e.g. ``weighted_avg(weight=quantity)``) and
     transform partition columns are opaque (legacy parity) — only the
@@ -466,51 +470,140 @@ def _formula_entity_tokens(parsed: ParsedExpr) -> Iterable[str]:
             yield _ref_token(node)
 
 
-_FILTER_AGG_SUFFIX_RE = re.compile(r":\w+(?:\([^)]*\))?")
-_FILTER_LITERAL_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
-_FILTER_VAR_RE = re.compile(r"\{[^}]*\}")
-_FILTER_TOKEN_RE = re.compile(r"[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*")
-
-
-def _extract_filter_tokens(filter_text: str) -> list[str]:
-    """Extract identifier-shaped tokens from a filter expression that
-    might be entity references.
-
-    Strips quoted literals, ``{variable}`` placeholders, and ``:agg``
-    aggregation suffixes (handled separately by the caller). Skips SQL
-    keywords and common SQL function names.
-    """
-    cleaned = _FILTER_AGG_SUFFIX_RE.sub("", filter_text)
-    cleaned = _FILTER_LITERAL_RE.sub("", cleaned)
-    cleaned = _FILTER_VAR_RE.sub("", cleaned)
-    out: list[str] = []
-    for m in _FILTER_TOKEN_RE.finditer(cleaned):
-        token = m.group(0)
-        # Skip identifiers immediately followed by '(' — they're SQL
-        # function names like coalesce(...), nullif(...).
-        end = m.end()
-        if end < len(cleaned) and cleaned[end] == "(":
-            continue
-        if token.lower() in _FILTER_TOKEN_BLACKLIST:
-            continue
-        if token.replace(".", "").isdigit():
-            continue
-        out.append(token)
-    return out
-
-
-def _field_entity_tokens(kind: FieldKind, text: str) -> list[str]:
+def _field_entity_tokens(kind: FieldKind, text: str) -> list[EntityToken]:
     """Entity tokens of one query field; an unparseable formula is a single token."""
     if kind == "ref":
         return [text]
-    if kind == "filter":
-        return _extract_filter_tokens(text)
     try:
         parsed = parse_expr(text)
     # IllegalWindowInFilterError is-a ValueError, so ValueError covers it.
     except (ValueError, UnknownFunctionError):
         return [text]
     return list(_formula_entity_tokens(parsed))
+
+
+class _ExtensionScope(BaseModel):
+    """Resolves query tokens over the query's scope, replacing each extension-added field by the stored entities its
+    definition reads."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    storage: StorageBackend
+    scope: QueryScope
+    stored: dict[str, SlayerModel]
+    expanded: set[tuple[str, str, str]] = set()
+
+    def _extended(self, name: str) -> SlayerModel | None:
+        """Model ``name`` when the query changes it (stored models resolve through storage, as outside a query)."""
+        model = self.scope.models.get(name)
+        return model if model is not None and model is not self.stored.get(name) else None
+
+    async def resolve(self, token: EntityToken, *, host: SlayerModel) -> list[EntityResolution]:
+        source, agg = token if isinstance(token, tuple) else (token, None)
+        field = self._extension_field(source, host=host)
+        if field is not None:
+            return await self._field_reads(owner=field[0], name=field[1])
+        scoped = self._scoped_form(source, agg=agg, host=host)
+        if scoped is not None:
+            return [EntityResolution(canonical_forms=[scoped])]
+        if agg is not None:
+            return [await _resolve_reference(
+                raw=f"{agg}({source})", prefix=source, agg=agg, storage=self.storage, source_model=host)]
+        return [await resolve_entity(source, storage=self.storage, source_model=host)]
+
+    def _extension_field(self, source: str, *, host: SlayerModel) -> tuple[SlayerModel, str] | None:
+        """``(extended model, field)`` when ``source`` names a field the query's extensions add."""
+        *prefix, leaf = source.split(".")
+        if not any(leaf in m.query_local_names for m in self.scope.models.values()):
+            return None
+        owner = self._model(prefix, host=host)
+        return (owner, leaf) if owner is not None and leaf in owner.query_local_names else None
+
+    def _walked(self, start: SlayerModel, path: list[str]) -> SlayerModel | None:
+        try:
+            return _walk_join_path(start, path, models_by_name={**self.scope.models, start.name: start})
+        except (EntityResolutionError, AmbiguousJoinPathError):
+            return None
+
+    def _model(self, path: list[str], *, host: SlayerModel) -> SlayerModel | None:
+        """The model ``path`` names: edge tokens from ``host`` (a lone hop short-form routed, as the binder does),
+        else a model the query extends and its edge tokens."""
+        path = list(drop_root_hop(path, host.spelling, head_quoted=False))
+        if not path:
+            return host
+        walked = self._walked(host, path)
+        if walked is not None:
+            return walked
+        routed = self.scope.resolve(path, root=host)
+        if routed is not None and routed[1]:
+            return self.scope.models.get(routed[1][-1].target_model)
+        head = self._extended(path[0])
+        return self._walked(head, path[1:]) if head is not None else None
+
+    def _scoped_form(self, source: str, *, agg: str | None, host: SlayerModel) -> str | None:
+        """Canonical form of a dotted ``source`` over the scope — its head an edge token from ``host`` or short-form
+        routed from it, else a model the query extends — or ``None``."""
+        star = source.endswith(".*")
+        segments = source.removesuffix(".*").split(".")
+        if (star and agg != "count") or (not star and len(segments) < 2):
+            return None
+        if star:
+            model = self._model(segments, host=host)
+            return f"{model.data_source}.{model.name}" if model is not None else None
+        heads = [(host, list(drop_root_qualifier(segments, host.spelling, quoted=())))]
+        routed = self.scope.resolve(segments[:-1], root=host)
+        if routed is not None and routed[1]:
+            heads.append((self.scope.models[routed[1][-1].target_model], segments[-1:]))
+        head = self._extended(segments[0])
+        if head is not None:
+            heads.append((head, segments[1:]))
+        for start, rest in heads:
+            try:
+                return _dotted_canonical(start, rest, models_by_name={**self.scope.models, start.name: start})
+            except (EntityResolutionError, AmbiguousJoinPathError):
+                continue
+        return None
+
+    async def _field_reads(self, *, owner: SlayerModel, name: str) -> list[EntityResolution]:
+        mark = (owner.data_source, owner.name, name)
+        if mark in self.expanded:
+            return []
+        self.expanded.add(mark)
+        column = owner.get_column(name)
+        if column is not None:
+            reachable = {**self.scope.models, owner.name: owner}
+            out: list[EntityResolution] = []
+            for model_name, leaf in definition_reads(column=column, host=owner, reachable=reachable):
+                target = reachable[model_name]
+                if leaf in target.query_local_names:
+                    out.extend(await self._field_reads(owner=target, name=leaf))
+                else:
+                    out.append(EntityResolution(canonical_forms=[f"{target.data_source}.{target.name}.{leaf}"]))
+            return out
+        measure = owner.get_measure(name)
+        if measure is None or not measure.formula:
+            return []
+        return [r for token in _field_entity_tokens("formula", measure.formula) for r in await self.resolve(token, host=owner)]
+
+
+async def _rooted(query: SlayerQuery, *, storage: StorageBackend) -> tuple[SlayerQuery, SlayerModel]:
+    """``query`` with its source model; a rootless query is rooted at the population the engine infers."""
+    src = query.source_model
+    if isinstance(src, SlayerModel):
+        return query, src
+    data_source = None
+    if src is None:
+        try:
+            choice = await (infer_spine_population if is_spine_query(query) else infer_population)(
+                query=query, storage=storage)
+        except PopulationInferenceError as exc:
+            raise EntityResolutionError(f"Could not infer the query's population: {exc}") from exc
+        src, data_source = choice.model_name, choice.data_source
+        query = query.model_copy(update={"source_model": src})
+    model = await storage.get_model(src, data_source=data_source)
+    if model is None:
+        raise EntityResolutionError(f"Source model not found: {src!r}.")
+    return query, model
 
 
 async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk over each SlayerQuery field (source_model → dimensions → time_dimensions → measures → filters); each branch is independently simple and parallels the SlayerQuery shape
@@ -529,39 +622,31 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
                 seen.add(f)
                 canonical.append(f)
 
-    # 1. source_model — a saved model name, an inline model, or an extension's base.
-    src = query.source_model
-    if isinstance(src, str):
-        source_model = await storage.get_model(src)
-    elif isinstance(src, SlayerModel):
-        source_model = src
-    elif isinstance(src, ModelExtension):
-        source_model = await storage.get_model(src.source_name)
-    else:
-        raise EntityResolutionError(
-            "Could not derive a model name from query.source_model."
-        )
-    if source_model is None:
-        raise EntityResolutionError(
-            f"Source model not found: {src!r}."
-        )
+    # 1. source_model — a saved model name, an inline model, or the population the engine infers — then the models
+    # its extensions name.
+    query, source_model = await _rooted(query, storage=storage)
     _add([f"{source_model.data_source}.{source_model.name}"])
+    for name in extension_model_names(query):
+        extended = await storage.get_model(name, data_source=source_model.data_source or None)
+        if extended is not None:
+            _add([f"{extended.data_source}.{extended.name}"])
 
     # 2. every field the reads walk enumerates; aggregation arguments and the query's own names are not entities.
     local_names = {m.name for m in query.measures or [] if m.name} | {
         d.name for d in query.dimensions or [] if isinstance(d, ComputedDimension) and d.name
-    }
+    } | {td.name for td in query.time_dimensions or [] if td.name}
+    ds = source_model.data_source
+    stored = await _datasource_models(storage, source_model)
+    query_scope = query_scopes([query], models_by_ds={ds: stored}, data_source=ds)[0][0]
+    scope = _ExtensionScope(storage=storage, scope=query_scope, stored=stored)
+    root = query_scope.host or source_model
     for kind, text in query_field_texts(query):
         for token in _field_entity_tokens(kind, text):
-            if token in local_names:
+            if isinstance(token, str) and token in local_names:
                 continue
-            result = await resolve_entity(
-                token,
-                storage=storage,
-                source_model=source_model,
-            )
-            _add(result.canonical_forms)
-            warnings.extend(result.warnings)
+            for result in await scope.resolve(token, host=root):
+                _add(result.canonical_forms)
+                warnings.extend(result.warnings)
 
     # Deduplicate warnings while preserving order.
     seen_warn: set[str] = set()

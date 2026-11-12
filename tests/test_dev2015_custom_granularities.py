@@ -162,8 +162,8 @@ class TestBucketing:
 class TestEveryPosition:
     async def test_functional_form_and_order_key(self, engine) -> None:
         functional = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "orders", "dimensions": ["fiscal_year(order_date)"], "measures": [m("sum(amount)", "s")],
-            "order": [{"column": "fiscal_year(order_date)", "direction": "desc"}],
+            "source_model": "orders", "dimensions": ["date_trunc('fiscal_year', order_date)"], "measures": [m("sum(amount)", "s")],
+            "order": [{"column": "date_trunc('fiscal_year', order_date)", "direction": "desc"}],
         }))
         explicit = await engine.execute(SlayerQuery.model_validate({
             "source_model": "orders", "measures": [m("sum(amount)", "s")],
@@ -177,20 +177,20 @@ class TestEveryPosition:
     async def test_time_dimensions_string_entry(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
             "source_model": "orders", "measures": [m("sum(amount)", "s")],
-            "time_dimensions": ["fiscal_year(order_date)"],
+            "time_dimensions": ["date_trunc('fiscal_year', order_date)"],
         }))
         assert _series(resp, column="order_date") == FY_ROWS
 
     async def test_filter(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
             "source_model": "orders", "measures": [m("sum(amount)", "s")],
-            "filters": ["fiscal_year(order_date) = '2024-04-01'"],
+            "filters": ["date_trunc('fiscal_year', order_date) = '2024-04-01'"],
         }))
         assert float(value(resp.data[0], "s")) == 50.0
 
     async def test_inside_an_expression(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "orders", "measures": [m("count_distinct(fiscal_year(order_date))", "fys")],
+            "source_model": "orders", "measures": [m("count_distinct(date_trunc('fiscal_year', order_date))", "fys")],
         }))
         assert int(value(resp.data[0], "fys")) == 3
 

@@ -16,7 +16,7 @@ from slayer.core.errors import PopulationErrorReason, PopulationInferenceError, 
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.core.time_spine import spine_model
-from slayer.engine.dimension_routing import route_dotted_target
+from slayer.engine.population.dimension_routing import route_dotted_target
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.facade.catalog import build_catalog
 from slayer.osi.converter import OsiToSlayerConverter
@@ -28,11 +28,11 @@ from slayer.osi.models import (
     OSIField,
     OSIMetric,
     OSIRelationship,
-    OSISemanticModel,
 )
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import disposable_engine, seeded_exec_engine
+from tests._osi_helpers import run_converter
 
 DS = "ds"
 M2O = JoinCardinality.MANY_TO_ONE
@@ -211,8 +211,8 @@ class TestOsiConversion:
         def rel(name: str, src: str, dst: str) -> OSIRelationship:
             return OSIRelationship.model_validate({"name": name, "from": src, "to": dst,
                                                    "from_columns": ["customer_id"], "to_columns": ["customer_id"]})
-        doc = OSIDocument(version="0.2.0.dev0", semantic_model=[OSISemanticModel(
-            name="s",
+        doc = OSIDocument(
+            version="0.2.0.dev0", name="s", legacy=True,
             datasets=[
                 OSIDataset(name="orders", source="orders",
                            fields=[OSIField(name="amount", expression=_expr("amount"))]),
@@ -222,8 +222,11 @@ class TestOsiConversion:
             relationships=[rel("o2c", "orders", "customers"), rel("c2o", "customers", "orders")],
             metrics=[OSIMetric(name="cross",
                                expression=_expr("SUM(orders.amount) + SUM(customers.region_id)"))],
-        )])
-        result = OsiToSlayerConverter(documents=[doc], data_source=DS, sa_engine=osi_engine).convert()
+        )
+        result = run_converter(
+            OsiToSlayerConverter(documents=[doc], data_source=DS),
+            datasource=DatasourceConfig(name=DS, type="sqlite", database=osi_engine.url.database),
+        )
         report = [w for w in result.unconverted_metrics if w.category == "no_join_path"]
         assert report, result.unconverted_metrics
         assert any(_names_pair(f"{w.message} {w.suggestion or ''}", a="orders", b="customers") for w in report)

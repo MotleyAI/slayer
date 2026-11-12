@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 import sqlglot
 from sqlglot import exp
-from sqlglot.expressions.core import Expression
+from sqlglot.expressions.core import Expr, Expression
 
 from slayer.sql.dialects import SqlDialect, _ALL_DIALECTS, _DS_TYPE_ONLY_DIALECTS
 from slayer.sql.dialects.base import ServerProfile
@@ -17,9 +17,20 @@ CH = ClickhouseDialect()
 SETTING = "allow_experimental_correlated_subqueries"
 PROFILE_SQL = "SELECT version(), getSetting('readonly')"
 CORRELATED_SQL = f"SELECT getSetting('{SETTING}')"
+_EXISTS = "EXISTS(SELECT 1 FROM a WHERE a.c = p.id)"
+_EXISTS_BESIDE_ARRAY_JOIN = f"SELECT s.value FROM p ARRAY JOIN p.l AS s WHERE {_EXISTS}"
+_EXISTS_ALONE = f"SELECT p.id FROM p WHERE {_EXISTS}"
+_ARRAY_JOIN_ALONE = "SELECT s.value FROM p ARRAY JOIN p.l AS s WHERE p.id > 1"
 
 
-def _profile(version: tuple[int, int] | None, readonly: int | None, correlated: bool | None) -> ServerProfile:
+def _tree(sql: str) -> Expr:
+    return sqlglot.parse_one(sql, read="clickhouse")
+
+
+_PLAIN = _tree(_EXISTS_ALONE)
+
+
+def _profile(version: tuple[int, ...] | None, readonly: int | None, correlated: bool | None) -> ServerProfile:
     return ServerProfile(version=version, readonly=readonly, correlated_subqueries=correlated)
 
 
@@ -49,18 +60,20 @@ class TestInSubqueryHooks:
 class TestProbeStatements:
     def test_default_probes_nothing(self) -> None:
         assert SqlDialect().server_profile_sql() is None
-        assert SqlDialect().correlated_setting_sql(_profile((25, 8), 1, None)) is None
+        assert SqlDialect().correlated_setting_probe(_profile((25, 8), 1, None)) is None
 
     def test_clickhouse_profile_statement(self) -> None:
         assert CH.server_profile_sql() == PROFILE_SQL
 
     @pytest.mark.parametrize("version", [None, (24, 8), (25, 3)])
     def test_no_correlated_statement_below_25_4(self, version: tuple[int, int] | None) -> None:
-        assert CH.correlated_setting_sql(_profile(version, 1, None)) is None
+        assert CH.correlated_setting_probe(_profile(version, 1, None)) is None
 
     @pytest.mark.parametrize("version", [(25, 4), (25, 8), (26, 1)])
     def test_correlated_statement_from_25_4(self, version: tuple[int, int]) -> None:
-        assert CH.correlated_setting_sql(_profile(version, 1, None)) == CORRELATED_SQL
+        probe = CH.correlated_setting_probe(_profile(version, 1, None))
+        assert probe is not None
+        assert probe.sql(dialect="clickhouse") == CORRELATED_SQL
 
 
 class TestParseServerProfile:
@@ -70,14 +83,14 @@ class TestParseServerProfile:
     @pytest.mark.parametrize(
         ("raw", "expected"),
         [
-            ("25.4.1.100", (25, 4)),  # NOSONAR(S1313) — ClickHouse version, not an IP
-            ("25.4", (25, 4)),
-            ("24.8.14.10459", (24, 8)),
-            ("25.4.1-lts", (25, 4)),
-            ("v25.4.1", (25, 4)),
+            ("25.4.1.100", (25, 4, 1)),  # NOSONAR(S1313) — ClickHouse version, not an IP
+            ("25.4", (25, 4, 0)),
+            ("24.8.14.10459", (24, 8, 14)),
+            ("25.4.1-lts", (25, 4, 1)),
+            ("v25.4.1", (25, 4, 1)),
         ],
     )
-    def test_version_valid(self, raw: str, expected: tuple[int, int]) -> None:
+    def test_version_valid(self, raw: str, expected: tuple[int, int, int]) -> None:
         assert CH.parse_server_profile(base_row=(raw, 0)).version == expected
 
     @pytest.mark.parametrize("raw", ["", "   ", "garbage", None, "abc.def", 25])
@@ -112,7 +125,7 @@ class TestParseServerProfile:
         assert CH.parse_server_profile(base_row=("25.4.1", 1), correlated_row=row).correlated_subqueries is None
 
     def test_full_profile(self) -> None:
-        assert CH.parse_server_profile(base_row=("25.8.3.1", "1"), correlated_row=("false",)) == _profile((25, 8), 1, False)
+        assert CH.parse_server_profile(base_row=("25.8.3.1", "1"), correlated_row=("false",)) == _profile((25, 8, 3), 1, False)
 
 
 class TestTimeoutPermitted:
@@ -126,22 +139,22 @@ class TestTimeoutPermitted:
 
 class TestCorrelatedSubqueryRefusal:
     def test_default_never_refuses(self) -> None:
-        assert SqlDialect().correlated_subquery_refusal(ServerProfile()) is None
+        assert SqlDialect().correlated_subquery_refusal(ServerProfile(), statement=_PLAIN) is None
 
     @pytest.mark.parametrize("profile", [_profile((24, 8), 0, None), _profile((25, 3), 2, None)])
     def test_below_25_4_names_the_version(self, profile: ServerProfile) -> None:
-        reason = CH.correlated_subquery_refusal(profile)
+        reason = CH.correlated_subquery_refusal(profile, statement=_PLAIN)
         assert reason is not None
         assert "25.4" in reason
 
     def test_unknown_version_refuses(self) -> None:
-        reason = CH.correlated_subquery_refusal(_profile(None, 0, True))
+        reason = CH.correlated_subquery_refusal(_profile(None, 0, True), statement=_PLAIN)
         assert reason is not None
         assert "25.4" in reason
 
     @pytest.mark.parametrize("version", [(25, 4), (25, 7)])
     def test_setting_off_readonly_1_before_25_8_lists_every_remedy(self, version: tuple[int, int]) -> None:
-        reason = CH.correlated_subquery_refusal(_profile(version, 1, False))
+        reason = CH.correlated_subquery_refusal(_profile(version, 1, False), statement=_PLAIN)
         assert reason is not None
         assert SETTING in reason
         assert "profile" in reason
@@ -150,7 +163,7 @@ class TestCorrelatedSubqueryRefusal:
 
     @pytest.mark.parametrize("version", [(25, 8), (26, 1)])
     def test_setting_off_readonly_1_from_25_8_omits_upgrade(self, version: tuple[int, int]) -> None:
-        reason = CH.correlated_subquery_refusal(_profile(version, 1, False))
+        reason = CH.correlated_subquery_refusal(_profile(version, 1, False), statement=_PLAIN)
         assert reason is not None
         assert SETTING in reason
         assert "readonly=2" in reason.replace(" ", "")
@@ -159,20 +172,29 @@ class TestCorrelatedSubqueryRefusal:
     @pytest.mark.parametrize("readonly", [0, 2])
     @pytest.mark.parametrize("correlated", [False, None])
     def test_user_may_set_it(self, readonly: int, correlated: bool | None) -> None:
-        assert CH.correlated_subquery_refusal(_profile((25, 4), readonly, correlated)) is None
+        assert CH.correlated_subquery_refusal(_profile((25, 4), readonly, correlated), statement=_PLAIN) is None
 
     @pytest.mark.parametrize("readonly", [1, None])
     def test_setting_already_on(self, readonly: int | None) -> None:
-        assert CH.correlated_subquery_refusal(_profile((25, 4), readonly, True)) is None
+        assert CH.correlated_subquery_refusal(_profile((25, 4), readonly, True), statement=_PLAIN) is None
+
+    @pytest.mark.parametrize(("version", "refused"), [((25, 4), True), ((25, 7), True), ((25, 8), False)])
+    def test_exists_beside_an_array_join_needs_25_8(self, version: tuple[int, int], refused: bool) -> None:
+        reason = CH.correlated_subquery_refusal(_profile(version, 0, None), statement=_tree(_EXISTS_BESIDE_ARRAY_JOIN))
+        assert (reason is not None and "25.8" in reason and "ARRAY JOIN" in reason) is refused
+
+    @pytest.mark.parametrize("sql", [_EXISTS_ALONE, _ARRAY_JOIN_ALONE])
+    def test_either_alone_runs_from_25_4(self, sql: str) -> None:
+        assert CH.correlated_subquery_refusal(_profile((25, 4), 0, None), statement=_tree(sql)) is None
 
     def test_setting_unknown_under_readonly_1_refuses(self) -> None:
-        reason = CH.correlated_subquery_refusal(_profile((25, 8), 1, None))
+        reason = CH.correlated_subquery_refusal(_profile((25, 8), 1, None), statement=_PLAIN)
         assert reason is not None
         assert SETTING in reason
 
     @pytest.mark.parametrize("correlated", [False, None])
     def test_readonly_unknown_and_setting_not_on_refuses(self, correlated: bool | None) -> None:
-        assert CH.correlated_subquery_refusal(_profile((25, 8), None, correlated)) is not None
+        assert CH.correlated_subquery_refusal(_profile((25, 8), None, correlated), statement=_PLAIN) is not None
 
 
 def _attached(sql: str, dialect: SqlDialect) -> str:

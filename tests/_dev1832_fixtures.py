@@ -159,7 +159,7 @@ def monthly_multi_q(**kw) -> SlayerQuery:
 
 
 def month_td() -> List[TimeDimension]:
-    return [TimeDimension(dimension=ColumnRef(name="ordered_at"),
+    return [TimeDimension(dimension="ordered_at",
                           granularity=TimeGranularity.MONTH)]
 
 

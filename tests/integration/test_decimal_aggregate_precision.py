@@ -1,4 +1,4 @@
-"""Exact NUMERIC/DECIMAL aggregates must not inherit a lossy DOUBLE cast (#364)."""
+"""Exact NUMERIC/DECIMAL aggregates must not inherit a lossy DOUBLE cast."""
 
 from decimal import Decimal
 
@@ -6,7 +6,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig, ModelJoin
-from slayer.engine.ingestion import ingest_datasource
+from slayer.live_schema import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -25,32 +25,34 @@ async def decimal_engine(tmp_path):
         )
 
     datasource = DatasourceConfig(name="test", type="duckdb", database=database)
-    model = next(model for model in ingest_datasource(datasource=datasource) if model.name == "orders")
+    storage = YAMLStorage(base_dir=str(tmp_path / "models"))
+    engine = SlayerQueryEngine(storage=storage)
+    models = await ingestion.ingest_datasource_async(datasource, client=engine.client_for(datasource))
+    model = next(model for model in models if model.name == "orders")
     amount = model.get_column("amount")
     assert amount is not None
     assert amount.type is DataType.DOUBLE
     assert amount.db_type == "DECIMAL(18,2)"
 
-    storage = YAMLStorage(base_dir=str(tmp_path / "models"))
     await storage.save_datasource(datasource)
     customers = model.model_copy(update={"name": "customers", "joins": []})
     model.joins = [ModelJoin(target_model="customers", join_pairs=[["id", "id"]])]
     await storage.save_model(model)
     await storage.save_model(customers)
-    return SlayerQueryEngine(storage=storage)
+    return engine
 
 
 @pytest.mark.parametrize(
     argnames="measure,query_fields,expected",
     argvalues=[
-        ("amount:sum", {}, [Decimal("90071992547409.93")]),
+        ("sum(amount)", {}, [Decimal("90071992547409.93")]),
         (
-            {"formula": "amount:sum(window='2d')", "name": "total"},
+            {"formula": "sum(amount, window='2d')", "name": "total"},
             {"time_dimensions": [{"dimension": "created_at", "granularity": "day"}]},
             [Decimal("90071992547409.91"), Decimal("90071992547409.93")],
         ),
         (
-            {"formula": "amount:sum(partition_by=created_at)", "name": "total"},
+            {"formula": "sum(amount, partition_by=created_at)", "name": "total"},
             {"dimensions": ["id", "created_at"]},
             [Decimal("0.02"), Decimal("90071992547409.91")],
         ),
@@ -75,7 +77,7 @@ async def test_inferred_decimal_aggregates_preserve_native_precision(
 async def test_explicit_double_measure_still_casts(decimal_engine):
     query = {
         "source_model": "orders",
-        "measures": [{"formula": "amount:sum", "type": "DOUBLE"}],
+        "measures": [{"formula": "sum(amount)", "type": "DOUBLE"}],
     }
     result = await decimal_engine.execute(query=query)
     sql = (await decimal_engine.execute(query=query, dry_run=True)).sql
@@ -85,7 +87,7 @@ async def test_explicit_double_measure_still_casts(decimal_engine):
 
 
 async def test_cross_model_decimal_aggregate_preserves_native_precision(decimal_engine):
-    query = {"source_model": "orders", "measures": ["customers.amount:sum"]}
+    query = {"source_model": "orders", "measures": ["sum(customers.amount)"]}
     result = await decimal_engine.execute(query=query)
     sql = (await decimal_engine.execute(query=query, dry_run=True)).sql
 

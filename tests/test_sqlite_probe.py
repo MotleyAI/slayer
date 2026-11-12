@@ -1,6 +1,6 @@
-"""DEV-1538: SQLite affinity-probe helper unit tests.
+"""SQLite affinity-probe helper unit tests.
 
-The helper lives in :mod:`slayer.sql.sqlite_introspect` and probes the actual
+The helper lives in :mod:`slayer.database.sqlite_introspect` and probes the actual
 storage classes of stored values in a SQLite column declared with INTEGER
 affinity. It returns:
 
@@ -20,24 +20,26 @@ SQLite connection.
 from __future__ import annotations
 
 import logging
-from slayer.storage.sqlite_conn import transaction
-from tests._engine_helpers import disposable_engine
 from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
 
 from slayer.core.enums import DataType
-from slayer.sql import sqlite_introspect
-from slayer.sql.sqlite_introspect import (
+from slayer.core.models import DatasourceConfig
+from slayer.database import sqlite_introspect
+from slayer.database.client import DelegatingSqlClient, ExecutionResult, SlayerSQLClient
+from slayer.database.sqlite_introspect import (
     COERCE_DISTINCT_LIMIT,
     PROBE_SCAN_CAP,
     probe_sqlite_integer_column,
 )
+from slayer.storage.sqlite_conn import transaction
+from tests._engine_helpers import disposable_engine
 
 
 # ---------------------------------------------------------------------------
-# Constants — DEV-1538 fixes the documented defaults so callers (validate_models,
+# Constants — the documented defaults are fixed so callers (validate_models,
 # the load-time refinement, ingest) can trust them. Pin the defaults to catch
 # accidental shrinkage.
 # ---------------------------------------------------------------------------
@@ -61,7 +63,7 @@ def test_coerce_distinct_limit_default_is_1000():
 @pytest.fixture
 def sqlite_engine(tmp_path: Path):
     """A file-backed SQLite engine. File-backed so multi-schema ATTACH tests
-    work; in-memory ``StaticPool`` works for single-connection cases but the
+    work; the in-memory engine works for single-connection cases but the
     ATTACH-DATABASE tests need a path."""
     db_path = tmp_path / "probe.db"
     with disposable_engine(f"sqlite:///{db_path}") as engine:
@@ -72,6 +74,18 @@ def sqlite_engine(tmp_path: Path):
 def conn(sqlite_engine):
     with sqlite_engine.connect() as c:
         yield c
+
+
+class _ConnectionClient(DelegatingSqlClient):
+    """Executes on one open test connection, so ATTACHes and ``conn.execute`` spies apply."""
+
+    def __init__(self, conn: sa.Connection) -> None:
+        super().__init__(inner=SlayerSQLClient(datasource=DatasourceConfig(name="probe", type="sqlite")))
+        self._conn = conn
+
+    async def execute(self, sql: str) -> ExecutionResult:
+        result = self._conn.execute(sa.text(sql))
+        return ExecutionResult(rows=[dict(row._mapping) for row in result])
 
 
 def _quote(name: str) -> str:
@@ -103,10 +117,10 @@ def _insert_typed(conn, table: str, column: str, values: list) -> None:
 
 
 class TestProbeAllInteger:
-    def test_all_integer_returns_int(self, conn) -> None:
+    async def test_all_integer_returns_int(self, conn) -> None:
         conn.execute(sa.text('CREATE TABLE t (v INTEGER)'))
         _insert_typed(conn, "t", "v", [1, 2, 3, 4, 5])
-        verdict = probe_sqlite_integer_column(conn=conn, table="t", column="v")
+        verdict = await probe_sqlite_integer_column(client=_ConnectionClient(conn), table="t", column="v")
         assert verdict is DataType.INT
 
 
@@ -116,7 +130,7 @@ class TestProbeAllInteger:
 
 
 class TestProbeMixedReal:
-    def test_mixed_real_returns_double(self, conn) -> None:
+    async def test_mixed_real_returns_double(self, conn) -> None:
         """Reproduces the issue's vaccine case: declared INTEGER affinity,
         actual storage is mostly REAL with a few INTEGER."""
         conn.execute(sa.text('CREATE TABLE sensordata (tempstabidx INTEGER)'))
@@ -129,8 +143,8 @@ class TestProbeMixedReal:
             "tempstabidx",
             [0.99, 0.943, 0.969] + [0.9 + i * 0.001 for i in range(894)],
         )
-        verdict = probe_sqlite_integer_column(
-            conn=conn, table="sensordata", column="tempstabidx"
+        verdict = await probe_sqlite_integer_column(
+            client=_ConnectionClient(conn), table="sensordata", column="tempstabidx"
         )
         assert verdict is DataType.DOUBLE
 
@@ -141,13 +155,13 @@ class TestProbeMixedReal:
 
 
 class TestProbeIntegerPlusText:
-    def test_integer_plus_non_coercible_text_returns_text(self, conn) -> None:
+    async def test_integer_plus_non_coercible_text_returns_text(self, conn) -> None:
         """The decision tree must check TEXT before REAL; mixed INT + TEXT
         where the TEXT is non-coercible classifies as TEXT regardless of
         n_real / n_non_integral counts (Codex finding #1)."""
         conn.execute(sa.text('CREATE TABLE t (v INTEGER)'))
         _insert_typed(conn, "t", "v", [1, 2, 3, "abc", "xyz"])
-        verdict = probe_sqlite_integer_column(conn=conn, table="t", column="v")
+        verdict = await probe_sqlite_integer_column(client=_ConnectionClient(conn), table="t", column="v")
         assert verdict is DataType.TEXT
 
 
@@ -157,14 +171,14 @@ class TestProbeIntegerPlusText:
 
 
 class TestProbeTextCoerce:
-    def test_text_coerce_widens_to_double(self, conn) -> None:
+    async def test_text_coerce_widens_to_double(self, conn) -> None:
         # No declared type → BLOB affinity; inserted strings remain TEXT.
         # INTEGER affinity would coerce "1" / "1e3" / "  4  " to INTEGER on
         # insert (and "2.5" to REAL), so the coerce branch would never fire.
         conn.execute(sa.text('CREATE TABLE t (v)'))
         # All TEXT, all numeric-coercible to finite floats.
         _insert_typed(conn, "t", "v", ["1", "2.5", "1e3", "-7.2", "  4  "])
-        verdict = probe_sqlite_integer_column(conn=conn, table="t", column="v")
+        verdict = await probe_sqlite_integer_column(client=_ConnectionClient(conn), table="t", column="v")
         assert verdict is DataType.DOUBLE
 
 
@@ -174,24 +188,24 @@ class TestProbeTextCoerce:
 
 
 class TestProbeTextNonCoerce:
-    def test_text_non_coerce_widens_to_text(self, conn) -> None:
+    async def test_text_non_coerce_widens_to_text(self, conn) -> None:
         conn.execute(sa.text('CREATE TABLE t (v INTEGER)'))
         _insert_typed(conn, "t", "v", ["1", "abc"])
-        verdict = probe_sqlite_integer_column(conn=conn, table="t", column="v")
+        verdict = await probe_sqlite_integer_column(client=_ConnectionClient(conn), table="t", column="v")
         assert verdict is DataType.TEXT
 
     @pytest.mark.parametrize(
         "bad_value",
         ["nan", "NaN", "inf", "-inf", "Infinity", "  ", ""],
     )
-    def test_nan_inf_whitespace_empty_classified_as_text(
+    async def test_nan_inf_whitespace_empty_classified_as_text(
         self, conn, bad_value: str
     ) -> None:
         """``float("nan")`` succeeds but ``math.isfinite`` is False; empty
         strings and whitespace fail ``float()``. All these widen to TEXT."""
         conn.execute(sa.text('CREATE TABLE t (v INTEGER)'))
         _insert_typed(conn, "t", "v", ["1", bad_value])
-        verdict = probe_sqlite_integer_column(conn=conn, table="t", column="v")
+        verdict = await probe_sqlite_integer_column(client=_ConnectionClient(conn), table="t", column="v")
         assert verdict is DataType.TEXT
 
 
@@ -201,7 +215,7 @@ class TestProbeTextNonCoerce:
 
 
 class TestProbeEmptyAndNull:
-    def test_empty_table_returns_none(self, conn) -> None:
+    async def test_empty_table_returns_none(self, conn) -> None:
         """Empty column → no evidence either way. Return None so refinement
         callers don't narrow a persisted DOUBLE based on a non-observation;
         ingest callers fall back to the SA-derived type (INT for declared
@@ -209,15 +223,15 @@ class TestProbeEmptyAndNull:
         """
         conn.execute(sa.text('CREATE TABLE t (v INTEGER)'))
         conn.commit()
-        verdict = probe_sqlite_integer_column(conn=conn, table="t", column="v")
+        verdict = await probe_sqlite_integer_column(client=_ConnectionClient(conn), table="t", column="v")
         assert verdict is None
 
-    def test_all_null_returns_none(self, conn) -> None:
+    async def test_all_null_returns_none(self, conn) -> None:
         """All-NULL rows → no evidence either way. Same rationale as
         empty-table: None means "no info"."""
         conn.execute(sa.text('CREATE TABLE t (v INTEGER)'))
         _insert_typed(conn, "t", "v", [None, None, None])
-        verdict = probe_sqlite_integer_column(conn=conn, table="t", column="v")
+        verdict = await probe_sqlite_integer_column(client=_ConnectionClient(conn), table="t", column="v")
         assert verdict is None
 
 
@@ -227,11 +241,11 @@ class TestProbeEmptyAndNull:
 
 
 class TestProbeFailure:
-    def test_probe_failure_returns_none_and_warns(self, conn, caplog) -> None:
+    async def test_probe_failure_returns_none_and_warns(self, conn, caplog) -> None:
         # Probe a nonexistent table. SQLAlchemy raises OperationalError.
         with caplog.at_level(logging.WARNING):
-            verdict = probe_sqlite_integer_column(
-                conn=conn, table="missing_table", column="v"
+            verdict = await probe_sqlite_integer_column(
+                client=_ConnectionClient(conn), table="missing_table", column="v"
             )
         assert verdict is None
         # At least one WARNING about probe failure.
@@ -245,21 +259,21 @@ class TestProbeFailure:
 
 
 class TestProbeIdentifierQuoting:
-    def test_column_with_special_chars(self, conn) -> None:
+    async def test_column_with_special_chars(self, conn) -> None:
         # Column name with a space and an embedded double-quote.
         conn.execute(sa.text('CREATE TABLE t ("weird ""name""" INTEGER)'))
         _insert_typed(conn, "t", 'weird "name"', [1, 2, 3])
-        verdict = probe_sqlite_integer_column(
-            conn=conn, table="t", column='weird "name"'
+        verdict = await probe_sqlite_integer_column(
+            client=_ConnectionClient(conn), table="t", column='weird "name"'
         )
         assert verdict is DataType.INT
 
-    def test_table_with_special_chars(self, sqlite_engine) -> None:
+    async def test_table_with_special_chars(self, sqlite_engine) -> None:
         with sqlite_engine.connect() as conn:
             conn.execute(sa.text('CREATE TABLE "weird table" (v INTEGER)'))
             _insert_typed(conn, "weird table", "v", [1, 2, 3])
-            verdict = probe_sqlite_integer_column(
-                conn=conn, table="weird table", column="v"
+            verdict = await probe_sqlite_integer_column(
+                client=_ConnectionClient(conn), table="weird table", column="v"
             )
             assert verdict is DataType.INT
 
@@ -270,7 +284,7 @@ class TestProbeIdentifierQuoting:
 
 
 class TestProbeLimitCap:
-    def test_limit_caps_scan(self, conn) -> None:
+    async def test_limit_caps_scan(self, conn) -> None:
         """The probe's row-scan SQL must include LIMIT ``PROBE_SCAN_CAP + 1``
         so saturation can be detected."""
         conn.execute(sa.text('CREATE TABLE t (v INTEGER)'))
@@ -289,8 +303,8 @@ class TestProbeLimitCap:
 
         conn.execute = _spy  # type: ignore[method-assign]
         try:
-            sqlite_introspect.probe_sqlite_integer_column(
-                conn=conn, table="t", column="v"
+            await sqlite_introspect.probe_sqlite_integer_column(
+                client=_ConnectionClient(conn), table="t", column="v"
             )
         finally:
             conn.execute = original_execute  # type: ignore[method-assign]
@@ -305,17 +319,17 @@ class TestProbeLimitCap:
 
 
 class TestProbeBlob:
-    def test_blob_only_returns_text(self, conn) -> None:
+    async def test_blob_only_returns_text(self, conn) -> None:
         """BLOBs can't be safely cast numerically; widen to TEXT (Codex #2)."""
         conn.execute(sa.text('CREATE TABLE t (v INTEGER)'))
         _insert_typed(conn, "t", "v", [b"\x00\x01", b"\x02\x03"])
-        verdict = probe_sqlite_integer_column(conn=conn, table="t", column="v")
+        verdict = await probe_sqlite_integer_column(client=_ConnectionClient(conn), table="t", column="v")
         assert verdict is DataType.TEXT
 
-    def test_blob_plus_integer_returns_text(self, conn) -> None:
+    async def test_blob_plus_integer_returns_text(self, conn) -> None:
         conn.execute(sa.text('CREATE TABLE t (v INTEGER)'))
         _insert_typed(conn, "t", "v", [1, 2, 3, b"\x00\x01"])
-        verdict = probe_sqlite_integer_column(conn=conn, table="t", column="v")
+        verdict = await probe_sqlite_integer_column(client=_ConnectionClient(conn), table="t", column="v")
         assert verdict is DataType.TEXT
 
 
@@ -325,21 +339,21 @@ class TestProbeBlob:
 
 
 class TestProbeSampleSaturation:
-    def test_sample_saturated_all_int_returns_none(self, conn, caplog, monkeypatch) -> None:
+    async def test_sample_saturated_all_int_returns_none(self, conn, caplog, monkeypatch) -> None:
         """When the sample exhausts at PROBE_SCAN_CAP + 1 and would otherwise
         verdict INT, return None so the caller keeps declared INT but logs."""
         monkeypatch.setattr(sqlite_introspect, "PROBE_SCAN_CAP", 50)  # tiny cap for test speed
         conn.execute(sa.text('CREATE TABLE t (v INTEGER)'))
         _insert_typed(conn, "t", "v", list(range(60)))
         with caplog.at_level(logging.WARNING):
-            verdict = sqlite_introspect.probe_sqlite_integer_column(
-                conn=conn, table="t", column="v"
+            verdict = await sqlite_introspect.probe_sqlite_integer_column(
+                client=_ConnectionClient(conn), table="t", column="v"
             )
         assert verdict is None
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert any("saturat" in r.getMessage().lower() for r in warnings)
 
-    def test_sample_saturated_with_real_still_returns_double(
+    async def test_sample_saturated_with_real_still_returns_double(
         self, conn, monkeypatch
     ) -> None:
         """When the sample saturates but we already saw REAL values in the
@@ -350,8 +364,8 @@ class TestProbeSampleSaturation:
         # First row REAL, rest INT — sample saturates but n_real > 0.
         _insert_typed(conn, "t", "v", [0.5])
         _insert_typed(conn, "t", "v", list(range(60)))
-        verdict = sqlite_introspect.probe_sqlite_integer_column(
-            conn=conn, table="t", column="v"
+        verdict = await sqlite_introspect.probe_sqlite_integer_column(
+            client=_ConnectionClient(conn), table="t", column="v"
         )
         assert verdict is DataType.DOUBLE
 
@@ -362,7 +376,7 @@ class TestProbeSampleSaturation:
 
 
 class TestProbeDistinctTextSaturation:
-    def test_distinct_text_saturated_returns_text(self, conn, monkeypatch) -> None:
+    async def test_distinct_text_saturated_returns_text(self, conn, monkeypatch) -> None:
         """When the distinct-text coerce probe saturates, we can't prove
         every distinct value coerces — widen to TEXT conservatively.
 
@@ -381,12 +395,12 @@ class TestProbeDistinctTextSaturation:
             conn, "t", "v",
             [str(i) for i in range(20)],
         )
-        verdict = sqlite_introspect.probe_sqlite_integer_column(
-            conn=conn, table="t", column="v"
+        verdict = await sqlite_introspect.probe_sqlite_integer_column(
+            client=_ConnectionClient(conn), table="t", column="v"
         )
         assert verdict is DataType.TEXT
 
-    def test_many_duplicate_low_distinct_text_returns_double(self, conn, monkeypatch) -> None:
+    async def test_many_duplicate_low_distinct_text_returns_double(self, conn, monkeypatch) -> None:
         """A column with many duplicate numeric-text values but very few
         DISTINCT values must NOT trigger saturation — distinct-text count
         is the trigger, not row count. Verdict: DOUBLE.
@@ -401,14 +415,14 @@ class TestProbeDistinctTextSaturation:
             conn, "t", "v",
             ["1"] * 40 + ["2.5"] * 40 + ["7"] * 20,
         )
-        verdict = sqlite_introspect.probe_sqlite_integer_column(
-            conn=conn, table="t", column="v"
+        verdict = await sqlite_introspect.probe_sqlite_integer_column(
+            client=_ConnectionClient(conn), table="t", column="v"
         )
         assert verdict is DataType.DOUBLE
 
 
 class TestProbeCoerceQueryFailure:
-    def test_coerce_query_failure_returns_none_and_warns(self, conn, caplog) -> None:
+    async def test_coerce_query_failure_returns_none_and_warns(self, conn, caplog) -> None:
         """If the main probe succeeds (column exists, n_text > 0) but the
         follow-up distinct-text query raises, the probe returns None and
         logs one WARNING — distinct from the main-probe-failure path."""
@@ -432,7 +446,7 @@ class TestProbeCoerceQueryFailure:
         conn.execute = _spy  # type: ignore[method-assign]
         try:
             with caplog.at_level(logging.WARNING):
-                verdict = original(conn=conn, table="t", column="v")
+                verdict = await original(client=_ConnectionClient(conn), table="t", column="v")
         finally:
             conn.execute = original_execute  # type: ignore[method-assign]
 
@@ -447,7 +461,7 @@ class TestProbeCoerceQueryFailure:
 
 
 class TestProbeSchemaQualified:
-    def test_attached_database_schema(self, tmp_path: Path) -> None:
+    async def test_attached_database_schema(self, tmp_path: Path) -> None:
         """SQLite supports ATTACH DATABASE to bind a second file under a
         non-``main`` schema. The probe should accept ``schema=`` and route to
         the right ATTACHed DB."""
@@ -462,8 +476,8 @@ class TestProbeSchemaQualified:
         with disposable_engine(f"sqlite:///{primary}") as engine:
             with engine.connect() as conn:
                 conn.execute(sa.text(f"ATTACH DATABASE '{attached}' AS aux"))
-                verdict = probe_sqlite_integer_column(
-                    conn=conn, table="other_t", column="v", schema="aux"
+                verdict = await probe_sqlite_integer_column(
+                    client=_ConnectionClient(conn), table="other_t", column="v", schema="aux"
                 )
                 assert verdict is DataType.INT
 
@@ -474,12 +488,12 @@ class TestProbeSchemaQualified:
 
 
 class TestProbeRealPlusNonCoercibleText:
-    def test_real_plus_non_coercible_text_returns_text(self, conn) -> None:
+    async def test_real_plus_non_coercible_text_returns_text(self, conn) -> None:
         """The decision tree must inspect TEXT before returning DOUBLE on
         n_real > 0. A column with REAL plus non-coercible TEXT widens to
         TEXT, never DOUBLE — numeric aggregation over non-numeric strings
         would silently corrupt results."""
         conn.execute(sa.text('CREATE TABLE t (v INTEGER)'))
         _insert_typed(conn, "t", "v", [0.5, 0.7, "N/A"])
-        verdict = probe_sqlite_integer_column(conn=conn, table="t", column="v")
+        verdict = await probe_sqlite_integer_column(client=_ConnectionClient(conn), table="t", column="v")
         assert verdict is DataType.TEXT

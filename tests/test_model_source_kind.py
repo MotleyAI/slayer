@@ -2,28 +2,41 @@
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from unittest.mock import MagicMock
+from typing import Any, TypeVar
+from unittest.mock import MagicMock, patch
 
 import pytest
 import sqlalchemy as sa
 from pydantic import ValidationError
 
+from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.engine.ingestion import (
+from slayer.live_schema import ingestion
+from slayer.live_schema.ingestion import (
     _additive_merge_existing,
-    ingest_datasource,
     ingest_datasource_idempotent,
     introspect_table_to_model,
     list_ingestable_objects,
 )
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.migrations import CURRENT_VERSIONS, migrate
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._engine_helpers import disposable_engine
+_T = TypeVar("_T")
+
+
+async def _with_client(fn: Callable[..., Awaitable[_T]], /, *, datasource: DatasourceConfig, **kwargs: Any) -> _T:
+    client = SlayerSQLClient(datasource=datasource)
+    try:
+        return await fn(datasource=datasource, client=client, **kwargs)
+    finally:
+        await client.aclose()
+        client.close()
 
 
 @pytest.fixture
@@ -57,36 +70,45 @@ _TABLE_AND_VIEW = """
 class TestClassification:
     def test_table_and_view_are_classified(self, workspace: Path) -> None:
         _, ds = _ds(workspace, _TABLE_AND_VIEW)
-        by_name = {m.name: m for m in ingest_datasource(datasource=ds)}
+        by_name = {m.name: m for m in run_sync(_with_client(ingestion.ingest_datasource_async, datasource=ds))}
         assert by_name["orders"].source_kind == "table"
         assert by_name["v_orders"].source_kind == "view"
 
-    def test_materialized_view_is_classified(self) -> None:
+    async def test_materialized_view_is_classified(self) -> None:
         """no SQLite/DuckDB matview support, so this is mock-only."""
         insp = MagicMock(spec=sa.engine.Inspector)
         insp.get_table_names.return_value = []
         insp.get_view_names.return_value = []
         insp.get_materialized_view_names.return_value = ["mv_orders"]
 
-        objects = list_ingestable_objects(inspector=insp, schema=None)
+        client = SlayerSQLClient(datasource=DatasourceConfig(name="ds", type="sqlite", database=":memory:"))
+        try:
+            with patch("sqlalchemy.inspect", return_value=insp):
+                objects = await list_ingestable_objects(client=client, schema=None)
+        finally:
+            await client.aclose()
+            client.close()
         assert [(o.name, o.kind) for o in objects] == [
             ("mv_orders", "materialized_view")
         ]
 
-    def test_introspect_table_to_model_defaults_to_none(
+    async def test_introspect_table_to_model_defaults_to_none(
         self, workspace: Path
     ) -> None:
         """The dbt and OSI converters call this without a kind and must be unaffected."""
-        db_path, ds = _ds(workspace, _TABLE_AND_VIEW)
-        with disposable_engine(f"sqlite:///{db_path}") as engine:
-            model = introspect_table_to_model(
-                sa_engine=engine,
-                inspector=sa.inspect(engine),
+        _, ds = _ds(workspace, _TABLE_AND_VIEW)
+        client = SlayerSQLClient(datasource=ds)
+        try:
+            model = await introspect_table_to_model(
+                client=client,
                 table_name="orders",
-                schema=None,
+                ref=None,
                 data_source="ds",
             )
             assert model.source_kind is None
+        finally:
+            await client.aclose()
+            client.close()
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +227,7 @@ class TestSourceKindRefresh:
         )
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
         first = await storage.get_model("foo", data_source="ds")
         assert first is not None
         assert first.source_kind == "view"
@@ -219,7 +241,7 @@ class TestSourceKindRefresh:
                 """
             )
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
         second = await storage.get_model("foo", data_source="ds")
         assert second is not None
         assert second.source_kind == "table", (
@@ -237,7 +259,7 @@ class TestSourceKindRefresh:
             """,
         )
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
         first = await storage.get_model("foo", data_source="ds")
         assert first is not None
         assert first.source_kind == "table"
@@ -247,7 +269,7 @@ class TestSourceKindRefresh:
                 "DROP TABLE foo; CREATE VIEW foo AS SELECT id, amount FROM src;"
             )
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
         second = await storage.get_model("foo", data_source="ds")
         assert second is not None
         assert second.source_kind == "view"
@@ -262,14 +284,14 @@ class TestSourceKindRefresh:
             """,
         )
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
         with transaction(db_path) as conn:
             conn.executescript(
                 "DROP VIEW foo; CREATE TABLE foo (id INTEGER PRIMARY KEY, amount REAL);"
             )
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
         addition = next(a for a in result.additions if a.model_name == "foo")
         assert addition.kind_change == "view → table"
 
@@ -316,8 +338,8 @@ class TestSourceKindRefresh:
         """End-to-end: adding source_kind must not turn every re-ingest into a write."""
         _, ds = _ds(workspace, _TABLE_AND_VIEW)
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
+        result = await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
         for addition in result.additions:
             assert addition.created is False
             assert addition.new_columns == []

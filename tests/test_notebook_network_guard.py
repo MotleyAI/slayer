@@ -24,6 +24,8 @@ _URL = f"https://{_HOST}/npm/vega-datasets@2/data/seattle-weather.csv"
         f"HTTP Error: HTTP GET error on '{_URL}' (HTTP 503 Service Unavailable)",
         f"IO Error: Could not resolve host: {_HOST}",
         "curl: (22) The requested URL returned error: 403 install.duckdb.org",
+        f'HTTP Error: ETag on reading file "{_URL}" was initially W/"a" and now it returned W/"b", '
+        "this likely means the remote file has changed.",
     ],
 )
 def test_external_host_outage_is_transient(text):
@@ -55,6 +57,7 @@ def test_hostless_httpfs_transport_error_is_transient(text):
         "curl: (22) The requested URL returned error: 404 install.duckdb.org",
         # A transient status but no external host named — not a classifiable outage.
         "HTTP Error: HTTP GET error on 'https://example.internal/x' (HTTP 503)",
+        "IO Error: this likely means the remote file has changed (no external host named)",
     ],
 )
 def test_real_bugs_are_not_transient(text):

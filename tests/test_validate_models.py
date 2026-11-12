@@ -1,9 +1,9 @@
 """Tests for ``validate_models`` — read-only diff between persisted SlayerModels
-and a live database schema. See DEV-1356.
+and a live database schema.
 
 Two layers are tested here:
 
-* Pure functions in ``slayer.engine.schema_drift`` — exercise each diff /
+* Pure functions in ``slayer.live_schema.schema_drift`` — exercise each diff /
   cascade rule against synthetic ``LiveTable`` fixtures, no DB involved.
 * ``SlayerQueryEngine.validate_models()`` — end-to-end against a real SQLite
   database in a tempfile, verifying the orchestrator wires up live
@@ -38,21 +38,23 @@ from slayer.core.models import (
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import (
+from slayer.live_schema.schema_drift import (
     EditModelDelete,
     LiveTable,
     RemoveSpec,
     WholeModelDelete,
     _resolve_live_table,
     _sql_model_source_refs,
-    _strip_ident_quotes,
     compute_datasource_drops,
     data_type_bucket,
     diff_sql_model,
     diff_sql_table_model,
 )
+from slayer.sql.dialects import get_dialect
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
+
+POSTGRES = get_dialect("postgres")
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +91,6 @@ def _orders_model(
 def _live_orders(
     *,
     columns: dict[str, DataType] | None = None,
-    pk_columns: set[str] | None = None,
 ) -> LiveTable:
     return LiveTable(
         columns=columns
@@ -99,7 +100,6 @@ def _live_orders(
             "status": DataType.TEXT,
             "customer_id": DataType.DOUBLE,
         },
-        pk_columns=pk_columns or {"id"},
     )
 
 
@@ -110,6 +110,17 @@ def _entry_for(model_name: str, entries: list) -> object | None:
     return None
 
 
+def _delete_for(model_name: str, entries: list) -> object | None:
+    return next((e for e in entries if e.model_name == model_name
+                 and isinstance(e, (EditModelDelete, WholeModelDelete))), None)
+
+
+def _retype_for(entries: list, column: str) -> dict:
+    (finding,) = [d for e in entries if (d := e.model_dump(mode="json")).get("finding") == "retype"
+                  and d.get("column") == column]
+    return finding
+
+
 # ---------------------------------------------------------------------------
 # data_type_bucket
 # ---------------------------------------------------------------------------
@@ -117,7 +128,7 @@ def _entry_for(model_name: str, entries: list) -> object | None:
 
 class TestDataTypeBucket:
     def test_number_string_boolean_temporal(self) -> None:
-        # DEV-1361: DataType.DOUBLE → DOUBLE, DataType.TEXT → TEXT.
+        # DataType.DOUBLE → DOUBLE, DataType.TEXT → TEXT.
         assert data_type_bucket(DataType.DOUBLE) == "number"
         assert data_type_bucket(DataType.TEXT) == "string"
         assert data_type_bucket(DataType.BOOLEAN) == "boolean"
@@ -129,7 +140,7 @@ class TestDataTypeBucket:
         assert data_type_bucket(DataType.DOUBLE) != data_type_bucket(DataType.TEXT)
 
     def test_int_and_double_share_number_bucket(self) -> None:
-        # DEV-1361: critical invariance — drift detection must NOT flag a
+        # Critical invariance — drift detection must NOT flag a
         # persisted DOUBLE column against an INT live column (or vice versa)
         # even though they're now distinct enum members.
         assert data_type_bucket(DataType.INT) == "number"
@@ -182,7 +193,7 @@ class TestDiffSqlTableModel:
         assert any("missing" in r.reason.lower() or "not found" in r.reason.lower()
                    for r in entry.reasons)
 
-    def test_type_bucket_mismatch_drops_column(self) -> None:
+    def test_type_bucket_mismatch_keeps_column(self) -> None:
         # Persisted "amount" is NUMBER, live made it STRING.
         model = _orders_model()
         live = _live_orders(
@@ -196,12 +207,11 @@ class TestDiffSqlTableModel:
         entry, dropped = diff_sql_table_model(
             model=model, live_table=live, available_models_in_ds={"orders"}
         )
-        assert isinstance(entry, EditModelDelete)
-        assert "amount" in entry.remove.columns
-        assert dropped == {"amount"}
+        assert entry is None
+        assert dropped == set()
 
     def test_integer_vs_float_same_bucket(self) -> None:
-        # DEV-1361: INT and DOUBLE are now distinct enum members but share
+        # INT and DOUBLE are now distinct enum members but share
         # the ``"number"`` bucket so drift detection does not false-positive
         # when a persisted DOUBLE column is reported as INT by live
         # introspection (the v5 refinement step reconciles these without
@@ -233,7 +243,6 @@ class TestDiffSqlTableModel:
         # Live reports TIMESTAMP — same bucket as DATE.
         live = LiveTable(
             columns={"id": DataType.DOUBLE, "happened_at": DataType.TIMESTAMP},
-            pk_columns={"id"},
         )
         entry, _ = diff_sql_table_model(
             model=model, live_table=live, available_models_in_ds={"events"}
@@ -375,7 +384,7 @@ class TestDiffSqlModel:
         assert "source tables and referenced columns exist" in entry.reasons[0].reason
         assert dropped == {c.name for c in model.columns}
 
-    def test_trial_execute_bucket_mismatch_drops_column(self) -> None:
+    def test_trial_execute_bucket_mismatch_keeps_column(self) -> None:
         model = SlayerModel(
             name="archived_orders",
             sql="SELECT id, amount FROM orders",
@@ -387,9 +396,8 @@ class TestDiffSqlModel:
         )
         live = {"id": DataType.DOUBLE, "amount": DataType.TEXT}
         entry, dropped = diff_sql_model(model=model, live_columns=live)
-        assert isinstance(entry, EditModelDelete)
-        assert "amount" in entry.remove.columns
-        assert dropped == {"amount"}
+        assert entry is None
+        assert dropped == set()
 
     def test_extra_live_columns_are_ignored(self) -> None:
         model = SlayerModel(
@@ -407,6 +415,15 @@ class TestDiffSqlModel:
         assert entry is None
 
 
+def _refs(*, sql: str, dialect: str) -> "dict[str, set[str]] | None":
+    """``_sql_model_source_refs`` with each table rendered and each column named."""
+    refs = _sql_model_source_refs(sql=sql, dialect=dialect)
+    if refs is None:
+        return None
+    return {table.sql(dialect=dialect): {col.name for col in cols} for table, cols in refs.items()}
+
+
+
 class TestSqlModelSourceRefs:
     def test_aliases_attributed_and_ctes_excluded(self) -> None:
         sql = """
@@ -417,7 +434,7 @@ class TestSqlModelSourceRefs:
         FROM recent AS r
         JOIN analytics.stores AS s ON r.store_id = s.id
         """
-        refs = _sql_model_source_refs(sql=sql, dialect="postgres")
+        refs = _refs(sql=sql, dialect="postgres")
         assert refs == {
             "orders": {"id", "store_id", "ts"},
             "analytics.stores": {"name", "id"},
@@ -426,26 +443,26 @@ class TestSqlModelSourceRefs:
     def test_star_behind_derived_ref_returns_none(self) -> None:
         # ``*`` may hide the physical column behind ``src.amount``.
         sql = "WITH src AS (SELECT * FROM orders) SELECT src.amount FROM src"
-        assert _sql_model_source_refs(sql=sql, dialect="postgres") is None
+        assert _refs(sql=sql, dialect="postgres") is None
 
     def test_bare_columns_attributed_to_single_table(self) -> None:
-        refs = _sql_model_source_refs(
+        refs = _refs(
             sql="SELECT id, amount FROM orders", dialect="postgres"
         )
         assert refs == {"orders": {"id", "amount"}}
 
     def test_ambiguous_bare_column_returns_none(self) -> None:
         sql = "SELECT amount FROM orders AS o JOIN stores AS s ON o.sid = s.id"
-        assert _sql_model_source_refs(sql=sql, dialect="postgres") is None
+        assert _refs(sql=sql, dialect="postgres") is None
 
     def test_unparseable_sql_returns_none(self) -> None:
-        assert _sql_model_source_refs(sql="SELECT FROM FROM", dialect="postgres") is None
+        assert _refs(sql="SELECT FROM FROM", dialect="postgres") is None
 
     def test_using_join_keys_attributed_to_all_tables(self) -> None:
         # USING identifiers are not exp.Column nodes; a dropped join key must
         # still be probed on every joined table (Codex review on PR #340).
         sql = "SELECT o.amount FROM orders AS o JOIN stores AS s USING (store_id)"
-        refs = _sql_model_source_refs(sql=sql, dialect="postgres")
+        refs = _refs(sql=sql, dialect="postgres")
         assert refs == {
             "orders": {"amount", "store_id"},
             "stores": {"store_id"},
@@ -457,7 +474,7 @@ class TestSqlModelSourceRefs:
             "SELECT a.amount FROM orders AS a WHERE EXISTS "
             "(SELECT 1 FROM stores AS a WHERE a.region = 'US')"
         )
-        refs = _sql_model_source_refs(sql=sql, dialect="postgres")
+        refs = _refs(sql=sql, dialect="postgres")
         assert refs == {"orders": {"amount"}, "stores": {"region"}}
 
     def test_correlated_outer_ref_attributed(self) -> None:
@@ -465,7 +482,7 @@ class TestSqlModelSourceRefs:
             "SELECT o.amount FROM orders AS o WHERE EXISTS "
             "(SELECT 1 FROM stores AS s WHERE s.oid = o.id)"
         )
-        refs = _sql_model_source_refs(sql=sql, dialect="postgres")
+        refs = _refs(sql=sql, dialect="postgres")
         assert refs == {"orders": {"amount", "id"}, "stores": {"oid"}}
 
     def test_using_join_on_cte_with_star_returns_none(self) -> None:
@@ -474,17 +491,17 @@ class TestSqlModelSourceRefs:
             "WITH c AS (SELECT * FROM stores) "
             "SELECT o.amount FROM orders AS o JOIN c USING (store_id)"
         )
-        assert _sql_model_source_refs(sql=sql, dialect="postgres") is None
+        assert _refs(sql=sql, dialect="postgres") is None
 
     def test_union_bare_columns_attributed_per_branch(self) -> None:
         sql = "SELECT a FROM t1 UNION ALL SELECT b FROM t2"
-        refs = _sql_model_source_refs(sql=sql, dialect="postgres")
+        refs = _refs(sql=sql, dialect="postgres")
         assert refs == {"t1": {"a"}, "t2": {"b"}}
 
     def test_table_less_statement_returns_empty_refs(self) -> None:
         # {} (verifies vacuously — invalid_sql) is distinct from None
         # (cannot verify — schema drift).
-        refs = _sql_model_source_refs(
+        refs = _refs(
             sql="SELECT no_such_function(1)", dialect="postgres"
         )
         assert refs == {}
@@ -493,7 +510,7 @@ class TestSqlModelSourceRefs:
         # ``c`` is not an operand of the USING join, so it must not be
         # probed for ``k``.
         sql = "SELECT a.x FROM a JOIN b USING (k) JOIN c ON c.id = a.cid"
-        refs = _sql_model_source_refs(sql=sql, dialect="postgres")
+        refs = _refs(sql=sql, dialect="postgres")
         assert refs == {"a": {"x", "k", "cid"}, "b": {"k"}, "c": {"id"}}
 
 
@@ -541,9 +558,9 @@ class TestCascadeRules:
         """
         model = _orders_model(
             measures=[
-                ModelMeasure(formula="amount:sum", name="total_amount"),
+                ModelMeasure(formula="sum(amount)", name="total_amount"),
                 # transitive: refs total_amount which itself refs dropped 'amount'
-                ModelMeasure(formula="total_amount / *:count", name="aov"),
+                ModelMeasure(formula="total_amount / count(*)", name="aov"),
             ],
         )
         edit = EditModelDelete(
@@ -561,7 +578,7 @@ class TestCascadeRules:
         assert set(entry.remove.measures) >= {"total_amount", "aov"}
 
     def test_rule_2_funcstyle_joined_custom_agg_cascades(self) -> None:
-        """DEV-1500: a ``ModelMeasure.formula`` using funcstyle over a custom
+        """A ``ModelMeasure.formula`` using funcstyle over a custom
         aggregation defined on a JOINED model (``rolling_avg(customers.score)``
         where ``rolling_avg`` lives on ``customers``) must extract
         ``customers.score`` as a ref, so dropping that column cascades the
@@ -745,15 +762,15 @@ class TestCascadeRules:
             name="qb_orders_summary",
             data_source="ds",
             source_queries=[
-                SlayerQuery(
-                    name="stage_a",
-                    source_model="orders",
-                    measures=[{"formula": "amount:sum", "name": "total"}],
-                ),
-                SlayerQuery(
-                    source_model="stage_a",
-                    measures=[{"formula": "total:max", "name": "peak"}],
-                ),
+                SlayerQuery.model_validate({
+                    "name": "stage_a",
+                    "source_model": "orders",
+                    "measures": [{"formula": "sum(amount)", "name": "total"}],
+                }),
+                SlayerQuery.model_validate({
+                    "source_model": "stage_a",
+                    "measures": [{"formula": "max(total)", "name": "peak"}],
+                }),
             ],
         )
         # 'amount' on orders dropped — qb_orders_summary stage_a refs it
@@ -770,13 +787,13 @@ class TestCascadeRules:
         qb_entry = _entry_for("qb_orders_summary", out)
         assert isinstance(qb_entry, WholeModelDelete)
 
-    def test_rule_6_query_backed_stage_filter_with_colon_syntax_cascades(
+    def test_rule_6_query_backed_stage_filter_with_aggregation_cascades(
         self,
     ) -> None:
         """A query-backed model whose stage filter uses Mode B DSL constructs
-        (``revenue:sum > 100``, ``change(...) > 0``) must still trigger a
+        (``sum(revenue) > 100``, ``change(...) > 0``) must still trigger a
         cascade drop when the underlying column is dropped. Regression for
-        DEV-1378: stage filters were routed through the SQL-only ref
+        Stage filters were once routed through the SQL-only ref
         extractor and returned ``[]``, so drift cascades were missed.
         """
         orders = _orders_model()
@@ -784,13 +801,11 @@ class TestCascadeRules:
             name="qb_orders_filtered",
             data_source="ds",
             source_queries=[
-                SlayerQuery(
-                    source_model="orders",
-                    measures=[{"formula": "amount:sum", "name": "total"}],
-                    # DSL filter using colon-syntax aggregation — must be
-                    # parsed by the DSL parser so 'amount' surfaces as a ref.
-                    filters=["amount:sum > 100"],
-                ),
+                SlayerQuery.model_validate({
+                    "source_model": "orders",
+                    "measures": [{"formula": "sum(amount)", "name": "total"}],
+                    "filters": ["sum(amount) > 100"],
+                }),
             ],
         )
         edit = EditModelDelete(
@@ -817,10 +832,10 @@ class TestCascadeRules:
             name="qb_orders",
             data_source="ds",
             source_queries=[
-                SlayerQuery(
-                    source_model="orders",
-                    measures=[{"formula": "amount:sum", "name": "total"}],
-                ),
+                SlayerQuery.model_validate({
+                    "source_model": "orders",
+                    "measures": [{"formula": "sum(amount)", "name": "total"}],
+                }),
             ],
         )
         whole = WholeModelDelete(model_name="orders", data_source="ds")
@@ -844,7 +859,7 @@ class TestCascadeRules:
                 # don't trigger cascade, so this column survives.
                 Column(name="id_doubled", sql="id * 2", type=DataType.DOUBLE),
             ],
-            measures=[ModelMeasure(formula="id:count_distinct", name="unique_ids")],
+            measures=[ModelMeasure(formula="count_distinct(id)", name="unique_ids")],
         )
         edit = EditModelDelete(
             model_name="orders",
@@ -887,7 +902,7 @@ class TestCollapseRule:
 class TestCrossDatasourceBoundary:
     def test_cascade_does_not_cross_datasource(self) -> None:
         """A cross-DS reference (model in DS A referencing model in DS B) is
-        never followed by the cascade walker — DEV-1356 keeps everything
+        never followed by the cascade walker — drift keeps everything
         within the parent model's data_source.
         """
         # Model in ds_a references customers from ds_b — this is invalid
@@ -1101,10 +1116,8 @@ class TestValidateModelsEndToEnd:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1538: validate_models — SQLite affinity probe surfaces type drift
-# when persisted INT disagrees with the value-level probe verdict, and
-# the probe-derived column drops cascade to dependent measures/derived
-# columns through the existing fixed-point cascade machinery.
+# validate_models — the SQLite affinity probe reports a re-type finding when
+# persisted INT disagrees with the value-level probe verdict.
 # ---------------------------------------------------------------------------
 
 
@@ -1122,10 +1135,8 @@ def _create_sqlite_with_mixed_storage(
 
 
 class TestValidateModelsSqliteProbe:
-    """DEV-1538: validate_models SQLite branch — the per-column probe runs
-    against each persisted INT base column and emits drift entries when the
-    probe disagrees with the persisted type. Drift entries must feed the
-    cascade machinery, not just append final-form EditModelDelete."""
+    """validate_models on SQLite: the per-column probe runs against each persisted INT base column and
+    reports a re-type finding when it disagrees with the persisted type."""
 
     @pytest.fixture
     def workspace(self):
@@ -1167,7 +1178,7 @@ class TestValidateModelsSqliteProbe:
         )
         return SlayerQueryEngine(storage=storage), db_path
 
-    async def test_surfaces_probe_drift_when_storage_widens_to_double(
+    async def test_reports_a_retype_when_storage_widens_to_double(
         self, workspace: Path
     ) -> None:
         engine, _ = await self._setup_sensordata(
@@ -1181,23 +1192,12 @@ class TestValidateModelsSqliteProbe:
             ],
         )
         result = await engine.validate_models(data_source="ds")
-        entry = _entry_for("sensordata", result)
-        assert isinstance(entry, EditModelDelete)
-        assert "tempstabidx" in entry.remove.columns
-        # Reason must reference the affinity probe, the column, the source
-        # type INT, the verdict DOUBLE, and the suggested remediation
-        # (re-run slayer ingest). Tightening this guards against the
-        # message drifting to a generic 'column drifted' wording.
-        reasons = [r.reason for r in entry.reasons if r.target == "column:tempstabidx"]
-        assert reasons, f"missing reason for column:tempstabidx in {entry.reasons!r}"
-        msg = reasons[0].lower()
-        assert "affinity" in msg or "probe" in msg
-        assert "tempstabidx" in reasons[0]
-        assert "int" in msg
-        assert "double" in msg
-        assert "slayer ingest" in msg
+        assert _delete_for("sensordata", result) is None, result
+        finding = _retype_for(result, "tempstabidx")
+        assert (finding["stored_type"], finding["live_type"]) == ("INT", "DOUBLE"), finding
+        assert "slayer ingest" in finding["remedy"], finding
 
-    async def test_surfaces_probe_drift_when_storage_widens_to_text(
+    async def test_reports_a_retype_when_storage_widens_to_text(
         self, workspace: Path
     ) -> None:
         """Same shape as the DOUBLE drift but verdict TEXT — non-coercible
@@ -1213,13 +1213,10 @@ class TestValidateModelsSqliteProbe:
             ],
         )
         result = await engine.validate_models(data_source="ds")
-        entry = _entry_for("sensordata", result)
-        assert isinstance(entry, EditModelDelete)
-        assert "tempstabidx" in entry.remove.columns
-        reasons = [r.reason for r in entry.reasons if r.target == "column:tempstabidx"]
-        assert reasons
-        msg = reasons[0].lower()
-        assert "text" in msg
+        assert _delete_for("sensordata", result) is None, result
+        finding = _retype_for(result, "tempstabidx")
+        assert (finding["stored_type"], finding["live_type"]) == ("INT", "TEXT"), finding
+        assert "slayer ingest" in finding["remedy"], finding
 
     async def test_no_drift_when_probe_agrees(
         self, workspace: Path
@@ -1272,7 +1269,7 @@ class TestValidateModelsSqliteProbe:
         engine = SlayerQueryEngine(storage=storage)
 
         with patch(
-            "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
+            "slayer.database.sqlite_introspect.probe_sqlite_integer_column",
             side_effect=AssertionError("probe must not fire on non-SQLite"),
         ):
             result = await engine.validate_models(data_source="ds")
@@ -1296,7 +1293,7 @@ class TestValidateModelsSqliteProbe:
             ],
         )
         with patch(
-            "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
+            "slayer.database.sqlite_introspect.probe_sqlite_integer_column",
             return_value=None,
         ):
             result = await engine.validate_models(data_source="ds")
@@ -1306,12 +1303,9 @@ class TestValidateModelsSqliteProbe:
             entry.remove.columns if isinstance(entry, EditModelDelete) else []
         )
 
-    async def test_probe_drift_cascades_to_dependent_measure(
+    async def test_probe_retype_keeps_the_dependent_measure(
         self, workspace: Path
     ) -> None:
-        """Codex finding #4: probe-derived drops must feed the cascade
-        machinery. A ModelMeasure referencing the widened column is dropped
-        in the same validate pass."""
         engine, _ = await self._setup_sensordata(
             workspace,
             values=[1, 0.5, 0.7, 0.9],
@@ -1323,23 +1317,18 @@ class TestValidateModelsSqliteProbe:
             ],
             measures=[
                 ModelMeasure(
-                    formula="tempstabidx:sum",
+                    formula="sum(tempstabidx)",
                     name="stab_total",
                 ),
             ],
         )
         result = await engine.validate_models(data_source="ds")
-        entry = _entry_for("sensordata", result)
-        assert isinstance(entry, EditModelDelete)
-        assert "tempstabidx" in entry.remove.columns
-        # Cascade: the dependent measure is also dropped.
-        assert "stab_total" in entry.remove.measures
+        assert _delete_for("sensordata", result) is None, result
+        assert _retype_for(result, "tempstabidx")
 
-    async def test_probe_drift_cascades_to_derived_column(
+    async def test_probe_retype_keeps_the_derived_column(
         self, workspace: Path
     ) -> None:
-        """Cascade through a derived column whose sql references the
-        widened base column."""
         engine, _ = await self._setup_sensordata(
             workspace,
             values=[1, 0.5, 0.7, 0.9],
@@ -1352,28 +1341,7 @@ class TestValidateModelsSqliteProbe:
             ],
         )
         result = await engine.validate_models(data_source="ds")
-        entry = _entry_for("sensordata", result)
-        assert isinstance(entry, EditModelDelete)
-        # Both the base column and the derived column are dropped.
-        assert "tempstabidx" in entry.remove.columns
-        assert "doubled" in entry.remove.columns
-
-
-class TestStripIdentQuotes:
-    def test_bare_identifier_unchanged(self) -> None:
-        assert _strip_ident_quotes("Company") == "Company"
-
-    def test_double_quoted(self) -> None:
-        assert _strip_ident_quotes('"Company"') == "Company"
-
-    def test_escaped_inner_quote(self) -> None:
-        assert _strip_ident_quotes('"Comp""any"') == 'Comp"any'
-
-    def test_unbalanced_quotes_left_alone(self) -> None:
-        assert _strip_ident_quotes('"Company') == '"Company'
-
-    def test_surrounding_whitespace_stripped(self) -> None:
-        assert _strip_ident_quotes('  "Company"  ') == "Company"
+        assert _delete_for("sensordata", result) is None, result
 
 
 class TestResolveLiveTable:
@@ -1381,23 +1349,23 @@ class TestResolveLiveTable:
 
     @staticmethod
     def _live(name: str) -> LiveTable:
-        return LiveTable(columns={"id": DataType.DOUBLE}, pk_columns={"id"})
+        return LiveTable(columns={"id": DataType.DOUBLE})
 
     def test_bare_table_matches(self) -> None:
         live = self._live("orders")
         assert _resolve_live_table(
-            sql_table="orders", live_tables={"orders": live}
+            sql_table="orders", live_tables={"orders": live}, dialect=POSTGRES
         ) is live
 
     def test_schema_qualified_matches_the_qualified_key(self) -> None:
-        # DEV-1758 (Codex review): the live map is keyed by the qualified form
+        # The live map is keyed by the qualified form
         # (``_collect_live_tables``), and a qualified sql_table is NO LONGER
         # stripped to a bare same-named object — that masked a dropped
         # non-default table behind its default twin. It matches the qualified
         # key directly.
         live = self._live("orders")
         assert _resolve_live_table(
-            sql_table="public.orders", live_tables={"public.orders": live}
+            sql_table="public.orders", live_tables={"public.orders": live}, dialect=POSTGRES
         ) is live
 
     def test_schema_qualified_does_not_fall_back_to_a_bare_twin(self) -> None:
@@ -1405,29 +1373,29 @@ class TestResolveLiveTable:
         # key (a different, default-schema table).
         live = self._live("orders")
         assert _resolve_live_table(
-            sql_table="public.orders", live_tables={"orders": live}
+            sql_table="public.orders", live_tables={"orders": live}, dialect=POSTGRES
         ) is None
 
     def test_quoted_table_part_strips_quotes(self) -> None:
         live = self._live("Company")
         # prod."Company" resolves against the per-segment-unquoted qualified key.
         assert _resolve_live_table(
-            sql_table='prod."Company"', live_tables={"prod.Company": live}
+            sql_table='prod."Company"', live_tables={"prod.Company": live}, dialect=POSTGRES
         ) is live
 
     def test_both_parts_quoted(self) -> None:
         live = self._live("Company")
         assert _resolve_live_table(
-            sql_table='"prod"."Company"', live_tables={"prod.Company": live}
+            sql_table='"prod"."Company"', live_tables={"prod.Company": live}, dialect=POSTGRES
         ) is live
 
     def test_escaped_inner_quote_in_table(self) -> None:
         live = self._live('Comp"any')
         assert _resolve_live_table(
-            sql_table='prod."Comp""any"', live_tables={'prod.Comp"any': live}
+            sql_table='prod."Comp""any"', live_tables={'prod."Comp""any"': live}, dialect=POSTGRES
         ) is live
 
     def test_missing_returns_none(self) -> None:
         assert _resolve_live_table(
-            sql_table='prod."Missing"', live_tables={"orders": self._live("orders")}
+            sql_table='prod."Missing"', live_tables={"orders": self._live("orders")}, dialect=POSTGRES
         ) is None

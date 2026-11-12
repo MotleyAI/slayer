@@ -52,10 +52,10 @@ from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.dialects.tsql import TsqlDialect
 import pydantic
 
-_MEASURE = [{"formula": "amount:sum", "name": "rev"}]
+_MEASURE = [{"formula": "sum(amount)", "name": "rev"}]
 
 _MONTH = TimeDimension(
-    dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+    dimension="created_at", granularity=TimeGranularity.MONTH,
 )
 
 #: One query per render path that builds its own ORDER BY term. D4's claim is
@@ -72,29 +72,29 @@ _D4_SHAPES = {
         source_model="orders",
         dimensions=[ColumnRef(name="status")],
         measures=[
-            {"formula": "amount:sum", "name": "rev"},
-            {"formula": "customers.spend:sum", "name": "cs"},
+            {"formula": "sum(amount)", "name": "rev"},
+            {"formula": "sum(customers.spend)", "name": "cs"},
         ],
         order=[OrderItem(column=ColumnRef(name="cs"), direction="desc")],
     ),
-    "outer_composite": SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
-        measures=[{"formula": "customers.spend:sum + amount:sum", "name": "mix"}],
-        order=[OrderItem(column=ColumnRef(name="mix"), direction="desc")],
-    ),
-    "windowed": SlayerQuery(
-        source_model="orders",
-        time_dimensions=[_MONTH],
-        measures=[{"formula": "amount:sum(window='90d')", "name": "w"}],
-        order=[OrderItem(column=ColumnRef(name="w"), direction="desc")],
-    ),
-    "transform_chain": SlayerQuery(
-        source_model="orders",
-        time_dimensions=[_MONTH],
-        measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],
-        order=[OrderItem(column=ColumnRef(name="cs"), direction="asc")],
-    ),
+    "outer_composite": SlayerQuery.model_validate({
+        "source_model": "orders",
+        "dimensions": [ColumnRef(name="status")],
+        "measures": [{"formula": "sum(customers.spend) + sum(amount)", "name": "mix"}],
+        "order": [OrderItem(column=ColumnRef(name="mix"), direction="desc")],
+    }),
+    "windowed": SlayerQuery.model_validate({
+        "source_model": "orders",
+        "time_dimensions": [_MONTH],
+        "measures": [{"formula": "sum(amount, window='90d')", "name": "w"}],
+        "order": [OrderItem(column=ColumnRef(name="w"), direction="desc")],
+    }),
+    "transform_chain": SlayerQuery.model_validate({
+        "source_model": "orders",
+        "time_dimensions": [_MONTH],
+        "measures": [{"formula": "cumsum(sum(amount))", "name": "cs"}],
+        "order": [OrderItem(column=ColumnRef(name="cs"), direction="asc")],
+    }),
 }
 
 
@@ -176,8 +176,8 @@ class TestOrderTargetMatrix:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                {"formula": "amount:sum", "name": "rev"},
-                {"formula": "amount:sum", "name": "rev_again"},
+                {"formula": "sum(amount)", "name": "rev"},
+                {"formula": "sum(amount)", "name": "rev_again"},
             ],
             order=[OrderItem(column=ColumnRef(name="rev_again"), direction="desc")],
         ))
@@ -237,12 +237,12 @@ class TestOrderTargetMatrix:
         with pytest.raises(pydantic.ValidationError):
             ColumnRef(name="1")
 
-        sql = await _sql(SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[{"formula": "amount:sum", "name": "_1"}],
-            order=[OrderItem(column=ColumnRef(name="_1"), direction="asc")],
-        ))
+        sql = await _sql(SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": [ColumnRef(name="status")],
+            "measures": [{"formula": "sum(amount)", "name": "_1"}],
+            "order": [OrderItem(column=ColumnRef(name="_1"), direction="asc")],
+        }))
         for term in order_terms(sql):
             stripped = term.strip()
             assert not stripped[0].isdigit(), (
@@ -250,15 +250,10 @@ class TestOrderTargetMatrix:
             )
 
     async def test_transformed_measure_orders_at_the_chain_outer_wrap(self) -> None:
-        sql = await _sql(SlayerQuery(
-            source_model="orders",
-            time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+        sql = await _sql(SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [TimeDimension(
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
-            )],
-            measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],
-            order=[OrderItem(column=ColumnRef(name="cs"), direction="desc")],
-        ))
+            )], "measures": [{"formula": "cumsum(sum(amount))", "name": "cs"}], "order": [OrderItem(column=ColumnRef(name="cs"), direction="desc")]}))
         _assert_orders_by(sql, "orders.cs")
 
     async def test_cross_model_aggregate_orders_on_its_cte_column(self) -> None:
@@ -266,8 +261,8 @@ class TestOrderTargetMatrix:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                {"formula": "amount:sum", "name": "rev"},
-                {"formula": "customers.spend:sum", "name": "cs"},
+                {"formula": "sum(amount)", "name": "rev"},
+                {"formula": "sum(customers.spend)", "name": "cs"},
             ],
             order=[OrderItem(column=ColumnRef(name="cs"), direction="desc")],
         ))
@@ -281,23 +276,18 @@ class TestOrderTargetMatrix:
             source_model="orders",
             dimensions=[ColumnRef(name="name", model="customers.regions")],
             measures=[
-                {"formula": "amount:sum", "name": "rev"},
-                {"formula": "customers.spend:sum", "name": "cs"},
+                {"formula": "sum(amount)", "name": "rev"},
+                {"formula": "sum(customers.spend)", "name": "cs"},
             ],
             order=[OrderItem(column=ColumnRef(name="cs"), direction="desc")],
         ))
         _assert_order_reference_resolves(sql)
 
     async def test_windowed_measure_orders_on_its_cte_column(self) -> None:
-        sql = await _sql(SlayerQuery(
-            source_model="orders",
-            time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+        sql = await _sql(SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [TimeDimension(
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
-            )],
-            measures=[{"formula": "amount:sum(window='90d')", "name": "w"}],
-            order=[OrderItem(column=ColumnRef(name="w"), direction="desc")],
-        ))
+            )], "measures": [{"formula": "sum(amount, window='90d')", "name": "w"}], "order": [OrderItem(column=ColumnRef(name="w"), direction="desc")]}))
         _assert_orders_by(sql, "orders.w")
 
 
@@ -400,8 +390,8 @@ class TestNullOrdering:
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
                 measures=[
-                    {"formula": "amount:sum", "name": "rev"},
-                    {"formula": "customers.spend:sum", "name": "cs"},
+                    {"formula": "sum(amount)", "name": "rev"},
+                    {"formula": "sum(customers.spend)", "name": "cs"},
                 ],
                 order=[OrderItem(column=ColumnRef(name="cs"), direction="desc")],
             ),
@@ -415,15 +405,10 @@ class TestNullOrdering:
 
     async def test_tsql_transform_chain_has_no_case_when_emulation(self) -> None:
         sql = await _sql(
-            SlayerQuery(
-                source_model="orders",
-                time_dimensions=[TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+            SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [TimeDimension(
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
-                )],
-                measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],
-                order=[OrderItem(column=ColumnRef(name="cs"), direction="asc")],
-            ),
+                )], "measures": [{"formula": "cumsum(sum(amount))", "name": "cs"}], "order": [OrderItem(column=ColumnRef(name="cs"), direction="asc")]}),
             dialect="tsql",
         )
         assert "CASE" not in order_by_text(sql, dialect="tsql").upper()
@@ -463,8 +448,8 @@ class TestSingleResolver:
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
                 measures=[
-                    {"formula": "amount:sum", "name": "rev"},
-                    {"formula": "customers.spend:sum", "name": "cs"},
+                    {"formula": "sum(amount)", "name": "rev"},
+                    {"formula": "sum(customers.spend)", "name": "cs"},
                 ],
                 order=[OrderItem(column=ColumnRef(name="rev"), direction="desc")],
             )),

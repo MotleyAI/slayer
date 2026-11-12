@@ -1,4 +1,4 @@
-"""Model-render core shared by the ``inspect`` surfaces and the deprecated ``inspect_model`` tool.
+"""Model-render core shared by the ``inspect`` surfaces.
 
 Must NOT import ``slayer.mcp`` — ``mcp/server.py`` imports from here (circular).
 """
@@ -15,16 +15,17 @@ from sqlalchemy.exc import DatabaseError, OperationalError
 from slayer.core.enums import DataType
 from slayer.core.join_edges import edge_reference
 from slayer.core.join_walker import OrientedJoin, canonical_token, neighbors
-from slayer.core.models import Column, SlayerModel, is_identifier
+from slayer.core.models import Column, SlayerModel, column_type_text, is_identifier
 from slayer.core.query import (
     SlayerQuery,
     extract_model_variables,
+    extension_variable_refs,
     extract_placeholder_names,
 )
-from slayer.engine.ingestion import _friendly_db_error
+from slayer.live_schema.ingestion import _friendly_db_error
 from slayer.engine.profiling import ensure_samples_fresh
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.search.render import compact_description_from_learning
+from slayer.database.client import ResultColumnType
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
 
@@ -157,7 +158,7 @@ def _render_inspect_footer(
             lines.append(f"> Names-only: {', '.join(names_only)}.")
         if omitted:
             lines.append(f"> Omitted: {', '.join(omitted)}.")
-        lines.append("> Re-call inspect_model with `sections=[...]` to fetch.")
+        lines.append("> Re-call inspect with `sections=[...]` to fetch.")
     return "\n".join(lines) if lines else None
 
 
@@ -193,9 +194,9 @@ def _markdown_table(rows: list[dict[str, Any]], columns: list[str]) -> str:
 
 
 def _render_column_type(column: Column) -> str:
-    """``type`` cell; opaque columns get their raw DB type and a not-queryable marker."""
+    """``type`` cell; opaque columns get their raw DB type and a not-queryable marker, a list its operations."""
     if not column.type.is_opaque:
-        return str(column.type)
+        return column_type_text(column)
     detail = column.db_type or "unrecognized DB type"
     return f"{column.type} ({detail}; not queryable)"
 
@@ -222,7 +223,7 @@ def _choose_sample_dims(
 def _choose_sample_agg(
     column: Column,
     *,
-    measure_types: dict[str, str],
+    measure_types: dict[str, ResultColumnType],
 ) -> str | None:
     """Pick a sample aggregation for ``column``, or ``None`` to skip it.
 
@@ -231,6 +232,8 @@ def _choose_sample_agg(
     """
     if column.type.is_opaque:
         return None
+    if column.type is DataType.ARRAY:
+        return "count"
     allowed = column.allowed_aggregations
     if allowed is not None and "avg" not in allowed:
         if not allowed:
@@ -238,8 +241,7 @@ def _choose_sample_agg(
         safe = next((a for a in allowed if a in _SAFE_SAMPLE_AGGS), None)
         return safe if safe else allowed[0]
     inferred = measure_types.get(column.name)
-    inferred_norm = inferred.strip().lower() if isinstance(inferred, str) else None
-    if inferred_norm and inferred_norm != "number":
+    if inferred is not None and inferred.type not in (DataType.INT, DataType.DOUBLE):
         return "count_distinct"
     if column.type not in (DataType.INT, DataType.DOUBLE):
         return "count_distinct"
@@ -249,7 +251,7 @@ def _choose_sample_agg(
 def _build_sample_query_args(
     model: SlayerModel,
     num_rows: int,
-    measure_types: dict[str, str] | None = None,
+    measure_types: dict[str, ResultColumnType] | None = None,
 ) -> dict[str, Any]:
     """Sample-data query: ``count(*)`` plus one aggregation per visible ungrouped non-identifier column."""
     measure_types = measure_types or {}
@@ -323,7 +325,7 @@ def _build_backing_query_info(model: SlayerModel) -> dict | None:
     # Required = no default in model.query_variables nor in the stage's own variables.
     defaulted: set = set(model.query_variables.keys())
     for q in model.source_queries:
-        all_placeholders |= extract_placeholder_names(q)
+        all_placeholders |= extract_placeholder_names(q) | extension_variable_refs(q)[0]
         if q.variables:
             defaulted |= set(q.variables.keys())
         stage_dicts.append(q.model_dump(mode="json", exclude_none=True))
@@ -361,23 +363,27 @@ def _render_stage_field_list(key: str, val: list) -> str:
 
 
 def _render_source_model(src: Any) -> str | None:
-    """Render a stage's ``source_model`` (str or ModelExtension dict)."""
+    """Render a stage's ``source_model`` (a name or an inline model dict)."""
     if isinstance(src, str):
         return f"- source_model: `{src}`"
-    if isinstance(src, dict):
-        sn = src.get("source_name") or src.get("name")
-        if sn:
-            return f"- source_model: `{sn}` (extension)"
+    if isinstance(src, dict) and src.get("name"):
+        return f"- source_model: `{src['name']}` (inline model)"
     return None
+
+
+def _render_extensions(extensions: Any) -> str | None:
+    """Render a stage's ``extensions`` as the models they extend."""
+    names = [e["source_name"] for e in extensions or [] if isinstance(e, dict) and e.get("source_name")]
+    return f"- extensions: {', '.join(f'`{n}`' for n in names)}" if names else None
 
 
 def _render_stage(i: int, stage: dict, total: int) -> list[str]:
     """Render one stage's markdown lines."""
     title = stage.get("name") or ("final" if i == total else f"stage {i}")
     out: list[str] = [f"\n**{i}. {title}**"]
-    src_line = _render_source_model(stage.get("source_model"))
-    if src_line:
-        out.append(src_line)
+    for line in (_render_source_model(stage.get("source_model")), _render_extensions(stage.get("extensions"))):
+        if line:
+            out.append(line)
     for key in ("dimensions", "time_dimensions", "measures", "filters"):
         val = stage.get(key)
         if not val:
@@ -522,7 +528,7 @@ async def _oriented_hops(
     return neighbors(model=model, models_by_name={**{m.name: m for m in peers}, model.name: model})
 
 
-async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of the inspect_model tool body; the section-gating + cache-miss + dual markdown/json render is intentionally a single linear pass
+async def render_model_inspection(  # NOSONAR(S3776) — the section-gating + cache-miss + dual markdown/json render is intentionally a single linear pass
     *,
     model: SlayerModel,
     storage: StorageBackend,
@@ -532,7 +538,6 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
     format: str = "markdown",
     sections: list[str] | None = None,
     descriptions_max_chars: int | None = None,
-    compact: bool = True,
 ) -> str:
     """Render a complete-yet-compact view of an already-resolved model.
 
@@ -541,7 +546,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
     fmt = format.lower().strip()
     if fmt not in ("markdown", "json"):
         raise ValueError(
-            f"Invalid format '{format}' for inspect_model. Must be 'markdown' or 'json'."
+            f"Invalid format '{format}'. Must be 'markdown' or 'json'."
         )
     failures = DocumentLoadFailures()
     if descriptions_max_chars is not None and descriptions_max_chars < 0:
@@ -611,9 +616,9 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
         }
 
     # Informs the sample query's avg vs count_distinct choice.
-    measure_types: dict[str, str] = {}
+    measure_types: dict[str, ResultColumnType] = {}
     if engine is not None and "samples" in included_set:
-        measure_types = await engine.get_column_types(
+        measure_types = await engine.get_result_column_types(
             model_name=model.name,
             data_source=model.data_source or None,
         )
@@ -821,16 +826,8 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
             for memory in relevant_learnings:
                 matched = sorted(set(wanted) & set(memory.entities))
                 matched_md = ", ".join(f"`{e}`" for e in matched)
-                if compact:
-                    body = (
-                        memory.description
-                        if memory.description
-                        else compact_description_from_learning(memory.learning)
-                    )
-                else:
-                    body = memory.learning
                 lines.append(
-                    f"- **M{memory.id}** ({matched_md}): {body}"
+                    f"- **M{memory.id}** ({matched_md}): {memory.learning}"
                 )
             out_sections.append("\n".join(lines))
 
@@ -876,6 +873,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 col_payloads.append({
                     "name": c.name,
                     "type": str(c.type),
+                    **({"element_type": str(c.element_type)} if c.element_type is not None else {}),
                     # Opaque columns only (see _render_column_type).
                     **(
                         {"db_type": c.db_type, "queryable": False}
@@ -962,34 +960,16 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 payload["sample_sql"] = sample_sql
 
         if "learnings" in included_set and relevant_learnings:
-            if compact:
-                payload["learnings"] = [
-                    {
-                        "id": memory.id,
-                        "description": (
-                            memory.description
-                            if memory.description
-                            else compact_description_from_learning(
-                                memory.learning,
-                            )
-                        ),
-                        "matched_entities": sorted(
-                            set(wanted) & set(memory.entities)
-                        ),
-                    }
-                    for memory in relevant_learnings
-                ]
-            else:
-                payload["learnings"] = [
-                    {
-                        "id": memory.id,
-                        "learning": memory.learning,
-                        "matched_entities": sorted(
-                            set(wanted) & set(memory.entities)
-                        ),
-                    }
-                    for memory in relevant_learnings
-                ]
+            payload["learnings"] = [
+                {
+                    "id": memory.id,
+                    "learning": memory.learning,
+                    "matched_entities": sorted(
+                        set(wanted) & set(memory.entities)
+                    ),
+                }
+                for memory in relevant_learnings
+            ]
 
         if saved_queries:
             payload["saved_queries"] = saved_queries

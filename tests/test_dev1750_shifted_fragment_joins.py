@@ -20,7 +20,7 @@ import pytest
 from slayer.core.keys import AggregateKey, ColumnKey
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
 
@@ -50,7 +50,7 @@ class TestShiftedCteFragmentDefaultParam:
 
     async def test_shifted_cte_joins_the_fragment_hops(self) -> None:
         sql = await gen(_q(measures=[
-            ModelMeasure(formula="time_shift(amount:wscaled_sum, -1)", name="prev"),
+            ModelMeasure(formula="time_shift(wscaled_sum(amount), -1)", name="prev"),
         ]))
         # The shift reads the crossing producer; the fragment's two hops + the
         # qualified weight fragment + the host ``amount`` operand all live there.
@@ -65,11 +65,11 @@ class TestShiftedCteFragmentDefaultParam:
         """The shifted re-aggregation belongs to the shifted CTE, not the host
         ``base`` — a leak there would double-join ``regions`` at host grain."""
         sql = await gen(_q(measures=[
-            ModelMeasure(formula="amount:sum", name="s"),
-            ModelMeasure(formula="time_shift(amount:wscaled_sum, -1)", name="prev"),
+            ModelMeasure(formula="sum(amount)", name="s"),
+            ModelMeasure(formula="time_shift(wscaled_sum(amount), -1)", name="prev"),
         ]))
         base = base_cte_body(sql)
-        # The local sibling ``amount:sum`` lives in the base; the crossing
+        # The local sibling ``sum(amount)`` lives in the base; the crossing
         # wscaled re-aggregation does not (it is isolated + shifted elsewhere).
         assert "SUM(orders.amount)" in base, base
         assert "customers__regions.weight" not in base, base
@@ -83,7 +83,7 @@ class TestShiftedCteFragmentUserKwarg:
     async def test_user_string_kwarg_crossing_join_registers(self) -> None:
         sql = await gen(_q(measures=[
             ModelMeasure(
-                formula="time_shift(amount:wscaled_sum(w='customers.regions.weight'), -1)",
+                formula="time_shift(wscaled_sum(amount, w='customers.regions.weight'), -1)",
                 name="prev",
             ),
         ]))
@@ -110,11 +110,11 @@ class TestFragmentBindingUnit:
         return dict(key.kwargs)
 
     def test_non_overridden_default_is_bound(self) -> None:
-        assert self._kwargs("amount:wscaled_sum") == {
+        assert self._kwargs("wscaled_sum(amount)") == {
             "w": ColumnKey(path=("customers", "regions"), leaf="weight")}
 
     def test_overridden_default_uses_the_override_not_the_default(self) -> None:
-        assert self._kwargs("amount:wscaled_sum(w='customers.region_id')") == {
+        assert self._kwargs("wscaled_sum(amount, w='customers.region_id')") == {
             "w": ColumnKey(path=("customers",), leaf="region_id")}
 
 
@@ -134,9 +134,9 @@ class TestShiftedCtePositionalArgRegistration:
     @pytest.mark.parametrize("agg", ["last", "first"])
     async def test_first_last_crossing_time_arg_no_silent_leak(self, agg: str) -> None:
         q = _q(measures=[
-            ModelMeasure(formula="customers.spend:sum", name="cm"),
+            ModelMeasure(formula="sum(customers.spend)", name="cm"),
             ModelMeasure(
-                formula=f"time_shift(amount:{agg}(customers.signup_at), -1)",
+                formula=f"time_shift({agg}(amount, customers.signup_at), -1)",
                 name="prev",
             ),
         ])
@@ -163,14 +163,14 @@ class TestCrossModelHiddenAliasReservation:
     fresh allocator (``test_dev1713_naming``)."""
 
     async def test_hidden_alias_bumped_off_user_column(self) -> None:
-        # ``customers.spend:sum`` forces the cross-model transform chain; the
+        # ``sum(customers.spend)`` forces the cross-model transform chain; the
         # arithmetic-wrapped ``time_shift`` mints a hidden ``_time_shift_inner``
         # slot that would collide with the like-named user measure.
         sql = await gen(_q(measures=[
-            ModelMeasure(formula="customers.spend:sum", name="cm"),
-            ModelMeasure(formula="amount:sum", name="_time_shift_inner"),
+            ModelMeasure(formula="sum(customers.spend)", name="cm"),
+            ModelMeasure(formula="sum(amount)", name="_time_shift_inner"),
             ModelMeasure(
-                formula="amount:sum - time_shift(amount:sum, -1)", name="growth",
+                formula="sum(amount) - time_shift(sum(amount), -1)", name="growth",
             ),
         ]))
         # The user measure keeps its own key (closing quote pins the exact

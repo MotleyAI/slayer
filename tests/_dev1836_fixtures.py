@@ -17,7 +17,7 @@ Join-arity design (the point of this chain)
 So, for an aggregate rooted at ``customers``: ``tier`` is zero-hop (exact),
 ``regions.name`` is provably safe (exact), ``segments.label`` is unproven
 (broadcast), and every ``orders``-level dimension/filter crosses the inverted
-1:N orientation (broadcast / dropped filter). ``customers.regions.pop:sum``
+1:N orientation (broadcast / dropped filter). ``sum(customers.regions.pop)``
 roots at ``regions``: every hop away from it is an inverted fan-out
 orientation, so every query dimension broadcasts. Unsafe-input probes:
 ``customers.seg_label`` (Mode-A derived over the unproven hop) and
@@ -173,14 +173,14 @@ def q(**kw) -> SlayerQuery:
 
 def month_td(column: str = "ordered_at") -> List[TimeDimension]:
     return [TimeDimension(
-        dimension=ColumnRef(name=column),
+        dimension=column,
         granularity=TimeGranularity.MONTH,
     )]
 
 
 #: Cross-model aggregate source inside a computed dimension (per-tier spend band).
 SPEND_BAND = (
-    "CASE WHEN customers.spend:sum(partition_by=customers.tier) > 100 "
+    "CASE WHEN sum(customers.spend, partition_by=customers.tier) > 100 "
     "THEN 'hi' ELSE 'lo' END"
 )
 

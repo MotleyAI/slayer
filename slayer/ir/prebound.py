@@ -29,14 +29,40 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from slayer.core.join_walker import resolved_terminal
 from slayer.core.keys import TimeTruncKey
 from slayer.core.models import SlayerModel
-from slayer.ir.bound import BoundFilter, DeclaredMeasure, GranularityConflict, OrderSpec
+from slayer.ir.bound import BoundFilter, DeclaredMeasure, GranularityConflict, OrderSpec, WholeListRead
 
 __all__ = [
+    "ModePolicy",
     "PreboundQuery",
     "StrictQueryCarrier",
     "partition_declared_measures",
     "walk_key_path",
 ]
+
+ToManyHandling = Literal["broadcast", "associate", "error"]
+
+
+class ModePolicy(BaseModel):
+    """The resolved ``to_many_handling``: how an unattributable dimension resolves."""
+
+    model_config = ConfigDict(frozen=True)
+
+    mode: ToManyHandling = "associate"
+    # The default: an association-ineligible aggregate broadcasts instead of raising.
+    fallback: bool = True
+
+    @classmethod
+    def resolve(cls, requested: Optional[ToManyHandling]) -> "ModePolicy":
+        """The one reader of the raw field: omitted associates with the broadcast fallback."""
+        return cls() if requested is None else cls(mode=requested, fallback=False)
+
+    @property
+    def associates(self) -> bool:
+        return self.mode == "associate"
+
+    @property
+    def refuses(self) -> bool:
+        return self.mode == "error"
 
 
 def partition_declared_measures(
@@ -88,8 +114,9 @@ class PreboundQuery(BaseModel):
     distinct_dimension_values: bool = True
     # How aggregates resolve query dimensions unattributable from their root;
     # threaded onto nested producer prebounds so every plan resolves alike.
-    to_many_handling: Literal["broadcast", "associate", "error"] = "broadcast"
+    mode_policy: ModePolicy = ModePolicy()
     granularity_conflicts: List[GranularityConflict] = Field(default_factory=list)
+    whole_list_reads: List[WholeListRead] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _filter_texts_are_parallel(self) -> "PreboundQuery":

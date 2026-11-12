@@ -162,7 +162,7 @@ class TestJoinedDimensionDottedKeys:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="customers.rev_x2")],
-            measures=[ModelMeasure(formula="*:count", name="n")],
+            measures=[ModelMeasure(formula="count(*)", name="n")],
         )
         resp = await engine.execute(query)
         assert "orders.customers.rev_x2" in resp.columns, resp.columns
@@ -177,7 +177,7 @@ class TestJoinedDimensionDottedKeys:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="customers.regions.name")],
-            measures=[ModelMeasure(formula="*:count", name="n")],
+            measures=[ModelMeasure(formula="count(*)", name="n")],
         )
         resp = await engine.execute(query)
         assert "orders.customers.regions.name" in resp.columns, resp.columns
@@ -190,7 +190,7 @@ class TestJoinedDimensionDottedKeys:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="customers.region_id")],
-            measures=[ModelMeasure(formula="*:count", name="n")],
+            measures=[ModelMeasure(formula="count(*)", name="n")],
         )
         resp = await engine.execute(query)
         assert "orders.customers.region_id" in resp.columns, resp.columns
@@ -223,7 +223,7 @@ class TestJoinedDimensionDottedKeys:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="customers.region_id")],
-            measures=[ModelMeasure(formula="customers.revenue:sum")],
+            measures=[ModelMeasure(formula="sum(customers.revenue)")],
         )
         resp = await engine.execute(query)
         assert "orders.customers.revenue_sum" in resp.columns, resp.columns
@@ -235,7 +235,7 @@ class TestJoinedDimensionDottedKeys:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="customers.regions.name")],
-            measures=[ModelMeasure(formula="customers.revenue:sum")],
+            measures=[ModelMeasure(formula="sum(customers.revenue)")],
             order=[OrderItem(column=ColumnRef(name="customers.regions.name"),
                              direction="asc")],
         )
@@ -250,11 +250,11 @@ class TestJoinedDimensionDottedKeys:
             source_model="orders",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="customers.signup_at"),
+                    dimension="customers.signup_at",
                     granularity=TimeGranularity.MONTH,
                 )
             ],
-            measures=[ModelMeasure(formula="*:count", name="n")],
+            measures=[ModelMeasure(formula="count(*)", name="n")],
         )
         resp = await engine.execute(query)
         assert "orders.customers.signup_at" in resp.columns, resp.columns
@@ -278,8 +278,8 @@ class TestJoinedDimensionDottedKeys:
             source_model="orders",
             dimensions=[ColumnRef(name="customers.rev_x2")],  # labeled -> surfaces
             measures=[
-                ModelMeasure(formula="amount:sum"),
-                ModelMeasure(formula="*:count", name="n"),
+                ModelMeasure(formula="sum(amount)"),
+                ModelMeasure(formula="count(*)", name="n"),
             ],
         )
         resp = await engine.execute(query, dry_run=True)
@@ -328,13 +328,13 @@ class TestJoinedDimensionDottedKeys:
                 ],
                 time_dimensions=[
                     TimeDimension(                            # joined TimeTruncKey
-                        dimension=ColumnRef(name="customers.signup_at"),
+                        dimension="customers.signup_at",
                         granularity=TimeGranularity.MONTH,
                     )
                 ],
                 measures=[
-                    ModelMeasure(formula="amount:sum"),        # local aggregate
-                    ModelMeasure(formula="*:count", name="n"),  # star-count
+                    ModelMeasure(formula="sum(amount)"),        # local aggregate
+                    ModelMeasure(formula="count(*)", name="n"),  # star-count
                 ],
             ),
             {
@@ -355,14 +355,14 @@ class TestJoinedDimensionDottedKeys:
                 ],
                 time_dimensions=[
                     TimeDimension(                            # joined TimeTruncKey
-                        dimension=ColumnRef(name="customers.signup_at"),
+                        dimension="customers.signup_at",
                         granularity=TimeGranularity.MONTH,
                     )
                 ],
                 measures=[
-                    ModelMeasure(formula="amount:sum"),          # local aggregate
-                    ModelMeasure(formula="customers.revenue:sum"),  # cross-model aggregate
-                    ModelMeasure(formula="*:count", name="n"),   # star-count
+                    ModelMeasure(formula="sum(amount)"),          # local aggregate
+                    ModelMeasure(formula="sum(customers.revenue)"),  # cross-model aggregate
+                    ModelMeasure(formula="count(*)", name="n"),   # star-count
                 ],
             ),
             {
@@ -382,9 +382,9 @@ class TestJoinedDimensionDottedKeys:
             source_model="orders",
             dimensions=[ColumnRef(name="customers.regions.name")],
             measures=[
-                ModelMeasure(formula="amount:sum"),
-                ModelMeasure(formula="*:count"),
-                ModelMeasure(formula="amount:sum", name="my_total"),
+                ModelMeasure(formula="sum(amount)"),
+                ModelMeasure(formula="count(*)"),
+                ModelMeasure(formula="sum(amount)", name="my_total"),
             ],
         )
         resp = await engine.execute(query, dry_run=True)
@@ -418,12 +418,12 @@ class TestMultiStageNaming:
             name="stage1",
             source_model="orders",
             dimensions=[ColumnRef(name="customers.region_id")],
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
         )
         root = SlayerQuery(
             source_model="stage1",
             dimensions=[ColumnRef(name="customers__region_id")],
-            measures=[ModelMeasure(formula="amount_sum:max", name="peak")],
+            measures=[ModelMeasure(formula="max(amount_sum)", name="peak")],
         )
         sql = await _new_sql(storage=storage, stages=[stage1, root])
         # The inner stage CTE carries the FLAT column name.
@@ -446,18 +446,18 @@ class TestMultiStageNaming:
             name="s1",
             source_model="orders",
             dimensions=[ColumnRef(name="customers.rev_x2")],  # inner: derived join
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
         )
         s2 = SlayerQuery(
             name="s2",
             source_model="s1",
             dimensions=[ColumnRef(name="customers__rev_x2")],  # consumes flat
-            measures=[ModelMeasure(formula="amount_sum:max", name="peak")],
+            measures=[ModelMeasure(formula="max(amount_sum)", name="peak")],
         )
         root = SlayerQuery(
             source_model="s2",
             dimensions=[ColumnRef(name="customers__rev_x2")],  # re-exports flat
-            measures=[ModelMeasure(formula="peak:min", name="floor")],
+            measures=[ModelMeasure(formula="min(peak)", name="floor")],
         )
         sql = await _new_sql(storage=engine.storage, stages=[s1, s2, root])
         # The inner stage CTE binds the joined derived dim under the FLAT name.
@@ -474,7 +474,7 @@ class TestMultiStageNaming:
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="customers.rev_x2")],
-                measures=[ModelMeasure(formula="amount:sum")],
+                measures=[ModelMeasure(formula="sum(amount)")],
             )
         )
         assert "orders.customers.rev_x2" in single.columns, single.columns
@@ -522,7 +522,7 @@ def _orders_named_model(measures=None) -> SlayerModel:
 class TestBareNamedMeasureResultKey:
     async def test_bare_named_measure_projects_under_name(self) -> None:
         model = _orders_named_model(
-            measures=[ModelMeasure(name="rev_total", formula="revenue:sum")]
+            measures=[ModelMeasure(name="rev_total", formula="sum(revenue)")]
         )
         query = SlayerQuery(source_model="orders", measures=["rev_total"])
         sql = await _engine_generate(query=query, model=model)
@@ -534,7 +534,7 @@ class TestBareNamedMeasureResultKey:
         """Guard (Codex F4): an explicit ``name`` on the query measure wins
         over the saved measure's own name."""
         model = _orders_named_model(
-            measures=[ModelMeasure(name="rev_total", formula="revenue:sum")]
+            measures=[ModelMeasure(name="rev_total", formula="sum(revenue)")]
         )
         query = SlayerQuery(
             source_model="orders",
@@ -549,7 +549,7 @@ class TestBareNamedMeasureResultKey:
         """The DEV-1443 shape: ORDER BY the bare measure name resolves to the
         emitted alias even with a dimension present."""
         model = _orders_named_model(
-            measures=[ModelMeasure(name="companies", formula="revenue:count_distinct")]
+            measures=[ModelMeasure(name="companies", formula="count_distinct(revenue)")]
         )
         query = SlayerQuery(
             source_model="orders",
@@ -563,13 +563,12 @@ class TestBareNamedMeasureResultKey:
 
     async def test_self_qualified_saved_measure_ref_matches_bare(self) -> None:
         """Codex F4 (qualified ref): a SELF-qualified saved-measure reference
-        (``orders.rev_total`` on source model ``orders``) is normalized to the
-        bare form by ``SlayerQuery.strip_source_model_prefix`` before planning,
-        so it preserves the measure NAME exactly like the bare reference — the
+        (``orders.rev_total`` on source model ``orders``) resolves at binding
+        as the bare form, so it preserves the measure NAME exactly like the bare reference — the
         two are equivalent, not divergent. Pinned so the equivalence is
         explicit."""
         model = _orders_named_model(
-            measures=[ModelMeasure(name="rev_total", formula="revenue:sum")]
+            measures=[ModelMeasure(name="rev_total", formula="sum(revenue)")]
         )
         query = SlayerQuery(
             source_model="orders",
@@ -589,7 +588,7 @@ class TestBareNamedMeasureResultKey:
         # Build the colliding measure outside the raises block so only the
         # model-construction call can throw (Sonar S5778 — one throwing
         # invocation per exception assertion).
-        colliding = ModelMeasure(name="status", formula="revenue:sum")
+        colliding = ModelMeasure(name="status", formula="sum(revenue)")
         with pytest.raises(ValueError, match="name collision"):
             _orders_named_model(measures=[colliding])
 
@@ -621,21 +620,21 @@ class TestTimeShiftCteDecollision:
             source_model="orders",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 )
             ],
             measures=[
                 ModelMeasure(
-                    formula="revenue:sum - time_shift(revenue:sum, -1, 'month')",
+                    formula="sum(revenue) - time_shift(sum(revenue), -1, 'month')",
                     name="g1",
                 ),
                 ModelMeasure(
-                    formula="revenue:sum - time_shift(revenue:sum, -2, 'month')",
+                    formula="sum(revenue) - time_shift(sum(revenue), -2, 'month')",
                     name="g2",
                 ),
                 ModelMeasure(
-                    formula="revenue:sum - time_shift(revenue:sum, -3, 'month')",
+                    formula="sum(revenue) - time_shift(sum(revenue), -3, 'month')",
                     name="g3",
                 ),
             ],
@@ -674,14 +673,14 @@ class TestTimeShiftCteDecollision:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
                 # A user measure whose name collides with the hidden placeholder.
-                ModelMeasure(formula="revenue:sum", name="_time_shift_inner"),
+                ModelMeasure(formula="sum(revenue)", name="_time_shift_inner"),
                 ModelMeasure(
-                    formula="revenue:sum - time_shift(revenue:sum, -1, 'month')",
+                    formula="sum(revenue) - time_shift(sum(revenue), -1, 'month')",
                     name="growth",
                 ),
             ],
@@ -715,13 +714,13 @@ class TestTimeShiftCteDecollision:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
-                ModelMeasure(formula="consecutive_periods(revenue:sum > 0) + 1",
+                ModelMeasure(formula="consecutive_periods(sum(revenue) > 0) + 1",
                              name="rev_streak"),
-                ModelMeasure(formula="consecutive_periods(quantity:sum > 0) + 1",
+                ModelMeasure(formula="consecutive_periods(sum(quantity) > 0) + 1",
                              name="qty_streak"),
             ],
         )

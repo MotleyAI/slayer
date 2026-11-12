@@ -1,7 +1,7 @@
 """End-to-end auto-ingestion test against the Jaffle Shop DuckDB.
 
-This is the integration test called out in S4 (issue #48): generate the
-Jaffle Shop demo into a temp DuckDB, call ``ingest_datasource``, and assert
+Generate the Jaffle Shop demo into a temp DuckDB, call
+``ingest_datasource_async``, and assert
 the resulting models conform to the v2 unified-columns shape (one ``Column``
 list per model, ``measures`` library left empty by ingestion, no dotted
 column names, joins resolved to direct FK pairs only). Also round-trips the
@@ -19,6 +19,7 @@ import yaml
 
 import duckdb
 
+from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormatType
 from slayer.core.models import DatasourceConfig, SlayerModel
@@ -27,20 +28,15 @@ from slayer.demo.jaffle_shop import (
     generate_data,
     load_data,
 )
-from slayer.engine.ingestion import ingest_datasource
+from slayer.live_schema import ingestion
+from slayer.database.client import SlayerSQLClient
 from slayer.storage import migrations as mig
 from slayer.storage.yaml_storage import YAMLStorage
 
+from tests.integration._demo_build import NOTEBOOK_DEMO_DB
 
 pytestmark = pytest.mark.integration
 
-# Cached 3-year demo DB maintained by tests/integration/test_notebooks.py's
-# session-scoped _ensure_jaffle_db fixture. Reusing it avoids ~6s of
-# `jafgen` subprocess time per pytest invocation.
-_CACHED_JAFFLE_DB = (
-    Path(__file__).resolve().parent.parent.parent
-    / "docs" / "examples" / "jaffle_data" / "demo" / "jaffle_shop.duckdb"
-)
 
 
 @pytest.fixture(scope="module")
@@ -51,8 +47,8 @@ def jaffle_duckdb_path(tmp_path_factory):
     tmpdir = tmp_path_factory.mktemp("jaffle_ingest")
     db_path = tmpdir / "jaffle_ingest.duckdb"
 
-    if _CACHED_JAFFLE_DB.exists():
-        shutil.copy(_CACHED_JAFFLE_DB, db_path)
+    if NOTEBOOK_DEMO_DB.exists():
+        shutil.copy(NOTEBOOK_DEMO_DB, db_path)
         return str(db_path)
 
     try:
@@ -69,6 +65,15 @@ def jaffle_duckdb_path(tmp_path_factory):
     return str(db_path)
 
 
+async def _ingest(ds: DatasourceConfig) -> list[SlayerModel]:
+    client = SlayerSQLClient(datasource=ds)
+    try:
+        return await ingestion.ingest_datasource_async(ds, client=client)
+    finally:
+        await client.aclose()
+        client.close()
+
+
 @pytest.fixture(scope="module")
 def jaffle_models(jaffle_duckdb_path):
     """Ingest the Jaffle Shop DuckDB and return models keyed by name."""
@@ -77,7 +82,7 @@ def jaffle_models(jaffle_duckdb_path):
         type="duckdb",
         database=jaffle_duckdb_path,
     )
-    models = ingest_datasource(datasource=ds)
+    models = run_sync(_ingest(ds))
     return {m.name: m for m in models}
 
 
@@ -90,11 +95,16 @@ _EXPECTED_COLUMNS: dict[str, dict[str, tuple]] = {
         "id": (DataType.TEXT, True, None),
         "name": (DataType.TEXT, False, None),
     },
+    "regions": {
+        "id": (DataType.TEXT, True, None),
+        "name": (DataType.TEXT, False, None),
+    },
     "stores": {
         "id": (DataType.TEXT, True, None),
         "name": (DataType.TEXT, False, None),
         "opened_at": (DataType.DATE, False, None),
         "tax_rate": (DataType.DOUBLE, False, NumberFormatType.FLOAT),
+        "region_id": (DataType.TEXT, False, None),
     },
     "products": {
         "sku": (DataType.TEXT, True, None),
@@ -102,6 +112,7 @@ _EXPECTED_COLUMNS: dict[str, dict[str, tuple]] = {
         "type": (DataType.TEXT, False, None),
         "price": (DataType.DOUBLE, False, NumberFormatType.FLOAT),
         "description": (DataType.TEXT, False, None),
+        "ingredients": (DataType.ARRAY, False, None),
     },
     "orders": {
         "id": (DataType.TEXT, True, None),
@@ -111,6 +122,8 @@ _EXPECTED_COLUMNS: dict[str, dict[str, tuple]] = {
         "subtotal": (DataType.DOUBLE, False, NumberFormatType.FLOAT),
         "tax_paid": (DataType.DOUBLE, False, NumberFormatType.FLOAT),
         "order_total": (DataType.DOUBLE, False, NumberFormatType.FLOAT),
+        "status": (DataType.TEXT, False, None),
+        "item_skus": (DataType.ARRAY, False, None),
     },
     "items": {
         "id": (DataType.TEXT, True, None),
@@ -136,7 +149,10 @@ _EXPECTED_COLUMNS: dict[str, dict[str, tuple]] = {
 # Expected direct joins per model. Values are sets of (target_model, src_col, tgt_col).
 _EXPECTED_JOINS: dict[str, set] = {
     "customers": set(),
-    "stores": set(),
+    "regions": set(),
+    "stores": {
+        ("regions", "region_id", "id"),
+    },
     "products": set(),
     "orders": {
         ("customers", "customer_id", "id"),

@@ -13,7 +13,7 @@ from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.models import DatasourceConfig
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage import migrations as mig
 from slayer.storage.base import _RAW_PASS
 from tests._stored_upgrade_fixtures import (

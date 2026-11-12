@@ -1,9 +1,9 @@
-"""DEV-1836 task 1.7 — producer filter inheritance (design D3), reproducing the
+"""Producer filter inheritance (design D3), reproducing the
 ``classify_host_filter`` decision table as behavior.
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Producer filter
 inheritance". Safe ROW conjuncts apply inside the producer (re-rooted);
-DEV-1840 upgrades the unsafe-but-reachable class from drop+warn to semi-join
+the unsafe-but-reachable class is upgraded from drop+warn to semi-join
 pushdown (the two pins below are updated with consent); AGGREGATE-phase
 routing is unchanged.
 """
@@ -33,8 +33,8 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="amount:sum", name="m")
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
+M = ModelMeasure(formula="sum(amount)", name="m")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
 
 
 class TestAttributableRowFilters:
@@ -45,6 +45,7 @@ class TestAttributableRowFilters:
         query = q(
             dimensions=["status"], measures=[M, CM],
             filters=["customers.tier = 'gold'"],
+            to_many_handling="broadcast",
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.status")
@@ -60,7 +61,7 @@ class TestAttributableRowFilters:
 
 class TestUnsafeRowFilters:
     async def test_host_filter_pushes_down_by_semi_join(self, exec_backend):
-        """DEV-1836 class-(c), upgraded by DEV-1840: the host-level conjunct
+        """Class-(c), upgraded to semi-join: the host-level conjunct
         crosses the declared 1:N edge, so it restricts the producer by
         semi-join — customers with at least one web order, spend counted
         once, silently. Old drop+warn gave gold the whole 160 slice."""
@@ -92,6 +93,7 @@ class TestUnsafeRowFilters:
         resp = await engine.execute(q(
             dimensions=["status"], measures=[M, CM],
             filters=["channel = 'app'"],
+            to_many_handling="broadcast",
         ))
         by = rows_by(resp, "orders.status")
         # App orders: o2 (new), o4/o5 (ok).
@@ -110,7 +112,7 @@ class TestAggregatePhaseRouting:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.tier"], measures=[M, CM],
-            filters=["customers.spend:sum > 100"],
+            filters=["sum(customers.spend) > 100"],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.customers.tier")
@@ -131,7 +133,7 @@ class TestAggregatePhaseRouting:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"], measures=[M],
-            filters=["amount:sum > 30"],
+            filters=["sum(amount) > 30"],
         ))
         by = rows_by(resp, "orders.customers.tier")
         assert set(by) == {("gold",), ("bronze",)}

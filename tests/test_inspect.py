@@ -120,7 +120,7 @@ async def _seed_basic(storage: YAMLStorage) -> None:
         ],
         measures=[
             ModelMeasure(
-                name="aov", formula="amount:sum / *:count",
+                name="aov", formula="sum(amount) / count(*)",
                 description="Average order value.",
             ),
         ],
@@ -202,7 +202,7 @@ class TestPerKindFullRender:
             reference="mydb.orders.aov", entity_type="measure", compact=False,
         )
         assert "Measure: mydb.orders.aov" in out
-        assert "amount:sum / *:count" in out
+        assert "sum(amount) / count(*)" in out
 
     async def test_aggregation(self, svc: InspectService) -> None:
         out = await svc.inspect(
@@ -361,7 +361,7 @@ class TestCollision:
             sql_table="ma",
             data_source="mydb",
             columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
-            measures=[ModelMeasure(name="same", formula="id:sum")],
+            measures=[ModelMeasure(name="same", formula="sum(id)")],
             aggregations=[Aggregation(name="same", formula="MAX({col})")],
         ))
         svc = InspectService(storage=storage)
@@ -551,7 +551,7 @@ class TestBareReferences:
     ) -> None:
         # '*:count' needs a model context; inspect passes source_model=None.
         out = await svc.inspect(
-            reference="*:count", entity_type="model", compact=False,
+            reference="count(*)", entity_type="model", compact=False,
         )
         assert "count" in out.lower()
 
@@ -912,7 +912,7 @@ def _orders_like_model() -> SlayerModel:
             Column(name="customer_id", sql="customer_id", type=DataType.INT),
             Column(name="big", sql="amount", type=DataType.DOUBLE),
         ],
-        measures=[ModelMeasure(name="aov", formula="amount:sum / *:count")],
+        measures=[ModelMeasure(name="aov", formula="sum(amount) / count(*)")],
         aggregations=[Aggregation(name="big", formula="MAX({col})")],
         joins=[ModelJoin(target_model="customers", join_pairs=[("customer_id", "id")])],
     )
@@ -976,9 +976,9 @@ class TestModelSkeletonHelpers:
         base = SlayerModel(
             name="m", sql_table="m", data_source="mydb",
             columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
-            measures=[ModelMeasure(name="tmp", formula="id:sum")],
+            measures=[ModelMeasure(name="tmp", formula="sum(id)")],
         )
-        m = base.model_copy(update={"measures": [ModelMeasure(formula="id:max")]})
+        m = base.model_copy(update={"measures": [ModelMeasure(formula="max(id)")]})
         md = render_model_skeleton(model=m)
         assert "Measures: _(none)_" in md
 
@@ -1018,11 +1018,11 @@ class TestModelSkeletonHelpers:
         base = SlayerModel(
             name="m", sql_table="m", data_source="mydb",
             columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
-            measures=[ModelMeasure(name="named", formula="id:sum")],
+            measures=[ModelMeasure(name="named", formula="sum(id)")],
         )
         m = base.model_copy(update={"measures": [
-            ModelMeasure(name="named", formula="id:sum"),
-            ModelMeasure(formula="id:max"),  # unnamed
+            ModelMeasure(name="named", formula="sum(id)"),
+            ModelMeasure(formula="max(id)"),  # unnamed
         ]})
         assert model_skeleton_fields(model=m)["measure_names"] == ["named"]
 

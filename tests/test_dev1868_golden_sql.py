@@ -1,4 +1,4 @@
-"""DEV-1868 — golden SQL baseline for the closure-sweep shapes across the
+"""Golden SQL baseline for the closure-sweep shapes across the
 standard five-dialect matrix (harness: tests/_golden_harness.py). The class-a
 tripwire for pre-existing legal ``time_shift`` forms is the untouched
 tests/test_dev1846_golden_sql.py baseline."""
@@ -52,12 +52,12 @@ def _cases() -> dict:
         "w1/filter": _orders(
             dimensions=["customers.tier"],
             filters=[f"{LAST_TIER} > 100"],
-            measures=[{"formula": "amount:sum", "name": "s"}],
+            measures=[{"formula": "sum(amount)", "name": "s"}],
         ),
         "w1/order": _orders(
             dimensions=["customers.tier"],
             filters=["customers.tier is not null"],
-            measures=[{"formula": "amount:sum", "name": "s"}],
+            measures=[{"formula": "sum(amount)", "name": "s"}],
             order=[{"column": LAST_TIER, "direction": "desc"}],
         ),
         # W2 — cross-model partitioned inners under transforms.
@@ -77,38 +77,38 @@ def _cases() -> dict:
         # W3 — composite routes (already combined; pinned against regression).
         "w3/scalar_call": _orders(
             dimensions=["customers.tier"],
-            measures=[{"formula": "round(customers.spend:sum / amount:sum, 2)",
+            measures=[{"formula": "round(sum(customers.spend) / sum(amount), 2)",
                        "name": "r"}],
         ),
         "w3/multi_remote": _orders(
             dimensions=["customers.tier"],
-            measures=[{"formula": "customers.spend:sum - customers.spend:max",
+            measures=[{"formula": "sum(customers.spend) - max(customers.spend)",
                        "name": "r"}],
         ),
         "w3/two_roots": _orders(
             dimensions=["customers.regions.name"],
-            measures=[{"formula": "customers.spend:sum / customers.regions.pop:sum",
+            measures=[{"formula": "sum(customers.spend) / sum(customers.regions.pop)",
                        "name": "r"}],
         ),
         # Series-regime time_shift emission.
         "ts/series_nested_cumsum": _sales(measures=[
-            {"formula": "time_shift(cumsum(revenue:sum), -1)", "name": "t"},
+            {"formula": "time_shift(cumsum(sum(revenue)), -1)", "name": "t"},
         ]),
         "ts/series_nested_by_store": _sales(
             dimensions=["store"],
-            measures=[{"formula": "time_shift(cumsum(revenue:sum), -1)",
+            measures=[{"formula": "time_shift(cumsum(sum(revenue)), -1)",
                        "name": "t"}],
         ),
-        "ts/series_cm_leaf": _sales(measures=[
-            {"formula": "time_shift(revenue:sum + regions.factor:sum, -1)",
+        "ts/series_cm_leaf": _sales(to_many_handling="broadcast", measures=[
+            {"formula": "time_shift(sum(revenue) + sum(regions.factor), -1)",
              "name": "t"},
         ]),
         "ts/series_in_pred": _sales(measures=[
-            {"formula": "time_shift(revenue:sum in (100, 999), -1)", "name": "t"},
+            {"formula": "time_shift(sum(revenue) in (100, 999), -1)", "name": "t"},
         ]),
         "ts/series_filters_once": _sales(
             filters=["status = 'a'"],
-            measures=[{"formula": "time_shift(cumsum(revenue:sum), -1)",
+            measures=[{"formula": "time_shift(cumsum(sum(revenue)), -1)",
                        "name": "t"}],
         ),
         # Residue split — the two permanent typed errors, recorded as raises.
@@ -117,14 +117,14 @@ def _cases() -> dict:
                         {"expression": "CASE WHEN cumsum(amount) > 50 "
                                        "THEN 1 ELSE 0 END", "name": "b"}],
             time_dimensions=_MONTH,
-            measures=[{"formula": "amount:sum", "name": "s"}],
+            measures=[{"formula": "sum(amount)", "name": "s"}],
         ),
         "res/transform_ungrained": _orders(
             dimensions=["customers.tier",
-                        {"expression": "CASE WHEN cumsum(amount:sum) > 50 "
+                        {"expression": "CASE WHEN cumsum(sum(amount)) > 50 "
                                        "THEN 1 ELSE 0 END", "name": "b"}],
             time_dimensions=_MONTH,
-            measures=[{"formula": "amount:sum", "name": "s"}],
+            measures=[{"formula": "sum(amount)", "name": "s"}],
         ),
     }
 

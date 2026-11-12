@@ -1,4 +1,4 @@
-"""DEV-1815 reuse guards: the Jaffle Shop demo is built once and shared.
+"""Reuse guards: the Jaffle Shop demo is built once and shared.
 
 These lock in the perf-critical reuse so a future change cannot silently
 regress to cold-building the demo per server fixture.
@@ -26,19 +26,19 @@ def _forbid_jafgen(*_args, **_kwargs):
 
 
 def test_prepare_demo_from_prebuilt_skips_jafgen_and_localizes_path(
-    jaffle_demo_duckdb: str, tmp_path, monkeypatch: pytest.MonkeyPatch
+    shared_demo_duckdb: str, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Copying the session DuckDB must skip jafgen yet keep an in-dir datasource path."""
     monkeypatch.setattr(jaffle, "generate_data", _forbid_jafgen)
 
     args, storage = _demo_build.prepare_demo_storage(
-        base_dir=str(tmp_path / "prep"), prebuilt_duckdb=jaffle_demo_duckdb
+        base_dir=str(tmp_path / "prep"), prebuilt_duckdb=shared_demo_duckdb
     )
 
     # The DuckDB lives inside THIS dir (a copy), not the shared template.
     local_db = os.path.join(args.storage, "demo", "jaffle_shop.duckdb")
     assert os.path.exists(local_db)
-    assert os.path.abspath(local_db) != os.path.abspath(jaffle_demo_duckdb)
+    assert os.path.abspath(local_db) != os.path.abspath(shared_demo_duckdb)
 
     # Codex #8: the ingested datasource must point at the copy, not the template.
     ds = run_sync(storage.get_datasource(DEMO_NAME))
@@ -47,31 +47,29 @@ def test_prepare_demo_from_prebuilt_skips_jafgen_and_localizes_path(
     assert os.path.abspath(ds.database) == os.path.abspath(local_db)
 
 
-def _forbid_ingest(*_args, **_kwargs):
-    raise AssertionError("ingest_datasource must not run when demo models are already warm")
-
-
-def test_warm_demo_models_skip_reingest(
-    jaffle_demo_duckdb: str, tmp_path, monkeypatch: pytest.MonkeyPatch
+def test_warm_demo_setup_rebuilds_and_writes_nothing(
+    shared_demo_duckdb: str, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The notebook harness relies on warm models skipping re-ingestion (DEV-1815 W2)."""
+    """A second demo setup over warm models reconciles in place: no DuckDB rebuild, no model write."""
     base = tmp_path / "warm"
     (base / "demo").mkdir(parents=True)
-    shutil.copy2(jaffle_demo_duckdb, base / "demo" / "jaffle_shop.duckdb")
+    shutil.copy2(shared_demo_duckdb, base / "demo" / "jaffle_shop.duckdb")
     storage = YAMLStorage(base_dir=str(base))
 
-    # First ingest populates all base models.
+    # First setup populates all base models.
     ensure_demo_datasource(
         storage, storage_path=str(base), ingest_models=True, assume_yes=True
     )
     present = set(run_sync(storage.list_models(data_source=DEMO_NAME)))
     assert all(t in present for t in TABLE_NAMES)
 
-    # With models already present, a second call must take the reuse fast-path.
-    monkeypatch.setattr(
-        "slayer.engine.ingestion.ingest_datasource", _forbid_ingest
-    )
-    _ds, _models, db_built = ensure_demo_datasource(
+    async def _forbid_save(*_args, **_kwargs):
+        raise AssertionError("a warm demo setup must not rewrite any model")
+
+    monkeypatch.setattr(jaffle, "generate_data", _forbid_jafgen)
+    monkeypatch.setattr(storage, "save_model", _forbid_save)
+    _ds, models, db_built = ensure_demo_datasource(
         storage, storage_path=str(base), ingest_models=True, assume_yes=True
     )
     assert db_built is False
+    assert {m.name for m in models} == set(TABLE_NAMES)

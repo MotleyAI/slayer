@@ -193,7 +193,7 @@ async def _assert_result_keys(
 class TestOrdinaryResultKeys:
     async def test_local_dims_and_measures(self, engine) -> None:
         """``<relation>.<column>`` for dimensions; ``<relation>.<measure>_<agg>``
-        for aggregates; ``*:count`` collapses the star to a leading underscore
+        for aggregates; ``count(*)`` collapses the star to a leading underscore
         (``orders._count``). Order follows the query's declaration order."""
         await _assert_result_keys(
             engine,
@@ -201,8 +201,8 @@ class TestOrdinaryResultKeys:
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
                 measures=[
-                    ModelMeasure(formula="amount:sum"),
-                    ModelMeasure(formula="*:count"),
+                    ModelMeasure(formula="sum(amount)"),
+                    ModelMeasure(formula="count(*)"),
                 ],
             ),
             ["orders.status", "orders.amount_sum", "orders._count"],
@@ -216,7 +216,7 @@ class TestOrdinaryResultKeys:
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="amount:sum", name="revenue")],
+                measures=[ModelMeasure(formula="sum(amount)", name="revenue")],
             ),
             ["orders.status", "orders.revenue"],
         )
@@ -232,11 +232,11 @@ class TestOrdinaryResultKeys:
                 source_model="orders",
                 time_dimensions=[
                     TimeDimension(
-                        dimension=ColumnRef(name="created_at"),
+                        dimension="created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
-                measures=[ModelMeasure(formula="*:count")],
+                measures=[ModelMeasure(formula="count(*)")],
             ),
             ["orders.created_at", "orders._count"],
         )
@@ -254,7 +254,7 @@ class TestJoinedDimensionResultKeys:
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="customers.region_id")],
-                measures=[ModelMeasure(formula="*:count")],
+                measures=[ModelMeasure(formula="count(*)")],
             ),
             ["orders.customers.region_id", "orders._count"],
         )
@@ -266,7 +266,7 @@ class TestJoinedDimensionResultKeys:
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="customers.regions.name")],
-                measures=[ModelMeasure(formula="*:count")],
+                measures=[ModelMeasure(formula="count(*)")],
             ),
             ["orders.customers.regions.name", "orders._count"],
         )
@@ -279,7 +279,7 @@ class TestJoinedDimensionResultKeys:
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="customers.rev_x2")],
-                measures=[ModelMeasure(formula="*:count")],
+                measures=[ModelMeasure(formula="count(*)")],
             ),
             ["orders.customers.rev_x2", "orders._count"],
         )
@@ -300,20 +300,20 @@ class TestCrossModelResultKeys:
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="customers.revenue:sum")],
+                measures=[ModelMeasure(formula="sum(customers.revenue)")],
             ),
             ["orders.status", "orders.customers.revenue_sum"],
         )
 
     async def test_cross_model_star_count_keeps_path(self, engine) -> None:
-        """``customers.*:count`` keeps its path AND collapses the star:
+        """``count(customers.*)`` keeps its path AND collapses the star:
         ``orders.customers._count``."""
         await _assert_result_keys(
             engine,
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="customers.*:count")],
+                measures=[ModelMeasure(formula="count(customers.*)")],
             ),
             ["orders.status", "orders.customers._count"],
         )
@@ -329,8 +329,8 @@ class TestCrossModelResultKeys:
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
                 measures=[
-                    ModelMeasure(formula="amount:sum"),
-                    ModelMeasure(formula="customers.revenue:sum"),
+                    ModelMeasure(formula="sum(amount)"),
+                    ModelMeasure(formula="sum(customers.revenue)"),
                 ],
             ),
             [
@@ -357,11 +357,11 @@ class TestWindowedResultKeys:
                 source_model="orders",
                 time_dimensions=[
                     TimeDimension(
-                        dimension=ColumnRef(name="created_at"),
+                        dimension="created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
-                measures=[ModelMeasure(formula="amount:sum(window='90d')")],
+                measures=[ModelMeasure(formula="sum(amount, window='90d')")],
             ),
             ["orders.created_at", "orders.amount_sum_window_90d"],
         )
@@ -377,13 +377,13 @@ class TestWindowedResultKeys:
                 source_model="orders",
                 time_dimensions=[
                     TimeDimension(
-                        dimension=ColumnRef(name="created_at"),
+                        dimension="created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
                 measures=[
-                    ModelMeasure(formula="amount:sum(window='90d')"),
-                    ModelMeasure(formula="amount:sum(window='30d')"),
+                    ModelMeasure(formula="sum(amount, window='90d')"),
+                    ModelMeasure(formula="sum(amount, window='30d')"),
                 ],
             ),
             [
@@ -410,7 +410,7 @@ class TestHiddenAndOrderOnlySlots:
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="*:count")],
+                measures=[ModelMeasure(formula="count(*)")],
                 order=[
                     OrderItem(
                         column=ColumnRef(name="created_at"), direction="desc",
@@ -434,7 +434,7 @@ class TestHiddenAndOrderOnlySlots:
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="*:count")],
+                measures=[ModelMeasure(formula="count(*)")],
                 order=[
                     OrderItem(
                         column=ColumnRef(name="created_at"), direction="desc",
@@ -459,7 +459,7 @@ class TestParametricResultKeys:
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="amount:percentile(p=0.9)")],
+                measures=[ModelMeasure(formula="percentile(amount, p=0.9)")],
             ),
             ["orders.status", "orders.amount_percentile_p_0_9"],
         )
@@ -473,8 +473,8 @@ class TestParametricResultKeys:
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
                 measures=[
-                    ModelMeasure(formula="amount:percentile(p=0.5)"),
-                    ModelMeasure(formula="amount:percentile(p=0.9)"),
+                    ModelMeasure(formula="percentile(amount, p=0.5)"),
+                    ModelMeasure(formula="percentile(amount, p=0.9)"),
                 ],
             ),
             [
@@ -502,8 +502,8 @@ class TestParametricResultKeys:
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
                 measures=[
-                    ModelMeasure(formula="customers.revenue:percentile(p=0.5)"),
-                    ModelMeasure(formula="customers.revenue:percentile(p=0.9)"),
+                    ModelMeasure(formula="percentile(customers.revenue, p=0.5)"),
+                    ModelMeasure(formula="percentile(customers.revenue, p=0.9)"),
                 ],
             ),
             [
@@ -535,7 +535,7 @@ class TestIdentifierSeparation:
                     ColumnRef(name="customers.regions.name"),
                     ColumnRef(name="customers.rev_x2"),
                 ],
-                measures=[ModelMeasure(formula="customers.revenue:sum")],
+                measures=[ModelMeasure(formula="sum(customers.revenue)")],
             )
         )
         for key in list(resp.columns) + list(resp.data[0].keys()):
@@ -548,7 +548,7 @@ class TestIdentifierSeparation:
             SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="customers.regions.name")],
-                measures=[ModelMeasure(formula="*:count")],
+                measures=[ModelMeasure(formula="count(*)")],
             )
         )
         assert "orders.customers.regions.name" in resp.columns

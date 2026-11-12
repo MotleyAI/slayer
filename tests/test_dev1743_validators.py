@@ -18,7 +18,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -60,7 +60,7 @@ class TestDotAndColonStillRejected:
     @pytest.mark.parametrize("bad", ["a.b", "a:b"])
     def test_dotted_or_coloned_measure_name_rejected(self, bad: str) -> None:
         with pytest.raises(ValueError):
-            ModelMeasure(name=bad, formula="amount:sum")
+            ModelMeasure(name=bad, formula="sum(amount)")
 
     @pytest.mark.parametrize("bad", ["a.b", "a:b"])
     def test_dotted_or_coloned_query_name_rejected(self, bad: str) -> None:
@@ -95,13 +95,11 @@ class TestSlayerPrefixReservedOnNames:
 
     def test_measure_name_reserved(self) -> None:
         with pytest.raises(ValueError):
-            ModelMeasure(name="__slayer_x", formula="amount:sum")
+            ModelMeasure(name="__slayer_x", formula="sum(amount)")
 
 
 # --------------------------------------------------------------------------- #
-# P3 — the parser rejects a literal __slayer_ spoof but keeps colon-aggs working.
-# The spoof scan runs on the RAW input, BEFORE _preprocess_colons substitutes
-# its own __slayer_agg_N__ placeholders [C3].
+# P3 — the parser rejects a literal __slayer_ spoof.
 # --------------------------------------------------------------------------- #
 class TestParserSlayerPrefixReservation:
     def test_literal_placeholder_spoof_rejected(self) -> None:
@@ -121,7 +119,7 @@ class TestParserSlayerPrefixReservation:
         assert parsed is not None
 
     def test_dotted_embedded_slayer_run_still_parses(self) -> None:
-        parsed = parse_expr("customers.foo__slayer_bar:sum")
+        parsed = parse_expr("sum(customers.foo__slayer_bar)")
         assert parsed is not None
 
     def test_unicode_embedded_slayer_run_still_parses(self) -> None:
@@ -131,24 +129,10 @@ class TestParserSlayerPrefixReservation:
         assert parse_expr("é__slayer_bar") is not None
         assert parse_expr("变量__slayer_bar") is not None
 
-    def test_colon_aggregation_still_parses(self) -> None:
-        # revenue:sum is rewritten to a __slayer_agg_ placeholder INTERNALLY;
-        # the raw-input scan must not mistake that for a spoof.
-        parsed = parse_expr("revenue:sum")
-        assert parsed is not None
-
-    def test_multiple_aggregations_still_parse(self) -> None:
-        parsed = parse_expr("revenue:sum / *:count")
-        assert parsed is not None
-
-    def test_dotted_colon_aggregation_still_parses(self) -> None:
-        parsed = parse_expr("customers.spend:sum")
-        assert parsed is not None
-
     def test_dunder_bearing_identifier_now_parses(self) -> None:
         # A bare __-bearing reference is no longer rejected by the parser
         # (binding legality is the binder's concern, not the parser's). A
-        # colon-agg like ``a__b.col:sum`` would hide the dunder inside the
+        # aggregation like ``sum(a__b.col)`` would hide the dunder inside the
         # placeholder map, so a BARE name is the real probe for the relaxation.
         parsed = parse_expr("a__b")
         assert parsed is not None

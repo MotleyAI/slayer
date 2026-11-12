@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import datetime
 import hashlib
 import json
 import os
 import queue
+import socket
 import subprocess
 import sys
 import threading
@@ -113,6 +115,28 @@ def usage_keys(report: dict, *, surface: str) -> set[str]:
     return {k for k in report.get("usage", {}) if k.startswith(f"{surface}:")}
 
 
+def session_rows(report: dict) -> list[tuple[str, str, int]]:
+    """``(queries_ok, queries_err, sessions)`` per ``mcp_sessions`` row, in report order."""
+    return [(row["queries_ok"], row["queries_err"], row["sessions"]) for row in report.get("mcp_sessions", [])]
+
+
+def raw_config() -> dict:
+    """The stored config file as plain JSON (fields of any version)."""
+    return json.loads(settings.config_path().read_text())
+
+
+def stored_first_query() -> str | None:
+    return raw_config().get("first_query_ok")
+
+
+def write_raw_config(**fields: Any) -> None:
+    """Merge ``fields`` into the stored config file as plain JSON, bypassing the config model."""
+    path = settings.config_path()
+    current = json.loads(path.read_text()) if path.is_file() else {}
+    current.update(fields)
+    settings.write_private(path, json.dumps(current, default=str).encode())
+
+
 def _resolve(schema: dict, node: dict) -> dict:
     while "$ref" in node:
         node = schema["$defs"][node["$ref"].rsplit("/", 1)[-1]]
@@ -173,6 +197,46 @@ def run_python(code: str, *, env: dict[str, str], timeout: float = SUBPROCESS_TI
         [sys.executable, "-c", code],
         env=env, capture_output=True, text=True, timeout=timeout,
     )
+
+
+def free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _listening_sockets(port: int) -> set[str]:
+    """``socket:[inode]`` of every TCP socket listening on ``port``."""
+    found: set[str] = set()
+    for table in (Path("/proc/net/tcp"), Path("/proc/net/tcp6")):
+        with contextlib.suppress(OSError):
+            for line in table.read_text().splitlines()[1:]:
+                fields = line.split()
+                if fields[3] == "0A" and int(fields[1].rsplit(":", 1)[1], 16) == port:
+                    found.add(f"socket:[{fields[9]}]")
+    return found
+
+
+def _listens(pid: int, port: int) -> bool:
+    """Whether process ``pid`` listens on ``port`` (elsewhere than Linux: whether anything does)."""
+    if not sys.platform.startswith("linux"):
+        with socket.socket() as sock:
+            return sock.connect_ex(("127.0.0.1", port)) == 0
+    sockets = _listening_sockets(port)
+    try:
+        fds = list(Path(f"/proc/{pid}/fd").iterdir())
+    except OSError:
+        return False
+    for fd in fds:
+        with contextlib.suppress(OSError):
+            if os.readlink(fd) in sockets:
+                return True
+    return False
+
+
+def wait_for_port(port: int, *, pid: int, timeout: float = 60.0) -> bool:
+    """Wait until process ``pid`` itself listens on ``port``: another process's listener does not count."""
+    return wait_until(lambda: _listens(pid, port), timeout=timeout)
 
 
 # --- sentinels --------------------------------------------------------------------------
@@ -278,8 +342,12 @@ class McpStdio:
         self.stderr = bytearray()
         self._lines: queue.Queue[bytes] = queue.Queue()
         self._next_id = 1
-        threading.Thread(target=self._pump_stdout, daemon=True).start()
-        threading.Thread(target=self._pump_stderr, daemon=True).start()
+        self._pumps = [
+            threading.Thread(target=self._pump_stdout, daemon=True),
+            threading.Thread(target=self._pump_stderr, daemon=True),
+        ]
+        for pump in self._pumps:
+            pump.start()
 
     def _pump_stdout(self) -> None:
         assert self.proc.stdout is not None
@@ -326,7 +394,14 @@ class McpStdio:
         self.proc.stdin.close()
 
     def wait(self, *, timeout: float = 30.0) -> int:
-        return self.proc.wait(timeout=timeout)
+        """Wait for exit and for stdout/stderr to be fully read."""
+        returncode = self.proc.wait(timeout=timeout)
+        for pump in self._pumps:
+            pump.join(timeout=10)
+        return returncode
+
+    def stderr_text(self) -> str:
+        return bytes(self.stderr).decode(errors="replace")
 
     def kill(self) -> None:
         if self.proc.poll() is None:

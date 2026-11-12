@@ -56,7 +56,7 @@ ACCOUNT = "account_snapshots.account_id"
 NAME_KEY = ColumnKey(leaf="name")
 ACCOUNT_KEY = ColumnKey(path=("account_snapshots",), leaf="account_id")
 MONTH_KEY = TimeTruncKey(
-    column=ColumnKey(path=("account_snapshots",), leaf="snapshot_date"), granularity=TimeGranularity.MONTH)
+    source=ColumnKey(path=("account_snapshots",), leaf="snapshot_date"), granularity=TimeGranularity.MONTH)
 BY_NAME_MONTH = ("name", "snapshot_date")
 BY_NAME_ACCOUNT = ("name", "account_id")
 SUM_MAX_Q_BY_OUTER_ACCOUNT = f"sum({MAX_Q}, partition_by=[{ACCOUNT}])"
@@ -137,7 +137,7 @@ class TestJoinedTimeBucket:
             time_dimensions=[MONTH_TD],
             measures=[m(f"sum(sum(account_snapshots.balance, {P}))")]))
         base = await engine.execute(query(
-            time_dimensions=[MONTH_TD], measures=[m("account_snapshots.balance:sum")]))
+            time_dimensions=[MONTH_TD], measures=[m("sum(account_snapshots.balance)")]))
         got = cells(resp, keys=("snapshot_date",))
         approx_cells(got, {(k,): v for k, v in SUM_SUM_P_BY_MONTH.items()})
         assert set(got) == set(cells(base, keys=("snapshot_date",)))
@@ -145,10 +145,10 @@ class TestJoinedTimeBucket:
     async def test_adding_the_measure_keeps_rows_and_siblings(self, engine):
         base = await engine.execute(query(
             dimensions=["name"], time_dimensions=[MONTH_TD],
-            measures=[m("account_snapshots.balance:sum", "b")]))
+            measures=[m("sum(account_snapshots.balance)", "b")]))
         both = await engine.execute(query(
             dimensions=["name"], time_dimensions=[MONTH_TD],
-            measures=[m("account_snapshots.balance:sum", "b"),
+            measures=[m("sum(account_snapshots.balance)", "b"),
                       m(f"sum(max(account_snapshots.balance, {P}))")]))
         assert cells(both, keys=BY_NAME_MONTH, value="b") == cells(base, keys=BY_NAME_MONTH, value="b")
 
@@ -164,14 +164,15 @@ class TestPlainToManyColumn:
 
 
 class TestUngrainedUndeterminedDimension:
-    async def test_associate(self, engine):
-        resp = await engine.execute(_by_month(f"sum({MAX_Q})", to_many_handling="associate"))
+    @pytest.mark.parametrize("mode", [None, "associate"])
+    async def test_associate(self, engine, mode):
+        resp = await engine.execute(_by_month(f"sum({MAX_Q})", to_many_handling=mode))
         got = cells(resp, keys=BY_NAME_MONTH)
         approx_cells({k: v for k, v in got.items() if k[0] != "Cy"}, ASSOCIATED_MAX_Q_BY_MONTH)
         assert warnings_of(resp, "associated")
 
-    async def test_default_broadcasts_with_warning(self, engine):
-        resp = await engine.execute(_by_month(f"sum({MAX_Q})"))
+    async def test_broadcast_with_warning(self, engine):
+        resp = await engine.execute(_by_month(f"sum({MAX_Q})", to_many_handling="broadcast"))
         approx_cells(cells(resp, keys=BY_NAME_MONTH), {**BROADCAST_MAX_Q_BY_MONTH, **CY_NULL_MONTH})
         (w,) = warnings_of(resp, "broadcast")
         assert "snapshot_date" in w.human_message()
@@ -196,8 +197,9 @@ class TestExplicitOuterKeys:
         _assert_undetermined_key_error(
             ei.value, key="account_snapshots.snapshot_date", grain_member="account_id")
 
-    async def test_undetermined_fanning_key_associates(self, engine):
-        resp = await engine.execute(_by_month(EXPLICIT_UNDETERMINED, to_many_handling="associate"))
+    @pytest.mark.parametrize("mode", [None, "associate"])
+    async def test_undetermined_fanning_key_associates(self, engine, mode):
+        resp = await engine.execute(_by_month(EXPLICIT_UNDETERMINED, to_many_handling=mode))
         got = cells(resp, keys=BY_NAME_MONTH)
         approx_cells({k: v for k, v in got.items() if k[0] != "Cy"}, ASSOCIATED_MAX_Q_BY_MONTH)
 
@@ -211,9 +213,10 @@ class TestExplicitOuterKeys:
             await sales_engine.execute(q)
         _assert_undetermined_key_error(ei.value, key="region", grain_member="city")
 
-    async def test_undetermined_to_one_key_associates(self, sales_engine):
+    @pytest.mark.parametrize("mode", [None, "associate"])
+    async def test_undetermined_to_one_key_associates(self, sales_engine, mode):
         resp = await sales_engine.execute(sales_q(
-            dimensions=["region"], to_many_handling="associate",
+            dimensions=["region"], to_many_handling=mode,
             measures=[reagg("avg", "sum(amount, partition_by=city)", name="acr",
                             partition_by="[region]")]))
         vals = {k[0]: v["sales.acr"] for k, v in region_key(resp).items()}
@@ -231,7 +234,7 @@ class TestPositions:
     async def test_order_only_key(self, engine):
         resp = await engine.execute(query(
             dimensions=["name"], time_dimensions=[MONTH_TD],
-            measures=[m("account_snapshots.balance:sum", "b")],
+            measures=[m("sum(account_snapshots.balance)", "b")],
             order=[{"column": f"sum(max(account_snapshots.balance, {P}))", "direction": "desc"}]))
         n, t = col(resp.columns, "name"), col(resp.columns, "snapshot_date")
         order = [(r[n], str(r[t])[:7]) for r in resp.data]
@@ -332,11 +335,12 @@ class TestPlanStructure:
         assert key.partition_keys == Grain.of([NAME_KEY, MONTH_KEY])
 
     def test_broadcast_dimension_left_out_of_the_settled_grain(self):
-        key, _ = self._outer_slot(f"sum({MAX_Q})")
+        key, _ = self._outer_slot(f"sum({MAX_Q})", to_many_handling="broadcast")
         assert key.partition_keys == Grain.of([NAME_KEY])
 
-    def test_associated_dimension_in_the_settled_grain(self):
-        key, _ = self._outer_slot(f"sum({MAX_Q})", to_many_handling="associate")
+    @pytest.mark.parametrize("mode", [None, "associate"])
+    def test_associated_dimension_in_the_settled_grain(self, mode):
+        key, _ = self._outer_slot(f"sum({MAX_Q})", to_many_handling=mode)
         assert key.partition_keys == Grain.of([NAME_KEY, MONTH_KEY])
 
     def test_keyless_settled_grain_is_empty(self):

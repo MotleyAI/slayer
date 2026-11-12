@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import UnknownFunctionError
+from slayer.core.errors import SlayerError, UnknownFunctionError
 from slayer.core.models import Column
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.syntax import AggCall, Cmp, Literal, Ref, parse_expr, parse_filter_expr
+from slayer.core.syntax import AggCall, Cmp, Literal, Ref, parse_expr
+from tests._dev2215_fixtures import warnings_mentioning
 from tests._engine_helpers import _engine_generate
 from tests._query_heal_fixtures import (
     BACKENDS,
@@ -22,9 +24,11 @@ from tests._query_heal_fixtures import (
     order_items_model,
     orders_model,
     products_model,
+    table,
 )
 
 DISTINCT_ONLY = "count(distinct x)"
+SLAYER_3 = "3.0"
 
 
 @pytest.fixture(params=BACKENDS)
@@ -80,14 +84,14 @@ class TestCountDistinctParse:
         assert parse_expr(healed) == parse_expr(canonical_text)
 
     def test_filter_position(self) -> None:
-        assert parse_filter_expr("count(distinct customer_id) > 1") == parse_filter_expr(
+        assert parse_expr("count(distinct customer_id) > 1") == parse_expr(
             "count_distinct(customer_id) > 1")
 
     def test_identifier_starting_with_distinct_untouched(self) -> None:
         assert parse_expr("count(distinct_id)") == AggCall(source=Ref(name="distinct_id"), agg="count")
 
     def test_quoted_distinct_unchanged(self) -> None:
-        assert parse_filter_expr("status == 'count(distinct x)'") == Cmp(
+        assert parse_expr("status == 'count(distinct x)'") == Cmp(
             op="==", left=Ref(name="status"), right=Literal(value="count(distinct x)"))
 
     @pytest.mark.parametrize("expr", [
@@ -134,7 +138,6 @@ METHOD_CALLS = [
     ("order_items.sum(coalesce(price, 0))", "sum(coalesce(order_items.price, 0))"),
     ("order_items.percentile(price, 0.9)", "percentile(order_items.price, 0.9)"),
     ("order_items.percentile(price, p=0.9)", "percentile(order_items.price, p=0.9)"),
-    ("order_items.month(created_at)", "month(order_items.created_at)"),
     ("order_items.first(price)", "first(order_items.price)"),
     ("order_items.COUNTD(id)", "COUNTD(order_items.id)"),
     ("order_items.products.max(list_price)", "max(order_items.products.list_price)"),
@@ -149,13 +152,12 @@ class TestMethodCallParse:
         assert parse_expr(healed) == parse_expr(canonical_text)
 
     def test_filter_position(self) -> None:
-        assert parse_filter_expr("order_items.count(*) > 1") == parse_filter_expr("count(order_items.*) > 1")
+        assert parse_expr("order_items.count(*) > 1") == parse_expr("count(order_items.*) > 1")
 
     @pytest.mark.parametrize(("expr", "functional"), [
         ("order_items.weighted_avg(price, qty)", "weighted_avg(order_items."),
         ("order_items.sum(products.price)", "sum(order_items."),
         ("order_items.sum(price, partition_by=region)", "sum(order_items.price"),
-        ("order_items.round(price)", "round(order_items.price)"),
         ("order_items.cumsum(price)", "cumsum("),
     ])
     def test_ambiguous_shapes_show_functional_spelling(self, expr: str, functional: str) -> None:
@@ -164,17 +166,37 @@ class TestMethodCallParse:
         assert functional in str(info.value)
 
 
+def _other_warnings(resp: Any) -> list[str]:
+    """Human messages of the response warnings that are not deprecations."""
+    deprecated = warnings_mentioning(resp, SLAYER_3)
+    return [w.human_message() for w in resp.warnings if w not in deprecated]
+
+
 class TestMethodCallExecuted:
     @pytest.mark.parametrize(("healed", "canonical_text"), [
-        pair for pair in METHOD_CALLS if pair[0] not in {"order_items.month(created_at)", "order_items.my_agg(price)"}
+        pair for pair in METHOD_CALLS if pair[0] != "order_items.my_agg(price)"
     ])
     async def test_measure_equals_functional_twin(
         self, engine: SlayerQueryEngine, healed: str, canonical_text: str,
     ) -> None:
-        await assert_equivalent(engine, by_region(healed), by_region(canonical_text))
+        expected = await engine.execute(by_region(canonical_text))
+        query = by_region(healed)
+        with pytest.warns(FutureWarning, match=re.escape(SLAYER_3)):
+            actual = await engine.execute(query)
+        assert actual.columns == expected.columns
+        assert table(actual, ordered=False) == table(expected, ordered=False)
+        assert actual.sql == expected.sql
+        assert _other_warnings(actual) == _other_warnings(expected)
+        assert warnings_mentioning(expected, SLAYER_3) == []
+        assert len(warnings_mentioning(actual, SLAYER_3)) == 1
 
-    async def test_granularity_dimension_equals_functional_twin(self, engine: SlayerQueryEngine) -> None:
-        def query(dimension: str) -> dict[str, Any]:
-            return {"source_model": "orders", "dimensions": [dimension], "measures": ["count(order_items.*)"]}
+    async def test_a_library_function_shows_functional_spelling_at_binding(self, engine: SlayerQueryEngine) -> None:
+        query = by_region("order_items.round(price)")
+        with pytest.raises(ValueError, match=re.escape("round(order_items.price)")):
+            await engine.execute(query)
 
-        await assert_equivalent(engine, query("order_items.month(created_at)"), query("month(order_items.created_at)"))
+    async def test_date_part_callee_shows_functional_spelling(self, engine: SlayerQueryEngine) -> None:
+        query = {"source_model": "orders", "dimensions": ["order_items.month(created_at)"],
+                 "measures": ["count(order_items.*)"]}
+        with pytest.raises((ValueError, SlayerError), match=re.escape("month(order_items.created_at)")):
+            await engine.execute(query)

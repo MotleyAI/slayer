@@ -1,4 +1,4 @@
-"""DEV-1587 — per-engine in-memory query result cache.
+"""Per-engine in-memory query result cache.
 
 Two layers of coverage:
 
@@ -23,6 +23,8 @@ from slayer.storage.sqlite_conn import transaction
 import pydantic
 import pytest
 import sqlalchemy
+import sqlglot
+from sqlglot import exp
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
@@ -30,12 +32,15 @@ from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.engine.cache import (
     CacheConfig,
+    NormalizedTable,
     QueryCache,
     RefreshResult,
     _CacheEntry,
 )
 from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
+from slayer.sql.dialects import get_dialect
+from slayer.sql.physical_tables import physical_tables
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -135,7 +140,7 @@ async def _build_engine(tmp_path, *, cache_config=None, ds_name="ds", storage_su
 
 
 def _sum_query() -> SlayerQuery:
-    return SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="amount:sum")])
+    return SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="sum(amount)")])
 
 
 def _mutate(db_path, sql: str) -> None:
@@ -237,85 +242,126 @@ class TestCommitReplace:
         assert (await c.get("k")) is None
 
 
+def _tables(sql: str, dialect: str) -> list[NormalizedTable]:
+    """The normalized physical tables of the parsed literal ``sql``."""
+    tree = sqlglot.parse_one(sql, dialect=dialect)
+    return [QueryCache._normalize_table_expr(t, dialect) for t in physical_tables(tree)]
+
+
+def _applicable(cache: QueryCache, sql: str, dialect: str) -> list[tuple[str, str]]:
+    return cache.applicable_keys(tables=_tables(sql, dialect), dialect=dialect)
+
+
 class TestTableParsing:
     def test_excludes_cte_and_subquery_aliases(self):
-        c = QueryCache(CacheConfig())
         sql = (
             "WITH cte AS (SELECT id FROM public.orders) "
             "SELECT * FROM cte JOIN (SELECT 1 AS x) sub ON TRUE"
         )
-        names = [t[2] for t in c.parse_referenced_tables(sql, "postgres")]
+        names = [t[2] for t in _tables(sql, "postgres")]
         assert "orders" in names
         assert "cte" not in names
         assert "sub" not in names
 
     def test_values_clause_has_no_physical_table(self):
-        c = QueryCache(CacheConfig())
-        names = [t[2] for t in c.parse_referenced_tables(
-            "SELECT * FROM (VALUES (1), (2)) AS v(x)", "postgres"
-        )]
+        names = [t[2] for t in _tables("SELECT * FROM (VALUES (1), (2)) AS v(x)", "postgres")]
         assert "v" not in names
 
     def test_qualified_table_sharing_cte_name_is_still_physical(self):
         # A schema-qualified physical table (`public.cte`) sharing a CTE's bare
         # name must still be detected — a qualified ref can never be a CTE.
-        c = QueryCache(CacheConfig())
-        tables = c.parse_referenced_tables(
+        tables = _tables(
             "WITH cte AS (SELECT 1 AS x) SELECT * FROM cte JOIN public.cte ON TRUE",
             "postgres",
         )
         assert (None, "public", "cte") in tables  # the physical public.cte
         # And a refresh key configured on that physical table applies.
         c2 = QueryCache(CacheConfig(refresh_keys=[("public.cte", "COUNT(*)")]))
-        assert c2.applicable_keys(
+        assert _applicable(
+            c2,
             "WITH cte AS (SELECT 1 AS x) SELECT * FROM cte JOIN public.cte ON TRUE",
             "postgres",
         ) == [("public.cte", "COUNT(*)")]
+
+
+class TestStatementTables:
+    """Applicable refresh keys from the statement tree's physical tables."""
+
+    _KEYS = CacheConfig(refresh_keys=(
+        ("orders", "COUNT(*)"), ("numbers", "COUNT(*)"), ("generate_series", "COUNT(*)"),
+        ("GENERATOR", "COUNT(*)"), ("_seq", "COUNT(*)"),
+    ))
+
+    @pytest.mark.parametrize("dialect", ["snowflake", "clickhouse", "tsql", "postgres", "duckdb", "bigquery"])
+    def test_a_number_series_is_not_a_table(self, dialect):
+        sequence = get_dialect(dialect).build_integer_sequence(size=4)
+        statement = exp.select("*").from_(sequence.subquery("_seq")).join(exp.to_table("orders"), join_type="cross")
+        tables = [QueryCache._normalize_table_expr(t, dialect) for t in physical_tables(statement)]
+        assert [t[2].casefold() for t in tables] == ["orders"]
+        assert QueryCache(self._KEYS).applicable_keys(tables=tables, dialect=dialect) == [("orders", "COUNT(*)")]
+
+    def test_qualified_tables_keep_their_qualifiers(self):
+        c = QueryCache(CacheConfig(refresh_keys=(
+            ("orders", "COUNT(*)"), ("raw.orders", "MAX(id)"), ("other.orders", "MIN(id)"), ("public.customers", "COUNT(*)"),
+        )))
+        sql = "SELECT * FROM raw.orders JOIN db.public.customers ON TRUE"
+        assert _tables(sql, "postgres") == [(None, "raw", "orders"), ("db", "public", "customers")]
+        assert _applicable(c, sql, "postgres") == [
+            ("orders", "COUNT(*)"), ("raw.orders", "MAX(id)"), ("public.customers", "COUNT(*)"),
+        ]
+
+    def test_a_cte_named_like_the_table_it_reads(self):
+        c = QueryCache(CacheConfig(refresh_keys=(("orders", "COUNT(*)"),)))
+        sql = "WITH orders AS (SELECT * FROM orders WHERE id > 1) SELECT * FROM orders"
+        assert _tables(sql, "postgres") == [(None, None, "orders")]
+        assert _applicable(c, sql, "postgres") == [("orders", "COUNT(*)")]
 
 
 class TestWildcardMatching:
     def test_unqualified_config_matches_any_qualifier_pg(self):
         c = QueryCache(CacheConfig(refresh_keys=[("orders", "COUNT(*)")]))
         for frm in ("orders", "public.orders", "db.public.orders"):
-            assert c.applicable_keys(f"SELECT * FROM {frm}", "postgres") == [
+            assert _applicable(c, f"SELECT * FROM {frm}", "postgres") == [
                 ("orders", "COUNT(*)")
             ]
 
     def test_schema_qualified_config_requires_schema_pg(self):
         c = QueryCache(CacheConfig(refresh_keys=[("public.orders", "COUNT(*)")]))
-        assert c.applicable_keys("SELECT * FROM public.orders", "postgres") == [
+        assert _applicable(c, "SELECT * FROM public.orders", "postgres") == [
             ("public.orders", "COUNT(*)")
         ]
-        assert c.applicable_keys("SELECT * FROM other.orders", "postgres") == []
-        assert c.applicable_keys("SELECT * FROM orders", "postgres") == []
+        assert _applicable(c, "SELECT * FROM other.orders", "postgres") == []
+        assert _applicable(c, "SELECT * FROM orders", "postgres") == []
 
     def test_snowflake_unquoted_folds_upper(self):
         c = QueryCache(CacheConfig(refresh_keys=[("orders", "COUNT(*)")]))
-        assert c.applicable_keys("SELECT * FROM orders", "snowflake") == [
+        assert _applicable(c, "SELECT * FROM orders", "snowflake") == [
             ("orders", "COUNT(*)")
         ]
         # Quoted lowercase is preserved (orders != ORDERS) → no match.
-        assert c.applicable_keys('SELECT * FROM "orders"', "snowflake") == []
+        assert _applicable(c, 'SELECT * FROM "orders"', "snowflake") == []
 
     def test_quoted_config_preserved_exactly(self):
         c = QueryCache(CacheConfig(refresh_keys=[('"Orders"', "COUNT(*)")]))
-        assert c.applicable_keys('SELECT * FROM "Orders"', "snowflake") == [
+        assert _applicable(c, 'SELECT * FROM "Orders"', "snowflake") == [
             ('"Orders"', "COUNT(*)")
         ]
-        assert c.applicable_keys("SELECT * FROM orders", "snowflake") == []
+        assert _applicable(c, "SELECT * FROM orders", "snowflake") == []
 
     def test_bigquery_dotted_paths(self):
         c = QueryCache(CacheConfig(refresh_keys=[("dataset.orders", "COUNT(*)")]))
-        assert c.applicable_keys(
+        assert _applicable(
+            c,
             "SELECT * FROM `project`.`dataset`.`orders`", "bigquery"
         ) == [("dataset.orders", "COUNT(*)")]
-        assert c.applicable_keys(
+        assert _applicable(
+            c,
             "SELECT * FROM `project`.`other`.`orders`", "bigquery"
         ) == []
 
     def test_sqlserver_schema_qualified(self):
         c = QueryCache(CacheConfig(refresh_keys=[("dbo.orders", "COUNT(*)")]))
-        assert c.applicable_keys("SELECT * FROM dbo.orders", "tsql") == [
+        assert _applicable(c, "SELECT * FROM dbo.orders", "tsql") == [
             ("dbo.orders", "COUNT(*)")
         ]
 
@@ -325,7 +371,7 @@ class TestWildcardMatching:
                 refresh_keys=[("orders", "MAX(updated_at)"), ("orders", "COUNT(*)")]
             )
         )
-        assert c.applicable_keys("SELECT * FROM orders", "postgres") == [
+        assert _applicable(c, "SELECT * FROM orders", "postgres") == [
             ("orders", "MAX(updated_at)"),
             ("orders", "COUNT(*)"),
         ]
@@ -334,7 +380,7 @@ class TestWildcardMatching:
         c = QueryCache(
             CacheConfig(refresh_keys=[("orders", "COUNT(*)"), ("aux", "COUNT(*)")])
         )
-        assert c.applicable_keys("SELECT * FROM orders", "postgres") == [
+        assert _applicable(c, "SELECT * FROM orders", "postgres") == [
             ("orders", "COUNT(*)")
         ]
 
@@ -344,7 +390,7 @@ class TestScanSqlAndValues:
         c = QueryCache(CacheConfig())
         sql = c.build_refresh_key_sql(
             "public.orders", ["MAX(updated_at)", "COUNT(*)"], "postgres"
-        )
+        ).sql(dialect="postgres")
         assert 'AS "slayer_rk_0"' in sql
         assert 'AS "slayer_rk_1"' in sql
         assert "MAX(updated_at)" in sql
@@ -353,7 +399,7 @@ class TestScanSqlAndValues:
 
     def test_build_scan_sql_mysql_backticks(self):
         c = QueryCache(CacheConfig())
-        sql = c.build_refresh_key_sql("orders", ["COUNT(*)"], "mysql")
+        sql = c.build_refresh_key_sql("orders", ["COUNT(*)"], "mysql").sql(dialect="mysql")
         assert "`slayer_rk_0`" in sql
 
     def test_values_differ(self):
@@ -662,7 +708,7 @@ class TestMultiStageAndByName:
             distinct_dimension_values=False,
         )
         outer = SlayerQuery(
-            source_model="raw", measures=[ModelMeasure(formula="amount:sum")]
+            source_model="raw", measures=[ModelMeasure(formula="sum(amount)")]
         )
         r1 = await engine.execute([inner, outer], cache=True)
         assert engine.cache_size == 1
@@ -679,7 +725,7 @@ class TestMultiStageAndByName:
         await engine.create_model_from_query(
             query=SlayerQuery(
                 source_model="orders",
-                measures=[ModelMeasure(formula="amount:sum")],
+                measures=[ModelMeasure(formula="sum(amount)")],
                 dimensions=[ColumnRef(name="status")],
             ),
             name="orders_by_status",
@@ -699,7 +745,7 @@ class TestMultiStageAndByName:
         await engine.create_model_from_query(
             query=SlayerQuery(
                 source_model="orders",
-                measures=[ModelMeasure(formula="amount:sum")],
+                measures=[ModelMeasure(formula="sum(amount)")],
                 dimensions=[ColumnRef(name="status")],
             ),
             name="obs",
@@ -714,7 +760,7 @@ class TestMultiStageAndByName:
                 source_queries=[
                     SlayerQuery(
                         source_model="orders",
-                        measures=[ModelMeasure(formula="amount:sum")],
+                        measures=[ModelMeasure(formula="sum(amount)")],
                         dimensions=[ColumnRef(name="status")],
                         filters=["status != 'pending'"],
                     )
@@ -739,7 +785,7 @@ class TestRefinedByName:
         await engine.create_model_from_query(
             query=SlayerQuery(
                 source_model="orders",
-                measures=[ModelMeasure(formula="amount:sum")],
+                measures=[ModelMeasure(formula="sum(amount)")],
                 dimensions=[ColumnRef(name="status")],
             ),
             name="obs",
@@ -799,7 +845,7 @@ class TestEvictAndManagement:
         q1 = _sum_query()
         q2 = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
             dimensions=[ColumnRef(name="status")],
         )
         await engine.execute(q1, cache=True)
@@ -857,7 +903,7 @@ class TestCacheConfigFrozen:
 
 class TestPolicyInteraction:
     async def test_refresh_key_scan_is_policy_scoped(self, tmp_path, monkeypatch):
-        # DEV-1587 × DEV-1578: with a forced-filter policy the refresh-key
+        # With a forced-filter policy the refresh-key
         # baseline scan must be rewritten to the same tenant scope as the data
         # query, so a global MAX/COUNT can't mask a tenant-local change.
         engine = await _build_engine(

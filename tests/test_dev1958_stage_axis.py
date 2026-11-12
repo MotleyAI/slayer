@@ -7,7 +7,6 @@ from __future__ import annotations
 import pytest
 
 from tests._dev1832_fixtures import (
-    ColumnRef,
     ModelMeasure,
     SlayerQuery,
     TimeDimension,
@@ -30,14 +29,14 @@ async def exec_engine(request):
 
 async def test_shifted_share_over_stage_time_dimension(exec_engine) -> None:
     inner = monthly_q(name="s1", dimensions=["region"], time_dimensions=month_td(),
-                      measures=[ModelMeasure(formula="amount:sum", name="rev")])
+                      measures=[ModelMeasure(formula="sum(amount)", name="rev")])
     outer = SlayerQuery.model_validate({
         "source_model": "s1", "dimensions": ["region"],
-        "time_dimensions": [TimeDimension(dimension=ColumnRef(name="ordered_at"),
+        "time_dimensions": [TimeDimension(dimension="ordered_at",
                                           granularity=TimeGranularity.MONTH,
                                           date_range=["2024-02-01", "2024-03-31"])],
         "measures": [ModelMeasure(
-            formula="time_shift(rev:sum / rev:sum(partition_by=[ordered_at]), -1)",
+            formula="time_shift(sum(rev) / sum(rev, partition_by=[ordered_at]), -1)",
             name="t")]})
     resp = await exec_engine.execute([inner, outer])
     got = {(r["s1.region"], month_key(r["s1.ordered_at"])): r["s1.t"] for r in resp.data}

@@ -9,7 +9,7 @@ orders (id, status, region, amount, qty, created_at):
    6  c  EU  60  6  2024-03-15
    7  b  US  70  7  2024-04-10
 
-Monthly ``amount:sum``: Jan 30, Feb 70, Mar 110, Apr 70; cumulative 30, 100, 210, 280.
+Monthly ``sum(amount)``: Jan 30, Feb 70, Mar 110, Apr 70; cumulative 30, 100, 210, 280.
 """
 
 from __future__ import annotations
@@ -70,9 +70,9 @@ def month_td() -> list[dict]:
 
 
 def cumsum_chain(**kw) -> SlayerQuery:
-    """``cumsum(amount:sum)`` by month (a one-step transform chain)."""
+    """``cumsum(sum(amount))`` by month (a one-step transform chain)."""
     kw.setdefault("time_dimensions", month_td())
-    kw.setdefault("measures", [{"formula": "cumsum(amount:sum)", "name": "running"}])
+    kw.setdefault("measures", [{"formula": "cumsum(sum(amount))", "name": "running"}])
     return q(**kw)
 
 
@@ -81,11 +81,11 @@ MODE_A_OR = "status = 'a' OR status = 'b'"
 
 def where_having_query() -> SlayerQuery:
     """Same-phase WHERE / HAVING conjuncts, two of them ORs."""
-    return q(dimensions=["region"], measures=["amount:sum"], filters=[
+    return q(dimensions=["region"], measures=["sum(amount)"], filters=[
         "amount > 15",
         "region == 'US' or region == 'EU'",
-        "amount:sum > 55 or amount:count > 2",
-        "amount:max < 1000",
+        "sum(amount) > 55 or count(amount) > 2",
+        "max(amount) < 1000",
     ])
 
 

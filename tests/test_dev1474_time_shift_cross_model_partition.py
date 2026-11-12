@@ -205,12 +205,12 @@ def _qoq_query(*, measure_formula: str, measure_name: str) -> SlayerQuery:
     return SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="ordered_at"),
+            dimension="ordered_at",
             granularity=TimeGranularity.QUARTER,
         )],
         dimensions=[ColumnRef(name="stores.name")],
         measures=[
-            ModelMeasure(formula="order_total:sum"),
+            ModelMeasure(formula="sum(order_total)"),
             ModelMeasure(formula=measure_formula, name=measure_name),
         ],
         order=[OrderItem(column=ColumnRef(name="ordered_at"), direction="asc")],
@@ -222,11 +222,11 @@ def _qoq_query(*, measure_formula: str, measure_name: str) -> SlayerQuery:
 # =========================================================================== #
 class TestShiftedCtePartitionShape:
     async def test_qoq_single_hop_partition_joins_and_projects(self) -> None:
-        """DEV-1474 core: ``change(order_total:sum)`` with ``stores.name`` — the
+        """DEV-1474 core: ``change(sum(order_total))`` with ``stores.name`` — the
         shifted CTE pulls ``LEFT JOIN stores`` (Law 1), projects the joined dim,
         and the sjoin joins back on it. Today: ``NotImplementedError 7b.12``."""
         sql = await _gen(
-            _qoq_query(measure_formula="change(order_total:sum)", measure_name="qoq"),
+            _qoq_query(measure_formula="change(sum(order_total))", measure_name="qoq"),
             _orders(), extra_models=[_stores(), _regions()],
         )
         shifted = _shifted_body(sql)
@@ -248,13 +248,13 @@ class TestShiftedCtePartitionShape:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="ordered_at"),
+                dimension="ordered_at",
                 granularity=TimeGranularity.QUARTER,
             )],
             dimensions=[ColumnRef(name="stores.regions.name")],
             measures=[
-                ModelMeasure(formula="order_total:sum"),
-                ModelMeasure(formula="time_shift(order_total:sum, -1)", name="prev"),
+                ModelMeasure(formula="sum(order_total)"),
+                ModelMeasure(formula="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
         sql = await _gen(query, _orders(), extra_models=[_stores(), _regions()])
@@ -277,13 +277,13 @@ class TestShiftedCtePartitionShape:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="ordered_at"),
+                dimension="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
             dimensions=[ColumnRef(name="status_up")],
             measures=[
-                ModelMeasure(formula="order_total:sum"),
-                ModelMeasure(formula="time_shift(order_total:sum, -1)", name="prev"),
+                ModelMeasure(formula="sum(order_total)"),
+                ModelMeasure(formula="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
         sql = await _gen(query, _orders())
@@ -309,13 +309,13 @@ class TestShiftedCtePartitionShape:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="ordered_at"),
+                dimension="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
             dimensions=[ColumnRef(name="stores.tier")],
             measures=[
-                ModelMeasure(formula="order_total:sum"),
-                ModelMeasure(formula="time_shift(order_total:sum, -1)", name="prev"),
+                ModelMeasure(formula="sum(order_total)"),
+                ModelMeasure(formula="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
         sql = await _gen(query, _orders(), extra_models=[stores, _regions()])
@@ -338,15 +338,15 @@ class TestShiftedCtePartitionShape:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="ordered_at"),
+                TimeDimension(dimension="ordered_at",
                               granularity=TimeGranularity.MONTH),
-                TimeDimension(dimension=ColumnRef(name="delivery_at"),
+                TimeDimension(dimension="delivery_at",
                               granularity=TimeGranularity.QUARTER),
             ],
             main_time_dimension="ordered_at",
             measures=[
-                ModelMeasure(formula="order_total:sum"),
-                ModelMeasure(formula="time_shift(order_total:sum, -1)", name="prev"),
+                ModelMeasure(formula="sum(order_total)"),
+                ModelMeasure(formula="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
         sql = await _gen(query, _orders())
@@ -370,14 +370,14 @@ class TestShiftedCtePartitionShape:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="ordered_at"),
+                dimension="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
             dimensions=[ColumnRef(name="stores.name")],
             measures=[
-                ModelMeasure(formula="order_total:sum"),
+                ModelMeasure(formula="sum(order_total)"),
                 ModelMeasure(
-                    formula="time_shift(order_total:sum, -1, partition_by=stores.name)",
+                    formula="time_shift(sum(order_total), -1, partition_by=stores.name)",
                     name="prev",
                 ),
             ],
@@ -394,12 +394,12 @@ class TestShiftedCtePartitionShape:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="stores.opened_at"),
+                dimension="stores.opened_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
-                ModelMeasure(formula="order_total:sum"),
-                ModelMeasure(formula="time_shift(order_total:sum, -1)", name="prev"),
+                ModelMeasure(formula="sum(order_total)"),
+                ModelMeasure(formula="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
         sql = await _gen(query, _orders(), extra_models=[_stores(), _regions()])
@@ -427,12 +427,12 @@ class TestShiftedCteJoinedFilter:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="ordered_at"),
+                dimension="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
-                ModelMeasure(formula="order_total:sum"),
-                ModelMeasure(formula="time_shift(order_total:sum, -1)", name="prev"),
+                ModelMeasure(formula="sum(order_total)"),
+                ModelMeasure(formula="time_shift(sum(order_total), -1)", name="prev"),
             ],
             filters=["stores.name = 'North'"],
         )
@@ -455,12 +455,12 @@ class TestShiftedCteJoinedFilter:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="ordered_at"),
+                dimension="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
-                ModelMeasure(formula="order_total:sum"),
-                ModelMeasure(formula="time_shift(order_total:sum, -1)", name="prev"),
+                ModelMeasure(formula="sum(order_total)"),
+                ModelMeasure(formula="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
         sql = await _gen(query, model, extra_models=[_stores(), _regions()])
@@ -504,13 +504,13 @@ class TestShiftedCteNullSafeJoinBack:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="ordered_at"),
+                dimension="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
             dimensions=[ColumnRef(name="status")],
             measures=[
-                ModelMeasure(formula="order_total:sum"),
-                ModelMeasure(formula="time_shift(order_total:sum, -1)", name="prev"),
+                ModelMeasure(formula="sum(order_total)"),
+                ModelMeasure(formula="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
         sql = await _gen(query, _orders(), dialect=dialect)
@@ -539,13 +539,13 @@ class TestLocalOnlyTimeShiftUnchanged:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="ordered_at"),
+                dimension="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
             dimensions=[ColumnRef(name="status")],
             measures=[
-                ModelMeasure(formula="order_total:sum"),
-                ModelMeasure(formula="time_shift(order_total:sum, -1)", name="prev"),
+                ModelMeasure(formula="sum(order_total)"),
+                ModelMeasure(formula="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
         sql = await _gen(query, _orders(), extra_models=[_stores(), _regions()])
@@ -574,15 +574,15 @@ class TestJoinedSecondaryTimeDimension:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="ordered_at"),
+                TimeDimension(dimension="ordered_at",
                               granularity=TimeGranularity.MONTH),
-                TimeDimension(dimension=ColumnRef(name="stores.opened_at"),
+                TimeDimension(dimension="stores.opened_at",
                               granularity=TimeGranularity.QUARTER),
             ],
             main_time_dimension="ordered_at",
             measures=[
-                ModelMeasure(formula="order_total:sum"),
-                ModelMeasure(formula="time_shift(order_total:sum, -1)", name="prev"),
+                ModelMeasure(formula="sum(order_total)"),
+                ModelMeasure(formula="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
         sql = await _gen(query, _orders(), extra_models=[_stores(), _regions()])
@@ -716,11 +716,11 @@ def _quarter_key(value) -> str:
 
 class TestQoQExecutionGroundTruth:
     async def test_change_per_store_matches_hand_computed(self, qoq_engine) -> None:
-        """The QoQ ``change(order_total:sum)`` partitioned by ``stores.name``
+        """The QoQ ``change(sum(order_total))`` partitioned by ``stores.name``
         matches hand-computed per-store deltas, including the NULL-store group
         (whose non-null prev proves the null-safe join-back)."""
         resp = await qoq_engine.execute(_qoq_query(
-            measure_formula="change(order_total:sum)", measure_name="qoq",
+            measure_formula="change(sum(order_total))", measure_name="qoq",
         ))
         by = {
             (r["orders.stores.name"], _quarter_key(r["orders.ordered_at"])): r
@@ -750,7 +750,7 @@ class TestQoQExecutionGroundTruth:
     async def test_change_pct_per_store_matches_hand_computed(self, qoq_engine) -> None:
         """``change_pct`` percentages per store (NULL prior → NULL)."""
         resp = await qoq_engine.execute(_qoq_query(
-            measure_formula="change_pct(order_total:sum)", measure_name="qoq_pct",
+            measure_formula="change_pct(sum(order_total))", measure_name="qoq_pct",
         ))
         by = {
             (r["orders.stores.name"], _quarter_key(r["orders.ordered_at"])): r
@@ -777,15 +777,15 @@ class TestSecondaryTimeDimensionExecution:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="ordered_at"),
+                TimeDimension(dimension="ordered_at",
                               granularity=TimeGranularity.MONTH),
-                TimeDimension(dimension=ColumnRef(name="delivery_at"),
+                TimeDimension(dimension="delivery_at",
                               granularity=TimeGranularity.QUARTER),
             ],
             main_time_dimension="ordered_at",
             measures=[
-                ModelMeasure(formula="order_total:sum"),
-                ModelMeasure(formula="time_shift(order_total:sum, -1)", name="prev"),
+                ModelMeasure(formula="sum(order_total)"),
+                ModelMeasure(formula="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
         resp = await secondary_td_engine.execute(query)

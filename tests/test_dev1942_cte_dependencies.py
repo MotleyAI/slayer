@@ -1,4 +1,4 @@
-"""DEV-1942 task 1.5 — CTE dependencies are declared (sql.arc42.md P6).
+"""CTE dependencies are declared (python.sql.arc42.md P6).
 
 The forward-reference validator (``assert_dependency_ordered_ctes``) flags any CTE
 that reads a sibling declared later in the same ``WITH`` — the DuckDB-rejected shape
@@ -38,8 +38,8 @@ from tests._dev1832_fixtures import (
 
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 
-_X = "amount:sum(partition_by=[region, ordered_at])"
-_Y = "amount:max(partition_by=[region, ordered_at])"
+_X = "sum(amount, partition_by=[region, ordered_at])"
+_Y = "max(amount, partition_by=[region, ordered_at])"
 REAGG_STANDALONE = f"min({_X}, partition_by=region)"
 HANDWRITTEN_MIN = f"sum(amount * min({_X}, partition_by=region))"
 REAGG_MAX_STANDALONE = f"max({_Y}, partition_by=region)"
@@ -156,7 +156,7 @@ class TestDualPhaseEmissionOrder:
             dimensions=["region"],
             measures=[ModelMeasure(formula=REAGG_STANDALONE, name="a"),
                       ModelMeasure(formula=HANDWRITTEN_MIN, name="b"),
-                      ModelMeasure(formula="cumsum(amount:sum)", name="c")],
+                      ModelMeasure(formula="cumsum(sum(amount))", name="c")],
             time_dimensions=month_td())
         resp = await engine.execute(query)
         assert resp.data

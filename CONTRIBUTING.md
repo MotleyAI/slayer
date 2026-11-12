@@ -84,7 +84,7 @@ Make changes with `/la:pr` in [Claude Code](https://docs.claude.com/en/docs/clau
 **Install the `la` plugin** at the version pinned in `pyproject.toml`, from inside Claude Code:
 
 ```text
-/plugin marketplace add MotleyAI/living-architecture#v0.3.1
+/plugin marketplace add MotleyAI/living-architecture#v0.4.0
 /plugin install la@living-architecture
 ```
 
@@ -151,13 +151,14 @@ A provable out-of-scope reference raises `ScopeLeakError` from `slayer/sql/scope
 
 ## Publishing
 
-Publishing a GitHub release publishes to PyPI (`.github/workflows/publish.yml`), and the release tag must match the package version. To publish to TestPyPI, run the "Publish to TestPyPI" workflow manually (`.github/workflows/publish-test.yml`). Both use OIDC trusted publishing, so no API tokens are needed.
+Publishing a GitHub release publishes to PyPI (`.github/workflows/publish.yml`), and the release tag must match the package version. To publish to TestPyPI, run the "Publish to TestPyPI" workflow manually (`.github/workflows/publish-test.yml`). Both use OIDC trusted publishing, so no API tokens are needed. Before uploading, both install the built wheel with `[all]` into a fresh `uv tool` environment and run the README's queries through its CLI and MCP server (`scripts/release_gate.py`); any failure stops the upload.
 
 ## Pull Requests
 
 - Branch from `main`, and keep each PR focused on one feature or fix.
 - Include tests for new behaviour.
 - Update `docs/` when your change affects user-facing behaviour.
+- A PR that merges `1.x` forward must keep every `openspec/specs` requirement `1.x` added or changed, verbatim, or list it with a reason in `openspec/forward-merge-ledger.yaml`. CI checks this with `scripts/forward_merge_specs.py`.
 
 Before pushing, run:
 

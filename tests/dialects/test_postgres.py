@@ -21,7 +21,7 @@ def test_postgres_explain_prefix() -> None:
 def test_postgres_log_native_flags() -> None:
     d = PostgresDialect()
     assert d.should_use_native_log(10) is True
-    assert d.should_use_native_log(2) is True
+    assert d.should_use_native_log(2) is False  # Postgres has no log2
 
 
 # build_date_trunc — native DATE_TRUNC
@@ -162,11 +162,11 @@ def test_postgres_register_udfs_is_noop() -> None:
     PostgresDialect().register_udfs(None)  # accepts any arg without side effects
 
 
-# build_explain_sql
+# explain_statements
 
 
-def test_postgres_build_explain_sql() -> None:
-    assert PostgresDialect().build_explain_sql("SELECT 1") == "EXPLAIN ANALYZE SELECT 1"
+def test_postgres_explain_statements() -> None:
+    assert PostgresDialect().explain_statements("SELECT 1").statement == "EXPLAIN ANALYZE SELECT 1"
 
 
 # rewrite_target_ast — numeric cast for 2-arg ROUND

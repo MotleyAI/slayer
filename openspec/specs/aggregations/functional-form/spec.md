@@ -129,14 +129,14 @@ with that transform's own error.
 #### Scenario: Row-grain composite keeps the aggregation reading
 - **WHEN** a measure is written `first(quantity * avg(unit_price, partition_by=product))`
   or `first(1)`
-- **THEN** it is the `first` aggregation, which rejects the expression source with
-  the existing "not supported over an expression" error
+- **THEN** it is the `first` aggregation, picking the row-level value at the ranked
+  row, by executed values — never the transform reading
 
 #### Scenario: Dispatch does not pre-empt transform-input validation
 - **WHEN** a measure is written `first(cumsum(weight))` with `weight` an unprojected
   row-level column
 - **THEN** it fails at plan time with the grain-refining row-level-leaf error naming
-  `cumsum` — never the aggregation's "not supported over an expression" error
+  `cumsum` — never the aggregation reading
 
 ### Requirement: Functional input is first-class — no rewriting, no warning
 The system SHALL NOT emit a normalization warning for functional aggregations,
@@ -212,8 +212,9 @@ spelling. Passing a parameter both positionally and by name, or more positional
 values than declared parameters — any positional value at all on an aggregation
 that declares none — SHALL fail with a clear error naming the rule. Ranked
 `first`/`last` declare no parameters — they take at most one positional value,
-their ranking column (the time axis when omitted), which, when given, SHALL be a
-column reference, never a literal or an attached value. After binding an
+their ranking key (resolved per › Default ranking key when omitted), which, when
+given, SHALL be a row-level expression — a column being the one-leaf case — never a
+literal-only expression or one carrying an aggregate, transform or attached value. After binding an
 attached (aggregate- or transform-valued) parameter is therefore always a named
 parameter.
 
@@ -244,7 +245,12 @@ parameter.
 #### Scenario: Invalid first/last ranking key errors
 - **WHEN** `last(amount, sum(amount, partition_by=region))`, `last(amount, 1)` or
   `last(amount, id, amount)` is submitted
-- **THEN** each fails at bind with a clear error naming the ranking-column rule
+- **THEN** each fails at bind with a clear error naming the ranking-key rule
+
+#### Scenario: Expression ranking key
+- **WHEN** a measure is written `last(balance, coalesce(updated_at, created_at))`
+- **THEN** it is the `balance` of the row latest by the coalesced timestamp, by
+  executed values on SQLite and DuckDB
 
 #### Scenario: Positional transform parameter equals named
 - **WHEN** a measure is written
@@ -268,11 +274,14 @@ concatenates the values.
 - **THEN** parsing fails with an error naming the aggregation and `partition_by`
 
 ### Requirement: SLayer emits only the functional spelling
-Every aggregation SLayer writes or shows to an agent SHALL use the functional
-spelling `agg(col, args)`, whatever spelling its input used: model measure
-formulas written by the dbt, Cube (including view facades) and OSI importers,
-root-model recommendation paths, error and warning remedies, and tool
-descriptions and help.
+Every aggregation SLayer writes or shows to an agent, or passes to its own engine,
+SHALL use the functional spelling `agg(col, args)`, whatever spelling its input
+used: model measure formulas written by the dbt, Cube (including view facades) and
+OSI importers, the SQL facade's catalog and translated queries, schema-probe queries,
+memory entity resolution, root-model recommendation paths, error and warning
+remedies, and tool descriptions and help. Result keys SHALL be unchanged by the
+spelling: an unnamed measure keeps the key it had when the colon spelling was the
+canonical text.
 
 #### Scenario: Importer-written formulas are functional
 - **WHEN** a dbt, Cube or OSI project is imported
@@ -281,8 +290,8 @@ descriptions and help.
   `sum(a) / count(*)`) and parses
 
 #### Scenario: Recommendation paths are functional
-- **WHEN** `recommend_root_model` is given `sum(orders.amount)`, its legacy colon
-  twin, or `percentile(orders.amount, p=0.9)`, and recommends `orders`
+- **WHEN** `recommend_root_model` is given `sum(orders.amount)` or
+  `percentile(orders.amount, p=0.9)`, and recommends `orders`
 - **THEN** the item paths are `sum(amount)` and `percentile(amount, p=0.9)`; a
   cross-model item keeps its join path inside the call (`sum(customers.regions.population)`)
 
@@ -295,36 +304,30 @@ descriptions and help.
 - **THEN** none shows the colon spelling; a custom aggregation is shown used as
   `sum_sq(column)`
 
-### Requirement: The legacy colon spelling is accepted as an exact equivalent
-The system SHALL accept the legacy colon spelling `col:agg(args)` as an exact
-equivalent of `agg(col, args)` in every position that accepts an aggregation:
-same generated SQL, same result values, same result-column keys, the same
-measure, filter and order matching across the two spellings, and the same error
-behavior for invalid combinations.
+#### Scenario: The SQL facade translates to functional queries
+- **WHEN** a SQL client runs `SELECT COUNT(*), SUM(revenue) FROM orders GROUP BY status HAVING SUM(revenue) > 1000`, and another selects a joined model's row count and `customers.region` count
+- **THEN** the translated SLayer queries measure `count(*)`, `sum(revenue)`, `count(customers.*)` and `count(customers.region)` and filter `sum(revenue) > 1000`, and the result column names are unchanged
 
-#### Scenario: Every builtin aggregation has an exact colon twin
-- **WHEN** each builtin aggregation is written in the legacy colon spelling —
-  including star (`*:count`), cross-model star (`customers.*:count`), a join-path
-  column, keyword and positional parameters (`price:percentile(p=0.9)`,
-  `balance:last(updated_at)`), and the reserved `window=` / `partition_by=` kwargs
-- **THEN** its SQL, results, result key and errors equal those of its functional
-  twin (parametrized over the full builtin set, not a hardcoded list)
+#### Scenario: Result keys are unchanged
+- **WHEN** a query on `orders` has the unnamed measures `sum(amount)`, `count(*)`, `sum(amount) / count(*)`, `cumsum(sum(amount))` and `sum(amount) FILTER (WHERE status = 'paid')`, and an unnamed computed dimension `sum(amount, partition_by=region)`
+- **THEN** their result keys are `orders.amount_sum`, `orders._count`, `orders.amount_sum_count`, `orders.cumsum_amount_sum`, `orders.amount_sum_filter_where_status_paid` and `orders.amount_sum_partition_by_region`, as before this change, including names long enough to carry a hash
 
 ### Requirement: The method-call spelling is an aggregation spelling
 `<path>.<name>(<source>[, <literal arguments>])` SHALL be accepted in every position that accepts an
-aggregation as an exact equivalent of `<name>(<path>.<source>[, <literal arguments>])` — same
-aggregation, result key, SQL and values — where `<path>` is a dotted join path, `<source>` is `*`, a
-bare column name, or an expression whose column leaves are all bare names (each leaf read under
-`<path>`), and every further argument, positional or keyword, is a literal. `<name>` SHALL be resolved
-exactly as in its functional twin: builtin aggregations, aggregation-name aliases, custom aggregations
-validated at binding, granularity calls, and the argument-shape dispatch of `first` / `last`. Any other
-method-call shape SHALL be rejected with an error showing the functional spelling: a dotted source
-leaf, a non-literal further argument, a `partition_by=` argument, or a callee that is a scalar
-function or a transform-only name.
+aggregation as a deprecated exact equivalent of `<name>(<path>.<source>[, <literal arguments>])` — same
+aggregation, result key, SQL and values, with the deprecation warnings and save-time rewrite of
+`queries/expression-grammar` › Legacy spellings keep their meaning — where `<path>` is a dotted join path,
+`<source>` is `*`, a bare column name, or an expression whose column leaves are all bare names (each leaf
+read under `<path>`), and every further argument, positional or keyword, is a literal. `<name>` SHALL be
+resolved exactly as in its functional twin: builtin aggregations, aggregation-name aliases, custom
+aggregations validated at binding, and the argument-shape dispatch of `first` / `last`. Any other
+method-call shape SHALL be rejected with an error showing the functional spelling: a dotted source leaf,
+a non-literal further argument, a `partition_by=` argument, or a callee that is a scalar function, a
+date-part alias (including `year` … `second`) or a transform-only name.
 
 #### Scenario: Count of a joined model's rows
 - **WHEN** a query rooted at `orders` measures `order_items.count(*)`
-- **THEN** its columns, rows and SQL equal those of `count(order_items.*)`
+- **THEN** its columns, rows and SQL equal those of `count(order_items.*)`, and the response warns naming `count(order_items.*)`
 
 #### Scenario: Expression source
 - **WHEN** a measure is written `order_items.sum(price * qty)`
@@ -336,8 +339,210 @@ function or a transform-only name.
 
 #### Scenario: Granularity callee follows its twin
 - **WHEN** a dimension expression is written `order_items.month(created_at)`
-- **THEN** it equals `month(order_items.created_at)`
+- **THEN** it is rejected with an error showing `month(order_items.created_at)`, because `month` is a date-part function, not an aggregation
 
 #### Scenario: Ambiguous method-call shapes are rejected
 - **WHEN** a measure is written `order_items.weighted_avg(price, qty)`, `order_items.sum(products.price)`, `order_items.sum(price, partition_by=region)` or `order_items.round(price)`
 - **THEN** each is rejected with an error showing the functional spelling to write
+
+### Requirement: An aggregation accepts a FILTER clause
+`agg(…) FILTER (WHERE c)` SHALL be accepted on every aggregation — built-in, aliased and model-defined custom — in every aggregation position, and SHALL mean the aggregation computed over only the rows where `c` is true. `c` SHALL be a row-level predicate over the aggregation's dataset; an aggregate, a transform or an attached value inside `c` SHALL be rejected with a typed query error naming the clause. Every row the aggregation reads SHALL be restricted by `c` — the source value, every column-valued parameter (`weight=`, `other=`), the ranking key of `first` / `last`, and every row a custom aggregation's formula reads directly (`COUNT(*)`, a bare column); literal parameters are unaffected. The restriction SHALL apply to the aggregation's own rows only, never to the query's result rows, a windowed aggregation's time buckets or any other measure. A grouped cell with rows but none passing `c` SHALL take the aggregation's empty value — NULL for a custom aggregation; with no grain, a custom aggregation SHALL read its formula's value over no rows. The clause SHALL compose with `partition_by=` and `window=`. An unnamed formula containing a filtered aggregation SHALL take its result key from its full text by the existing expression-naming rule — the same rule whether or not the condition holds a `{variable}`, a variable naming itself by its placeholder — and spellings of one formula that differ only in case or whitespace SHALL share that key. A filtered aggregation and the same aggregation unfiltered, or filtered by a different condition, SHALL never share a result key or a value, whether they are named or unnamed, in one formula or in separate measures.
+
+#### Scenario: Filtered count
+- **WHEN** a query on `orders` by `region` has measure `count(*) FILTER (WHERE status = 'paid')`
+- **THEN** each region's value is its number of paid orders, 0 where it has none
+
+#### Scenario: Filtered sum equals a masked sum
+- **WHEN** one measure is `sum(amount) FILTER (WHERE status = 'paid')` and another `sum(iif(status = 'paid', amount, NULL))`
+- **THEN** both return the same values
+
+#### Scenario: Filtered weighted average uses only passing rows
+- **WHEN** a measure is `weighted_avg(price, weight=quantity) FILTER (WHERE status = 'paid')`
+- **THEN** it equals the weighted average computed over the paid rows alone, numerator and denominator both
+
+#### Scenario: Filtered last picks the newest passing row
+- **WHEN** a query by `customer_id` has measure `last(balance, updated_at) FILTER (WHERE status = 'active')` and a customer's newest row is inactive
+- **THEN** the value is the balance of that customer's newest active row
+
+#### Scenario: Aggregate inside the condition rejected
+- **WHEN** a measure is `sum(amount) FILTER (WHERE amount > avg(amount))`
+- **THEN** it is rejected with the typed error naming the FILTER clause
+
+#### Scenario: With partition_by
+- **WHEN** a query by `region, city` has measure `sum(amount, partition_by=region) FILTER (WHERE status = 'paid')`
+- **THEN** each row carries its region's paid total
+
+#### Scenario: Constant condition named from its text
+- **WHEN** a query on `orders` has the unnamed measures `count(*) FILTER (WHERE status = 'paid')` and `sum(amount) FILTER (WHERE amount > 10)`
+- **THEN** their result keys are `orders.count_filter_where_status_paid` and `orders.amount_sum_filter_where_amount_10`, never a name built from an internal masked form
+
+#### Scenario: Variable and constant conditions follow one rule
+- **WHEN** one query has the unnamed measure `sum(amount) FILTER (WHERE amount > {n})` with `n = 10` and another has `sum(amount) FILTER (WHERE amount > 10)`
+- **THEN** their result keys are `orders.amount_sum_filter_where_amount_n` and `orders.amount_sum_filter_where_amount_10`, both derived from the formula text as written
+
+#### Scenario: Spellings of one formula share a key
+- **WHEN** the unnamed measure is written `count(*) filter (where status = 'paid')` instead
+- **THEN** its result key is `orders.count_filter_where_status_paid`
+
+#### Scenario: Filtered first beside the unfiltered first
+- **WHEN** a query on `orders` has the unnamed measures `first(amount) FILTER (WHERE status = 'open')` and `first(amount)`, and a second query has the same two measures named `fo` and `f`
+- **THEN** both queries execute, each measure under its own result key, with `fo` the amount of the earliest open order and `f` the amount of the earliest order
+
+#### Scenario: Filtered and unfiltered first inside one formula
+- **WHEN** a measure is `first(amount) FILTER (WHERE status = 'open') - first(amount)` and the same with `last`
+- **THEN** each returns the difference of the two distinct picks, never 0 from one pick read twice
+
+#### Scenario: Conditions whose names coincide stay distinct
+- **WHEN** a query has the measures `first(amount) FILTER (WHERE status = 'open')` and `first(amount) FILTER (WHERE status <> 'open')`, named `a` and `b`
+- **THEN** `a` is the amount of the earliest open order and `b` the amount of the earliest order that is not open
+
+#### Scenario: Filtered star count over a joined condition beside the plain count
+- **WHEN** a query on `orders` has the unnamed measures `count(*) FILTER (WHERE customers.name = 'Alice')` and `count(*)`
+- **THEN** both execute under distinct result keys, with Alice's order count and the total order count
+
+#### Scenario: Ordering by the filtered formula
+- **WHEN** a query on `orders` by `status` has the measure `count(*) FILTER (WHERE status = 'paid')` and orders by the same formula text descending
+- **THEN** the order applies to that measure's column
+
+#### Scenario: Filtered custom row count
+- **WHEN** `orders` defines the custom aggregation `rows` with formula `COUNT(*)` and a query on `orders` by `region` has measure `rows(amount) FILTER (WHERE status = 'paid')`
+- **THEN** each region's value is its number of paid orders, and NULL for a region whose orders include none that are paid
+
+#### Scenario: Filtered custom formula reading a raw column
+- **WHEN** `orders` defines the custom aggregation `per_order` with formula `SUM({value}) / COUNT(DISTINCT id)` and a measure is `per_order(amount) FILTER (WHERE status = 'paid')`
+- **THEN** it equals the paid amount divided by the number of distinct paid orders, grouped or ungrouped
+
+#### Scenario: Filtered custom formula reading only placeholders
+- **WHEN** `orders` defines `wsum` with formula `SUM({value} * {weight})` (`weight` defaulting to `quantity`) and a measure is `wsum(price) FILTER (WHERE status = 'paid')`
+- **THEN** it equals `wsum(price)` over a query restricted to the paid rows
+
+#### Scenario: Ungrouped filtered custom aggregation with no passing rows
+- **WHEN** a query on `orders` with no dimensions has measure `rows(amount) FILTER (WHERE status = 'none')`
+- **THEN** the value is 0, the formula's value over no rows
+
+#### Scenario: Filtered custom aggregation in a trailing window
+- **WHEN** a query on `orders` by month has measure `rows(amount, window='2m') FILTER (WHERE status = 'paid')` and one month has orders but none paid while the month before has a paid order
+- **THEN** that month is in the result and its value counts the paid orders of its trailing interval
+
+#### Scenario: Filtered custom aggregation beside unfiltered measures
+- **WHEN** a query on `orders` by `region` has the measures `rows(amount) FILTER (WHERE status = 'paid')`, `rows(amount)` and `count(*)`
+- **THEN** the result has one row per region and the unfiltered measures equal their values in the query without the filtered one
+
+#### Scenario: Filtered custom aggregation over a joined model
+- **WHEN** a query on `customers` by `name` has measure `rows(orders.amount) FILTER (WHERE orders.status = 'paid')`
+- **THEN** each customer's value is their number of paid orders, NULL for a customer with no paid order
+
+### Requirement: Default ranking key
+A ranked `first` / `last` aggregation without an explicit ranking key SHALL rank by,
+in order: the first entry of the query's `dimensions` (in projection order) that is
+row-level and types DATE or TIMESTAMP — a column or a computed dimension, never a
+granularity bucket, which ties every row of a cell; else the first time dimension's un-truncated source, column or
+expression; else the model's default time dimension; else it SHALL fail with the
+existing ranking-key resolution error.
+
+#### Scenario: A temporal computed dimension is the default ranking key
+- **WHEN** a query groups by the computed dimension `coalesce(shipped_at, created_at)`
+  (typed TIMESTAMP) and a month time dimension on `created_at`, and selects
+  `last(amount)`
+- **THEN** each cell's value is the `amount` of its row latest by the coalesced
+  timestamp, by executed values on SQLite and DuckDB
+
+#### Scenario: An expression time dimension's source is the default ranking key
+- **WHEN** a query's only temporal dimension is the time dimension
+  `coalesce(shipped_at, created_at)` at `month` and it selects `last(amount)`
+- **THEN** each month's value is the `amount` of its row latest by the un-truncated
+  coalesced timestamp
+
+### Requirement: An expression ranking key is judged by its leaves
+An explicit or defaulted ranking key SHALL be determined by the aggregation's home
+and never widen it (semantics Axiom 2.4), judged over every leaf the expression reads
+and every dependency of a derived column it names, for local and cross-model
+(target-rooted) producers alike: a key reading a leaf across a fanning or unproven
+hop from the home SHALL fail with the existing ranked-input safety error naming that
+leaf and the hop. Two ranked aggregations differing only in their ranking key SHALL
+stay separate producers; equal keys, however spelled, SHALL share one.
+
+#### Scenario: Fanning leaf inside an expression ranking key
+- **WHEN** a query rooted at `customers` selects
+  `last(spend, coalesce(orders.created_at, signup_ts))`, `customers → orders`
+  one-to-many
+- **THEN** it fails at plan time with the ranked-input safety error naming
+  `orders.created_at` and the hop, never a value
+
+#### Scenario: Cross-model ranked aggregate with an expression key
+- **WHEN** a query rooted at `orders` selects
+  `last(customers.spend, coalesce(customers.updated_at, customers.signup_ts), partition_by=region)`
+- **THEN** it executes ranked inside the `customers`-rooted producer, by executed values
+
+### Requirement: The colon spelling is refused
+
+Fresh input using the colon aggregation spelling `<source>:<name>[(<args>)]` — a column, a join-path column, `*` or `<path>.*` source — or the colon granularity spelling `<column>:<granularity>` SHALL be rejected with a typed error naming the colon span and its twin, in every Mode-B position (query measures, filters, order keys, dimensions, time dimensions, `main_time_dimension`, computed-dimension expressions, model measure formulas, model-extension and inline-model measures, stage formulas), when a model or saved query is saved, and in entity references (`recommend_root_model` items, memory `linked_entities`). The twin SHALL be `date_trunc('<name>', <source>)` when `<name>` is a built-in granularity, and `<name>(<source>[, <args>])` otherwise, with the source and arguments as written. A colon inside a string literal, a quoted identifier or a `::` cast SHALL NOT be refused.
+
+#### Scenario: Measure
+
+- **WHEN** a query on `orders` has the measure `amount:sum`
+- **THEN** it is rejected with the typed error naming `amount:sum` and `sum(amount)`
+
+#### Scenario: Every builtin aggregation and alias
+
+- **WHEN** each builtin aggregation and each aggregation-name alias is written in the colon spelling as a measure
+- **THEN** each is rejected naming its functional twin (parametrized over the full builtin and alias sets)
+
+#### Scenario: Star and cross-model star
+
+- **WHEN** a query on `orders` has the measure `*:count`, and another `customers.*:count`
+- **THEN** they are rejected naming `count(*)` and `count(customers.*)`
+
+#### Scenario: Parameters
+
+- **WHEN** a measure is `price:percentile(p=0.9)`, `balance:last(updated_at)` or `amount:sum(window='30d')`
+- **THEN** each is rejected naming `percentile(price, p=0.9)`, `last(balance, updated_at)` and `sum(amount, window='30d')`
+
+#### Scenario: Filter and order key
+
+- **WHEN** a query filters `amount:sum > 100`, and another orders by `amount:sum` descending, as a string and as an object order item
+- **THEN** each is rejected with the typed error naming `sum(amount)`
+
+#### Scenario: Built-in granularity
+
+- **WHEN** a query has the dimension `created_at:month`, the time dimension `created_at:month`, or the order key `customers.created_at:month`
+- **THEN** each is rejected naming `date_trunc('month', created_at)` (`date_trunc('month', customers.created_at)` for the order key)
+
+#### Scenario: Custom granularity
+
+- **WHEN** a query on a datasource defining the granularity `fiscal_quarter` has the time dimension `created_at:fiscal_quarter`
+- **THEN** it is rejected naming `fiscal_quarter(created_at)`
+
+#### Scenario: Model and saved-query saves
+
+- **WHEN** a model is saved with the measure formula `amount:sum`, or a query-backed model with a source query measuring `*:count`
+- **THEN** the save is refused with the typed error naming the twin, and nothing is stored
+
+#### Scenario: Entity references
+
+- **WHEN** `recommend_root_model` is given `orders.amount:sum`, or a memory is saved with the linked entity `orders.amount:sum`
+- **THEN** each is rejected with the typed error naming `sum(orders.amount)`
+
+#### Scenario: Colons that are not the colon spelling
+
+- **WHEN** a filter is `note = 'a:sum'`, a measure is `sum(amount::INT)`, and a measure is `sum(amount) FILTER (WHERE note = 'x:count')`
+- **THEN** each is accepted
+
+### Requirement: first and last never pick a NULL ranking key
+A ranked `first` / `last` aggregation (plain, partitioned, windowed or cross-model) SHALL pick only among the rows whose ranking key is non-NULL: `first` the row with the smallest key, `last` the row with the largest, on every dialect and independent of its native NULL ordering or session settings. A cell whose rows all have a NULL ranking key SHALL take the empty value, NULL. A NULL value under a non-NULL key SHALL be picked like any other value.
+
+#### Scenario: NULL keys are skipped in both directions
+- **WHEN** a customer's rows are `(updated_at 2024-01-01, status 'a')`, `(NULL, 'b')`, `(2024-03-01, 'c')` and a query selects `first(status, updated_at)` and `last(status, updated_at)`
+- **THEN** they are `'a'` and `'c'` on SQLite, DuckDB, Postgres and every other Tier-1 dialect
+
+#### Scenario: All keys NULL
+- **WHEN** a customer's rows all have a NULL `updated_at`
+- **THEN** `first(status, updated_at)` and `last(status, updated_at)` are NULL for that customer
+
+#### Scenario: NULL value under a non-NULL key
+- **WHEN** the latest-by-`updated_at` row's `status` is NULL
+- **THEN** `last(status, updated_at)` is NULL, not an earlier row's status
+
+#### Scenario: Partitioned and cross-model
+- **WHEN** a query rooted at `orders` selects `last(customers.status, customers.updated_at, partition_by=region)` over customers some of whose `updated_at` are NULL
+- **THEN** each region's value is the status of its latest non-NULL-keyed customer, by executed values on SQLite and DuckDB

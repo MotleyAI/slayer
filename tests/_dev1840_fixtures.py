@@ -282,7 +282,7 @@ def bundle(models: Optional[List[SlayerModel]] = None) -> ResolvedSourceBundle:
 
 def signup_month_td() -> List[TimeDimension]:
     return [TimeDimension(
-        dimension=ColumnRef(name="customers.signup_at"),
+        dimension="customers.signup_at",
         granularity=TimeGranularity.MONTH,
     )]
 
@@ -327,7 +327,7 @@ SPEND_APP_LAST_BY_TIER = {"gold": 60.0, "silver": 80.0}
 #: Nested computed-dimension producer: per-tier spend band, threshold chosen so
 #: the app pushdown flips gold (160 ≤ 170) while unfiltered gold (245) is 'hi'.
 SPEND_BAND_170 = (
-    "CASE WHEN customers.spend:sum(partition_by=customers.tier) > 170 "
+    "CASE WHEN sum(customers.spend, partition_by=customers.tier) > 170 "
     "THEN 'hi' ELSE 'lo' END"
 )
 

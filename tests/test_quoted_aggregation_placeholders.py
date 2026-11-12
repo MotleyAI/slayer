@@ -17,7 +17,7 @@ from slayer.core.models import (
     Aggregation, AggregationParam, Column, DatasourceConfig, ModelMeasure, SlayerModel,
 )
 from slayer.core.query import SlayerQuery
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.sql.sql_template import (
     SqlTemplateError, aggregation_reads, check_aggregation_definition, placeholder_names, sql_template,
 )
@@ -55,6 +55,10 @@ def _orders(*aggs: Aggregation) -> SlayerModel:
 
 def _q(formula: str) -> SlayerQuery:
     return SlayerQuery(source_model="orders", measures=[ModelMeasure(formula=formula, name="m")])
+
+
+def _mode_b_string(text: str) -> str:
+    return "'" + text.replace("'", "''") + "'"
 
 
 async def _dry(formula: str, *, agg: Aggregation, dialect: str = "postgres", validate: bool = False) -> str:
@@ -204,7 +208,7 @@ class TestQuotedBindingValue:
     async def test_string_kwarg_stays_inside_the_literal(self, dialect: str) -> None:
         # The kwarg is the dialect's own spelling of a string literal valued a'b\c.
         kwarg = exp.Literal.string(_TRICKY).sql(dialect=dialect)
-        sql = await _dry(f"lbl(amount, n={kwarg!r})", agg=_agg(_LABEL, name="lbl", n="'x'"), dialect=dialect)
+        sql = await _dry(f"lbl(amount, n={_mode_b_string(kwarg)})", agg=_agg(_LABEL, name="lbl", n="'x'"), dialect=dialect)
         lit = _then_literal(sql, dialect=dialect)
         assert isinstance(lit, exp.Literal)
         assert lit.is_string
@@ -268,8 +272,9 @@ class TestTypedLiteral:
     async def test_interval_value_cannot_hold_a_quote_or_backslash(self, dialect: str, value: str, formula: str) -> None:
         kwarg = exp.Literal.string(value).sql(dialect=dialect)
         agg = _agg(formula, name="days", n="2")
+        formula_text = f"days(amount, n={_mode_b_string(kwarg)})"
         with pytest.raises(SqlTemplateError) as ei:
-            await _dry(f"days(amount, n={kwarg!r})", agg=agg, dialect=dialect)
+            await _dry(formula_text, agg=agg, dialect=dialect)
         _names_placeholder(err=ei.value, name="n", formula=formula)
 
 

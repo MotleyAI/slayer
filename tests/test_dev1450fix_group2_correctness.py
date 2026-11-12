@@ -27,10 +27,10 @@ from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import _measure_formula_refs
+from slayer.live_schema.schema_drift import _measure_formula_refs
 from slayer.storage.sqlite_conn import transaction
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.syntax import parse_expr, parse_expr as _parse, parse_filter_expr
+from slayer.core.syntax import parse_expr, parse_expr as _parse
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -42,37 +42,22 @@ from slayer.storage.yaml_storage import YAMLStorage
 def test_over_inside_string_literal_is_not_a_window_clause():
     # No raise — the OVER( is inside a quoted literal.
     parse_expr("status == 'OVER('")
-    parse_expr('label == "x OVER (y)"')
+    parse_expr("label == 'x OVER (y)'")
 
 
 def test_over_inside_escaped_string_literal_not_window():
-    # OVER( inside a Python-escaped string literal must not trip the window
-    # guard (Codex round 2): the value is `x " OVER(`.
-    parse_expr(r'status == "x \" OVER("')
+    # The value is `x ' OVER(`: a doubled quote must not end the literal early.
+    parse_expr("status == 'x '' OVER('")
 
 
 def test_in_keyword_inside_escaped_string_literal_not_rewritten():
-    """CR review: ``_normalize_sql_filter_operators`` previously used the
-    SQL-style ('' / "") matcher, so a backslash-escaped quote left the
-    string body unprotected and ``IN`` / ``IS`` / ``AND`` rewrites leaked
-    into the literal. Now backed by ``_PY_STRING_LITERAL_RE``.
-
-    Pin: a literal containing an embedded ``IN`` keyword must round-trip
-    cleanly when the literal is bounded by escaped quotes."""
-    # The value of the literal is `x " IN (foo)` — IN must NOT lowercase
-    # inside the string. The right operand is a literal compared via ==,
-    # not a SQL-style IN clause.
-    parse_filter_expr(r'label == "x \" IN (foo)"')
+    """An embedded ``IN`` inside a literal bounded by a doubled quote stays text."""
+    parse_expr("label == 'x '' IN (foo)'")
 
 
 def test_colon_inside_escaped_string_literal_not_preprocessed():
-    """CR review: ``_preprocess_colons`` previously used the SQL-style
-    matcher; an escaped quote leaked colon-syntax aggregation rewrites
-    into string bodies. Pin: a literal containing ``revenue:sum`` is
-    not rewritten to an aggregation."""
-    # Inner literal is `x " revenue:sum`. The colon there is text, not
-    # a colon-syntax aggregation source.
-    parse_expr(r'label == "x \" revenue:sum"')
+    """A literal containing ``sum(revenue)`` after a doubled quote is not an aggregation."""
+    parse_expr("label == 'x '' revenue:sum'")
 
 
 # ---------------------------------------------------------------------------
@@ -86,11 +71,11 @@ def test_is_null_filter_parses_and_renders():
     resulting ``ast.Is`` / ``ast.IsNot`` nodes. Pins both the parse and
     a downstream render through ``_compose_arithmetic_op``."""
     # Parse must accept the SQL-style spelling.
-    parse_filter_expr("deleted_at IS NULL")
-    parse_filter_expr("deleted_at IS NOT NULL")
+    parse_expr("deleted_at IS NULL")
+    parse_expr("deleted_at IS NOT NULL")
     # And the lower-cased Python form should also work.
-    parse_filter_expr("deleted_at is None")
-    parse_filter_expr("deleted_at is not None")
+    parse_expr("deleted_at is None")
+    parse_expr("deleted_at is not None")
 
 
 def test_partition_by_multi_column_parses_and_binds():
@@ -110,7 +95,7 @@ def test_partition_by_multi_column_parses_and_binds():
     )
     bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[])
     scope = ModelScope(source_model=orders)
-    parsed = _parse("rank(amount:sum, partition_by=[region, channel], direction='desc')")
+    parsed = _parse("rank(sum(amount), partition_by=[region, channel], direction='desc')")
     bound = bind_expr(parsed=parsed, scope=scope, bundle=bundle)
     assert isinstance(bound.value_key, TransformKey)
     assert bound.value_key.op == "rank"
@@ -126,7 +111,7 @@ def test_partition_by_multi_column_parses_and_binds():
 
 def test_aggregation_eligibility_primary_key_rejected():
     """A sole primary-key column is restricted to the count family and
-    ``min`` / ``max``; ``id:sum`` raises ``AggregationNotAllowedError``."""
+    ``min`` / ``max``; ``sum(id)`` raises ``AggregationNotAllowedError``."""
     orders = SlayerModel(
         name="orders", data_source="prod", sql_table="orders",
         columns=[
@@ -137,9 +122,9 @@ def test_aggregation_eligibility_primary_key_rejected():
     bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[])
     scope = ModelScope(source_model=orders)
     for agg in ("count", "count_distinct", "max", "min"):
-        bind_expr(parsed=parse_expr(f"id:{agg}"), scope=scope, bundle=bundle)
+        bind_expr(parsed=parse_expr(f"{agg}(id)"), scope=scope, bundle=bundle)
     for agg in ("sum", "avg"):
-        parsed = parse_expr(f"id:{agg}")
+        parsed = parse_expr(f"{agg}(id)")
         with pytest.raises(AggregationNotAllowedError, match="primary-key"):
             bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
@@ -157,10 +142,10 @@ def test_aggregation_eligibility_type_default_rejected():
     bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[])
     scope = ModelScope(source_model=orders)
     # count is fine on text.
-    bind_expr(parsed=parse_expr("status:count"), scope=scope, bundle=bundle)
+    bind_expr(parsed=parse_expr("count(status)"), scope=scope, bundle=bundle)
     # avg / sum are not.
     for agg in ("avg", "sum"):
-        parsed = parse_expr(f"status:{agg}")
+        parsed = parse_expr(f"{agg}(status)")
         with pytest.raises(AggregationNotAllowedError, match="not applicable"):
             bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
@@ -175,15 +160,12 @@ async def test_is_null_filter_renders_end_to_end(engine):
     # makes sense as a predicate. Use ``orders`` as the host model with
     # an Mode-B filter through the join.
     resp = await engine.execute(
-        SlayerQuery(
-            source_model="orders",
-            dimensions=["customers.region"],
-            measures=[{"formula": "*:count"}],
-            # IS NULL via the SQL spelling (filter normalizer lowers to
-            # ``is None``; AST converter maps to ``is``; generator emits
-            # ``IS NULL``).
-            filters=["customers.region IS NOT NULL"],
-        )
+        SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": ["customers.region"],
+            "measures": [{"formula": "count(*)"}],
+            "filters": ["customers.region IS NOT NULL"],
+        })
     )
     # Both seed rows have non-null region; the filter is inert (passes).
     assert resp.row_count == 2
@@ -217,9 +199,9 @@ def test_aggregation_eligibility_allowed_aggregations_whitelist():
     )
     bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[])
     scope = ModelScope(source_model=orders)
-    bind_expr(parsed=parse_expr("amount:sum"), scope=scope, bundle=bundle)
-    bind_expr(parsed=parse_expr("amount:max"), scope=scope, bundle=bundle)
-    parsed = parse_expr("amount:avg")
+    bind_expr(parsed=parse_expr("sum(amount)"), scope=scope, bundle=bundle)
+    bind_expr(parsed=parse_expr("max(amount)"), scope=scope, bundle=bundle)
+    parsed = parse_expr("avg(amount)")
     with pytest.raises(AggregationNotAllowedError, match="allowed_aggregations"):
         bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
@@ -262,7 +244,7 @@ def _cyclic_bundle():
 def test_cyclic_dotted_star_rejected():
     bundle = _cyclic_bundle()
     scope = ModelScope(source_model=bundle.source_model)
-    parsed = parse_expr("a.b.a.*:count")
+    parsed = parse_expr("count(a.b.a.*)")
     with pytest.raises(ValueError, match="Circular join"):
         bind_expr(parsed, scope=scope, bundle=bundle)
 
@@ -270,7 +252,7 @@ def test_cyclic_dotted_star_rejected():
 def test_noncyclic_dotted_star_ok():
     bundle = _cyclic_bundle()
     scope = ModelScope(source_model=bundle.source_model)
-    bound = bind_expr(parse_expr("b.*:count"), scope=scope, bundle=bundle)
+    bound = bind_expr(parse_expr("count(b.*)"), scope=scope, bundle=bundle)
     # *:count over the joined model -> AggregateKey on a StarKey(path=("b",)).
     assert isinstance(bound.value_key, AggregateKey)
     assert isinstance(bound.value_key.source, StarKey)
@@ -345,12 +327,12 @@ async def test_order_by_joined_column_not_in_dimensions(engine):
     dimension binds the full dotted ref — leaf-only binding would fail to
     resolve ``region`` on ``orders``."""
     resp = await engine.execute(
-        SlayerQuery(
-            source_model="orders",
-            dimensions=["customers.region"],
-            measures=[{"formula": "amount:sum"}],
-            order=[OrderItem(column=ColumnRef(name="customers.region"), direction="asc")],
-        )
+        SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": ["customers.region"],
+            "measures": [{"formula": "sum(amount)"}],
+            "order": [OrderItem(column=ColumnRef(name="customers.region"), direction="asc")],
+        })
     )
     regions = [r["orders.customers.region"] for r in resp.data]
     assert regions == ["EU", "NA"]

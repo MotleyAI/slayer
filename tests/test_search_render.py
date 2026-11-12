@@ -73,7 +73,7 @@ def _make_orders_model() -> SlayerModel:
         measures=[
             ModelMeasure(
                 name="aov",
-                formula="amount:sum / *:count",
+                formula="sum(amount) / count(*)",
                 description="Average order value.",
             ),
         ],
@@ -437,7 +437,7 @@ def test_measure_text_includes_parent_and_formula() -> None:
     assert "aov" in text
     assert "orders" in text
     assert "warehouse" in text
-    assert "amount:sum / *:count" in text
+    assert "sum(amount) / count(*)" in text
     assert "Average order value" in text
 
 

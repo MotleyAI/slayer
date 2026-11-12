@@ -44,7 +44,7 @@ FILTERED_WSUM_BY_STATUS = {"ok": 6160.0, "new": 5750.0}
 #: SUM(spend*amount*pop) per status (c4 has no region → NULL term).
 WSUM4_BY_STATUS = {"ok": 916000.0, "new": 575000.0}
 
-_C_BROADCAST = "customers.regions.pop:weighted_avg(weight=customers.spend)"
+_C_BROADCAST = "weighted_avg(customers.regions.pop, weight=customers.spend)"
 
 
 def _orders_bundle() -> ResolvedSourceBundle:
@@ -96,7 +96,7 @@ class TestBroadcastHomeRule:
         resp = await orders_engine.execute(bcast_q(
             dimensions=["status"],
             measures=[ModelMeasure(
-                formula="customers.spend:weighted_avg(weight=amount)", name="w")]))
+                formula="weighted_avg(customers.spend, weight=amount)", name="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in HOST_HOME_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -109,7 +109,7 @@ class TestHostLocusSourceRendering:
         resp = await filter_engine.execute(bcast_q(
             dimensions=["status"],
             measures=[ModelMeasure(
-                formula="customers.north_spend:wsum(weight=amount)", name="w")]))
+                formula="wsum(customers.north_spend, weight=amount)", name="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in FILTERED_WSUM_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -119,7 +119,7 @@ class TestHostLocusSourceRendering:
         resp = await filter_engine.execute(bcast_q(
             dimensions=["status"],
             measures=[ModelMeasure(
-                formula="customers.spend:wsum4(weight=amount)", name="w")]))
+                formula="wsum4(customers.spend, weight=amount)", name="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in WSUM4_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -153,7 +153,7 @@ class TestDerivedColumnEdgeCases:
         bare (nonexistent) column reference."""
         resp = await derived_default_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.spend:wsum5", name="w")]))
+            measures=[ModelMeasure(formula="wsum5(customers.spend)", name="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in DERIVED_DEFAULT_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -162,7 +162,7 @@ class TestDerivedColumnEdgeCases:
         """A host-locus source whose Column.sql crosses a fanning hop is rejected,
         never emitted as a multiplying join."""
         query = bcast_q(dimensions=["status"], measures=[ModelMeasure(
-            formula="customers.bad_spend:weighted_avg(weight=amount)", name="w")])
+            formula="weighted_avg(customers.bad_spend, weight=amount)", name="w")])
         models = fanning_derived_source_models()
         with pytest.raises(ValueError, match="unproven join hop"):
             await gen(query, models=models)
@@ -170,13 +170,13 @@ class TestDerivedColumnEdgeCases:
 
 class TestCardinalityInvariant:
     async def test_adding_broadcast_measure_keeps_rows_and_siblings(self, orders_engine):
-        """Adding the broadcast C measure keeps the status rows and amount:sum sibling values (system principle 8)."""
+        """Adding the broadcast C measure keeps the status rows and amount:sum sibling values (semantics Law 7)."""
         base = await orders_engine.execute(bcast_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="amount:sum", name="tot")]))
+            measures=[ModelMeasure(formula="sum(amount)", name="tot")]))
         withw = await orders_engine.execute(bcast_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="amount:sum", name="tot"),
+            measures=[ModelMeasure(formula="sum(amount)", name="tot"),
                       ModelMeasure(formula=_C_BROADCAST, name="w")]))
         a = _vals(base, "orders.tot")
         b = _vals(withw, "orders.tot")

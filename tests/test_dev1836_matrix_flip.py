@@ -1,4 +1,4 @@
-"""DEV-1836 task 1.9 — the DEV-1837 matrix cells flip: row regroup attaches
+"""The compatibility-matrix cells flip: row regroup attaches
 coexist with cross-model measures, cross-model sources become legal in
 computed dimensions, and intermediate-hop dimensions execute (design D4, F3).
 
@@ -47,16 +47,16 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="amount:sum", name="m")
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
+M = ModelMeasure(formula="sum(amount)", name="m")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
 
 #: A local aggregation-derived (row attach) dimension: channel totals band.
 LOCAL_BAND = {
-    "expression": "CASE WHEN amount:sum(partition_by=channel) > 30 THEN 1 ELSE 0 END",
+    "expression": "CASE WHEN sum(amount, partition_by=channel) > 30 THEN 1 ELSE 0 END",
     "name": "band",
 }
 #: A bare partitioned aggregate as a dimension.
-LOCAL_BARE = {"expression": "amount:sum(partition_by=channel)", "name": "ct"}
+LOCAL_BARE = {"expression": "sum(amount, partition_by=channel)", "name": "ct"}
 
 
 def _bundle() -> ResolvedSourceBundle:
@@ -78,7 +78,7 @@ class TestRowAttachWithCrossModelMeasure:
 
     async def test_band_dim_with_cm_executes(self, exec_backend):
         dialect, engine = exec_backend
-        query = q(dimensions=[LOCAL_BAND], measures=[M, CM])
+        query = q(dimensions=[LOCAL_BAND], measures=[M, CM], to_many_handling="broadcast")
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.band")
         assert set(by) == {(1,), (0,)}
@@ -95,7 +95,7 @@ class TestRowAttachWithCrossModelMeasure:
 
     async def test_bare_dim_with_cm_executes(self, exec_backend):
         _, engine = exec_backend
-        resp = await engine.execute(q(dimensions=[LOCAL_BARE], measures=[M, CM]))
+        resp = await engine.execute(q(dimensions=[LOCAL_BARE], measures=[M, CM], to_many_handling="broadcast"))
         by = rows_by(resp, "orders.ct")
         assert set(by) == {(87.0,), (30.0,)}
         for row in resp.data:
@@ -117,9 +117,9 @@ class TestRowAttachWithCrossModelMeasure:
         """Transform-root dimension family × cross-model measure."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=[{"expression": "rank(amount:sum(partition_by=channel), direction='desc')",
+            dimensions=[{"expression": "rank(sum(amount, partition_by=channel), direction='desc')",
                          "name": "rr"}],
-            measures=[M, CM],
+            measures=[M, CM], to_many_handling="broadcast",
         ))
         by = {int(k[0]): row for k, row in rows_by(resp, "orders.rr").items()}
         # Channel totals rank descending: web 87 → 1, app 30 → 2.
@@ -134,11 +134,11 @@ class TestRowAttachWithCrossModelMeasure:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=[{
-                "expression": ("rank(amount:sum(partition_by=channel) - "
-                               "amount:sum(partition_by=status), direction='desc')"),
+                "expression": ("rank(sum(amount, partition_by=channel) - "
+                               "sum(amount, partition_by=status), direction='desc')"),
                 "name": "mr",
             }],
-            measures=[M, CM],
+            measures=[M, CM], to_many_handling="broadcast",
         ))
         by = {int(k[0]): row for k, row in rows_by(resp, "orders.mr").items()}
         # (channel−status) deltas at the union grain, ranked descending:
@@ -224,15 +224,29 @@ class TestCrossModelSourceInComputedDimension:
 class TestIntermediateHopDimensions:
     """The former generator raise for shared-grain dims on intermediate hops."""
 
+    async def test_intermediate_hop_dim_associates_by_default(self, exec_backend):
+        """A region's population is not attributable per customer, so by default each
+        tier aggregates the distinct regions its customers reach."""
+        _, engine = exec_backend
+        kw = {"dimensions": ["customers.tier"],
+              "measures": [M, ModelMeasure(formula="sum(customers.regions.pop)", name="pop")]}
+        default = await engine.execute(q(**kw))
+        assoc = await engine.execute(q(**kw, to_many_handling="associate"))
+        assert sorted(map(str, default.data)) == sorted(map(str, assoc.data))
+        (w,) = [w for w in default.warnings or [] if w.kind == "associated"]
+        assert "pop" in w.measure
+
     async def test_intermediate_hop_dim_executes_and_broadcasts(self, exec_backend):
         """customers.tier lies on an intermediate hop of the pop aggregate's
-        chain; a region's population is not attributable per customer, so the
-        metric broadcasts with metadata — never a not-implemented error."""
+        chain; a region's population is not attributable per customer, so under
+        explicit broadcast the metric broadcasts with metadata — never a
+        not-implemented error."""
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.tier"],
-            measures=[M, ModelMeasure(formula="customers.regions.pop:sum",
+            measures=[M, ModelMeasure(formula="sum(customers.regions.pop)",
                                       name="pop")],
+            to_many_handling="broadcast",
         )
         resp = await engine.execute(query)
         assert set(rows_by(resp, "orders.customers.tier")) == {

@@ -9,44 +9,44 @@ from __future__ import annotations
 
 import argparse
 import io
+import re
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from typing import Any, NoReturn
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import duckdb
 import pytest
 import sqlalchemy as sa
+import sqlglot
+from sqlglot import exp
 
-import slayer.engine.ingestion as ingestion_mod
+import slayer.live_schema.ingestion as ingestion_mod
 from slayer.async_utils import run_sync
 from slayer.cli import _run_datasources_create
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.engine.ingestion import (
+from slayer.live_schema.ingestion import (
     IngestionScanReport,
     IntrospectedColumn,
     _additive_merge_existing,
-    _fetch_bigquery_dataset_description,
+    _fetch_schema_description,
     _print_ingest_addition,
     _safe_get_table_comment,
     _sqlite_probe_integer_columns,
-    ingest_datasource,
     ingest_datasource_idempotent,
-    ingest_datasource_report,
     introspect_table_to_model,
 )
-from slayer.engine.introspect_utils import (
-    _clean_comment,
-    _get_column_comments_fallback,
-    _get_columns_fallback,
-)
-from slayer.engine.schema_scope import SchemaRef
-from slayer.engine.schema_drift import IdempotentIngestResult, ModelAddition
+from slayer.live_schema.schema_drift import IdempotentIngestResult, ModelAddition
+from slayer.live_schema.schema_scope import SchemaRef
 from slayer.mcp.server import _render_ingest_result
+from slayer.database.client import DelegatingSqlClient, SlayerSQLClient
+from slayer.sql.dialects import ReflectedColumn, SqlDialect, TableKeys, dialect_for_ds_type, dialect_for_sa_backend
+from slayer.sql.dialects.reflection import TableLocation, clean_comment
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
-
-from tests._engine_helpers import disposable_engine
 
 
 # ---------------------------------------------------------------------------
@@ -54,25 +54,83 @@ from tests._engine_helpers import disposable_engine
 # ---------------------------------------------------------------------------
 
 
-def _mock_engine(dialect_name: str = "postgresql") -> MagicMock:
-    # No spec: sa.Engine sets ``dialect`` in __init__, so a spec'd mock
+def _mock_connection(dialect_name: str = "postgresql") -> MagicMock:
+    # No spec: sa.Connection sets ``dialect`` in __init__, so a spec'd mock
     # rejects it.
-    engine = MagicMock()
-    engine.dialect.name = dialect_name
-    return engine
-
-
-def _mock_conn_engine(dialect_name: str, execute_side_effect) -> tuple[MagicMock, MagicMock]:
-    """Engine whose ``connect()`` context yields a conn with stubbed execute."""
-    engine = _mock_engine(dialect_name)
     conn = MagicMock()
-    engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
-    engine.connect.return_value.__exit__ = MagicMock(return_value=False)
-    if callable(execute_side_effect):
-        conn.execute.side_effect = execute_side_effect
-    else:
-        conn.execute.return_value.fetchall.return_value = execute_side_effect
-    return engine, conn
+    conn.dialect.name = dialect_name
+    return conn
+
+
+class _Rows:
+    def __init__(self, rows: list[tuple]) -> None:
+        self._rows = rows
+
+    def fetchall(self) -> list[tuple]:
+        return list(self._rows)
+
+    def all(self) -> list[tuple]:
+        return list(self._rows)
+
+    def __iter__(self) -> Iterator[tuple]:
+        return iter(self._rows)
+
+
+class _CommentConnection:
+    """Answers the INFORMATION_SCHEMA columns query with ``columns``, every other query with ``comments``."""
+
+    def __init__(
+        self, *, backend: str, columns: list[tuple], comments: list[tuple] | Exception,
+    ) -> None:
+        self.dialect = SimpleNamespace(name=backend)
+        self.statements: list[str] = []
+        self._columns = columns
+        self._comments = comments
+
+    def _respond(self, statement: str) -> list[tuple]:
+        if "data_type" in statement.lower():
+            return self._columns
+        if isinstance(self._comments, Exception):
+            raise self._comments
+        return self._comments
+
+    def exec_driver_sql(self, statement: str, *args: Any, **kwargs: Any) -> _Rows:
+        assert not args, "catalog queries carry no bind parameters"
+        assert not kwargs, "catalog queries carry no bind parameters"
+        self.statements.append(statement)
+        return _Rows(self._respond(statement))
+
+    def rollback(self) -> None:
+        pass
+
+    def comment_queries(self) -> list[str]:
+        return [s for s in self.statements if "data_type" not in s.lower()]
+
+
+class _ColumnsRaisingInspector:
+    default_schema_name: str | None = None
+
+    def get_columns(self, *_args: Any, **_kwargs: Any) -> NoReturn:
+        raise RuntimeError("pg_collation does not exist")
+
+
+_ID_X = [("id", "INTEGER"), ("x", "VARCHAR")]
+
+
+def _fallback_comments(
+    *, backend: str, comments: list[tuple] | Exception, columns: list[tuple] = _ID_X,
+    table: str = "orders", schema: str | None = None,
+) -> tuple[dict[str, str | None], _CommentConnection]:
+    """Column name → comment from the dialect's ``reflect_columns`` with the Inspector failing."""
+    conn = _CommentConnection(backend=backend, columns=columns, comments=comments)
+    cols = dialect_for_sa_backend(backend).reflect_columns(
+        connection=conn, inspector=_ColumnsRaisingInspector(),
+        table=table, schema=schema, catalog=None,
+    )
+    return {c.name: c.comment for c in cols}, conn
+
+
+_BIND = re.compile(r"(?<![:\w]):[A-Za-z_]\w*")
 
 
 def _mock_inspector(
@@ -89,6 +147,81 @@ def _mock_inspector(
     else:
         inspector.get_table_comment.return_value = {"text": table_comment}
     return inspector
+
+
+class _HookClient(DelegatingSqlClient):
+    """Serves metadata reads through the datasource dialect's hooks over a mocked engine and Inspector."""
+
+    def __init__(self, *, datasource: DatasourceConfig, connection: Any, inspector: Any = None) -> None:
+        super().__init__(inner=SlayerSQLClient(datasource=datasource))
+        self._connection = connection
+        self._inspector = inspector
+
+    @property
+    def _dialect(self) -> SqlDialect:
+        return dialect_for_ds_type(self.datasource.type)
+
+    async def default_schema(self) -> str | None:
+        return self._dialect.reflect_default_schema(connection=self._connection, inspector=self._inspector)
+
+    async def current_catalog(self) -> str | None:
+        return None
+
+    async def reflect_columns(self, location: TableLocation) -> list[ReflectedColumn]:
+        return self._dialect.reflect_columns(
+            connection=self._connection, inspector=self._inspector, table=location.name,
+            schema=location.schema_name, catalog=location.catalog,
+        )
+
+    async def reflect_table_keys(self, location: TableLocation) -> TableKeys:
+        return self._dialect.reflect_table_keys(
+            connection=self._connection, inspector=self._inspector, table=location.name,
+            schema=location.schema_name, catalog=location.catalog,
+        )
+
+    async def table_comment(self, location: TableLocation) -> str | None:
+        try:
+            comment = self._inspector.get_table_comment(location.name, schema=location.schema_name)
+        except NotImplementedError:
+            return None
+        return clean_comment(comment.get("text"))
+
+    async def schema_description(self, schema: str | None, configured_schema: str | None) -> str | None:
+        return self._dialect.reflect_schema_description(
+            connection=self._connection, schema=schema, configured_schema=configured_schema,
+        )
+
+
+def _inspector_client(inspector: Any, *, ds_type: str = "postgres", backend: str = "postgresql") -> _HookClient:
+    return _HookClient(
+        datasource=DatasourceConfig(name="ds", type=ds_type), connection=_mock_connection(backend), inspector=inspector,
+    )
+
+
+@asynccontextmanager
+async def _client(ds: DatasourceConfig) -> AsyncIterator[SlayerSQLClient]:
+    client = SlayerSQLClient(datasource=ds)
+    try:
+        yield client
+    finally:
+        await client.aclose()
+        client.close()
+
+
+async def _ingest(ds: DatasourceConfig) -> list[SlayerModel]:
+    async with _client(ds) as client:
+        return await ingestion_mod.ingest_datasource_async(ds, client=client)
+
+
+async def _report(ds: DatasourceConfig) -> IngestionScanReport:
+    async with _client(ds) as client:
+        return await ingestion_mod.ingest_datasource_report_async(ds, client=client)
+
+
+async def _idempotent(*, datasource: DatasourceConfig | None, storage: YAMLStorage) -> IdempotentIngestResult:
+    assert datasource is not None
+    async with _client(datasource) as client:
+        return await ingest_datasource_idempotent(datasource=datasource, storage=storage, client=client)
 
 
 def _commented_duckdb(path: Path) -> None:
@@ -127,16 +260,16 @@ def _col(model: SlayerModel, name: str) -> Column:
 
 class TestCleanComment:
     def test_strips_whitespace(self) -> None:
-        assert _clean_comment("  order id  ") == "order id"
+        assert clean_comment("  order id  ") == "order id"
 
     def test_empty_string_is_none(self) -> None:
-        assert _clean_comment("") is None
+        assert clean_comment("") is None
 
     def test_whitespace_only_is_none(self) -> None:
-        assert _clean_comment("   \n\t ") is None
+        assert clean_comment("   \n\t ") is None
 
     def test_none_passthrough(self) -> None:
-        assert _clean_comment(None) is None
+        assert clean_comment(None) is None
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +278,7 @@ class TestCleanComment:
 
 
 class TestInspectorPathComments:
-    def test_column_comments_land_on_descriptions(self) -> None:
+    async def test_column_comments_land_on_descriptions(self) -> None:
         inspector = _mock_inspector(
             [
                 {"name": "id", "type": sa.INTEGER(), "comment": "row id"},
@@ -155,11 +288,10 @@ class TestInspectorPathComments:
             pk=["id"],
             table_comment="Orders table",
         )
-        model = introspect_table_to_model(
-            sa_engine=_mock_engine(),
-            inspector=inspector,
+        model = await introspect_table_to_model(
+            client=_inspector_client(inspector),
             table_name="orders",
-            schema=None,
+            ref=None,
             data_source="ds",
         )
         assert model.description == "Orders table"
@@ -167,73 +299,70 @@ class TestInspectorPathComments:
         assert _col(model, "amount").description is None
         assert _col(model, "note").description is None
 
-    def test_whitespace_comment_normalized_to_none(self) -> None:
+    async def test_whitespace_comment_normalized_to_none(self) -> None:
         inspector = _mock_inspector(
             [{"name": "id", "type": sa.INTEGER(), "comment": "   "}],
             table_comment="  ",
         )
-        model = introspect_table_to_model(
-            sa_engine=_mock_engine(),
-            inspector=inspector,
+        model = await introspect_table_to_model(
+            client=_inspector_client(inspector),
             table_name="t",
-            schema=None,
+            ref=None,
             data_source="ds",
         )
         assert model.description is None
         assert _col(model, "id").description is None
 
-    def test_count_rename_keeps_description(self) -> None:
+    async def test_count_rename_keeps_description(self) -> None:
         inspector = _mock_inspector(
             [{"name": "_count", "type": sa.INTEGER(), "comment": "collides"}],
         )
-        model = introspect_table_to_model(
-            sa_engine=_mock_engine(),
-            inspector=inspector,
+        model = await introspect_table_to_model(
+            client=_inspector_client(inspector),
             table_name="t",
-            schema=None,
+            ref=None,
             data_source="ds",
         )
         assert _col(model, "count_col").description == "collides"
 
 
 class TestSafeGetTableComment:
-    def test_returns_text(self) -> None:
+    async def test_returns_text(self) -> None:
         inspector = _mock_inspector([], table_comment="hello")
-        assert _safe_get_table_comment(inspector, "t", None) == "hello"
+        assert await _safe_get_table_comment(_inspector_client(inspector), "t", None) == "hello"
 
-    def test_none_text(self) -> None:
+    async def test_none_text(self) -> None:
         inspector = _mock_inspector([], table_comment=None)
-        assert _safe_get_table_comment(inspector, "t", None) is None
+        assert await _safe_get_table_comment(_inspector_client(inspector), "t", None) is None
 
-    def test_not_implemented_is_skipped(self) -> None:
+    async def test_not_implemented_is_skipped(self) -> None:
         inspector = _mock_inspector([], table_comment=NotImplementedError())
-        assert _safe_get_table_comment(inspector, "t", None) is None
+        assert await _safe_get_table_comment(_inspector_client(inspector), "t", None) is None
 
-    def test_arbitrary_error_is_skipped(self) -> None:
+    async def test_arbitrary_error_is_skipped(self) -> None:
         inspector = _mock_inspector([], table_comment=RuntimeError("boom"))
-        assert _safe_get_table_comment(inspector, "t", None) is None
+        assert await _safe_get_table_comment(_inspector_client(inspector), "t", None) is None
 
-    def test_whitespace_normalized(self) -> None:
+    async def test_whitespace_normalized(self) -> None:
         inspector = _mock_inspector([], table_comment="  x ")
-        assert _safe_get_table_comment(inspector, "t", None) == "x"
+        assert await _safe_get_table_comment(_inspector_client(inspector), "t", None) == "x"
 
 
 class TestSqliteProbePreservesComments:
-    def test_non_sqlite_engine_keeps_comments(self) -> None:
+    async def test_non_affinity_engine_keeps_comments(self) -> None:
         cols = [IntrospectedColumn(name="a", type=DataType.INT, comment="kept")]
-        out = _sqlite_probe_integer_columns(
-            sa_engine=_mock_engine("postgresql"), sql_table="t", columns=cols
-        )
+        async with _client(DatasourceConfig(name="mem", type="duckdb", database=":memory:")) as client:
+            with patch("slayer.database.sqlite_introspect.probe_sqlite_integer_column") as probe:
+                out = await _sqlite_probe_integer_columns(client=client, sql_table="t", columns=cols)
+        probe.assert_not_called()
         assert out[0].comment == "kept"
 
-    def test_widened_column_keeps_comment(self) -> None:
-        with disposable_engine("sqlite:///:memory:") as engine:
-            with engine.connect() as conn:
-                conn.execute(sa.text("CREATE TABLE t (a INTEGER)"))
-                conn.execute(sa.text("INSERT INTO t VALUES (1.5)"))
-                conn.commit()
+    async def test_widened_column_keeps_comment(self) -> None:
+        async with _client(DatasourceConfig(name="mem", type="sqlite", database=":memory:")) as client:
+            await client.execute("CREATE TABLE t (a INTEGER)")
+            await client.execute("INSERT INTO t VALUES (1.5)")
             cols = [IntrospectedColumn(name="a", type=DataType.INT, comment="probed")]
-            out = _sqlite_probe_integer_columns(sa_engine=engine, sql_table="t", columns=cols)
+            out = await _sqlite_probe_integer_columns(client=client, sql_table="t", columns=cols)
             assert out[0].type is DataType.DOUBLE
             assert out[0].comment == "probed"
 
@@ -245,111 +374,83 @@ class TestSqliteProbePreservesComments:
 
 class TestColumnCommentsFallback:
     @pytest.mark.parametrize(
-        ("dialect", "source_marker"),
+        ("backend", "source_marker"),
         [
             ("mysql", "column_comment"),
             ("mariadb", "column_comment"),
             ("snowflake", "information_schema"),
             ("clickhouse", "system.columns"),
-            ("duckdb", "duckdb_columns"),
             ("postgresql", "col_description"),
         ],
     )
-    def test_dialect_query_shape(self, dialect: str, source_marker: str) -> None:
-        engine, conn = _mock_conn_engine(dialect_name=dialect, execute_side_effect=[("id", "row id"), ("x", None)])
-        result = _get_column_comments_fallback(
-            sa_engine=engine, table_name="orders", ref=None
+    def test_dialect_query_shape(self, backend: str, source_marker: str) -> None:
+        comments, engine = _fallback_comments(
+            backend=backend, comments=[("id", "row id"), ("x", None)],
         )
-        assert result == {"id": "row id"}
-        args, kwargs = conn.execute.call_args
-        sql_str = str(args[0]).lower()
-        assert source_marker in sql_str
-        params = args[1] if len(args) > 1 else kwargs
-        assert "orders" in params.values()
-        assert "orders" not in sql_str
+        assert comments == {"id": "row id", "x": None}
+        (sql,) = engine.comment_queries()
+        assert source_marker in sql.lower()
+        assert "'orders'" in sql
+        assert not _BIND.search(sql)
 
-    @pytest.mark.parametrize(
-        "dialect", ["mysql", "snowflake", "clickhouse", "duckdb", "postgresql"]
-    )
-    def test_schema_is_bound_not_interpolated(self, dialect: str) -> None:
-        engine, conn = _mock_conn_engine(dialect_name=dialect, execute_side_effect=[("id", "row id")])
-        result = _get_column_comments_fallback(
-            sa_engine=engine, table_name="orders", ref=SchemaRef(name="s1")
+    @pytest.mark.parametrize("backend", ["mysql", "snowflake", "clickhouse", "postgresql"])
+    def test_schema_is_an_escaped_literal(self, backend: str) -> None:
+        comments, engine = _fallback_comments(
+            backend=backend, comments=[("id", "row id")], schema="s1",
         )
-        assert result == {"id": "row id"}
-        args, kwargs = conn.execute.call_args
-        sql_str = str(args[0])
-        params = args[1] if len(args) > 1 else kwargs
-        assert "s1" in params.values()
-        assert "s1" not in sql_str
+        assert comments["id"] == "row id"
+        (sql,) = engine.comment_queries()
+        assert "'s1'" in sql
+        assert not _BIND.search(sql)
 
     def test_clickhouse_defaults_to_current_database(self) -> None:
-        engine, conn = _mock_conn_engine(dialect_name="clickhouse", execute_side_effect=[("id", "c")])
-        _get_column_comments_fallback(sa_engine=engine, table_name="t", ref=None)
-        sql_str = str(conn.execute.call_args[0][0]).lower()
-        assert "currentdatabase()" in sql_str
+        _, engine = _fallback_comments(backend="clickhouse", comments=[("id", "c")], table="t")
+        (sql,) = engine.comment_queries()
+        assert "currentdatabase()" in sql.lower()
 
     @pytest.mark.parametrize(
-        ("dialect", "default_marker"),
+        ("backend", "default_marker"),
         [
             ("mysql", "database()"),
-            ("snowflake", "current_schema()"),
-            ("duckdb", "current_schema()"),
+            ("snowflake", "current_schema"),
             ("postgresql", "pg_table_is_visible"),
         ],
     )
-    def test_no_schema_scopes_to_default(self, dialect: str, default_marker: str) -> None:
-        engine, conn = _mock_conn_engine(dialect_name=dialect, execute_side_effect=[("id", "c")])
-        _get_column_comments_fallback(sa_engine=engine, table_name="t", ref=None)
-        sql_str = str(conn.execute.call_args[0][0]).lower()
-        assert default_marker in sql_str
+    def test_no_schema_scopes_to_default(self, backend: str, default_marker: str) -> None:
+        _, engine = _fallback_comments(backend=backend, comments=[("id", "c")], table="t")
+        (sql,) = engine.comment_queries()
+        assert default_marker in sql.lower()
 
-    def test_no_literal_interpolation(self) -> None:
-        engine, conn = _mock_conn_engine(dialect_name="mysql", execute_side_effect=[])
-        _get_column_comments_fallback(
-            sa_engine=engine,
-            table_name="'; DROP TABLE users;--",
-            ref=SchemaRef(name="'; DROP TABLE users;--"),
+    def test_hostile_names_stay_escaped_literals(self) -> None:
+        payload = "'; DROP TABLE users;--"
+        _, engine = _fallback_comments(backend="mysql", comments=[], table=payload, schema=payload)
+        (sql,) = engine.comment_queries()
+        (tree,) = sqlglot.parse(sql, read="mysql")
+        assert tree is not None
+        values = {lit.this for lit in tree.find_all(exp.Literal) if lit.is_string}
+        assert payload in values
+
+    def test_dialect_without_comment_query_reads_none(self) -> None:
+        comments, engine = _fallback_comments(backend="mssql", comments=[("id", "x")], table="t")
+        assert comments == {"id": None, "x": None}
+        assert engine.comment_queries() == []
+
+    def test_comment_query_error_keeps_columns(self) -> None:
+        comments, _ = _fallback_comments(
+            backend="mysql", comments=RuntimeError("no such view"), table="t",
         )
-        args, _ = conn.execute.call_args
-        assert "DROP TABLE" not in str(args[0])
-
-    def test_unknown_dialect_returns_empty(self) -> None:
-        engine, conn = _mock_conn_engine(dialect_name="mssql", execute_side_effect=[("id", "x")])
-        assert _get_column_comments_fallback(
-            sa_engine=engine, table_name="t", ref=None
-        ) == {}
-        conn.execute.assert_not_called()
-
-    def test_query_error_returns_empty(self) -> None:
-        def _boom(*args, **kwargs):
-            raise RuntimeError("no such view")
-
-        engine, _ = _mock_conn_engine(dialect_name="duckdb", execute_side_effect=_boom)
-        assert _get_column_comments_fallback(
-            sa_engine=engine, table_name="t", ref=None
-        ) == {}
+        assert comments == {"id": None, "x": None}
 
     def test_blank_comments_filtered(self) -> None:
-        engine, _ = _mock_conn_engine(dialect_name="mysql", execute_side_effect=[("a", ""), ("b", "  "), ("c", "ok")])
-        assert _get_column_comments_fallback(
-            sa_engine=engine, table_name="t", ref=None
-        ) == {"c": "ok"}
+        comments, _ = _fallback_comments(
+            backend="mysql", comments=[("a", ""), ("b", "  "), ("c", "ok")],
+            columns=[("a", "INTEGER"), ("b", "INTEGER"), ("c", "INTEGER")], table="t",
+        )
+        assert comments == {"a": None, "b": None, "c": "ok"}
 
     def test_generic_fallback_merges_comments(self) -> None:
-        def _dispatch(clause, params=None):
-            res = MagicMock()
-            if "duckdb_columns" in str(clause):
-                res.fetchall.return_value = [("id", "row id")]
-            else:
-                res.fetchall.return_value = [("id", "INTEGER"), ("x", "VARCHAR")]
-            return res
-
-        engine, _ = _mock_conn_engine(dialect_name="duckdb", execute_side_effect=_dispatch)
-        cols = _get_columns_fallback(sa_engine=engine, table_name="t", ref=None)
-        by_name = {c["name"]: c for c in cols}
-        assert by_name["id"]["comment"] == "row id"
-        assert by_name["x"].get("comment") is None
+        comments, _ = _fallback_comments(backend="postgresql", comments=[("id", "row id")], table="t")
+        assert comments == {"id": "row id", "x": None}
 
 
 # ---------------------------------------------------------------------------
@@ -359,11 +460,11 @@ class TestColumnCommentsFallback:
 
 class TestDuckDBEndToEnd:
     @pytest.fixture
-    def duckdb_models(self, tmp_path: Path) -> list[SlayerModel]:
+    async def duckdb_models(self, tmp_path: Path) -> list[SlayerModel]:
         db_path = tmp_path / "commented.duckdb"
         _commented_duckdb(db_path)
         ds = DatasourceConfig(name="ds", type="duckdb", database=str(db_path))
-        return ingest_datasource(datasource=ds)
+        return await _ingest(ds)
 
     def test_table_comment_becomes_model_description(self, duckdb_models) -> None:
         assert _model_by_name(duckdb_models, "orders").description == "All orders"
@@ -401,7 +502,7 @@ def _addition_for(name: str, additions) -> ModelAddition | None:
 class TestIdempotentDescriptionFill:
     async def test_created_model_reports_descriptions(self, tmp_path: Path) -> None:
         storage, ds = await _duckdb_idempotent_setup(tmp_path)
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _idempotent(datasource=ds, storage=storage)
         addition = _addition_for("orders", result.additions)
         assert addition is not None
         assert addition.created
@@ -413,7 +514,7 @@ class TestIdempotentDescriptionFill:
 
     async def test_fill_if_empty_and_preserve_user_text(self, tmp_path: Path) -> None:
         storage, ds = await _duckdb_idempotent_setup(tmp_path)
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _idempotent(datasource=ds, storage=storage)
         loaded = await storage.get_model("orders", data_source="ds")
         loaded.description = None
         for c in loaded.columns:
@@ -423,7 +524,7 @@ class TestIdempotentDescriptionFill:
                 c.description = "hand-authored"
         await storage.save_model(loaded)
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _idempotent(datasource=ds, storage=storage)
         addition = _addition_for("orders", result.additions)
         assert addition is not None
         assert not addition.created
@@ -438,8 +539,8 @@ class TestIdempotentDescriptionFill:
 
     async def test_reingest_is_noop_when_descriptions_present(self, tmp_path: Path) -> None:
         storage, ds = await _duckdb_idempotent_setup(tmp_path)
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _idempotent(datasource=ds, storage=storage)
+        result = await _idempotent(datasource=ds, storage=storage)
         for addition in result.additions:
             assert addition.described_columns == []
             assert addition.model_described is False
@@ -448,13 +549,13 @@ class TestIdempotentDescriptionFill:
         self, tmp_path: Path
     ) -> None:
         storage, ds = await _duckdb_idempotent_setup(tmp_path)
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _idempotent(datasource=ds, storage=storage)
         conn = duckdb.connect(ds.database)
         conn.execute("ALTER TABLE orders ADD COLUMN discount DOUBLE")
         conn.execute("COMMENT ON COLUMN orders.discount IS 'Discount applied'")
         conn.close()
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _idempotent(datasource=ds, storage=storage)
         addition = _addition_for("orders", result.additions)
         assert addition is not None
         assert "discount" in addition.new_columns
@@ -514,128 +615,120 @@ class TestAdditiveMergeDescriptions:
 # ---------------------------------------------------------------------------
 
 
-def _bq_engine(dataset_id: str | None, description: str | None = "ds desc"):
-    """Mock BigQuery engine exposing the client the way sqlalchemy-bigquery does."""
-    engine = _mock_engine("bigquery")
-    engine.dialect.dataset_id = dataset_id
+def _bq_connection(dataset_id: str | None, description: str | None = "ds desc"):
+    """Mock BigQuery connection exposing the client the way sqlalchemy-bigquery does."""
+    conn = _mock_connection("bigquery")
+    conn.dialect.dataset_id = dataset_id
     client = MagicMock()
     client.get_dataset.return_value = SimpleNamespace(description=description)
-    conn = MagicMock()
     conn.connection._client = client
-    engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
-    engine.connect.return_value.__exit__ = MagicMock(return_value=False)
-    return engine, client
+    return conn, client
+
+
+async def _describe(*, connection: Any, datasource: DatasourceConfig, schema: str | None) -> str | None:
+    client = _HookClient(datasource=datasource, connection=connection)
+    return await _fetch_schema_description(client=client, datasource=datasource, schema=schema)
 
 
 class TestFetchBigQueryDatasetDescription:
-    def test_non_bigquery_dialect_returns_none(self) -> None:
+    async def test_non_bigquery_dialect_returns_none(self) -> None:
         ds = DatasourceConfig(name="d", type="duckdb", database="x.db")
         assert (
-            _fetch_bigquery_dataset_description(
-                sa_engine=_mock_engine("duckdb"), datasource=ds, schema=None
-            )
+            await _describe(connection=_mock_connection("duckdb"), datasource=ds, schema=None)
             is None
         )
 
-    def test_explicit_schema_wins(self) -> None:
-        engine, client = _bq_engine(dataset_id="dialect_ds")
+    async def test_explicit_schema_wins(self) -> None:
+        conn, client = _bq_connection(dataset_id="dialect_ds")
         ds = DatasourceConfig(name="d", type="bigquery", schema_name="cfg_ds")
-        out = _fetch_bigquery_dataset_description(
-            sa_engine=engine, datasource=ds, schema="explicit_ds"
-        )
+        out = await _describe(connection=conn, datasource=ds, schema="explicit_ds")
         assert out == "ds desc"
         assert client.get_dataset.call_args[0][0] == "explicit_ds"
 
-    def test_dialect_default_beats_schema_name(self) -> None:
-        engine, client = _bq_engine(dataset_id="dialect_ds")
+    async def test_dialect_default_beats_schema_name(self) -> None:
+        conn, client = _bq_connection(dataset_id="dialect_ds")
         ds = DatasourceConfig(name="d", type="bigquery", schema_name="cfg_ds")
-        _fetch_bigquery_dataset_description(sa_engine=engine, datasource=ds, schema=None)
+        await _describe(connection=conn, datasource=ds, schema=None)
         assert client.get_dataset.call_args[0][0] == "dialect_ds"
 
-    def test_schema_name_is_last_resort(self) -> None:
-        engine, client = _bq_engine(dataset_id=None)
+    async def test_schema_name_is_last_resort(self) -> None:
+        conn, client = _bq_connection(dataset_id=None)
         ds = DatasourceConfig(name="d", type="bigquery", schema_name="cfg_ds")
-        _fetch_bigquery_dataset_description(sa_engine=engine, datasource=ds, schema=None)
+        await _describe(connection=conn, datasource=ds, schema=None)
         assert client.get_dataset.call_args[0][0] == "cfg_ds"
 
-    def test_unresolvable_dataset_returns_none(self) -> None:
-        engine, client = _bq_engine(dataset_id=None)
+    async def test_unresolvable_dataset_returns_none(self) -> None:
+        conn, client = _bq_connection(dataset_id=None)
         ds = DatasourceConfig(name="d", type="bigquery")
         assert (
-            _fetch_bigquery_dataset_description(
-                sa_engine=engine, datasource=ds, schema=None
-            )
+            await _describe(connection=conn, datasource=ds, schema=None)
             is None
         )
         client.get_dataset.assert_not_called()
 
-    def test_client_error_returns_none(self) -> None:
-        engine, client = _bq_engine(dataset_id="d1")
+    async def test_client_error_returns_none(self) -> None:
+        conn, client = _bq_connection(dataset_id="d1")
         client.get_dataset.side_effect = RuntimeError("403")
         ds = DatasourceConfig(name="d", type="bigquery")
         assert (
-            _fetch_bigquery_dataset_description(
-                sa_engine=engine, datasource=ds, schema=None
-            )
+            await _describe(connection=conn, datasource=ds, schema=None)
             is None
         )
 
-    def test_whitespace_description_is_none(self) -> None:
-        engine, _ = _bq_engine(dataset_id="d1", description="   ")
+    async def test_whitespace_description_is_none(self) -> None:
+        conn, _ = _bq_connection(dataset_id="d1", description="   ")
         ds = DatasourceConfig(name="d", type="bigquery")
         assert (
-            _fetch_bigquery_dataset_description(
-                sa_engine=engine, datasource=ds, schema=None
-            )
+            await _describe(connection=conn, datasource=ds, schema=None)
             is None
         )
 
 
 class TestIngestDatasourceReport:
-    def test_returns_models_and_no_description_for_duckdb(self, tmp_path: Path) -> None:
+    async def test_returns_models_and_no_description_for_duckdb(self, tmp_path: Path) -> None:
         db_path = tmp_path / "x.duckdb"
         _commented_duckdb(db_path)
         ds = DatasourceConfig(name="ds", type="duckdb", database=str(db_path))
-        out = ingest_datasource_report(datasource=ds)
+        out = await _report(ds)
         assert isinstance(out, IngestionScanReport)
         assert {m.name for m in out.models} == {"customers", "orders"}
         assert out.schema_description is None
 
-    def test_wrapper_returns_plain_model_list(self, tmp_path: Path) -> None:
+    async def test_wrapper_returns_plain_model_list(self, tmp_path: Path) -> None:
         db_path = tmp_path / "x.duckdb"
         _commented_duckdb(db_path)
         ds = DatasourceConfig(name="ds", type="duckdb", database=str(db_path))
-        models = ingest_datasource(datasource=ds)
+        models = await _ingest(ds)
         assert isinstance(models, list)
         assert all(isinstance(m, SlayerModel) for m in models)
 
-    def test_fetch_skipped_when_description_set(
+    async def test_fetch_skipped_when_description_set(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        fetch = MagicMock(return_value="never used")
+        fetch = AsyncMock(return_value="never used")
         monkeypatch.setattr(
-            ingestion_mod, "_fetch_bigquery_dataset_description", fetch
+            ingestion_mod, "_fetch_schema_description", fetch
         )
         db_path = tmp_path / "x.duckdb"
         _commented_duckdb(db_path)
         ds = DatasourceConfig(
             name="ds", type="duckdb", database=str(db_path), description="already set"
         )
-        out = ingest_datasource_report(datasource=ds)
+        out = await _report(ds)
         fetch.assert_not_called()
         assert out.schema_description is None
 
-    def test_fetch_called_when_description_empty(
+    async def test_fetch_called_when_description_empty(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        fetch = MagicMock(return_value="dataset says hi")
+        fetch = AsyncMock(return_value="dataset says hi")
         monkeypatch.setattr(
-            ingestion_mod, "_fetch_bigquery_dataset_description", fetch
+            ingestion_mod, "_fetch_schema_description", fetch
         )
         db_path = tmp_path / "x.duckdb"
         _commented_duckdb(db_path)
         ds = DatasourceConfig(name="ds", type="duckdb", database=str(db_path))
-        out = ingest_datasource_report(datasource=ds)
+        out = await _report(ds)
         fetch.assert_called_once()
         assert out.schema_description == "dataset says hi"
 
@@ -653,13 +746,13 @@ def _sqlite_live_db(tmp_path: Path) -> str:
 
 
 def _patch_full_ingest(monkeypatch: pytest.MonkeyPatch, description: str | None):
-    real = ingestion_mod.ingest_datasource_report
+    real = ingestion_mod.ingest_datasource_report_async
 
-    def _fake(*args, **kwargs):
-        out = real(*args, **kwargs)
+    async def _fake(*args, **kwargs):
+        out = await real(*args, **kwargs)
         return out.model_copy(update={"schema_description": description})
 
-    monkeypatch.setattr(ingestion_mod, "ingest_datasource_report", _fake)
+    monkeypatch.setattr(ingestion_mod, "ingest_datasource_report_async", _fake)
 
 
 class TestIdempotentDatasourceDescription:
@@ -672,14 +765,14 @@ class TestIdempotentDatasourceDescription:
         await storage.save_datasource(ds)
         _patch_full_ingest(monkeypatch, "From the dataset")
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _idempotent(datasource=ds, storage=storage)
         assert result.datasource_described is True
         loaded = await storage.get_datasource("ds")
         assert loaded.description == "From the dataset"
 
         # Re-ingest with the reloaded datasource (as the CLI does): the
         # persisted description must make the second pass a no-op.
-        result2 = await ingest_datasource_idempotent(datasource=loaded, storage=storage)
+        result2 = await _idempotent(datasource=loaded, storage=storage)
         assert result2.datasource_described is False
         reloaded = await storage.get_datasource("ds")
         assert reloaded.description == "From the dataset"
@@ -695,7 +788,7 @@ class TestIdempotentDatasourceDescription:
         await storage.save_datasource(ds)
         _patch_full_ingest(monkeypatch, "From the dataset")
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _idempotent(datasource=ds, storage=storage)
         assert result.datasource_described is False
         loaded = await storage.get_datasource("ds")
         assert loaded.description == "user text"
@@ -717,7 +810,7 @@ class TestIdempotentDatasourceDescription:
         storage._armed = True
         _patch_full_ingest(monkeypatch, "From the dataset")
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _idempotent(datasource=ds, storage=storage)
         assert result.datasource_described is False
         assert any(
             e.model_name == "" and "datasource" in e.error.lower()
@@ -784,28 +877,24 @@ class TestReportShape:
 
 
 class TestMcpIngestRender:
-    def test_description_only_update_rendered(self) -> None:
+    async def test_description_only_update_rendered(self) -> None:
         result = IdempotentIngestResult(
             additions=[ModelAddition(
                 model_name="orders", data_source="ds",
                 described_columns=["amount"], model_described=True,
             )],
         )
-        out = _render_ingest_result(
-            result,
-            schema_name="",
-            ds=DatasourceConfig(name="ds", type="sqlite", database=":memory:"),
-        )
+        ds = DatasourceConfig(name="ds", type="sqlite", database=":memory:")
+        async with _client(ds) as client:
+            out = await _render_ingest_result(result, schema_name="", ds=ds, client=client)
         assert "+descriptions: amount" in out
         assert "+model description" in out
 
-    def test_datasource_only_description_not_swallowed(self) -> None:
+    async def test_datasource_only_description_not_swallowed(self) -> None:
         result = IdempotentIngestResult(datasource_described=True)
-        out = _render_ingest_result(
-            result,
-            schema_name="",
-            ds=DatasourceConfig(name="ds", type="sqlite", database=":memory:"),
-        )
+        ds = DatasourceConfig(name="ds", type="sqlite", database=":memory:")
+        async with _client(ds) as client:
+            out = await _render_ingest_result(result, schema_name="", ds=ds, client=client)
         assert "Datasource description imported." in out
         assert "already in sync" not in out
 
@@ -873,7 +962,7 @@ class TestBigQueryDriverContract:
         out = dialect.get_table_comment(MagicMock(), "t")
         assert out == {"text": "tbl desc"}
 
-    def test_real_dialect_reflection_flows_into_slayer_model(self) -> None:
+    async def test_real_dialect_reflection_flows_into_slayer_model(self) -> None:
         """Run the REAL BigQueryDialect reflection over a locally built
         Table — only the network call is mocked — and feed its genuine
         output through introspect_table_to_model."""
@@ -897,11 +986,10 @@ class TestBigQueryDriverContract:
         inspector.get_pk_constraint.return_value = {"constrained_columns": []}
         inspector.get_table_comment.return_value = real_comment
 
-        model = introspect_table_to_model(
-            sa_engine=_mock_engine("bigquery"),
-            inspector=inspector,
+        model = await introspect_table_to_model(
+            client=_inspector_client(inspector, ds_type="bigquery", backend="bigquery"),
             table_name="orders",
-            schema="dset",
+            ref=SchemaRef(name="dset", requested="dset"),
             data_source="bq",
         )
         assert model.description == "All orders"

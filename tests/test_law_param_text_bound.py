@@ -1,4 +1,4 @@
-"""Law (engine.arc42.md §3.1): aggregation parameter text is analysed once, by the binder.
+"""Law (python.engine.arc42.md §3.1): aggregation parameter text is analysed once, by the binder.
 
 No module of ``slayer/engine``, ``slayer/sql`` or ``slayer/ir`` reads
 ``Aggregation.params`` (hence ``AggregationParam.sql``) outside the binder module,

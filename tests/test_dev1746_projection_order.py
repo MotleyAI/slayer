@@ -63,8 +63,8 @@ def _cm_declared_first_query() -> SlayerQuery:
         source_model="orders_x",
         dimensions=[ColumnRef(name="status")],
         measures=[
-            ModelMeasure(formula="customers_v2.lifetime_value:sum", name="cm_first"),
-            ModelMeasure(formula="amount:sum", name="local_second"),
+            ModelMeasure(formula="sum(customers_v2.lifetime_value)", name="cm_first"),
+            ModelMeasure(formula="sum(amount)", name="local_second"),
         ],
     )
 
@@ -75,12 +75,12 @@ def _windowed_declared_first_query() -> SlayerQuery:
         source_model="orders_x",
         dimensions=[ColumnRef(name="status")],
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
-            ModelMeasure(formula="amount:sum(window='90d')", name="w_first"),
-            ModelMeasure(formula="amount:sum", name="local_second"),
+            ModelMeasure(formula="sum(amount, window='90d')", name="w_first"),
+            ModelMeasure(formula="sum(amount)", name="local_second"),
         ],
     )
 
@@ -92,9 +92,9 @@ def _interleaved_query() -> SlayerQuery:
         source_model="orders_x",
         dimensions=[ColumnRef(name="status")],
         measures=[
-            ModelMeasure(formula="amount:sum", name="a_local"),
-            ModelMeasure(formula="customers_v2.lifetime_value:sum", name="b_cross"),
-            ModelMeasure(formula="amount:avg", name="c_local"),
+            ModelMeasure(formula="sum(amount)", name="a_local"),
+            ModelMeasure(formula="sum(customers_v2.lifetime_value)", name="b_cross"),
+            ModelMeasure(formula="avg(amount)", name="c_local"),
         ],
     )
 
@@ -183,8 +183,8 @@ class TestB7DeclarationOrderProjection:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                ModelMeasure(formula="customers.spend:sum", name="cm_first"),
-                ModelMeasure(formula="amount:sum", name="local_second"),
+                ModelMeasure(formula="sum(customers.spend)", name="cm_first"),
+                ModelMeasure(formula="sum(amount)", name="local_second"),
             ],
         )
         resp = await exec_engine.execute(query)
@@ -202,15 +202,15 @@ class TestB7DeclarationOrderProjection:
         query = SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
                 ModelMeasure(
-                    formula="customers_v2.lifetime_value:sum", name="ltv",
+                    formula="sum(customers_v2.lifetime_value)", name="ltv",
                 ),
                 ModelMeasure(
-                    formula="cumsum(customers_v2.lifetime_value:sum)",
+                    formula="cumsum(sum(customers_v2.lifetime_value))",
                     name="running",
                 ),
             ],
@@ -281,10 +281,10 @@ class TestB7DeclarationOrderProjection:
             source_model="orders_x",
             dimensions=[ColumnRef(name="customers_v2.status")],
             measures=[ModelMeasure(
-                formula="customers_v2.lifetime_value:sum", name="ltv",
+                formula="sum(customers_v2.lifetime_value)", name="ltv",
             )],
             order=[OrderItem.model_validate({
-                "column": "customers_v2.lifetime_value:sum", "direction": direction,
+                "column": "sum(customers_v2.lifetime_value)", "direction": direction,
             })],
         )
         sql = await _gen(query, dialect="tsql")
@@ -298,8 +298,8 @@ class TestB7DeclarationOrderProjection:
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="*:count", name="n")],
-            order=[OrderItem.model_validate({"column": "amount:sum", "direction": "desc"})],
+            measures=[ModelMeasure(formula="count(*)", name="n")],
+            order=[OrderItem.model_validate({"column": "sum(amount)", "direction": "desc"})],
         )
         sql = await _gen(query, dialect="postgres")
         emitted = _alias_suffixes(outer_select_aliases(sql))
@@ -315,8 +315,8 @@ class TestB7DeclarationOrderProjection:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="customers.tier")],
-            measures=[ModelMeasure(formula="*:count", name="n")],
-            order=[OrderItem.model_validate({"column": "customers.spend:sum", "direction": "desc"})],
+            measures=[ModelMeasure(formula="count(*)", name="n")],
+            order=[OrderItem.model_validate({"column": "sum(customers.spend)", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
         assert _alias_suffixes(list(resp.columns)) == ["tier", "n"], resp.columns
@@ -355,12 +355,12 @@ class TestProjectionInvariant:
         query = SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
-                ModelMeasure(formula="amount:sum(window='90d')", name="wa"),
-                ModelMeasure(formula="amount:sum(window='90d')", name="wb"),
+                ModelMeasure(formula="sum(amount, window='90d')", name="wa"),
+                ModelMeasure(formula="sum(amount, window='90d')", name="wb"),
             ],
         )
         planned = plan_query(query=query, bundle=_chain_bundle())
@@ -456,12 +456,12 @@ class TestB8InnerStagePlanOrder:
         return SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
-                ModelMeasure(formula="cumsum(amount:sum)", name="zz_running"),
-                ModelMeasure(formula="amount:avg", name="aa_total"),
+                ModelMeasure(formula="cumsum(sum(amount))", name="zz_running"),
+                ModelMeasure(formula="avg(amount)", name="aa_total"),
             ],
         )
 
@@ -469,13 +469,13 @@ class TestB8InnerStagePlanOrder:
         return SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
-                ModelMeasure(formula="cumsum(amount:sum)", name="zz_running"),
+                ModelMeasure(formula="cumsum(sum(amount))", name="zz_running"),
                 ModelMeasure(
-                    formula="customers_v2.lifetime_value:sum", name="aa_cross",
+                    formula="sum(customers_v2.lifetime_value)", name="aa_cross",
                 ),
             ],
         )
@@ -484,12 +484,12 @@ class TestB8InnerStagePlanOrder:
         return SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
-                ModelMeasure(formula="time_shift(amount:sum, -1)", name="zz_prev"),
-                ModelMeasure(formula="amount:avg", name="aa_total"),
+                ModelMeasure(formula="time_shift(sum(amount), -1)", name="zz_prev"),
+                ModelMeasure(formula="avg(amount)", name="aa_total"),
             ],
         )
 
@@ -497,14 +497,14 @@ class TestB8InnerStagePlanOrder:
         return SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
                 ModelMeasure(
-                    formula="consecutive_periods(amount:sum > 0)", name="zz_streak",
+                    formula="consecutive_periods(sum(amount) > 0)", name="zz_streak",
                 ),
-                ModelMeasure(formula="amount:avg", name="aa_total"),
+                ModelMeasure(formula="avg(amount)", name="aa_total"),
             ],
         )
 
@@ -542,6 +542,8 @@ class TestB8InnerStagePlanOrder:
     async def test_no_carried_alias_is_dropped(self, factory_name: str) -> None:
         """Fail closed at both ends: every public alias survives to the projection, and no stage omits an alias the next stage reads."""
         query = getattr(self, factory_name)()
+        if factory_name == "_cross_model_transform_query":
+            query = query.model_copy(update={"to_many_handling": "broadcast"})
         sql = await _gen(query, dialect="postgres")
         expected = set(_alias_suffixes(_expected_projection_aliases(query)))
         emitted = set(_alias_suffixes(outer_select_aliases(sql)))
@@ -562,12 +564,12 @@ class TestB8InnerStagePlanOrder:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
-                ModelMeasure(formula="cumsum(amount:sum)", name="zz_running"),
-                ModelMeasure(formula="amount:sum", name="aa_total"),
+                ModelMeasure(formula="cumsum(sum(amount))", name="zz_running"),
+                ModelMeasure(formula="sum(amount)", name="aa_total"),
             ],
         )
         resp = await exec_engine.execute(query)
@@ -585,13 +587,14 @@ class TestB8InnerStagePlanOrder:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
-                ModelMeasure(formula="cumsum(amount:sum)", name="zz_running"),
-                ModelMeasure(formula="customers.spend:sum", name="aa_cross"),
+                ModelMeasure(formula="cumsum(sum(amount))", name="zz_running"),
+                ModelMeasure(formula="sum(customers.spend)", name="aa_cross"),
             ],
+            to_many_handling="broadcast",
         )
         resp = await exec_engine.execute(query)
         assert [r["orders.zz_running"] for r in resp.data] == pytest.approx(
@@ -609,12 +612,12 @@ class TestB8InnerStagePlanOrder:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
-                ModelMeasure(formula="time_shift(amount:sum, -1)", name="zz_prev"),
-                ModelMeasure(formula="amount:sum", name="aa_total"),
+                ModelMeasure(formula="time_shift(sum(amount), -1)", name="zz_prev"),
+                ModelMeasure(formula="sum(amount)", name="aa_total"),
             ],
         )
         resp = await exec_engine.execute(query)
@@ -638,14 +641,14 @@ class TestB8InnerStagePlanOrder:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
                 ModelMeasure(
-                    formula="consecutive_periods(amount:sum > 0)", name="zz_streak",
+                    formula="consecutive_periods(sum(amount) > 0)", name="zz_streak",
                 ),
-                ModelMeasure(formula="amount:sum", name="aa_total"),
+                ModelMeasure(formula="sum(amount)", name="aa_total"),
             ],
         )
         resp = await exec_engine.execute(query)
@@ -661,7 +664,7 @@ class TestB11JoinOrdering:
             SlayerQuery(
                 source_model="orders_x",
                 dimensions=[ColumnRef(name="customers_v2.status")],
-                measures=[ModelMeasure(formula="amount:sum")],
+                measures=[ModelMeasure(formula="sum(amount)")],
             ),
             dialect="postgres",
         )
@@ -673,7 +676,7 @@ class TestB11JoinOrdering:
             SlayerQuery(
                 source_model="orders_x",
                 dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="amount:sum")],
+                measures=[ModelMeasure(formula="sum(amount)")],
                 filters=["customers_v2.status == 'active'"],
             ),
             dialect="postgres",
@@ -690,7 +693,7 @@ class TestB11JoinOrdering:
             SlayerQuery(
                 source_model="orders_x",
                 dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="amount:sum")],
+                measures=[ModelMeasure(formula="sum(amount)")],
                 filters=["customers_v2.deep_pop > 0"],
             ),
             dialect="postgres",
@@ -708,7 +711,7 @@ class TestB11JoinOrdering:
             SlayerQuery(
                 source_model="orders_x",
                 dimensions=[ColumnRef(name="customers_v2.deep_gdp")],
-                measures=[ModelMeasure(formula="amount:sum")],
+                measures=[ModelMeasure(formula="sum(amount)")],
             ),
             dialect="postgres",
         )
@@ -732,7 +735,7 @@ class TestB11JoinOrdering:
                 ColumnRef(name="customers_v2.status"),
                 ColumnRef(name="customers_v2.deep_pop"),
             ],
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
             filters=["customers_v2.status != 'x'"],
         )
         first = await _gen(query, dialect="postgres")
@@ -745,7 +748,7 @@ class TestB11JoinOrdering:
             SlayerQuery(
                 source_model="orders_x",
                 dimensions=[ColumnRef(name="customers_v2.deep_pop")],
-                measures=[ModelMeasure(formula="amount:sum")],
+                measures=[ModelMeasure(formula="sum(amount)")],
                 filters=["customers_v2.status != 'x'"],
             ),
             dialect="postgres",
@@ -762,7 +765,7 @@ class TestB11JoinOrdering:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="customers.regions.name")],
-            measures=[ModelMeasure(formula="amount:sum", name="revenue")],
+            measures=[ModelMeasure(formula="sum(amount)", name="revenue")],
         )
         resp = await exec_engine.execute(query)
         by_region = {
@@ -777,7 +780,7 @@ class TestB11JoinOrdering:
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=[ColumnRef(name="customers_v2.deep_pop")],
-            measures=[ModelMeasure(formula="amount:sum")],
+            measures=[ModelMeasure(formula="sum(amount)")],
         )
         sequences = {}
         for dialect in ("postgres", "sqlite", "duckdb"):
@@ -813,7 +816,7 @@ class TestB11JoinOrdering:
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=[ColumnRef(name="customers_v2.status")],
-            measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
+            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
             filters=["customers_v2.status != 'x'"],
         )
         sql = await _gen(query, dialect="postgres")

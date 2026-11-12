@@ -1,12 +1,14 @@
 """The usage report: every leaf is SLayer vocabulary (enum token, bool, bucket, date, UUID, count)."""
 
 import datetime
+import json
 import uuid
-from typing import Annotated, Literal, get_args
+from types import UnionType
+from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 VERSION_PATTERN = r"^\d+(\.\d+)*((a|b|rc)\d+)?(\.post\d+)?(\.dev\d+)?(\+[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$"
 
 Count = Annotated[int, Field(ge=0)]
@@ -16,18 +18,18 @@ UsageKey = Literal[
     # CLI leaf commands
     "cli:serve", "cli:flight-serve", "cli:pg-serve", "cli:mcp", "cli:query", "cli:ingest",
     "cli:validate-models", "cli:recommend-root-model",
-    "cli:import-dbt", "cli:import-cube", "cli:import-osi",
+    "cli:import-dbt", "cli:import-cube", "cli:import-osi", "cli:export-osi",
     "cli:models.list", "cli:models.show", "cli:models.create", "cli:models.delete",
     "cli:datasources.list", "cli:datasources.show", "cli:datasources.create",
     "cli:datasources.delete", "cli:datasources.test",
     "cli:memory.save", "cli:memory.forget", "cli:storage.migrate-types",
-    "cli:inspect", "cli:search", "cli:search.refresh-samples",
+    "cli:datasources.refresh-samples", "cli:inspect", "cli:search",
     "cli:other",
     # MCP tools
     "mcp:create_datasource", "mcp:create_model", "mcp:delete_datasource", "mcp:delete_model",
     "mcp:describe_datasource", "mcp:edit_datasource", "mcp:edit_model", "mcp:forget_memory",
     "mcp:get_datasource_priority", "mcp:ingest_datasource_models", "mcp:inspect",
-    "mcp:inspect_model", "mcp:list_datasources", "mcp:models_summary", "mcp:query",
+    "mcp:list_datasources", "mcp:models_summary", "mcp:query",
     "mcp:recommend_root_model", "mcp:save_memory", "mcp:search", "mcp:set_datasource_priority",
     "mcp:validate_models", "mcp:other",
     # REST route templates
@@ -51,6 +53,7 @@ ErrorToken = Literal[
 FlagToken = Literal[
     "multistage", "inline_source", "time_dimensions", "filters",
     "computed_dimensions", "saved_query", "to_many_handling",
+    "cast", "try_cast", "aggregate_filter", "list_literal",
 ]
 
 TransformToken = Literal[
@@ -61,7 +64,17 @@ TransformToken = Literal[
 AggregationToken = Literal[
     "sum", "avg", "min", "max", "count", "count_distinct", "count_distinct_approx",
     "first", "last", "weighted_avg", "median", "percentile", "stddev_samp", "stddev_pop",
-    "var_samp", "var_pop", "corr", "covar_samp", "covar_pop", "custom",
+    "var_samp", "var_pop", "corr", "covar_samp", "covar_pop", "collect", "custom",
+]
+
+FunctionToken = Literal[
+    "abs", "acos", "ascii", "asin", "atan", "atan2", "cbrt", "ceil", "ceiling", "chr", "coalesce", "concat",
+    "concat_ws", "contains", "contains_all", "contains_any", "cos", "current_date", "date_add", "date_diff",
+    "date_part", "div", "ends_with", "exp", "floor", "greatest", "ifnull", "iif", "ilike", "instr", "interval",
+    "json_value", "least", "left", "length", "like", "ln", "log", "log10", "log2", "lower", "lpad", "ltrim", "mod",
+    "now", "nullif", "pi", "pow", "power", "regexp_extract", "regexp_like", "regexp_replace", "repeat", "replace",
+    "reverse", "right", "round", "rpad", "rtrim", "sign", "sin", "split_part", "sqrt", "starts_with", "substr",
+    "substring", "tan", "trim", "trunc", "upper",
 ]
 
 DialectToken = Literal[
@@ -71,6 +84,7 @@ DialectToken = Literal[
 
 DatasourceBucket = Literal["0", "1", "2-5", "6+"]
 ModelCountBucket = Literal["0", "1-10", "11-50", "51-200", "200+"]
+QueryCountBucket = Literal["0", "1", "2-5", "6-20", "21+"]
 StorageToken = Literal["yaml", "sqlite", "other"]
 
 ClientToken = Literal[
@@ -89,9 +103,69 @@ USAGE_KEYS: frozenset[str] = frozenset(get_args(UsageKey))
 FLAGS: frozenset[str] = frozenset(get_args(FlagToken))
 TRANSFORMS: frozenset[str] = frozenset(get_args(TransformToken))
 AGGREGATIONS: frozenset[str] = frozenset(get_args(AggregationToken))
+FUNCTIONS: frozenset[str] = frozenset(get_args(FunctionToken))
 DIALECTS: frozenset[str] = frozenset(get_args(DialectToken))
 CLIENTS: frozenset[str] = frozenset(get_args(ClientToken))
 EXTRAS: tuple[ExtraToken, ...] = get_args(ExtraToken)
+_QUERY_COUNT_RANK = {bucket: rank for rank, bucket in enumerate(get_args(QueryCountBucket))}
+
+
+def known_usage_key(*, surface: str, key: str) -> str | None:
+    """``key`` when defined, else ``<surface>:other`` when defined, else ``None``."""
+    if key in USAGE_KEYS:
+        return key
+    other = f"{surface}:other"
+    return other if other in USAGE_KEYS else None
+
+
+def fold_retired_usage_keys(data: Any) -> Any:
+    """Count a usage key this version no longer defines as its surface's ``other`` (or drop it)."""
+    usage = data.get("usage") if isinstance(data, dict) else None
+    if not isinstance(usage, dict) or all(key in USAGE_KEYS for key in usage):
+        return data
+    entries = {
+        key: entry.model_dump() if isinstance(entry, UsageEntry) else entry for key, entry in usage.items()
+    }
+    if not all(isinstance(entry, dict) for entry in entries.values()):
+        return data
+    folded: dict[str, dict] = {}
+    for key, entry in entries.items():
+        target = known_usage_key(surface=str(key).partition(":")[0], key=str(key))
+        if target is None:
+            continue
+        merged = folded.setdefault(target, {"ok": 0, "errors": {}})
+        merged["ok"] += entry.get("ok", 0)
+        for token, count in (entry.get("errors") or {}).items():
+            merged["errors"][token] = merged["errors"].get(token, 0) + count
+    return {**data, "usage": folded}
+
+
+def _known_parts(data: Any, annotation: Any) -> Any:
+    """``data`` without the fields and literal dict keys ``annotation`` does not define."""
+    if get_origin(annotation) is Annotated:
+        return _known_parts(data, get_args(annotation)[0])
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        if not isinstance(data, dict):
+            return data
+        fields = {(f.alias or n): f.annotation for n, f in annotation.model_fields.items()}
+        fields |= {n: f.annotation for n, f in annotation.model_fields.items()}
+        return {k: _known_parts(v, fields[k]) for k, v in data.items() if k in fields}
+    origin, args = get_origin(annotation), get_args(annotation)
+    if origin is dict and isinstance(data, dict):
+        key_type, value_type = args
+        keep = (lambda k: k in get_args(key_type)) if get_origin(key_type) is Literal else (lambda _k: True)
+        return {k: _known_parts(v, value_type) for k, v in data.items() if keep(k)}
+    if origin is list and isinstance(data, list):
+        return [_known_parts(v, args[0]) for v in data]
+    if origin in (Union, UnionType) and data is not None:
+        (inner,) = [a for a in args if a is not type(None)] or [annotation]
+        return _known_parts(data, inner)
+    return data
+
+
+def read_spooled(raw: bytes) -> "Batch":
+    """A spool file's batch, keeping every counter this version names and dropping the rest."""
+    return Batch.model_validate(_known_parts(fold_retired_usage_keys(json.loads(raw)), Batch))
 
 
 class _Strict(BaseModel):
@@ -112,6 +186,7 @@ class Features(_Strict):
     flags: dict[FlagToken, Count] = Field(default_factory=dict)
     transforms: dict[TransformToken, Count] = Field(default_factory=dict)
     aggregations: dict[AggregationToken, Count] = Field(default_factory=dict)
+    functions: dict[FunctionToken, Count] = Field(default_factory=dict)
 
 
 class Dialects(_Strict):
@@ -133,6 +208,21 @@ class McpClientCount(_Strict):
     sessions: Count = 0
 
 
+class McpSessionCount(_Strict):
+    """MCP sessions whose successful and failed ``query`` calls fall into these buckets."""
+
+    queries_ok: QueryCountBucket
+    queries_err: QueryCountBucket
+    sessions: Count = 0
+
+
+def session_counts(counts: dict[tuple[str, str], int]) -> list[McpSessionCount]:
+    """One row per ``(queries_ok, queries_err)`` bucket pair, in bucket rank order."""
+    pairs = sorted(counts, key=lambda pair: (_QUERY_COUNT_RANK[pair[0]], _QUERY_COUNT_RANK[pair[1]]))
+    return [McpSessionCount.model_validate({"queries_ok": ok, "queries_err": err, "sessions": counts[(ok, err)]})
+            for ok, err in pairs]
+
+
 class Batch(_Strict):
     """Counters of one or more processes; the content of a spool file."""
 
@@ -142,6 +232,12 @@ class Batch(_Strict):
     dialects: Dialects = Field(default_factory=Dialects)
     context: Context = Field(default_factory=Context)
     mcp_clients: list[McpClientCount] = Field(default_factory=list)
+    mcp_sessions: list[McpSessionCount] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fold_retired_usage_keys(cls, data: Any) -> Any:
+        return fold_retired_usage_keys(data)
 
 
 class Env(_Strict):
@@ -158,8 +254,9 @@ class UsageReport(Batch):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True, serialize_by_alias=True)
 
-    schema_version: Literal[1] = Field(default=SCHEMA_VERSION, alias="schema")
+    schema_version: Literal[2] = Field(default=SCHEMA_VERSION, alias="schema")
     install_id: uuid.UUID | None
+    first_query_ok: datetime.date | None = None
     batch_id: uuid.UUID
     env: Env
 
@@ -176,6 +273,7 @@ def merge(batches: list[Batch]) -> Batch:
     dialects = Dialects()
     context = Context()
     clients: dict[tuple, int] = {}
+    session_pairs: dict[tuple[str, str], int] = {}
     firsts, lasts = [], []
     for batch in batches:
         if batch.period is not None:
@@ -188,6 +286,7 @@ def merge(batches: list[Batch]) -> Batch:
         _add(features.flags, batch.features.flags)
         _add(features.transforms, batch.features.transforms)
         _add(features.aggregations, batch.features.aggregations)
+        _add(features.functions, batch.features.functions)
         _add(dialects.queries, batch.dialects.queries)
         for dialect, buckets in batch.dialects.datasources.items():
             _add(dialects.datasources.setdefault(dialect, {}), buckets)
@@ -197,6 +296,9 @@ def merge(batches: list[Batch]) -> Batch:
         for client in batch.mcp_clients:
             key = (client.client, client.major)
             clients[key] = clients.get(key, 0) + client.sessions
+        for row in batch.mcp_sessions:
+            pair = (row.queries_ok, row.queries_err)
+            session_pairs[pair] = session_pairs.get(pair, 0) + row.sessions
     return Batch(
         period=Period(first=min(firsts), last=max(lasts)) if firsts else None,
         usage=usage,
@@ -207,4 +309,5 @@ def merge(batches: list[Batch]) -> Batch:
             McpClientCount(client=client, major=major, sessions=sessions)
             for (client, major), sessions in sorted(clients.items(), key=lambda kv: (kv[0][0], kv[0][1] or 0))
         ],
+        mcp_sessions=session_counts(session_pairs),
     )

@@ -68,9 +68,9 @@ async def exec_backend_rev(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="amount:sum", name="m")
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
-RM = ModelMeasure(formula="stores.rent:sum", name="rm")
+M = ModelMeasure(formula="sum(amount)", name="m")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+RM = ModelMeasure(formula="sum(stores.rent)", name="rm")
 
 
 async def _dry_has_exists_and_closes(engine, query, dialect) -> None:
@@ -128,6 +128,7 @@ class TestReverseHopPushdown:
         """Scenario: pushed filter still restricts the result rows."""
         _, engine = exec_backend
         resp = await engine.execute(q(
+            to_many_handling="broadcast",
             dimensions=["status"], measures=[M, CM],
             filters=["channel = 'app'"],
         ))
@@ -172,7 +173,8 @@ class TestSameRowGrouping:
         AND by a gold customer — across the composite hop plus one more."""
         dialect, engine = exec_backend
         query = q(dimensions=["status"], measures=[M, RM],
-                  filters=["channel = 'app'", "customers.tier = 'gold'"])
+                  filters=["channel = 'app'", "customers.tier = 'gold'"],
+                  to_many_handling="broadcast")
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.status")
         assert set(by) == {("ok",), ("new",)}
@@ -190,6 +192,7 @@ class TestCompositeCorrelation:
         full composite correlation excludes it."""
         _, engine = exec_backend
         resp = await engine.execute(q(
+            to_many_handling="broadcast",
             dimensions=["status"], measures=[M, RM],
             filters=["channel = 'app'"],
         ))
@@ -273,6 +276,7 @@ class TestExpandedDependencies:
         rewrite; the broadcast total 515 marks the dropped-filter defect."""
         _, engine = exec_backend
         resp = await engine.execute(q(
+            to_many_handling="broadcast",
             dimensions=["status"], measures=[M, CM],
             filters=["cust_tier = 'gold'"],
         ))
@@ -310,9 +314,9 @@ class TestProducerKinds:
         query = q(
             dimensions=["customers.tier"],
             measures=[
-                ModelMeasure(formula="customers.spend:first(customers.signup_at)",
+                ModelMeasure(formula="first(customers.spend, customers.signup_at)",
                              name="f"),
-                ModelMeasure(formula="customers.spend:last(customers.signup_at)",
+                ModelMeasure(formula="last(customers.spend, customers.signup_at)",
                              name="l"),
             ],
             filters=["channel = 'app'"],
@@ -335,7 +339,7 @@ class TestProducerKinds:
         _, engine = exec_backend
         resp = await engine.execute(q(
             time_dimensions=signup_month_td(),
-            measures=[ModelMeasure(formula="customers.spend:sum(window='1y')",
+            measures=[ModelMeasure(formula="sum(customers.spend, window='1y')",
                                    name="w")],
             filters=["channel = 'app'"],
         ))
@@ -353,7 +357,7 @@ class TestProducerKinds:
         dialect, engine = exec_backend
         dry = await engine.execute(query=q(
             time_dimensions=signup_month_td(),
-            measures=[ModelMeasure(formula="customers.spend:sum(window='1y')",
+            measures=[ModelMeasure(formula="sum(customers.spend, window='1y')",
                                    name="w")],
             filters=["channel = 'app'"],
         ), dry_run=True)
@@ -375,7 +379,7 @@ class TestProducerKinds:
         _, engine = exec_backend
         resp = await engine.execute(query=q(
             time_dimensions=signup_month_td(),
-            measures=[ModelMeasure(formula="customers.spend:sum(window='1y')",
+            measures=[ModelMeasure(formula="sum(customers.spend, window='1y')",
                                    name="w")],
             filters=["status = 'new'"],
         ))

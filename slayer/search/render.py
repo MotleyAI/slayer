@@ -35,6 +35,7 @@ from slayer.core.models import (
     Column,
     ModelMeasure,
     SlayerModel,
+    column_type_text,
 )
 from slayer.memories.models import Memory
 
@@ -199,7 +200,7 @@ def render_column_text(*, model: SlayerModel, column: Column) -> str:
     """Column doc: parent qualifier + per-field metadata + cached sample."""
     lines: list[str] = [
         f"Column: {model.data_source}.{model.name}.{column.name}",
-        f"Type: {column.type}",
+        f"Type: {column_type_text(column)}",
     ]
     if column.description:
         lines.append(f"Description: {column.description}")

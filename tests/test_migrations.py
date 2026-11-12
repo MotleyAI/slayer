@@ -454,7 +454,7 @@ def test_query_v1_to_v2_fields_renamed() -> None:
     })
     assert q.version == mig.CURRENT_VERSIONS["SlayerQuery"]
     assert q.measures is not None
-    assert q.measures[0].formula == "revenue:sum"
+    assert q.measures[0].formula == "sum(revenue)"
     assert q.measures[0].name == "rev"
 
 
@@ -481,7 +481,8 @@ def test_query_v1_to_v2_inline_model_extension() -> None:
         "fields": [{"formula": "revenue:sum"}],
     })
     assert q.version == mig.CURRENT_VERSIONS["SlayerQuery"]
-    sm = q.source_model
+    assert q.source_model == "orders"
+    (sm,) = q.extensions or []
     assert isinstance(sm, ModelExtension)
     assert sm.source_name == "orders"
     assert [c.name for c in sm.columns or []] == ["region", "revenue"]
@@ -534,7 +535,7 @@ def test_model_v1_to_v2_source_queries_nested_rename() -> None:
     # renamed to 'measures' and version bumped to current.
     assert isinstance(inner, SlayerQuery)
     assert inner.measures is not None
-    assert inner.measures[0].formula == "revenue:sum"
+    assert inner.measures[0].formula == "sum(revenue)"
     assert inner.measures[0].name == "rev"
     assert inner.version == mig.CURRENT_VERSIONS["SlayerQuery"]
 
@@ -559,7 +560,8 @@ def test_model_v1_to_v2_source_queries_with_inline_extension() -> None:
     })
     inner = m.source_queries[0]
     assert isinstance(inner, SlayerQuery)
-    src = inner.source_model
+    assert inner.source_model == "orders"
+    (src,) = inner.extensions or []
     assert isinstance(src, ModelExtension)
     # Merged into columns (status from dimensions + revenue from measures)
     assert sorted(c.name for c in src.columns or []) == ["revenue", "status"]
@@ -582,7 +584,7 @@ def test_model_v2_input_with_source_queries_preserved() -> None:
     inner = m.source_queries[0]
     assert isinstance(inner, SlayerQuery)
     assert inner.measures is not None
-    assert inner.measures[0].formula == "revenue:sum"
+    assert inner.measures[0].formula == "sum(revenue)"
     assert inner.measures[0].name == "rev"
 
 
@@ -618,9 +620,14 @@ async def test_v1_yaml_round_trip_to_v2() -> None:
                 "measures": [{"name": "revenue", "sql": "amount"}],
             }, f)
 
-        storage = YAMLStorage(base_dir=tmpdir)
+        engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=tmpdir))
+        storage = engine.storage
 
-        loaded = await storage.get_model("orders")
+        try:
+            loaded = await storage.get_model("orders")
+        finally:
+            await engine.aclose()
+            engine.close()
         assert loaded is not None
         assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
         assert [c.name for c in loaded.columns] == ["status", "revenue"]
@@ -684,8 +691,12 @@ async def test_v1_sqlite_round_trip_to_v2() -> None:
 
         # Open SQLiteStorage *after* the legacy data is in place so the
         # schema migrator runs the v3 → v4 PK rebuild on real legacy rows.
-        storage = SQLiteStorage(db_path=db_path)
-        loaded = await storage.get_model("orders")
+        engine = SlayerQueryEngine(storage=SQLiteStorage(db_path=db_path))
+        try:
+            loaded = await engine.storage.get_model("orders")
+        finally:
+            await engine.aclose()
+            engine.close()
         assert loaded is not None
         assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
         assert [c.name for c in loaded.columns] == ["status", "revenue"]
@@ -723,6 +734,19 @@ def test_query_v2_to_v3_drops_legacy_execution_flags(
         assert f in warnings_emitted[0].message
     # The query identifier appears (here: source_model since name is unset)
     assert "orders" in warnings_emitted[0].message
+
+
+def test_query_v2_to_v3_names_an_inline_model_without_its_contents(caplog) -> None:
+    secret = "alice@example.com"
+    inline = {"name": "inline_orders", "sql_table": "orders", "data_source": "ds",
+              "columns": [{"name": "email", "type": "string"}],
+              "measures": [{"name": "m", "sql": f"COUNT(CASE WHEN email = '{secret}' THEN 1 END)"}]}
+    caplog.set_level(logging.WARNING, logger="slayer.storage.v3_migration")
+    with pytest.warns(DeprecationWarning) as caught:
+        SlayerQuery.model_validate({"version": 2, "source_model": inline, "dry_run": True})
+    texts = [r.getMessage() for r in caplog.records] + [str(w.message) for w in caught]
+    assert any("inline_orders" in t for t in texts), texts
+    assert not [t for t in texts if secret in t], texts
 
 
 def test_query_v2_to_v3_no_op_when_neither_present(caplog) -> None:
@@ -794,7 +818,7 @@ async def _build_engine_with_orders(tmpdir: str):
 async def test_engine_dry_run_kwarg_slayer_query_input() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         engine = await _build_engine_with_orders(tmp)
-        q = SlayerQuery(source_model="orders", measures=[{"formula": "*:count"}])
+        q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "count(*)"}]})
         result = await engine.execute(query=q, dry_run=True)
         assert result.data == []
         assert "COUNT(*)" in result.sql
@@ -804,7 +828,7 @@ async def test_engine_dry_run_kwarg_dict_input() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         engine = await _build_engine_with_orders(tmp)
         result = await engine.execute(
-            query={"source_model": "orders", "measures": [{"formula": "*:count"}]},
+            query={"source_model": "orders", "measures": [{"formula": "count(*)"}]},
             dry_run=True,
         )
         assert result.data == []
@@ -817,7 +841,7 @@ async def test_engine_dry_run_kwarg_list_input() -> None:
         engine = await _build_engine_with_orders(tmp)
         result = await engine.execute(
             query=[
-                {"source_model": "orders", "measures": [{"formula": "*:count"}]},
+                {"source_model": "orders", "measures": [{"formula": "count(*)"}]},
             ],
             dry_run=True,
         )

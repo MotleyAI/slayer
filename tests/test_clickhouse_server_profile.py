@@ -11,7 +11,7 @@ import pytest
 
 from slayer.core.models import DatasourceConfig
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects.base import ServerProfile
 from tests._ch_fake_http import (
     CH_TIMEOUT_KEY,
@@ -56,7 +56,7 @@ class TestProfileContents:
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)
             profile = _profile(_client())
-        assert profile == ServerProfile(version=(25, 8), readonly=1, correlated_subqueries=True)
+        assert profile == ServerProfile(version=(25, 8, 3), readonly=1, correlated_subqueries=True)
         assert fake.statements() == [PROFILE_SQL, CORRELATED_SQL]
 
     @pytest.mark.parametrize("version", ["24.8.14.10459", "25.3.1.1"])
@@ -69,7 +69,7 @@ class TestProfileContents:
         assert profile.readonly == 1
         assert fake.statements() == [PROFILE_SQL]
 
-    @pytest.mark.parametrize(("version", "parsed"), [("25.4.1.1", (25, 4)), ("26.1.2.3", (26, 1))])
+    @pytest.mark.parametrize(("version", "parsed"), [("25.4.1.1", (25, 4, 1)), ("26.1.2.3", (26, 1, 2))])
     def test_correlated_statement_from_25_4(self, monkeypatch, version: str, parsed: tuple[int, int]) -> None:
         fake = FakeClickHouse(version=version, readonly=1, correlated=False)
         with fake_ch_engine(fake) as engine:
@@ -107,7 +107,7 @@ class TestCorrelatedProbeFailure:
             profile = _profile(client)
         assert result.warnings == []
         assert fake.params_for("SELECT 1")[0][CH_TIMEOUT_KEY] == 30
-        assert profile.version == (25, 8)
+        assert profile.version == (25, 8, 3)
         assert profile.readonly == 0
         assert profile.correlated_subqueries is None
 
@@ -131,7 +131,7 @@ class TestOneFillPerEngine:
             route_engine(monkeypatch, engine)
             _client().execute_sync("SELECT 1")
             profile = _profile(_client())
-        assert profile == ServerProfile(version=(25, 8), readonly=1, correlated_subqueries=True)
+        assert profile == ServerProfile(version=(25, 8, 3), readonly=1, correlated_subqueries=True)
         assert (fake.permission_checks(), fake.correlated_checks()) == (1, 1)
 
     def test_server_profile_fill_reused_by_execution(self, monkeypatch) -> None:

@@ -81,7 +81,7 @@ def _unfiltered_query() -> SlayerQuery:
     return SlayerQuery(
         source_model="orders_x",
         measures=[ModelMeasure(
-            formula="customers_v2.lifetime_value:sum", name="ltv",
+            formula="sum(customers_v2.lifetime_value)", name="ltv",
         )],
     )
 
@@ -90,7 +90,7 @@ def _filtered_query() -> SlayerQuery:
     return SlayerQuery(
         source_model="orders_x",
         measures=[ModelMeasure(
-            formula="customers_v2.lifetime_value:sum", name="ltv",
+            formula="sum(customers_v2.lifetime_value)", name="ltv",
         )],
         filters=["status == 'paid'"],
     )
@@ -102,7 +102,7 @@ def _non_empty_base_query() -> SlayerQuery:
         source_model="orders_x",
         dimensions=[ColumnRef(name="status")],
         measures=[ModelMeasure(
-            formula="customers_v2.lifetime_value:sum", name="ltv",
+            formula="sum(customers_v2.lifetime_value)", name="ltv",
         )],
     )
 
@@ -142,9 +142,7 @@ class TestEmptyBaseGrainPlanNode:
             "the host-local filter was not recorded on the node, so the "
             "renderer would have to re-walk the masks to find it."
         )
-        known = {m.slot_id for m in planned.masks} | {
-            mf.id for mf in planned.mode_a_filters
-        }
+        known = {m.slot_id for m in planned.masks}
         assert set(ids) <= known, (
             f"node references unknown filter ids: {set(ids) - known}"
         )
@@ -272,7 +270,7 @@ class TestEmptyBaseExecution:
         """The reason for the LIMIT-1 collapse: one row, counted once."""
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="customers.spend:sum", name="total")],
+            measures=[ModelMeasure(formula="sum(customers.spend)", name="total")],
         )
         resp = await exec_engine.execute(query)
         assert len(resp.data) == 1, (
@@ -289,7 +287,7 @@ class TestEmptyBaseExecution:
         order, so the scalar is 1000, not the unfiltered 1325."""
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="customers.spend:sum", name="total")],
+            measures=[ModelMeasure(formula="sum(customers.spend)", name="total")],
             filters=["status == 'paid'"],
         )
         resp = await exec_engine.execute(query)
@@ -303,7 +301,7 @@ class TestEmptyBaseExecution:
         zero rows, NOT a row with the scalar aggregate in it."""
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="customers.spend:sum", name="total")],
+            measures=[ModelMeasure(formula="sum(customers.spend)", name="total")],
             filters=["status == 'nonexistent'"],
         )
         resp = await exec_engine.execute(query)
@@ -317,7 +315,7 @@ class TestEmptyBaseExecution:
         """An expression of cross-model aggregates alone also leaves ``_base`` a placeholder spine."""
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="customers.spend:sum * 2", name="twice")],
+            measures=[ModelMeasure(formula="sum(customers.spend) * 2", name="twice")],
         )
         resp = await exec_engine.execute(query)
         assert len(resp.data) == 1, resp.data

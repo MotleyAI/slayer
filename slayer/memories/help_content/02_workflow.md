@@ -12,7 +12,7 @@
 Decompose the question into blocks first: every qualifier, projected column, filter,
 grouping, unit, rounding, and ordering hint is one block, and each must map to a named
 column, measure, filter or dimension. Never drop a qualifier because no entity matched:
-search for it, else encode it as an expression or an inline extension column; reference
+search for it, else encode it as an expression where it is used; reference
 already-encoded quantities by name rather than re-deriving them. Pin explicitly rather
 than guessing: which aggregation ("typical" is not automatically avg vs median), the
 grouping column and raw vs standardized labels, each aggregate's scope (all rows vs a
@@ -22,11 +22,11 @@ show" is the rows.
 
 ## Filter literals
 
-Build every `==` / `in` / `like` condition on a text column from that column's
+Build every `=` / `in` / `like` condition on a text column from that column's
 sampled values (inspect it with `compact=false`), never a guessed spelling; samples are a top-N snapshot,
 so verify a needed literal that is absent (e.g. a distinct-values query) rather than
 assume.
-Compare case- and whitespace-insensitively in the condition only, never on a projected,
+Compare case- and whitespace-insensitively (`trim(name) ILIKE 'al%'`) in the condition only, never on a projected,
 grouped or join-key column. Apply only the transformations (TRIM / ROUND / CAST /
 dedup) the question or a governing definition requires.
 
@@ -42,8 +42,8 @@ column and direction as asked; each aggregate's scope right; NULL behaviour inte
 string values in the expected casing. On a wrong result change one variable at a time:
 two changes per attempt make the outcome uninterpretable.
 
-When a one-off concept is missing, extend inline (`source_model` as an extension)
-rather than editing the stored model; persist reusable shapes with `create_model`
+When a one-off concept is missing, write it as an expression in the position that uses
+it rather than editing the stored model; persist reusable shapes with `create_model`
 (`query=` for multi-stage results).
 
 ## Error decoder
@@ -55,6 +55,7 @@ rather than editing the stored model; persist reusable shapes with `create_model
 | "Unresolvable" / "ambiguous" path | missing join edge, or write the full path |
 | "Time dimension required" | add `time_dimensions` or set `main_time_dimension` |
 | "matches a source column" | rename the measure as the suggestion says |
+| "is a list" | group, compare or aggregate its elements (`tags.value`), or test `contains(tags, x)` |
 | database connection errors | `describe_datasource(name=...)` runs a live check |
 
 ## Connecting a database

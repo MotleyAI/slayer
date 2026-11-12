@@ -10,6 +10,7 @@ from sqlglot.dialects.dialect import Dialect
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.errors import ExplainUnsupportedError
 from slayer.sql.dialects import (
     _ALL_DIALECTS,
     ClickhouseDialect,
@@ -178,13 +179,13 @@ def test_default_build_covar_2arg_emits_native_covar_samp() -> None:
 # should_use_native_log — default impl
 
 
-def test_default_should_use_native_log_10_is_true() -> None:
-    assert SqlDialect().should_use_native_log(10) is True
+def test_default_should_use_native_log_10_is_false() -> None:
+    """The neutral ``LOG(10, x)``: a single-argument alias is a dialect's own spelling."""
+    assert SqlDialect().should_use_native_log(10) is False
 
 
-def test_default_should_use_native_log_2_is_true() -> None:
-    """Defaults to True (Postgres-shaped)."""
-    assert SqlDialect().should_use_native_log(2) is True
+def test_default_should_use_native_log_2_is_false() -> None:
+    assert SqlDialect().should_use_native_log(2) is False
 
 
 def test_default_should_use_native_log_other_bases_false() -> None:
@@ -226,19 +227,19 @@ def test_default_register_udfs_is_noop_via_spy_connection() -> None:
     )
 
 
-# build_explain_sql — default impl from prefix/postfix fields
+# explain_statements — default impl from the prefix field
 
 
-def test_default_build_explain_sql_uses_prefix() -> None:
+def test_default_explain_statements_use_prefix() -> None:
     """Base class defaults to ``"EXPLAIN"`` prefix."""
-    assert SqlDialect().build_explain_sql("SELECT 1") == "EXPLAIN SELECT 1"
+    assert SqlDialect().explain_statements("SELECT 1").statement == "EXPLAIN SELECT 1"
 
 
-def test_bigquery_build_explain_sql_raises() -> None:
-    """BigQuery has no EXPLAIN, so ``build_explain_sql`` raises ValueError."""
+def test_bigquery_explain_statements_raise() -> None:
+    """BigQuery has no EXPLAIN, so ``explain_statements`` raises."""
     d = BigqueryDialect()
-    with pytest.raises(ValueError, match="EXPLAIN is not supported"):
-        d.build_explain_sql("SELECT 1")
+    with pytest.raises(ExplainUnsupportedError):
+        d.explain_statements("SELECT 1")
 
 
 # Pydantic v2 frozen instance — defensive
@@ -289,7 +290,7 @@ async def test_chain_outer_wrap_with_order() -> None:
 
 async def test_chain_outer_wrap_hidden_order_by_names_the_carried_alias() -> None:
     """A non-projected sort key resolves to the alias the chain carries."""
-    sql = await gen(cumsum_chain(order=[{"column": "amount:max", "direction": "desc"}]),
+    sql = await gen(cumsum_chain(order=[{"column": "max(amount)", "direction": "desc"}]),
                     dialect="postgres")
     assert outer_order(sql, "postgres") == [("orders.amount_max", "", True)], sql
 

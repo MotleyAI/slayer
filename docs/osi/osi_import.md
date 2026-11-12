@@ -1,6 +1,6 @@
 # Importing OSI (Open Semantic Interchange) Configs
 
-SLayer can import [Open Semantic Interchange](https://github.com/open-semantic-interchange/OSI) (OSI) semantic-model configs and convert them into SLayer models. OSI is a vendor-neutral YAML/JSON standard for semantic models, datasets, relationships, and metrics.
+SLayer can import [Ossie / Open Semantic Interchange](https://github.com/apache/ossie) (OSI) semantic-model documents and convert them into SLayer models. OSI is a vendor-neutral YAML/JSON standard for datasets, relationships, and metrics.
 
 ## Quick Start
 
@@ -8,43 +8,75 @@ SLayer can import [Open Semantic Interchange](https://github.com/open-semantic-i
 slayer import-osi ./osi_configs --datasource my_postgres --storage ./slayer_data
 ```
 
-This reads every `.yaml`/`.yml`/`.json` file in the path (a single file or a directory), converts each OSI dataset into a SLayer model, and saves the models to storage. A **reachable datasource is required** — column data types come from live table introspection (OSI carries no column types), so the importer connects to `--datasource` and overlays OSI's semantic metadata on top.
+This reads every `.yaml`/`.yml`/`.json` file in the path (a single file or a directory), converts each OSI dataset into a SLayer model, and saves the models to storage. A **reachable datasource is required**: column types come from live introspection of `--datasource`, and OSI's semantic metadata is overlaid on top.
 
-Spec versions `1.0`, `0.1.0`, `0.1.1`, and `0.2.0.dev0` are all accepted (they are structurally identical); an unknown version is warned about but still parsed.
+## Document Shapes
+
+A current-spec document holds one semantic model at its root (`version`, `name`, `datasets`, and optionally `description`, `ai_context`, `relationships`, `metrics`, `custom_extensions`). An older document wrapping its models in `semantic_model` (an array or a single object) still imports, each wrapped model as its own semantic model. A file that mixes both shapes, holds neither (such as an Ossie ontology or ontology-mapping document), has an empty `semantic_model`, or wraps its models while declaring `0.3.0.dev0` (whose documents are flat only) is skipped with a warning; the other files still import.
+
+Spec versions `1.0`, `0.1.0`, `0.1.1`, `0.2.0.dev0` and `0.3.0.dev0` parse silently; an unknown version is warned about but still parsed.
 
 ## What Gets Converted
 
 | OSI construct | SLayer target |
 |---|---|
-| `semantic_model[].datasets[]` | one `SlayerModel` each (name = dataset name) |
+| `datasets[]` | one `SlayerModel` each (name = dataset name) |
 | dataset `source` (`db.schema.table`) | `sql_table` + `schema`; a query source → `sql` mode |
-| dataset `fields[]` | `Column`s (real types from introspection) |
-| field `expression` (bare) | overlaid onto the introspected column |
-| field `expression` (derived, e.g. `UPPER(x)`) | a derived `Column` with `sql` set |
-| field `dimension.is_time` | column typed temporal; sets `default_time_dimension` |
+| dataset `fields[]` | the model's columns (see [Fields](#fields)) |
 | dataset `primary_key` | `Column.primary_key = true` |
-| `relationships[]` (`from` → `to`) | a LEFT `ModelJoin` on the `from` model, [`cardinality`](../concepts/models.md#join-cardinality) `many_to_one` (OSI relationships are direction-implied: `from` = many, `to` = one) |
-| `metrics[]` (raw SQL aggregation) | a `ModelMeasure` formula |
+| `relationships[]` (`from` → `to`) | a LEFT `ModelJoin` on the `from` model, [`cardinality`](../concepts/models.md#join-cardinality) `many_to_one` (`from` = many, `to` = one) |
+| `datasets[].metrics[]` | a `ModelMeasure` on that dataset's model |
+| `metrics[]` | a `ModelMeasure` on an anchor model (see [Metrics](#metrics)) |
 | `ai_context` (instructions + synonyms) | entity `description` + `meta["osi_ai_context"]` |
-| `unique_keys` / `custom_extensions` | model/column `meta` |
+| `unique_keys` / `custom_extensions` | model/column `meta`; a single-field unique key also sets `Column.unique` |
+
+A `SLAYER` custom extension written by [`slayer export-osi`](osi_export.md) restores the SLayer structure it carries (join types and directions, measure formulas, column filters, model sources, SLayer-only columns and measures) wherever the document is unedited since export, and otherwise the Ossie content is imported and the report names the entity.
+
+### Fields
+
+A current-spec model exposes **exactly its declared fields**: a field renaming a source column (`order_id: o_orderkey`) hides `o_orderkey`, and source columns no field declares are not on the model. Field expressions may still read any source column, and every column they read must exist in the live source. A dataset with no fields imports with no visible columns and a warning. Older wrapped documents keep every introspected column and overlay their fields on top. When a dataset's query source outputs a label more than once (`SELECT o.id, c.id, …`), every field reading that label is dropped with a report as ambiguous. A field reading a source column whose name another field holds, or transforming the source column of its own name (`status: UPPER(status)`), is dropped with a report (an older wrapped document keeps the source column).
+
+A column's type is the type the database reports; a field's declared `datatype` is used only when the database cannot report one, then the type of a source column the field shares its name with (DOUBLE when none exists), and a disagreement adds an informational report entry. This deviates from the spec's consumer guidance on purpose, since `Column.type` drives SQL casts against the real database. The declared value is kept in `meta["osi_datatype"]`.
+
+| `datatype` | SLayer type |
+|---|---|
+| `String` | TEXT |
+| `Integer` | INT |
+| `Decimal`, `Float` | DOUBLE |
+| `Boolean` | BOOLEAN |
+| `Date` | DATE |
+| `DateTime`, `DateTimeTz` | TIMESTAMP |
+| `Time`, `Opaque` | UNKNOWN |
+
+A field is a time dimension when `dimension.is_time` is `true`, or when `is_time` is unset and its `datatype` is `Date`, `Time`, `DateTime` or `DateTimeTz` (an explicit `is_time: false` wins). The role never changes the column's type: it is recorded as `meta["osi_is_time"]`, and only a DATE or TIMESTAMP time-dimension field can become the model's `default_time_dimension`.
+
+### Keys and Relationships
+
+In a current-spec document, every name in `primary_key`, `unique_keys`, `from_columns` and `to_columns` must be a declared field of its dataset; anything else is reported and not applied. A relationship keyed on a computed field is reported as not representable, and a relationship resolves its datasets only within its own document. A valid `primary_key` replaces the introspected one; without one, a field renaming an introspected key column keeps the key flag. An empty `primary_key` or `unique_keys` entry is reported and ignored (an empty `primary_key` leaves the model without a key).
 
 ### Metrics
 
-An OSI metric holds a raw SQL aggregation expression. SLayer parses it into aggregation formulas:
+An OSI metric holds a raw SQL aggregation, which SLayer converts into a formula:
 
 - `SUM(amount)` → `sum(amount)`, `COUNT(*)` → `count(*)`, `COUNT(DISTINCT id)` → `count_distinct(id)`
-- arithmetic + constants + scalar functions pass through: `SUM(a) / NULLIF(COUNT(*), 0)` → `sum(a) / nullif(count(*), 0)`
-- a non-bare aggregate operand is materialized as a hidden derived column: `SUM(quantity * amount)` → a hidden column `quantity * amount` plus `sum(<col>)`
-- `PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY x)` → `percentile(x, p=0.9)` (`0.5` → `median(x)`)
+- arithmetic, constants and allowlisted scalar functions pass through: `SUM(a) / NULLIF(COUNT(*), 0)` → `sum(a) / nullif(count(*), 0)`
+- `PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY x)` → `percentile(x, p=0.9)` (`0.5` → `median(x)`); `PERCENTILE_DISC`, and a percentile the target dialect cannot compute, is reported as unconverted
+- `STDDEV_SAMP`, `STDDEV_POP`, `VAR_SAMP`, `VAR_POP(x)` → `stddev_samp(x)` etc., `CORR`, `COVAR_SAMP`, `COVAR_POP(x, y)` → `corr(x, other=y)` etc., and `APPROX_COUNT_DISTINCT(x)` → `count_distinct_approx(x)`
+- an aggregate operand is written inline when the formula language expresses it — `SUM(quantity * amount)` → `sum(quantity * amount)`, `CASE`/`IFF`, comparisons, `AND`/`OR`/`NOT`, `IS NULL` — and otherwise becomes a hidden helper column on its single owning dataset, typed from the database
+- `agg(x) FILTER (WHERE p)` → `agg(CASE WHEN p THEN x END)` (`COUNT(*)` counts `CASE WHEN p THEN 1 END`); the predicate must be row-level and read only the aggregate's dataset, and groups are never removed
+- `ARRAY_AGG(DISTINCT x)` → `collect(x)`, `ARRAY_CONTAINS(a, v)` and `v = ANY(a)` → `contains(a, v)`, `ARRAY_LENGTH(a)` and `CARDINALITY(a)` → `length(a)` (in a field, stored as SLayer's own SQL for the datasource), with SLayer's NULL conventions: `collect` drops NULL inputs and gives `[]` for none, `contains` is NULL for a NULL list or value and FALSE when the value is absent, and `length` counts non-NULL elements
+- a string literal keeps its `'` (written `''`) and backslash characters
 
-A metric that references columns from more than one dataset is attached to an **anchor** model — the model that reaches every referenced dataset over the relationship-derived joins with the fewest total hops (ties prefer a referenced dataset, then the smallest name). Cross-dataset columns are emitted as join-qualified dotted refs (`sum(customers.regions.population)`).
+`SUM`/`AVG`/`MIN`/`MAX` over `DISTINCT`, any aggregate but `COUNT(x)` over a list field (`MAX(tags)`, `COUNT(DISTINCT tags)`), window functions, and a `CASE` outside any aggregate are reported as unconverted.
+
+A **dataset-scoped** metric references its own dataset's fields unqualified (`SUM(amount)`). A **model-scoped** metric references fields as `dataset.field` (`SUM(orders.amount) / COUNT(DISTINCT customers.id)`) and is attached to an **anchor** model: among the models that reach every referenced dataset over the relationship joins, preferably one that never crosses a join in its fan-out direction (usually the fact table), then the fewest total hops, a referenced dataset, and the smallest name; an operand reading several datasets must reach them all over to-one joins. A dataset-scoped metric reads a column of its own source directly as `source.column` (`SUM(source.quantity)`, `source` matched case-insensitively): it reads a field passing that column through unchanged, else a hidden helper column, and is reported as unconverted when a field named `source` exists, the column is missing or ambiguous, or a field holding its name does not read it unchanged; older wrapped documents and model-scoped metrics do not read `source.column`. Unquoted names match declared fields case-insensitively and quoted names exactly; a dataset whose field and dataset-metric names repeat, in any case, is refused, since Ossie requires them unique. Older wrapped documents may also reference columns unqualified when exactly one dataset has them. A metric's `datatype` is kept in `meta["osi_datatype"]` and never changes the result type.
 
 ## Dialect Selection
 
-OSI expressions are multi-dialect. `--dialect` (default `ANSI_SQL`) picks which one to read; when it is absent, the importer falls back to another SQL-compatible dialect (`SNOWFLAKE`, `DATABRICKS`). An expression available only in a non-SQL dialect (`MDX`, `MAQL`, `TABLEAU`) is clean-failed to the report.
+Each expression is read from exactly one candidate, the first available in this order: the `--dialect` override; the top-level `sql`; an `OSSIE_SQL_2026` entry; an `ANSI_SQL` entry; an entry in the datasource's own dialect (`POSTGRES`, `DUCKDB`, `TSQL`, …); any other SQL dialect SLayer can read (with an informational report entry). Within one step the first entry wins. An expression with only non-SQL dialects (`MDX`, `DAX`, `TABLEAU`, …) is reported, never raised.
+
+`OSSIE_SQL_2026` and `ANSI_SQL` are read with Ossie's portable function set (`IFF`, `ZEROIFNULL`, `DATEADD`, `STARTSWITH`, `||`, …), and every stored column SQL is rendered in the datasource's dialect (for example `||` becomes `CONCAT` on MySQL). An expression already in the datasource's own dialect is stored verbatim, apart from its unquoted names, which every expression and dataset `source` stores as the datasource's database folds them (`OrderAmount` → `orderamount` on Postgres, Redshift, Snowflake and Oracle; a column qualified by another dataset's name is kept as written).
 
 ## Clean-Fail Report
 
-Anything that cannot be expressed exactly is reported (never silently dropped) — each entry lists the entity, a reason, and any workaround. Examples: a metric with a top-level `CASE` (outside any aggregate) or a window function, a relationship with mismatched key lengths or an unknown target, a dataset whose table cannot be introspected, an illegal name (containing `.`/`:`), a metric whose referenced datasets are not connected by any join path, or an orphan `COUNT(*)` (a column-less metric in a semantic model with no unique fact table, so its grain is ambiguous). The CLI prints a grouped report and a `models / unconverted / dropped` tally at the end.
-
-A query source is introspected live (a `LIMIT 0` / cursor-metadata probe) for real column types, the same way table sources are — no connection-less heuristics.
+Anything that cannot be expressed exactly is reported (never silently dropped): each entry lists the entity, a reason, and any workaround. Examples are an unreadable or unparseable expression, a field reading a column the source lacks, a relationship with mismatched key lengths or an undeclared key, a dataset whose source cannot be introspected, an illegal name (containing `.`/`:`), a metric whose datasets no join path connects, and an orphan `COUNT(*)` (a column-less model-scoped metric with no unique fact table, so its grain is ambiguous). The CLI prints a grouped report and a `models / unconverted / dropped` tally at the end.

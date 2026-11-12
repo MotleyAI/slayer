@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 
 from tests._dev1832_fixtures import dev1832_models
 from tests._engine_helpers import _engine_generate
@@ -22,7 +22,7 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1832_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MONTH_TD = [TimeDimension(dimension=ColumnRef(name="ordered_at"),
+_MONTH_TD = [TimeDimension(dimension="ordered_at",
                            granularity=TimeGranularity.MONTH)]
 
 
@@ -59,7 +59,7 @@ def _cases() -> dict:
         "lifted/transform_constituent": {
             "source": "monthly", "mode": None,
             "kw": {"time_dimensions": _MONTH_TD, "measures": [{"formula":
-                "sum(cumsum(amount:sum(partition_by=[region, ordered_at])) - 1)",
+                "sum(cumsum(sum(amount, partition_by=[region, ordered_at])) - 1)",
                 "name": "m"}]}},
         "lifted/mixed_transform": {
             "source": "sales", "mode": None,
@@ -70,17 +70,17 @@ def _cases() -> dict:
         "lifted/mixed_reagg": {
             "source": "monthly", "mode": None,
             "kw": {"time_dimensions": _MONTH_TD, "measures": [{"formula":
-                "sum(amount * min(amount:sum(partition_by=[region, ordered_at]), "
+                "sum(amount * min(sum(amount, partition_by=[region, ordered_at]), "
                 "partition_by=region))", "name": "m"}]}},
         "lifted/mixed_collapse": {
             "source": "monthly", "mode": None,
             "kw": {"time_dimensions": _MONTH_TD, "measures": [{"formula":
-                "sum(amount * last(amount:sum(partition_by=[region, ordered_at])))",
+                "sum(amount * last(sum(amount, partition_by=[region, ordered_at])))",
                 "name": "m"}]}},
         "lifted/windowed_inner": {
             "source": "monthly", "mode": None,
             "kw": {"time_dimensions": _MONTH_TD, "measures": [{"formula":
-                "sum(rank(amount:sum(window='90d', partition_by=region), direction='desc'))",
+                "sum(rank(sum(amount, window='90d', partition_by=region), direction='desc'))",
                 "name": "m"}]}},
         # positive/* — already supported; byte-identical SQL through the change.
         "positive/same_model_arith": {

@@ -3,6 +3,7 @@
 import argparse
 import datetime as dt
 import decimal
+import json
 import logging
 import math
 import os
@@ -162,6 +163,8 @@ def canon(v: Any) -> Any:
     if isinstance(v, (int, float, decimal.Decimal)):
         f = float(v)
         return int(f) if f.is_integer() else f
+    if isinstance(v, list):  # MetricFlow returns a list as its JSON text
+        return json.dumps(v)
     if isinstance(v, str):
         if _DATE_RE.match(v):
             return v[:10]

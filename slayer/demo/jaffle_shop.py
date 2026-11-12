@@ -9,22 +9,25 @@ to fit inside MCP-client startup timeouts; bump ``--years`` for a richer
 dataset (only the first four jafgen stores open within the first 2 years).
 
 All operations are idempotent: re-running with the same storage path reuses
-the existing DuckDB file instead of regenerating.
+an up-to-date DuckDB file and rebuilds one whose schema is stale.
 """
 
 import datetime as dt
-import io
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
 from collections import deque
+from functools import lru_cache
 from importlib.util import find_spec
-from typing import IO, TYPE_CHECKING
+from typing import IO
 
 import duckdb
+import sqlglot
 from pydantic import BaseModel, Field
+from sqlglot import exp
+from sqlglot.expressions.core import Expr
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
@@ -37,12 +40,11 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.engine.ingestion import ingest_datasource
+from slayer.core.errors import SlayerError
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.database import engine_factory
 from slayer.storage.base import StorageBackend, storage_base_dir
 from slayer.storage.document_loading import DocumentLoadFailures
-
-if TYPE_CHECKING:
-    import duckdb
 
 DEMO_NAME = "jaffle_shop"
 
@@ -58,11 +60,48 @@ CENTS_COLUMNS = {
     "supplies": ["cost"],
 }
 
-LOAD_ORDER = ["customers", "stores", "products", "orders", "items", "supplies", "tweets"]
+LOAD_ORDER = ["regions", "customers", "stores", "products", "orders", "items", "supplies", "tweets"]
 
 # CSV file stem (jafgen's ``raw_<name>.csv``) → DuckDB table name. Names match
 # 1:1 today, but the mapping keeps the seam open if jafgen renames a file.
 TABLE_NAMES = {name: name for name in LOAD_ORDER}
+
+# Seeded by the loader (jafgen has no regions); region id → name.
+REGIONS = {
+    "northeast": "Northeast",
+    "midwest": "Midwest",
+    "south": "South",
+    "west": "West",
+}
+
+# jafgen store name → region id.
+STORE_REGIONS = {
+    "Philadelphia": "northeast",
+    "Brooklyn": "northeast",
+    "Chicago": "midwest",
+    "San Francisco": "west",
+    "Los Angeles": "west",
+    "New Orleans": "south",
+}
+
+
+def _store_region_sql() -> str:
+    cases = " ".join(f"WHEN '{store}' THEN '{region}'" for store, region in STORE_REGIONS.items())
+    return f"CASE name {cases} END"
+
+
+# Stable per-order bucket 0..99 from the id's md5 (≈90% completed, 7% refunded, 3% cancelled).
+_ORDER_STATUS_SQL = (
+    "CASE WHEN CAST('0x' || substr(md5(id), 1, 8) AS BIGINT) % 100 < 90 THEN 'completed' "
+    "WHEN CAST('0x' || substr(md5(id), 1, 8) AS BIGINT) % 100 < 97 THEN 'refunded' "
+    "ELSE 'cancelled' END"
+)
+
+# Columns computed on load from the CSV row: table → {column: SQL expression over the raw columns}.
+DERIVED_COLUMNS = {
+    "stores": {"region_id": _store_region_sql()},
+    "orders": {"status": _ORDER_STATUS_SQL},
+}
 
 # Tables whose CSV column names diverge from our schema. Maps CSV name → SQL
 # column name. Loader uses an explicit column-list INSERT for these tables so
@@ -79,7 +118,24 @@ DATE_COLUMNS = {
     "tweets": ["tweeted_at"],
 }
 
+# List columns computed on insert from a sibling CSV (table ``source``), per table: column → (source CSV, per-row list).
+_LIST_SOURCE = "source"
+LIST_COLUMNS = {
+    "products": {"ingredients": (
+        "supplies", "SELECT list(DISTINCT s.name ORDER BY s.name) FROM source AS s WHERE s.sku = _products_raw.sku",
+    )},
+    "orders": {"item_skus": (
+        "items", "SELECT list(i.sku ORDER BY i.id) FROM source AS i WHERE i.order_id = _orders_raw.id",
+    )},
+}
+
+
 JAFFLE_SCHEMA_SQL = """\
+CREATE TABLE regions (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR NOT NULL
+);
+
 CREATE TABLE customers (
     id VARCHAR PRIMARY KEY,
     name VARCHAR NOT NULL
@@ -89,15 +145,17 @@ CREATE TABLE stores (
     id VARCHAR PRIMARY KEY,
     name VARCHAR NOT NULL,
     opened_at DATE NOT NULL,
-    tax_rate DOUBLE NOT NULL
+    tax_rate DOUBLE NOT NULL,
+    region_id VARCHAR NOT NULL REFERENCES regions(id)
 );
 
 CREATE TABLE products (
     sku VARCHAR PRIMARY KEY,
     name VARCHAR NOT NULL,
     type VARCHAR NOT NULL,
-    price DOUBLE NOT NULL,
-    description VARCHAR NOT NULL
+    price DECIMAL(12,2) NOT NULL,
+    description VARCHAR NOT NULL,
+    ingredients VARCHAR[]
 );
 
 CREATE TABLE orders (
@@ -105,9 +163,11 @@ CREATE TABLE orders (
     customer_id VARCHAR NOT NULL REFERENCES customers(id),
     ordered_at DATE NOT NULL,
     store_id VARCHAR NOT NULL REFERENCES stores(id),
-    subtotal DOUBLE NOT NULL,
-    tax_paid DOUBLE NOT NULL,
-    order_total DOUBLE NOT NULL
+    subtotal DECIMAL(12,2) NOT NULL,
+    tax_paid DECIMAL(12,2) NOT NULL,
+    order_total DECIMAL(12,2) NOT NULL,
+    status VARCHAR NOT NULL,
+    item_skus VARCHAR[]
 );
 
 CREATE TABLE items (
@@ -119,7 +179,7 @@ CREATE TABLE items (
 CREATE TABLE supplies (
     id VARCHAR NOT NULL,
     name VARCHAR NOT NULL,
-    cost DOUBLE NOT NULL,
+    cost DECIMAL(12,2) NOT NULL,
     perishable VARCHAR NOT NULL,
     sku VARCHAR NOT NULL REFERENCES products(sku),
     PRIMARY KEY (id, sku)
@@ -137,12 +197,17 @@ CREATE TABLE tweets (
 # --- curated semantic enrichment --------------------------------------------
 #
 # Hand-curated labels, descriptions, formats, and measures layered on top of
-# the bare auto-ingested models. Monetary columns are in dollars (the loader
-# converts jafgen's cents on insert — see CENTS_COLUMNS).
+# the bare auto-ingested models. Monetary columns are exact DECIMAL(12,2) dollars
+# (the loader converts jafgen's cents on insert — see CENTS_COLUMNS).
 
 
 def _currency() -> NumberFormat:
     return NumberFormat(type=NumberFormatType.CURRENCY, symbol="$", precision=2)
+
+
+MONEY_DB_TYPE = "DECIMAL(12,2)"
+_CUSTOMER_ID_LABEL = "Customer ID"
+_ROW_COUNT = "count(id)"
 
 
 def _percent() -> NumberFormat:
@@ -153,6 +218,7 @@ class _ColumnEnrichment(BaseModel):
     label: str
     description: str | None = None
     format: NumberFormat | None = None
+    db_type: str | None = None
 
 
 class _TableEnrichment(BaseModel):
@@ -188,22 +254,36 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
                     label="Store ID", description="Store where the order was placed."
                 ),
                 "customer_id": _ColumnEnrichment(
-                    label="Customer ID", description="Customer who placed the order."
+                    label=_CUSTOMER_ID_LABEL, description="Customer who placed the order."
                 ),
                 "subtotal": _ColumnEnrichment(
                     label="Net Sales",
                     description="Pre-tax order amount, in dollars.",
                     format=_currency(),
+                    db_type=MONEY_DB_TYPE,
                 ),
                 "tax_paid": _ColumnEnrichment(
                     label="Tax Paid",
                     description="Tax charged on the order, in dollars.",
                     format=_currency(),
+                    db_type=MONEY_DB_TYPE,
                 ),
                 "order_total": _ColumnEnrichment(
                     label="Order Total",
                     description="Final order amount including tax, in dollars.",
                     format=_currency(),
+                    db_type=MONEY_DB_TYPE,
+                ),
+                "status": _ColumnEnrichment(
+                    label="Status",
+                    description=(
+                        "Order status: completed, refunded or cancelled. Refunded and "
+                        "cancelled orders keep their order_total."
+                    ),
+                ),
+                "item_skus": _ColumnEnrichment(
+                    label="Item SKUs",
+                    description="The SKU of each item on the order, one entry per unit (repeats kept).",
                 ),
             },
             measures=[
@@ -211,7 +291,10 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
                     name="total_revenue",
                     formula="sum(order_total)",
                     label="Total Revenue",
-                    description="Gross sales including tax, in dollars.",
+                    description=(
+                        "Gross sales including tax, in dollars, counting refunded and "
+                        "cancelled orders too."
+                    ),
                     type=DataType.DOUBLE,
                 ),
                 ModelMeasure(
@@ -230,7 +313,7 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
                 ),
                 ModelMeasure(
                     name="order_count",
-                    formula="count(id)",
+                    formula=_ROW_COUNT,
                     label="Orders",
                     description="Number of orders.",
                     type=DataType.INT,
@@ -271,7 +354,7 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
         "customers": _TableEnrichment(
             description="Customers of the Jaffle Shop — one row per person.",
             columns={
-                "id": _ColumnEnrichment(label="Customer ID"),
+                "id": _ColumnEnrichment(label=_CUSTOMER_ID_LABEL),
                 "name": _ColumnEnrichment(label="Customer", description="Customer name."),
             },
             measures=[
@@ -285,7 +368,7 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
             ],
         ),
         "stores": _TableEnrichment(
-            description="Physical Jaffle Shop locations.",
+            description="Physical Jaffle Shop locations, each in one region.",
             columns={
                 "id": _ColumnEnrichment(label="Store ID"),
                 "name": _ColumnEnrichment(label="Store", description="Store name."),
@@ -297,6 +380,9 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
                     description="Local sales-tax rate.",
                     format=_percent(),
                 ),
+                "region_id": _ColumnEnrichment(
+                    label="Region ID", description="Region the store belongs to."
+                ),
             },
             measures=[
                 ModelMeasure(
@@ -307,6 +393,13 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
                     type=DataType.INT,
                 ),
             ],
+        ),
+        "regions": _TableEnrichment(
+            description="Sales regions grouping the stores — one row per region.",
+            columns={
+                "id": _ColumnEnrichment(label="Region ID"),
+                "name": _ColumnEnrichment(label="Region", description="Region name."),
+            },
         ),
         "products": _TableEnrichment(
             description="Menu items sold at the Jaffle Shop — jaffles and beverages.",
@@ -320,9 +413,14 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
                     label="Price",
                     description="List price, in dollars.",
                     format=_currency(),
+                    db_type=MONEY_DB_TYPE,
                 ),
                 "description": _ColumnEnrichment(
                     label="Description", description="Product description."
+                ),
+                "ingredients": _ColumnEnrichment(
+                    label="Ingredients",
+                    description="The supplies the product is made from, a list sorted by name.",
                 ),
             },
             measures=[
@@ -356,7 +454,7 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
             measures=[
                 ModelMeasure(
                     name="units_sold",
-                    formula="count(id)",
+                    formula=_ROW_COUNT,
                     label="Units Sold",
                     description="Number of item units sold.",
                     type=DataType.INT,
@@ -375,6 +473,7 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
                     label="Unit Cost",
                     description="Cost per unit, in dollars.",
                     format=_currency(),
+                    db_type=MONEY_DB_TYPE,
                 ),
                 "perishable": _ColumnEnrichment(
                     label="Perishable", description="Whether the supply is perishable."
@@ -405,7 +504,7 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
             columns={
                 "id": _ColumnEnrichment(label="Tweet ID"),
                 "user_id": _ColumnEnrichment(
-                    label="Customer ID", description="Customer who tweeted."
+                    label=_CUSTOMER_ID_LABEL, description="Customer who tweeted."
                 ),
                 "tweeted_at": _ColumnEnrichment(
                     label="Tweet Date", description="When the tweet was posted."
@@ -415,7 +514,7 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
             measures=[
                 ModelMeasure(
                     name="tweet_count",
-                    formula="count(id)",
+                    formula=_ROW_COUNT,
                     label="Tweets",
                     description="Number of tweets.",
                     type=DataType.INT,
@@ -439,7 +538,7 @@ def _is_auto_default_format(fmt: NumberFormat | None) -> bool:
 
 
 def _enrich_column(column: Column, col_spec: _ColumnEnrichment) -> bool:
-    """Fill unset label / description / auto-default format on one column."""
+    """Fill unset label / description / db_type / auto-default format on one column."""
     changed = False
     if column.label is None:
         column.label = col_spec.label
@@ -453,6 +552,9 @@ def _enrich_column(column: Column, col_spec: _ColumnEnrichment) -> bool:
         and _is_auto_default_format(column.format)
     ):
         column.format = col_spec.format.model_copy(deep=True)
+        changed = True
+    if col_spec.db_type is not None and not column.db_type:
+        column.db_type = col_spec.db_type
         changed = True
     return changed
 
@@ -528,7 +630,7 @@ def _stream_fileno(stream) -> int | None:
     """
     try:
         return stream.fileno()
-    except (AttributeError, io.UnsupportedOperation, ValueError, OSError):
+    except (AttributeError, ValueError, OSError):
         return None
 
 
@@ -656,11 +758,31 @@ def shift_dates_to_today(conn: "duckdb.DuckDBPyConnection") -> None:
     delta_days = (dt.date.today() - max_date).days
     if delta_days == 0:
         return
+    shift = exp.Interval(this=exp.Literal.string(str(delta_days)), unit=exp.Var(this="DAY"))
     for table, cols in DATE_COLUMNS.items():
         for col in cols:
-            conn.execute(
-                f"UPDATE {table} SET {col} = {col} + INTERVAL '{delta_days} days'"
-            )
+            shifted = exp.Add(this=exp.column(col), expression=shift.copy())
+            update = exp.Update(this=exp.table_(table), expressions=[exp.column(col).eq(shifted)])
+            conn.execute(update.sql(dialect="duckdb"))
+
+
+def _require_store_regions(conn: "duckdb.DuckDBPyConnection", *, view: str) -> None:
+    query = exp.select("name").distinct().from_(exp.table_(view))
+    names = {name for (name,) in conn.execute(query.sql(dialect="duckdb")).fetchall()}
+    unmapped = sorted(names - STORE_REGIONS.keys())
+    if unmapped:
+        raise SlayerError(f"Demo stores without a region assignment: {', '.join(unmapped)}")
+
+
+def _declared_columns(conn: "duckdb.DuckDBPyConnection", table: str) -> set[str]:
+    return {
+        name
+        for (name,) in conn.execute(
+            "SELECT column_name FROM duckdb_columns() WHERE database_name = current_database() "
+            "AND schema_name = 'main' AND table_name = ?",
+            [table],
+        ).fetchall()
+    }
 
 
 def load_data(
@@ -670,46 +792,79 @@ def load_data(
 ) -> None:
     """Load jafgen CSVs from ``data_dir`` into the already-created tables.
 
-    Monetary columns listed in ``CENTS_COLUMNS`` are converted from cents to
-    dollars on insert. After loading, all ``DATE_COLUMNS`` are shifted forward
-    so the latest ``orders.ordered_at`` is today (see ``shift_dates_to_today``).
+    Seeds ``REGIONS`` first. Monetary columns listed in ``CENTS_COLUMNS`` are converted exactly
+    from cents to ``DECIMAL(12,2)`` dollars, and the ``DERIVED_COLUMNS`` the schema declares are
+    computed on insert; a store missing from ``STORE_REGIONS`` raises ``SlayerError``. After
+    loading, all ``DATE_COLUMNS`` are shifted forward so the latest ``orders.ordered_at`` is today
+    (see ``shift_dates_to_today``).
     """
+    if _declared_columns(conn, TABLE_NAMES["regions"]):
+        insert = exp.insert(exp.values(list(REGIONS.items())), TABLE_NAMES["regions"], columns=["id", "name"])
+        conn.execute(insert.sql(dialect="duckdb"))
     for csv_name in LOAD_ORDER:
         table = TABLE_NAMES[csv_name]
         csv_path = os.path.join(data_dir, f"{prefix}_{csv_name}.csv")
         if not os.path.exists(csv_path):
             continue
 
-        # read_csv_auto takes a SQL string literal, not a bound parameter, so
-        # escape any single quotes in the path by doubling them before
-        # interpolation. (The path itself is trusted in normal demo flows —
-        # this is defence-in-depth for callers who pass arbitrary data_dirs.)
-        quoted_csv_path = csv_path.replace("'", "''")
-
         cents_cols = CENTS_COLUMNS.get(csv_name, [])
         renames = COLUMN_RENAMES.get(csv_name, {})
-        conn.execute(
-            f"CREATE TEMP VIEW _{table}_raw AS SELECT * FROM read_csv_auto('{quoted_csv_path}')"
+        view = f"_{table}_raw"
+        # read_csv_auto takes a SQL string literal, not a bound parameter.
+        csv_source = exp.Table(this=exp.Anonymous(this="read_csv_auto", expressions=[exp.Literal.string(csv_path)]))
+        create = exp.Create(
+            this=exp.table_(view), kind="VIEW", expression=exp.select("*").from_(csv_source),
+            properties=exp.Properties(expressions=[exp.TemporaryProperty()]),
         )
+        conn.execute(create.sql(dialect="duckdb"))
         try:
-            csv_columns = [row[0] for row in conn.execute(f"DESCRIBE _{table}_raw").fetchall()]
+            describe = exp.Describe(this=exp.table_(view))
+            csv_columns = [row[0] for row in conn.execute(describe.sql(dialect="duckdb")).fetchall()]
             select_parts = []
             target_columns = []
             for col in csv_columns:
                 target_col = renames.get(col, col)
                 target_columns.append(target_col)
+                value: Expr = exp.column(col)
                 if col in cents_cols:
-                    select_parts.append(f"CAST({col} AS DOUBLE) / 100.0 AS {target_col}")
-                else:
-                    select_parts.append(f"{col} AS {target_col}")
-            conn.execute(
-                f"INSERT INTO {table} ({', '.join(target_columns)}) "
-                f"SELECT {', '.join(select_parts)} FROM _{table}_raw"
+                    cents = exp.cast(value, to="DECIMAL(18,0)")
+                    value = exp.cast(exp.Mul(this=cents, expression=exp.Literal.number("0.01")), to=MONEY_DB_TYPE)
+                select_parts.append(exp.alias_(value, target_col))
+            declared = _declared_columns(conn, table)
+            derived: dict[str, Expr] = {
+                c: sqlglot.parse_one(e, dialect="duckdb")
+                for c, e in DERIVED_COLUMNS.get(csv_name, {}).items() if c in declared
+            }
+            derived |= _list_expressions(csv_name, declared=declared, data_dir=data_dir, prefix=prefix)
+            for target_col, derived_expr in derived.items():
+                target_columns.append(target_col)
+                select_parts.append(exp.alias_(derived_expr, target_col))
+            if csv_name == "stores" and "region_id" in derived:
+                _require_store_regions(conn, view=view)
+            insert = exp.insert(
+                expression=exp.select(*select_parts).from_(exp.table_(view)), into=exp.table_(table),
+                columns=[exp.to_identifier(c) for c in target_columns],
             )
+            conn.execute(insert.sql(dialect="duckdb"))
         finally:
-            conn.execute(f"DROP VIEW _{table}_raw")
+            conn.execute(exp.Drop(this=exp.table_(view), kind="VIEW").sql(dialect="duckdb"))
 
     shift_dates_to_today(conn)
+
+
+def _list_expressions(csv_name: str, *, declared: set[str], data_dir: str, prefix: str) -> dict[str, Expr]:
+    """The declared ``LIST_COLUMNS`` of ``csv_name`` whose source CSV exists, as insert expressions (``[]`` for a
+    row with none)."""
+    out: dict[str, Expr] = {}
+    for column, (source, values) in LIST_COLUMNS.get(csv_name, {}).items():
+        path = os.path.join(data_dir, f"{prefix}_{source}.csv")
+        if column not in declared or not os.path.exists(path):
+            continue
+        rows = sqlglot.parse_one(values, dialect="duckdb")
+        table = next(t for t in rows.find_all(exp.Table) if t.name == _LIST_SOURCE)
+        table.set("this", exp.Anonymous(this="read_csv_auto", expressions=[exp.Literal.string(path)]))
+        out[column] = exp.Coalesce(this=exp.Subquery(this=rows), expressions=[exp.Array(expressions=[])])
+    return out
 
 
 def verify(conn: "duckdb.DuckDBPyConnection") -> dict:
@@ -721,12 +876,16 @@ def verify(conn: "duckdb.DuckDBPyConnection") -> dict:
 
     counts = {}
     for table in TABLE_NAMES.values():
-        counts[table] = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        count = exp.select(exp.Count(this=exp.Star())).from_(exp.table_(table))
+        row = conn.execute(count.sql(dialect="duckdb")).fetchone()
+        assert row is not None
+        counts[table] = row[0]
     results["row_counts"] = counts
 
     fk_checks = {
         "orders->customers": "SELECT COUNT(*) FROM orders WHERE customer_id NOT IN (SELECT id FROM customers)",
         "orders->stores": "SELECT COUNT(*) FROM orders WHERE store_id NOT IN (SELECT id FROM stores)",
+        "stores->regions": "SELECT COUNT(*) FROM stores WHERE region_id NOT IN (SELECT id FROM regions)",
         "items->orders": "SELECT COUNT(*) FROM items WHERE order_id NOT IN (SELECT id FROM orders)",
         "items->products": "SELECT COUNT(*) FROM items WHERE sku NOT IN (SELECT sku FROM products)",
         "supplies->products": "SELECT COUNT(*) FROM supplies WHERE sku NOT IN (SELECT sku FROM products)",
@@ -755,6 +914,50 @@ def verify(conn: "duckdb.DuckDBPyConnection") -> dict:
     return results
 
 
+def _schema_projection(conn: "duckdb.DuckDBPyConnection") -> list[tuple]:
+    """Canonical ``(table, column_index, column, type)`` rows of the demo tables in ``conn``'s own catalog."""
+    return conn.execute(
+        "SELECT table_name, column_index, column_name, data_type FROM duckdb_columns() "
+        "WHERE database_name = current_database() AND schema_name = 'main' "
+        "AND list_contains(?, table_name) ORDER BY table_name, column_index",
+        [list(TABLE_NAMES.values())],
+    ).fetchall()
+
+
+@lru_cache(maxsize=1)
+def _bundled_schema_projection() -> tuple[tuple, ...]:
+    """``_schema_projection`` of ``JAFFLE_SCHEMA_SQL``, built in memory."""
+    conn = duckdb.connect()
+    try:
+        create_schema(conn)
+        return tuple(_schema_projection(conn))
+    finally:
+        conn.close()
+
+
+def _release_factory_engine(db_path: str) -> None:
+    """Have ``engine_factory`` dispose its cached engine on ``db_path``, if any."""
+    engine_factory.invalidate_engine(
+        DatasourceConfig(name=DEMO_NAME, type="duckdb", database=db_path)
+    )
+
+
+def _connect_existing(db_path: str) -> "duckdb.DuckDBPyConnection":
+    """Open the existing demo DB; a failure (e.g. another process's lock) is one line naming it."""
+    _release_factory_engine(db_path)
+    try:
+        return duckdb.connect(db_path)
+    except duckdb.Error as exc:
+        reason = (str(exc).strip().splitlines() or [type(exc).__name__])[0]
+        raise SlayerError(f"Cannot open the demo database {db_path}: {reason}") from exc
+
+
+def _remove_db_files(path: str) -> None:
+    for leftover in (path, f"{path}.wal"):
+        if os.path.exists(leftover):
+            os.remove(leftover)
+
+
 def build_jaffle_shop(
     db_path: str,
     *,
@@ -762,35 +965,72 @@ def build_jaffle_shop(
     force: bool = False,
     stream: IO[str] | None = None,
 ) -> bool:
-    """Generate the Jaffle Shop DuckDB at ``db_path`` if it does not already exist.
+    """Generate the Jaffle Shop DuckDB at ``db_path`` unless an up-to-date one exists.
 
-    Returns ``True`` if the DB was freshly generated, ``False`` if an existing
-    file at ``db_path`` was reused. When ``force=True``, any existing file is
-    overwritten. On the reuse path, dates are re-shifted so
-    ``MAX(orders.ordered_at) == today`` — this keeps the demo feeling current
-    even when the DB was built days or weeks earlier. ``stream`` is forwarded
-    to ``generate_data`` so jafgen's Rich progress bars stay visible.
+    Returns ``True`` when generated: the file is missing, its schema differs from
+    ``JAFFLE_SCHEMA_SQL``, or ``force``. A reused DB has its dates re-shifted so
+    ``MAX(orders.ordered_at) == today``. A rebuild is written to a sibling file and
+    then replaces ``db_path``, so the demo is never left without a complete DB.
+    ``stream`` is forwarded to ``generate_data`` so jafgen's progress stays visible.
     """
-    if os.path.exists(db_path) and not force:
-        conn = duckdb.connect(db_path)
+    if os.path.exists(db_path):
+        conn = _connect_existing(db_path)
         try:
-            shift_dates_to_today(conn)
+            current = tuple(_schema_projection(conn)) == _bundled_schema_projection()
+            if current and not force:
+                shift_dates_to_today(conn)
+                return False
         finally:
             conn.close()
-        return False
 
-    if force and os.path.exists(db_path):
-        os.remove(db_path)
-
-    with tempfile.TemporaryDirectory(prefix="jaffle_") as tmpdir:
-        data_dir = generate_data(output_dir=tmpdir, years=years, stream=stream)
-        conn = duckdb.connect(db_path)
-        try:
-            create_schema(conn)
-            load_data(conn=conn, data_dir=data_dir)
-        finally:
-            conn.close()
+    sibling = f"{db_path}.building"
+    _remove_db_files(sibling)
+    try:
+        with tempfile.TemporaryDirectory(prefix="jaffle_") as tmpdir:
+            data_dir = generate_data(output_dir=tmpdir, years=years, stream=stream)
+            conn = duckdb.connect(sibling)
+            try:
+                create_schema(conn)
+                load_data(conn=conn, data_dir=data_dir)
+            finally:
+                conn.close()
+        _release_factory_engine(db_path)
+        if os.path.exists(f"{db_path}.wal"):
+            os.remove(f"{db_path}.wal")
+        os.replace(sibling, db_path)
+    finally:
+        _remove_db_files(sibling)
     return True
+
+
+def ingest_demo_models(*, storage: StorageBackend, datasource: DatasourceConfig) -> list[SlayerModel]:
+    """Idempotently ingest the demo models, then apply the curated enrichment; returns the stored demo models.
+
+    Creates missing models and additively merges existing ones (missing joins
+    reconciled in), so every user edit survives.
+    """
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        result = engine.ingest_idempotent_sync(datasource)
+        stored = {
+            m.name: m
+            for m in DocumentLoadFailures().skip(
+                engine.run_sync(engine.storage.load_models(data_source=datasource.name))
+            )
+        }
+    finally:
+        engine.close()
+    missing = [t for t in TABLE_NAMES if t not in stored]
+    if missing:
+        causes = "; ".join(f"{e.model_name}: {e.error}" for e in result.errors if e.model_name in missing)
+        raise SlayerError(f"Demo setup did not store the models {', '.join(missing)}" + (f" ({causes})" if causes else ""))
+    models: list[SlayerModel] = []
+    for table in TABLE_NAMES:
+        model = stored[table]
+        if apply_demo_enrichment(model):
+            run_sync(storage.save_model(model))
+        models.append(model)
+    return models
 
 
 def ensure_demo_datasource(
@@ -805,17 +1045,13 @@ def ensure_demo_datasource(
 ) -> tuple[DatasourceConfig, list[SlayerModel], bool]:
     """Ensure the Jaffle Shop demo is fully set up in ``storage``.
 
-    - Builds the DuckDB at ``<storage_base_dir>/demo/jaffle_shop.duckdb`` if missing.
-    - Registers a datasource record (``name``, default ``jaffle_shop``).
-    - Optionally auto-ingests models, sets ``default_time_dimension`` on
-      ``orders``/``tweets``, and applies the curated semantic enrichment
-      (labels, descriptions, formats, measures — see ``DEMO_ENRICHMENT``).
+    - Builds the DuckDB at ``<storage_base_dir>/demo/jaffle_shop.duckdb`` if missing or stale.
+    - Registers a datasource record (``name``, default ``jaffle_shop``); an existing
+      record is overwritten only with ``assume_yes``.
+    - Optionally ingests the models through ``ingest_demo_models``.
 
-    Returns ``(datasource, jaffle_models, db_built)``. ``jaffle_models`` is
-    the full set of Jaffle Shop ``SlayerModel`` objects currently in storage
-    (whether ingested this call or from a previous run), so callers can report
-    the true state of the demo. ``db_built`` is True when the DuckDB file was
-    freshly generated this call.
+    Returns ``(datasource, jaffle_models, db_built)``: the Jaffle Shop models now in
+    storage, and whether the DuckDB file was generated this call.
     """
     db_path = resolve_demo_db_path(storage_path)
     db_built = build_jaffle_shop(db_path=db_path, years=years, stream=stream)
@@ -835,33 +1071,4 @@ def ensure_demo_datasource(
 
     if not ingest_models:
         return ds, [], db_built
-
-    # Fast path: DB was reused and models are already stored — return what's
-    # on disk. Lookups are scoped to the demo datasource (bare-name calls
-    # raise on multi-datasource storages). Enrichment still runs so demos
-    # set up by older versions gain labels/measures on next startup.
-    existing_model_names = set(run_sync(storage.list_models(data_source=name)))
-    stored = {m.name: m for m in DocumentLoadFailures().skip(run_sync(storage.load_models(data_source=name)))}
-    if not db_built and all(t in existing_model_names for t in TABLE_NAMES):
-        jaffle_models = []
-        for t in TABLE_NAMES:
-            model = stored.get(t)
-            if model is None:
-                continue
-            if assume_yes and apply_demo_enrichment(model):
-                run_sync(storage.save_model(model))
-            jaffle_models.append(model)
-        return ds, jaffle_models, db_built
-
-    models = ingest_datasource(datasource=ds)
-    written: list[SlayerModel] = []
-    for model in models:
-        apply_demo_enrichment(model)
-        existing_model = stored.get(model.name)
-        if existing_model is not None and not assume_yes:
-            written.append(existing_model)
-            continue
-        run_sync(storage.save_model(model))
-        written.append(model)
-
-    return ds, written, db_built
+    return ds, ingest_demo_models(storage=storage, datasource=ds), db_built

@@ -83,8 +83,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          message="Window duration parts must be positive in '…'.",
          category="checker", family="local-partitioned", user=True, owner="checker"),
     _row(module=_EE, function="check_windowed_time_dimension", exc="TimeAxisError",
-         message="Windowed measure could not resolve its time dimension."
-         + SUGGEST + "Add a single time_dimensions entry, or set main_time_dimension to select among multiple time dimensions.",
+         message="Windowed measure could not resolve its time dimension." + SUGGEST + "…",
          category="checker", family="time-axis", user=True, owner="checker"),
     _row(module=_EE, function="check_transform_inputs", exc="TransformInputError",
          message="The transform cannot consume a boolean-shaped predicate: its desugared arithmetic subtracts the shifted series, and subtraction over truth values is undefined."
@@ -117,13 +116,25 @@ ROWS: Tuple[LedgerRow, ...] = (
          + SUGGEST + "…",
          category="checker", family="positions", user=True, owner="checker"),
     _row(module=_EE, function="check_time_dimension_column", exc="TimeDimensionColumnError",
-         message="A time dimension must reference a temporal column (DATE / TIMESTAMP); got column type …."
-         + AT + "time dimension …",
+         message="A time dimension must reference a temporal … (DATE / TIMESTAMP); got … type …."
+         + AT + "time dimension …" + SUGGEST + "…",
          category="checker", family="time-axis", user=True, owner="checker"),
     _row(module=_EE, function="check_time_dimension_column", exc="TimeDimensionColumnError",
-         message="Cannot re-bucket to '…': the column is already bucketed at '…', which does not nest into '…'."
+         message="Cannot re-bucket to '…': the … is already bucketed at '…', which does not nest into '…'."
          + AT + "time dimension …"
          + SUGGEST + "Request the same or a nesting-coarser granularity, or bucket the raw column instead.",
+         category="checker", family="time-axis", user=True, owner="checker"),
+    _row(module=_EE, function="check_spine_time_dimension", exc="TimeSpineError",
+         message="Time dimension `…` reads time_spine.timestamp inside an expression; an expression is never an axis."
+         + AT + "time dimension …" + SUGGEST + "…",
+         category="checker", family="time-axis", user=True, owner="checker"),
+    _row(module=_EE, function="check_time_dimension_row_level", exc="TimeDimensionColumnError",
+         message="A time dimension is row-level; its expression reads an aggregate or transform."
+         + AT + "time dimension …" + SUGGEST + "Bucket a column or a row-level expression of columns.",
+         category="checker", family="time-axis", user=True, owner="checker"),
+    _row(module=_EE, function="check_time_dimension_home", exc="UnsafeJoinInputError",
+         message="The time dimension reads …, which crosses an unproven or fanning join hop to … from …: no "
+         "dataset determines every column the expression reads." + AT + "time dimension …" + SUGGEST + "…",
          category="checker", family="time-axis", user=True, owner="checker"),
     _row(module=_EE, function="_require_temporal", exc="DateOperandTypeError",
          message="…() needs a DATE or TIMESTAMP operand; `…` is not one."
@@ -131,10 +142,42 @@ ROWS: Tuple[LedgerRow, ...] = (
          "a date function, now() / current_date(), or an ISO literal such as '2024-01-31' or "
          "'2024-01-31 10:00:00'.",
          category="checker", family="date-operand", user=True, owner="checker"),
+    _row(module=_EE, function="_require_temporal", exc="DateOperandTypeError",
+         message="…() needs a DATE or TIMESTAMP operand; `…` is not one: its branches return both … and …."
+         + SUGGEST + "CAST every non-temporal branch to DATE or TIMESTAMP.",
+         category="checker", family="date-operand", user=True, owner="checker"),
     _row(module=_EE, function="_check_date_call", exc="DateOperandTypeError",
          message="date_add() count `…` is not numeric."
          + SUGGEST + "Pass an integer, or a numeric column or expression (it is truncated toward zero).",
          category="checker", family="date-operand", user=True, owner="checker"),
+    _row(module=_EE, function="check_conditional_branches", exc="ScalarOperandTypeError",
+         message="… `…` returns both … and …; its branches must share one type."
+         + SUGGEST + "CAST one branch so both are … (or both …).",
+         category="checker", family="mixed-type-coercion", user=True, owner="checker"),
+    _row(module=_EE, function="check_result_names_case", exc="NameCollisionError",
+         message="Result names … differ only in case; names match in any case, so they collide."
+         + SUGGEST + "Rename one of them.",
+         category="checker", family="names", user=True, owner="checker"),
+    _row(module=_EE, function="check_whole_periods_axis", exc="TimeAxisError",
+         message="whole_periods_only completes time-dimension periods, but the query groups by an integer extraction "
+         "and has no time dimension." + SUGGEST + "Group by the time bucket ….",
+         category="checker", family="time-axis", user=True, owner="checker"),
+    _row(module=_EE, function="check_extraction_literal", exc="DateOperandTypeError",
+         message="'…' is a date, but `…` is an integer extraction, never equal to a date."
+         + SUGGEST + "Compare the time bucket instead: … … '…'.",
+         category="checker", family="time-points", user=True, owner="checker"),
+    _row(module=_EE, function="_number_literal", exc="ScalarOperandTypeError",
+         message="'…' is not a number, so it cannot meet the number `…`."
+         + SUGGEST + "Compare with a number (e.g. 100), or compare text with text.",
+         category="checker", family="mixed-type-coercion", user=True, owner="checker"),
+    _row(module=_EE, function="_numeric_scalar_args", exc="ScalarOperandTypeError",
+         message="…() reads numbers, but `…` is TEXT."
+         + SUGGEST + "Convert numbers stored as text: …(TRY_CAST(… AS DOUBLE)).",
+         category="checker", family="mixed-type-coercion", user=True, owner="checker"),
+    _row(module=_EE, function="_text_concat_args", exc="ScalarOperandTypeError",
+         message="Text concatenation has no portable spelling for the BOOLEAN `…`."
+         + SUGGEST + "Spell it explicitly: CASE WHEN … THEN 'true' ELSE 'false' END.",
+         category="checker", family="mixed-type-coercion", user=True, owner="checker"),
     _row(module=_EE, function="_raise_not_a_time_point", exc="TimeLiteralError",
          message="'…' is not a time point."
          + AT + "comparison with `…`"
@@ -151,8 +194,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          category="checker", family="date-operand", user=True, owner="checker"),
     _row(module=_EE, function="check_time_transforms_resolved", exc="TimeAxisError",
          message="The transform requires an unambiguous time dimension."
-         + AT + "transform …"
-         + SUGGEST + "Add a single time_dimensions entry, or set main_time_dimension to select among multiple time dimensions.",
+         + AT + "transform …" + SUGGEST + "…",
          category="checker", family="time-axis", user=True, owner="checker"),
     _row(module=_EE, function="check_partition_key_resolves", exc="PartitionKeyError",
          message="The partition_by column '…' is ambiguous — it is a time dimension at multiple granularities."
@@ -165,9 +207,9 @@ ROWS: Tuple[LedgerRow, ...] = (
          + SUGGEST + "Add it to time_dimensions, or choose one of: ….",
          category="checker", family="local-partitioned", user=True, owner="checker"),
     _row(module=_EE, function="check_partition_key_resolves", exc="PartitionKeyError",
-         message="The partition_by column '…' is not a query dimension."
+         message="The partition_by … '…' is not a query dimension."
          + AT + "…"
-         + SUGGEST + "Add it to dimensions/time_dimensions, or choose one of: ….",
+         + SUGGEST + "Add it to dimensions/time_dimensions…, or choose one of: ….",
          category="checker", family="local-partitioned", user=True, owner="checker"),
     _row(module=_EE, function="check_transform_partition_keys_in_operand_grain", exc="PartitionKeyError",
          message="The partition_by column '…' is not a member of the transform's operand grain (…); a rank-family transform partitions its operand's cells."
@@ -253,11 +295,6 @@ ROWS: Tuple[LedgerRow, ...] = (
          + AT + "measure …"
          + SUGGEST + "Drop the window/first-last or attribute the dimension.",
          category="checker", family="association", user=True, owner="checker"),
-    _row(module=_EE, function="check_association_root_unique_key", exc="AssociationError",
-         message="The aggregate needs distinct-entity association, but its root model … declares no primary or unique key to deduplicate entities by."
-         + AT + "measure …"
-         + SUGGEST + "Declare a primary or unique key on ….",
-         category="checker", family="association", user=True, owner="checker"),
     _row(module=_EE, function="check_parameter_determined", exc="ParameterGrainError",
          message="Parameter … is not determined by the operand grain (…); the aggregation reads one value per cell of that grain."
          + AT + "measure …"
@@ -288,7 +325,7 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_EE, function="check_reaggregation_outer_keys_determined", exc="PartitionKeyError",
          message="The re-aggregation's explicit outer partition_by key(s) … are not determined by its operand grain (…)."
          + AT + "measure …"
-         + SUGGEST + "Add them to the inner partition_by= so the operand is grained by them, or choose to_many_handling='associate'.",
+         + SUGGEST + "Add them to the inner partition_by= so the operand is grained by them, or omit to_many_handling (or set 'associate').",
          category="checker", family="reaggregation", user=True, owner="checker"),
     _row(module=_SP, function="_assert_total_routing", exc="ValueError",
          message="Aggregate … in a … received no routing disposition (inline, producer substitution, or explicit rejection) — the planner cannot compile this shape.",
@@ -366,10 +403,15 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_BI, function="_resolve_main_time_dimension", exc="UnknownReferenceError", message="",
          category="bind", family="time-axis", user=True, owner="bind"),
     _row(module=_BI, function="bind_query_inputs", exc="GranularityCallError",
-         message="Order key …(…) has no matching projected time dimension. Project a time_dimension on … at … granularity (e.g. …(…) in dimensions) to order by its bucket.",
+         message="Order key date_trunc('…', …) has no matching projected time dimension. Project date_trunc('…', …) in dimensions to order by its bucket.",
          category="bind", family="time-axis", user=True, owner="bind"),
+    _row(module=_BI, function="_bind_inner_restriction", exc="AmbiguousJoinPathError", message="",
+         category="bind", family="joins", user=True, owner="bind"),
+    _row(module=_BI, function="_bind_inner_restriction", exc="QueryExtensionError",
+         message="The … restricts the population, but no join path reaches … from it.",
+         category="bind", family="joins", user=True, owner="bind"),
     _row(module=_BI, function="_assert_equivalent_tds_agree", exc="GranularityCallError",
-         message="Conflicting time dimensions on … at … granularity: equivalent columns must not differ in date range or label.",
+         message="Conflicting time dimensions on … at … granularity: equivalent spellings must not differ in date range, name or label.",
          category="bind", family="time-axis", user=True, owner="bind"),
     _row(module=_EE, function="type_position_conjunct", exc="PositionTypingError",
          message="This … expression is valid as neither a field nor a measure. Field typing failed: it references …, available only after aggregation. Measure typing failed: it references row-level …, not available at the query grain (not among the query dimensions)."
@@ -393,10 +435,7 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_EE, function="check_duplicate_measure_name", exc="DuplicateMeasureNameError", message="",
          category="checker", family="names", user=True, owner="checker"),
     _row(module=_EE, function='check_dimension_call_known', exc='UnknownGranularityError',
-         message='…\n  suggestion: For a time bucket use ``gran(col)``; a custom aggregation used as a dimension must carry ``partition_by=``.',
-         category="checker", family='granularities', user=True, owner="checker"),
-    _row(module=_EE, function='check_granularity_call_shape', exc='GranularityShapeError',
-         message='Granularity call … must be a single column reference ``gran(col)``.\n  suggestion: Pass one bare or dotted column, e.g. ``fiscal_year(created_at)``.',
+         message="…\n  suggestion: For a time bucket write date_trunc('<unit>', expr); a custom aggregation used as a dimension must carry ``partition_by=``.",
          category="checker", family='granularities', user=True, owner="checker"),
     _row(module=_EE, function='check_granularity_known', exc='UnknownGranularityError',
          message='…',
@@ -428,4 +467,75 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_PL, function="_iter_slot_deps", exc="TypeError",
          message="_iter_slot_deps has no case for …: classify the kind explicitly (slot-worthy, inlined composite, or never slottable).",
          category="internal", family="internal", user=False, owner="compiler"),
+    _row(module=_SP, function='_forward_lateral', exc='_PushBlocked',
+         message="a list child's hop back to its parent is its own row",
+         category='control', family='positions', user=False, owner='compiler'),
+    _row(module=_EE, function='_check_native_lists', exc='ListTypeError',
+         message='… needs a database with native lists; … has none.'
+         + SUGGEST + 'Run the query on a database with list columns (Postgres, DuckDB, BigQuery, Snowflake, ClickHouse, Trino or Presto).',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_list_literal', exc='ListTypeError',
+         message="The list literal … holds a NULL element; a list's elements are its non-NULL elements."
+         + SUGGEST + 'Drop the NULL from the literal.',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_list_literal', exc='ListTypeError',
+         message='The list literal … mixes element types; every element must be of one type.'
+         + SUGGEST + 'Write every element as text, or every element as a number.',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_list_comparison', exc='ListTypeError',
+         message='`…` is a list and cannot be compared with a scalar by ….'
+         + SUGGEST + '…',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_list_comparison', exc='ListTypeError',
+         message='`…` is a list, which has no order: it cannot be compared with ….'
+         + SUGGEST + 'Compare whole lists with = or <>, or its elements through ….',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_comparable_sets', exc='ListTypeError',
+         message='`…` and `…` hold … and … elements, which cannot be compared.'
+         + SUGGEST + "Compare lists of one element type, or cast one list's elements (CAST(x AS …[])).",
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_known_elements', exc='ListTypeError',
+         message='`…` holds opaque (UNKNOWN) elements, which cannot be ….'
+         + SUGGEST + "Declare the column's element_type.",
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_list_in', exc='ListTypeError',
+         message='`…` is a list and cannot be IN a list of scalars.'
+         + SUGGEST + 'Use contains_any(…, [...]), compare whole lists with … IN ([...], [...]), or filter … IN (...).',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_list_call', exc='ListTypeError',
+         message='…() compares two lists; `…` is not a list.'
+         + SUGGEST + 'Use contains(list, value) for one value, or contains(text, substring) on text.',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_list_call', exc='ListTypeError',
+         message='…([]): [] has no element type here.'
+         + SUGGEST + 'Give the empty list a typed operand.',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_list_call', exc='ListTypeError',
+         message='`…` holds opaque (UNKNOWN) elements, which …() cannot read.'
+         + SUGGEST + "Declare the column's element_type.",
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_list_call', exc='ListTypeError',
+         message='…() compares … elements with ….'
+         + SUGGEST + 'Pass a … value.',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_list_arguments', exc='ListTypeError',
+         message='…() does not take the list `…`.'
+         + SUGGEST + 'Read its elements through …, or use contains / length.',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_list_aggregation', exc='ListTypeError',
+         message='`…` is a list: an aggregation over a list is only count or count_distinct; …() cannot take it.'
+         + SUGGEST + '…',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_list_aggregation', exc='ListTypeError',
+         message='…() cannot collect the opaque (UNKNOWN) values of `…`.'
+         + SUGGEST + 'Collect a column with a scalar type.',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='check_list_dimension', exc='ListTypeError',
+         message='Grouping by the list dimension … needs a database with native lists; … has none.'
+         + SUGGEST + 'Run the query on a database with list columns (Postgres, DuckDB, BigQuery, Snowflake, ClickHouse, Trino or Presto).',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='check_list_order_key', exc='ListTypeError',
+         message='Order key … is a list, which has no sort order.'
+         + SUGGEST + 'Order by a scalar column, or by length(...) of the list.',
+         category='checker', family='lists', user=True, owner='checker'),
 )

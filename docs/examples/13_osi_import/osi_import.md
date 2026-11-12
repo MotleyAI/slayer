@@ -22,7 +22,7 @@ export SLAYER_STORAGE=~/slayer-data
 
 ## 3. Register the datasource
 
-OSI carries no column types, so the importer reads them live — the datasource has to exist first:
+The importer reads column types live (a declared OSI `datatype` is only the fallback), so the datasource has to exist first:
 
 ```bash
 slayer datasources create duckdb:///path/to/shop.duckdb --name shop_osi
@@ -57,7 +57,7 @@ Both import [`shop.osi.yaml`](shop.osi.yaml) and check every answer against gold
 
 ## What the import produces
 
-Each OSI **dataset** becomes a SLayer model, with real column *types* from live introspection of the datasource (OSI carries no type hints). Each **relationship** becomes a LEFT join, and each **metric** folds into a `ModelMeasure` formula on the model the converter picks as its anchor. OSI `ai_context` and `custom_extensions` are carried onto the SLayer entities as descriptions and `meta`, so an agent reading the model sees them.
+Each OSI **dataset** becomes a SLayer model exposing its declared fields, with real column *types* from live introspection of the datasource. Each **relationship** becomes a LEFT join, and each **metric** folds into a `ModelMeasure` formula — a dataset-scoped metric on its own dataset, a model-scoped one on the model the converter picks as its anchor. OSI `ai_context` and `custom_extensions` are carried onto the SLayer entities as descriptions and `meta`, so an agent reading the model sees them.
 
 ## The five queries
 

@@ -1,12 +1,12 @@
 """Query-backed expansion on the typed pipeline: ``_expand_query_backed_model``,
-``_validate_and_populate_cache`` and ``get_column_types``.
+``_validate_and_populate_cache`` and ``get_result_column_types``.
 
 * Stored ``source_queries`` are topo-sorted (Kahn), not required top-to-bottom.
 * Virtual-model columns are the PUBLIC slots only, typed from typed-plan slot types.
 * Per-stage normalize + variable substitution mirror ``_execute_pipeline``.
 * ``expand_query_backed_models_in_bundle`` handles nested query-backed join
   targets, query-backed stage sources, and the root ``ModelExtension`` overlay.
-* ``get_column_types`` renders its probe through ``generate_planned_stages``.
+* ``get_result_column_types`` renders its probe through ``generate_planned_stages``.
 """
 from __future__ import annotations
 
@@ -119,23 +119,24 @@ class TestStoredSourceQueriesTopoSort:
             source_queries=[
                 # Out-of-order: ``main`` references ``kpi`` via
                 # joins.target_model but appears FIRST.
-                SlayerQuery(
-                    name="main",
-                    source_model=ModelExtension.model_validate({
+                SlayerQuery.model_validate({
+                    "name": "main",
+                    "source_model": "orders",
+                    "extensions": [ModelExtension.model_validate({
                         "source_name": "orders",
                         # The reverse hop is traversable, so the pair names kpi's
                         # real exported column ("id"; "kpi_id" is only a label).
                         "joins": [{"target_model": "kpi", "join_pairs": [["id", "id"]]}],
-                    }),
-                    dimensions=["status"],
-                    measures=[{"formula": "kpi._count:sum"}],
-                ),
-                SlayerQuery(
-                    name="kpi",
-                    source_model="orders",
-                    measures=[{"formula": "*:count"}],
-                    dimensions=[{"name": "id", "label": "kpi_id"}],  # type: ignore[list-item]
-                ),
+                    })],
+                    "dimensions": ["status"],
+                    "measures": [{"formula": "sum(kpi._count)"}],
+                }),
+                SlayerQuery.model_validate({
+                    "name": "kpi",
+                    "source_model": "orders",
+                    "measures": [{"formula": "count(*)"}],
+                    "dimensions": [{"name": "id", "label": "kpi_id"}],
+                }),
                 SlayerQuery(source_model="main"),
             ],
         )
@@ -157,23 +158,24 @@ class TestStoredSourceQueriesTopoSort:
             data_source="ds",
             source_queries=[
                 # main references kpi (forward ref under legacy strict order)
-                SlayerQuery(
-                    name="main",
-                    source_model=ModelExtension.model_validate({
+                SlayerQuery.model_validate({
+                    "name": "main",
+                    "source_model": "orders",
+                    "extensions": [ModelExtension.model_validate({
                         "source_name": "orders",
                         # The reverse hop is traversable, so the pair names kpi's
                         # real exported column ("id"; "kpi_id" is only a label).
                         "joins": [{"target_model": "kpi", "join_pairs": [["id", "id"]]}],
-                    }),
-                    dimensions=["status"],
-                    measures=[{"formula": "kpi._count:sum"}],
-                ),
-                SlayerQuery(
-                    name="kpi",
-                    source_model="orders",
-                    measures=[{"formula": "*:count"}],
-                    dimensions=[ {"name": "id", "label": "kpi_id"} ],  # type: ignore[list-item]
-                ),
+                    })],
+                    "dimensions": ["status"],
+                    "measures": [{"formula": "sum(kpi._count)"}],
+                }),
+                SlayerQuery.model_validate({
+                    "name": "kpi",
+                    "source_model": "orders",
+                    "measures": [{"formula": "count(*)"}],
+                    "dimensions": [ {"name": "id", "label": "kpi_id"} ],
+                }),
                 SlayerQuery(source_model="main"),
             ],
         )
@@ -193,17 +195,19 @@ class TestStoredSourceQueriesTopoSort:
                 source_queries=[
                     SlayerQuery(
                         name="a",
-                        source_model=ModelExtension.model_validate({
+                        source_model="orders",
+                        extensions=[ModelExtension.model_validate({
                             "source_name": "orders",
                             "joins": [{"target_model": "b", "join_pairs": [["id", "id"]]}],
-                        }),
+                        })],
                     ),
                     SlayerQuery(
                         name="b",
-                        source_model=ModelExtension.model_validate({
+                        source_model="orders",
+                        extensions=[ModelExtension.model_validate({
                             "source_name": "orders",
                             "joins": [{"target_model": "a", "join_pairs": [["id", "id"]]}],
-                        }),
+                        })],
                     ),
                     SlayerQuery(source_model="a"),
                 ],
@@ -278,32 +282,32 @@ class TestVirtualModelColumns:
         m = SlayerModel(
             name="qb_count",
             data_source="ds",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "*:count"}],
-                dimensions=["status"],
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "count(*)"}],
+                "dimensions": ["status"],
+            })],
         )
         engine, tmp = await _engine()
         try:
             saved = await engine.save_model(m)
             count_col = next(c for c in saved.columns if c.name == "_count")
             assert count_col.type == DataType.INT, (
-                f"*:count must yield DataType.INT, got {count_col.type!r}"
+                f"count(*) must yield DataType.INT, got {count_col.type!r}"
             )
         finally:
             tmp.cleanup()
 
     async def test_sum_inherits_source_column_type(self) -> None:
-        """``amount:sum`` over a DOUBLE source column → DOUBLE virtual col."""
+        """``sum(amount)`` over a DOUBLE source column → DOUBLE virtual col."""
         m = SlayerModel(
             name="qb_sum",
             data_source="ds",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "amount:sum"}],
-                dimensions=["status"],
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(amount)"}],
+                "dimensions": ["status"],
+            })],
         )
         engine, tmp = await _engine()
         try:
@@ -317,7 +321,7 @@ class TestVirtualModelColumns:
         """Codex review fix — a user-supplied ``type=`` on a query measure
         spec is the override; ``_type_for_measure_formula`` is the fallback.
 
-        ``*:count`` ordinarily infers ``INT``; explicit ``type=DOUBLE``
+        ``count(*)`` ordinarily infers ``INT``; explicit ``type=DOUBLE``
         on the same formula must win and surface as a DOUBLE virtual
         column.
         """
@@ -326,7 +330,7 @@ class TestVirtualModelColumns:
             data_source="ds",
             source_queries=[SlayerQuery(
                 source_model="orders",
-                measures=[ModelMeasure(formula="*:count", type=DataType.DOUBLE)],
+                measures=[ModelMeasure(formula="count(*)", type=DataType.DOUBLE)],
                 dimensions=["status"],
             )],
         )
@@ -345,8 +349,8 @@ class TestVirtualModelColumns:
         """Codex review fix — when a hidden slot is later promoted to
         public, its type / format / description must be filled in.
 
-        Repro: declare ``rank(*:count, direction='desc')`` first (hoists ``*:count`` as a
-        hidden dep with no display metadata), THEN declare ``*:count``
+        Repro: declare ``rank(count(*), direction='desc')`` first (hoists ``count(*)`` as a
+        hidden dep with no display metadata), THEN declare ``count(*)``
         as a public measure. The promoted public slot must end up with
         ``type=INT`` (not the default None → DOUBLE fallback).
         """
@@ -360,8 +364,8 @@ class TestVirtualModelColumns:
                     # rank uses *:count as a hidden inner; intern order
                     # hoists *:count hidden first, then the public
                     # *:count entry promotes the same slot.
-                    {"formula": "rank(*:count, direction='desc')", "name": "ranked"},
-                    {"formula": "*:count"},
+                    {"formula": "rank(count(*), direction='desc')", "name": "ranked"},
+                    {"formula": "count(*)"},
                 ],
             )],
         )
@@ -383,7 +387,7 @@ class TestVirtualModelColumns:
         orders_with_measure = _orders_model().model_copy(update={
             "measures": [
                 ModelMeasure(
-                    formula="amount:sum * 1.0",
+                    formula="sum(amount) * 1.0",
                     name="adjusted_total",
                     type=DataType.DOUBLE,
                 ),
@@ -416,14 +420,14 @@ class TestVirtualModelColumns:
         re-looks-up the saved measure here.
 
         Repro: ``ModelMeasure(formula="amount:sum", type=DataType.INT)``
-        on the source model — inference for ``amount:sum`` over a DOUBLE
+        on the source model — inference for ``sum(amount)`` over a DOUBLE
         ``amount`` would normally pick DOUBLE, but the explicit
         ``type=INT`` must win.
         """
         orders_with_int_measure = _orders_model().model_copy(update={
             "measures": [
                 ModelMeasure(
-                    formula="amount:sum",
+                    formula="sum(amount)",
                     name="rounded_total",
                     type=DataType.INT,  # ← explicit override
                 ),
@@ -448,7 +452,7 @@ class TestVirtualModelColumns:
             col = next(c for c in saved.columns if c.name == "rounded_total")
             assert col.type == DataType.INT, (
                 f"Saved ModelMeasure.type=INT must override inference "
-                f"(which would pick DOUBLE for amount:sum); got {col.type!r}"
+                f"(which would pick DOUBLE for sum(amount)); got {col.type!r}"
             )
         finally:
             tmp.cleanup()
@@ -460,11 +464,11 @@ class TestVirtualModelColumns:
         m = SlayerModel(
             name="qb_fmt",
             data_source="ds",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "amount:sum"}],
-                dimensions=["status"],
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(amount)"}],
+                "dimensions": ["status"],
+            })],
         )
         engine, tmp = await _engine()
         try:
@@ -479,11 +483,11 @@ class TestVirtualModelColumns:
         m = SlayerModel(
             name="qb_desc",
             data_source="ds",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "amount:sum"}],
-                dimensions=["status"],
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(amount)"}],
+                "dimensions": ["status"],
+            })],
         )
         engine, tmp = await _engine()
         try:
@@ -522,7 +526,7 @@ class TestVirtualModelColumns:
             tmp.cleanup()
 
     async def test_excludes_hidden_hoisted_slots(self) -> None:
-        """A query with ``rank(amount:sum, direction='desc')`` hoists the inner ``amount_sum``
+        """A query with ``rank(sum(amount), direction='desc')`` hoists the inner ``amount_sum``
         as a hidden slot. The migrated path exposes ONLY user-declared
         public columns; ``amount_sum`` is NOT a column on the virtual model
         (decision #3 — P4 closure).
@@ -533,7 +537,7 @@ class TestVirtualModelColumns:
             source_queries=[SlayerQuery(
                 source_model="orders",
                 dimensions=["status"],
-                measures=[ModelMeasure(formula="rank(amount:sum, direction='desc')", name="rank_by_amt")],
+                measures=[ModelMeasure(formula="rank(sum(amount), direction='desc')", name="rank_by_amt")],
             )],
         )
         engine, tmp = await _engine()
@@ -564,11 +568,11 @@ class TestSourceModelOriginDropped:
         m = SlayerModel(
             name="qb_no_origin",
             data_source="ds",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "amount:sum"}],
-                dimensions=["status"],
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(amount)"}],
+                "dimensions": ["status"],
+            })],
         )
         engine, tmp = await _engine()
         try:
@@ -581,12 +585,12 @@ class TestSourceModelOriginDropped:
 
 
 # ---------------------------------------------------------------------------
-# get_column_types: renders through the typed generate_planned_stages
+# get_result_column_types: renders through the typed generate_planned_stages
 # ---------------------------------------------------------------------------
 
 
-class TestGetColumnTypesTypedPipeline:
-    async def test_get_column_types_on_query_backed_model_returns_typed_results(
+class TestGetResultColumnTypesTypedPipeline:
+    async def test_get_result_column_types_on_query_backed_model_returns_typed_results(
         self,
     ) -> None:
         """Functional probe against a real SQLite-backed query-backed model.
@@ -623,61 +627,60 @@ class TestGetColumnTypesTypedPipeline:
         await storage.save_model(SlayerModel(
             name="qb_for_types_live",
             data_source="prod",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "amount:sum"}],
-                dimensions=["status"],
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(amount)"}],
+                "dimensions": ["status"],
+            })],
         ))
 
         engine = SlayerQueryEngine(storage=storage)
-        types = await engine.get_column_types("qb_for_types_live")
+        types = await engine.get_result_column_types("qb_for_types_live")
         # Returned bare-name keys: ``amount_sum`` (probeable; status is
         # a TEXT column whose default agg may or may not be probed
         # depending on type allowlist).
         assert "amount_sum" in types, types
-        # The returned type token is whatever ``client.get_column_types``
-        # produces — typically "number" for SQLite.
-        assert types["amount_sum"], types["amount_sum"]
+        assert types["amount_sum"].type in (DataType.INT, DataType.DOUBLE), types["amount_sum"]
 
-    async def test_get_column_types_renders_via_generate_planned_stages(self) -> None:
-        """The query-backed probe path renders through ``generate_planned_stages``."""
+    async def test_get_result_column_types_renders_via_build_planned_statement(self) -> None:
+        """The query-backed probe path builds through ``build_planned_statement``."""
         # Save a real query-backed model so the prelude branch runs too.
         m = SlayerModel(
             name="qb_for_types",
             data_source="ds",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "amount:sum"}],
-                dimensions=["status"],
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(amount)"}],
+                "dimensions": ["status"],
+            })],
         )
         engine, tmp = await _engine()
         try:
             await engine.save_model(m)
-            planned_calls: List[str] = []
-            original_generate = query_engine_module.generate_planned_stages
+            planned_calls: List[Tuple[bool, str]] = []
+            original_generate = query_engine_module.build_planned_statement
 
             def _wrapper(*args, **kwargs):
-                sql = original_generate(*args, **kwargs)
-                planned_calls.append(sql)
-                return sql
+                built = original_generate(*args, **kwargs)
+                planned_calls.append((bool(kwargs.get("type_probe")), built.statement.sql()))
+                return built
 
             with patch.object(
-                query_engine_module, "generate_planned_stages", _wrapper,
+                query_engine_module, "build_planned_statement", _wrapper,
             ):
                 # The call may fail at the SQL-execute step (we don't have
                 # a real backing table); the assertion is about the
                 # render path, which runs before the probe executes.
                 try:
-                    await engine.get_column_types("qb_for_types")
+                    await engine.get_result_column_types("qb_for_types")
                 except Exception:  # noqa: BLE001 — probe-execute failure is expected
                     pass
-            assert planned_calls, (
-                "get_column_types must render the query-backed probe through "
-                "generate_planned_stages"
+            probes = [sql for is_probe, sql in planned_calls if is_probe]
+            assert len(probes) == 1, (
+                "get_result_column_types must build the query-backed probe through "
+                f"build_planned_statement exactly once; got {len(probes)}"
             )
-            assert "SELECT" in planned_calls[0].upper(), planned_calls[0]
+            assert "SELECT" in probes[0].upper(), probes[0]
         finally:
             tmp.cleanup()
 
@@ -714,28 +717,29 @@ class TestNestedQueryBackedSavePath:
         qb_b = SlayerModel(
             name="qb_b_customers_kpi",
             data_source="ds",
-            source_queries=[SlayerQuery(
-                source_model="customers",
-                measures=[{"formula": "*:count"}],
-                dimensions=["region"],
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "customers",
+                "measures": [{"formula": "count(*)"}],
+                "dimensions": ["region"],
+            })],
         )
         # qb_A joins qb_B inline AND references a column on it (so the
         # planner doesn't drop the join as unused).
         qb_a = SlayerModel(
             name="qb_a_orders_with_kpi",
             data_source="ds",
-            source_queries=[SlayerQuery(
-                source_model=ModelExtension.model_validate({
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "extensions": [ModelExtension.model_validate({
                     "source_name": "orders",
                     "joins": [{
                         "target_model": "qb_b_customers_kpi",
                         "join_pairs": [["region", "region"]],
                     }],
-                }),
-                dimensions=["status"],
-                measures=[{"formula": "qb_b_customers_kpi._count:sum"}],
-            )],
+                })],
+                "dimensions": ["status"],
+                "measures": [{"formula": "sum(qb_b_customers_kpi._count)"}],
+            })],
         )
         engine, tmp = await _engine(_customers_model(), qb_b)
         try:
@@ -754,12 +758,12 @@ class TestSavePath:
         m = SlayerModel(
             name="qb_with_var",
             data_source="ds",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "amount:sum"}],
-                dimensions=["status"],
-                filters=["amount > {threshold}"],
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(amount)"}],
+                "dimensions": ["status"],
+                "filters": ["amount > {threshold}"],
+            })],
         )
         engine, tmp = await _engine()
         try:
@@ -785,13 +789,13 @@ class TestSavePath:
             # Outer model's defaults — sibling must see ``threshold=100``.
             query_variables={"threshold": "100"},
             source_queries=[
-                SlayerQuery(
-                    name="filtered",
-                    source_model="orders",
-                    measures=[{"formula": "amount:sum"}],
-                    dimensions=["status"],
-                    filters=["amount > {threshold}"],  # ← references outer var
-                ),
+                SlayerQuery.model_validate({
+                    "name": "filtered",
+                    "source_model": "orders",
+                    "measures": [{"formula": "sum(amount)"}],
+                    "dimensions": ["status"],
+                    "filters": ["amount > {threshold}"],
+                }),
                 SlayerQuery(
                     source_model="filtered",
                     dimensions=["status"],
@@ -836,22 +840,22 @@ class TestSavePath:
             m1 = SlayerModel(
                 name="qb_ds_refresh",
                 data_source="ds",
-                source_queries=[SlayerQuery(
-                    source_model="orders_a",
-                    measures=[{"formula": "amount:sum"}],
-                    dimensions=["status"],
-                )],
+                source_queries=[SlayerQuery.model_validate({
+                    "source_model": "orders_a",
+                    "measures": [{"formula": "sum(amount)"}],
+                    "dimensions": ["status"],
+                })],
             )
             saved1 = await engine.save_model(m1)
             assert saved1.data_source == "ds"
             m2 = SlayerModel(
                 name="qb_ds_refresh",
                 data_source="ds",  # deliberately stale
-                source_queries=[SlayerQuery(
-                    source_model="orders_b",
-                    measures=[{"formula": "amount:sum"}],
-                    dimensions=["status"],
-                )],
+                source_queries=[SlayerQuery.model_validate({
+                    "source_model": "orders_b",
+                    "measures": [{"formula": "sum(amount)"}],
+                    "dimensions": ["status"],
+                })],
             )
             saved2 = await engine.save_model(m2)
             assert saved2.data_source == "ds2", saved2.data_source
@@ -866,11 +870,11 @@ class TestSavePath:
         engine, tmp = await _engine()
         try:
             built = await engine.create_model_from_query(
-                query=SlayerQuery(
-                    source_model="orders",
-                    measures=[{"formula": "amount:sum"}],
-                    dimensions=["status"],
-                ),
+                query=SlayerQuery.model_validate({
+                    "source_model": "orders",
+                    "measures": [{"formula": "sum(amount)"}],
+                    "dimensions": ["status"],
+                }),
                 name="built_no_save",
                 save=False,
             )
@@ -895,28 +899,29 @@ class TestNestedQueryBackedExpansion:
         kpi_model = SlayerModel(
             name="customers_kpi",
             data_source="ds",
-            source_queries=[SlayerQuery(
-                source_model="customers",
-                measures=[{"formula": "*:count"}],
-                dimensions=["region"],
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "customers",
+                "measures": [{"formula": "count(*)"}],
+                "dimensions": ["region"],
+            })],
         )
         engine, tmp = await _engine(_customers_model(), kpi_model)
         try:
             # Save another query-backed model that references the first
             # as a join target AND references a column on it so the
             # planner doesn't drop the join as unused.
-            outer = SlayerQuery(
-                source_model=ModelExtension.model_validate({
+            outer = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "extensions": [ModelExtension.model_validate({
                     "source_name": "orders",
                     "joins": [{
                         "target_model": "customers_kpi",
                         "join_pairs": [["region", "region"]],
                     }],
-                }),
-                measures=[{"formula": "customers_kpi._count:sum"}],
-                dimensions=["status"],
-            )
+                })],
+                "measures": [{"formula": "sum(customers_kpi._count)"}],
+                "dimensions": ["status"],
+            })
             resp = await engine.execute(outer, dry_run=True)
             assert resp.sql is not None
             # Both backing tables must appear in the rendered SQL.
@@ -933,23 +938,24 @@ class TestNestedQueryBackedExpansion:
         qb = SlayerModel(
             name="qb_base",
             data_source="ds",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                dimensions=["status"],
-                measures=[{"formula": "amount:sum"}],
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "dimensions": ["status"],
+                "measures": [{"formula": "sum(amount)"}],
+            })],
         )
         engine, tmp = await _engine(qb)
         try:
             # Apply an overlay that adds an extra dimension column.
-            q = SlayerQuery(
-                source_model=ModelExtension(
+            q = SlayerQuery.model_validate({
+                "source_model": "qb_base",
+                "extensions": [ModelExtension(
                     source_name="qb_base",
                     columns=[Column(name="extra", sql="'lit'", type=DataType.TEXT)],
-                ),
-                dimensions=["extra", "status"],
-                measures=[{"formula": "amount_sum:sum"}],
-            )
+                )],
+                "dimensions": ["extra", "status"],
+                "measures": [{"formula": "sum(amount_sum)"}],
+            })
             resp = await engine.execute(q, dry_run=True)
             assert resp.sql is not None
             # The overlay column appears in the outer projection.
@@ -964,22 +970,22 @@ class TestNestedQueryBackedExpansion:
         qb = SlayerModel(
             name="qb_inner",
             data_source="ds",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                dimensions=["status"],
-                measures=[{"formula": "amount:sum"}],
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "dimensions": ["status"],
+                "measures": [{"formula": "sum(amount)"}],
+            })],
         )
         engine, tmp = await _engine(qb)
         try:
             # Stage ``s`` projects ``status`` so the root can reference it.
             queries: list = [
-                SlayerQuery(
-                    name="s",
-                    source_model="qb_inner",
-                    dimensions=["status"],
-                    measures=[{"formula": "amount_sum:sum"}],
-                ),
+                SlayerQuery.model_validate({
+                    "name": "s",
+                    "source_model": "qb_inner",
+                    "dimensions": ["status"],
+                    "measures": [{"formula": "sum(amount_sum)"}],
+                }),
                 SlayerQuery(source_model="s", dimensions=["status"]),
             ]
             resp = await engine.execute(queries, dry_run=True)
@@ -1014,13 +1020,14 @@ class TestCrossDatasourceJoin:
             name="xds_qb",
             data_source="ds",
             source_queries=[SlayerQuery(
-                source_model=ModelExtension.model_validate({
+                source_model="orders",
+                extensions=[ModelExtension.model_validate({
                     "source_name": "orders",
                     "joins": [{
                         "target_model": "customers",
                         "join_pairs": [["region", "region"]],
                     }],
-                }),
+                })],
                 dimensions=["status", "customers.name"],
             )],
         )
@@ -1047,11 +1054,11 @@ class TestWrapperAliasShapes:
         m = SlayerModel(
             name="qb_local",
             data_source="ds",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                dimensions=["status"],
-                measures=[{"formula": "amount:sum"}],
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "dimensions": ["status"],
+                "measures": [{"formula": "sum(amount)"}],
+            })],
         )
         engine, tmp = await _engine()
         try:
@@ -1067,7 +1074,7 @@ class TestWrapperAliasShapes:
     async def test_cross_model_agg_alias_flattens_with_double_underscore(
         self,
     ) -> None:
-        """``customers.revenue:sum`` (cross-model) flattens to canonical
+        """``sum(customers.revenue)`` (cross-model) flattens to canonical
         ``customers__revenue_sum`` (the join path AND the agg suffix both
         appear in the flat name).
         """
@@ -1087,11 +1094,11 @@ class TestWrapperAliasShapes:
         m = SlayerModel(
             name="qb_cross",
             data_source="ds",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                dimensions=["status"],
-                measures=[{"formula": "customers.revenue:sum"}],
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "dimensions": ["status"],
+                "measures": [{"formula": "sum(customers.revenue)"}],
+            })],
         )
         tmp = tempfile.TemporaryDirectory()
         storage = YAMLStorage(base_dir=tmp.name)
@@ -1109,7 +1116,7 @@ class TestWrapperAliasShapes:
     async def test_cross_model_parametric_agg_alias_includes_kwargs(
         self,
     ) -> None:
-        """``customers.revenue:percentile(p=0.5)`` (cross-model parametric)
+        """``percentile(customers.revenue, p=0.5)`` (cross-model parametric)
         flattens to ``customers__revenue_percentile_p_0_5`` (the wrapper keeps the kwarg suffix).
         """
         orders_with_join = _orders_model().model_copy(update={
@@ -1126,11 +1133,11 @@ class TestWrapperAliasShapes:
         m = SlayerModel(
             name="qb_cross_param",
             data_source="ds",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                dimensions=["status"],
-                measures=[{"formula": "customers.revenue:percentile(p=0.5)"}],
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "dimensions": ["status"],
+                "measures": [{"formula": "percentile(customers.revenue, p=0.5)"}],
+            })],
         )
         tmp = tempfile.TemporaryDirectory()
         storage = YAMLStorage(base_dir=tmp.name)
@@ -1155,11 +1162,11 @@ class TestWrapperAliasShapes:
         m = SlayerModel(
             name="qb_joined_dim",
             data_source="ds",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                dimensions=["customers.name", "customers.signup_at"],
-                measures=[{"formula": "amount:sum"}],
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "dimensions": ["customers.name", "customers.signup_at"],
+                "measures": [{"formula": "sum(amount)"}],
+            })],
         )
         tmp = tempfile.TemporaryDirectory()
         storage = YAMLStorage(base_dir=tmp.name)
@@ -1196,9 +1203,9 @@ class TestP4ClosureBehavior:
     async def test_outer_dotted_ref_canonical_alias_no_longer_resolves(
         self,
     ) -> None:
-        """A query-backed model that already aggregated ``customers.revenue:sum``
+        """A query-backed model that already aggregated ``sum(customers.revenue)``
         exposes the canonical flat name ``customers__revenue_sum``. An outer
-        dotted ref (``customers.revenue:sum``) against the virtual model never
+        dotted ref (``sum(customers.revenue)``) against the virtual model never
         re-aggregates that column through the legacy ``SourceModelOrigin``
         lineage walk (the P4 closure): ``customers``, which no join path
         reaches from the virtual model, is aggregated over its own rows.
@@ -1217,11 +1224,11 @@ class TestP4ClosureBehavior:
         qb = SlayerModel(
             name="qb_already_aggregated",
             data_source="ds",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                dimensions=["status"],
-                measures=[{"formula": "customers.revenue:sum"}],
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "dimensions": ["status"],
+                "measures": [{"formula": "sum(customers.revenue)"}],
+            })],
         )
         tmp = tempfile.TemporaryDirectory()
         storage = YAMLStorage(base_dir=tmp.name)
@@ -1232,18 +1239,18 @@ class TestP4ClosureBehavior:
         try:
             await engine.save_model(qb)
             # The flat-name form MUST work.
-            flat_q = SlayerQuery(
-                source_model="qb_already_aggregated",
-                measures=[{"formula": "customers__revenue_sum:sum"}],
-                dimensions=["status"],
-            )
+            flat_q = SlayerQuery.model_validate({
+                "source_model": "qb_already_aggregated",
+                "measures": [{"formula": "sum(customers__revenue_sum)"}],
+                "dimensions": ["status"],
+            })
             resp_flat = await engine.execute(flat_q, dry_run=True)
             assert resp_flat.sql is not None
-            dotted_q = SlayerQuery(
-                source_model="qb_already_aggregated",
-                measures=[{"formula": "customers.revenue:sum"}],
-                dimensions=["status"],
-            )
+            dotted_q = SlayerQuery.model_validate({
+                "source_model": "qb_already_aggregated",
+                "measures": [{"formula": "sum(customers.revenue)"}],
+                "dimensions": ["status"],
+            })
             resp = await engine.execute(dotted_q, dry_run=True)
             assert any(
                 w.kind == "unrelated_dataset" and w.dataset == "customers" for w in resp.warnings or []

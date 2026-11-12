@@ -8,8 +8,8 @@ distinguishing characteristics:
 * Native ``stddev_*`` / ``var_*`` / ``corr`` / ``covar_*`` (sqlglot
   transpiles to the dialect-correct spellings).
 * Native ``LOG10`` / ``LOG2``.
-* ``DateTime`` columns must round-trip as ``DataType.TIMESTAMP`` (issue #62
-  regression — auto-ingestion).
+* ``DateTime`` columns must round-trip as ``DataType.TIMESTAMP`` (auto-ingestion
+  regression).
 
 Rollup-ingestion tests are intentionally omitted: ClickHouse exposes no
 foreign-key metadata via SQLAlchemy's Inspector. Cross-model coverage
@@ -25,12 +25,14 @@ import math as _math
 import statistics
 import tempfile
 import uuid
+from typing import Any
 import warnings
 from collections.abc import Generator
 from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
+import requests
 import sqlalchemy as sa
 from sqlalchemy.exc import DBAPIError
 
@@ -47,10 +49,11 @@ from slayer.core.models import (
 from slayer.core.policy import JoinFilterRule, JoinFilterRuleset, SessionPolicy
 from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
-from slayer.engine.ingestion import ingest_datasource
-from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.live_schema import ingestion
+from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine
+from slayer.database import engine_factory
+from slayer.database.client import DelegatingSqlClient, ExecutionResult, SlayerSQLClient, SqlClient
+from slayer.sql.dialects.base import ServerProfile
 from slayer.storage.yaml_storage import YAMLStorage
 from tests.integration._dev2015_server import (
     check_all,
@@ -75,8 +78,23 @@ from tests._dev1737_fixtures import (
     matrix_query,
     server_seed_statements,
 )
+from tests._dev2120_fixtures import (
+    DOCS_ROWS,
+    LIB,
+    check_library,
+    check_native_json,
+    contractors_model,
+    contractors_statements,
+    lib_model,
+    server_literal,
+    server_table_statements as dev2120_table_statements,
+)
+from tests._cast_fixtures import check_try_cast_targets
+from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
 from tests._engine_helpers import disposable_engine
+from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_model, mixed_numbers_statements
 from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
+from tests.integration._one_request import PATHS, assert_one_request_each, run_three
 
 pytest.importorskip("testcontainers.clickhouse")
 pytest.importorskip("clickhouse_sqlalchemy")
@@ -154,6 +172,15 @@ def _drop_module_db(clickhouse_container, db_name: str) -> None:
     with disposable_engine(_admin_url(clickhouse_container)) as engine:
         with engine.begin() as conn:
             conn.execute(sa.text(f"DROP DATABASE IF EXISTS {db_name}"))
+
+
+async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
+    sql_client = SlayerSQLClient(datasource=ds)
+    try:
+        return await ingestion.ingest_datasource_async(ds, client=sql_client, **kwargs)
+    finally:
+        await sql_client.aclose()
+        sql_client.close()
 
 
 def _ds_config(clickhouse_container, db_name: str) -> DatasourceConfig:
@@ -262,8 +289,11 @@ def clickhouse_env(_clickhouse_env_storage) -> SlayerQueryEngine:
 
 @pytest.mark.integration
 class TestClickHouseQueries:
+    async def test_try_cast_integer_targets(self, clickhouse_env: SlayerQueryEngine) -> None:
+        await check_try_cast_targets(clickhouse_env, model="orders")
+
     async def test_count_all(self, clickhouse_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(source_model="orders", measures=[{"formula": "*:count"}])
+        query = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "count(*)"}]})
         result = await clickhouse_env.execute(query=query)
         assert result.row_count == 1
         assert result.data[0]["orders._count"] == 6
@@ -272,7 +302,8 @@ class TestClickHouseQueries:
         """An ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
         LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
         query = SlayerQuery(
-            source_model=ModelExtension(
+            source_model="orders",
+            extensions=[ModelExtension(
                 source_name="orders",
                 columns=[Column(
                     name="rx",
@@ -280,60 +311,41 @@ class TestClickHouseQueries:
                         "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END",
                     type=DataType.DOUBLE,
                 )],
-            ),
+            )],
             dimensions=[ColumnRef(name="rx")],
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         result = await clickhouse_env.execute(query=query)
         by_rx = {int(r["orders.rx"]): r["orders._count"] for r in result.data}
         assert by_rx == {1: 2, 0: 4}
 
     async def test_sum_measure(self, clickhouse_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(source_model="orders", measures=[{"formula": "total:sum"}])
+        query = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(total)"}]})
         result = await clickhouse_env.execute(query=query)
         assert float(result.data[0]["orders.total_sum"]) == 875.0  # NOSONAR(S1244) — sum of integer cents, exact-representable
-
-    async def test_functional_aggregation_parity(self, clickhouse_env: SlayerQueryEngine) -> None:
-        colon = await clickhouse_env.execute(
-            query=SlayerQuery(source_model="orders", measures=[{"formula": "total:sum"}])
-        )
-        func = await clickhouse_env.execute(
-            query=SlayerQuery(source_model="orders", measures=[{"formula": "sum(total)"}])
-        )
-        assert float(func.data[0]["orders.total_sum"]) == float(colon.data[0]["orders.total_sum"])
 
     async def test_string_hygiene_functions_execute(
         self, clickhouse_env: SlayerQueryEngine
     ) -> None:
-        """The typed pipeline emits string functions UPPERCASE
-        (``LOWER(...)`` / ``SUBSTRING(...)``) where the legacy path emitted
-        ClickHouse's native lowercase spelling. ClickHouse function names are
-        case-sensitive in general, so this pins that the standard SQL aliases
-        really do resolve on a live server rather than trusting that the
-        emitted SQL merely looks plausible.
-
-        ``substr`` now reaches the server as ``SUBSTRING``: routing every
-        scalar through one dialect-aware policy means sqlglot transpiles the
-        call to the target's own spelling instead of passing the DSL name
-        through verbatim.
-        """
-        lowered = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            filters=["lower(status) = 'completed'"],
-        )
+        """``lower`` / ``substr`` reach ClickHouse as its character-counting ``lowerUTF8`` /
+        ``substringUTF8``; ClickHouse names are case-sensitive, so this pins that they resolve live."""
+        lowered = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "filters": ["lower(status) = 'completed'"],
+        })
         result = await clickhouse_env.execute(query=lowered)
         assert result.data[0]["orders._count"] > 0
-        assert "LOWER(" in (result.sql or ""), result.sql
+        assert "lowerUTF8(" in (result.sql or ""), result.sql
 
-        subs = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            filters=["substr(status, 1, 4) = 'comp'"],
-        )
+        subs = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "filters": ["substr(status, 1, 4) = 'comp'"],
+        })
         result = await clickhouse_env.execute(query=subs)
         assert result.data[0]["orders._count"] > 0
-        assert "SUBSTRING(" in (result.sql or ""), result.sql
+        assert "substringUTF8(" in (result.sql or ""), result.sql
 
     async def test_trunc_executes_lowercase(
         self, clickhouse_env: SlayerQueryEngine
@@ -344,36 +356,36 @@ class TestClickHouseQueries:
         live server — and that ``trunc`` truncates toward zero rather than
         rounding: ``trunc(total / 40.0)`` is 2.5 -> 2 only for total = 100.
         """
-        acceptance = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            filters=["trunc(total) >= 100"],
-        )
+        acceptance = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "filters": ["trunc(total) >= 100"],
+        })
         result = await clickhouse_env.execute(query=acceptance)
         assert result.data[0]["orders._count"] > 0
         assert "trunc(" in (result.sql or ""), result.sql
         assert "TRUNC(" not in (result.sql or ""), result.sql
 
-        truncates = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            filters=["trunc(total / 40.0) == 2"],
-        )
+        truncates = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "filters": ["trunc(total / 40.0) == 2"],
+        })
         result = await clickhouse_env.execute(query=truncates)
         assert result.data[0]["orders._count"] == 1, result.sql
 
     async def test_avg_measure(self, clickhouse_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(source_model="orders", measures=[{"formula": "avg_amount:avg"}])
+        query = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "avg(avg_amount)"}]})
         result = await clickhouse_env.execute(query=query)
         avg = float(result.data[0]["orders.avg_amount_avg"])
         assert abs(avg - 145.83) < 0.1
 
     async def test_group_by_status(self, clickhouse_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            dimensions=[{"name": "status"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "dimensions": [{"name": "status"}],
+        })
         result = await clickhouse_env.execute(query=query)
         by_status = {r["orders.status"]: r["orders._count"] for r in result.data}
         assert by_status["completed"] == 3
@@ -381,83 +393,83 @@ class TestClickHouseQueries:
         assert by_status["cancelled"] == 1
 
     async def test_filter_equals(self, clickhouse_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            filters=["status == 'completed'"],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "filters": ["status == 'completed'"],
+        })
         result = await clickhouse_env.execute(query=query)
         assert result.data[0]["orders._count"] == 3
 
     async def test_filter_gt(self, clickhouse_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            filters=["total > 100"],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "filters": ["total > 100"],
+        })
         result = await clickhouse_env.execute(query=query)
         assert result.data[0]["orders._count"] == 3
 
     async def test_order_by_desc(self, clickhouse_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            dimensions=[{"name": "status"}],
-            order=[{"column": {"name": "count"}, "direction": "desc"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "dimensions": [{"name": "status"}],
+            "order": [{"column": {"name": "count"}, "direction": "desc"}],
+        })
         result = await clickhouse_env.execute(query=query)
         assert result.data[0]["orders.status"] == "completed"
 
     async def test_limit(self, clickhouse_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            dimensions=[{"name": "status"}],
-            limit=2,
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "dimensions": [{"name": "status"}],
+            "limit": 2,
+        })
         result = await clickhouse_env.execute(query=query)
         assert result.row_count == 2
 
     async def test_multiple_measures(self, clickhouse_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}, {"formula": "total:sum"}],
-            dimensions=[{"name": "status"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}, {"formula": "sum(total)"}],
+            "dimensions": [{"name": "status"}],
+        })
         result = await clickhouse_env.execute(query=query)
         completed = next(r for r in result.data if r["orders.status"] == "completed")
         assert completed["orders._count"] == 3
         assert float(completed["orders.total_sum"]) == 450.0  # NOSONAR(S1244) — sum of integer cents, exact-representable
 
     async def test_time_dimension_month_granularity(self, clickhouse_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}],
+        })
         result = await clickhouse_env.execute(query=query)
         assert result.row_count == 3
 
     async def test_time_dimension_with_date_range(self, clickhouse_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            time_dimensions=[{
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "time_dimensions": [{
                 "dimension": {"name": "created_at"},
                 "granularity": "month",
                 "date_range": ["2024-01-01", "2024-02-28"],
             }],
-        )
+        })
         result = await clickhouse_env.execute(query=query)
         total = sum(r["orders._count"] for r in result.data)
         assert total == 4
 
     async def test_composite_filter(self, clickhouse_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            filters=["status == 'completed' or status == 'pending'"],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+            "filters": ["status == 'completed' or status == 'pending'"],
+        })
         result = await clickhouse_env.execute(query=query)
         assert result.data[0]["orders._count"] == 5
 
@@ -465,12 +477,12 @@ class TestClickHouseQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[
-                ModelMeasure(formula="total:sum"),
-                ModelMeasure(formula="time_shift(total:sum, -1, 'month')", name="prev_month"),
+                ModelMeasure(formula="sum(total)"),
+                ModelMeasure(formula="time_shift(sum(total), -1, 'month')", name="prev_month"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
@@ -483,11 +495,11 @@ class TestClickHouseQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[
-                ModelMeasure(formula="total:sum"),
-                ModelMeasure(formula="consecutive_periods(total:sum > 200)", name="positive_run"),
+                ModelMeasure(formula="sum(total)"),
+                ModelMeasure(formula="consecutive_periods(sum(total) > 200)", name="positive_run"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
@@ -504,12 +516,12 @@ class TestClickHouseQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[
-                ModelMeasure(formula="total:sum"),
-                ModelMeasure(formula="change(total:sum)", name="amount_change"),
+                ModelMeasure(formula="sum(total)"),
+                ModelMeasure(formula="change(sum(total))", name="amount_change"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
@@ -521,12 +533,12 @@ class TestClickHouseQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[
-                ModelMeasure(formula="total:sum"),
-                ModelMeasure(formula="change_pct(total:sum)", name="pct"),
+                ModelMeasure(formula="sum(total)"),
+                ModelMeasure(formula="change_pct(sum(total))", name="pct"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
@@ -538,13 +550,13 @@ class TestClickHouseQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-02-01", "2024-02-29"],
             )],
             measures=[
-                ModelMeasure(formula="total:sum"),
-                ModelMeasure(formula="time_shift(total:sum, -1, 'month')", name="prev"),
-                ModelMeasure(formula="time_shift(total:sum, 1, 'month')", name="next"),
+                ModelMeasure(formula="sum(total)"),
+                ModelMeasure(formula="time_shift(sum(total), -1, 'month')", name="prev"),
+                ModelMeasure(formula="time_shift(sum(total), 1, 'month')", name="next"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
@@ -634,27 +646,24 @@ class TestCrossModelAndMultistageClickHouse:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
-            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="customers.avg_score:avg")],
+            measures=[ModelMeasure(formula="count(*)"), ModelMeasure(formula="avg(customers.avg_score)")],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
         result = await clickhouse_cross_model_env.execute(query=query)
         assert result.row_count == 3
-        global_avg = pytest.approx((90.0 + 60.0 + 80.0) / 3)
-        assert float(result.data[0]["orders.customers.avg_score_avg"]) == global_avg
-        assert float(result.data[1]["orders.customers.avg_score_avg"]) == global_avg
-        assert float(result.data[2]["orders.customers.avg_score_avg"]) == global_avg
+        assert [float(r["orders.customers.avg_score_avg"]) for r in result.data] == pytest.approx([90.0, 60.0, 85.0])
 
     async def test_query_list_named(self, clickhouse_cross_model_env: SlayerQueryEngine) -> None:
         inner = SlayerQuery(
             name="monthly", source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
-            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total:sum")],
+            measures=[ModelMeasure(formula="count(*)"), ModelMeasure(formula="sum(total)")],
         )
-        outer = SlayerQuery(source_model="monthly", measures=[ModelMeasure(formula="*:count")])
+        outer = SlayerQuery(source_model="monthly", measures=[ModelMeasure(formula="count(*)")])
         result = await clickhouse_cross_model_env.execute(query=[inner, outer])
         assert result.data[0]["monthly._count"] == 3
 
@@ -662,25 +671,26 @@ class TestCrossModelAndMultistageClickHouse:
         source = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
-            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total:sum")],
+            measures=[ModelMeasure(formula="count(*)"), ModelMeasure(formula="sum(total)")],
         )
         saved = await clickhouse_cross_model_env.create_model_from_query(query=source, name="ch_monthly")
         assert saved.source_queries is not None
         result = await clickhouse_cross_model_env.execute(
-            query=SlayerQuery(source_model="ch_monthly", measures=[ModelMeasure(formula="*:count")])
+            query=SlayerQuery(source_model="ch_monthly", measures=[ModelMeasure(formula="count(*)")])
         )
         assert result.data[0]["ch_monthly._count"] == 3
 
     async def test_sql_dimension(self, clickhouse_cross_model_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
-            source_model=ModelExtension.model_validate({
+            source_model="orders",
+            extensions=[ModelExtension.model_validate({
                 "source_name": "orders",
                 "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
-            }),
+            })],
             dimensions=[ColumnRef(name="tier")],
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         result = await clickhouse_cross_model_env.execute(query=query)
         by_tier = {r["orders.tier"]: r["orders._count"] for r in result.data}
@@ -698,7 +708,7 @@ class TestClickHouseMedianPercentile:
     async def test_median(self, clickhouse_env: SlayerQueryEngine) -> None:
         # amounts = [100, 200, 50, 150, 75, 300]; native ClickHouse median()
         # is a quantile(0.5) approximation — accept a tolerance, not equality.
-        query = SlayerQuery(source_model="orders", measures=[{"formula": "total:median"}])
+        query = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "median(total)"}]})
         result = await clickhouse_env.execute(query=query)
         assert float(result.data[0]["orders.total_median"]) == pytest.approx(125.0, abs=50.0)
 
@@ -706,7 +716,7 @@ class TestClickHouseMedianPercentile:
         """ClickhouseDialect.build_median routes through sqlglot's ClickHouse
         dialect which emits ``quantile(0.5)(x)`` natively. Pin the SQL shape
         via dry_run so a regression to ``percentile_cont`` is caught."""
-        query = SlayerQuery(source_model="orders", measures=[{"formula": "total:median"}])
+        query = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "median(total)"}]})
         dry = await clickhouse_env.execute(query=query, dry_run=True)
         assert dry.sql is not None
         sql_lower = dry.sql.lower()
@@ -723,8 +733,8 @@ class TestClickHouseMedianPercentile:
         query = SlayerQuery(
             source_model="orders",
             measures=[
-                {"formula": "total:percentile(p=0.25)"},
-                {"formula": "total:percentile(p=0.75)"},
+                {"formula": "percentile(total, p=0.25)"},
+                {"formula": "percentile(total, p=0.75)"},
             ],
         )
         dry = await clickhouse_env.execute(query=query, dry_run=True)
@@ -749,8 +759,8 @@ class TestClickHouseMedianPercentile:
         query = SlayerQuery(
             source_model="orders",
             measures=[
-                {"formula": "total:percentile(p=0.25)"},
-                {"formula": "total:percentile(p=0.75)"},
+                {"formula": "percentile(total, p=0.25)"},
+                {"formula": "percentile(total, p=0.75)"},
             ],
         )
         result = await clickhouse_env.execute(query=query)
@@ -767,11 +777,11 @@ class TestClickHouseMedianPercentile:
             pending:   [50, 300]        -> median 175 (or close, due to approximation)
             cancelled: [75]             -> 75
         """
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "total:median"}],
-            dimensions=[{"name": "status"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "median(total)"}],
+            "dimensions": [{"name": "status"}],
+        })
         result = await clickhouse_env.execute(query=query)
         by_status = {
             r["orders.status"]: float(r["orders.total_median"]) for r in result.data
@@ -798,10 +808,7 @@ class TestClickHouseStatAggregations:
     implementations (no UDF, no decomposition formula)."""
 
     async def test_stddev_samp_native_clickhouse(self, clickhouse_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "total:stddev_samp"}],
-        )
+        query = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "stddev_samp(total)"}]})
         result = await clickhouse_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         assert float(result.data[0]["orders.total_stddev_samp"]) == pytest.approx(
@@ -811,7 +818,7 @@ class TestClickHouseStatAggregations:
     async def test_stddev_pop_native_clickhouse(self, clickhouse_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            measures=[{"formula": "total:stddev_pop"}],
+            measures=[{"formula": "stddev_pop(total)"}],
         )
         result = await clickhouse_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -820,10 +827,7 @@ class TestClickHouseStatAggregations:
         )
 
     async def test_var_samp_native_clickhouse(self, clickhouse_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "total:var_samp"}],
-        )
+        query = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "var_samp(total)"}]})
         result = await clickhouse_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         assert float(result.data[0]["orders.total_var_samp"]) == pytest.approx(
@@ -833,7 +837,7 @@ class TestClickHouseStatAggregations:
     async def test_var_pop_native_clickhouse(self, clickhouse_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            measures=[{"formula": "total:var_pop"}],
+            measures=[{"formula": "var_pop(total)"}],
         )
         result = await clickhouse_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -842,10 +846,10 @@ class TestClickHouseStatAggregations:
         )
 
     async def test_corr_native_clickhouse(self, clickhouse_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "total:corr(other=customer_id)"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "corr(total, other=customer_id)"}],
+        })
         result = await clickhouse_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         ys = [1.0, 1.0, 2.0, 2.0, 3.0, 3.0]
@@ -855,10 +859,10 @@ class TestClickHouseStatAggregations:
         )
 
     async def test_covar_samp_native_clickhouse(self, clickhouse_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "total:covar_samp(other=customer_id)"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "covar_samp(total, other=customer_id)"}],
+        })
         result = await clickhouse_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         ys = [1.0, 1.0, 2.0, 2.0, 3.0, 3.0]
@@ -872,7 +876,7 @@ class TestClickHouseStatAggregations:
     async def test_covar_pop_native_clickhouse(self, clickhouse_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            measures=[{"formula": "total:covar_pop(other=customer_id)"}],
+            measures=[{"formula": "covar_pop(total, other=customer_id)"}],
         )
         result = await clickhouse_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -927,14 +931,14 @@ async def test_log10_round_trip_clickhouse(clickhouse_log10_env: SlayerQueryEngi
     """ClickHouse has native LOG10 (ClickhouseDialect.log10_native=True).
     The emitted SQL must preserve ``log10(...)``."""
     result = await clickhouse_log10_env.execute(
-        SlayerQuery(source_model="orders", measures=[{"formula": "log_amount:max"}])
+        SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "max(log_amount)"}]})
     )
     assert float(result.data[0]["orders.log_amount_max"]) == pytest.approx(
         _math.log10(300.0), rel=1e-9
     )
 
     dry = await clickhouse_log10_env.execute(
-        SlayerQuery(source_model="orders", measures=[{"formula": "log_amount:max"}]),
+        SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "max(log_amount)"}]}),
         dry_run=True,
     )
     assert dry.sql is not None
@@ -1093,7 +1097,7 @@ async def test_integration_clickhouse_cross_model_derived_columnsql(
 
 
 # ---------------------------------------------------------------------------
-# Dialect-specific: DateTime column type round-trip (issue #62 regression)
+# Dialect-specific: DateTime column type round-trip
 # ---------------------------------------------------------------------------
 
 
@@ -1125,11 +1129,11 @@ def clickhouse_ingest_for_types_env(clickhouse_container):
 
 @pytest.mark.integration
 def test_clickhouse_datetime_typed_correctly(clickhouse_ingest_for_types_env) -> None:
-    """Regression for issue #62: auto-ingesting a ClickHouse DateTime
+    """Regression: auto-ingesting a ClickHouse DateTime
     column must produce ``DataType.TIMESTAMP``, not STRING. Int32 / Float64
     must map to INT / DOUBLE."""
     ds = clickhouse_ingest_for_types_env
-    models = ingest_datasource(datasource=ds, schema=None)
+    models = run_sync(_ingest(ds, schema=None))
     orders = next(m for m in models if m.name == "orders")
     by_name = {c.name: c for c in orders.columns}
 
@@ -1147,7 +1151,7 @@ def test_clickhouse_datetime_typed_correctly(clickhouse_ingest_for_types_env) ->
 @pytest.mark.integration
 def test_clickhouse_comments_imported(clickhouse_ingest_for_types_env) -> None:
     ds = clickhouse_ingest_for_types_env
-    models = ingest_datasource(datasource=ds, schema=None)
+    models = run_sync(_ingest(ds, schema=None))
     orders = next(m for m in models if m.name == "orders")
     assert orders.description == "All orders"
     by_name = {c.name: c for c in orders.columns}
@@ -1232,11 +1236,11 @@ class TestClickHouseModeAEscaping:
     async def test_backslash_value_matches_only_its_row(
         self, clickhouse_esc_env: SlayerQueryEngine, value: str, expected: float
     ) -> None:
-        resp = await clickhouse_esc_env.execute(SlayerQuery(
-            source_model="esc",
-            measures=[{"formula": "amount:sum"}],
-            variables={"v": value},
-        ))
+        resp = await clickhouse_esc_env.execute(SlayerQuery.model_validate({
+            "source_model": "esc",
+            "measures": [{"formula": "sum(amount)"}],
+            "variables": {"v": value},
+        }))
         assert resp.row_count == 1
         assert float(resp.data[0]["esc.amount_sum"]) == expected
 
@@ -1246,16 +1250,16 @@ class TestClickHouseModeAEscaping:
         # Assert on the COUNT of matching rows (unambiguous) rather than a zero
         # aggregate — a breakout that matched the whole table would give a
         # non-zero count, and a zero SUM would not distinguish the cases.
-        resp = await clickhouse_esc_env.execute(SlayerQuery(
-            source_model="esc",
-            measures=[{"formula": "*:count"}],
-            variables={"v": "x\\' OR '1'='1"},
-        ))
+        resp = await clickhouse_esc_env.execute(SlayerQuery.model_validate({
+            "source_model": "esc",
+            "measures": [{"formula": "count(*)"}],
+            "variables": {"v": "x\\' OR '1'='1"},
+        }))
         assert int(resp.data[0]["esc._count"]) == 0
 
 
 # ---------------------------------------------------------------------------
-# Decimal native-type preservation (#364)
+# Decimal native-type preservation
 # ---------------------------------------------------------------------------
 
 
@@ -1281,7 +1285,7 @@ def _clickhouse_decimal_storage(clickhouse_container, tmp_path_factory):
 
         datasource = _ds_config(clickhouse_container, db_name)
         model = next(
-            m for m in ingest_datasource(datasource=datasource)
+            m for m in run_sync(_ingest(datasource))
             if m.name == "decimal_orders"
         )
         amount = model.get_column("amount")
@@ -1313,12 +1317,12 @@ class TestClickHouseDecimalPreservation:
         "measure,result_key,expected",
         [
             (
-                "amount:sum",
+                "sum(amount)",
                 "decimal_orders.amount_sum",
                 Decimal("90071992547409.93"),
             ),
             (
-                "short_amount:sum",
+                "sum(short_amount)",
                 "decimal_orders.short_amount_sum",
                 Decimal("900719925474.0993"),
             ),
@@ -1581,12 +1585,31 @@ def _user_datasource(
                 conn.exec_driver_sql(f"DROP USER IF EXISTS {user}")
 
 
-def _rls_engine(datasource: DatasourceConfig, *, policy: SessionPolicy | None = None) -> SlayerQueryEngine:
+def _rls_engine(
+    datasource: DatasourceConfig, *, policy: SessionPolicy | None = None, client_factory: ClientFactory | None = None,
+) -> SlayerQueryEngine:
     storage = YAMLStorage(base_dir=tempfile.mkdtemp(prefix="rls_ch_"))
     run_sync(storage.save_datasource(datasource))
     for model in _rls_models():
         run_sync(storage.save_model(model))
-    return SlayerQueryEngine(storage=storage, policy=policy)
+    return SlayerQueryEngine(storage=storage, policy=policy, client_factory=client_factory)
+
+
+class _RecordingGateway(DelegatingSqlClient):
+    """A factory client over the default one, recording what reaches it."""
+
+    def __init__(self, inner: SqlClient) -> None:
+        super().__init__(inner)
+        self.profile_requests = 0
+        self.statements: list[str] = []
+
+    async def server_profile(self) -> ServerProfile:
+        self.profile_requests += 1
+        return await self.inner.server_profile()
+
+    async def execute(self, sql: str, *args: Any, **kwargs: Any) -> ExecutionResult:
+        self.statements.append(sql)
+        return await self.inner.execute(sql, *args, **kwargs)
 
 
 _TENANT_POLICY = SessionPolicy(ruleset=JoinFilterRuleset(
@@ -1620,7 +1643,7 @@ _SHARD_ROWS = {
 
 _SEMI_JOIN_QUERY = SlayerQuery.model_validate({
     "source_model": "sj_orders", "dimensions": ["sj_customers.org"],
-    "measures": [{"formula": "amount:sum", "name": "m"}, {"formula": "sj_customers.spend:sum", "name": "cm"}],
+    "measures": [{"formula": "sum(amount)", "name": "m"}, {"formula": "sum(sj_customers.spend)", "name": "cm"}],
     "filters": ["channel = 'app'"],
 })
 _SEMI_JOIN_ROWS = [{"sj_orders.sj_customers.org": "A", "sj_orders.m": 5.0, "sj_orders.cm": 100.0}]
@@ -1693,7 +1716,10 @@ class TestJoinPolicyReadonly:
     async def test_no_setting_reaches_the_server(self, clickhouse_container, rls_db) -> None:
         with _user_datasource(clickhouse_container, rls_db, settings="readonly = 1") as ds:
             engine = _rls_engine(ds, policy=_TENANT_POLICY)
-            dry = await engine.execute(SlayerQuery.model_validate({"source_model": "line_items", "dimensions": ["id"]}), dry_run=True)
+            dry = await engine.execute(SlayerQuery.model_validate({
+                "source_model": "line_items",
+                "dimensions": ["id"],
+            }), dry_run=True)
         assert dry.sql is not None
         assert _CORRELATED_SETTING not in dry.sql
         assert "EXISTS" not in dry.sql.upper()
@@ -1770,6 +1796,26 @@ class TestVersionedReadonly:
         _, container, db_name = versioned_clickhouse
         with _user_datasource(container, db_name, settings="readonly = 2") as ds:
             await _assert_semi_join_runs_with_setting(_rls_engine(ds))
+
+    async def test_semi_join_and_profile_reach_the_factory_client(self, versioned_clickhouse) -> None:
+        """Scenario: Engine-internal statements reach the factory client (ClickHouse server profile)."""
+        _, container, db_name = versioned_clickhouse
+        built: list[_RecordingGateway] = []
+
+        def factory(datasource: DatasourceConfig) -> _RecordingGateway:
+            built.append(_RecordingGateway(SlayerSQLClient(datasource=datasource)))
+            return built[-1]
+
+        with _user_datasource(container, db_name, settings="readonly = 2") as ds:
+            engine = _rls_engine(ds, client_factory=factory)
+            try:
+                assert (await engine.execute(_SEMI_JOIN_QUERY)).data == _SEMI_JOIN_ROWS
+            finally:
+                await engine.aclose()
+                engine.close()
+        assert len(built) == 1
+        assert built[0].profile_requests >= 1
+        assert any("EXISTS" in sql.upper() for sql in built[0].statements), built[0].statements
 
     async def test_setting_enabled_in_profile_runs(self, versioned_clickhouse) -> None:
         _, container, db_name = versioned_clickhouse
@@ -1864,3 +1910,145 @@ def test_every_clickhouse_alias_failure_is_quoted(clickhouse_container) -> None:
             ) == []
     finally:
         _drop_module_db(clickhouse_container, db_name)
+
+
+# ---------------------------------------------------------------------------
+# Portable Mode-B library (spec: queries/scalar-functions, regex, json, mixed-type-coercion, string-matching)
+# ---------------------------------------------------------------------------
+
+def _http(clickhouse_container, db_name: str, sql: str, **settings: str) -> None:
+    """Run one statement over HTTP, where per-query server settings ride as URL parameters."""
+    host = clickhouse_container.get_container_host_ip()
+    port = int(clickhouse_container.get_exposed_port(8123))
+    user = getattr(clickhouse_container, "username", "default") or "default"
+    password = getattr(clickhouse_container, "password", "") or ""
+    resp = requests.post(f"http://{host}:{port}/", params={"database": db_name, **settings}, data=sql.encode(),
+                         auth=(user, password), timeout=60)
+    assert resp.ok, resp.text
+
+
+@pytest.fixture(scope="module")
+def _clickhouse_dev2120_storage(clickhouse_container, tmp_path_factory):
+    db_name = _create_module_db(clickhouse_container)
+    try:
+        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in dev2120_table_statements(LIB, dialect="clickhouse"):
+                    conn.execute(sa.text(stmt))
+        _http(clickhouse_container, db_name, "CREATE TABLE docs (id Int32, payload JSON) ENGINE = MergeTree ORDER BY id",
+              allow_experimental_json_type="1")
+        rows = ", ".join(f"({rid}, {server_literal(doc or '{}', kind='TEXT', dialect='clickhouse')})"
+                         for rid, doc in DOCS_ROWS)
+        _http(clickhouse_container, db_name, f"INSERT INTO docs VALUES {rows}", allow_experimental_json_type="1")
+        ds = _ds_config(clickhouse_container, db_name)
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("clickhouse_dev2120")))
+        run_sync(storage.save_datasource(ds))
+        run_sync(storage.save_model(lib_model(data_source="testclickhouse")))
+        for model in run_sync(_ingest(ds, include_tables=["docs"])):
+            run_sync(storage.save_model(model))
+        yield storage
+    finally:
+        _drop_module_db(clickhouse_container, db_name)
+
+
+@pytest.mark.integration
+class TestClickHousePortableLibrary:
+    async def test_library(self, _clickhouse_dev2120_storage) -> None:
+        await check_library(SlayerQueryEngine(storage=_clickhouse_dev2120_storage))
+
+    async def test_native_json_column(self, _clickhouse_dev2120_storage) -> None:
+        await check_native_json(SlayerQueryEngine(storage=_clickhouse_dev2120_storage))
+
+
+# ---------------------------------------------------------------------------
+# List columns (spec: models/list-columns, queries/list-functions, queries/list-children, aggregations/collect)
+# ---------------------------------------------------------------------------
+
+
+_TAGGED = ("CREATE TABLE tagged (id Int32, tags Array(LowCardinality(Nullable(String)))) "
+           "ENGINE = MergeTree ORDER BY id")
+
+
+@contextlib.contextmanager
+def _seeded_lists(container, base_dir: str):
+    db_name = _create_module_db(container)
+    try:
+        with disposable_engine(_ds_url_for_db(container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in [*contractors_statements(dialect="clickhouse"),
+                             *assignments_statements(dialect="clickhouse"),
+                             *mixed_numbers_statements(dialect="clickhouse"), _TAGGED]:
+                    conn.execute(sa.text(stmt))
+        ds = _ds_config(container, db_name)
+        storage = YAMLStorage(base_dir=base_dir)
+        run_sync(storage.save_datasource(ds))
+        run_sync(storage.save_model(contractors_model(data_source=ds.name)))
+        run_sync(storage.save_model(assignments_model(data_source=ds.name)))
+        run_sync(storage.save_model(mixed_numbers_model(data_source=ds.name)))
+        yield storage, ds
+    finally:
+        _drop_module_db(container, db_name)
+
+
+@pytest.fixture(scope="module")
+def _clickhouse_lists(clickhouse_container, tmp_path_factory):
+    with _seeded_lists(clickhouse_container, str(tmp_path_factory.mktemp("clickhouse_lists"))) as seeded:
+        yield seeded
+
+
+@pytest.fixture(scope="module")
+def _versioned_clickhouse_lists(versioned_clickhouse, tmp_path_factory):
+    _, container, _ = versioned_clickhouse
+    with _seeded_lists(container, str(tmp_path_factory.mktemp("clickhouse_lists_versioned"))) as seeded:
+        yield seeded
+
+
+@pytest.mark.integration
+class TestClickHouseLists:
+    async def test_lists(self, _clickhouse_lists) -> None:
+        # Below 25.4 a filter across a to-many hop is refused, a list reached through a to-one join included.
+        await check_lists(SlayerQueryEngine(storage=_clickhouse_lists[0]), dialect="clickhouse",
+                          refused={"through-to-one": "25.4", "elements-filtered-across-another-to-many": "25.4"})
+
+    async def test_lists_on_a_correlating_server(self, _versioned_clickhouse_lists, versioned_clickhouse) -> None:
+        # Before 25.8 a correlated EXISTS beside a list's ARRAY JOIN is refused.
+        refused = {"elements-filtered-across-another-to-many": "25.8"} if versioned_clickhouse[0] == "25.4" else None
+        await check_lists(SlayerQueryEngine(storage=_versioned_clickhouse_lists[0]), dialect="clickhouse",
+                          refused=refused)
+
+    async def test_mixed_numeric_lists(self, _clickhouse_lists) -> None:
+        await check_mixed_numbers(SlayerQueryEngine(storage=_clickhouse_lists[0]))
+
+    def test_wrapped_element_ingested(self, _clickhouse_lists) -> None:
+        (model,) = run_sync(_ingest(_clickhouse_lists[1], include_tables=["tagged"]))
+        tags = model.get_column("tags")
+        assert tags is not None
+        assert (tags.type, tags.element_type) == (DataType.ARRAY, DataType.TEXT)
+
+
+# ---------------------------------------------------------------------------
+# A warm statement costs one request
+# ---------------------------------------------------------------------------
+
+
+def _query_log_since(clickhouse_container, since: str) -> list[str]:
+    """Every client query the server started since ``since``, in order."""
+    with disposable_engine(_admin_url(clickhouse_container)) as engine, engine.connect() as conn:
+        conn.exec_driver_sql("SYSTEM FLUSH LOGS")
+        rows = conn.exec_driver_sql(
+            "SELECT query FROM system.query_log WHERE type = 'QueryStart' AND is_initial_query"
+            f" AND event_time_microseconds >= toDateTime64('{since}', 6) ORDER BY event_time_microseconds",
+        ).fetchall()
+    return [query for (query,) in rows]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("path", PATHS)
+def test_warm_statement_costs_one_request(clickhouse_container, path: str) -> None:
+    with disposable_engine(_admin_url(clickhouse_container)) as engine, engine.connect() as conn:
+        since = conn.exec_driver_sql("SELECT toString(now64(6))").scalar()
+    run_three(
+        SlayerSQLClient(datasource=_ds_config(clickhouse_container, "default")), path=path,
+        sql=lambda marker: f"SELECT '{marker}' AS m",
+    )
+    assert_one_request_each(_query_log_since(clickhouse_container, since))

@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from slayer.usage_reporting.sender import HTTP_TIMEOUT
+
+# Outlasts one whole send, which may itself take up to HTTP_TIMEOUT on a loaded runner.
+_WAIT = 3 * HTTP_TIMEOUT
 
 
 class CapturedRequest(BaseModel):
@@ -30,6 +36,13 @@ class CaptureBehaviour(BaseModel):
     stall_first: float = 0.0
 
 
+class _Server(ThreadingHTTPServer):
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        # A client that gave up on a delayed reply is expected; the traceback would land in a captured CLI stderr.
+        if not isinstance(sys.exc_info()[1], ConnectionError):
+            super().handle_error(request, client_address)
+
+
 class CaptureServer:
     """Records every POST; ``behaviour`` sets status and delays."""
 
@@ -37,8 +50,10 @@ class CaptureServer:
         self.behaviour = CaptureBehaviour()
         self.requests: list[CapturedRequest] = []
         self.arrivals = 0
+        self.hold = threading.Event()  # cleared: arrived requests wait unrecorded until set
+        self.hold.set()
         self._lock = threading.Lock()
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler_class())
+        self._server = _Server(("127.0.0.1", 0), self._handler_class())
         self._server.daemon_threads = True
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 
@@ -52,10 +67,11 @@ class CaptureServer:
         return self
 
     def stop(self) -> None:
+        self.hold.set()
         self._server.shutdown()
         self._server.server_close()
 
-    def wait_for(self, *, count: int, timeout: float = 10.0) -> list[CapturedRequest]:
+    def wait_for(self, *, count: int, timeout: float = _WAIT) -> list[CapturedRequest]:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             with self._lock:
@@ -65,7 +81,7 @@ class CaptureServer:
         with self._lock:
             return list(self.requests)
 
-    def wait_for_arrival(self, *, timeout: float = 10.0) -> bool:
+    def wait_for_arrival(self, *, timeout: float = _WAIT) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             with self._lock:
@@ -87,6 +103,7 @@ class CaptureServer:
                 delay = server.behaviour.delay + (server.behaviour.stall_first if first else 0.0)
                 if delay:
                     time.sleep(delay)
+                server.hold.wait()
                 with server._lock:
                     server.requests.append(CapturedRequest(
                         path=self.path, headers=dict(self.headers.items()), body=body,

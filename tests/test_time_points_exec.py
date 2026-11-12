@@ -10,7 +10,7 @@ import pytest
 from slayer.core.enums import TimeGranularity
 from slayer.core.errors import DateOperandTypeError, GranularityCallError, QueryTypeError, TimeLiteralError
 from slayer.core.query import SlayerQuery
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 
 from tests._time_points_fixtures import (
     BACKENDS, EV_TS, SHIPPED_NEXT_MONTH, UNSHIPPED, bucket_text, code_of, ev_dt, ids, ids_in, ids_where,
@@ -306,64 +306,64 @@ class TestSqliteTimestampSpelling:
 
 class TestGranularityCalls:
     async def test_in_filter_lowers_to_exact_bound(self, engine) -> None:
-        assert await ids(engine, "month(ts) >= '2024-03-15'") == ids_where(lambda t: t >= D(2024, 4, 1))
+        assert await ids(engine, "date_trunc('month', ts) >= '2024-03-15'") == ids_where(lambda t: t >= D(2024, 4, 1))
 
     @pytest.mark.parametrize(("filt", "pred"), [
-        ("month(ts) > '2025-01'", lambda t: t >= D(2025, 2, 1)),
-        ("month(ts) < '2025-03-15'", lambda t: t < D(2025, 4, 1)),
-        ("month(ts) <= '2025-03-15'", lambda t: t < D(2025, 4, 1)),
-        ("month(ts) = '2025-03'", lambda t: D(2025, 3, 1) <= t < D(2025, 4, 1)),
-        ("quarter(ts) = '2025'", lambda t: D(2025, 1, 1) <= t < D(2026, 1, 1)),
-        ("quarter(ts) = '2025-02'", lambda t: False),  # no quarter starts in February
-        ("year(ts) = 'last year'", lambda t: D(2025, 1, 1) <= t < D(2026, 1, 1)),
-        ("day(ts) >= '2025-03-01 10:00:00'", lambda t: t >= D(2025, 3, 2)),
+        ("date_trunc('month', ts) > '2025-01'", lambda t: t >= D(2025, 2, 1)),
+        ("date_trunc('month', ts) < '2025-03-15'", lambda t: t < D(2025, 4, 1)),
+        ("date_trunc('month', ts) <= '2025-03-15'", lambda t: t < D(2025, 4, 1)),
+        ("date_trunc('month', ts) = '2025-03'", lambda t: D(2025, 3, 1) <= t < D(2025, 4, 1)),
+        ("date_trunc('quarter', ts) = '2025'", lambda t: D(2025, 1, 1) <= t < D(2026, 1, 1)),
+        ("date_trunc('quarter', ts) = '2025-02'", lambda t: False),  # no quarter starts in February
+        ("date_trunc('year', ts) = 'last year'", lambda t: D(2025, 1, 1) <= t < D(2026, 1, 1)),
+        ("date_trunc('day', ts) >= '2025-03-01 10:00:00'", lambda t: t >= D(2025, 3, 2)),
     ])
     async def test_exact_bounds(self, engine, filt, pred) -> None:
         assert await ids(engine, filt) == ids_where(pred)
 
     async def test_compared_with_each_other(self, engine) -> None:
-        assert await ids(engine, "month(shipped_at) = month(ts)") == ALL - SHIPPED_NEXT_MONTH - UNSHIPPED
+        assert await ids(engine, "date_trunc('month', shipped_at) = date_trunc('month', ts)") == ALL - SHIPPED_NEXT_MONTH - UNSHIPPED
 
     async def test_against_instants(self, engine) -> None:
-        assert await ids(engine, "month(ts) = '2025-03-15 10:00:00'") == set()
-        assert await ids(engine, "month(ts) = '2025-03-01 00:00:00'") == ids_in(D(2025, 3, 1), D(2025, 4, 1))
-        assert await ids(engine, "month(ts) > '2025-03-15 10:00:00'") == ids_where(lambda t: t >= D(2025, 4, 1))
-        assert await ids(engine, "month(ts) <= '2025-03-15 10:00:00'") == ids_where(lambda t: t < D(2025, 4, 1))
+        assert await ids(engine, "date_trunc('month', ts) = '2025-03-15 10:00:00'") == set()
+        assert await ids(engine, "date_trunc('month', ts) = '2025-03-01 00:00:00'") == ids_in(D(2025, 3, 1), D(2025, 4, 1))
+        assert await ids(engine, "date_trunc('month', ts) > '2025-03-15 10:00:00'") == ids_where(lambda t: t >= D(2025, 4, 1))
+        assert await ids(engine, "date_trunc('month', ts) <= '2025-03-15 10:00:00'") == ids_where(lambda t: t < D(2025, 4, 1))
 
     async def test_case_insensitive_callee(self, engine) -> None:
-        assert await ids(engine, "MONTH(ts) >= '2024-03-15'") == await ids(engine, "month(ts) >= '2024-03-15'")
+        assert await ids(engine, "DATE_TRUNC('MONTH', ts) >= '2024-03-15'") == await ids(engine, "date_trunc('month', ts) >= '2024-03-15'")
 
     async def test_count_distinct_months(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "ev", "measures": [{"formula": "count_distinct(month(ts))", "name": "m"}],
+            "source_model": "ev", "measures": [{"formula": "count_distinct(date_trunc('month', ts))", "name": "m"}],
         }))
         assert resp.data[0]["ev.m"] == len({(t.year, t.month) for t in map(ev_dt, EV_TS)})
 
     async def test_computed_dimension_groups_by_year_bucket(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "ev", "dimensions": [{"expression": "year(ts)", "name": "y"}],
+            "source_model": "ev", "dimensions": [{"expression": "date_trunc('year', ts)", "name": "y"}],
             "measures": [{"formula": "count(*)", "name": "n"}],
         }))
         got = {bucket_text(r["ev.y"])[:10]: r["ev.n"] for r in resp.data}
         assert got == {f"{y}-01-01": n for y, n in Counter(t.year for t in map(ev_dt, EV_TS)).items()}
 
     async def test_inside_arithmetic(self, engine) -> None:
-        got = await ids(engine, "date_diff('day', month(ts), ts) = 0")
+        got = await ids(engine, "date_diff('day', date_trunc('month', ts), ts) = 0")
         assert got == ids_where(lambda t: t.day == 1)
 
     @pytest.mark.parametrize(("filt", "column"), [
-        ("month(code) = '2025-03'", "code"),
-        ("month(code) = month(ts)", "code"),
-        ("date_diff('day', month(raw_ts), ts) = 0", "raw_ts"),
+        ("date_trunc('month', code) = '2025-03'", "code"),
+        ("date_trunc('month', code) = date_trunc('month', ts)", "code"),
+        ("date_diff('day', date_trunc('month', raw_ts), ts) = 0", "raw_ts"),
     ])
     async def test_non_temporal_operand_rejected(self, engine, filt, column) -> None:
         with pytest.raises(DateOperandTypeError) as ei:
             await ids(engine, filt)
-        assert f"month() needs a DATE or TIMESTAMP operand; `{column}` is not one" in str(ei.value)
+        assert f"`{column}` is not one" in str(ei.value), str(ei.value)
 
     @pytest.mark.parametrize(("formula", "kind"), [
-        ("sum(month(ts))", "TIMESTAMP"),
-        ("avg(month(d))", "DATE"),
+        ("sum(date_trunc('month', ts))", "TIMESTAMP"),
+        ("avg(date_trunc('month', d))", "DATE"),
         ("sum(date_add(ts, 1, 'day'))", "TIMESTAMP"),
     ])
     async def test_numeric_aggregation_of_temporal_expression_rejected(self, engine, formula, kind) -> None:
@@ -373,17 +373,17 @@ class TestGranularityCalls:
 
     async def test_non_temporal_operand_rejected_in_measure(self, engine) -> None:
         query = SlayerQuery.model_validate({
-            "source_model": "ev", "measures": [{"formula": "count_distinct(month(code))", "name": "m"}],
+            "source_model": "ev", "measures": [{"formula": "count_distinct(date_trunc('month', code))", "name": "m"}],
         })
         with pytest.raises(DateOperandTypeError):
             await engine.execute(query)
 
     @pytest.mark.parametrize("filt", [
-        "month() >= '2024-01-01'",
-        "month(ts, d) >= '2024-01-01'",
-        "month(upper(code)) >= '2024-01-01'",
-        "month(*) >= '2024-01-01'",
-        "month(ts, granularity=2) >= '2024-01-01'",
+        "date_trunc('month') >= '2024-01-01'",
+        "date_trunc('month', ts, d) >= '2024-01-01'",
+        "date_trunc('month', *) >= '2024-01-01'",
+        "date_trunc(code, ts) >= '2024-01-01'",
+        "date_trunc('month', ts, granularity=2) >= '2024-01-01'",
     ])
     async def test_wrong_shape_rejected(self, engine, filt) -> None:
         with pytest.raises(GranularityCallError) as ei:
@@ -391,7 +391,11 @@ class TestGranularityCalls:
         msg = str(ei.value)
         for gran in GRANULARITIES:
             assert gran in msg, f"error must name granularity {gran!r}: {msg}"
-        assert "(col" in msg, msg
+        assert "date_trunc" in msg, msg
+
+    async def test_non_temporal_expression_operand_rejected(self, engine) -> None:
+        with pytest.raises(DateOperandTypeError, match=r"upper\(code\)"):
+            await ids(engine, "date_trunc('month', upper(code)) >= '2024-01-01'")
 
 
 class TestDateFunctionGrammar:

@@ -19,14 +19,16 @@ Helpers:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import tempfile
-from collections.abc import AsyncGenerator, Callable, Generator, Mapping
+from collections.abc import AsyncGenerator, Callable, Generator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from typing import Any, Optional
 
+import pytest
 import sqlalchemy as sa
 import sqlglot
 from sqlglot import exp
@@ -38,7 +40,10 @@ from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.engine.compile import stages
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle, resolve_scope
-from slayer.sql import engine_factory
+from slayer.database import client as sql_client
+from slayer.database import engine_factory
+from slayer.sql.dialects import SQLGLOT_NAMES, dialect_for_ds_type
+from slayer.storage.base import StorageBackend
 from slayer.storage.yaml_storage import YAMLStorage
 
 # Dialect → file extension for a seeded on-disk database (cosmetic; the
@@ -61,6 +66,47 @@ def disposable_engine(url: str, **kwargs) -> Generator[sa.Engine]:
         engine.dispose()
 
 
+def plant_async_engine(monkeypatch: pytest.MonkeyPatch, client: sql_client.SlayerSQLClient, fake: Any) -> None:
+    """Make ``fake`` the async engine ``client`` builds for the running loop."""
+    monkeypatch.setattr(sql_client, "create_async_engine", lambda *_a, **_k: fake)
+    assert client._get_async_engine() is fake
+
+
+@asynccontextmanager
+async def owned_query_engine(
+    *, storage: StorageBackend, datasources: Sequence[DatasourceConfig] = (), **engine_kwargs: Any,
+) -> AsyncGenerator[SlayerQueryEngine]:
+    """The one owner of a test's query engine: saves ``datasources`` into ``storage``, yields the engine,
+    and on exit releases it on this loop, closes it and invalidates those datasources' factory engines."""
+    for ds in datasources:
+        await storage.save_datasource(ds)
+    engine = SlayerQueryEngine(storage=storage, **engine_kwargs)
+    try:
+        yield engine
+    finally:
+        try:
+            release = asyncio.ensure_future(engine.aclose())
+            try:
+                await asyncio.shield(release)
+            except asyncio.CancelledError:
+                await release  # cancelled mid-release: still finish it on this loop before re-raising
+                raise
+        finally:
+            try:
+                engine.close()
+            finally:
+                for ds in datasources:
+                    engine_factory.invalidate_engine(ds)
+
+
+def _seeded_datasource(
+    db_path: str, *, dialect: str, datasource: str, datasource_fields: Optional[Mapping[str, Any]],
+) -> DatasourceConfig:
+    return DatasourceConfig.model_validate(
+        {"name": datasource, "type": dialect, "database": db_path, **(datasource_fields or {})},
+    )
+
+
 async def build_exec_engine(
     db_path: str,
     *,
@@ -77,8 +123,8 @@ async def build_exec_engine(
     this directly only when you manage the tempdir / db yourself. ``datasource_fields``
     adds extra ``DatasourceConfig`` fields."""
     storage = YAMLStorage(base_dir=os.path.join(os.path.dirname(db_path), "store"))
-    await storage.save_datasource(DatasourceConfig.model_validate(
-        {"name": datasource, "type": dialect, "database": db_path, **(datasource_fields or {})},
+    await storage.save_datasource(_seeded_datasource(
+        db_path, dialect=dialect, datasource=datasource, datasource_fields=datasource_fields,
     ))
     for model in models:
         await storage.save_model(model, _validate=validate)
@@ -98,27 +144,18 @@ async def seeded_exec_engine(
     clock: Optional[Callable[[], datetime]] = None,
     datasource_fields: Optional[Mapping[str, Any]] = None,
 ) -> AsyncGenerator[tuple[SlayerQueryEngine, str]]:
-    """The one seeded executing-engine context.
-
-    Seeds a temp db (``seed(db_path)``), registers ``models`` against a
-    ``dialect``-typed datasource, and yields ``(engine, db_path)``. On exit it
-    closes the query engine and invalidates the datasource's factory engine — in
-    ``finally``, before the temp dir is removed — so no engine outlives its file.
-    """
+    """The one seeded executing-engine context: seeds a temp db (``seed(db_path)``), registers ``models``
+    against a ``dialect``-typed datasource, and yields ``(engine, db_path)``, owned by ``owned_query_engine``
+    so no engine outlives its file."""
     with tempfile.TemporaryDirectory() as tmp:
         db_path = os.path.join(tmp, f"seed{_DIALECT_DB_EXT.get(dialect, '.db')}")
         seed(db_path)
-        ds_config = DatasourceConfig(name=datasource, type=dialect, database=db_path)
-        engine = await build_exec_engine(
-            db_path, dialect=dialect, models=models,
-            datasource=datasource, validate=validate, clock=clock,
-            datasource_fields=datasource_fields,
-        )
-        try:
+        storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
+        ds = _seeded_datasource(db_path, dialect=dialect, datasource=datasource, datasource_fields=datasource_fields)
+        async with owned_query_engine(storage=storage, datasources=[ds], clock=clock) as engine:
+            for model in models:
+                await storage.save_model(model, _validate=validate)
             yield engine, db_path
-        finally:
-            engine.close()
-            engine_factory.invalidate_engine(ds_config)
 
 
 async def make_seeded_sqlite_engine(
@@ -205,11 +242,13 @@ async def _engine_generate(
         await storage.save_model(model, _validate=validate)
         for extra in extra_models or []:
             await storage.save_model(extra, _validate=validate)
-        engine = SlayerQueryEngine(storage=storage) if clock is None else SlayerQueryEngine(storage=storage, clock=clock)
-        response = await engine.execute(query, dry_run=True)
+        async with owned_query_engine(storage=storage, clock=clock) as engine:
+            response = await engine.execute(query, dry_run=True)
         sql = response.sql
         assert sql is not None, "engine.execute(dry_run=True) returned no SQL"
-        _assert_valid_sql(sql, dialect=dialect)
+        # A datasource type that is not a sqlglot name (``mariadb``) parses as its dialect's.
+        parse_dialect = dialect if dialect in SQLGLOT_NAMES else dialect_for_ds_type(dialect).sqlglot_name
+        _assert_valid_sql(sql, dialect=parse_dialect)
         return sql
 
 
@@ -229,6 +268,13 @@ def _outer_select(sql: str, *, dialect: str = "postgres") -> exp.Select:
 def _where_text(sql: str, *, dialect: str = "postgres") -> str:
     """Rendered text of the outermost SELECT's WHERE predicate ('' if none)."""
     where = _outer_select(sql, dialect=dialect).args.get("where")
+    return where.this.sql(dialect=dialect) if where is not None else ""
+
+
+def _dataset_where_text(sql: str, *, dialect: str = "postgres") -> str:
+    """Rendered WHERE of the outermost SELECT's FROM when it is a model's filtered dataset ('' if none)."""
+    source = _outer_select(sql, dialect=dialect).args["from_"].this
+    where = source.this.args.get("where") if isinstance(source, exp.Subquery) else None
     return where.this.sql(dialect=dialect) if where is not None else ""
 
 

@@ -55,7 +55,7 @@ class TestModeBOverDunderModels:
 
     @pytest.mark.asyncio
     async def test_cross_model_star_count_measure_resolves(self) -> None:
-        """FAIL-FIRST: a Mode-B cross-model count ``customer__region.*:count``
+        """FAIL-FIRST: a Mode-B cross-model count ``count(customer__region.*)``
         over the ``__``-named model resolves and generates SQL.
 
         Fails today: the ``customer__region`` model build raises and the
@@ -63,10 +63,10 @@ class TestModeBOverDunderModels:
         """
         host, dunder = dunder_target_models()
         sql = await _engine_generate(
-            query=SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "customer__region.*:count"}],
-            ),
+            query=SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "count(customer__region.*)"}],
+            }),
             model=host,
             extra_models=[dunder],
             validate=False,
@@ -98,7 +98,7 @@ class TestModeBOverDunderModels:
                           join_pairs=[["cr_id", "id"]]),
             ],
             measures=[ModelMeasure(name="crc",
-                                   formula="customer__region.*:count")],
+                                   formula="count(customer__region.*)")],
         )
         dunder = dunder_target()  # raises today — the flip must let it through
         sql = await _engine_generate(

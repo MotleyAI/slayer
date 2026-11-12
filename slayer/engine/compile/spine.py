@@ -9,11 +9,11 @@ from typing import List, Optional, Tuple
 from slayer.core.enums import UNIT_MONTHS, UNIT_SECONDS, TimeGranularity
 from slayer.core.granularity import Granularity, granularity_parts, nests_into, resolve_granularity
 from slayer.core.keys import (
-    AggregateKey, ArithmeticKey, ColumnKey, LiteralKey, TimeTruncKey, ValueKey, source_anchor_path, split_top_level_and,
-    walk_value_keys,
+    AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, LiteralKey, TimeTruncKey, ValueKey, source_anchor_path, split_top_level_and,
+    column_leaf, walk_value_keys,
 )
 from slayer.core.models import SlayerModel
-from slayer.core.refs import key_display
+from slayer.core.refs import bucket_remedy, key_display
 from slayer.core.time_bounds import is_frame_bound, strip_frame_bounds
 from slayer.core.time_points import add_units, floor_to
 from slayer.core.time_spine import TIME_SPINE_COLUMN, TIME_SPINE_MODEL, is_spine
@@ -51,7 +51,7 @@ def _mentions(key: ValueKey, spine: ColumnKey) -> bool:
 
 def _bare(key: ValueKey, spine: ColumnKey) -> bool:
     """``spine`` occurs outside a bucket of it."""
-    if isinstance(key, TimeTruncKey) and key.column == spine:
+    if isinstance(key, TimeTruncKey) and key.source == spine:
         return False
     return key == spine or any(_bare(c, spine) for c in key.children())
 
@@ -132,7 +132,10 @@ def _checked_spine_time_dimensions(
     n_dims, n_tds = prebound.n_dims, prebound.n_time_dimensions
     for dm in prebound.declared_measures[:n_dims]:
         key = dm.bound.value_key
-        check_spine_plain_use(offender=dm.declared_name if _mentions(key, spine) else None, position="dimension")
+        check_spine_plain_use(
+            offender=dm.declared_name if _mentions(key, spine) else None, position="dimension",
+            remedy=bucket_remedy(key),
+        )
     for dm in prebound.declared_measures[n_dims + n_tds:]:
         key = dm.bound.value_key
         agg = _spine_aggregate(key, spine=spine, host=host, bundle=bundle)
@@ -140,7 +143,7 @@ def _checked_spine_time_dimensions(
         check_spine_plain_use(offender=dm.declared_name if _bare(key, spine) else None, position="measure")
     spine_tds = [
         dm.bound.value_key for dm in prebound.declared_measures[n_dims:n_dims + n_tds]
-        if isinstance(dm.bound.value_key, TimeTruncKey) and dm.bound.value_key.column == spine
+        if isinstance(dm.bound.value_key, TimeTruncKey) and dm.bound.value_key.source == spine
     ]
     projected = set(spine_tds)
     for spec in prebound.order_specs:
@@ -195,18 +198,21 @@ def check_axis_rebucket(
 ) -> None:
     """A spine bucket attributed through a fact's axis obeys that axis column's recorded granularity."""
     spine = spine_column(host)
-    if not (isinstance(host_key, TimeTruncKey) and host_key.column == spine and isinstance(rerooted, TimeTruncKey)):
+    if not (isinstance(host_key, TimeTruncKey) and host_key.source == spine and isinstance(rerooted, TimeTruncKey)):
         return
-    column = rerooted.column
+    column = rerooted.source
+    if not isinstance(column, (ColumnKey, ColumnSqlKey)):
+        return
     owner = walk_key_path(model=root, path=tuple(column.path), bundle=bundle)
-    leaf = column.leaf if isinstance(column, ColumnKey) else column.column_name
+    leaf = column_leaf(column)
     col = owner.get_column(leaf) if owner is not None else None
     if col is None or col.granularity is None:
         return
+    name = ".".join((*column.path, leaf))
+    upstream = resolve_granularity(col.granularity, defined=bundle.granularities)
     check_time_dimension_column(
-        name=".".join((*column.path, leaf)), column_type=col.type,
-        upstream_granularity=resolve_granularity(col.granularity, defined=bundle.granularities),
-        requested_granularity=rerooted.granularity,
+        name=name, column_type=col.type, requested_granularity=rerooted.granularity,
+        bucketed_leaves=() if upstream is None else ((name, upstream),),
     )
 
 

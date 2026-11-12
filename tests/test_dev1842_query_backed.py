@@ -33,17 +33,23 @@ import slayer.engine.bundle_builder
 
 class TestQueryBackedFailClosed:
     def test_direct_measures_on_query_backed_model_rejected(self) -> None:
-        backing = SlayerQuery(source_model="orders", dimensions=["status"],
-                              measures=[{"formula": "amount:sum"}])
-        dead = ModelMeasure(name="dead", formula="amount:sum")
+        backing = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": ["status"],
+            "measures": [{"formula": "sum(amount)"}],
+        })
+        dead = ModelMeasure(name="dead", formula="sum(amount)")
         with pytest.raises(ValidationError):
             SlayerModel(name="qb_bad", data_source="ds",
                         source_queries=[backing], measures=[dead])
 
     def test_rejection_names_model_and_remedy(self) -> None:
-        backing = SlayerQuery(source_model="orders", dimensions=["status"],
-                              measures=[{"formula": "amount:sum"}])
-        dead = ModelMeasure(name="dead", formula="amount:sum")
+        backing = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": ["status"],
+            "measures": [{"formula": "sum(amount)"}],
+        })
+        dead = ModelMeasure(name="dead", formula="sum(amount)")
         with pytest.raises(ValidationError) as ei:
             SlayerModel(name="qb_named", data_source="ds",
                         source_queries=[backing], measures=[dead])
@@ -61,7 +67,7 @@ class TestQueryBackedFailClosed:
         m = SlayerModel(
             name="ok", data_source="ds", sql_table="ok",
             columns=[Column(name="amount", type=DataType.DOUBLE)],
-            measures=[ModelMeasure(name="live", formula="amount:sum")],
+            measures=[ModelMeasure(name="live", formula="sum(amount)")],
         )
         assert m.measures[0].name == "live"
 
@@ -84,18 +90,19 @@ class TestExtensionMeasuresOverQueryBacked:
             ))
             await storage.save_model(SlayerModel(
                 name="qb_base", data_source="ds",
-                source_queries=[SlayerQuery(
-                    source_model="orders", dimensions=["status"],
-                    measures=[{"formula": "amount:sum"}],
-                )],
+                source_queries=[SlayerQuery.model_validate({
+                    "source_model": "orders",
+                    "dimensions": ["status"],
+                    "measures": [{"formula": "sum(amount)"}],
+                })],
             ))
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery(
-                source_model=ModelExtension(
+                source_model="qb_base", extensions=[ModelExtension(
                     source_name="qb_base",
                     measures=[ModelMeasure(name="doubled",
-                                           formula="amount_sum:sum * 2")],
-                ),
+                                           formula="sum(amount_sum) * 2")],
+                )],
                 dimensions=["status"],
                 measures=[{"formula": "doubled", "name": "r"}],
             )
@@ -111,10 +118,10 @@ class TestExtensionMeasuresOverQueryBacked:
             columns=[Column(name="amount", type=DataType.DOUBLE)],
         )
         query = SlayerQuery(
-            source_model=ModelExtension(
+            source_model="t", extensions=[ModelExtension(
                 source_name="t",
-                measures=[ModelMeasure(name="scaled", formula="amount:sum * 100")],
-            ),
+                measures=[ModelMeasure(name="scaled", formula="sum(amount) * 100")],
+            )],
             measures=[{"formula": "scaled", "name": "r"}],
         )
         sql = await _engine_generate(
@@ -135,10 +142,10 @@ class TestExtensionMeasuresOverQueryBacked:
                 await storage.save_model(m, _validate=False)
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery(
-                source_model=ModelExtension(
+                source_model="orders", extensions=[ModelExtension(
                     source_name="orders",
                     measures=[ModelMeasure(name="ext_aov", formula="customers.aov")],
-                ),
+                )],
                 dimensions=["customers.tier"],
                 measures=[{"formula": "ext_aov", "name": "r"}],
             )
@@ -155,13 +162,13 @@ class TestSameNameExtensionRejected:
         base = SlayerModel(
             name="t", data_source="ds", sql_table="t",
             columns=[Column(name="amount", type=DataType.DOUBLE)],
-            measures=[ModelMeasure(name="sh", formula="amount:sum")],
+            measures=[ModelMeasure(name="sh", formula="sum(amount)")],
         )
         query = SlayerQuery(
-            source_model=ModelExtension(
+            source_model="t", extensions=[ModelExtension(
                 source_name="t",
-                measures=[ModelMeasure(name="sh", formula="amount:sum * 100")],
-            ),
+                measures=[ModelMeasure(name="sh", formula="sum(amount) * 100")],
+            )],
             measures=[{"formula": "sh", "name": "r"}],
         )
         with pytest.raises(ValueError, match=r"duplicate measure names"):
@@ -194,7 +201,7 @@ class TestOverlayNamespaceDisjoint:
         )
         ext = ModelExtension(
             source_name="t",
-            measures=[ModelMeasure(name="amount", formula="amount:sum")],
+            measures=[ModelMeasure(name="amount", formula="sum(amount)")],
         )
         with pytest.raises(
             ValueError, match=r"name collision between columns and measures"
@@ -202,12 +209,10 @@ class TestOverlayNamespaceDisjoint:
             apply_extension_overlay(base, ext)
 
 
-class TestStageExtensionMeasuresOverQueryBackedRejected:
-    """DEV-1842 decision D — a stage sourced from a ModelExtension-with-measures
-    over a query-backed base is a loud error (deferred-overlay re-application is
-    wired only for the root source, so the measures would be silently dropped)."""
+class TestStageExtensionMeasuresOverQueryBacked:
+    """A non-root stage may extend a query-backed model with measures."""
 
-    async def test_stage_extension_measures_over_query_backed_rejected(self) -> None:
+    async def test_stage_extension_measures_over_query_backed_build(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)
             await storage.save_datasource(
@@ -222,23 +227,24 @@ class TestStageExtensionMeasuresOverQueryBackedRejected:
             ))
             await storage.save_model(SlayerModel(
                 name="qb_base", data_source="ds",
-                source_queries=[SlayerQuery(
-                    source_model="orders", dimensions=["status"],
-                    measures=[{"formula": "amount:sum"}],
-                )],
+                source_queries=[SlayerQuery.model_validate({
+                    "source_model": "orders",
+                    "dimensions": ["status"],
+                    "measures": [{"formula": "sum(amount)"}],
+                })],
             ))
             stage = SlayerQuery(
-                source_model=ModelExtension(
+                source_model="qb_base", extensions=[ModelExtension(
                     source_name="qb_base",
                     measures=[ModelMeasure(name="doubled",
-                                           formula="amount_sum:sum * 2")],
-                ),
+                                           formula="sum(amount_sum) * 2")],
+                )],
                 dimensions=["status"],
                 measures=[{"formula": "doubled", "name": "r"}],
             )
             root = SlayerQuery(source_model="orders", dimensions=["status"])
-            with pytest.raises(ValueError, match=r"may not add measures"):
-                await slayer.engine.bundle_builder.build_resolved_source_bundle(
-                    query=root, storage=storage, data_source="ds",
-                    named_queries={"s1": stage},
-                )
+            bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
+                query=root, storage=storage, data_source="ds",
+                named_queries={"s1": stage},
+            )
+            assert bundle is not None

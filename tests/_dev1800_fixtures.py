@@ -1,7 +1,7 @@
 """Shared fixtures for DEV-1800 — change/change_pct over a cross-model inner
 aggregate combined into a composite.
 
-The failing composite class (``change(cm) + amount:sum`` etc.) is exercised on
+The failing composite class (``change(cm) + sum(amount)`` etc.) is exercised on
 the DEV-1750 dataset (imported where used — it carries ``wscaled_sum`` and
 multi-order customers). This module adds the *attributable* dataset: the
 cross-model inner varies along the query's time axis (customer signup month),
@@ -152,7 +152,7 @@ def signup_td() -> List[TimeDimension]:
     """Month time dimension on the customer signup axis (the attributable axis).
     Dotted so it works whether the query is rooted at orders or customers."""
     return [TimeDimension(
-        dimension=ColumnRef(name="customers.signup_at"),
+        dimension="customers.signup_at",
         granularity=TimeGranularity.MONTH,
     )]
 

@@ -9,7 +9,7 @@ import pytest
 from slayer.core.models import SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.cache import CacheConfig, QueryCache
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from tests._dev1737_fixtures import exec_engine, scenario_models, scenario_tables
 
 CLOCK_FILTER = "created_at >= date_add(current_date(), -30, 'day')"
@@ -73,7 +73,7 @@ class TestClockBypass:
             "name": "recent_orders", "source_model": "orders", "dimensions": ["status"],
             "measures": [{"formula": "count(*)", "name": "n"}], "filters": ["created_at <= now()"],
         })
-        outer = SlayerQuery.model_validate({"source_model": "recent_orders", "measures": ["n:sum"]})
+        outer = SlayerQuery.model_validate({"source_model": "recent_orders", "measures": ["sum(n)"]})
         await engine.execute([inner, outer], cache=True)
         await engine.execute([inner, outer], cache=True)
         assert len(_data(data_calls)) == 2

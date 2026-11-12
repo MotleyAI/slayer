@@ -25,7 +25,7 @@ async def _twin_query_law(engine, *, dims, value_formula, threshold, td=None):
     base = {"dimensions": dims}
     if td is not None:
         base["time_dimensions"] = td
-    display = [ModelMeasure(formula="amount:sum", name="s")]
+    display = [ModelMeasure(formula="sum(amount)", name="s")]
     filtered = (await engine.execute(q(
         **base, measures=display, filters=[f"{value_formula} > {threshold}"],
     ))).data
@@ -47,15 +47,15 @@ async def _twin_query_law(engine, *, dims, value_formula, threshold, td=None):
 
 
 _SHAPES = [
-    pytest.param(["region"], "amount:sum", 60, None, id="plain-local"),
-    pytest.param(["customers.tier"], "customers.spend:sum", 175, None, id="cross-model"),
+    pytest.param(["region"], "sum(amount)", 60, None, id="plain-local"),
+    pytest.param(["customers.tier"], "sum(customers.spend)", 175, None, id="cross-model"),
     pytest.param(
         ["customers.regions.name", "customers.tier"],
-        "customers.spend:sum(partition_by=customers.regions.name)", 100, None,
+        "sum(customers.spend, partition_by=customers.regions.name)", 100, None,
         id="cross-model-partitioned",
     ),
     pytest.param(
-        ["region"], "amount:sum(window='90d', partition_by=region)", 40, month_td(),
+        ["region"], "sum(amount, window='90d', partition_by=region)", 40, month_td(),
         id="windowed",
     ),
 ]
@@ -79,16 +79,16 @@ class TestNullPredicateDropsRow:
         twin = (await exec_engine.execute(q(
             dimensions=["region"],
             measures=[
-                ModelMeasure(formula="amount:sum", name="s"),
-                ModelMeasure(formula="nomatch:sum", name="e"),
+                ModelMeasure(formula="sum(amount)", name="s"),
+                ModelMeasure(formula="sum(nomatch)", name="e"),
             ],
         ))).data
         assert twin
         assert all(r["orders.e"] is None for r in twin)
         filtered = (await exec_engine.execute(q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
-            filters=["nomatch:sum > 0"],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            filters=["sum(nomatch) > 0"],
         ))).data
         assert filtered == []
 
@@ -97,7 +97,7 @@ class TestPositionSupportCannotLag:
     async def test_measure_legal_expression_filters_and_orders(self, exec_engine) -> None:
         # Once an expression executes as a declared measure, the same expression
         # must be accepted as a filter and as an order target — no extra support.
-        expr = "customers.spend:sum(partition_by=customers.regions.name)"
+        expr = "sum(customers.spend, partition_by=customers.regions.name)"
         dims = ["customers.regions.name", "customers.tier"]
         as_measure = (await exec_engine.execute(q(
             dimensions=dims, measures=[ModelMeasure(formula=expr, name="e")],
@@ -105,13 +105,13 @@ class TestPositionSupportCannotLag:
         assert as_measure
         as_filter = (await exec_engine.execute(q(
             dimensions=dims,
-            measures=[ModelMeasure(formula="customers.spend:sum", name="sp")],
+            measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],
             filters=[f"{expr} > 100"],
         ))).data
         assert 0 < len(as_filter) <= len(as_measure)
         ordered = (await exec_engine.execute(q(
             dimensions=dims,
-            measures=[ModelMeasure(formula="customers.spend:sum", name="sp")],
+            measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],
             order=[{"column": expr, "direction": "desc"}],
         ))).data
         assert len(ordered) == len(as_measure)

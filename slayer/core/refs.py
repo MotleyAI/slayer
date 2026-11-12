@@ -6,16 +6,21 @@ import hashlib
 import re
 from decimal import Decimal
 from operator import attrgetter
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
+from slayer.core.enums import GRANULARITY_NAMES
 from slayer.core.granularity import CustomGranularity
 from slayer.core.keys import (
     MIRRORED_TIME_POINT_OP,
+    OPTIONAL_KEY_FIELDS,
     AggregateKey,
     ArithmeticKey,
+    ArrayLiteralKey,
+    CastKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
+    ListSetKey,
     LiteralKey,
     ScalarCallKey,
     SqlFragmentKey,
@@ -23,6 +28,7 @@ from slayer.core.keys import (
     TimePointCmpKey,
     TimeTruncKey,
     TransformKey,
+    VALUE_KEY_TYPES,
     ValueKey,
 )
 
@@ -33,15 +39,6 @@ IDENTIFIER_RE = re.compile(r"^[a-zA-Z_]\w*$")
 
 # An identifier or dotted path; used to scan formula text for reference candidates.
 IDENT_OR_PATH_RE = re.compile(r"[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*")
-
-# Legacy colon aggregation spelling (``revenue:sum``, ``*:count``). Group 1 measure name,
-# group 2 aggregation name, group 3 optional ``(...)`` arglist.
-AGG_REF_RE = re.compile(
-    r"(\*|[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*(?:\.\*)?)"  # measure / *
-    r":"
-    r"([a-zA-Z_]\w*)"
-    r"(\([^)]*\))?"
-)
 
 
 # Aggregation-suffix utilities
@@ -65,7 +62,9 @@ def auto_name_from_expression(expression: str) -> str:
 
 # The row-level ``ValueKey`` kinds an ``AggregateKey.source`` may take when it
 # is a same-model scalar EXPRESSION rather than a column / star.
-EXPRESSION_SOURCE_KINDS = (ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey, InKey, TimePointCmpKey)
+EXPRESSION_SOURCE_KINDS = (
+    ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey, InKey, TimePointCmpKey, CastKey, ListSetKey,
+)
 
 
 # The pinned legacy key spelling: the historical Pydantic
@@ -82,7 +81,7 @@ _LEGACY_KEY_SPELLINGS: dict[type, tuple[str, _LegacyFields]] = {
         ("column_name", attrgetter("column_name")),
     )),
     TimeTruncKey: ("TimeTruncKey", (
-        ("column", attrgetter("column")),
+        ("column", attrgetter("source")),
         ("granularity", lambda k: str(k.granularity)),
     )),
     StarKey: ("StarKey", (("path", attrgetter("path")),)),
@@ -94,6 +93,7 @@ _LEGACY_KEY_SPELLINGS: dict[type, tuple[str, _LegacyFields]] = {
         ("partition_keys", lambda k: (
             None if k.partition_keys is None else k.partition_keys.keys
         )),
+        ("filter", attrgetter("filter")),
     )),
     TransformKey: ("TransformKey", (
         ("op", attrgetter("op")), ("input", attrgetter("input")),
@@ -120,6 +120,11 @@ _LEGACY_KEY_SPELLINGS: dict[type, tuple[str, _LegacyFields]] = {
     SqlFragmentKey: ("SqlFragmentKey", (
         ("template", attrgetter("template")), ("refs", attrgetter("refs")),
     )),
+    CastKey: ("CastKey", (
+        ("source", attrgetter("source")), ("type_text", attrgetter("type_text")),
+        ("try_", attrgetter("try_")),
+    )),
+    ListSetKey: ("ListSetKey", (("source", attrgetter("source")),)),
 }
 
 
@@ -146,6 +151,7 @@ def _legacy_key_fields(key: Any) -> tuple[str, list[tuple[str, str]]]:
     spelled_cls, fields = _LEGACY_KEY_SPELLINGS[type(key)]
     return spelled_cls, [
         (name, _legacy_value_spelling(get(key))) for name, get in fields
+        if not (name in OPTIONAL_KEY_FIELDS and get(key) is None)
     ]
 
 
@@ -186,8 +192,8 @@ def agg_signature_suffix(
 
 
 def _partition_key_display(key: Any) -> str:
-    if isinstance(key, TimeTruncKey):
-        key = key.column
+    if isinstance(key, (TimeTruncKey, ListSetKey)):
+        key = key.source
     if isinstance(key, ColumnKey):
         parts = [*key.path, key.leaf]
     elif isinstance(key, ColumnSqlKey):
@@ -199,8 +205,8 @@ def _partition_key_display(key: Any) -> str:
 
 def dotted_key_display(pk: ValueKey) -> str:
     """Human-readable dotted path for a key in error messages."""
-    if isinstance(pk, TimeTruncKey):
-        return dotted_key_display(pk.column)
+    if isinstance(pk, (TimeTruncKey, ListSetKey)):
+        return dotted_key_display(pk.source)
     return key_display(pk)
 
 
@@ -215,7 +221,9 @@ def _scalar_display(value: Any) -> str:
 
 
 def _arg_display(value: Any) -> str:
-    return key_display(value) if type(value) in _LEGACY_KEY_SPELLINGS else _scalar_display(value)
+    if isinstance(value, ArrayLiteralKey) or type(value) in _LEGACY_KEY_SPELLINGS:
+        return key_display(value)
+    return _scalar_display(value)
 
 
 def _grain_display_list(keys: Any) -> str:
@@ -231,7 +239,8 @@ def _aggregate_display(key: AggregateKey) -> str:
     args.extend(f"{k}={_arg_display(v)}" for k, v in key.kwargs)
     if key.partition_keys is not None:
         args.append(f"partition_by={_grain_display_list(key.partition_keys)}")
-    return _call_display(key.agg, args)
+    text = _call_display(key.agg, args)
+    return text if key.filter is None else f"{text} FILTER (WHERE {key_display(key.filter)})"
 
 
 def _transform_display(key: TransformKey) -> str:
@@ -265,18 +274,51 @@ def _fragment_display(key: SqlFragmentKey) -> str:
     return text
 
 
-def key_display(key: ValueKey) -> str:
-    """User-facing formula text of any key kind."""
+def _leaf_display(key: ValueKey) -> str | None:
     if isinstance(key, ColumnKey):
         return ".".join((*key.path, key.leaf))
     if isinstance(key, ColumnSqlKey):
         return ".".join((*key.path, key.column_name))
-    if isinstance(key, TimeTruncKey):
-        return f"{key.granularity}({key_display(key.column)})"
     if isinstance(key, StarKey):
         return ".".join((*key.path, "*"))
     if isinstance(key, LiteralKey):
         return _scalar_display(key.value)
+    return None
+
+
+def _listed_display(key: ValueKey) -> str | None:
+    """Display of a key reading or holding several values, else ``None``."""
+    if isinstance(key, InKey):
+        values = ", ".join(key_display(v) for v in key.values)
+        return f"{key_display(key.column)} {'not in' if key.negated else 'in'} ({values})"
+    if isinstance(key, ArrayLiteralKey):
+        return f"[{', '.join(key_display(v) for v in key.values)}]"
+    if isinstance(key, ListSetKey):
+        return key_display(key.source)
+    return None
+
+
+def bucket_remedy(key: ValueKey) -> str | None:
+    """``date_trunc('<part>', <operand>)`` for a ``date_part`` extraction whose part is a granularity, else ``None``."""
+    if isinstance(key, ScalarCallKey) and key.name == "date_part" and len(key.args) == 2:
+        part, operand = key.args
+        if isinstance(part, LiteralKey) and part.value in GRANULARITY_NAMES and isinstance(operand, VALUE_KEY_TYPES):
+            return f"date_trunc('{part.value}', {key_display(cast(ValueKey, operand))})"
+    return None
+
+
+def first_bucket_remedy(keys: Any) -> str | None:
+    """``bucket_remedy`` of the first extraction among ``keys``."""
+    return next((r for k in keys if (r := bucket_remedy(k)) is not None), None)
+
+
+def key_display(key: ValueKey) -> str:
+    """User-facing formula text of any key kind."""
+    shown = _leaf_display(key) or _listed_display(key)
+    if shown is not None:
+        return shown
+    if isinstance(key, TimeTruncKey):
+        return f"date_trunc('{key.granularity}', {key_display(key.source)})"
     if isinstance(key, AggregateKey):
         return _aggregate_display(key)
     if isinstance(key, TransformKey):
@@ -285,11 +327,10 @@ def key_display(key: ValueKey) -> str:
         return _arithmetic_display(key)
     if isinstance(key, ScalarCallKey):
         return _call_display(key.name, [_arg_display(a) for a in key.args])
+    if isinstance(key, CastKey):
+        return f"{'TRY_CAST' if key.try_ else 'CAST'}({key_display(key.source)} AS {key.type_text})"
     if isinstance(key, TimePointCmpKey):
         return _time_point_cmp_display(key)
-    if isinstance(key, InKey):
-        values = ", ".join(key_display(v) for v in key.values)
-        return f"{key_display(key.column)} {'not in' if key.negated else 'in'} ({values})"
     if isinstance(key, SqlFragmentKey):
         return _fragment_display(key)
     raise TypeError(f"key_display has no rule for {type(key).__name__}")
@@ -331,20 +372,17 @@ def agg_kwarg_canonical_str(value: Any) -> str:
         return _decimal_to_plain_str(Decimal(str(value)))
     if isinstance(value, str):
         return value
-    if isinstance(value, ColumnKey):
-        if value.path:
-            return ".".join(value.path) + "." + value.leaf
-        return value.leaf
-    if isinstance(value, ColumnSqlKey):
-        if value.path:
-            return ".".join(value.path) + "." + value.column_name
-        return value.column_name
+    if isinstance(value, (ColumnKey, ColumnSqlKey)):
+        return ".".join((*value.path, value.leaf if isinstance(value, ColumnKey) else value.column_name))
     if isinstance(value, AggregateKey):
         return _agg_key_canonical_str(value)
     if isinstance(value, TransformKey):
         return _transform_key_canonical_str(value)
     if isinstance(value, SqlFragmentKey):
         return sql_fragment_digest(value)
+    if isinstance(value, (ScalarCallKey, ArithmeticKey, CastKey, InKey, TimeTruncKey, LiteralKey, ListSetKey)):
+        # A row-level expression parameter (a FILTER-masked one included).
+        return auto_name_from_expression(key_display(value))
     raise TypeError(
         f"AggregateKey kwarg value of type {type(value).__name__!r} "
         f"is not supported: {value!r}",
@@ -423,38 +461,8 @@ def canonical_agg_name(
     return f"{measure_name}_{aggregation_name}{suffix}"
 
 
-def strip_agg_suffix(raw: str) -> tuple[str, str | None]:
-    """Return ``(prefix, agg_name)`` stripping a trailing legacy colon suffix ``:agg``/``:agg(...)`` (arglist discarded); locates the outermost colon (outside parens) so ``revenue:last(created_at)`` isn't fooled."""
-    depth = 0
-    for i, ch in enumerate(raw):
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-        elif ch == ":" and depth == 0:
-            prefix = raw[:i]
-            tail = raw[i + 1:]
-            agg = tail.split("(", 1)[0]
-            return prefix, agg
-    return raw, None
-
-
-def split_agg_suffix(raw: str) -> tuple[str, str | None]:
-    """Return ``(prefix, suffix)`` splitting a trailing legacy colon suffix ``:agg`` but keeping the full suffix (args included) — unlike :func:`strip_agg_suffix`, so a re-rooted reference re-attaches it verbatim."""
-    depth = 0
-    for i, ch in enumerate(raw):
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-        elif ch == ":" and depth == 0:
-            return raw[:i], raw[i + 1:]
-    return raw, None
-
-
 def functional_agg_text(*, source: str, suffix: str) -> str:
-    """Functional text of ``(source, suffix)``, the inverse of :func:`split_agg_suffix`:
-    ``("price", "percentile(p=0.9)")`` → ``percentile(price, p=0.9)``."""
+    """Functional text of ``(source, suffix)``: ``("price", "percentile(p=0.9)")`` → ``percentile(price, p=0.9)``."""
     name, paren, rest = suffix.strip().partition("(")
     args = rest.rstrip()[:-1].strip() if paren else ""
     inner = f"{source}, {args}" if args else source

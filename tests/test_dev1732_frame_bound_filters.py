@@ -130,7 +130,7 @@ class TestFrameBoundRecognition:
         """A derived (``Column.sql``) temporal column binds to a
         ``ColumnSqlKey``; ``_build_date_range_filter`` binds its
         date-range bound column through the same path that produces
-        ``TimeTruncKey.column``, so identity matching covers it for free."""
+        ``TimeTruncKey.source``, so identity matching covers it for free."""
         derived = ColumnSqlKey(path=(), model="orders", column_name="event_at")
         key = _cmp(">=", derived, _lit("2024-06-01"))
         assert strip_frame_bounds(key=key, time_columns=frozenset({derived})) is None
@@ -372,7 +372,7 @@ def _joined_orders() -> SlayerModel:
 
 
 _MONTHLY_CREATED_AT = TimeDimension(
-    dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+    dimension="created_at", granularity=TimeGranularity.MONTH,
 )
 
 
@@ -380,7 +380,7 @@ def _windowed_query(**kw) -> SlayerQuery:
     base = dict(
         source_model="orders",
         time_dimensions=[_MONTHLY_CREATED_AT],
-        measures=[ModelMeasure(formula="revenue:sum(window='90d')", name="rev_90d")],
+        measures=[ModelMeasure(formula="sum(revenue, window='90d')", name="rev_90d")],
     )
     base.update(kw)
     return SlayerQuery.model_validate(base)
@@ -580,7 +580,7 @@ class TestWindowedSrcFrameBounds:
             time_dimensions=[
                 _MONTHLY_CREATED_AT,
                 TimeDimension(
-                    dimension=ColumnRef(name="ship_date"),
+                    dimension="ship_date",
                     granularity=TimeGranularity.DAY,
                 ),
             ],
@@ -632,7 +632,7 @@ class TestWindowedSrcFrameBounds:
             time_dimensions=[
                 _MONTHLY_CREATED_AT,
                 TimeDimension(
-                    dimension=ColumnRef(name="customers.signup_at"),
+                    dimension="customers.signup_at",
                     granularity=TimeGranularity.DAY,
                 ),
             ],
@@ -659,7 +659,7 @@ class TestWindowedSrcFrameBounds:
             time_dimensions=[
                 _MONTHLY_CREATED_AT,
                 TimeDimension(
-                    dimension=ColumnRef(name="customers.signup_at"),
+                    dimension="customers.signup_at",
                     granularity=TimeGranularity.DAY,
                 ),
             ],
@@ -707,8 +707,8 @@ class TestWindowedSrcFrameBounds:
     async def test_two_windowed_measures_share_the_residual(self) -> None:
         query = _windowed_query(
             measures=[
-                ModelMeasure(formula="revenue:sum(window='90d')", name="rev_90d"),
-                ModelMeasure(formula="revenue:avg(window='30d')", name="rev_30d"),
+                ModelMeasure(formula="sum(revenue, window='90d')", name="rev_90d"),
+                ModelMeasure(formula="avg(revenue, window='30d')", name="rev_30d"),
             ],
             filters=["created_at >= '2024-06-01' and status = 'paid'"],
         )
@@ -773,7 +773,7 @@ class TestWindowedSrcFrameBounds:
         query = _windowed_query(
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-06-01", "2024-12-31"],
                 ),
@@ -803,7 +803,7 @@ class TestFrameBoundColumnSet:
                 time_dimensions=[
                     _MONTHLY_CREATED_AT,
                     TimeDimension(
-                        dimension=ColumnRef(name="ship_date"),
+                        dimension="ship_date",
                         granularity=TimeGranularity.DAY,
                     ),
                 ],
@@ -830,7 +830,7 @@ class TestFrameBoundColumnSet:
                 time_dimensions=[
                     _MONTHLY_CREATED_AT,
                     TimeDimension(
-                        dimension=ColumnRef(name="ship_date"),
+                        dimension="ship_date",
                         granularity=TimeGranularity.DAY,
                     ),
                 ],
@@ -840,7 +840,7 @@ class TestFrameBoundColumnSet:
             _orders(),
         )
         visible = {
-            s.key.column
+            s.key.source
             for s in plan.row_slots
             if isinstance(s.key, TimeTruncKey) and not s.hidden
         }
@@ -849,7 +849,7 @@ class TestFrameBoundColumnSet:
         )
         # A hidden slot's column never leaks into the set.
         hidden_cols = {
-            s.key.column
+            s.key.source
             for s in plan.row_slots
             if isinstance(s.key, TimeTruncKey) and s.hidden
         }
@@ -865,7 +865,7 @@ def _shift_query(**kw) -> SlayerQuery:
     base = dict(
         source_model="orders",
         time_dimensions=[_MONTHLY_CREATED_AT],
-        measures=[ModelMeasure(formula="time_shift(revenue:sum, -1, 'month')", name="prev")],
+        measures=[ModelMeasure(formula="time_shift(sum(revenue), -1, 'month')", name="prev")],
     )
     base.update(kw)
     return SlayerQuery.model_validate(base)
@@ -921,7 +921,7 @@ class TestTimeShiftFrameBounds:
             _shift_query(
                 time_dimensions=[
                     TimeDimension(
-                        dimension=ColumnRef(name="created_at"),
+                        dimension="created_at",
                         granularity=TimeGranularity.MONTH,
                         date_range=["2024-06-01", "2024-12-31"],
                     ),

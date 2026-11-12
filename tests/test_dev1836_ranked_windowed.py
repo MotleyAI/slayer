@@ -1,4 +1,4 @@
-"""DEV-1836 task 1.10 — cross-model ranked (first/last), windowed, and
+"""Cross-model ranked (first/last), windowed, and
 partitioned aggregates at safe grains (SQLite + DuckDB).
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Explicit grain and
@@ -13,7 +13,7 @@ import pytest
 
 from slayer.core.enums import TimeGranularity
 from slayer.core.errors import SlayerError
-from slayer.core.query import ColumnRef, TimeDimension
+from slayer.core.query import TimeDimension
 from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1836_fixtures import (
@@ -38,12 +38,12 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="amount:sum", name="m")
+M = ModelMeasure(formula="sum(amount)", name="m")
 
 
 def signup_month_td() -> list[TimeDimension]:
     return [TimeDimension(
-        dimension=ColumnRef(name="customers.signup_at"),
+        dimension="customers.signup_at",
         granularity=TimeGranularity.MONTH,
     )]
 
@@ -62,7 +62,7 @@ class TestCrossModelPartitioned:
         query = q(
             dimensions=["customers.tier", "status"],
             measures=[M, ModelMeasure(
-                formula="customers.spend:sum(partition_by=customers.tier)",
+                formula="sum(customers.spend, partition_by=customers.tier)",
                 name="pt",
             )],
         )
@@ -84,9 +84,9 @@ class TestCrossModelRanked:
             dimensions=["customers.tier"],
             measures=[
                 M,
-                ModelMeasure(formula="customers.spend:first(customers.signup_at)",
+                ModelMeasure(formula="first(customers.spend, customers.signup_at)",
                              name="f"),
-                ModelMeasure(formula="customers.spend:last(customers.signup_at)",
+                ModelMeasure(formula="last(customers.spend, customers.signup_at)",
                              name="l"),
             ],
         )
@@ -109,7 +109,7 @@ class TestCrossModelRanked:
         both = await engine.execute(q(
             dimensions=["customers.tier"],
             measures=[M, ModelMeasure(
-                formula="customers.spend:last(customers.signup_at)", name="l",
+                formula="last(customers.spend, customers.signup_at)", name="l",
             )],
         ))
         solo_by = rows_by(solo, "orders.customers.tier")
@@ -125,7 +125,7 @@ class TestCrossModelWindowed:
         dialect, engine = exec_backend
         query = q(
             time_dimensions=signup_month_td(),
-            measures=[ModelMeasure(formula="customers.spend:sum(window='1y')",
+            measures=[ModelMeasure(formula="sum(customers.spend, window='1y')",
                                    name="w")],
         )
         resp = await engine.execute(query)
@@ -145,7 +145,7 @@ class TestCrossModelWindowed:
             dimensions=["customers.tier"],
             time_dimensions=signup_month_td(),
             measures=[ModelMeasure(
-                formula="customers.spend:sum(window='1y', partition_by=customers.tier)",
+                formula="sum(customers.spend, window='1y', partition_by=customers.tier)",
                 name="w",
             )],
         )
@@ -175,8 +175,9 @@ class TestCrossModelWindowed:
         query = q(
             time_dimensions=month_td(),
             measures=[ModelMeasure(
-                formula="customers.spend:sum(window='1y')", name="w",
+                formula="sum(customers.spend, window='1y')", name="w",
             )],
+            to_many_handling="broadcast",
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)

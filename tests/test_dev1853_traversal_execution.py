@@ -74,9 +74,11 @@ class TestReverseDimensionResolves:
     async def test_orphan_orders_never_appear_from_customers_root(
         self, fwd_engine,
     ) -> None:
-        resp = await fwd_engine.execute(SlayerQuery(
-            source_model="customers", dimensions=["name"],
-            measures=[{"formula": "orders.amount:sum", "name": "t"}]))
+        resp = await fwd_engine.execute(SlayerQuery.model_validate({
+            "source_model": "customers",
+            "dimensions": ["name"],
+            "measures": [{"formula": "sum(orders.amount)", "name": "t"}],
+        }))
         got = {r["customers.name"]: r["customers.t"] for r in resp.data}
         assert got == CHAIN_AMOUNT_BY_NAME
         assert not broadcast_warnings(resp)
@@ -120,9 +122,11 @@ class TestOrientedCardinalityValues:
                 d, declare="reverse",
                 cardinality=JoinCardinality.MANY_TO_ONE,
                 customers_id_pk=False)
-            resp = await engine.execute(SlayerQuery(
-                source_model="orders", dimensions=["customers.name"],
-                measures=[{"formula": "amount:sum", "name": "t"}]))
+            resp = await engine.execute(SlayerQuery.model_validate({
+                "source_model": "orders",
+                "dimensions": ["customers.name"],
+                "measures": [{"formula": "sum(amount)", "name": "t"}],
+            }))
             got = {r["orders.customers.name"]: r["orders.t"] for r in resp.data}
             assert got == CHAIN_AMOUNT_BY_NAME_WITH_ORPHAN
             assert not broadcast_warnings(resp)
@@ -138,22 +142,41 @@ class TestOrientedCardinalityValues:
                 d, declare="reverse",
                 cardinality=JoinCardinality.MANY_TO_ONE,
                 customers_id_pk=False)
-            resp = await engine.execute(SlayerQuery(
-                source_model="customers", dimensions=["tier"],
-                measures=[{"formula": "orders.amount:sum", "name": "t"}]))
+            resp = await engine.execute(SlayerQuery.model_validate({
+                "source_model": "customers",
+                "dimensions": ["tier"],
+                "measures": [{"formula": "sum(orders.amount)", "name": "t"}],
+            }))
             got = {r["customers.tier"]: r["customers.t"] for r in resp.data}
             assert got == CHAIN_AMOUNT_BY_TIER_EXACT
             assert not broadcast_warnings(resp)
 
-    async def test_undeclared_unproven_orientation_broadcasts(self) -> None:
+    async def test_undeclared_unproven_orientation_associates_by_default(self) -> None:
         # Same query shape, but the attribution hop carries no declaration and
-        # covers no unique set — unproven fails closed into broadcast.
+        # covers no unique set — unproven, so each tier associates its orders.
         with tempfile.TemporaryDirectory() as d:
             engine = await chain_engine(
                 d, declare="forward", cardinality=None, customers_id_pk=False)
-            resp = await engine.execute(SlayerQuery(
-                source_model="customers", dimensions=["tier"],
-                measures=[{"formula": "orders.amount:sum", "name": "t"}]))
+            resp = await engine.execute(SlayerQuery.model_validate({
+                "source_model": "customers",
+                "dimensions": ["tier"],
+                "measures": [{"formula": "sum(orders.amount)", "name": "t"}],
+            }))
+            assert not broadcast_warnings(resp)
+            assert [w for w in resp.warnings or [] if w.kind == "associated"]
+            got = {r["customers.tier"]: r["customers.t"] for r in resp.data}
+            assert got == CHAIN_AMOUNT_BY_TIER_EXACT
+
+    async def test_undeclared_unproven_orientation_broadcasts_under_broadcast(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            engine = await chain_engine(
+                d, declare="forward", cardinality=None, customers_id_pk=False)
+            resp = await engine.execute(SlayerQuery.model_validate({
+                "source_model": "customers",
+                "dimensions": ["tier"],
+                "measures": [{"formula": "sum(orders.amount)", "name": "t"}],
+                "to_many_handling": "broadcast",
+            }))
             assert broadcast_warnings(resp)
             values = {r["customers.t"] for r in resp.data}
             assert values == {CHAIN_UNPROVEN_BROADCAST_TOTAL}
@@ -165,7 +188,7 @@ class TestOrientedCardinalityValues:
         # regions crosses two fan-out orientations.
         resp = await fwd_engine.execute(SlayerQuery(
             source_model="customers", dimensions=["orders.status"],
-            measures=[{"formula": "regions.pop:sum", "name": "rp"}]))
+            measures=[{"formula": "sum(regions.pop)", "name": "rp"}], to_many_handling="broadcast"))
         assert broadcast_warnings(resp)
         values = {r["customers.rp"] for r in resp.data}
         assert values == {CHAIN_POP_BROADCAST_TOTAL}
@@ -176,11 +199,11 @@ class TestOrientedCardinalityValues:
         self, fwd_engine,
     ) -> None:
         # orders.status is unattributable from a customer (reverse fan-out).
-        # Default broadcasts the distinct-customer total; associate
+        # Broadcast repeats the distinct-customer total; associate
         # dedups each customer's spend once per status, never join-multiplied.
         kw = dict(source_model="customers", dimensions=["orders.status"],
-                  measures=[{"formula": "spend:sum", "name": "s"}])
-        bcast = await fwd_engine.execute(SlayerQuery.model_validate(kw))
+                  measures=[{"formula": "sum(spend)", "name": "s"}])
+        bcast = await fwd_engine.execute(SlayerQuery.model_validate({**kw, "to_many_handling": "broadcast"}))
         assert broadcast_warnings(bcast)
         assert {r["customers.s"] for r in bcast.data} == {
             CHAIN_SPEND_BROADCAST_TOTAL}
@@ -195,9 +218,10 @@ class TestOrientedCardinalityValues:
 
 class TestMultiHopReverse:
     async def test_two_reverse_hops_from_regions(self, fwd_engine) -> None:
-        resp = await fwd_engine.execute(SlayerQuery(
-            source_model="regions",
-            dimensions=["name", "customers.orders.status"]))
+        resp = await fwd_engine.execute(SlayerQuery.model_validate({
+            "source_model": "regions",
+            "dimensions": ["name", "customers.orders.status"],
+        }))
         assert rows_set(resp, "regions.name",
                         "regions.customers.orders.status") == CHAIN_MULTIHOP
 
@@ -205,9 +229,10 @@ class TestMultiHopReverse:
 class TestReverseClosure:
     async def test_reverse_cross_model_aggregate_binds(self, fwd_engine) -> None:
         # The source bundle from customers must include orders (reverse BFS).
-        resp = await fwd_engine.execute(SlayerQuery(
-            source_model="customers",
-            measures=[{"formula": "orders.amount:sum", "name": "t"}]))
+        resp = await fwd_engine.execute(SlayerQuery.model_validate({
+            "source_model": "customers",
+            "measures": [{"formula": "sum(orders.amount)", "name": "t"}],
+        }))
         assert len(resp.data) == 1
         assert resp.data[0]["customers.t"] == \
             pytest.approx(CHAIN_REVERSE_AGG_TOTAL)
@@ -221,7 +246,7 @@ class TestReverseClosure:
             assert orders is not None
             orders.measures = [
                 *orders.measures,
-                ModelMeasure(name="total_amount", formula="amount:sum"),
+                ModelMeasure(name="total_amount", formula="sum(amount)"),
             ]
             await storage.save_model(orders)
             resp = await engine.execute(SlayerQuery(

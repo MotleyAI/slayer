@@ -10,7 +10,7 @@ Each test reproduces the bug via a deliberate asymmetry: ``_setup`` writes
 on the main thread (through whichever engine the client resolves), then
 ``await client.execute(...)`` reads on a worker thread. Before the fix:
 worker-thread reads see an empty database and the assertions fail. After
-the fix (per-client engine + ``StaticPool`` + ``check_same_thread=False``)
+the fix (per-client engine + one-connection pool + ``check_same_thread=False``)
 all calls share one connection and all reads see the same data.
 
 DDL/DML can't go through ``client.execute()``: ``_execute_sql_sync``
@@ -20,16 +20,22 @@ bypasses the client and writes directly through the engine.
 """
 
 import asyncio
+import concurrent.futures
+import threading
 from typing import Any
 from collections.abc import Iterable
 
 import pytest
 import sqlalchemy as sa
 import sqlalchemy.exc
+import sqlglot
 
+from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
-from slayer.sql import client as sql_client
-from slayer.sql.client import SlayerSQLClient
+from slayer.database import client as sql_client
+from slayer.database import engine_factory
+from slayer.database.client import ResultColumnType, SlayerSQLClient, render_type_probe
+from slayer.sql.dialects import SqliteDialect
 
 
 def _in_memory_client(name: str = "test") -> SlayerSQLClient:
@@ -71,7 +77,7 @@ def no_retry(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def test_async_cross_call_sees_same_in_memory_db() -> None:
-    """Issue #72 acceptance: schema/data set up once, multiple async reads see it."""
+    """Schema/data set up once, multiple async reads see it."""
     client = _in_memory_client()
     _setup(
         client,
@@ -86,8 +92,8 @@ async def test_async_cross_call_sees_same_in_memory_db() -> None:
     assert rows2 == [{"x": 2}]
 
 
-async def test_get_column_types_cross_call_sees_same_in_memory_db() -> None:
-    """Issue #72 acceptance: get_column_types() must see schema set up earlier."""
+async def test_get_result_column_types_cross_call_sees_same_in_memory_db() -> None:
+    """get_result_column_types() must see schema set up earlier."""
     client = _in_memory_client()
     _setup(
         client,
@@ -96,8 +102,9 @@ async def test_get_column_types_cross_call_sees_same_in_memory_db() -> None:
             "INSERT INTO u VALUES (1, 'x')",
         ],
     )
-    types = await client.get_column_types("SELECT a, b FROM u")
-    assert types == {"a": "number", "b": "string"}
+    types = await client.get_result_column_types(
+        render_type_probe(sqlglot.parse_one("SELECT a, b FROM u"), dialect=SqliteDialect()))
+    assert types == {"a": ResultColumnType(type=DataType.INT), "b": ResultColumnType(type=DataType.TEXT)}
 
 
 async def test_two_clients_get_isolated_in_memory_dbs(no_retry: None) -> None:
@@ -141,10 +148,10 @@ async def test_sync_and_async_on_same_client_share_in_memory_db() -> None:
     assert sync_rows == [{"n": 42}]
 
 
-async def test_sqlite_udfs_work_under_static_pool() -> None:
-    """SQLite Python UDFs (median) must remain registered under StaticPool.
+async def test_sqlite_udfs_work_on_the_one_connection() -> None:
+    """SQLite Python UDFs (median) must remain registered on the in-memory engine's one connection.
 
-    StaticPool keeps a single connection; the engine's ``connect`` event
+    The pool keeps a single connection; the engine's ``connect`` event
     fires once and registers ``median``/``percentile_cont``/``percentile_disc``
     on that one connection. The UDF must be callable through ``execute``.
     """
@@ -182,7 +189,7 @@ async def test_concurrent_async_calls_share_in_memory_db(no_retry: None) -> None
     """Realistic concurrent path: many awaits in flight at once.
 
     ``asyncio.gather`` forces several worker threads from the executor
-    pool. Without StaticPool + ``check_same_thread=False``, each thread
+    pool. Without one shared connection + ``check_same_thread=False``, each thread
     holds its own SQLite connection / its own in-memory DB, so SELECTs
     land on threads where the table was never seen. Either an
     ``OperationalError("no such table")`` or
@@ -201,3 +208,32 @@ async def test_concurrent_async_calls_share_in_memory_db(no_retry: None) -> None
     )
     for i, rows in enumerate(r.rows for r in results):
         assert rows == [{"i": i}], f"call {i} got {rows}"
+
+
+def test_concurrent_first_use_builds_one_in_memory_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two threads resolving a fresh client's engine at once share one database."""
+    client = _in_memory_client()
+    real_build = engine_factory.build_in_memory_sqlite_engine
+    both_calling = threading.Barrier(2, timeout=5)
+    builds: list[str] = []
+    second_build = threading.Event()
+
+    def build_and_wait(connection_string: str) -> sa.Engine:
+        builds.append(connection_string)
+        if len(builds) == 1:
+            second_build.wait(timeout=1)
+        else:
+            second_build.set()
+        return real_build(connection_string)
+
+    def resolve(_: int) -> sa.Engine:
+        both_calling.wait()
+        return client._get_sync_engine_for_client()
+
+    monkeypatch.setattr(engine_factory, "build_in_memory_sqlite_engine", build_and_wait)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            first, second = pool.map(resolve, range(2))
+        assert first is second
+    finally:
+        client.close()

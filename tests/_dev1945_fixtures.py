@@ -11,7 +11,7 @@ line_items (id, order_id, qty, created_at):    1 o1 1.0 2024-01-05 | 2 o1 2.0 20
                                                3 o2 3.0 2024-01-04
 shipments (id, line_item_id, shipped_at):      1 li1 2024-01-06 | 2 li1 2024-01-07 | 3 li3 2024-01-08
 
-Ranking ``amount:last`` by ``created_at`` or by ``cust_signup`` picks order 2 (30.0);
+Ranking ``last(amount)`` by ``created_at`` or by ``cust_signup`` picks order 2 (30.0);
 ranking over the fanned ``li_ts`` join would pick order 1 (its line item dated
 2024-01-05 is newest) — the defect the refusals guard against.
 """
@@ -23,7 +23,7 @@ from typing import List, Optional
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.sqlite_conn import transaction
@@ -174,7 +174,7 @@ def orders_q(**kw) -> SlayerQuery:
 
 def month_td(column: str = "created_at") -> List[TimeDimension]:
     return [TimeDimension(
-        dimension=ColumnRef(name=column), granularity=TimeGranularity.MONTH,
+        dimension=column, granularity=TimeGranularity.MONTH,
     )]
 
 
@@ -182,9 +182,9 @@ def measure(formula: str, name: str = "l") -> dict:
     return {"formula": formula, "name": name}
 
 
-#: ``amount:last`` by ``created_at`` and by ``cust_signup`` both pick order 2.
+#: ``last(amount)`` by ``created_at`` and by ``cust_signup`` both pick order 2.
 LAST_AMOUNT = 30.0
-#: ``amount:first`` by ``created_at`` picks order 1.
+#: ``first(amount)`` by ``created_at`` picks order 1.
 FIRST_AMOUNT = 10.0
 #: The only month bucket; its trailing 30d window holds both orders.
 JAN = "2024-01"

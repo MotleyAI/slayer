@@ -74,8 +74,8 @@ def test_presto_and_athena_resolve_to_presto() -> None:
 
 def test_trino_driver_facts() -> None:
     facts = TrinoDialect().driver_facts("trino")
-    assert (facts.url_scheme, facts.sync_driver, facts.async_driver, facts.install_extra) == (
-        "trino", None, None, "trino",
+    assert (facts.url_scheme, facts.default_driver, facts.extra_drivers, facts.install_extra) == (
+        "trino", None, {}, "trino",
     )
 
 
@@ -94,8 +94,8 @@ def test_trino_log_native_flags() -> None:
     assert d.should_use_native_log(2) is True
 
 
-def test_trino_build_explain_sql() -> None:
-    assert TrinoDialect().build_explain_sql("SELECT 1") == "EXPLAIN ANALYZE SELECT 1"
+def test_trino_explain_statements() -> None:
+    assert TrinoDialect().explain_statements("SELECT 1").statement == "EXPLAIN ANALYZE SELECT 1"
 
 
 # ---------------------------------------------------------------------------
@@ -342,7 +342,7 @@ def _conn(properties: dict[str, str]) -> SimpleNamespace:
 
 class TestTimeoutHooks:
     def test_no_timeout_statement(self) -> None:
-        assert TrinoDialect().statement_timeout_sql(120) is None
+        assert TrinoDialect().statement_timeout(120) is None
 
     def test_fail_closed(self) -> None:
         assert TrinoDialect().statement_timeout_best_effort is False
@@ -385,7 +385,7 @@ class TestTimeoutHooks:
         prior = PrestoDialect().set_connection_timeout(conn, 30)
         PrestoDialect().restore_connection_timeout(conn, prior)
         assert props == {"query_max_run_time": "1h"}
-        assert PrestoDialect().statement_timeout_sql(30) is None
+        assert PrestoDialect().statement_timeout(30) is None
 
 
 # ---------------------------------------------------------------------------
@@ -431,7 +431,7 @@ class TestBuildEngineScheme:
         assert _build(url) is sentinel.engine
         built, kwargs = _built(create_engine)
         assert kwargs["connect_args"] == {"http_scheme": "https"}
-        assert kwargs["pool_pre_ping"] is True
+        assert "pool_pre_ping" not in kwargs
         assert built == make_url(url)
 
     def test_password_on_non_443_port_connects_over_https(self, create_engine: MagicMock) -> None:

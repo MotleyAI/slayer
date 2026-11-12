@@ -1,6 +1,6 @@
 """The join-key spelling contract: ``join_pairs`` entries name declared base
 columns by ``Column.name`` on each side; the physical spelling comes from one
-seam (``Column.physical_name`` / ``physical_join_pairs``)."""
+seam (``Column.physical_name`` over ``join_key_columns``)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import JoinKeyError
-from slayer.core.join_walker import edges_between, physical_join_pairs
+from slayer.core.join_walker import OrientedJoin, edges_between, join_key_columns
 from slayer.core.models import (
     Column,
     DatasourceConfig,
@@ -21,9 +21,9 @@ from slayer.core.models import (
     physical_column_sql,
 )
 from slayer.core.query import ModelExtension, SlayerQuery
-from slayer.engine.join_safety import audit_join_safety
+from slayer.engine.cardinality.join_safety import audit_join_safety
 from slayer.engine.query_engine import SlayerQueryEngine, _detection_skip_reason
-from slayer.engine.schema_drift import (
+from slayer.live_schema.schema_drift import (
     EditModelDelete,
     LiveTable,
     compute_datasource_drops,
@@ -32,10 +32,17 @@ from slayer.engine.schema_drift import (
 from slayer.ir.source_bundle import apply_extension_overlay
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
-from slayer.storage.type_refinement import refine_dict_with_live_schema
+from slayer.live_schema.type_refinement import refine_dict_with_live_schema
+from slayer.async_utils import run_sync
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1902_fixtures import customers_model, orders_model, regions_model
+
+
+def _physical_pairs(*, edge: OrientedJoin, source: SlayerModel, target: SlayerModel) -> list[tuple[str, str]]:
+    return [(s.physical_name, t.physical_name) for s, t in join_key_columns(edge=edge, source=source, target=target)]
 
 
 def _orders(*columns: Column, pairs: list[list[str]], target: str = "customers") -> SlayerModel:
@@ -177,8 +184,9 @@ class TestExtensionOverlay:
                 await storage.save_model(m)
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery.model_validate({
-                "source_model": ModelExtension(source_name="orders", joins=[
-                    ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])]),
+                "source_model": "orders",
+                "extensions": [ModelExtension(source_name="orders", joins=[
+                    ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])])],
                 "measures": [{"formula": "sum(amount)", "name": "amt"}],
                 "dimensions": ["regions.name"]})
             with pytest.raises(ValueError, match="key 'region_id'"):
@@ -233,19 +241,19 @@ class TestPhysicalJoinPairs:
     def test_forward_orientation(self):
         orders, customers = orders_model(), customers_model()
         (edge,) = edges_between(source=orders, target=customers)
-        assert physical_join_pairs(edge=edge, source=orders, target=customers) == [
+        assert _physical_pairs(edge=edge, source=orders, target=customers) == [
             ("cust_fk", "customer_pk")]
 
     def test_reverse_orientation(self):
         orders, customers = orders_model(), customers_model()
         (edge,) = edges_between(source=customers, target=orders)
-        assert physical_join_pairs(edge=edge, source=customers, target=orders) == [
+        assert _physical_pairs(edge=edge, source=customers, target=orders) == [
             ("customer_pk", "cust_fk")]
 
     def test_quoted_key_unquoted(self):
         orders, customers = orders_model(), customers_model(pk_sql='"CustPK"')
         (edge,) = edges_between(source=orders, target=customers)
-        assert physical_join_pairs(edge=edge, source=orders, target=customers) == [
+        assert _physical_pairs(edge=edge, source=orders, target=customers) == [
             ("cust_fk", "CustPK")]
 
     def test_unresolvable_target_key_raises(self):
@@ -253,7 +261,7 @@ class TestPhysicalJoinPairs:
         customers = _customers()
         (edge,) = edges_between(source=orders, target=customers)
         with pytest.raises(JoinKeyError, match="'cust_key'"):
-            physical_join_pairs(edge=edge, source=orders, target=customers)
+            _physical_pairs(edge=edge, source=orders, target=customers)
 
     async def test_query_crossing_unresolvable_join_fails_before_sql(self):
         with tempfile.TemporaryDirectory() as d:
@@ -308,7 +316,7 @@ class TestDriftAndRefinement:
 
     @pytest.mark.parametrize("key", ["id", "cust_id"])
     def test_dropped_local_key_drops_its_join(self, key):
-        """A local key dropped for a type drift (PK or not) takes its join with it."""
+        """A dropped local key (PK or not) takes its join with it."""
         orders = SlayerModel(
             name="orders", data_source="test", sql_table="orders",
             columns=[Column(name="id", type=DataType.INT, primary_key=True),
@@ -319,7 +327,7 @@ class TestDriftAndRefinement:
             name="customers", data_source="test", sql_table="customers",
             columns=[Column(name="id", type=DataType.INT, primary_key=True)],
         )
-        live = LiveTable(columns={"id": DataType.INT, "cust_id": DataType.INT, key: DataType.TEXT})
+        live = LiveTable(columns={c: DataType.INT for c in ("id", "cust_id") if c != key})
         diffs = {m.name: diff_sql_table_model(
             model=m, live_table=live if m is orders else LiveTable(columns={"id": DataType.INT}),
             available_models_in_ds={"orders", "customers"}) for m in (orders, customers)}
@@ -340,8 +348,13 @@ class TestDriftAndRefinement:
                 "name": "items", "sql_table": "items", "data_source": "live",
                 "columns": [{"name": "quantity", "sql": '"qty"', "type": "DOUBLE"}],
             }
-            changed = refine_dict_with_live_schema(
-                doc, DatasourceConfig(name="live", type="sqlite", database=db_path))
+            ds = DatasourceConfig(name="live", type="sqlite", database=db_path)
+            client = SlayerSQLClient(datasource=ds)
+            try:
+                changed = run_sync(refine_dict_with_live_schema(doc, ds, client))
+            finally:
+                client.close()
+                engine_factory.invalidate_engine(ds)
             assert changed is True
             assert doc["columns"][0]["type"] == "INT"
 

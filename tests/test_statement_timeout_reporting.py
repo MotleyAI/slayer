@@ -14,7 +14,8 @@ from slayer.core.warnings import (
     StatementTimeoutSkippedWarning,
 )
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
-from slayer.sql.client import ExecutionResult, SlayerSQLClient
+from slayer.database.client import ExecutionResult, SlayerSQLClient
+from slayer.sql.dialects.base import ExplainStatements
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -90,11 +91,20 @@ async def engine(tmp_path, monkeypatch) -> SlayerQueryEngine:
         result = await real_execute(self, sql, timeout_seconds=timeout_seconds)
         return result.model_copy(update={"warnings": [*result.warnings, _REJECTED]})
 
+    real_explain = SlayerSQLClient.explain
+
+    async def _skipping_explain(
+        self: SlayerSQLClient, statements: ExplainStatements, timeout_seconds: int = 120,
+    ) -> ExecutionResult:
+        result = await real_explain(self, statements, timeout_seconds=timeout_seconds)
+        return result.model_copy(update={"warnings": [*result.warnings, _REJECTED]})
+
     monkeypatch.setattr(SlayerSQLClient, "execute", _skipping_execute)
+    monkeypatch.setattr(SlayerSQLClient, "explain", _skipping_explain)
     return SlayerQueryEngine(storage=storage)
 
 
-_QUERY = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="*:count")])  # pyright: ignore[reportArgumentType]
+_QUERY = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="count(*)")])  # pyright: ignore[reportArgumentType]
 
 
 async def test_data_query_response_carries_skip(engine: SlayerQueryEngine) -> None:

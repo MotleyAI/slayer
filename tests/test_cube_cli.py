@@ -1,6 +1,6 @@
 """Tests for the `slayer import-cube` CLI (slayer/cli.py).
 
-DEV-1608 §11. Offline: writes SLayer models to storage + a JSON report. No
+Offline: writes SLayer models to storage + a JSON report. No
 datasource connection required.
 """
 
@@ -64,12 +64,10 @@ def test_import_cube_survives_save_failure(tmp_path, monkeypatch, capsys):
     # still written ("report, don't crash"), the failure is categorized
     # SAVE_FAILED (not the misleading PARSE_ERROR), and the summary reports the
     # actual saved count.
-    import slayer.storage.yaml_storage as ys
-
     async def _boom(self, model):
         raise RuntimeError("save exploded")
 
-    monkeypatch.setattr(ys.YAMLStorage, "save_model", _boom)
+    monkeypatch.setattr(YAMLStorage, "save_model", _boom)
     storage_dir = tmp_path / "store"
     code = _run("import-cube", FIXTURE, "--datasource", "cube_ds", "--storage", str(storage_dir))
     assert code == 0
@@ -80,19 +78,6 @@ def test_import_cube_survives_save_failure(tmp_path, monkeypatch, capsys):
     assert save_failures  # every model failed to save → a SAVE_FAILED issue each
     # Summary reflects that nothing was actually saved.
     assert "0 of" in capsys.readouterr().out
-
-
-def test_import_cube_report_honors_models_dir(tmp_path):
-    # With --models-dir (and no --storage) the report lands next to the models,
-    # matching _resolve_storage's resolution chain.
-    models_dir = tmp_path / "mstore"
-    code = _run(
-        "import-cube", FIXTURE,
-        "--datasource", "cube_ds",
-        "--models-dir", str(models_dir),
-    )
-    assert code == 0
-    assert (models_dir / "cube_import_report.json").exists()
 
 
 def test_import_cube_report_path_override(tmp_path):

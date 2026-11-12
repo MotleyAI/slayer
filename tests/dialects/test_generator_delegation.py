@@ -60,7 +60,7 @@ class TestSqliteJsonExtractInGenerator:
         query = SlayerQuery(
             source_model="users",
             dimensions=[ColumnRef(name="tier")],
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         sql = await _engine_generate(
             query=query, model=model_with_json_dim, dialect="sqlite",
@@ -74,7 +74,7 @@ class TestSqliteJsonExtractInGenerator:
     ) -> None:
         query = SlayerQuery(
             source_model="users",
-            measures=[ModelMeasure(formula="is_gold:sum")],
+            measures=[ModelMeasure(formula="sum(is_gold)")],
         )
         sql = await _engine_generate(
             query=query, model=model_with_json_dim, dialect="sqlite",
@@ -98,7 +98,7 @@ class TestSqliteJsonExtractInGenerator:
         query = SlayerQuery(
             source_model="users",
             dimensions=[ColumnRef(name="tier")],
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         sql = await _engine_generate(query=query, model=model, dialect="sqlite")
         assert "JSON_EXTRACT(" in sql, sql
@@ -117,7 +117,7 @@ class TestSqliteJsonExtractInGenerator:
         query = SlayerQuery(
             source_model="users",
             dimensions=[ColumnRef(name="tier")],
-            measures=[ModelMeasure(formula="*:count")],
+            measures=[ModelMeasure(formula="count(*)")],
         )
         sql = await _engine_generate(
             query=query, model=model_with_json_dim, dialect="postgres",
@@ -193,32 +193,32 @@ class TestMedianPercentilePerDialect:
     # --- percentile --------------------------------------------------------
 
     async def test_build_percentile_postgres(self) -> None:
-        sql = await orders_agg_sql("amount:percentile(p=0.95)", dialect="postgres")
+        sql = await orders_agg_sql("percentile(amount, p=0.95)", dialect="postgres")
         assert "PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY orders.amount)" in sql
 
     async def test_build_percentile_sqlite(self) -> None:
-        sql = await orders_agg_sql("amount:percentile(p=0.5)", dialect="sqlite")
+        sql = await orders_agg_sql("percentile(amount, p=0.5)", dialect="sqlite")
         assert "PERCENTILE_CONT(orders.amount, 0.5)" in sql
 
     async def test_build_percentile_clickhouse_emits_quantile(self) -> None:
-        sql = await orders_agg_sql("amount:percentile(p=0.75)", dialect="clickhouse")
+        sql = await orders_agg_sql("percentile(amount, p=0.75)", dialect="clickhouse")
         # ClickHouse parametric aggregate syntax.
         assert "quantile(0.75)(orders.amount)" in sql
 
     @pytest.mark.parametrize("p", ["0.05", "0.25", "0.5", "0.95"])
     async def test_build_percentile_clickhouse_param_substitution(self, p: str) -> None:
-        sql = await orders_agg_sql(f"amount:percentile(p={p})", dialect="clickhouse")
+        sql = await orders_agg_sql(f"percentile(amount, p={p})", dialect="clickhouse")
         assert f"quantile({p})(orders.amount)" in sql
 
     async def test_build_percentile_duckdb(self) -> None:
-        sql = await orders_agg_sql("amount:percentile(p=0.5)", dialect="duckdb")
+        sql = await orders_agg_sql("percentile(amount, p=0.5)", dialect="duckdb")
         # sqlglot rewrites the WITHIN GROUP form to DuckDB's QUANTILE_CONT.
         assert "QUANTILE_CONT" in sql
         assert "orders.amount" in sql
 
     async def test_build_percentile_mysql_raises(self) -> None:
         with pytest.raises(NotImplementedError, match="MySQL"):
-            await orders_agg_sql("amount:percentile(p=0.5)", dialect="mysql")
+            await orders_agg_sql("percentile(amount, p=0.5)", dialect="mysql")
 
     def test_build_percentile_missing_p_raises(self) -> None:
         gen = SQLGenerator(dialect="postgres")
@@ -228,37 +228,37 @@ class TestMedianPercentilePerDialect:
 
     async def test_build_percentile_unsafe_p_rejected(self) -> None:
         with pytest.raises(ValueError, match="DROP TABLE x"):
-            await orders_agg_sql("amount:percentile(p='0.5); DROP TABLE x; --')")
+            await orders_agg_sql("percentile(amount, p='0.5); DROP TABLE x; --')")
 
     async def test_build_percentile_uses_model_level_default_p(self) -> None:
         """Model-level Aggregation(name='percentile', params=[p=...]) supplies the default."""
-        sql = await orders_agg_sql("amount:percentile", aggregations=_percentile_default("0.9"))
+        sql = await orders_agg_sql("percentile(amount)", aggregations=_percentile_default("0.9"))
         assert "PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY orders.amount)" in sql
 
     async def test_build_percentile_query_kwarg_overrides_model_default(self) -> None:
         """Query-time kwargs win over the model-level default."""
         sql = await orders_agg_sql(
-            "amount:percentile(p=0.25)", aggregations=_percentile_default("0.9"))
+            "percentile(amount, p=0.25)", aggregations=_percentile_default("0.9"))
         assert "PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY orders.amount)" in sql
 
     async def test_build_percentile_rejects_non_literal_p(self) -> None:
-        """`measure:percentile(p=quantity)` fails with a clear validation error, never a column in PERCENTILE_CONT(p)'s direct-arg slot."""
+        """`percentile(measure, p=quantity)` fails with a clear validation error, never a column in PERCENTILE_CONT(p)'s direct-arg slot."""
         with pytest.raises(ValueError, match="numeric literal"):
-            await orders_agg_sql("amount:percentile(p=quantity)")
+            await orders_agg_sql("percentile(amount, p=quantity)")
 
     async def test_build_percentile_rejects_p_out_of_range(self) -> None:
         with pytest.raises(ValueError, match=r"\[0, 1\]"):
-            await orders_agg_sql("amount:percentile(p=1.5)")
+            await orders_agg_sql("percentile(amount, p=1.5)")
 
     async def test_build_percentile_rejects_p_negative(self) -> None:
         with pytest.raises(ValueError, match=r"\[0, 1\]"):
-            await orders_agg_sql("amount:percentile(p='-0.1')")
+            await orders_agg_sql("percentile(amount, p='-0.1')")
 
     async def test_build_percentile_rejects_non_literal_p_via_model_default(self) -> None:
         """A model-level ``p`` default that is not a number (``pg_sleep(10)``) is rejected too."""
         aggregations = _percentile_default("pg_sleep(10)")
         with pytest.raises(ValueError, match="numeric literal"):
-            await orders_agg_sql("amount:percentile", aggregations=aggregations)
+            await orders_agg_sql("percentile(amount)", aggregations=aggregations)
 
 class TestStatAggsPerDialect:
     """Per-dialect SQL emission for the new statistical aggregations
@@ -395,12 +395,12 @@ class TestStatAggsPerDialect:
     async def test_build_two_arg_stat_emits_two_arg_call(
         self, dialect: str, agg: str, sql_fn: str,
     ) -> None:
-        sql = await orders_agg_sql(f"amount:{agg}(other=quantity)", dialect=dialect)
+        sql = await orders_agg_sql(f"{agg}(amount, other=quantity)", dialect=dialect)
         assert f"{sql_fn}(orders.amount, orders.quantity)" in sql
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     async def test_build_two_arg_stat_clickhouse(self, agg: str) -> None:
-        sql = await orders_agg_sql(f"amount:{agg}(other=quantity)", dialect="clickhouse")
+        sql = await orders_agg_sql(f"{agg}(amount, other=quantity)", dialect="clickhouse")
         # ClickHouse casing is its own thing; assert the call shape only.
         assert f"{agg.lower()}(orders.amount, orders.quantity)" in sql.lower()
 
@@ -408,7 +408,7 @@ class TestStatAggsPerDialect:
     async def test_build_two_arg_stat_mysql_emits_formula(self, agg: str) -> None:
         # MySQL has no native CORR / COVAR_SAMP / COVAR_POP but can express them
         # via the variance-decomposition formula: cov(x,y) = (var(x+y)-var(x)-var(y))/2
-        sql = await orders_agg_sql(f"amount:{agg}(other=quantity)", dialect="mysql")
+        sql = await orders_agg_sql(f"{agg}(amount, other=quantity)", dialect="mysql")
         assert "VAR_SAMP(" in sql or "VAR_POP(" in sql
         assert f"{agg.upper()}(" not in sql
         assert "/" in sql
@@ -419,7 +419,7 @@ class TestStatAggsPerDialect:
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     async def test_build_two_arg_stat_tsql_emits_formula(self, agg: str) -> None:
         # T-SQL has no native CORR / COVAR_SAMP / COVAR_POP; use variance-decomposition
-        sql = await orders_agg_sql(f"amount:{agg}(other=quantity)", dialect="tsql")
+        sql = await orders_agg_sql(f"{agg}(amount, other=quantity)", dialect="tsql")
         assert "VAR(" in sql or "VARP(" in sql
         assert f"{agg.upper()}(" not in sql
         assert "/" in sql
@@ -448,7 +448,7 @@ class TestStatAggsPerDialect:
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     async def test_build_two_arg_stat_unsafe_other_rejected(self, agg: str) -> None:
         with pytest.raises(ValueError, match="DROP TABLE x"):
-            await orders_agg_sql(f"amount:{agg}(other='quantity); DROP TABLE x; --')")
+            await orders_agg_sql(f"{agg}(amount, other='quantity); DROP TABLE x; --')")
 
     def test_build_stddev_samp_over_a_masked_value(self) -> None:
         gen = SQLGenerator(dialect="postgres")
@@ -468,7 +468,7 @@ class TestStatAggsPerDialect:
 
     async def test_build_corr_masks_only_the_value_not_the_other_column(self) -> None:
         # DEV-1832: a Column.filter masks only its own value; ``other=`` is never wrapped by it.
-        sql = await orders_agg_sql("completed_amount:corr(other=quantity)")
+        sql = await orders_agg_sql("corr(completed_amount, other=quantity)")
         assert sql.count("CASE WHEN orders.status = 'completed'") == 1
         assert "CORR(" in sql
         assert "orders.amount" in sql
@@ -596,7 +596,7 @@ class TestTsqlDialect:
     async def test_build_percentile_tsql_raises(self) -> None:
         """T-SQL PERCENTILE_CONT is window-only (requires OVER); unsupported as GROUP BY agg."""
         with pytest.raises(NotImplementedError):
-            await orders_agg_sql("amount:percentile(p=0.5)", dialect="tsql")
+            await orders_agg_sql("percentile(amount, p=0.5)", dialect="tsql")
 
     @pytest.mark.parametrize("agg,expected_fn", [
         ("stddev_samp", "STDEV"),
@@ -620,37 +620,37 @@ class TestTsqlDialect:
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     async def test_build_two_arg_stat_tsql_uses_var_function(self, agg: str) -> None:
         """covar/corr on T-SQL must use T-SQL VAR() not Postgres VAR_SAMP()."""
-        sql = await orders_agg_sql(f"amount:{agg}(other=quantity)", dialect="tsql")
+        sql = await orders_agg_sql(f"{agg}(amount, other=quantity)", dialect="tsql")
         assert "VAR(" in sql or "VARP(" in sql, f"Expected VAR()/VARP() in formula, got: {sql}"
         assert "VAR_SAMP(" not in sql, f"VAR_SAMP is not a T-SQL function: {sql}"
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     async def test_build_two_arg_stat_tsql_no_direct_call(self, agg: str) -> None:
         """T-SQL doesn't have COVAR_SAMP / COVAR_POP / CORR natively."""
-        sql = await orders_agg_sql(f"amount:{agg}(other=quantity)", dialect="tsql")
+        sql = await orders_agg_sql(f"{agg}(amount, other=quantity)", dialect="tsql")
         assert f"{agg.upper()}(" not in sql, sql
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     async def test_build_two_arg_stat_tsql_contains_both_columns(self, agg: str) -> None:
-        sql = await orders_agg_sql(f"amount:{agg}(other=quantity)", dialect="tsql")
+        sql = await orders_agg_sql(f"{agg}(amount, other=quantity)", dialect="tsql")
         assert "orders.amount" in sql
         assert "orders.quantity" in sql
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     async def test_build_two_arg_stat_tsql_uses_division(self, agg: str) -> None:
-        sql = await orders_agg_sql(f"amount:{agg}(other=quantity)", dialect="tsql")
+        sql = await orders_agg_sql(f"{agg}(amount, other=quantity)", dialect="tsql")
         assert "/" in sql, f"Variance-decomposition formula must contain division: {sql}"
 
     @pytest.mark.parametrize("agg", ["covar_samp", "covar_pop"])
     async def test_build_covar_tsql_null_guards_both_columns(self, agg: str) -> None:
         """Both columns are NULL-guarded against each other in the formula."""
-        upper = (await orders_agg_sql(f"amount:{agg}(other=quantity)", dialect="tsql")).upper()
+        upper = (await orders_agg_sql(f"{agg}(amount, other=quantity)", dialect="tsql")).upper()
         assert "CASE WHEN" in upper, upper
         assert "IS NOT NULL" in upper or "IS NULL" in upper, upper
 
     async def test_build_corr_tsql_uses_stdev_for_denominator(self) -> None:
         """corr denominator uses STDEV (T-SQL stddev_samp) * STDEV."""
-        sql = await orders_agg_sql("amount:corr(other=quantity)", dialect="tsql")
+        sql = await orders_agg_sql("corr(amount, other=quantity)", dialect="tsql")
         assert "STDEV(" in sql, sql
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
@@ -671,7 +671,7 @@ class TestTsqlDialect:
     ) -> None:
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="revenue:sum")],
+            measures=[ModelMeasure(formula="count(*)"), ModelMeasure(formula="sum(revenue)")],
             dimensions=[ColumnRef(name="status")],
         )
         sql = await _engine_generate(
@@ -685,9 +685,9 @@ class TestTsqlDialect:
     ) -> None:
         query = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="revenue:sum")],
+            measures=[ModelMeasure(formula="sum(revenue)")],
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
         )
@@ -703,12 +703,12 @@ class TestTsqlDialect:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
-                ModelMeasure(formula="revenue:sum"),
-                ModelMeasure(formula="time_shift(revenue:sum, -1, 'year')", name="rev_prev_year"),
+                ModelMeasure(formula="sum(revenue)"),
+                ModelMeasure(formula="time_shift(sum(revenue), -1, 'year')", name="rev_prev_year"),
             ],
         )
         sql = await _engine_generate(

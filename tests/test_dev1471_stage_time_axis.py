@@ -9,7 +9,7 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, SlayerModel
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
 from tests._dev1471_fixtures import (
     BACKENDS,
     MONTHLY_INNER as _INNER,
@@ -42,10 +42,10 @@ def _by_month(data: list[dict], value_key: str) -> dict:
 async def test_time_shift_over_stage_time_dimension(backend: str) -> None:
     outer = SlayerQuery.model_validate({
         "source_model": "s1",
-        "time_dimensions": [TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.MONTH)],
+        "time_dimensions": [TimeDimension(dimension="created_at", granularity=TG.MONTH)],
         "measures": [
-            {"formula": "rev:sum"},
-            {"formula": "time_shift(rev:sum, -1, 'month')", "name": "prev"},
+            {"formula": "sum(rev)"},
+            {"formula": "time_shift(sum(rev), -1, 'month')", "name": "prev"},
         ],
     })
     with tempfile.TemporaryDirectory() as tmp:
@@ -59,10 +59,10 @@ async def test_time_shift_over_stage_time_dimension(backend: str) -> None:
 async def test_change_and_cumsum_over_stage_time_dimension(backend: str) -> None:
     outer = SlayerQuery.model_validate({
         "source_model": "s1",
-        "time_dimensions": [TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.MONTH)],
+        "time_dimensions": [TimeDimension(dimension="created_at", granularity=TG.MONTH)],
         "measures": [
-            {"formula": "change(rev:sum)", "name": "chg"},
-            {"formula": "cumsum(rev:sum)", "name": "cum"},
+            {"formula": "change(sum(rev))", "name": "chg"},
+            {"formula": "cumsum(sum(rev))", "name": "cum"},
         ],
     })
     with tempfile.TemporaryDirectory() as tmp:
@@ -79,8 +79,8 @@ async def test_change_and_cumsum_over_stage_time_dimension(backend: str) -> None
 async def test_last_over_stage_time_dimension(backend: str) -> None:
     outer = SlayerQuery.model_validate({
         "source_model": "s1",
-        "time_dimensions": [TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.MONTH)],
-        "measures": [{"formula": "last(rev:sum)", "name": "lst"}],
+        "time_dimensions": [TimeDimension(dimension="created_at", granularity=TG.MONTH)],
+        "measures": [{"formula": "last(sum(rev))", "name": "lst"}],
     })
     with tempfile.TemporaryDirectory() as tmp:
         resp = await _exec_outer(backend, tmp, outer)
@@ -111,15 +111,15 @@ _MONTHLY_MODEL_TABLE = {
 async def test_windowed_aggregate_over_stage_time_dimension(backend: str) -> None:
     """rev:sum(window='60d') on the stage bucket equals the model-backed evaluation
     over a dataset holding the same monthly rows (transforms spec equivalence)."""
-    windowed = [{"formula": "rev:sum(window='60d')", "name": "win"}]
+    windowed = [{"formula": "sum(rev, window='60d')", "name": "win"}]
     stage_outer = SlayerQuery.model_validate({
         "source_model": "s1",
-        "time_dimensions": [TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.MONTH)],
+        "time_dimensions": [TimeDimension(dimension="created_at", granularity=TG.MONTH)],
         "measures": windowed,
     })
     model_query = SlayerQuery.model_validate({
         "source_model": "monthly",
-        "time_dimensions": [TimeDimension(dimension=ColumnRef(name="month_ts"), granularity=TG.MONTH)],
+        "time_dimensions": [TimeDimension(dimension="month_ts", granularity=TG.MONTH)],
         "measures": windowed,
     })
     with tempfile.TemporaryDirectory() as tmp:
@@ -146,17 +146,17 @@ async def test_time_shift_over_multi_hop_flat_time_dimension(backend: str) -> No
     inner = SlayerQuery.model_validate({
         "name": "s1", "source_model": "orders",
         "time_dimensions": [TimeDimension(
-            dimension=ColumnRef(name="customers.regions.last_activity_at"), granularity=TG.MONTH,
+            dimension="customers.regions.last_activity_at", granularity=TG.MONTH,
         )],
-        "measures": [{"formula": "*:count", "name": "n"}],
+        "measures": [{"formula": "count(*)", "name": "n"}],
     })
     col = "customers__regions__last_activity_at"
     outer = SlayerQuery.model_validate({
         "source_model": "s1",
-        "time_dimensions": [TimeDimension(dimension=ColumnRef(name=col), granularity=TG.MONTH)],
+        "time_dimensions": [TimeDimension(dimension=col, granularity=TG.MONTH)],
         "measures": [
-            {"formula": "n:sum"},
-            {"formula": "time_shift(n:sum, -1, 'month')", "name": "prev"},
+            {"formula": "sum(n)"},
+            {"formula": "time_shift(sum(n), -1, 'month')", "name": "prev"},
         ],
     })
     with tempfile.TemporaryDirectory() as tmp:
@@ -178,7 +178,7 @@ _TWO_TD_ROWS = [
 _TWO_TD_INNER = SlayerQuery.model_validate({
     "name": "s1", "source_model": "orders",
     "dimensions": ["created_at", "shipped_at"],
-    "measures": [{"formula": "amount:sum", "name": "rev"}],
+    "measures": [{"formula": "sum(amount)", "name": "rev"}],
 })
 
 
@@ -194,10 +194,10 @@ async def test_two_stage_time_dimensions_without_main_raise() -> None:
     outer = SlayerQuery.model_validate({
         "source_model": "s1",
         "time_dimensions": [
-            TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.MONTH),
-            TimeDimension(dimension=ColumnRef(name="shipped_at"), granularity=TG.MONTH),
+            TimeDimension(dimension="created_at", granularity=TG.MONTH),
+            TimeDimension(dimension="shipped_at", granularity=TG.MONTH),
         ],
-        "measures": [{"formula": "change(rev:sum)", "name": "chg"}],
+        "measures": [{"formula": "change(sum(rev))", "name": "chg"}],
     })
     with tempfile.TemporaryDirectory() as tmp:
         engine = await _two_td_engine("sqlite", tmp)
@@ -210,11 +210,11 @@ async def test_main_time_dimension_selects_stage_axis(backend: str) -> None:
     outer = SlayerQuery.model_validate({
         "source_model": "s1",
         "time_dimensions": [
-            TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.MONTH),
-            TimeDimension(dimension=ColumnRef(name="shipped_at"), granularity=TG.MONTH),
+            TimeDimension(dimension="created_at", granularity=TG.MONTH),
+            TimeDimension(dimension="shipped_at", granularity=TG.MONTH),
         ],
         "main_time_dimension": "created_at",
-        "measures": [{"formula": "change(rev:sum)", "name": "chg"}],
+        "measures": [{"formula": "change(sum(rev))", "name": "chg"}],
     })
     with tempfile.TemporaryDirectory() as tmp:
         engine = await _two_td_engine(backend, tmp)
@@ -229,9 +229,9 @@ async def test_main_time_dimension_selects_stage_axis(backend: str) -> None:
 async def test_order_by_stage_bucket(backend: str) -> None:
     outer = SlayerQuery.model_validate({
         "source_model": "s1",
-        "time_dimensions": [TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.MONTH)],
-        "measures": [{"formula": "rev:sum"}],
-        "order": [OrderItem.model_validate({"column": "month(created_at)", "direction": "desc"})],
+        "time_dimensions": [TimeDimension(dimension="created_at", granularity=TG.MONTH)],
+        "measures": [{"formula": "sum(rev)"}],
+        "order": [OrderItem.model_validate({"column": "date_trunc('month', created_at)", "direction": "desc"})],
     })
     with tempfile.TemporaryDirectory() as tmp:
         resp = await _exec_outer(backend, tmp, outer)
@@ -244,10 +244,10 @@ async def test_two_granularities_of_one_stage_column(backend: str) -> None:
     outer = SlayerQuery.model_validate({
         "source_model": "s1",
         "time_dimensions": [
-            TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.MONTH),
-            TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.YEAR),
+            TimeDimension(dimension="created_at", granularity=TG.MONTH),
+            TimeDimension(dimension="created_at", granularity=TG.YEAR),
         ],
-        "measures": [{"formula": "rev:sum"}],
+        "measures": [{"formula": "sum(rev)"}],
     })
     with tempfile.TemporaryDirectory() as tmp:
         resp = await _exec_outer(backend, tmp, outer)

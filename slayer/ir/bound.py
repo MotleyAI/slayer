@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -26,6 +26,8 @@ class BoundFilter(BaseModel):
     value_key: ValueKey
     phase: Phase
     referenced_keys: Tuple[ValueKey, ...] = Field(default_factory=tuple)
+    # A FILTER clause's condition on its producer: restricts rows, never a frame bound.
+    row_restriction: bool = False
 
 
 class BoundExpr(BaseModel):
@@ -45,16 +47,17 @@ class BoundExpr(BaseModel):
 
 
 class BoundTimeDimension(BaseModel):
-    """A bound time dimension: the wrapped ``BoundExpr`` (``bound``) plus the column
-    facts the checker judges — ``column_type`` and the recorded bucket
-    ``upstream_granularity`` (from a bucketed stage column or a model ``Column``'s
-    ``granularity``; ``None`` for an un-bucketed column)."""
+    """A bound time dimension: the wrapped ``BoundExpr`` (``bound``) plus the facts the
+    checker judges — a column's ``column_type`` (an expression is typed by the checker)
+    and ``(leaf, granularity)`` per temporal leaf a bucketed stage column or a model
+    ``Column``'s ``granularity`` records."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
     bound: BoundExpr
     column_type: Optional[DataType] = None
-    upstream_granularity: Optional[Granularity] = None
+    bucketed_leaves: Tuple[Tuple[str, Granularity], ...] = ()
+    is_expression: bool = False
 
 
 def bound_filter_from_key(vk: ValueKey) -> BoundFilter:
@@ -62,6 +65,11 @@ def bound_filter_from_key(vk: ValueKey) -> BoundFilter:
     refs = tuple(walk_value_keys(vk))
     phase = max((k.phase for k in refs), default=vk.phase)
     return BoundFilter(value_key=vk, phase=phase, referenced_keys=refs)
+
+
+def row_restriction_from_key(vk: ValueKey) -> BoundFilter:
+    """A FILTER clause's condition as its producer's row restriction."""
+    return bound_filter_from_key(vk).model_copy(update={"row_restriction": True})
 
 
 class DeclaredMeasure(BaseModel):
@@ -76,6 +84,7 @@ class DeclaredMeasure(BaseModel):
     canonical_alias: Optional[str] = None
     name_is_explicit: bool = False
     type: Optional[DataType] = None
+    element_type: Optional[DataType] = None
     type_is_explicit: bool = False
     preserve_native_type: bool = False
     format: Optional[NumberFormat] = None
@@ -92,6 +101,7 @@ class OrderSpec(BaseModel):
 
     bound: BoundExpr
     direction: str = "asc"
+    nulls: Literal["default", "first", "last"] = "default"
 
 
 class GranularityConflict(BaseModel):
@@ -101,3 +111,12 @@ class GranularityConflict(BaseModel):
 
     column: str
     granularities: Tuple[Granularity, Granularity]
+
+
+class WholeListRead(BaseModel):
+    """A query reading the whole list ``list`` as its element set: grouping by it, or counting its distinct sets."""
+
+    model_config = ConfigDict(frozen=True)
+
+    operation: Literal["group", "count_distinct"]
+    list: str

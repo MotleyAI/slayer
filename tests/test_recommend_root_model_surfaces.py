@@ -181,7 +181,7 @@ class TestCliHandler:
     def test_cli_text(self, storage, capsys) -> None:
 
         args = argparse.Namespace(
-            storage=storage.base_dir, models_dir=None,
+            storage=storage.base_dir,
             items=["customers.name", "products.category"],
             data_source=None, format="text",
         )
@@ -192,7 +192,7 @@ class TestCliHandler:
     def test_cli_json(self, storage, capsys) -> None:
 
         args = argparse.Namespace(
-            storage=storage.base_dir, models_dir=None,
+            storage=storage.base_dir,
             items=["orders.status"], data_source="mydb", format="json",
         )
         _run_recommend_root_model(args)
@@ -232,8 +232,8 @@ class TestSlayerClient:
         assert rec.root_model == "orders"  # to-one determiner of both
 
 
-UNRELATED_ITEMS = ["customers.name", "tickets.id:count"]
-UNRELATED_FLAGS = {"customers.name": False, "tickets.id:count": True}
+UNRELATED_ITEMS = ["customers.name", "count(tickets.id)"]
+UNRELATED_FLAGS = {"customers.name": False, "count(tickets.id)": True}
 
 
 def _flags(payload: dict) -> dict[str, bool]:
@@ -252,7 +252,7 @@ def _flagged_in_text(text: str) -> bool:
     def lines(item: str) -> list[str]:
         return [ln.lower() for ln in text.splitlines() if item in ln]
 
-    return bool(lines("tickets.id:count")) and all("unrelated" in ln for ln in lines("tickets.id:count")) \
+    return bool(lines("count(tickets.id)")) and all("unrelated" in ln for ln in lines("count(tickets.id)")) \
         and not any("unrelated" in ln for ln in lines("customers.name"))
 
 
@@ -281,7 +281,7 @@ class TestUnrelatedFlagSurfaces:
     @pytest.mark.parametrize("fmt", ["json", "text"])
     def test_cli(self, storage, capsys, fmt: str) -> None:
         args = argparse.Namespace(
-            storage=storage.base_dir, models_dir=None, items=UNRELATED_ITEMS, data_source=None, format=fmt,
+            storage=storage.base_dir, items=UNRELATED_ITEMS, data_source=None, format=fmt,
         )
         _run_recommend_root_model(args)
         out = capsys.readouterr().out
@@ -302,7 +302,7 @@ class TestUnrelatedFlagSurfaces:
                 "data_source": "mydb", "root_model": "customers", "reachable": True,
                 "item_paths": [
                     {"input_item": "customers.name", "path": "name", "unrelated": False},
-                    {"input_item": "tickets.id:count", "path": "count(tickets.id)", "unrelated": True},
+                    {"input_item": "count(tickets.id)", "path": "count(tickets.id)", "unrelated": True},
                 ],
                 "coverage": [], "message": "", "warnings": [],
             }
@@ -357,7 +357,7 @@ class TestRootHintSurfaces:
     def test_cli_feasible_hint_honored(self, storage, capsys) -> None:
 
         args = argparse.Namespace(
-            storage=storage.base_dir, models_dir=None,
+            storage=storage.base_dir,
             items=["customers.name"], data_source=None,
             format="json", root_hint="orders",
         )
@@ -365,18 +365,18 @@ class TestRootHintSurfaces:
         payload = json.loads(capsys.readouterr().out)
         assert payload["root_model"] == "orders"
 
-    def test_cli_bad_hint_nonzero_exit(self, storage, capsys) -> None:
-
-
-        args = argparse.Namespace(
-            storage=storage.base_dir, models_dir=None,
-            items=["orders.status"], data_source="mydb",
-            format="text", root_hint="nope",
-        )
+    def test_cli_bad_hint_nonzero_exit(self, storage, monkeypatch, capsys) -> None:
+        monkeypatch.setattr(sys, "argv", [
+            "slayer", "recommend-root-model", "orders.status", "--data-source", "mydb",
+            "--root-hint", "nope", "--storage", storage.base_dir,
+        ])
         with pytest.raises(SystemExit) as exc:
-            _run_recommend_root_model(args)
-        assert exc.value.code != 0
-        assert "failed" in capsys.readouterr().out.lower()
+            main()
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert captured.err.startswith("Error: ")
+        assert len(captured.err.strip().splitlines()) == 1
+        assert "Error" not in captured.out
 
     def test_cli_parser_accepts_root_hint(self, storage, monkeypatch, capsys) -> None:
 

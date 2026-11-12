@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-import slayer.engine.ingestion as ingestion_mod
+import slayer.live_schema.ingestion as ingestion_mod
 from slayer.core.models import ModelJoin
 
 from tests._dev1853_fixtures import rows_set
@@ -200,10 +200,11 @@ class TestGeneratedNamesAvoidCollisions:
             forward = await lv.edges()
 
         original = ingestion_mod.list_ingestable_objects
-        monkeypatch.setattr(
-            ingestion_mod, "list_ingestable_objects",
-            lambda **kw: list(reversed(original(**kw))),
-        )
+
+        async def reversed_objects(**kw):
+            return list(reversed(await original(**kw)))
+
+        monkeypatch.setattr(ingestion_mod, "list_ingestable_objects", reversed_objects)
         async with live(schema) as lv:
             await lv.ingest()
             assert await lv.edges() == forward

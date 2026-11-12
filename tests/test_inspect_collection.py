@@ -50,6 +50,7 @@ from slayer.core.models import (
 from slayer.inspect.service import InspectService
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._cli_inprocess import run_cli_in_process
 
 
 # ---------------------------------------------------------------------------
@@ -76,8 +77,8 @@ async def _seed_two_ds(storage: YAMLStorage) -> None:
             Column(name="customer_id", type=DataType.INT, hidden=True),
         ],
         measures=[
-            ModelMeasure(name="revenue", formula="amount:sum"),
-            ModelMeasure(name="orders_count", formula="*:count"),
+            ModelMeasure(name="revenue", formula="sum(amount)"),
+            ModelMeasure(name="orders_count", formula="count(*)"),
         ],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
     ))
@@ -114,7 +115,7 @@ async def _seed_single_ds(storage: YAMLStorage) -> None:
             Column(name="amount", type=DataType.DOUBLE, description="USD amount."),
             Column(name="customer_id", type=DataType.INT, hidden=True),
         ],
-        measures=[ModelMeasure(name="revenue", formula="amount:sum")],
+        measures=[ModelMeasure(name="revenue", formula="sum(amount)")],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
     ))
     await storage.save_model(SlayerModel(
@@ -190,7 +191,7 @@ class TestModelCollectionCompactMarkdown:
         out = await _svc(two_ds).inspect(reference=None, entity_type="model")
         assert "Columns: 3" not in out
         assert "Measures: revenue" not in out
-        assert "amount:sum" not in out
+        assert "sum(amount)" not in out
 
     async def test_hidden_model_excluded(self, two_ds: YAMLStorage) -> None:
         out = await _svc(two_ds).inspect(reference=None, entity_type="model")
@@ -302,7 +303,7 @@ class TestModelCollectionVerbose:
         )
         # Full models_summary verbose markers, both datasources.
         assert "**Columns (3):**" in out          # orders in mydb
-        assert "amount:sum" in out
+        assert "sum(amount)" in out
         assert "# Datasource: `otherdb` — 2 model(s)" in out
 
     async def test_descriptions_max_chars_truncates(
@@ -660,16 +661,16 @@ class TestCliCollection:
         self, cli_storage: YAMLStorage
     ) -> None:
 
-        args = _inspect_args(reference=[], entity_type="column")
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf), pytest.raises(SystemExit) as exc:
-            _run_inspect(args=args, storage=cli_storage)
-        assert exc.value.code == 1
+        result = run_cli_in_process(
+            ["inspect", "--type", "column", "--storage", cli_storage.base_dir],
+        )
+        assert result.returncode == 1
         # Must fail with the collection-unsupported message, NOT the old
         # empty-list rejection (so it can't pass for the wrong reason).
-        out = buf.getvalue()
-        assert "Collection view" in out
-        assert "must not be empty" not in out
+        assert len(result.stderr.splitlines()) == 1
+        assert result.stderr.startswith("Error: ")
+        assert "Collection view" in result.stderr
+        assert "must not be empty" not in result.stderr
 
     def test_single_positional_still_bare(
         self, cli_storage: YAMLStorage

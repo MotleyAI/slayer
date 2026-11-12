@@ -195,8 +195,9 @@ class TestModelsReadBy:
         assert {"fin", "hr"} <= self.reads(SlayerQuery.model_validate(MIXED_QUERY), models)
 
     @pytest.mark.parametrize("stage", [
-        {"source_model": {"source_name": "hr", "columns": [{"name": "x", "sql": "salary * 2"}]}},
-        {"source_model": {"source_name": "pub", "joins": [{"target_model": "hr", "join_pairs": [["id", "id"]]}]}},
+        {"source_model": "hr", "extensions": [{"source_name": "hr", "columns": [{"name": "x", "sql": "salary * 2"}]}]},
+        {"source_model": "pub", "extensions": [
+            {"source_name": "pub", "joins": [{"target_model": "hr", "join_pairs": [["id", "id"]]}]}]},
         {"source_model": {"name": "inline", "sql_table": "pub_items", "data_source": DS,
                           "columns": [{"name": "id", "type": "number", "primary_key": True}],
                           "joins": [{"target_model": "hr", "join_pairs": [["id", "id"]]}]}},
@@ -218,7 +219,8 @@ class TestModelsReadBy:
     async def test_overlays_defining_one_column_name_differently_are_each_read(self, models: dict[str, SlayerModel]) -> None:
         def stage(sql: str, **extra) -> SlayerQuery:
             return SlayerQuery.model_validate({
-                "source_model": {"source_name": "pub_link", "columns": [{"name": "extra", "sql": sql}]},
+                "source_model": "pub_link",
+                "extensions": [{"source_name": "pub_link", "columns": [{"name": "extra", "sql": sql}]}],
                 "dimensions": ["extra"], **extra,
             })
 

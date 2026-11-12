@@ -7,9 +7,18 @@ import threading
 import warnings
 
 import pytest
+import sqlglot
 
+from slayer.core.enums import DataType
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
-from slayer.sql.client import SlayerSQLClient, _TYPE_PROBE_TIMEOUT_SECONDS
+from slayer.database.client import (
+    ResultColumnType,
+    SlayerSQLClient,
+    TypeProbe,
+    _TYPE_PROBE_TIMEOUT_SECONDS,
+    render_type_probe,
+)
+from slayer.sql.dialects import ClickhouseDialect
 from tests._ch_fake_http import (
     CH_TIMEOUT_KEY,
     PROFILE_SQL,
@@ -22,6 +31,14 @@ from tests._ch_fake_http import (
 
 # ClickHouse-specific spellings a sqlglot round-trip would rewrite.
 VERBATIM_SQL = "SELECT toStartOfMonth(d) AS m, x::Int32 AS y FROM t -- trailing comment"
+
+
+def _probe(sql: str) -> TypeProbe:
+    return render_type_probe(sqlglot.parse_one(sql, dialect="clickhouse"), dialect=ClickhouseDialect())
+
+
+def _numeric_x(types: dict[str, ResultColumnType]) -> bool:
+    return list(types) == ["x"] and types["x"].type in (DataType.INT, DataType.DOUBLE)
 
 
 def _skipped(record: list[warnings.WarningMessage]) -> list[StatementTimeoutSkippedWarning]:
@@ -149,7 +166,7 @@ class TestReadonlyUsers:
             route_engine(monkeypatch, engine)
             SlayerSQLClient(datasource=ch_datasource()).execute_sync("SELECT 1")
             asyncio.run(SlayerSQLClient(datasource=ch_datasource()).execute("SELECT 1"))
-            asyncio.run(SlayerSQLClient(datasource=ch_datasource()).get_column_types("SELECT 1"))
+            asyncio.run(SlayerSQLClient(datasource=ch_datasource()).get_result_column_types(_probe("SELECT 1")))
         assert fake.permission_checks() == 1
 
     def test_each_engine_checks_on_its_own(self, monkeypatch) -> None:
@@ -202,9 +219,11 @@ class TestTypeProbe:
         fake = FakeClickHouse()
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)
-            types = asyncio.run(SlayerSQLClient(datasource=ch_datasource()).get_column_types("SELECT 1 AS x"))
+            types = asyncio.run(
+                SlayerSQLClient(datasource=ch_datasource()).get_result_column_types(_probe("SELECT 1 AS x"))
+            )
             assert CH_TIMEOUT_KEY not in pooled_ch_settings(engine)
-        assert types == {"x": "number"}
+        assert _numeric_x(types), types
         (probe,) = [s for s in fake.statements() if s != PROFILE_SQL]
         assert "SELECT 1 AS x" in probe
         assert fake.params_for(probe)[0][CH_TIMEOUT_KEY] == _TYPE_PROBE_TIMEOUT_SECONDS
@@ -215,8 +234,10 @@ class TestTypeProbe:
             route_engine(monkeypatch, engine)
             with warnings.catch_warnings(record=True) as record:
                 warnings.simplefilter("always")
-                types = asyncio.run(SlayerSQLClient(datasource=ch_datasource()).get_column_types("SELECT 1 AS x"))
-        assert types == {"x": "number"}
+                types = asyncio.run(
+                    SlayerSQLClient(datasource=ch_datasource()).get_result_column_types(_probe("SELECT 1 AS x"))
+                )
+        assert _numeric_x(types), types
         (probe,) = [s for s in fake.statements() if s != PROFILE_SQL]
         assert CH_TIMEOUT_KEY not in fake.params_for(probe)[0]
         assert _skipped(record) == [_readonly_payload(_TYPE_PROBE_TIMEOUT_SECONDS)]

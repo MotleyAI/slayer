@@ -34,7 +34,7 @@ from slayer.core.query import SlayerQuery
 from slayer.core.scope import StageColumn, StageSchema
 from slayer.engine.binding import bind_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 
 from tests._engine_helpers import _engine_generate
 
@@ -60,8 +60,8 @@ async def _gen(model, formula, **kw) -> str:
     )
 
 
-_REV = ModelMeasure(name="rev", formula="amount:sum")
-_CNT = ModelMeasure(name="cnt", formula="*:count")
+_REV = ModelMeasure(name="rev", formula="sum(amount)")
+_CNT = ModelMeasure(name="cnt", formula="count(*)")
 _GRP = ModelMeasure(name="grp", formula="status")
 
 
@@ -71,36 +71,36 @@ class TestPositiveResolutionThroughBinder:
 
     async def test_root_measure_equals_inline(self) -> None:
         model = _model([_REV])
-        assert await _gen(model, "rev") == await _gen(_model([]), "amount:sum")
+        assert await _gen(model, "rev") == await _gen(_model([]), "sum(amount)")
 
     async def test_arithmetic_operand_expanded(self) -> None:
         model = _model([_REV])
-        assert await _gen(model, "rev + 1") == await _gen(_model([]), "amount:sum + 1")
+        assert await _gen(model, "rev + 1") == await _gen(_model([]), "sum(amount) + 1")
 
     async def test_comparison_operand_expanded(self) -> None:
         model = _model([_REV])
         assert await _gen(model, "rev > 100") == await _gen(
-            _model([]), "amount:sum > 100")
+            _model([]), "sum(amount) > 100")
 
     async def test_unary_operand_expanded(self) -> None:
         model = _model([_REV])
-        assert await _gen(model, "-rev") == await _gen(_model([]), "-amount:sum")
+        assert await _gen(model, "-rev") == await _gen(_model([]), "-sum(amount)")
 
     async def test_boolean_operands_expanded(self) -> None:
         model = _model([_REV, _CNT])
         assert await _gen(model, "rev > 100 and cnt > 0") == await _gen(
-            _model([]), "amount:sum > 100 and *:count > 0")
+            _model([]), "sum(amount) > 100 and count(*) > 0")
 
     async def test_scalar_arg_expanded(self) -> None:
         model = _model([_REV])
         assert await _gen(model, "nullif(rev, 0)") == await _gen(
-            _model([]), "nullif(amount:sum, 0)")
+            _model([]), "nullif(sum(amount), 0)")
 
     async def test_transform_input_expanded(self) -> None:
         model = _model([_REV])
         td = [{"dimension": "created_at", "granularity": "month"}]
         assert await _gen(model, "cumsum(rev)", time_dimensions=td) == await _gen(
-            _model([]), "cumsum(amount:sum)", time_dimensions=td)
+            _model([]), "cumsum(sum(amount))", time_dimensions=td)
 
 
 class TestAggregationScopeNotExpanded:
@@ -110,19 +110,19 @@ class TestAggregationScopeNotExpanded:
     async def test_agg_source_not_expanded(self) -> None:
         model = _model([_REV])
         with pytest.raises(ValueError) as ei:
-            await _gen(model, "rev:sum")
+            await _gen(model, "sum(rev)")
         assert "saved measure" in str(ei.value).lower()
 
     async def test_agg_positional_arg_not_expanded(self) -> None:
         model = _model([_REV])
         with pytest.raises(ValueError) as ei:
-            await _gen(model, "amount:last(rev)")
+            await _gen(model, "last(amount, rev)")
         assert "saved measure" in str(ei.value).lower()
 
     async def test_agg_kwarg_not_expanded(self) -> None:
         model = _model([_REV])
         with pytest.raises(ValueError) as ei:
-            await _gen(model, "amount:weighted_avg(weight=rev)")
+            await _gen(model, "weighted_avg(amount, weight=rev)")
         assert "saved measure" in str(ei.value).lower()
 
 
@@ -146,7 +146,7 @@ class TestCycleAndDepthThroughBinder:
         assert "cycl" in message or "circular" in message
 
     async def test_depth_limit_exceeded(self) -> None:
-        measures = [ModelMeasure(name="m5", formula="amount:sum")]
+        measures = [ModelMeasure(name="m5", formula="sum(amount)")]
         for i in range(4, 0, -1):
             measures.append(ModelMeasure(name=f"m{i}", formula=f"m{i + 1}"))
         model = _model(measures)
@@ -156,11 +156,11 @@ class TestCycleAndDepthThroughBinder:
             assert ei.value.limit == 2
 
     async def test_within_depth_resolves(self) -> None:
-        measures = [ModelMeasure(name="m5", formula="amount:sum")]
+        measures = [ModelMeasure(name="m5", formula="sum(amount)")]
         for i in range(4, 0, -1):
             measures.append(ModelMeasure(name=f"m{i}", formula=f"m{i + 1}"))
         model = _model(measures)
-        assert await _gen(model, "m1") == await _gen(_model([]), "amount:sum")
+        assert await _gen(model, "m1") == await _gen(_model([]), "sum(amount)")
 
 
 class TestTransformArgEligibilityDropped:
@@ -175,7 +175,7 @@ class TestTransformArgEligibilityDropped:
     async def test_transform_partition_by_measure_not_expanded(self) -> None:
         model = _model([_REV, _GRP])
         with pytest.raises(ValueError):
-            await _gen(model, "rank(amount:sum, partition_by=grp, direction='desc')",
+            await _gen(model, "rank(sum(amount), partition_by=grp, direction='desc')",
                        dimensions=["status"],
                        time_dimensions=[{"dimension": "created_at",
                                          "granularity": "month"}])

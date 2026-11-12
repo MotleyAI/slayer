@@ -60,7 +60,7 @@ def _measure_model(**kw) -> SlayerModel:
     return SlayerModel(
         name="orders", sql_table="orders", data_source="ds",
         columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
-        measures=[ModelMeasure(name="amt_scaled", formula="amount:sum * {k}")],
+        measures=[ModelMeasure(name="amt_scaled", formula="sum(amount) * {k}")],
         **kw,
     )
 

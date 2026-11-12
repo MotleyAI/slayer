@@ -1,0 +1,322 @@
+"""Type probes: one dialect bounding hook, a typed door that executes them verbatim, AST-built trial queries."""
+# pyright: reportUnnecessaryTypeIgnoreComment=true
+
+from __future__ import annotations
+
+import tempfile
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+import sqlalchemy as sa
+import sqlglot
+from pydantic import ValidationError
+from sqlalchemy import event
+from sqlglot import exp
+from sqlglot.errors import ParseError
+
+from slayer.core.enums import DataType
+from slayer.core.errors import NotReadOnlyQueryError
+from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.database.engine_factory import client_cache_key
+from slayer.database.client import (
+    ResultColumnType,
+    SlayerSQLClient,
+    TypeProbe,
+    UnparseableTypeProbeError,
+    get_result_column_types_sync,
+    render_type_probe,
+    sql_model_trial_query,
+)
+from slayer.sql.dialects import (
+    _ALL_DIALECTS, DuckdbDialect, OracleDialect, PostgresDialect, SqlDialect, SqliteDialect, TsqlDialect,
+)
+from slayer.sql.render.parse import parse_query, parse_table
+from slayer.sql.type_probe import mint_type_probe
+from slayer.storage.sqlite_conn import transaction
+from slayer.storage.yaml_storage import YAMLStorage
+from tests._engine_helpers import disposable_engine
+
+
+def _inner() -> exp.Select:
+    return exp.select("a").from_("t")
+
+
+# ── row bound ─────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("dialect", _ALL_DIALECTS, ids=lambda d: type(d).__name__)
+def test_type_probe_bounds_the_query_by_the_dialect_row_count(dialect: SqlDialect) -> None:
+    probe = dialect.type_probe(_inner())
+    rows = 1 if isinstance(dialect, SqliteDialect) else 0
+    assert dialect.type_probe_rows == rows
+    assert probe.args["limit"].expression == exp.Literal.number(rows)
+    (source,) = [probe.args["from_"].this]
+    assert isinstance(source, exp.Subquery)
+    assert source.alias == "_types"
+    assert source.this == _inner()
+    assert probe.expressions == [exp.Star()]
+
+
+@pytest.mark.parametrize(("dialect", "tail"), [
+    (SqliteDialect(), ") AS _types LIMIT 1"),
+    (PostgresDialect(), ") AS _types LIMIT 0"),
+    (DuckdbDialect(), ") AS _types LIMIT 0"),
+])
+def test_type_probe_renders_limit(dialect: SqlDialect, tail: str) -> None:
+    sql = render_type_probe(_inner(), dialect=dialect).sql
+    assert sql.startswith("SELECT * FROM (SELECT a FROM t")
+    assert sql.endswith(tail)
+
+
+def test_tsql_type_probe_renders_top_without_limit() -> None:
+    sql = render_type_probe(_inner(), dialect=TsqlDialect()).sql
+    assert sql.startswith("SELECT TOP 0 * FROM (")
+    assert sql.endswith(") AS _types")
+    assert "LIMIT" not in sql
+
+
+@pytest.mark.parametrize("dialect", _ALL_DIALECTS, ids=lambda d: type(d).__name__)
+def test_every_dialect_type_probe_passes_its_own_check(dialect: SqlDialect) -> None:
+    query = exp.select(exp.column("Qty", quoted=True)).from_(exp.table_("order", db="Sales", quoted=True))
+    assert isinstance(render_type_probe(query, dialect=dialect), TypeProbe)
+
+
+def test_type_probe_is_never_constructed_directly() -> None:
+    with pytest.raises(ValidationError):
+        TypeProbe(sql="SELECT * FROM (SELECT a FROM t) AS _types LIMIT 0")
+
+
+def _never_rendered(_tree: object) -> str:
+    pytest.fail("a refused probe is never rendered")
+
+
+@pytest.mark.parametrize(("sql", "dialect"), [
+    ("DROP TABLE t", PostgresDialect()),
+    ("DELETE FROM t", PostgresDialect()),
+    ("WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x LIMIT 0", PostgresDialect()),
+    ("SELECT a FROM t LIMIT 0; DROP TABLE t", PostgresDialect()),
+    ("SELECT a FROM t", PostgresDialect()),
+    ("SELECT a FROM t LIMIT 5", PostgresDialect()),
+    ("SELECT a FROM t LIMIT 0", SqliteDialect()),
+    ("SELECT a FROM t FETCH FIRST 5 ROWS ONLY", OracleDialect()),
+])
+def test_mint_refuses_what_is_not_a_bounded_read(sql: str, dialect: SqlDialect) -> None:
+    tree = sqlglot.parse_one(sql, dialect=dialect.sqlglot_name)
+    with pytest.raises(ValueError, match="bounded to"):
+        mint_type_probe(tree, dialect=dialect, render=_never_rendered)
+
+
+def test_type_probe_is_frozen() -> None:
+    probe = render_type_probe(_inner(), dialect=PostgresDialect())
+    with pytest.raises(ValidationError):
+        probe.sql = "SELECT 1"  # pyright: ignore[reportAttributeAccessIssue]
+
+
+# ── the typed door ────────────────────────────────────────────────────────
+
+@pytest.fixture
+def sqlite_engine(tmp_path: Path):
+    with disposable_engine(f"sqlite:///{tmp_path / 'probe.db'}") as engine:
+        with engine.connect() as conn:
+            conn.execute(sa.text("CREATE TABLE t (a INTEGER, b TEXT)"))
+            conn.execute(sa.text("INSERT INTO t VALUES (1, 'x')"))
+            conn.commit()
+        yield engine
+
+
+def test_door_executes_the_probe_verbatim(sqlite_engine: sa.Engine) -> None:
+    seen: list[str] = []
+    event.listen(sqlite_engine, "before_cursor_execute", lambda _c, _cur, statement, *_a: seen.append(statement))
+    probe = render_type_probe(exp.select("a", "b").from_("t"), dialect=SqliteDialect())
+    assert get_result_column_types_sync(probe, engine=sqlite_engine, db_type="sqlite") == _TYPED
+    statement, *census = seen
+    assert statement == probe.sql
+    assert census == [probe.census_sql(["a", "b"], dialect=SqliteDialect())]
+
+
+_TYPED = {"a": ResultColumnType(type=DataType.INT), "b": ResultColumnType(type=DataType.TEXT)}
+
+
+def _probe_db_client(tmp_path: Path) -> SlayerSQLClient:
+    return SlayerSQLClient(datasource=DatasourceConfig(name="probe", type="sqlite", database=str(tmp_path / "probe.db")))
+
+
+def test_sync_door_parses_and_probes_a_plain_string(sqlite_engine: sa.Engine) -> None:
+    assert get_result_column_types_sync("SELECT a, b FROM t", engine=sqlite_engine, db_type="sqlite") == _TYPED
+
+
+async def test_client_door_parses_and_probes_a_plain_string(sqlite_engine: sa.Engine, tmp_path: Path) -> None:
+    client = _probe_db_client(tmp_path)
+    try:
+        assert await client.get_result_column_types("SELECT a, b FROM t") == _TYPED
+    finally:
+        await client.aclose()
+        client.close()
+
+
+def test_sync_door_names_an_unparseable_statement(sqlite_engine: sa.Engine) -> None:
+    with pytest.raises(UnparseableTypeProbeError, match=r"SELECT \(\(\( not valid"):
+        get_result_column_types_sync("SELECT ((( not valid", engine=sqlite_engine, db_type="sqlite")
+
+
+async def test_client_door_names_an_unparseable_statement(sqlite_engine: sa.Engine, tmp_path: Path) -> None:
+    client = _probe_db_client(tmp_path)
+    try:
+        with pytest.raises(UnparseableTypeProbeError, match=r"SELECT \(\(\( not valid"):
+            await client.get_result_column_types("SELECT ((( not valid")
+    finally:
+        client.close()
+
+
+def test_sync_door_refuses_a_modifying_statement(sqlite_engine: sa.Engine) -> None:
+    with pytest.raises(NotReadOnlyQueryError):
+        get_result_column_types_sync("DELETE FROM t", engine=sqlite_engine, db_type="sqlite")
+    with sqlite_engine.connect() as conn:
+        assert conn.execute(sa.text("SELECT COUNT(*) FROM t")).scalar() == 1
+
+
+async def test_client_door_refuses_a_modifying_statement(sqlite_engine: sa.Engine, tmp_path: Path) -> None:
+    client = _probe_db_client(tmp_path)
+    try:
+        with pytest.raises(NotReadOnlyQueryError):
+            await client.get_result_column_types("DELETE FROM t")
+    finally:
+        client.close()
+    with sqlite_engine.connect() as conn:
+        assert conn.execute(sa.text("SELECT COUNT(*) FROM t")).scalar() == 1
+
+
+# ── trial query ───────────────────────────────────────────────────────────
+
+def _trial(sql: str) -> exp.Select:
+    return sql_model_trial_query(sql, dialect=PostgresDialect())
+
+
+@pytest.mark.parametrize("sql", ["SELECT a FROM t", "SELECT a FROM t;", "SELECT a FROM t ;  \n",
+                                 "SELECT a FROM t -- note"])
+def test_trial_query_wraps_the_parsed_model_sql(sql: str) -> None:
+    trial = _trial(sql)
+    source = trial.args["from_"].this
+    assert isinstance(source, exp.Subquery)
+    assert source.alias == "_sd_validate"
+    assert source.this.sql(dialect="postgres") == "SELECT a FROM t"
+    assert trial.args["where"].this.sql() == "1 = 0"
+
+
+@pytest.mark.parametrize("sql", ["DELETE FROM t", "SELECT a INTO u FROM t",
+                                 "WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x", "SELECT ((( not valid"])
+def test_trial_query_refuses_what_is_not_a_read_only_query(sql: str) -> None:
+    with pytest.raises((NotReadOnlyQueryError, ParseError)):
+        _trial(sql)
+
+
+# ── parse door ────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize(("name", "parts", "rendered"), [
+    ("order", ("", "", "order"), '"order"'),
+    ('"Sales"."Order Items"', ("", "Sales", "Order Items"), '"Sales"."Order Items"'),
+    ("Sales.OrderItems", ("", "Sales", "OrderItems"), '"Sales"."OrderItems"'),
+    ("analytics.sales.orders", ("analytics", "sales", "orders"), "analytics.sales.orders"),
+    ('"sales.v2".orders', ("", "sales.v2", "orders"), '"sales.v2".orders'),
+])
+def test_parse_table_reads_the_dialect_identifier_rules(name: str, parts: tuple[str, str, str],
+                                                        rendered: str) -> None:
+    table = parse_table(name=name, dialect=PostgresDialect())
+    catalog, db, name = parts
+    assert table.catalog == catalog
+    assert table.db == db
+    assert table.name == name
+    assert table.sql(dialect="postgres") == rendered
+
+
+def test_parse_query_returns_the_read_only_query() -> None:
+    tree = parse_query(sql='SELECT qty FROM "Order Items"', target_dialect=DuckdbDialect(),
+                       parse_dialect=DuckdbDialect())
+    assert isinstance(tree, exp.Select)
+    assert tree.sql(dialect="duckdb") == 'SELECT qty FROM "Order Items"'
+
+
+@pytest.mark.parametrize("sql", ["DELETE FROM t", "SELECT a INTO u FROM t", "SELECT a FROM t FOR UPDATE",
+                                 "DROP TABLE t", "SELECT ((( not valid"])
+def test_parse_query_refuses_what_is_not_a_read_only_query(sql: str) -> None:
+    postgres = PostgresDialect()
+    with pytest.raises((NotReadOnlyQueryError, ParseError)):
+        parse_query(sql=sql, target_dialect=postgres, parse_dialect=postgres)
+
+
+# ── engine model typing ───────────────────────────────────────────────────
+
+def _orders(sql_table: str = "orders") -> SlayerModel:
+    return SlayerModel(name="orders", sql_table=sql_table, data_source="test", columns=[
+        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+        Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+    ])
+
+
+async def _captured_engine_probe(ds_type: str) -> str:
+    storage = YAMLStorage(base_dir=tempfile.mkdtemp())
+    await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+    seen: list[TypeProbe] = []
+
+    async def capture(probe: TypeProbe) -> dict[str, str]:
+        seen.append(probe)
+        return {}
+
+    with patch.object(storage, "get_model", new_callable=AsyncMock, return_value=_orders()):
+        engine = SlayerQueryEngine(storage=storage)
+        ds = MagicMock()
+        ds.get_connection_string.return_value = "sqlite://"
+        ds.type = ds_type
+        ds.credentials_json = None
+        with patch.object(engine, "_resolve_datasource", new_callable=AsyncMock, return_value=ds):
+            client = MagicMock()
+            client.get_result_column_types = capture
+            engine._sql_clients[client_cache_key(ds)] = client
+            await engine.get_result_column_types("orders")
+    (probe,) = seen
+    assert isinstance(probe, TypeProbe)
+    return probe.sql
+
+
+async def test_engine_probe_keeps_the_limit_wrapper() -> None:
+    sql = await _captured_engine_probe("sqlite")
+    assert sql.startswith("SELECT * FROM (")
+    assert sql.endswith(") AS _types LIMIT 1")
+    assert isinstance(sqlglot.parse_one(sql, dialect="sqlite").args["from_"].this, exp.Subquery)
+
+
+async def test_engine_probe_keeps_the_top_wrapper_on_tsql() -> None:
+    sql = await _captured_engine_probe("mssql")
+    assert sql.startswith("SELECT TOP 0 * FROM (")
+    assert sql.endswith(") AS _types")
+    assert "LIMIT" not in sql
+
+
+async def test_engine_probe_applies_the_session_policy(tmp_path: Path) -> None:
+    db = str(tmp_path / "live.db")
+    with transaction(db) as conn:
+        conn.executescript("CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL, org TEXT);"
+                           "INSERT INTO orders VALUES (1, 2.5, 'secret-org');")
+    storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
+    await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=db))
+    await storage.save_model(_orders())
+    engine = SlayerQueryEngine(storage=storage, policy=SessionPolicy(
+        ruleset=ColumnFilterRuleset(column="org", value="secret-org")))
+    seen: list[str] = []
+    real = SlayerSQLClient.get_result_column_types
+
+    async def spy(self: SlayerSQLClient, probe: TypeProbe) -> dict[str, ResultColumnType]:
+        seen.append(probe.sql)
+        return await real(self, probe)
+
+    try:
+        with patch.object(SlayerSQLClient, "get_result_column_types", spy):
+            types = await engine.get_result_column_types("orders")
+    finally:
+        engine.close()
+    assert types["revenue"].type == DataType.DOUBLE
+    (sql,) = seen
+    assert "secret-org" in sql
+    assert sql.endswith(") AS _types LIMIT 1")

@@ -15,7 +15,7 @@ import pytest
 from slayer.core.enums import JoinType
 from slayer.core.join_search import count_routes, reachable
 from slayer.core.query import SlayerQuery
-from slayer.engine.join_safety import safe_reachable
+from slayer.engine.cardinality.join_safety import safe_reachable
 
 from tests._dev1853_fixtures import chain_engine, chain_models
 
@@ -24,9 +24,11 @@ QUERIES = {
         source_model="customers", dimensions=["name", "orders.status"]),
     "forward_dims": SlayerQuery(
         source_model="orders", dimensions=["status", "customers.name"]),
-    "reverse_aggregate": SlayerQuery(
-        source_model="customers", dimensions=["name"],
-        measures=[{"formula": "orders.amount:sum", "name": "t"}]),
+    "reverse_aggregate": SlayerQuery.model_validate({
+        "source_model": "customers",
+        "dimensions": ["name"],
+        "measures": [{"formula": "sum(orders.amount)", "name": "t"}],
+    }),
     "multi_hop": SlayerQuery(
         source_model="regions", dimensions=["name", "customers.orders.status"]),
 }

@@ -6,16 +6,18 @@ algebra type error raises here, each invoked at its family's original checkpoint
 
 from __future__ import annotations
 
-from datetime import datetime
+import re
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from types import MappingProxyType
 from typing import (
-    Callable, Dict, Iterator, List, Literal, Mapping, NamedTuple, NoReturn, Optional,
+    Any, Callable, Dict, Iterable, Iterator, List, Literal, Mapping, NamedTuple, NoReturn, Optional,
     Sequence, Tuple, TypeGuard, cast,
 )
 
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.enums import RANK_FAMILY_TRANSFORMS, DataType, TimeGranularity
+from slayer.core.enums import RANK_FAMILY_TRANSFORMS, DataType, TimeGranularity, TIME_TRANSFORMS
 from slayer.core.errors import (
     AssociationError,
     CanonicalAliasShadowsColumnError,
@@ -24,7 +26,7 @@ from slayer.core.errors import (
     DimensionTypeError,
     DistinctDimensionValuesError,
     DuplicateMeasureNameError,
-    GranularityShapeError,
+    ListTypeError,
     MeasureNameCollidesWithColumnError,
     ModelFilterError,
     NameCollisionError,
@@ -32,6 +34,7 @@ from slayer.core.errors import (
     PartitionKeyError,
     PositionTypingError,
     ReaggregationError,
+    ScalarOperandTypeError,
     TimeAxisError,
     TimeDimensionColumnError,
     TimeLiteralError,
@@ -42,22 +45,34 @@ from slayer.core.errors import (
     UnrelatedDatasetError,
     UnsafeJoinInputError,
 )
-from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, nests_into, unknown_granularity_message
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.keys import (
     DATE_ADD_COUNT_ARG,
     DATE_OPERAND_ARGS,
+    LIST_FUNCTIONS,
+    LIST_ONLY_FUNCTIONS,
+    NULL_SAFE_COMPARISON_OPS,
+    NUMERIC_ARG_SCALARS,
     AggregateKey,
+    ArrayLiteralKey,
     ColumnTypeFn,
     ConsumerNode,
     walk_consumer_positions,
     attached_inputs,
     is_boolean_shaped,
     is_cross_model_agg,
+    is_list_call,
     is_local_combined_regroup_ref,
     is_local_partitioned_agg,
     is_reaggregation_key,
+    boolean_valued,
+    conditional_branch_conflict,
+    elements_as_numbers,
+    list_element_type,
+    list_valued,
+    literal_type,
+    numeric_valued,
     split_top_level_and,
     ArithmeticKey,
     ColumnKey,
@@ -65,7 +80,11 @@ from slayer.core.keys import (
     Grain,
     InKey,
     LiteralKey,
+    CastKey,
+    ListSetKey,
+    SCALAR_SPECS,
     ScalarCallKey,
+    StarKey,
     TimePointCmpKey,
     TimeTruncKey,
     TransformKey,
@@ -73,25 +92,28 @@ from slayer.core.keys import (
     regroup_root_grain,
     temporal_type,
     type_date_values,
+    column_leaf,
     value_arg_positions,
+    value_type,
     source_anchor_path,
     transform_operand_grain,
     walk_value_keys,
+    list_set_key,
 )
 from slayer.core.models import SlayerModel
-from slayer.core.refs import dotted_key_display, key_display
+from slayer.core.names import folded_collisions
+from slayer.core.refs import bucket_remedy, dotted_key_display, key_display
 from slayer.core.scope import ModelScope, StageSchema
 from slayer.core.time_points import (
-    TIME_POINT_FORMS, Instant, add_units, ceil_to, floor_to, is_relative_token, resolve_time_point,
+    TIME_POINT_FORMS, Instant, add_units, ceil_to, floor_to, is_relative_token, is_time_point, resolve_time_point,
 )
 from slayer.sql.sql_expr import has_window_function
-from slayer.sql.sql_predicate import parse_sql_predicate
-from slayer.ir.planned import MaskTyping, ModeAFilter
+from slayer.ir.planned import MaskTyping
 from slayer.ir.elaborated import (
     ConjunctTyping, ElaboratedQuery, ExpressionEntry, PositionVerdict, Term,
 )
-from slayer.ir.bound import BoundFilter, DeclaredMeasure, OrderSpec, bound_filter_from_key
-from slayer.ir.prebound import PreboundQuery
+from slayer.ir.bound import BoundFilter, DeclaredMeasure, OrderSpec, WholeListRead, bound_filter_from_key
+from slayer.ir.prebound import ModePolicy, PreboundQuery
 from slayer.ir.terms import (
     Aggregate,
     Broadcast,
@@ -135,7 +157,7 @@ def _field_blockers(cj: ValueKey, row_agg_set: frozenset) -> Tuple[List[ValueKey
     return blockers, attached
 
 
-def _measure_blockers(cj: ValueKey, dim_keys: frozenset) -> List[ValueKey]:
+def row_refs_off_grain(cj: ValueKey, dim_keys: frozenset) -> List[ValueKey]:
     """Row-level refs outside aggregate subtrees not available at query grain.
     A subtree equal to a query dimension's bound key IS the grouped value —
     available at query grain wholesale."""
@@ -165,10 +187,10 @@ def _key_display(k: ValueKey) -> str:
         return f"{name} (partition_by)" if k.partition_keys is not None else name
     if isinstance(k, TransformKey):
         return f"{k.op}(...)"
-    if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
-        col = k.column if isinstance(k, TimeTruncKey) else k
-        leaf = getattr(col, "leaf", None) or getattr(col, "column_name", "?")
-        return ".".join((*col.path, leaf))
+    if isinstance(k, TimeTruncKey):
+        return _key_display(k.source) if isinstance(k.source, (ColumnKey, ColumnSqlKey)) else key_display(k.source)
+    if isinstance(k, (ColumnKey, ColumnSqlKey)):
+        return ".".join((*k.path, column_leaf(k)))
     return type(k).__name__
 
 
@@ -187,7 +209,7 @@ def type_position_conjunct(
     if not field_blockers:
         return ConjunctTyping(MaskTyping.FIELD, 1 if attached else 0)
     if has_measure_position:
-        measure_blockers = _measure_blockers(cj, dim_keys)
+        measure_blockers = row_refs_off_grain(cj, dim_keys)
         if not measure_blockers:
             return ConjunctTyping(MaskTyping.MEASURE, 1)
         raise PositionTypingError(
@@ -221,7 +243,7 @@ def check_measures_at_query_grain(prebound: PreboundQuery) -> None:
         if dm.is_dimension:
             continue
         root = dm.bound.value_key
-        blockers = _measure_blockers(root, dim_keys)
+        blockers = row_refs_off_grain(root, dim_keys)
         if not blockers:
             continue
         names = ", ".join(_key_display(k) for k in blockers)
@@ -586,6 +608,16 @@ def check_duplicate_measure_name(*, name: str, occurrences: List[str]) -> NoRetu
     raise DuplicateMeasureNameError(name=name, occurrences=occurrences)
 
 
+def check_result_names_case(*, names: Iterable[str]) -> None:
+    """A fresh query's result names may not differ only in case (names match in any case)."""
+    for group in folded_collisions(names):
+        raise NameCollisionError(
+            summary=f"Result names {' and '.join(repr(n) for n in group)} differ only in case; names match in any "
+            f"case, so they collide.",
+            suggestion="Rename one of them.",
+        )
+
+
 def check_reserved_regroup_prefix(columns: List[str]) -> None:
     """A real column may not carry the reserved regroup placeholder prefix while a regroup is active."""
     if columns:
@@ -596,28 +628,18 @@ def check_reserved_regroup_prefix(columns: List[str]) -> None:
         )
 
 
-def validate_model_filter(
-    *,
-    mf: str,
-    idx: int,
-    model: SlayerModel,
-) -> ModeAFilter:
-    """Validate a ``SlayerModel.filters`` entry and emit its Mode-A text carrier (rejects same-model ModelMeasure and window-function column refs)."""
-    parsed = parse_sql_predicate(mf)
-    measure_names = {m.name for m in (model.measures or [])}
-    windowed_columns = {
-        c.name for c in model.columns
-        if c.sql and has_window_function(c.sql)
-    }
-    for col in parsed.columns:
-        if col in measure_names:
+def validate_model_filter(*, mf: str, references: Iterable[Tuple[SlayerModel, str]]) -> None:
+    """Reject a model filter naming a saved measure or a windowed column, each ``(owner, leaf)`` reference judged on its owner."""
+    for owner, col in references:
+        if col in {m.name for m in owner.measures or []}:
             raise ModelFilterError(
                 summary=f"The model filter references measure {col!r}. "
                 f"Model filters can only reference table columns (WHERE).",
                 location=f"model filter {mf!r}",
                 suggestion="Use query-level filters for measure conditions.",
             )
-        if col in windowed_columns:
+        column = owner.get_column(col)
+        if column is not None and column.sql and has_window_function(column.sql):
             raise ModelFilterError(
                 summary=f"The model filter references column {col!r} whose "
                 f"SQL contains a window function.",
@@ -625,7 +647,6 @@ def validate_model_filter(
                 suggestion="Factor it into a multi-stage source_queries model "
                 "or use a rank-family transform at query time.",
             )
-    return ModeAFilter(id=f"mf{idx}", text=mf)
 
 
 def _aggregate_terms(
@@ -844,14 +865,23 @@ def check_dimension_temporal_axis(
                 )
 
 
-def check_windowed_time_dimension(*, resolved: bool) -> None:
+_AXIS_REMEDY = "Add a single time_dimensions entry, or set main_time_dimension to select among multiple time dimensions."
+
+
+def with_bucket_remedy(suggestion: str, remedy: Optional[str]) -> str:
+    """``suggestion``, led by grouping on ``remedy``'s time bucket when a dimension is an integer extraction."""
+    if remedy is None:
+        return suggestion
+    return f"Group by the time bucket {remedy}: an extraction is an integer, never a time axis. {suggestion}"
+
+
+def check_windowed_time_dimension(*, resolved: bool, remedy: Optional[str] = None) -> None:
     """A windowed measure needs a resolvable query time dimension (both windowed guard sites)."""
     if resolved:
         return
     raise TimeAxisError(
         summary="Windowed measure could not resolve its time dimension.",
-        suggestion="Add a single time_dimensions entry, or set main_time_dimension "
-        "to select among multiple time dimensions.",
+        suggestion=with_bucket_remedy(_AXIS_REMEDY, remedy),
     )
 
 
@@ -868,7 +898,7 @@ def check_unrelated_row_read(
     """A row-level read of a dataset no join path reaches, outside an aggregation's inputs, raises."""
     if reference is None:
         return
-    ref = key_display(reference.column if isinstance(reference, TimeTruncKey) else reference)
+    ref = key_display(reference.source if isinstance(reference, TimeTruncKey) else reference)
     raise UnrelatedDatasetError(
         summary=f"{ref} reads {dataset}, which no join path reaches from the population "
         f"{population}: it meets {population} as a product, so it is read only through aggregates.",
@@ -919,13 +949,30 @@ def check_spine_aggregation(*, offender: Optional[str]) -> None:
         )
 
 
-def check_spine_plain_use(*, offender: Optional[str], position: str) -> None:
+def check_spine_plain_use(*, offender: Optional[str], position: str, remedy: Optional[str] = None) -> None:
     """The spine column appears only bucketed by a granularity, or in a bound."""
     if offender is not None:
         raise TimeSpineError(
             summary=f"time_spine.timestamp in {position} `{offender}` is not a bucketed time dimension.",
             location=offender,
-            suggestion=_SPINE_REMEDY,
+            suggestion=with_bucket_remedy(_SPINE_REMEDY, remedy),
+        )
+
+
+_SPINE_AXIS_REMEDY = (
+    "Bucket time_spine.timestamp itself (time_dimensions=[{dimension: time_spine.timestamp, granularity: month, "
+    "date_range: [...]}]) and compute other date logic from the fact's own column."
+)
+
+
+def check_spine_time_dimension(*, offender: Optional[str], remedy: Optional[str] = None) -> None:
+    """An expression is never an axis: a time dimension reads the spine column only as the bare column."""
+    if offender is not None:
+        raise TimeSpineError(
+            summary=f"Time dimension `{offender}` reads time_spine.timestamp inside an expression; "
+            f"an expression is never an axis.",
+            location=f"time dimension {offender!r}",
+            suggestion=with_bucket_remedy(_SPINE_AXIS_REMEDY, remedy),
         )
 
 
@@ -961,20 +1008,11 @@ def check_granularity_known(
     return granularity
 
 
-def check_granularity_call_shape(*, entry: str, column: Optional[str]) -> None:
-    """A datasource-granularity call must take exactly one column reference."""
-    if column is None:
-        raise GranularityShapeError(
-            summary=f"Granularity call {entry!r} must be a single column reference ``gran(col)``.",
-            suggestion="Pass one bare or dotted column, e.g. ``fiscal_year(created_at)``.",
-        )
-
-
 def check_dimension_call_known(*, entry: str, defined: Mapping[str, CustomGranularity]) -> NoReturn:
     """A single-column dimension call naming no granularity, scalar, transform or built-in aggregation."""
     raise UnknownGranularityError(
         summary=unknown_granularity_message(name=entry, defined=defined.values(), where="dimensions"),
-        suggestion="For a time bucket use ``gran(col)``; a custom aggregation used as a "
+        suggestion="For a time bucket write date_trunc('<unit>', expr); a custom aggregation used as a "
         "dimension must carry ``partition_by=``.",
     )
 
@@ -983,24 +1021,27 @@ def check_time_dimension_column(
     *,
     name: str,
     column_type: Optional[DataType],
-    upstream_granularity: Optional[Granularity],
     requested_granularity: Granularity,
+    bucketed_leaves: Sequence[Tuple[str, Granularity]] = (),
+    is_expression: bool = False,
 ) -> None:
-    """A time dimension's column must be temporal (DATE / TIMESTAMP); a bucketed column — stage, query-backed cache, or hand-set ``Column.granularity`` — re-buckets only to the same or a nesting-coarser granularity (closure Axiom 9). One message for all three origins."""
+    """A time dimension must be temporal (DATE / TIMESTAMP); every bucketed leaf — stage, query-backed cache, or hand-set ``Column.granularity`` — re-buckets only to the same or a nesting-coarser granularity (closure Axiom 9). One message for all three origins."""
     if column_type not in (DataType.DATE, DataType.TIMESTAMP):
+        kind = "expression" if is_expression else "column"
         raise TimeDimensionColumnError(
-            summary=f"A time dimension must reference a temporal column "
-            f"(DATE / TIMESTAMP); got column type {column_type!r}.",
+            summary=f"A time dimension must reference a temporal {kind} "
+            f"(DATE / TIMESTAMP); got {kind} type {column_type!r}.",
             location=f"time dimension {name!r}",
+            suggestion="Wrap it in CAST(… AS TIMESTAMP) or CAST(… AS DATE)."
+            if is_expression and column_type is None else None,
         )
-    if (
-        upstream_granularity is not None
-        and requested_granularity != upstream_granularity
-        and not nests_into(upstream_granularity, requested_granularity)
-    ):
+    for leaf, upstream in bucketed_leaves:
+        if requested_granularity == upstream or nests_into(upstream, requested_granularity):
+            continue
+        column = "column" if leaf == name else f"column {leaf!r}"
         raise TimeDimensionColumnError(
             summary=f"Cannot re-bucket to '{requested_granularity}': the "
-            f"column is already bucketed at '{upstream_granularity}', which "
+            f"{column} is already bucketed at '{upstream}', which "
             f"does not nest into '{requested_granularity}'.",
             location=f"time dimension {name!r}",
             suggestion="Request the same or a nesting-coarser granularity, or "
@@ -1008,10 +1049,37 @@ def check_time_dimension_column(
         )
 
 
-# Allowlisted scalars whose result is never numeric.
-_TEXT_SCALARS = frozenset({
-    "lower", "upper", "trim", "ltrim", "rtrim", "replace", "substr", "substring", "concat",
-})
+def check_time_dimension_row_level(*, name: str, source: ValueKey) -> None:
+    """A time dimension's expression is row-level: no aggregate, transform or attached value."""
+    if any(isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(source)):
+        raise TimeDimensionColumnError(
+            summary="A time dimension is row-level; its expression reads an aggregate or transform.",
+            location=f"time dimension {name!r}",
+            suggestion="Bucket a column or a row-level expression of columns.",
+        )
+
+
+def time_dimension_type(source: ValueKey, *, column_type: ColumnTypeFn) -> Optional[DataType]:
+    """A time dimension expression's type: DATE / TIMESTAMP when provably temporal, else a provable other type, else ``None``."""
+    return temporal_type(source, column_type=column_type) or _count_type(source, column_type=column_type)
+
+
+def check_time_dimension_home(*, name: str, crossing: Optional[Tuple[str, Optional[str]]], anchor: str) -> None:
+    """A time dimension expression reads every leaf over provably to-one hops from its anchor (Axiom 2.2)."""
+    if crossing is None:
+        return
+    leaf, hop = crossing
+    if hop is None:
+        check_input_dependencies_analyzable(alias=name, column=leaf)
+        return
+    raise UnsafeJoinInputError(
+        summary=f"The time dimension reads {leaf}, which crosses an unproven or fanning join hop "
+        f"to {hop} from {anchor}: no dataset determines every column the expression reads.",
+        location=f"time dimension {name!r}",
+        suggestion=_JOIN_REMEDY,
+    )
+
+
 _NON_NUMERIC_TYPES = frozenset({
     DataType.TEXT, DataType.BOOLEAN, DataType.DATE, DataType.TIMESTAMP, DataType.UNKNOWN,
 })
@@ -1024,20 +1092,23 @@ def _operand_display(k: object) -> str:
         return f"'{k}'"
     if isinstance(k, ScalarCallKey):
         return f"{k.name}({', '.join(_operand_display(a) for a in k.args)})"
+    if isinstance(k, CastKey):
+        return f"{'TRY_CAST' if k.try_ else 'CAST'}({_operand_display(k.source)} AS {k.type_text})"
     if isinstance(k, ArithmeticKey):
         if len(k.operands) == 1:
             return f"{k.op}{_operand_display(k.operands[0])}"
         return f" {k.op} ".join(_operand_display(o) for o in k.operands)
     if isinstance(k, (AggregateKey, TransformKey, ColumnKey, ColumnSqlKey, TimeTruncKey)):
         return _key_display(k)
+    if isinstance(k, ArrayLiteralKey):
+        return f"[{', '.join(_operand_display(v) for v in k.values)}]"
+    if isinstance(k, ListSetKey):
+        return _operand_display(k.source)
     return str(k)
 
 
 _LITERAL_TYPES: Mapping[type, DataType] = MappingProxyType({
     bool: DataType.BOOLEAN, str: DataType.TEXT,
-})
-_SCALAR_RESULT_TYPES: Mapping[str, DataType] = MappingProxyType({
-    **{name: DataType.TEXT for name in _TEXT_SCALARS}, "like": DataType.BOOLEAN,
 })
 
 
@@ -1049,7 +1120,10 @@ def _leaf_count_type(key: object, *, column_type: ColumnTypeFn) -> Optional[Data
     if isinstance(key, (ArithmeticKey, TimePointCmpKey, InKey)) and is_boolean_shaped(key):
         return DataType.BOOLEAN
     if isinstance(key, ScalarCallKey):
-        return _SCALAR_RESULT_TYPES.get(key.name)
+        spec = SCALAR_SPECS.get(key.name)
+        return None if spec is None else spec.result
+    if isinstance(key, CastKey) and key.data_type is not DataType.UNKNOWN:
+        return key.data_type
     return None
 
 
@@ -1076,8 +1150,19 @@ def _count_type(key: object, *, column_type: ColumnTypeFn) -> Optional[DataType]
 
 
 def _require_temporal(fn: str, operand: object, *, column_type: ColumnTypeFn) -> None:
-    if temporal_type(operand, column_type=column_type) is None:
+    if temporal_type(operand, column_type=column_type) is not None:
+        return
+    conflict = (
+        conditional_branch_conflict(operand, column_type=column_type) if isinstance(operand, ScalarCallKey) else None
+    )
+    if conflict is not None:
+        a, b = conflict
         raise DateOperandTypeError(
+            summary=f"{fn}() needs a DATE or TIMESTAMP operand; `{_operand_display(operand)}` is not one: its "
+            f"branches return both {a.value} and {b.value}.",
+            suggestion="CAST every non-temporal branch to DATE or TIMESTAMP.",
+        )
+    raise DateOperandTypeError(
             summary=f"{fn}() needs a DATE or TIMESTAMP operand; "
             f"`{_operand_display(operand)}` is not one.",
             suggestion="Pass a column declared DATE / TIMESTAMP (set Column.type), "
@@ -1101,14 +1186,32 @@ def _check_date_call(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> None:
 
 
 def check_date_operands(*, roots: Sequence[ValueKey], column_type: ColumnTypeFn) -> None:
-    """Every date-function and ``gran(col)`` operand must be DATE/TIMESTAMP and every ``date_add`` count numeric."""
+    """Every date-function and ``date_trunc`` operand must be DATE/TIMESTAMP and every ``date_add`` count numeric."""
     keys = [key for root in roots for key in walk_value_keys(root)]
-    for key in keys:  # innermost first: a ``gran(col)`` inside a date function names its column
+    for key in keys:  # innermost first: a ``date_trunc`` inside a date function names its column
         if isinstance(key, TimeTruncKey):
-            _require_temporal(str(key.granularity), key.column, column_type=column_type)
+            _require_temporal(str(key.granularity), key.source, column_type=column_type)
     for key in keys:
         if isinstance(key, ScalarCallKey) and key.name in DATE_OPERAND_ARGS:
             _check_date_call(key, column_type=column_type)
+
+
+def check_conditional_branches(*, roots: Sequence[ValueKey], column_type: ColumnTypeFn) -> None:
+    """Every value-returning conditional's branches must share one type."""
+    for root in roots:
+        for key in walk_value_keys(root):
+            if not isinstance(key, ScalarCallKey):
+                continue
+            conflict = conditional_branch_conflict(key, column_type=column_type)
+            if conflict is None:
+                continue
+            a, b = conflict
+            call = "CASE" if key.name == "iif" else f"{key.name}()"
+            raise ScalarOperandTypeError(
+                summary=f"{call} `{_operand_display(key)}` returns both {a.value} and {b.value}; its branches "
+                f"must share one type.",
+                suggestion=f"CAST one branch so both are {a.value} (or both {b.value}).",
+            )
 
 
 _PLAIN_COMPARISON_OPS = frozenset({"==", "!=", "<", "<=", ">", ">="})
@@ -1133,11 +1236,11 @@ def resolve_time_points(
 def _time_operand(
     operand: ValueKey, *, column_type: ColumnTypeFn,
 ) -> Tuple[ValueKey, Optional[DataType], Optional[Granularity]]:
-    """``(bounded operand, its temporal type, bucket granularity)``: a direct ``gran(col)``
+    """``(bounded operand, its temporal type, bucket granularity)``: a direct ``date_trunc``
     bounds ``col``; ISO literals in a conditional count as dates when that makes it temporal."""
     if isinstance(operand, TimeTruncKey):
-        t = temporal_type(operand.column, column_type=column_type)
-        return operand.column, t, operand.granularity
+        t = temporal_type(operand.source, column_type=column_type)
+        return operand.source, t, operand.granularity
     t = temporal_type(operand, column_type=column_type)
     if t is None:
         typed = type_date_values(operand)
@@ -1169,6 +1272,10 @@ def _raise_not_a_time_point(*, operand: object, text: str) -> NoReturn:
     )
 
 
+_NOT_IN = "not in"
+_MEMBERSHIP_SQL = {"in": "IN", _NOT_IN: "NOT IN"}
+
+
 def _lower_time_point(
     key: TimePointCmpKey, *, column_type: ColumnTypeFn, now: datetime, units: Mapping[str, CustomGranularity],
 ) -> ValueKey:
@@ -1178,7 +1285,7 @@ def _lower_time_point(
     point = resolve_time_point(key.point, now=now, units=units)
     if point is None:
         _raise_not_a_time_point(operand=key.operand, text=key.point)
-    op = {"in": "=", "not in": "!="}.get(key.op, key.op)
+    op = {"in": "=", _NOT_IN: "!="}.get(key.op, key.op)
     if isinstance(point, Instant):
         if gran is None:
             return ArithmeticKey(op=_arith_op(op), operands=(target, _bound(point.value, t=t, key=key)))
@@ -1225,7 +1332,9 @@ def _raise_sub_day(key: TimePointCmpKey) -> NoReturn:
 
 def _non_temporal_comparison(key: TimePointCmpKey, *, units: Mapping[str, CustomGranularity]) -> ValueKey:
     """A literal time point against a non-temporal operand keeps its plain-string meaning."""
-    if key.op in ("in", "not in") or is_relative_token(key.point, units=units):
+    op_text = _MEMBERSHIP_SQL.get(key.op, key.op)
+    check_extraction_literal(operand=key.operand, text=key.point, op=op_text, units=units)
+    if key.op in _MEMBERSHIP_SQL or is_relative_token(key.point, units=units):
         raise DateOperandTypeError(
             summary=f"'{key.point}' is a time point, but `{_operand_display(key.operand)}` "
             f"is not a DATE or TIMESTAMP operand.",
@@ -1239,6 +1348,541 @@ def _non_temporal_comparison(key: TimePointCmpKey, *, units: Mapping[str, Custom
     return ArithmeticKey(op=op, operands=(key.operand, literal))
 
 
+# Positions where TEXT beside a number reads as a number (spec: queries/mixed-type-coercion).
+_COERCED_OPS = frozenset({"==", "!=", "<", "<=", ">", ">=", *NULL_SAFE_COMPARISON_OPS, "+", "-", "*", "/", "%"})
+_TEXT_PRESERVING_AGGS = frozenset({"min", "max", "first", "last"})
+
+
+def _text_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
+    """Whether ``key``'s value is certainly TEXT."""
+    if isinstance(key, LiteralKey):
+        return isinstance(key.value, str)
+    if isinstance(key, (ColumnKey, ColumnSqlKey)):
+        return column_type(key) is DataType.TEXT
+    if isinstance(key, CastKey):
+        return key.data_type is DataType.TEXT
+    if isinstance(key, AggregateKey):
+        return key.agg.lower() in _TEXT_PRESERVING_AGGS and _text_valued(key.source, column_type=column_type)
+    if isinstance(key, ScalarCallKey):
+        spec = SCALAR_SPECS.get(key.name)
+        if spec is not None and spec.result is not None:
+            return spec.result is DataType.TEXT
+        values = [key.args[i] for i in value_arg_positions(key.name, len(key.args))]
+        known = [a for a in values if not (isinstance(a, LiteralKey) and a.value is None)]
+        return bool(known) and all(_text_valued(a, column_type=column_type) for a in known)
+    return False
+
+
+def _as_number(key: ValueKey, *, beside: ValueKey) -> ValueKey:
+    """A TEXT operand read as a number: a literal converted now, anything else ``TRY_CAST(… AS DOUBLE)``."""
+    if isinstance(key, LiteralKey) and isinstance(key.value, str):
+        return LiteralKey(value=_number_literal(key.value, beside=beside))
+    return CastKey(source=key, type_text="DOUBLE", data_type=DataType.DOUBLE, try_=True)
+
+
+_BARE_YEAR = re.compile(r"\s*\d{4}\s*")
+
+
+def check_extraction_literal(
+    *, operand: ValueKey, text: str, op: str, units: Mapping[str, CustomGranularity] = MappingProxyType({}),
+) -> None:
+    """An integer extraction compared with a date-shaped literal (not a bare year or a number) is refused."""
+    remedy = bucket_remedy(operand)
+    if remedy is None or _BARE_YEAR.fullmatch(text) or not is_time_point(text, units=units):
+        return
+    raise DateOperandTypeError(
+        summary=f"'{text}' is a date, but `{key_display(operand)}` is an integer extraction, never equal to a date.",
+        suggestion=f"Compare the time bucket instead: {remedy} {op} '{text}'.",
+    )
+
+
+def _number_literal(text: str, *, beside: ValueKey) -> Decimal:
+    check_extraction_literal(operand=beside, text=text, op="=")
+    try:
+        value = Decimal(text.strip())
+    except InvalidOperation:
+        value = None
+    if value is None or not value.is_finite():
+        raise ScalarOperandTypeError(
+            summary=f"'{text}' is not a number, so it cannot meet the number `{_operand_display(beside)}`.",
+            suggestion="Compare with a number (e.g. 100), or compare text with text.",
+        )
+    return value
+
+
+def coerce_text_numbers(key: ValueKey, *, column_type: ColumnTypeFn) -> ValueKey:
+    """TEXT beside a number in a comparison, ``IN``, arithmetic or ``greatest`` / ``least`` reads as a number;
+    a number function over TEXT fails (literals convert); ``||`` reads a number as its text and refuses a BOOLEAN."""
+    rebuilt = cast(ValueKey, key.map_children(lambda c: coerce_text_numbers(c, column_type=column_type)))
+
+    def text(k: object) -> bool:
+        return _text_valued(k, column_type=column_type)
+
+    def number(k: object) -> bool:
+        return numeric_valued(k, column_type=column_type)
+
+    def boolean(k: object) -> bool:
+        return boolean_valued(k, column_type=column_type)
+
+    if isinstance(rebuilt, ArithmeticKey) and rebuilt.op in _COERCED_OPS and len(rebuilt.operands) == 2:
+        return _coerce_binary(rebuilt, text=text, number=number)
+    if isinstance(rebuilt, InKey):
+        return _coerce_in(rebuilt, text=text, number=number)
+    if isinstance(rebuilt, ScalarCallKey):
+        return _coerce_scalar_args(rebuilt, text=text, number=number, boolean=boolean)
+    return rebuilt
+
+
+_ZONED_COMPARED_OPS = frozenset({"==", "=", "!=", "<>", "<", "<=", ">", ">=", *NULL_SAFE_COMPARISON_OPS})
+
+
+def coerce_zoned_comparisons(
+    key: ValueKey, *, zoned: Callable[[object], bool], column_type: ColumnTypeFn,
+) -> ValueKey:
+    """A naive timestamp compared with a zoned-instant column converts to the column's type; the column stays bare."""
+    rebuilt = cast(ValueKey, key.map_children(
+        lambda c: coerce_zoned_comparisons(c, zoned=zoned, column_type=column_type)))
+    if not (isinstance(rebuilt, ArithmeticKey) and rebuilt.op in _ZONED_COMPARED_OPS and len(rebuilt.operands) == 2):
+        return rebuilt
+    left, right = rebuilt.operands
+
+    def naive(k: ValueKey) -> bool:
+        # A temporal literal renders as ISO text, which already reads as the column's type.
+        literal = isinstance(k, LiteralKey) and isinstance(k.value, date)
+        return not literal and not zoned(k) and temporal_type(k, column_type=column_type) is DataType.TIMESTAMP
+
+    if zoned(left) and naive(right):
+        return rebuilt.model_copy(update={"operands": (left, _as_zoned(right))})
+    if zoned(right) and naive(left):
+        return rebuilt.model_copy(update={"operands": (_as_zoned(left), right)})
+    return rebuilt
+
+
+def _as_zoned(key: ValueKey) -> ValueKey:
+    return CastKey(source=key, type_text="TIMESTAMP", data_type=DataType.TIMESTAMP)
+
+
+def _coerce_binary(key: ArithmeticKey, *, text: Callable[[object], bool], number: Callable[[object], bool]) -> ValueKey:
+    left, right = key.operands
+    if text(left) and number(right):
+        return key.model_copy(update={"operands": (_as_number(left, beside=right), right)})
+    if number(left) and text(right):
+        return key.model_copy(update={"operands": (left, _as_number(right, beside=left))})
+    return key
+
+
+def _coerce_in(key: InKey, *, text: Callable[[object], bool], number: Callable[[object], bool]) -> ValueKey:
+    if text(key.column) and all(number(v) for v in key.values):
+        return key.model_copy(update={"column": _as_number(key.column, beside=key.values[0])})
+    if number(key.column) and any(text(v) for v in key.values):
+        values = tuple(cast(LiteralKey, _as_number(v, beside=key.column)) if text(v) else v for v in key.values)
+        return key.model_copy(update={"values": values})
+    return key
+
+
+def _numeric_scalar_args(key: ScalarCallKey, *, text: Callable[[object], bool]) -> list:
+    """A number function's arguments: TEXT literals converted, any other TEXT refused."""
+    args = list(key.args)
+    for i, arg in enumerate(args):
+        if isinstance(arg, LiteralKey) and isinstance(arg.value, str):
+            args[i] = LiteralKey(value=_number_literal(arg.value, beside=key))
+        elif text(arg):
+            display = _operand_display(arg)
+            raise ScalarOperandTypeError(
+                summary=f"{key.name}() reads numbers, but `{display}` is TEXT.",
+                suggestion=f"Convert numbers stored as text: {key.name}(TRY_CAST({display} AS DOUBLE)).",
+            )
+    return args
+
+
+def _text_concat_args(
+    key: ScalarCallKey, *, number: Callable[[object], bool], boolean: Callable[[object], bool],
+) -> list:
+    """Concatenation arguments: a number reads as its text; a BOOLEAN has no portable text."""
+    for arg in key.args:
+        if boolean(arg):
+            display = _operand_display(arg)
+            raise ScalarOperandTypeError(
+                summary=f"Text concatenation has no portable spelling for the BOOLEAN `{display}`.",
+                suggestion=f"Spell it explicitly: CASE WHEN {display} THEN 'true' ELSE 'false' END.",
+            )
+    return [CastKey(source=cast(ValueKey, a), type_text="TEXT", data_type=DataType.TEXT) if number(a) else a
+            for a in key.args]
+
+
+def _coerce_scalar_args(
+    key: ScalarCallKey, *, text: Callable[[object], bool], number: Callable[[object], bool],
+    boolean: Callable[[object], bool],
+) -> ValueKey:
+    args = list(key.args)
+    if key.name in ("greatest", "least"):
+        numbers = [a for a in args if number(a)]
+        if numbers:
+            args = [_as_number(cast(ValueKey, a), beside=cast(ValueKey, numbers[0])) if text(a) else a for a in args]
+    elif key.name in NUMERIC_ARG_SCALARS:
+        args = _numeric_scalar_args(key, text=text)
+    elif key.name in ("concat", "concat_ws"):
+        args = _text_concat_args(key, number=number, boolean=boolean)
+    if args == list(key.args):
+        return key
+    return key.model_copy(update={"args": tuple(args)})
+
+
+# ---------------------------------------------------------------------------
+# Lists (spec: models/list-columns, queries/list-functions, aggregations/collect)
+# ---------------------------------------------------------------------------
+
+#: Comparisons a list never takes, each with the list function meaning what the comparison would.
+_LIST_COMPARISONS: Mapping[str, Optional[str]] = MappingProxyType({
+    "==": "contains", "!=": "contains", "<": None, "<=": None, ">": None, ">=": None,
+    **dict.fromkeys(NULL_SAFE_COMPARISON_OPS),
+})
+#: Comparisons that, between two lists, compare their element sets.
+_SET_COMPARISONS = frozenset({"==", "!=", *NULL_SAFE_COMPARISON_OPS})
+#: Comparison operators as Mode B writes them.
+_WRITTEN_OPS: Mapping[str, str] = MappingProxyType({"==": "=", "!=": "<>"})
+#: The aggregations a list-valued source takes.
+_LIST_SOURCE_AGGREGATIONS = frozenset({"count", "count_distinct"})
+_TYPE_FAMILIES: Mapping[DataType, str] = MappingProxyType({
+    DataType.TEXT: "text", DataType.INT: "number", DataType.DOUBLE: "number", DataType.BOOLEAN: "boolean",
+    DataType.DATE: "time", DataType.TIMESTAMP: "time",
+})
+
+
+class ListTyping(BaseModel):
+    """What the list rules read about a scope: column types and element types, and whether ``key``'s join path
+    reaches a list's elements."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    column_type: Callable[[Any], Optional[DataType]]
+    column_element: Callable[[Any], Optional[DataType]]
+    element_access: Callable[[Any], bool]
+    native_lists: bool = True
+    database: str = ""
+
+    def is_list(self, key: object) -> bool:
+        return list_valued(key, column_type=self.column_type)
+
+    def element(self, key: object) -> Optional[DataType]:
+        return list_element_type(key, column_type=self.column_type, column_element=self.column_element)
+
+
+def _list_display(key: object) -> str:
+    """``L.value``, the element spelling of a list column; else the key's display."""
+    return f"{_operand_display(key)}.value" if isinstance(key, (ColumnKey, ColumnSqlKey)) else _operand_display(key)
+
+
+def _check_native_lists(key: ValueKey, *, typing: ListTyping) -> None:
+    construct = _list_construct(key, typing=typing)
+    if construct is not None and not typing.native_lists:
+        raise ListTypeError(
+            summary=f"{construct} needs a database with native lists; {typing.database} has none.",
+            suggestion="Run the query on a database with list columns (Postgres, DuckDB, BigQuery, Snowflake, "
+            "ClickHouse, Trino or Presto).",
+        )
+
+
+def _list_construct(key: ValueKey, *, typing: ListTyping) -> Optional[str]:
+    """The list construct ``key`` is (named for a refusal), else ``None``."""
+    if isinstance(key, ScalarCallKey) and is_list_call(key, column_type=typing.column_type):
+        return f"{key.name}() over a list"
+    if isinstance(key, ArrayLiteralKey):
+        return "A list literal"
+    if isinstance(key, AggregateKey) and list_valued(key, column_type=typing.column_type):
+        return f"{key.agg}()"
+    if isinstance(key, (ColumnKey, StarKey)) and typing.element_access(key):
+        return f"Element access `{_operand_display(key)}`"
+    if _reads_sets(key, typing=typing):
+        return "Comparing lists"
+    if isinstance(key, AggregateKey) and key.agg.lower() == "count_distinct" and typing.is_list(key.source):
+        return "count_distinct() over a list"
+    return None
+
+
+def _check_list_literal(key: ArrayLiteralKey) -> None:
+    text = f"[{', '.join(_operand_display(v) for v in key.values)}]"
+    if any(v.value is None for v in key.values):
+        raise ListTypeError(
+            summary=f"The list literal {text} holds a NULL element; a list's elements are its non-NULL elements.",
+            suggestion="Drop the NULL from the literal.",
+        )
+    types = [literal_type(v.value) for v in key.values]
+    families = {_TYPE_FAMILIES.get(t) if t is not None else None for t in types}
+    if len(families) > 1:
+        raise ListTypeError(
+            summary=f"The list literal {text} mixes element types; every element must be of one type.",
+            suggestion="Write every element as text, or every element as a number.",
+        )
+
+
+def _reads_sets(key: object, *, typing: ListTyping) -> bool:
+    """An equality comparison between two lists, which compares their element sets."""
+    return (isinstance(key, ArithmeticKey) and key.op in _SET_COMPARISONS and len(key.operands) == 2
+            and all(typing.is_list(o) for o in key.operands))
+
+
+def _check_list_comparison(key: ArithmeticKey, *, typing: ListTyping) -> None:
+    if key.op not in _LIST_COMPARISONS or len(key.operands) != 2:
+        return
+    offender = next((o for o in key.operands if typing.is_list(o)), None)
+    if offender is None:
+        return
+    if _reads_sets(key, typing=typing):
+        _check_comparable_sets(*key.operands, typing=typing)
+        return
+    shown, op = _operand_display(offender), _WRITTEN_OPS.get(key.op, key.op)
+    if key.op not in _SET_COMPARISONS:
+        raise ListTypeError(
+            summary=f"`{shown}` is a list, which has no order: it cannot be compared with {op}.",
+            suggestion=f"Compare whole lists with = or <>, or its elements through {_list_display(offender)}.",
+        )
+    remedy = _LIST_COMPARISONS[key.op]
+    hint = (f"Test membership with {remedy}({shown}, x), compare it with another list, or compare its elements "
+            f"through {_list_display(offender)}.") if remedy else f"Compare its elements through {_list_display(offender)}."
+    raise ListTypeError(summary=f"`{shown}` is a list and cannot be compared with a scalar by {op}.", suggestion=hint)
+
+
+def _check_comparable_sets(left: ValueKey, right: ValueKey, *, typing: ListTyping) -> None:
+    """Two lists compare as sets when their elements are known and of one type family."""
+    for side in (left, right):
+        _check_known_elements(side, typing=typing, reading="compared as a set")
+    left_type, right_type = typing.element(left), typing.element(right)
+    if left_type is not None and right_type is not None and (
+            _TYPE_FAMILIES.get(left_type) != _TYPE_FAMILIES.get(right_type)):
+        a, b = left_type.value, right_type.value
+        raise ListTypeError(
+            summary=f"`{_operand_display(left)}` and `{_operand_display(right)}` hold {a} and {b} elements, which "
+            f"cannot be compared.",
+            suggestion=f"Compare lists of one element type, or cast one list's elements (CAST(x AS {a}[])).",
+        )
+
+
+def _check_known_elements(key: ValueKey, *, typing: ListTyping, reading: str) -> None:
+    element = typing.element(key)
+    if element is not None and element.is_opaque:
+        raise ListTypeError(
+            summary=f"`{_operand_display(key)}` holds opaque (UNKNOWN) elements, which cannot be {reading}.",
+            suggestion="Declare the column's element_type.",
+        )
+
+
+def _check_list_in(key: InKey, *, typing: ListTyping) -> None:
+    if typing.is_list(key.column):
+        column = _operand_display(key.column)
+        raise ListTypeError(
+            summary=f"`{column}` is a list and cannot be IN a list of scalars.",
+            suggestion=f"Use contains_any({column}, [...]), compare whole lists with {column} IN ([...], [...]), "
+            f"or filter {_list_display(key.column)} IN (...).",
+        )
+
+
+def _same_family(element: Optional[DataType], other: Optional[DataType]) -> bool:
+    if element is None or other is None:
+        return True
+    return _TYPE_FAMILIES.get(element) == _TYPE_FAMILIES.get(other) or (
+        element in (DataType.INT, DataType.DOUBLE) and other is DataType.TEXT
+    )
+
+
+def _check_list_call(key: ScalarCallKey, *, typing: ListTyping) -> None:
+    if key.name in LIST_ONLY_FUNCTIONS:
+        for arg in key.args:
+            if not typing.is_list(arg):
+                raise ListTypeError(
+                    summary=f"{key.name}() compares two lists; `{_operand_display(arg)}` is not a list.",
+                    suggestion="Use contains(list, value) for one value, or contains(text, substring) on text.",
+                )
+    elif not is_list_call(key, column_type=typing.column_type):
+        return
+    values = key.args[0]
+    element = typing.element(values)
+    if isinstance(values, ArrayLiteralKey) and not values.values:
+        raise ListTypeError(
+            summary=f"{key.name}([]): [] has no element type here.", suggestion="Give the empty list a typed operand.",
+        )
+    if element is not None and element.is_opaque:
+        raise ListTypeError(
+            summary=f"`{_operand_display(values)}` holds opaque (UNKNOWN) elements, which {key.name}() cannot read.",
+            suggestion="Declare the column's element_type.",
+        )
+    if key.name == "length":
+        return
+    other = key.args[1]
+    other_type = typing.element(other) if key.name != "contains" else value_type(other, column_type=typing.column_type)
+    if not _same_family(element, other_type):
+        assert element is not None and other_type is not None
+        raise ListTypeError(
+            summary=f"{key.name}() compares {element.value} elements with {other_type.value}.",
+            suggestion=f"Pass a {element.value} value.",
+        )
+
+
+def _check_list_arguments(key: ScalarCallKey, *, typing: ListTyping) -> None:
+    """A list reaches a scalar function only as a list function's list or a value-returning branch."""
+    if key.name in LIST_FUNCTIONS and (key.name in LIST_ONLY_FUNCTIONS or is_list_call(key, column_type=typing.column_type)):
+        return
+    returned = value_arg_positions(key.name, len(key.args))
+    branch = bool(returned) and all(typing.is_list(key.args[i]) for i in returned if not _is_null_literal(key.args[i]))
+    for i, arg in enumerate(key.args):
+        if typing.is_list(arg) and not (branch and i in returned):
+            raise ListTypeError(
+                summary=f"{key.name}() does not take the list `{_operand_display(arg)}`.",
+                suggestion=f"Read its elements through {_list_display(arg)}, or use contains / length.",
+            )
+
+
+def _is_null_literal(arg: object) -> bool:
+    return isinstance(arg, LiteralKey) and arg.value is None
+
+
+def _check_list_aggregation(key: AggregateKey, *, typing: ListTyping) -> None:
+    """One gate on every aggregation's typed source: a list counts as a whole, its elements aggregate via ``.value``."""
+    agg = key.agg.lower()
+    source = key.source
+    if typing.is_list(source):
+        if agg == "count_distinct":
+            _check_known_elements(source, typing=typing, reading="counted as distinct sets")
+        if agg in _LIST_SOURCE_AGGREGATIONS:
+            return
+        remedy = f"{key.agg}({_list_display(source)})" if isinstance(source, (ColumnKey, ColumnSqlKey)) else None
+        raise ListTypeError(
+            summary=f"`{_operand_display(source)}` is a list: an aggregation over a list is only count or "
+            f"count_distinct; {key.agg}() cannot take it.",
+            suggestion=f"Aggregate its elements: {remedy}." if remedy else "Aggregate the list's elements instead.",
+        )
+    if list_valued(key, column_type=typing.column_type):
+        source_type = value_type(source, column_type=typing.column_type)
+        if source_type is not None and source_type.is_opaque:
+            raise ListTypeError(
+                summary=f"{key.agg}() cannot collect the opaque (UNKNOWN) values of `{_operand_display(source)}`.",
+                suggestion="Collect a column with a scalar type.",
+            )
+
+
+def check_list_operands(*, roots: Sequence[ValueKey], typing: ListTyping) -> None:
+    """Every list rule over the query's keys (spec: models/list-columns › List columns are not dimensions,
+    comparisons or general aggregation inputs; queries/list-functions)."""
+    for root in roots:
+        for key in walk_value_keys(root):
+            _check_native_lists(key, typing=typing)
+            if isinstance(key, ArrayLiteralKey):
+                _check_list_literal(key)
+            elif isinstance(key, ArithmeticKey):
+                _check_list_comparison(key, typing=typing)
+            elif isinstance(key, InKey):
+                _check_list_in(key, typing=typing)
+            elif isinstance(key, ScalarCallKey):
+                _check_list_call(key, typing=typing)
+                _check_list_arguments(key, typing=typing)
+            elif isinstance(key, AggregateKey):
+                _check_list_aggregation(key, typing=typing)
+
+
+def check_list_dimension(*, name: str, key: ValueKey, typing: ListTyping, will_group_by: bool) -> None:
+    """A list groups by its element set, on a database with lists and over known elements."""
+    if not (will_group_by and typing.is_list(key)):
+        return
+    if not typing.native_lists:
+        raise ListTypeError(
+            summary=f"Grouping by the list dimension {name!r} needs a database with native lists; "
+            f"{typing.database} has none.",
+            suggestion="Run the query on a database with list columns (Postgres, DuckDB, BigQuery, Snowflake, "
+            "ClickHouse, Trino or Presto).",
+        )
+    _check_known_elements(key, typing=typing, reading="grouped on")
+
+
+def check_list_order_key(*, key: ValueKey, typing: ListTyping) -> None:
+    """A list has no sort order."""
+    if typing.is_list(key):
+        raise ListTypeError(
+            summary=f"Order key {_list_display(key)} is a list, which has no sort order.",
+            suggestion="Order by a scalar column, or by length(...) of the list.",
+        )
+
+
+def canonical_list_reads(key: ValueKey, *, typing: ListTyping) -> ValueKey:
+    """``key`` with every equality-reading position of a list reading its element set (semantics Axiom 3.2): both
+    sides of a comparison between lists, a ``count_distinct`` source and a partition key."""
+    rebuilt = cast(ValueKey, key.map_children(lambda c: canonical_list_reads(c, typing=typing)))
+    if _reads_sets(rebuilt, typing=typing):
+        assert isinstance(rebuilt, ArithmeticKey)
+        left, right = _numbers_as_doubles(*rebuilt.operands, typing=typing)
+        return rebuilt.model_copy(update={"operands": (list_set_key(left), list_set_key(right))})
+    if not isinstance(rebuilt, (AggregateKey, TransformKey)):
+        return rebuilt
+    update: Dict[str, Any] = {}
+    if isinstance(rebuilt, AggregateKey) and rebuilt.agg.lower() == "count_distinct" and typing.is_list(rebuilt.source):
+        update["source"] = list_set_key(cast(ValueKey, rebuilt.source))
+    keys = rebuilt.partition_keys
+    if keys is not None and any(typing.is_list(k) for k in keys):
+        update["partition_keys"] = Grain.of(list_set_key(k) if typing.is_list(k) else k for k in keys)
+    return rebuilt.model_copy(update=update) if update else rebuilt
+
+
+def canonical_list_dimension(key: ValueKey, *, typing: ListTyping, will_group_by: bool) -> ValueKey:
+    """A grouped list dimension groups by its element set."""
+    return list_set_key(key) if will_group_by and typing.is_list(key) else key
+
+
+def _numbers_as_doubles(left: ValueKey, right: ValueKey, *, typing: ListTyping) -> Tuple[ValueKey, ValueKey]:
+    """An INT list compared with a DOUBLE list is read as a DOUBLE list."""
+    types = typing.element(left), typing.element(right)
+    if set(types) != {DataType.INT, DataType.DOUBLE}:
+        return left, right
+    widened = [
+        CastKey(source=k, type_text="DOUBLE[]", data_type=DataType.ARRAY, element_type=DataType.DOUBLE)
+        if t is DataType.INT else k
+        for k, t in zip((left, right), types)
+    ]
+    return widened[0], widened[1]
+
+
+def whole_list_reads(*, dimensions: Sequence[ValueKey], roots: Sequence[ValueKey]) -> List[WholeListRead]:
+    """One read per grouped list dimension and per list counted by ``count_distinct``, each (operation, list) once."""
+    reads = [WholeListRead(operation="group", list=key_display(d)) for d in dimensions if isinstance(d, ListSetKey)]
+    reads += [
+        WholeListRead(operation="count_distinct", list=key_display(k.source))
+        for root in roots for k in walk_value_keys(root)
+        if isinstance(k, AggregateKey) and k.agg.lower() == "count_distinct" and isinstance(k.source, ListSetKey)
+    ]
+    return list(dict.fromkeys(reads))
+
+
+def coerce_list_arguments(key: ValueKey, *, typing: ListTyping) -> ValueKey:
+    """TEXT meeting a list of numbers reads as a number: literals convert, a column is read with TRY_CAST; a second
+    list of another element type is compared one element at a time."""
+    rebuilt = cast(ValueKey, key.map_children(lambda c: coerce_list_arguments(c, typing=typing)))
+    if not (isinstance(rebuilt, ScalarCallKey) and rebuilt.name in ("contains", "contains_any", "contains_all")
+            and is_list_call(rebuilt, column_type=typing.column_type)):
+        return rebuilt
+    element = typing.element(rebuilt.args[0])
+    if element not in (DataType.INT, DataType.DOUBLE):
+        return rebuilt
+    values, other = rebuilt.args
+    beside = cast(ValueKey, values)
+    coerced = other
+    if isinstance(other, ArrayLiteralKey):
+        coerced = other.model_copy(update={"values": tuple(
+            LiteralKey(value=_number_literal(v.value, beside=beside)) if isinstance(v.value, str) else v
+            for v in other.values
+        )})
+    elif rebuilt.name == "contains" and _text_valued(other, column_type=typing.column_type):
+        coerced = _as_number(cast(ValueKey, other), beside=beside)
+    if rebuilt.name != "contains" and _other_elements(coerced, typing=typing) - {element}:
+        coerced = elements_as_numbers(cast(ValueKey, coerced), text=typing.element(coerced) is DataType.TEXT)
+    return rebuilt if coerced is other else rebuilt.model_copy(update={"args": (values, coerced)})
+
+
+def _other_elements(key: object, *, typing: ListTyping) -> set[DataType]:
+    """The known element types of a list function's second list."""
+    if isinstance(key, ArrayLiteralKey):
+        return {t for v in key.values if (t := literal_type(v.value)) is not None}
+    element = typing.element(key)
+    return set() if element is None else {element}
+
+
 def _time_search_children(key: ValueKey) -> List[ValueKey]:
     if isinstance(key, AggregateKey):
         # A transform constituent lives in the source (or a composite parameter);
@@ -1246,9 +1890,9 @@ def _time_search_children(key: ValueKey) -> List[ValueKey]:
         return [
             key.source,
             *[a for a in key.args if isinstance(
-                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey))],
+                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, CastKey))],
             *[v for _, v in key.kwargs if isinstance(
-                v, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey))],
+                v, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, CastKey))],
         ]
     if isinstance(key, TransformKey):
         return [key.input]
@@ -1258,9 +1902,11 @@ def _time_search_children(key: ValueKey) -> List[ValueKey]:
         return [
             a for a in key.args
             if isinstance(
-                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, TimePointCmpKey, InKey),
+                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, TimePointCmpKey, InKey, CastKey),
             )
         ]
+    if isinstance(key, (CastKey, ListSetKey)):
+        return [key.source]
     if isinstance(key, TimePointCmpKey):
         return [key.operand]
     if isinstance(key, InKey):
@@ -1282,7 +1928,17 @@ def _find_unresolved_time_needing_op(key: ValueKey) -> Optional[str]:
     return None
 
 
-def check_time_transforms_resolved(*, roots) -> None:
+def check_whole_periods_axis(*, has_time_dimension: bool, remedy: Optional[str]) -> None:
+    """``whole_periods_only`` snaps time dimensions; an integer extraction is none."""
+    if not has_time_dimension and remedy is not None:
+        raise TimeAxisError(
+            summary="whole_periods_only completes time-dimension periods, but the query groups by an integer "
+            "extraction and has no time dimension.",
+            suggestion=f"Group by the time bucket {remedy}.",
+        )
+
+
+def check_time_transforms_resolved(*, roots, remedy: Optional[str] = None) -> None:
     """A time-needing transform still at ``time_key=None`` after attachment means no resolvable TD."""
     for vk in roots:
         op = _find_unresolved_time_needing_op(vk)
@@ -1290,8 +1946,7 @@ def check_time_transforms_resolved(*, roots) -> None:
             raise TimeAxisError(
                 summary="The transform requires an unambiguous time dimension.",
                 location=f"transform {op!r}",
-                suggestion="Add a single time_dimensions entry, or set "
-                "main_time_dimension to select among multiple time dimensions.",
+                suggestion=with_bucket_remedy(_AXIS_REMEDY, remedy),
             )
 
 
@@ -1382,12 +2037,13 @@ def check_partition_key_resolves(
         )
     if maps_to_bucket or lenient:
         return
+    is_column = isinstance(pk, (ColumnKey, ColumnSqlKey))
     raise PartitionKeyError(
-        summary=f"The partition_by column '{dotted_key_display(pk)}' is not a "
+        summary=f"The partition_by {'column' if is_column else 'key'} '{dotted_key_display(pk)}' is not a "
         f"query dimension.",
         location=label,
-        suggestion=f"Add it to dimensions/time_dimensions, or choose one of: "
-        f"{', '.join(available_dims) or '(none)'}.",
+        suggestion=f"Add it to dimensions/time_dimensions{'' if is_column else ' (as a computed dimension)'}, "
+        f"or choose one of: {', '.join(available_dims) or '(none)'}.",
     )
 
 
@@ -1595,20 +2251,6 @@ def check_association_windowed_ranked(*, alias: str, windowed_or_ranked: bool) -
         )
 
 
-def check_association_root_unique_key(
-    *, alias: str, root_name: str, has_unique_key: bool,
-) -> None:
-    """The association root must declare a unique key to dedup its entities."""
-    if not has_unique_key:
-        raise AssociationError(
-            summary=f"The aggregate needs distinct-entity association, but its root "
-            f"model {root_name!r} declares no primary or unique key to deduplicate "
-            f"entities by.",
-            location=f"measure {alias!r}",
-            suggestion=f"Declare a primary or unique key on {root_name!r}.",
-        )
-
-
 def check_parameter_determined(
     *, alias: str, param_name: str, grain_display: str, determined: bool,
 ) -> None:
@@ -1642,10 +2284,10 @@ def check_reaggregation_no_window(*, alias: str, window_val) -> None:
 
 
 def check_reaggregation_dims_attributable(
-    *, alias: str, mode: str, unattributable_names: Sequence[str],
+    *, alias: str, policy: ModePolicy, unattributable_names: Sequence[str],
 ) -> None:
     """Unattributable outer dims are a hard error under to_many_handling='error'; associate/broadcast resolution stays compiler-side."""
-    if mode != "error" or not unattributable_names:
+    if not policy.refuses or not unattributable_names:
         return
     names = ", ".join(unattributable_names)
     raise ReaggregationError(
@@ -1658,10 +2300,10 @@ def check_reaggregation_dims_attributable(
 
 
 def check_reaggregation_outer_keys_determined(
-    *, alias: str, mode: str, undetermined_keys: Sequence[str], grain_display: str,
+    *, alias: str, policy: ModePolicy, undetermined_keys: Sequence[str], grain_display: str,
 ) -> None:
-    """Explicit outer partition_by keys the operand grain does not determine associate only under 'associate'."""
-    if mode == "associate" or not undetermined_keys:
+    """Explicit outer partition_by keys the operand grain does not determine associate only in an associating mode."""
+    if policy.associates or not undetermined_keys:
         return
     raise PartitionKeyError(
         summary=f"The re-aggregation's explicit outer partition_by key(s) "
@@ -1669,7 +2311,7 @@ def check_reaggregation_outer_keys_determined(
         f"({grain_display}).",
         location=f"measure {alias!r}",
         suggestion="Add them to the inner partition_by= so the operand is grained "
-        "by them, or choose to_many_handling='associate'.",
+        "by them, or omit to_many_handling (or set 'associate').",
     )
 
 

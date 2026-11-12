@@ -1,4 +1,4 @@
-"""DEV-1929: a model column carries a time-bucket ``granularity``, and a finer /
+"""A model column carries a time-bucket ``granularity``, and a finer /
 non-nesting time dimension over a bucketed model column — hand-set, query-backed
 cache, or sibling-stage stand-in — is the same typed re-bucketing error as over a
 stage column. Same or nesting-coarser still binds and executes.
@@ -16,11 +16,12 @@ import pytest
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import TimeDimensionColumnError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.binding import bind_time_dimension
 from slayer.engine.elaborate_env import check_time_dimension_column
-from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.live_schema.ingestion import ingest_datasource_idempotent
+from slayer.database.client import SlayerSQLClient
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
@@ -172,27 +173,27 @@ class TestBinderAndChecker:
     def test_bare_column_returns_handset_granularity(self) -> None:
         orders, customers = self._orders_customers(gran_o=TG.DAY)
         bound = bind_time_dimension(
-            TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.DAY),
+            TimeDimension(dimension="created_at", granularity=TG.DAY),
             scope=ModelScope(source_model=orders),
             bundle=ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[customers]),
         )
-        assert bound.upstream_granularity == TG.DAY
+        assert bound.bucketed_leaves == (("created_at", TG.DAY),)
         assert bound.column_type == DataType.TIMESTAMP
 
     def test_dotted_join_path_returns_handset_granularity(self) -> None:
         orders, customers = self._orders_customers(gran_c=TG.MONTH)
         bound = bind_time_dimension(
-            TimeDimension(dimension=ColumnRef(name="customers.signup_at"), granularity=TG.YEAR),
+            TimeDimension(dimension="customers.signup_at", granularity=TG.YEAR),
             scope=ModelScope(source_model=orders),
             bundle=ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[customers]),
         )
-        assert bound.upstream_granularity == TG.MONTH
+        assert bound.bucketed_leaves == (("customers.signup_at", TG.MONTH),)
 
     def test_rebucket_message_is_generalised(self) -> None:
         with pytest.raises(TimeDimensionColumnError) as exc:
             check_time_dimension_column(
                 name="monthly.created_at", column_type=DataType.TIMESTAMP,
-                upstream_granularity=TG.MONTH, requested_granularity=TG.DAY,
+                bucketed_leaves=(("monthly.created_at", TG.MONTH),), requested_granularity=TG.DAY,
             )
         msg = str(exc.value)
         assert "month" in msg
@@ -212,7 +213,7 @@ class TestQueryBackedCache:
             engine = await _seeded_engine("sqlite", tmp)
             model = await engine.create_model_from_query(
                 query={"source_model": "orders",
-                       "measures": [{"formula": "amount:sum", "name": "rev"}],
+                       "measures": [{"formula": "sum(amount)", "name": "rev"}],
                        "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]},
                 name="monthly",
             )
@@ -228,7 +229,7 @@ class TestQueryBackedCache:
             engine = await _seeded_engine("sqlite", tmp)
             plain = await engine.create_model_from_query(
                 query={"source_model": "orders", "dimensions": ["created_at"],
-                       "measures": [{"formula": "amount:sum", "name": "rev"}]},
+                       "measures": [{"formula": "sum(amount)", "name": "rev"}]},
                 name="raw_ts",
             )
             assert all(c.granularity is None for c in plain.columns)
@@ -236,11 +237,11 @@ class TestQueryBackedCache:
             await engine.execute(query=SlayerQuery.model_validate({
                 "source_model": "raw_ts",
                 "time_dimensions": [{"dimension": "created_at", "granularity": "day"}],
-                "measures": [{"formula": "rev:sum"}],
+                "measures": [{"formula": "sum(rev)"}],
             }), dry_run=True)
             maxed = await engine.create_model_from_query(
                 query={"source_model": "orders", "dimensions": ["region"],
-                       "measures": [{"formula": "created_at:max"}]},
+                       "measures": [{"formula": "max(created_at)"}]},
                 name="maxed",
             )
             assert all(c.granularity is None for c in maxed.columns)
@@ -249,14 +250,14 @@ class TestQueryBackedCache:
             await engine.execute(query=SlayerQuery.model_validate({
                 "source_model": "maxed",
                 "time_dimensions": [{"dimension": agg_col, "granularity": "day"}],
-                "measures": [{"formula": "*:count"}],
+                "measures": [{"formula": "count(*)"}],
             }), dry_run=True)
             # A computed dimension is cached without a granularity.
-            band = "CASE WHEN amount:sum(partition_by=region) > 100 THEN 'big' ELSE 'small' END"
+            band = "CASE WHEN sum(amount, partition_by=region) > 100 THEN 'big' ELSE 'small' END"
             banded = await engine.create_model_from_query(
                 query={"source_model": "orders",
                        "dimensions": [{"expression": band, "name": "size_band"}],
-                       "measures": [{"formula": "amount:sum", "name": "rev"}]},
+                       "measures": [{"formula": "sum(amount)", "name": "rev"}]},
                 name="banded",
             )
             assert all(c.granularity is None for c in banded.columns)
@@ -266,13 +267,13 @@ class TestQueryBackedCache:
             engine = await _seeded_engine("sqlite", tmp)
             await engine.create_model_from_query(
                 query={"source_model": "orders",
-                       "measures": [{"formula": "amount:sum", "name": "rev"}],
+                       "measures": [{"formula": "sum(amount)", "name": "rev"}],
                        "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]},
                 name="monthly",
             )
             yearly = await engine.create_model_from_query(
                 query={"source_model": "monthly",
-                       "measures": [{"formula": "rev:sum"}],
+                       "measures": [{"formula": "sum(rev)"}],
                        "time_dimensions": [{"dimension": "created_at", "granularity": "year"}]},
                 name="yearly",
             )
@@ -280,7 +281,7 @@ class TestQueryBackedCache:
             finer = SlayerQuery.model_validate({
                 "source_model": "yearly",
                 "time_dimensions": [{"dimension": "created_at", "granularity": "day"}],
-                "measures": [{"formula": "rev_sum:sum"}],
+                "measures": [{"formula": "sum(rev_sum)"}],
             })
             with pytest.raises(TimeDimensionColumnError):
                 await engine.execute(query=finer, dry_run=True)
@@ -295,7 +296,7 @@ class TestQueryBackedExecuted:
         engine = await _seeded_engine(backend, tmp)
         await engine.create_model_from_query(
             query={"source_model": "orders",
-                   "measures": [{"formula": "amount:sum", "name": "rev"}],
+                   "measures": [{"formula": "sum(amount)", "name": "rev"}],
                    "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]},
             name="monthly",
         )
@@ -307,7 +308,7 @@ class TestQueryBackedExecuted:
             finer = SlayerQuery.model_validate({
                 "source_model": "monthly",
                 "time_dimensions": [{"dimension": "created_at", "granularity": "day"}],
-                "measures": [{"formula": "rev:sum"}],
+                "measures": [{"formula": "sum(rev)"}],
             })
             with pytest.raises(TimeDimensionColumnError):
                 await engine.execute(query=finer)
@@ -318,7 +319,7 @@ class TestQueryBackedExecuted:
             resp = await engine.execute(query=SlayerQuery.model_validate({
                 "source_model": "monthly",
                 "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
-                "measures": [{"formula": "rev:sum"}],
+                "measures": [{"formula": "sum(rev)"}],
             }))
             assert _by_bucket(resp.data) == _MONTH_SUMS
 
@@ -328,7 +329,7 @@ class TestQueryBackedExecuted:
             resp = await engine.execute(query=SlayerQuery.model_validate({
                 "source_model": "monthly",
                 "time_dimensions": [{"dimension": "created_at", "granularity": "year"}],
-                "measures": [{"formula": "rev:sum"}],
+                "measures": [{"formula": "sum(rev)"}],
             }))
             assert _by_bucket(resp.data) == _YEAR_SUMS
 
@@ -344,20 +345,20 @@ class TestHandSetExecuted:
             finer = SlayerQuery.model_validate({
                 "source_model": "orders",
                 "time_dimensions": [{"dimension": "created_at", "granularity": "hour"}],
-                "measures": [{"formula": "amount:sum", "name": "rev"}],
+                "measures": [{"formula": "sum(amount)", "name": "rev"}],
             })
             with pytest.raises(TimeDimensionColumnError):
                 await engine.execute(query=finer, dry_run=True)
             day = await engine.execute(query=SlayerQuery.model_validate({
                 "source_model": "orders",
                 "time_dimensions": [{"dimension": "created_at", "granularity": "day"}],
-                "measures": [{"formula": "amount:sum", "name": "rev"}],
+                "measures": [{"formula": "sum(amount)", "name": "rev"}],
             }))
             assert len(day.data) == len(_SEED)
             month = await engine.execute(query=SlayerQuery.model_validate({
                 "source_model": "orders",
                 "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
-                "measures": [{"formula": "amount:sum", "name": "rev"}],
+                "measures": [{"formula": "sum(amount)", "name": "rev"}],
             }))
             assert _by_bucket(month.data) == _MONTH_SUMS
 
@@ -383,14 +384,14 @@ class TestHandSetJoinPath:
         finer = SlayerQuery.model_validate({
             "source_model": "orders",
             "time_dimensions": [{"dimension": "customers.signup_at", "granularity": "day"}],
-            "measures": [{"formula": "*:count", "name": "n"}],
+            "measures": [{"formula": "count(*)", "name": "n"}],
         })
         with pytest.raises(TimeDimensionColumnError):
             await engine.execute(query=finer, dry_run=True)
         await engine.execute(query=SlayerQuery.model_validate({
             "source_model": "orders",
             "time_dimensions": [{"dimension": "customers.signup_at", "granularity": "year"}],
-            "measures": [{"formula": "*:count", "name": "n"}],
+            "measures": [{"formula": "count(*)", "name": "n"}],
         }), dry_run=True)
 
 
@@ -423,18 +424,18 @@ class TestSiblingStandIns:
         )
         bundle = ResolvedSourceBundle(dialect="postgres", source_model=host, referenced_models=[sibling])
         bound = bind_time_dimension(
-            TimeDimension(dimension=ColumnRef(name="s1.created_at"), granularity=TG.DAY),
+            TimeDimension(dimension="s1.created_at", granularity=TG.DAY),
             scope=ModelScope(source_model=host), bundle=bundle,
         )
-        assert bound.upstream_granularity == TG.MONTH
+        assert bound.bucketed_leaves == (("s1.created_at", TG.MONTH),)
         with pytest.raises(TimeDimensionColumnError):
             check_time_dimension_column(
                 name="s1.created_at", column_type=bound.column_type,
-                upstream_granularity=bound.upstream_granularity, requested_granularity=TG.DAY,
+                bucketed_leaves=bound.bucketed_leaves, requested_granularity=TG.DAY,
             )
         check_time_dimension_column(  # month re-binds
             name="s1.created_at", column_type=bound.column_type,
-            upstream_granularity=bound.upstream_granularity, requested_granularity=TG.MONTH,
+            bucketed_leaves=bound.bucketed_leaves, requested_granularity=TG.MONTH,
         )
 
     async def test_model_extension_over_bucketed_sibling(self) -> None:
@@ -442,15 +443,15 @@ class TestSiblingStandIns:
             engine = await _seeded_engine("sqlite", tmp)
             s1 = {"name": "s1", "source_model": "orders",
                   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
-                  "measures": [{"formula": "amount:sum", "name": "rev"}]}
-            finer = {"source_model": {"source_name": "s1"},
+                  "measures": [{"formula": "sum(amount)", "name": "rev"}]}
+            finer = {"source_model": "s1", "extensions": [{"source_name": "s1"}],
                      "time_dimensions": [{"dimension": "created_at", "granularity": "day"}],
-                     "measures": [{"formula": "rev:sum"}]}
+                     "measures": [{"formula": "sum(rev)"}]}
             with pytest.raises(TimeDimensionColumnError):
                 await engine.execute(query=[s1, finer], dry_run=True)
-            coarser = {"source_model": {"source_name": "s1"},
+            coarser = {"source_model": "s1", "extensions": [{"source_name": "s1"}],
                        "time_dimensions": [{"dimension": "created_at", "granularity": "year"}],
-                       "measures": [{"formula": "rev:sum"}]}
+                       "measures": [{"formula": "sum(rev)"}]}
             resp = await engine.execute(query=[s1, coarser])
             assert _by_bucket(resp.data) == _YEAR_SUMS
 
@@ -459,15 +460,16 @@ class TestSiblingStandIns:
             engine = await _seeded_engine("sqlite", tmp)
             s1 = {"name": "s1", "source_model": "orders", "dimensions": ["id"],
                   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
-                  "measures": [{"formula": "amount:sum", "name": "rev"}]}
+                  "measures": [{"formula": "sum(amount)", "name": "rev"}]}
 
             def outer(gran: str) -> dict:
                 return {
-                    "source_model": {"source_name": "orders",
-                                     "joins": [{"target_model": "s1", "join_pairs": [["id", "id"]]}]},
+                    "source_model": "orders",
+                    "extensions": [{"source_name": "orders",
+                                    "joins": [{"target_model": "s1", "join_pairs": [["id", "id"]]}]}],
                     "dimensions": ["id"],
                     "time_dimensions": [{"dimension": "s1.created_at", "granularity": gran}],
-                    "measures": [{"formula": "amount:sum", "name": "x"}],
+                    "measures": [{"formula": "sum(amount)", "name": "x"}],
                 }
             finer = outer("day")
             with pytest.raises(TimeDimensionColumnError):
@@ -484,22 +486,22 @@ class TestUnifiedMessage:
             engine = await _seeded_engine("sqlite", tmp)
             s1 = {"name": "s1", "source_model": "orders",
                   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
-                  "measures": [{"formula": "amount:sum", "name": "rev"}]}
+                  "measures": [{"formula": "sum(amount)", "name": "rev"}]}
             stage_outer = {"source_model": "s1",
                            "time_dimensions": [{"dimension": "created_at", "granularity": "day"}],
-                           "measures": [{"formula": "rev:sum"}]}
+                           "measures": [{"formula": "sum(rev)"}]}
             with pytest.raises(TimeDimensionColumnError) as stage_exc:
                 await engine.execute(query=[s1, stage_outer], dry_run=True)
             await engine.create_model_from_query(
                 query={"source_model": "orders",
-                       "measures": [{"formula": "amount:sum", "name": "rev"}],
+                       "measures": [{"formula": "sum(amount)", "name": "rev"}],
                        "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]},
                 name="monthly",
             )
             model_finer = SlayerQuery.model_validate({
                 "source_model": "monthly",
                 "time_dimensions": [{"dimension": "created_at", "granularity": "day"}],
-                "measures": [{"formula": "rev:sum"}]})
+                "measures": [{"formula": "sum(rev)"}]})
             with pytest.raises(TimeDimensionColumnError) as model_exc:
                 await engine.execute(query=model_finer, dry_run=True)
             assert str(stage_exc.value) == str(model_exc.value)
@@ -521,7 +523,12 @@ class TestIngestion:
             storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
             ds = DatasourceConfig(name="ds", type="sqlite", database=db)
             await storage.save_datasource(ds)
-            await ingest_datasource_idempotent(datasource=ds, storage=storage)
+            client = SlayerSQLClient(datasource=ds)
+            try:
+                await ingest_datasource_idempotent(datasource=ds, storage=storage, client=client)
+            finally:
+                await client.aclose()
+                client.close()
             names = await storage.list_models("ds")
             assert names
             for n in names:
@@ -584,8 +591,8 @@ class TestMCPSurfaces:
             server, _storage = await self._server(tmp)
             await _call(server, name="edit_model", arguments={
                 "model_name": "orders", "columns": [{"name": "created_at", "granularity": "month"}]})
-            out = await _call(server, name="inspect_model", arguments={
-                "model_name": "orders", "format": "json"})
+            out = await _call(server, name="inspect", arguments={
+                "entity_type": "model", "reference": "orders", "compact": False, "format": "json"})
             cols = {c["name"]: c for c in json.loads(out)["columns"]}
             assert cols["created_at"].get("granularity") == "month"
             assert "granularity" not in cols["note"]

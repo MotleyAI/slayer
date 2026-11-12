@@ -28,7 +28,8 @@ from slayer.core.policy import (
 from slayer.engine.plan import plan_query, plan_stages
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.planned import plan_has_semi_join_filters
-from slayer.sql.client import ExecutionResult, SlayerSQLClient
+from slayer.database.client import ExecutionResult, SlayerSQLClient
+from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.clickhouse import _attach_ch_correlated_setting
 from slayer.sql.generator import generate_planned_stages
 from slayer.sql.session_policy import apply_session_policy
@@ -46,8 +47,8 @@ from tests._dev1840_fixtures import (
 
 _SETTING = "allow_experimental_correlated_subqueries"
 
-M = ModelMeasure(formula="amount:sum", name="m")
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
+M = ModelMeasure(formula="sum(amount)", name="m")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
 
 PUSHED = q(dimensions=["customers.tier"], measures=[M, CM],
            filters=["channel = 'app'"])
@@ -282,6 +283,10 @@ class TestOnlyEmittedStagesGate:
         assert fake.permission_checks() == 0
 
 
+async def _always_present(**_kw) -> bool:  # NOSONAR(S7503) — must stay async
+    return True
+
+
 class TestPolicyNeedsNoProbe:
     @pytest.mark.parametrize(
         "ruleset",
@@ -301,7 +306,7 @@ class TestPolicyNeedsNoProbe:
     async def test_policy_only_query_sends_nothing(self, tmp_path, ch_server, monkeypatch, ruleset):
         fake = ch_server.start(version="25.4.1.1", readonly=1, correlated=False)
         engine = await _ch_engine(tmp_path, policy=SessionPolicy(ruleset=ruleset))
-        monkeypatch.setattr(engine, "_column_present", lambda **_kw: True)
+        monkeypatch.setattr(engine, "_column_present", _always_present)
         sql = await _dry_sql(engine, q(measures=[M]))
         assert fake.requests == []
         assert _SETTING not in sql
@@ -325,14 +330,14 @@ class TestSettingsCoexistence:
             raise AssertionError("join path never probes columns")
 
         out = apply_session_policy(
-            sql,
-            dialect="clickhouse",
+            sqlglot.parse_one(sql, dialect="clickhouse"),
+            sql_dialect=get_dialect("clickhouse"),
             policy=SessionPolicy(ruleset=JoinFilterRuleset(
                 table="customers", column="organization_uuid", value="orgA",
                 joins=(_ORDERS_RULE,),
             )),
             has_column=_boom_probe,
-        )
+        ).sql(dialect="clickhouse")
         assert out.count("SETTINGS") == 1
         assert out.count(_SETTING) == 1
         assert f"{_SETTING} = 1" in out

@@ -33,10 +33,10 @@ from tests._dev1847_fixtures import (
 from tests.test_filtered_local_isolation import _s5_bundle
 
 LOCAL_BAND = {
-    "expression": "CASE WHEN amount:sum(partition_by=channel) > 30 THEN 1 ELSE 0 END",
+    "expression": "CASE WHEN sum(amount, partition_by=channel) > 30 THEN 1 ELSE 0 END",
     "name": "band",
 }
-_X = "amount:sum(partition_by=[region, ordered_at])"
+_X = "sum(amount, partition_by=[region, ordered_at])"
 REAGG_STANDALONE = f"min({_X}, partition_by=region)"
 HANDWRITTEN_MIN = f"sum(amount * {REAGG_STANDALONE})"
 REAGG_BAND = {
@@ -86,13 +86,13 @@ def _pairs(ds: List[RootDisposition], match) -> set:
 class TestPhaseRoutingMatrix:
     def test_row_local_producer(self):
         ds = _discover(q(dimensions=["status", LOCAL_BAND],
-                         measures=[ModelMeasure(formula="amount:sum", name="s")]),
+                         measures=[ModelMeasure(formula="sum(amount)", name="s")]),
                        _bundle(dev1836_models()))
         assert _pairs(ds, _agg("sum", ["channel"])) == {("row", "local_producer")}
 
     def test_combined_local_producer_partitioned(self):
         ds = _discover(q(dimensions=["status", "channel"],
-                         measures=[ModelMeasure(formula="amount:sum(partition_by=channel)",
+                         measures=[ModelMeasure(formula="sum(amount, partition_by=channel)",
                                                 name="pt")]),
                        _bundle(dev1836_models()))
         [d] = _of(ds, _agg("sum", ["channel"]))
@@ -102,31 +102,31 @@ class TestPhaseRoutingMatrix:
 
     def test_combined_local_producer_ranked(self):
         ds = _discover(q(dimensions=["status"],
-                         measures=[ModelMeasure(formula="amount:last(ordered_at)", name="l")]),
+                         measures=[ModelMeasure(formula="last(amount, ordered_at)", name="l")]),
                        _bundle(dev1836_models()))
         assert _pairs(ds, _agg("last")) == {("combined", "local_producer")}
 
     def test_combined_local_producer_windowed(self):
         ds = _discover(q(time_dimensions=month_td(),
-                         measures=[ModelMeasure(formula="amount:sum(window='90d')", name="w")]),
+                         measures=[ModelMeasure(formula="sum(amount, window='90d')", name="w")]),
                        _bundle(dev1836_models()))
         assert _pairs(ds, _agg("sum")) == {("combined", "local_producer")}
 
     def test_combined_local_producer_crossing_input(self):
         ds = _discover(SlayerQuery(source_model="orders",
-                                   measures=[ModelMeasure(formula="region_pay:sum", name="m0")]),
+                                   measures=[ModelMeasure(formula="sum(region_pay)", name="m0")]),
                        _s5_bundle())
         assert _pairs(ds, _agg("sum")) == {("combined", "local_producer")}
 
     def test_row_target_rooted(self):
         ds = _discover(q(dimensions=[{"expression": SPEND_BAND, "name": "band"}],
-                         measures=[ModelMeasure(formula="amount:sum", name="s")]),
+                         measures=[ModelMeasure(formula="sum(amount)", name="s")]),
                        _bundle(dev1836_models()))
         assert _pairs(ds, _agg("sum", ["tier"])) == {("row", "target_rooted")}
 
     def test_combined_target_rooted_cross_model(self):
         ds = _discover(q(dimensions=["status"],
-                         measures=[ModelMeasure(formula="customers.spend:sum", name="cm")]),
+                         measures=[ModelMeasure(formula="sum(customers.spend)", name="cm")]),
                        _bundle(dev1836_models()))
         [d] = _of(ds, _agg("sum"))
         assert (d.phase, d.routing) == ("combined", "target_rooted")
@@ -134,7 +134,7 @@ class TestPhaseRoutingMatrix:
 
     def test_declared_type_carried(self):
         ds = _discover(q(dimensions=["status"],
-                         measures=[ModelMeasure(formula="customers.spend:sum", name="cm",
+                         measures=[ModelMeasure(formula="sum(customers.spend)", name="cm",
                                                 type=DataType.DOUBLE)]),
                        _bundle(dev1836_models()))
         [d] = _of(ds, _agg("sum"))
@@ -143,7 +143,7 @@ class TestPhaseRoutingMatrix:
     def test_combined_target_rooted_unattributable_grain(self):
         """A local aggregate grouped by an unattributable dimension routes target-rooted."""
         ds = _discover(q(dimensions=["customers.segments.label"],
-                         measures=[ModelMeasure(formula="amount:sum", name="s")]),
+                         measures=[ModelMeasure(formula="sum(amount)", name="s")]),
                        _bundle(dev1836_models()))
         assert _pairs(ds, _agg("sum")) == {("combined", "target_rooted")}
 
@@ -159,7 +159,7 @@ class TestPhaseRoutingMatrix:
     def test_row_reaggregation(self):
         ds = _discover(monthly_q(dimensions=["region", REAGG_BAND],
                                  time_dimensions=monthly_month_td(),
-                                 measures=[ModelMeasure(formula="amount:sum", name="s")]),
+                                 measures=[ModelMeasure(formula="sum(amount)", name="s")]),
                        _bundle(_monthly_models()))
         assert _pairs(ds, _agg("min", ["region"])) == {("row", "reaggregation")}
 
@@ -195,7 +195,7 @@ class TestRowAttachRoots:
 class TestDualRole:
     def test_computed_dimension_and_measure(self):
         ds = _discover(q(dimensions=["channel", LOCAL_BAND],
-                         measures=[ModelMeasure(formula="amount:sum(partition_by=channel)",
+                         measures=[ModelMeasure(formula="sum(amount, partition_by=channel)",
                                                 name="x")]),
                        _bundle(dev1836_models()))
         assert _pairs(ds, _agg("sum", ["channel"])) == {
@@ -229,29 +229,29 @@ class TestDualRole:
 class TestConsumerContextExclusions:
     def test_order_by_dimension_name_is_row_scope(self):
         ds = _discover(q(dimensions=["status", LOCAL_BAND],
-                         measures=[ModelMeasure(formula="amount:sum", name="s")],
+                         measures=[ModelMeasure(formula="sum(amount)", name="s")],
                          order=[{"column": "band", "direction": "asc"}]),
                        _bundle(dev1836_models()))
         assert _pairs(ds, _agg("sum", ["channel"])) == {("row", "local_producer")}
 
     def test_field_typed_filter_on_dimension_aggregate_is_row_scope(self):
         ds = _discover(q(dimensions=["status", LOCAL_BAND],
-                         measures=[ModelMeasure(formula="amount:sum", name="s")],
-                         filters=["amount:sum(partition_by=channel) > 30"]),
+                         measures=[ModelMeasure(formula="sum(amount)", name="s")],
+                         filters=["sum(amount, partition_by=channel) > 30"]),
                        _bundle(dev1836_models()))
         assert _pairs(ds, _agg("sum", ["channel"])) == {("row", "local_producer")}
 
     def test_measure_typed_filter_dimension_subtree_not_walked(self):
         ds = _discover(q(dimensions=["status", LOCAL_BAND],
-                         measures=[ModelMeasure(formula="amount:sum", name="s")],
-                         filters=["amount:sum > band"]),
+                         measures=[ModelMeasure(formula="sum(amount)", name="s")],
+                         filters=["sum(amount) > band"]),
                        _bundle(dev1836_models()))
         assert _pairs(ds, _agg("sum", ["channel"])) == {("row", "local_producer")}
 
     def test_measure_typed_filter_keeps_dual_role_combined(self):
         ds = _discover(q(dimensions=["channel", LOCAL_BAND],
-                         measures=[ModelMeasure(formula="amount:sum", name="s")],
-                         filters=["amount:sum(partition_by=channel) > amount:sum"]),
+                         measures=[ModelMeasure(formula="sum(amount)", name="s")],
+                         filters=["sum(amount, partition_by=channel) > sum(amount)"]),
                        _bundle(dev1836_models()))
         assert _pairs(ds, _agg("sum", ["channel"])) == {
             ("row", "local_producer"), ("combined", "local_producer"),
@@ -273,8 +273,8 @@ class TestConsumerNames:
 
 class TestShiftCandidates:
     @pytest.mark.parametrize(("formula", "series"), [
-        pytest.param("time_shift(amount:sum, -1)", False, id="re-aggregating"),
-        pytest.param("time_shift(cumsum(amount:sum), -1)", True, id="series"),
+        pytest.param("time_shift(sum(amount), -1)", False, id="re-aggregating"),
+        pytest.param("time_shift(cumsum(sum(amount)), -1)", True, id="series"),
     ])
     def test_time_shift_carries_series(self, formula, series):
         ds = _discover(q(time_dimensions=month_td(),
@@ -286,7 +286,7 @@ class TestShiftCandidates:
 
     def test_non_shift_disposition_has_no_series(self):
         ds = _discover(q(dimensions=["status"],
-                         measures=[ModelMeasure(formula="customers.spend:sum", name="cm")]),
+                         measures=[ModelMeasure(formula="sum(customers.spend)", name="cm")]),
                        _bundle(dev1836_models()))
         assert ds
         assert all(d.series is None for d in ds)
@@ -295,8 +295,8 @@ class TestShiftCandidates:
 class TestOccurrenceOrder:
     def test_first_seen_order(self):
         ds = _discover(q(dimensions=["status"],
-                         measures=[ModelMeasure(formula="customers.spend:sum", name="cm"),
-                                   ModelMeasure(formula="amount:last(ordered_at)", name="l")]),
+                         measures=[ModelMeasure(formula="sum(customers.spend)", name="cm"),
+                                   ModelMeasure(formula="last(amount, ordered_at)", name="l")]),
                        _bundle(dev1836_models()))
         routings = [d.routing for d in ds if d.routing != "inline"]
         assert routings == ["target_rooted", "local_producer"]
@@ -311,7 +311,7 @@ class TestDeletedSymbols:
         ("slayer.engine.compile.stages", "_bare_combined_roots"),
         ("slayer.engine.compile.stages", "_discover_roots"),
         ("slayer.engine.compile.stages", "_answers_need_nested_regroups"),
-        ("slayer.engine.join_safety", "local_crossing_input_paths"),
+        ("slayer.engine.cardinality.join_safety", "local_crossing_input_paths"),
         ("slayer.ir.prebound", "position_typing_context"),
     ])
     def test_symbol_gone(self, module, name):
@@ -340,7 +340,7 @@ class TestReaggregationInComputedDimension:
     @pytest.mark.parametrize(("kw", "location"), [
         pytest.param({"measures": [ModelMeasure(formula=_R, name="r")]},
                      "measure 'r'", id="dual-role-measure"),
-        pytest.param({"measures": [ModelMeasure(formula="amount:sum", name="s")],
+        pytest.param({"measures": [ModelMeasure(formula="sum(amount)", name="s")],
                       "order": [{"column": _R, "direction": "asc"}]},
                      "order item", id="dual-role-order"),
     ])
@@ -362,7 +362,7 @@ class TestReaggregationInComputedDimension:
     async def test_dimension_only_consumption_executes(self, exec_engine, filters, expected):
         resp = await exec_engine.execute(sales_q(
             dimensions=["product", _RLEVEL],
-            measures=[ModelMeasure(formula="amount:sum", name="s")], filters=filters))
+            measures=[ModelMeasure(formula="sum(amount)", name="s")], filters=filters))
         got = {(r["sales.product"], r["sales.rlevel"]): r["sales.s"] for r in resp.data}
         assert got == pytest.approx(expected)
 
@@ -386,11 +386,11 @@ class TestUnderReaggregationPartitionKeys:
 class TestTransformOverReaggregationDimension:
     async def test_filter_on_it_is_a_time_axis_error(self, exec_engine):
         """The re-aggregation is opaque at grain ``region`` — no time axis for ``cumsum``,
-        exactly as over ``amount:sum(partition_by=region)``."""
+        exactly as over ``sum(amount, partition_by=region)``."""
         query = monthly_q(
             dimensions=["region", {"expression": f"cumsum({REAGG_STANDALONE})", "name": "rr"}],
             time_dimensions=monthly_month_td(),
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
             filters=["rr > 10"])
         with pytest.raises(TimeAxisError, match="cumsum"):
             await exec_engine.execute(query)

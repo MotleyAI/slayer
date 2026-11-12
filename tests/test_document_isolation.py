@@ -18,14 +18,15 @@ from fastapi.testclient import TestClient
 from slayer.api.server import create_app
 from slayer.core.errors import StoredDocumentLoadError
 from slayer.core.models import DatasourceConfig
+from slayer.database.client import DatabaseUnavailable
 from slayer.core.query import SlayerQuery
-from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from slayer.memories.resolver import resolve_entity
 from slayer.search.retrievers.bm25 import BM25Retriever
 from slayer.search.service import SearchService
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
@@ -119,7 +120,8 @@ _LOAD_FAILURES: dict[str, tuple[Callable[[], dict], Any, Callable[[BaseException
         _orders_v5_double, None, _is_value_error("unavailable for type refinement")),
     "refinement-driver-error": (
         _orders_v5_double, _UNREACHABLE_PG,
-        lambda cause: isinstance(cause, sqlalchemy.exc.OperationalError)),
+        lambda cause: isinstance(cause, DatabaseUnavailable)
+        and isinstance(cause.__cause__, sqlalchemy.exc.OperationalError)),
     "malformed-version": (_orders_bad_version, "live", _is_value_error("abc")),
 }
 
@@ -252,8 +254,13 @@ class TestTypedLoadError:
         if datasource not in (None, "live"):
             store.datasource = datasource
         storage = await store.seed(models=[make_doc()], register_datasource=datasource is not None)
-        with pytest.raises(StoredDocumentLoadError) as ei:
-            await storage.get_model(BAD, data_source=DS)
+        engine = SlayerQueryEngine(storage=storage)
+        try:
+            with pytest.raises(StoredDocumentLoadError) as ei:
+                await engine.storage.get_model(BAD, data_source=DS)
+        finally:
+            await engine.aclose()
+            engine.close()
         assert isinstance(ei.value, ValueError)
         assert f"{DS}.{BAD}" in str(ei.value)
         assert ei.value.__cause__ is not None
@@ -274,7 +281,14 @@ class TestEnumerationSkipsAndWarns:
     async def test_reingest_succeeds_and_reports_the_bad_model_once(
         self, store: Store, bad_store: StorageBackend, recorded: list,
     ) -> None:
-        result = await ingest_datasource_idempotent(datasource=store.datasource, storage=bad_store)
+        engine = SlayerQueryEngine(storage=bad_store)
+        try:
+            result = await ingest_datasource_idempotent(
+                datasource=store.datasource, storage=bad_store, client=engine.client_for(store.datasource),
+            )
+        finally:
+            await engine.aclose()
+            engine.close()
         bad_errors = [e for e in result.errors if e.model_name == BAD]
         assert len(bad_errors) == 1
         assert CAUSE in bad_errors[0].error
@@ -311,9 +325,10 @@ class TestEnumerationSurfaces:
         assert all(name in text for name in GOOD_MODELS)
         _assert_one_warning(recorded, name=BAD, cause=CAUSE)
 
-    async def test_mcp_inspect_model_unknown_lists_the_rest(self, bad_store: StorageBackend, recorded: list) -> None:
-        text = await _mcp_text(bad_store, tool="inspect_model", arguments={"model_name": "nope"})
-        assert all(f"{DS}.{name}" in text for name in GOOD_MODELS)
+    async def test_mcp_inspect_model_collection_lists_the_rest(self, bad_store: StorageBackend, recorded: list) -> None:
+        text = await _mcp_text(bad_store, tool="inspect", arguments={"entity_type": "model", "format": "json"})
+        listed = {f"{e['data_source']}.{m['name']}" for e in json.loads(text)["datasources"] for m in e["models"]}
+        assert all(f"{DS}.{name}" in listed for name in GOOD_MODELS)
         _assert_one_warning(recorded, name=BAD, cause=CAUSE)
 
     async def test_search_carries_the_warning(self, bad_store: StorageBackend, recorded: list) -> None:

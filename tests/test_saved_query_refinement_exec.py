@@ -11,7 +11,7 @@ import pytest
 from slayer.core.errors import RefinementConflictError, UnknownReferenceError
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from tests._saved_query_refinement_fixtures import (
     AVG_CUSTOMER_REVENUE,
     BY_REGION_MONTH,
@@ -79,12 +79,12 @@ PARITY = {
         with_fields(MONTHLY_REVENUE, order=[{"column": "revenue", "direction": "desc"}], limit=1),
     ),
     "second_granularity": (
-        {"time_dimensions": ["year(ordered_at)"]},
-        with_fields(MONTHLY_REVENUE, time_dimensions=[MONTH_TD, "year(ordered_at)"]),
+        {"time_dimensions": ["date_trunc('year', ordered_at)"]},
+        with_fields(MONTHLY_REVENUE, time_dimensions=[MONTH_TD, "date_trunc('year', ordered_at)"]),
     ),
     "functional_dimension": (
-        {"dimensions": ["year(ordered_at)"]},
-        with_fields(MONTHLY_REVENUE, time_dimensions=[MONTH_TD, "year(ordered_at)"]),
+        {"dimensions": ["date_trunc('year', ordered_at)"]},
+        with_fields(MONTHLY_REVENUE, time_dimensions=[MONTH_TD, "date_trunc('year', ordered_at)"]),
     ),
     "identical_duplicates": (
         {"dimensions": ["orders.region"], "measures": [REVENUE]},
@@ -137,7 +137,7 @@ class TestSingleStage:
         assert [(month(r["orders.ordered_at"]), r["orders.revenue"]) for r in resp.data] == [("2025-02", 105.0)]
 
     async def test_second_granularity_renames_saved_key(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute("monthly_revenue", refine={"time_dimensions": ["year(ordered_at)"]})
+        resp = await engine.execute("monthly_revenue", refine={"time_dimensions": ["date_trunc('year', ordered_at)"]})
         assert set(resp.columns) == {"orders.ordered_at.month", "orders.ordered_at.year", "orders.revenue"}
         assert by_month(resp.data, key="orders.ordered_at.month") == MONTHLY
 

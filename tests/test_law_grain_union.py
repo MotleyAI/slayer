@@ -26,7 +26,7 @@ from tests._law_harness import (
 CM_TOTAL = 350.0
 
 #: Direct-half oracle: REGION_TOTAL[region] + city-alone total[city] per
-#: union-grain cell (region, city) — hand-derived from the DEV-1739 rows.
+#: union-grain cell (region, city) — hand-derived from the fixture rows.
 MIXED_GRAIN_X = {
     ("North", "CityA"): 130.0, ("North", "CityB"): 140.0, ("North", None): 130.0,
     ("South", "CityC"): 100.0, (None, "CityD"): 120.0,
@@ -61,7 +61,7 @@ def _grain_projection(key: tuple, *, shape, grain: tuple) -> tuple:
 
 async def test_population_and_operand_broadcast_constancy(law_case):
     engine, shape = law_case
-    full = await execute_shape(engine, shape)
+    full = await execute_shape(engine, shape, to_many_handling="broadcast")
     if full is None:
         return
     full_rows = keyed_rows(full, shape=shape)
@@ -115,7 +115,7 @@ async def test_mixed_grain_formula_constant_within_union_grain_cells(exec_engine
         dimensions=["region", "city"],
         time_dimensions=month_td(),
         measures=[ModelMeasure(
-            formula="amount:sum(partition_by=region) + amount:sum(partition_by=city)",
+            formula="sum(amount, partition_by=region) + sum(amount, partition_by=city)",
             name="x",
         )],
     ))

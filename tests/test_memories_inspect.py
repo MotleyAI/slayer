@@ -1,11 +1,7 @@
-"""``inspect_model`` integration + ``query`` docstring tests for DEV-1357 v2.
+"""Model ``inspect`` Learnings section + ``query`` docstring tests.
 
-The ``inspect_model`` tool gains a ``Learnings`` section that surfaces
-**only memories where ``query is None``** — query-bearing memories appear
-only via ``search`` (in the ``example_queries`` bucket). The section is
-auto-pruned when no matching learning-shaped memory exists. The
-``query`` MCP tool docstring gains a paragraph directing agents to call
-``search`` first.
+The Learnings section surfaces only memories where ``query is None`` and is
+pruned when none match; the ``query`` docstring points agents at ``search``.
 """
 
 import json
@@ -14,7 +10,7 @@ import shutil
 from slayer.storage.sqlite_conn import transaction
 import tempfile
 from typing import Any
-from collections.abc import Generator
+from collections.abc import AsyncIterator, Generator
 
 import pytest
 
@@ -75,8 +71,9 @@ def storage(_shared_storage: YAMLStorage) -> YAMLStorage:
 
 
 @pytest.fixture
-def mcp_server(_shared_mcp_server, storage: YAMLStorage):
-    return _shared_mcp_server
+async def mcp_server(_shared_mcp_server, storage: YAMLStorage) -> AsyncIterator[Any]:
+    yield _shared_mcp_server
+    await _shared_mcp_server._slayer_engine.aclose()
 
 
 @pytest.fixture
@@ -97,7 +94,7 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
                 Column(name="status", sql="status", type=DataType.TEXT),
             ],
             measures=[
-                ModelMeasure(formula="amount:sum / *:count", name="aov"),
+                ModelMeasure(formula="sum(amount) / count(*)", name="aov"),
             ],
         )
     )
@@ -131,7 +128,7 @@ async def _call(
 
 
 # ---------------------------------------------------------------------------
-# inspect_model — Learnings section (only memories where query is None)
+# Model inspect — Learnings section (only memories where query is None)
 # ---------------------------------------------------------------------------
 
 
@@ -145,8 +142,8 @@ class TestInspectModelLearningsSection:
         )
         result = await _call(
             mcp_server,
-            name="inspect_model",
-            arguments={"model_name": "orders", "data_source": "mydb"},
+            name="inspect",
+            arguments={"entity_type": "model", "reference": "mydb.orders", "compact": False},
         )
         assert "Learnings" in result or "learnings" in result.lower()
         assert "orders.amount in cents not dollars" in result
@@ -154,19 +151,19 @@ class TestInspectModelLearningsSection:
     async def test_section_pruned_when_only_query_bearing_memories_match(
         self, mcp_server, seeded: YAMLStorage
     ) -> None:
-        # A memory with a query attached must NOT surface in inspect_model.
+        # A memory with a query attached must NOT surface in the model inspect.
         await seeded.save_memory(
             learning="example query",
             entities=["mydb.orders.amount"],
             query=SlayerQuery(
                 source_model="orders",
-                measures=[ModelMeasure(formula="amount:sum")],
+                measures=[ModelMeasure(formula="sum(amount)")],
             ),
         )
         result = await _call(
             mcp_server,
-            name="inspect_model",
-            arguments={"model_name": "orders", "data_source": "mydb"},
+            name="inspect",
+            arguments={"entity_type": "model", "reference": "mydb.orders", "compact": False},
         )
         assert "## Learnings" not in result
         assert "example query" not in result
@@ -180,8 +177,8 @@ class TestInspectModelLearningsSection:
         )
         result = await _call(
             mcp_server,
-            name="inspect_model",
-            arguments={"model_name": "orders", "data_source": "mydb"},
+            name="inspect",
+            arguments={"entity_type": "model", "reference": "mydb.orders", "compact": False},
         )
         assert "customer-only note" not in result
         # Pin the section header itself — an empty "## Learnings"
@@ -193,8 +190,8 @@ class TestInspectModelLearningsSection:
     ) -> None:
         result = await _call(
             mcp_server,
-            name="inspect_model",
-            arguments={"model_name": "orders", "data_source": "mydb"},
+            name="inspect",
+            arguments={"entity_type": "model", "reference": "mydb.orders", "compact": False},
         )
         assert "## Learnings" not in result
         assert "## learnings" not in result.lower()
@@ -208,8 +205,8 @@ class TestInspectModelLearningsSection:
         )
         result = await _call(
             mcp_server,
-            name="inspect_model",
-            arguments={"model_name": "orders", "data_source": "mydb"},
+            name="inspect",
+            arguments={"entity_type": "model", "reference": "mydb.orders", "compact": False},
         )
         assert "aov measure excludes refunded orders" in result
 
@@ -222,8 +219,8 @@ class TestInspectModelLearningsSection:
         )
         result = await _call(
             mcp_server,
-            name="inspect_model",
-            arguments={"model_name": "orders", "data_source": "mydb"},
+            name="inspect",
+            arguments={"entity_type": "model", "reference": "mydb.orders", "compact": False},
         )
         assert "orders is the canonical revenue table" in result
 
@@ -236,10 +233,9 @@ class TestInspectModelLearningsSection:
         )
         result = await _call(
             mcp_server,
-            name="inspect_model",
+            name="inspect",
             arguments={
-                "model_name": "orders",
-                "data_source": "mydb",
+                "entity_type": "model", "reference": "mydb.orders", "compact": False,
                 "sections": ["columns"],
             },
         )
@@ -249,23 +245,16 @@ class TestInspectModelLearningsSection:
     async def test_json_output_uses_learning_field(
         self, mcp_server, seeded: YAMLStorage
     ) -> None:
-        """``inspect_model(format='json', sections=['learnings'])`` must
-        emit ``learning`` (the Memory field name) — not the legacy
-        ``body`` alias, which would AttributeError as soon as a memory
-        matches."""
+        """JSON Learnings emit ``learning`` (the Memory field), not the legacy ``body`` alias."""
         await seeded.save_memory(
             learning="amount is in cents",
             entities=["mydb.orders.amount"],
         )
-        # DEV-1549: compact-by-default JSON Learnings emits ``description``
-        # (with first-paragraph fallback). Opt out with compact=False to
-        # exercise the verbose ``learning`` contract this test pins.
         result = await _call(
             mcp_server,
-            name="inspect_model",
+            name="inspect",
             arguments={
-                "model_name": "orders",
-                "data_source": "mydb",
+                "entity_type": "model", "reference": "mydb.orders",
                 "format": "json",
                 "sections": ["learnings"],
                 "compact": False,

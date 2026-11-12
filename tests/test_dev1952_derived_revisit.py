@@ -40,11 +40,11 @@ from slayer.core.models import (
 )
 from slayer.core.query import SlayerQuery
 from slayer.core.scope import ModelScope
-from slayer.engine import join_safety
+from slayer.engine.cardinality import join_safety
 from slayer.engine.binding import bind_expr
 from slayer.engine.compile.stages import _canonical_path
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.param_binding import resolve_default_qualifier_path
 from slayer.sql.column_expansion import (
@@ -653,20 +653,20 @@ async def _assert_circular(
 class TestQueryTimeBackstop:
     async def test_aggregated_across_to_one_hop(self, qengine) -> None:
         await _assert_circular(qengine, _orders_q(
-            measures=[ModelMeasure(formula="customers.revisit_spend:sum", name="w")]))
+            measures=[ModelMeasure(formula="sum(customers.revisit_spend)", name="w")]))
 
     async def test_aggregated_on_declaring_model(self, qengine) -> None:
         await _assert_circular(qengine, _cust_q(
-            measures=[ModelMeasure(formula="revisit_spend:sum", name="w")]))
+            measures=[ModelMeasure(formula="sum(revisit_spend)", name="w")]))
 
     async def test_as_dimension(self, qengine) -> None:
         await _assert_circular(qengine, _cust_q(
             dimensions=["revisit_spend"],
-            measures=[ModelMeasure(formula="spend:sum", name="s")]))
+            measures=[ModelMeasure(formula="sum(spend)", name="s")]))
 
     async def test_in_filter(self, qengine) -> None:
         await _assert_circular(qengine, _cust_q(
-            measures=[ModelMeasure(formula="spend:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(spend)", name="s")],
             filters=["revisit_spend > 0"]))
 
     async def test_raw_row_mode(self, qengine) -> None:
@@ -675,24 +675,24 @@ class TestQueryTimeBackstop:
 
     async def test_through_a_derived_chain(self, qengine) -> None:
         exc = await _assert_circular(qengine, _cust_q(
-            measures=[ModelMeasure(formula="chain:sum", name="w")]))
+            measures=[ModelMeasure(formula="sum(chain)", name="w")]))
         assert exc.column == "revisit_spend"  # the innermost expanded definition
 
     async def test_filter_kind_definition(self, qengine) -> None:
         # reference comes from the filter fragment, proving the filter surface.
         await _assert_circular(qengine, _cust_q(
-            measures=[ModelMeasure(formula="filt_revisit:sum", name="w")]))
+            measures=[ModelMeasure(formula="sum(filt_revisit)", name="w")]))
 
     async def test_leading_host_qualifier_keeps_full_spelling(self, qengine) -> None:
         # The door keeps the complete pre-strip reference (leading host qualifier).
         await _assert_circular(
-            qengine, _cust_q(measures=[ModelMeasure(formula="revisit_lead:sum", name="w")]),
+            qengine, _cust_q(measures=[ModelMeasure(formula="sum(revisit_lead)", name="w")]),
             reference="customers.regions.customers.spend")
 
     async def test_refused_before_sql_executes(self, qengine) -> None:
         # dry_run builds SQL but does not execute it — a raise here proves the
         # refusal is at compile time, before any SQL runs.
-        query = _cust_q(measures=[ModelMeasure(formula="revisit_spend:sum", name="w")])
+        query = _cust_q(measures=[ModelMeasure(formula="sum(revisit_spend)", name="w")])
         with pytest.raises(CircularJoinPathError):
             await qengine.execute(query, dry_run=True)
 
@@ -701,7 +701,7 @@ class TestQueryTimeBackstop:
         # revisited model, and that the message names the circular path.
         exc = await _assert_circular(
             qengine, _orders_q(measures=[ModelMeasure(
-                formula="customers.regions.customers.spend:sum", name="w")]),
+                formula="sum(customers.regions.customers.spend)", name="w")]),
             reference=None)
         assert "customers.regions.customers" in str(exc)
         # The query-typed refusal is the base class, not the save-time derived one.
@@ -709,7 +709,7 @@ class TestQueryTimeBackstop:
 
     async def test_unresolved_model_refused_as_unresolvable(self, unresolved_engine) -> None:
         query = _cust_q(dimensions=["ghost_spend"],
-                        measures=[ModelMeasure(formula="spend:sum", name="s")])
+                        measures=[ModelMeasure(formula="sum(spend)", name="s")])
         with pytest.raises(UnresolvableDimensionJoinError) as ei:
             await unresolved_engine.execute(query)
         msg = str(ei.value)
@@ -725,7 +725,7 @@ class TestBinderParity:
     async def test_query_typed_revisit_raises_circular_class(self, qengine) -> None:
         exc = await _assert_circular(
             qengine, _orders_q(measures=[ModelMeasure(
-                formula="customers.regions.customers.spend:sum", name="w")]),
+                formula="sum(customers.regions.customers.spend)", name="w")]),
             reference=None)
         assert isinstance(exc, CircularJoinPathError)
         assert isinstance(exc, ValueError)
@@ -769,12 +769,12 @@ async def default_engine(request):
 
 class TestViaHostRerootUnchanged:
     async def test_associate_over_composed_reroot_path(self, reroot_engine) -> None:
-        # `customers.spend:sum(partition_by=status)` from orders exercises
+        # `sum(customers.spend, partition_by=status)` from orders exercises
         # reroot_from_root / attributable_from_root over a composed via-host path.
         resp = await reroot_engine.execute(_dev1900_orders_q(
             dimensions=["status"],
             measures=[ModelMeasure(
-                formula="customers.spend:sum(partition_by=status)", name="w")],
+                formula="sum(customers.spend, partition_by=status)", name="w")],
             to_many_handling="associate"))
         got = {r["orders.status"]: r["orders.w"] for r in resp.data}
         assert got == pytest.approx({"new": 290.0, "ok": 420.0})
@@ -789,12 +789,12 @@ class TestDefinitionDefaultsUnchanged:
 
     async def test_scalar_default_matches_explicit(self, default_engine) -> None:
         explicit = await self._value(
-            default_engine, "customers.spend:wsum_host(weight=orders.amount)")
-        default = await self._value(default_engine, "customers.spend:wsum_host")
+            default_engine, "wsum_host(customers.spend, weight=orders.amount)")
+        default = await self._value(default_engine, "wsum_host(customers.spend)")
         assert default == pytest.approx(explicit)
 
     async def test_expression_default_matches_explicit(self, default_engine) -> None:
         explicit = await self._value(
-            default_engine, "customers.spend:wsum_host_expr(weight=orders.amount)")
-        default = await self._value(default_engine, "customers.spend:wsum_host_expr")
+            default_engine, "wsum_host_expr(customers.spend, weight=orders.amount)")
+        default = await self._value(default_engine, "wsum_host_expr(customers.spend)")
         assert default == pytest.approx(explicit)

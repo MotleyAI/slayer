@@ -40,7 +40,7 @@ referenceable in filters, in order and from a downstream stage.
 
 #### Scenario: Colliding derived keys fail loudly
 - **WHEN** one query contains both `sum(amount - cost)` and `sum(amount + cost)`
-  without renames, or both `sum(iif(ordered_at == '2024-02', 1, 0))` and
+  without renames, or both `sum(iif(ordered_at = '2024-02', 1, 0))` and
   `sum(iif(ordered_at != '2024-02', 1, 0))`
 - **THEN** it fails with a duplicate-key error naming both expressions and advising a rename
 
@@ -65,12 +65,12 @@ referenceable in filters, in order and from a downstream stage.
 #### Scenario: Date comparison forms
 - **WHEN** a measure on `orders` is written with a date comparison inside `iif` or
   joined by `and` — `iif(ordered_at >= 'last month', 1, 0)`,
-  `iif(ordered_at == '2024-02', 1, 0)`, `iif(ordered_at != '2024-02', 1, 0)`,
-  `iif(month(ordered_at) >= '2024-02', 1, 0)`,
+  `iif(ordered_at = '2024-02', 1, 0)`, `iif(ordered_at != '2024-02', 1, 0)`,
+  `iif(date_trunc('month', ordered_at) >= '2024-02', 1, 0)`,
   `amount > 5 and ordered_at >= '2024-02-01'` — each summed
 - **THEN** the keys are `orders.iif_ordered_at_last_month_1_0_sum`,
-  `orders.iif_ordered_at_2024_02_1_0_sum` (for both `==` and `!=`),
-  `orders.iif_month_ordered_at_2024_02_1_0_sum` and
+  `orders.iif_ordered_at_2024_02_1_0_sum` (for both `=` and `!=`),
+  `orders.iif_date_trunc_month_ordered_at_2024_02_1_0_sum` and
   `orders.amount_5_and_ordered_at_2024_02_01_sum` — the relative point named by its
   text, never by the date it resolves to
 
@@ -238,8 +238,8 @@ leaves' join paths (the host for a literal-only or host-mixed expression).
 ### Requirement: Expression source typing
 The system SHALL type an aggregation's expression source by its leaves and
 constituents alone, never by its spelling. A `first`/`last` aggregation over an
-expression source SHALL be rejected with the existing not-supported-over-an-expression
-error. A numeric-only aggregation over a confidently non-numeric expression SHALL be
+expression source SHALL pick the expression's value at the ranked row of each cell,
+the source homed like any expression source. A numeric-only aggregation over a confidently non-numeric expression SHALL be
 rejected at binding. An expression whose leaves no candidate home determines over
 provably to-one hops SHALL fail with the existing input-safety error naming the leaf
 and the fanning or unproven hop, and a leaf whose derived definition cannot be
@@ -252,10 +252,10 @@ that is not a projected grain key SHALL be rejected per `queries/transforms` ›
 Non-shift transforms reject grain-refining row-level leaves. An aggregation source
 consisting entirely of attached values is a re-aggregation and SHALL be accepted; a
 source mixing row-level references with attached values is a row-grain aggregation
-and SHALL be accepted (per `queries/semantics` › Row-grain aggregation sources), except
-that a collapsing (`first`/`last`) transform constituent mixed with a row-level
-reference SHALL be rejected with a typed error naming the shape (its broadcast onto
-row-level operands is deferred to DEV-1928); an
+and SHALL be accepted (per `queries/semantics` › Row-grain aggregation sources),
+a collapsing (`first`/`last`) transform constituent included (per
+`queries/partitioned-aggregates` › Mixed sources carry the full expression-source
+surface); an
 attached (aggregate-valued) parameter on a row-level source SHALL be accepted when the
 aggregation's operating grain determines it (per `queries/partitioned-aggregates` ›
 Attached parameters on row-level sources). An attached input — a source constituent
@@ -300,8 +300,9 @@ operand dataset for an attached one.
 #### Scenario: Collapsing constituent mixed with a row leaf fails closed
 - **WHEN** a query over a month time dimension selects
   `sum(amount * last(sum(amount, partition_by=[region, ordered_at])))`
-- **THEN** it fails with a typed error naming the collapsing transform and the
-  row-level column, never a broadcast or multiplied value
+- **THEN** it executes with the collapsed value broadcast onto each row of its
+  partition (Jan 375 / Feb 825 / Mar 900 on the reference dataset), never a
+  multiplied value
 
 #### Scenario: Unanalysable derived leaf fails closed
 - **WHEN** an expression leaf names a derived column whose definition no dialect can
@@ -310,8 +311,10 @@ operand dataset for an attached one.
 
 #### Scenario: Ranked aggregation over an expression keeps its error
 - **WHEN** a measure is written `first(amount - customers.discount)`
-- **THEN** it fails with the existing error that `first` is not supported over an
-  expression — never a cross-model error and never wrong values
+- **THEN** it executes over the `orders` rows, each cell carrying `amount` minus its
+  customer's discount on the cell's earliest row by the ranking key, by
+  hand-computed executed values on SQLite and DuckDB — never a cross-model error and
+  never wrong values
 
 #### Scenario: Fully attached source accepted
 - **WHEN** a measure is written `avg(sum(amount, partition_by=[city, region]))`
@@ -335,7 +338,7 @@ operand dataset for an attached one.
 #### Scenario: Attached parameter on a row-level source executes under broadcast
 - **WHEN** a measure is written
   `weighted_avg(customers.spend, weight=sum(amount, partition_by=customers.regions.name))`
-  rooted at `orders` under the default `broadcast` `to_many_handling`
+  rooted at `orders` under `to_many_handling: "broadcast"`
 - **THEN** it executes — the parameter's producer rooted at `orders`, attached per
   customer row inside the `customers`-rooted producer — with values identical to
   `associate` and `error` on every dimension the home determines, never the former
@@ -368,8 +371,39 @@ operand dataset for an attached one.
   `sum(customers.spend * sum(amount, partition_by=customers.regions.name))` — a
   row-grain source homed at `customers` whose constituent is homed at `orders`
 - **THEN** the constituent's producer is rooted at `orders` and attached per
-  customer row; by `status` under the default mode the customers-rooted total
+  customer row; by `status` under `to_many_handling: "broadcast"` the customers-rooted total
   (33780 on the reference dataset) is broadcast to both cells with the usual
   warning, and by `customers.tier` every mode returns identical hand-computed
   values (gold 15300, silver 16600, bronze 1880) — never the input-safety error the
   constituent's interior would raise from `customers`
+
+### Requirement: Column-valued parameters accept row-level expressions
+Every aggregation parameter that takes a column — `weight=`, the second input
+`other=` of `corr` / `covar_samp` / `covar_pop`, a custom aggregation's declared
+parameter — SHALL accept a row-level Mode-B expression, positionally or by name, a
+column being the one-leaf case. The expression SHALL be typed and homed by the rules
+a column parameter follows (`queries/semantics` › Aggregation parameters are typed
+by the home dataset's grain, semantics Axiom 2.4): a parameter whose leaves the
+aggregation's dataset does not determine SHALL fail with the existing typed
+parameter error naming the parameter, the grain and the remedy. An expression
+parameter carrying an aggregate or transform SHALL keep the attached-parameter rules.
+
+#### Scenario: Expression weight
+- **WHEN** a measure is written `weighted_avg(price, weight=quantity * 2)` and,
+  separately, `weighted_avg(price, quantity * 2)`
+- **THEN** both equal `weighted_avg(price, weight=quantity)` by executed values on
+  SQLite and DuckDB, and the two spellings share one result key
+
+#### Scenario: Expression second input of corr
+- **WHEN** a measure is written `corr(amount, quantity + 1)`
+- **THEN** it equals `corr(amount, quantity)` by executed values
+
+#### Scenario: Cross-model expression parameter over a to-one hop
+- **WHEN** a query rooted at `orders` selects
+  `weighted_avg(amount, weight=coalesce(customers.discount, 0))`
+- **THEN** each order is weighted by its own customer's discount, by executed values
+
+#### Scenario: Undetermined expression parameter fails closed
+- **WHEN** a query over `[region]` selects
+  `weighted_avg(sum(amount, partition_by=[city, region]), weight=id * 2)`
+- **THEN** it fails at plan time with the typed parameter error naming `weight`

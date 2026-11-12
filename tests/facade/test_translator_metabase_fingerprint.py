@@ -30,6 +30,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
 from slayer.facade.catalog import FacadeCatalog, build_catalog
+from slayer.facade.rows import FacadeColumn, RowBatch
 from slayer.facade.translator import QueryResult, TranslationError, translate
 
 
@@ -134,9 +135,6 @@ def test_qualified_table_exact_match_wins_over_public_alias() -> None:
     distinct table, ``public.X`` must resolve via exact match instead of
     short-circuiting to the bare-name lookup (which would silently pick
     a different schema's same-named table)."""
-    from slayer.core.enums import DataType
-    from slayer.core.models import Column, SlayerModel
-    from slayer.facade.catalog import build_catalog
     public_orders = SlayerModel(
         name="orders", data_source="public", sql_table="orders",
         columns=[Column(name="id", type=DataType.INT, primary_key=True),
@@ -253,7 +251,6 @@ def test_translate_accepts_lazy_catalog_executor_factory() -> None:
 
     class _RecordingExecutor:
         def execute(self, *, parsed, sql):
-            from slayer.facade.rows import FacadeColumn, RowBatch
             return RowBatch(
                 columns=[FacadeColumn(name="x", type=DataType.INT)],
                 rows=[{"x": 1}],
@@ -297,9 +294,8 @@ def test_metabase_fingerprint_orders_corpus_17() -> None:
 
 
 def test_aggregate_over_three_part_qualified_column() -> None:
-    """DEV-1558 Codex review fold: SUM("public"."orders"."total") must
-    resolve to the `total:sum` metric on the orders model, not to a
-    bogus `public.orders.total:sum` lookup."""
+    """SUM("public"."orders"."total") resolves to the `sum(total)` metric on the orders model, not to a
+    bogus `sum(public.orders.total)` lookup."""
     sql = (
         'SELECT SUM("public"."orders"."total") AS "total_sum" '
         'FROM "public"."orders"'
@@ -311,7 +307,7 @@ def test_aggregate_over_three_part_qualified_column() -> None:
     def _formula(m):
         return m["formula"] if isinstance(m, dict) else m.formula
     measure_formulas = [_formula(m) for m in (result.query.measures or [])]
-    assert "total:sum" in measure_formulas
+    assert "sum(total)" in measure_formulas
 
 
 def test_order_by_three_part_qualified_column() -> None:
@@ -369,7 +365,7 @@ def test_hygiene_wrapper_around_two_part_column_rejected() -> None:
 def test_metabase_gui_question_count_orders_corpus_20() -> None:
     """Corpus #20 — Metabase's compiled GUI question (`COUNT of orders`):
     ``SELECT COUNT(*) AS "count" FROM "public"."orders"``.  This rides on
-    DEV-1486's aggregate-SQL → metric mapping (`COUNT(*)` → `*:count`) plus
+    the aggregate-SQL → metric mapping (`COUNT(*)` → `count(*)`) plus
     the 3-part / 2-part qualified `"public"."orders"` table reference."""
     sql = (
         '-- Metabase:: userID: 1 queryType: MBQL queryHash: a54de39466cbf3e8\n'
@@ -380,10 +376,10 @@ def test_metabase_gui_question_count_orders_corpus_20() -> None:
     aliases = [projected for _alias, projected in result.column_name_mapping]
     assert aliases == ["count"]
     assert result.query.source_model == "orders"
-    # Underlying engine measure is `*:count` (the canonical count-all form).
+    # Underlying engine measure is `count(*)` (the canonical count-all form).
     # The measures list carries pydantic ModelMeasure-shaped entries; accept
     # both dict and attribute access.
     def _formula(m):
         return m["formula"] if isinstance(m, dict) else m.formula
     measure_formulas = [_formula(m) for m in (result.query.measures or [])]
-    assert "*:count" in measure_formulas
+    assert "count(*)" in measure_formulas

@@ -11,17 +11,45 @@ Per-entity versions evolve independently. ``CURRENT_VERSIONS[entity]`` is the
 version that ``.save_*()`` will write today.
 """
 
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
-from collections.abc import Callable
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
-    "SlayerModel": 15,
-    "SlayerQuery": 6,
-    "DatasourceConfig": 2,
-    "Memory": 4,
+    "SlayerModel": 21,
+    "SlayerQuery": 13,
+    "DatasourceConfig": 3,
+    "Memory": 9,
     "Embedding": 1,
 }
+
+_document: ContextVar[str | None] = ContextVar("slayer_migrated_document", default=None)
+_stored: ContextVar[bool] = ContextVar("slayer_stored_document", default=False)
+
+
+@contextmanager
+def migrating_document(label: str | None, *, stored: bool) -> Iterator[None]:
+    """Name the document whose nested documents migrate inside the block; ``stored`` when it carries a version."""
+    token = _document.set(label or _document.get())
+    stored_token = _stored.set(stored or _stored.get())
+    try:
+        yield
+    finally:
+        _stored.reset(stored_token)
+        _document.reset(token)
+
+
+def in_stored_document() -> bool:
+    """Whether validation runs inside a stored (versioned) model's or memory's nested documents."""
+    return _stored.get()
+
+
+def document_label(data: dict) -> str | None:
+    """``data``'s own name, else the enclosing stored document's."""
+    name = data.get("name")
+    return name if isinstance(name, str) and name else _document.get()
 
 # Registry: (entity_name, source_version) -> converter producing source_version+1.
 _REGISTRY: dict[tuple[str, int], Callable[[dict], dict]] = {}
@@ -88,6 +116,13 @@ def _model_v10_to_v11(data: dict) -> dict:
     return data
 
 
+@register_migration(entity="DatasourceConfig", source_version=2)
+def _datasource_v2_to_v3(data: dict) -> dict:
+    """v3: per-doc no-op; the library-name granularity rename rewrites dependants, so it runs in the
+    storage load path on every load."""
+    return data
+
+
 def _blank(v: Any) -> bool:
     return isinstance(v, str) and not v.strip()
 
@@ -129,7 +164,7 @@ _STRICT_FALSE_TOKENS = frozenset({"0", "false", "f", "no", "n", "off", ""})
 @register_migration(entity="SlayerQuery", source_version=3)
 def _query_v3_to_v4(data: dict) -> dict:
     """v4: retire ``strict`` — ``strict: true`` → ``to_many_handling: "error"``;
-    ``false``/absent drops to the ``"broadcast"`` default."""
+    ``false``/absent leaves the mode omitted (the default)."""
     if "strict" not in data:
         return data
     strict = data.pop("strict")
@@ -146,6 +181,30 @@ def _query_v3_to_v4(data: dict) -> dict:
     if strict:
         data.setdefault("to_many_handling", "error")
     return data
+
+
+def is_legacy_root_extension(source: Any) -> bool:
+    """Whether a raw ``source_model`` is the legacy extension object."""
+    return isinstance(source, dict) and "source_name" in source
+
+
+def hoist_root_extension(data: dict) -> dict:
+    """A query whose ``source_model`` is an extension object, as ``source_model: <base>`` plus that extension."""
+    source = data.get("source_model")
+    if not isinstance(source, dict) or not is_legacy_root_extension(source):
+        return data
+    return with_root_extension(data, extension=source, base=source["source_name"])
+
+
+def with_root_extension(data: dict, *, extension: Any, base: Any) -> dict:
+    """``data`` sourced from ``base`` with ``extension`` first in its extensions; a non-list ``extensions`` is left to validation."""
+    extensions = data.get("extensions")
+    if extensions is not None and not isinstance(extensions, list):
+        return data
+    return {**data, "source_model": base, "extensions": [extension, *(extensions or [])]}
+
+
+register_migration(entity="SlayerQuery", source_version=12, stored_only=True)(hoist_root_extension)
 
 
 def migrate(entity: str, data: Any) -> Any:
@@ -195,3 +254,9 @@ from slayer.storage import v8_migration  # noqa: E402, F401  # ALLOW(import-not-
 from slayer.storage import v9_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import rank_direction_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import stored_repair_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import sql_string_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import time_dimension_text_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import distinct_column_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import colon_spelling_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import ossie_alignment_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import many_handling_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here

@@ -2,40 +2,76 @@
 
 from __future__ import annotations
 
+import json
 import re as _re
-from typing import TYPE_CHECKING, Any, ClassVar
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING, Any, ClassVar, Optional
 from urllib.parse import quote
 
 import sqlalchemy as sa
 import sqlalchemy.engine.url as _sa_url
 
 from sqlglot import exp
-from sqlglot.expressions.core import Expression
+from sqlglot.expressions.datatypes import DType
+from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
-from slayer.sql.dialects.base import SqlDialect
+from slayer.core.json_path import JsonPath
+from slayer.core.regex_pattern import RegexPattern, RegexReplacement
+from slayer.sql import connection_policy
+from slayer.sql.dialects.base import (
+    LIST_VALUE, PORTABLE_LIBRARY, ExtremumFn, IdentifierFolding, NativeFn, TransactionMode, ListRelation, SqlDialect, TextFn, anon, as_text,
+    case, either,
+    element_lambda, lit, operand_copy, setting, text_try_cast,
+)
+from slayer.sql.dialects.patterns import POSIX, RegexFlavour
 from slayer.sql.dialects.drivers import import_driver
+from slayer.sql.dialects.reflection import (
+    ResultColumnType,
+    TableLocation,
+    call,
+    info_schema_comments_query,
+    result_column_type_of_name,
+)
 
 if TYPE_CHECKING:
     from slayer.core.models import DatasourceConfig
 
 
-# ``snowflake.connector.constants.FieldType`` codes → SLayer category.
-_SNOWFLAKE_TYPE_MAP: dict[int, str] = {
-    0: "number",   # FIXED (NUMBER / INT / DECIMAL)
-    1: "number",   # REAL (FLOAT / DOUBLE)
-    2: "string",   # TEXT (VARCHAR / STRING)
-    3: "time",     # DATE
-    4: "time",     # TIMESTAMP (legacy alias)
-    5: "string",   # VARIANT (semi-structured JSON / object)
-    6: "time",     # TIMESTAMP_LTZ
-    7: "time",     # TIMESTAMP_TZ
-    8: "time",     # TIMESTAMP_NTZ
-    9: "string",   # OBJECT
-    10: "string",  # ARRAY
-    11: "string",  # BINARY
-    12: "time",    # TIME
-    13: "boolean", # BOOLEAN
+_ARRAY_TYPE_CODE = 10
+
+
+def _semi_structured(values: Expression) -> Expression:
+    """A structured ``ARRAY(T)`` read as a semi-structured ARRAY (a no-op on one), which the ARRAY functions take."""
+    return exp.Cast(this=values.copy(), to=exp.DataType.build("ARRAY"))
+
+
+def _typed_elements(values: Expression, element: Optional[DataType], distinct: bool = False) -> Expression:
+    """The non-NULL elements as a structured ``ARRAY(T)``, whose elements read as ``T``."""
+    kept = anon("ARRAY_COMPACT", _semi_structured(values))
+    kept = anon("ARRAY_DISTINCT", kept) if distinct else kept
+    if element is None or element.is_opaque:
+        return kept
+    return exp.Cast(this=kept, to=exp.DataType.build(f"ARRAY<{element.value}>"))
+
+
+def _json_list(value: Any) -> Any:
+    return json.loads(value) if isinstance(value, str) else value
+
+
+_TYPEOF_SAMPLE = 20
+#: ``TYPEOF`` of a VARIANT element → its SLayer type (absent: opaque).
+_TYPEOF_TYPES: dict[str, DataType] = {
+    "INTEGER": DataType.INT, "DECIMAL": DataType.DOUBLE, "DOUBLE": DataType.DOUBLE, "VARCHAR": DataType.TEXT,
+    "BOOLEAN": DataType.BOOLEAN, "DATE": DataType.DATE, "TIMESTAMP_NTZ": DataType.TIMESTAMP,
+    "TIMESTAMP_LTZ": DataType.TIMESTAMP, "TIMESTAMP_TZ": DataType.TIMESTAMP,
+}
+# ``snowflake.connector.constants.FieldType`` codes → type names; ``FIXED`` (0) is read by precision / scale.
+_FIXED = 0
+_FIELD_TYPE_NAMES: dict[int, str] = {
+    1: "FLOAT", 2: "TEXT", 3: "DATE", 4: "TIMESTAMP", 5: "VARIANT", 6: "TIMESTAMP_LTZ",
+    7: "TIMESTAMP_TZ", 8: "TIMESTAMP_NTZ", 9: "OBJECT", 10: "ARRAY", 11: "BINARY", 12: "TIME",
+    13: "BOOLEAN", 14: "GEOGRAPHY", 15: "GEOMETRY",
 }
 
 
@@ -96,25 +132,182 @@ def _extract_connection_name(connection_string: str) -> str:
     return name
 
 
+def _parameters(case_insensitive: bool) -> Expression:
+    """Match parameters: case as asked, ``.`` across newlines."""
+    return lit("is" if case_insensitive else "cs")
+
+
+def _snowflake_path(path: JsonPath) -> str:
+    """``GET_PATH`` syntax: no ``$``; a key that is not a plain identifier in double quotes."""
+    out = []
+    for i, step in enumerate(path.steps):
+        if isinstance(step, int):
+            out.append(f"[{step}]")
+        else:
+            plain = _SAFE_SNOWFLAKE_IDENT.match(step) is not None and "$" not in step
+            key = step if plain else f'"{step}"'
+            out.append(key if i == 0 else f".{key}")
+    return "".join(out)
+
+
 class SnowflakeDialect(SqlDialect):
     """Snowflake dialect."""
 
     sqlglot_name: str = "snowflake"
+    aliased_integer_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.TINYINT, exp.DataType.Type.SMALLINT})
+    array_cast_types: ClassVar[bool] = True
+    ilike_native: ClassVar[bool] = True
+    identifier_folding: ClassVar[IdentifierFolding] = "upper"
+    # INFORMATION_SCHEMA has no KEY_COLUMN_USAGE.
+    primary_key_inspector_only: bool = True
     ds_type_aliases: frozenset[str] = frozenset({"snowflake"})
+    # Its SQLAlchemy dialect sends ROLLBACK / COMMIT even in autocommit.
+    transaction_mode: ClassVar[TransactionMode] = "dialect_autocommit"
+    sa_backend_names: frozenset[str] = frozenset({"snowflake"})
     explain_prefix: str | None = "EXPLAIN USING JSON"
-    explain_postfix: str = ""
-    log10_native: bool = True
+    log10_native: bool = False
     log2_native: bool = False
     max_identifier_bytes: int | None = 255
     approx_count_distinct_native: bool = True
+    row_number_needs_order: bool = True
     url_scheme: str | None = "snowflake"
     install_extra: str | None = "snowflake"
+
+    def normalize_reflected_name(self, name: str) -> str:
+        return name.lower() if name == name.upper() else name
+
+    def column_comments_query(self, location: TableLocation) -> exp.Select:
+        return info_schema_comments_query(
+            comment_column="comment", default_schema=call("CURRENT_SCHEMA"), location=location,
+        )
 
     _EXTRACT_FIELDS: ClassVar[dict[DatePart, str]] = {
         **SqlDialect._EXTRACT_FIELDS,
         DatePart.ISO_YEAR: "YEAROFWEEKISO", DatePart.WEEK: "WEEKISO",
         DatePart.DAY_OF_WEEK: "DAYOFWEEKISO", DatePart.DAY_OF_YEAR: "DAYOFYEAR",
     }
+    regex_flavour: ClassVar[Optional[RegexFlavour]] = POSIX
+    json_db_types: ClassVar[frozenset[str]] = frozenset({"VARIANT", "OBJECT", "ARRAY"})
+    database_name: ClassVar[str] = "Snowflake"
+    native_lists: ClassVar[bool] = True
+    library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    native_functions: ClassVar[frozenset[NativeFn]] = frozenset({
+        "REPEAT", "LPAD", "RPAD", "REVERSE", "CHR", "SPLIT_PART", "PI", "CBRT",
+    })
+
+    def result_readers(self, description: Sequence[Any]) -> dict[int, Callable[[Any], Any]]:
+        """The connector returns an ARRAY (type code 10) as JSON text."""
+        return {i: _json_list for i, d in enumerate(description) if d[1] == _ARRAY_TYPE_CODE}
+
+    def list_element_types_query(self, *, table: exp.Table, column: exp.Identifier) -> Optional[exp.Select]:
+        """The distinct ``TYPEOF`` of an untyped ARRAY's elements, a few rows."""
+        flattened = exp.TableFromRows(
+            this=exp.Explode(this=exp.Kwarg(this=exp.var("INPUT"), expression=exp.column(column.copy()))),
+            alias=exp.TableAlias(this=exp.to_identifier("__slayer_f")),
+        )
+        kind = anon("TYPEOF", exp.column(LIST_VALUE, table="__slayer_f"))
+        return exp.select(kind).distinct().from_(table.copy()).join(
+            exp.Lateral(this=flattened.this, alias=flattened.args["alias"]), join_type="CROSS",
+        ).limit(_TYPEOF_SAMPLE)
+
+    def list_element_type(self, names: Sequence[Any]) -> DataType:
+        """One scalar family maps to its type, mixed scalars to TEXT; objects, nested arrays or no elements are
+        UNKNOWN."""
+        kinds = {_TYPEOF_TYPES.get(str(n).upper(), DataType.UNKNOWN) for n in names if str(n).upper() != "NULL_VALUE"}
+        if not kinds or DataType.UNKNOWN in kinds:
+            return DataType.UNKNOWN
+        if kinds <= {DataType.INT, DataType.DOUBLE}:
+            return DataType.DOUBLE if DataType.DOUBLE in kinds else DataType.INT
+        return kinds.pop() if len(kinds) == 1 else DataType.TEXT
+
+    def list_length(self, values: Expression) -> Expression:
+        return anon("ARRAY_SIZE", values)
+
+    def build_list_set(self, values: Expression, element: Optional[DataType]) -> Expression:
+        return anon("ARRAY_SORT", anon("ARRAY_DISTINCT", anon("ARRAY_COMPACT", _semi_structured(values))))
+
+    def build_list_key(self, values: Expression) -> Expression:
+        return values
+
+    def list_contains(self, values: Expression, value: Expression) -> Expression:
+        found = exp.Cast(this=operand_copy(value), to=exp.DataType.build("VARIANT"))
+        return anon("ARRAY_CONTAINS", found, _semi_structured(values))
+
+    def list_overlaps(self, values: Expression, other: Expression) -> Expression:
+        return anon("ARRAYS_OVERLAP", anon("ARRAY_COMPACT", _semi_structured(values)),
+                    anon("ARRAY_COMPACT", _semi_structured(other)))
+
+    def list_contains_all(self, values: Expression, other: Expression) -> Expression:
+        wanted = anon("ARRAY_DISTINCT", anon("ARRAY_COMPACT", _semi_structured(other)))
+        missing = anon("ARRAY_EXCEPT", wanted, _semi_structured(values))
+        return exp.EQ(this=anon("ARRAY_SIZE", missing), expression=lit(0))
+
+    def list_relation(
+        self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,
+        distinct: bool = False,
+    ) -> ListRelation:
+        """``FLATTEN`` of the list cast to ``ARRAY(T)``, so ``value`` is typed; no correlated subquery reads it."""
+        rows = exp.Explode(this=exp.Kwarg(this=exp.var("INPUT"), expression=_typed_elements(values, element, distinct)))
+        return ListRelation(relation=exp.TableFromRows(this=rows, alias=exp.TableAlias(this=alias.copy())))
+
+    def list_exists(
+        self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], predicate: Expr,
+    ) -> Expression:
+        """``FILTER(values, e -> predicate(e))`` is non-empty: Snowflake rejects a correlated subquery over FLATTEN."""
+        matched = anon("FILTER", _typed_elements(values, element), element_lambda(predicate, alias=alias))
+        found = exp.GT(this=anon("ARRAY_SIZE", matched), expression=lit(0))
+        return exp.Coalesce(this=found, expressions=[exp.false()])
+
+    def build_collect(self, value: Expression, element: Optional[DataType]) -> Expression:
+        """Skips NULLs and returns ``[]`` over none."""
+        order = self.distinct_sorted(value)
+        return exp.WithinGroup(this=exp.ArrayAgg(this=order.this), expression=exp.Order(expressions=order.expressions))
+
+    def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
+        if fn == "concat_ws":
+            return anon("ARRAY_TO_STRING", anon("ARRAY_CONSTRUCT_COMPACT", *args[1:]), args[0])
+        return super().build_text_call(fn, args)
+
+    def first_code_point(self, s: Expression) -> Expression:
+        return case((exp.EQ(this=s.copy(), expression=lit("")), lit(0)), default=anon("UNICODE", s))
+
+    def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        """A digits-only string is no time point (Snowflake would read it as epoch seconds)."""
+        converted = text_try_cast(value, to)
+        if to.this not in exp.DataType.TEMPORAL_TYPES:
+            return converted
+        digits = anon("REGEXP_LIKE", anon("TRIM", as_text(value)), lit("[+-]?[0-9]+"))
+        return case((digits, exp.Null()), default=converted)
+
+    def build_extremum(self, fn: ExtremumFn, args: tuple[Expression, ...]) -> Expression:
+        return anon(f"{fn.upper()}_IGNORE_NULLS", *args)
+
+    def build_regexp_like(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        """``REGEXP_LIKE`` matches the whole string here; ``REGEXP_INSTR`` finds a partial match."""
+        position = anon("REGEXP_INSTR", value, self.regex_text(pattern), lit(1), lit(1), lit(0),
+                        _parameters(case_insensitive))
+        return exp.GT(this=position, expression=lit(0))
+
+    def build_regexp_extract(
+        self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
+    ) -> Expression:
+        if group == 0:
+            return anon("REGEXP_SUBSTR", value, self.regex_text(pattern), lit(1), lit(1), _parameters(False))
+        extracted = anon("REGEXP_SUBSTR", value, self.regex_text(pattern), lit(1), lit(1), lit("cse"), lit(group))
+        return self.skipped_group_empty(value, pattern, group, extracted)
+
+    def build_regexp_replace(
+        self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,
+    ) -> Expression:
+        return anon("REGEXP_REPLACE", value, self.regex_text(pattern), self.replacement_text(replacement), lit(1),
+                    lit(0), _parameters(case_insensitive))
+
+    def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
+        """``GET_PATH`` on the VARIANT (text parsed with ``TRY_PARSE_JSON``); objects, arrays and null are NULL."""
+        document = value.copy() if native else anon("TRY_PARSE_JSON", anon("TO_VARCHAR", value))
+        found = anon("GET_PATH", document, lit(_snowflake_path(path)))
+        not_scalar = either(anon("IS_OBJECT", found), anon("IS_ARRAY", found.copy()), anon("IS_NULL_VALUE", found.copy()))
+        return case((not_scalar, exp.Null()), default=anon("TO_VARCHAR", found.copy()))
 
     def _second_gap(self, *, start: Expression, end: Expression) -> Expression:
         """No interval type: ``DATEDIFF`` of second-aligned timestamps is exact."""
@@ -199,8 +392,8 @@ class SnowflakeDialect(SqlDialect):
                         f"snowflake-connector bridge. Set ``warehouse`` / "
                         f"``role`` / ``database`` / ``schema_name`` on the "
                         f"typed ``DatasourceConfig`` fields instead — those "
-                        f"fire via ``apply_session_overrides`` on every "
-                        f"pool checkout."
+                        f"fire via ``apply_session_overrides`` once per "
+                        f"new connection."
                     )
         if not _is_connection_name_sentinel(connection_string):
             return None
@@ -210,11 +403,9 @@ class SnowflakeDialect(SqlDialect):
             sf = import_driver(_CONNECTOR_MODULE, datasource=datasource, dialect=self)
             return sf.connect(connection_name=name)
 
-        return sa.create_engine(
-            "snowflake://",
-            creator=_create_snowflake_connection,
-            pool_pre_ping=True,
-        )
+        return sa.create_engine("snowflake://", **connection_policy.engine_kwargs(
+            url="snowflake://", dialect=self, datasource=datasource, creator=_create_snowflake_connection,
+        ))
 
     def deferred_driver_modules(self, connection_string: str) -> tuple[str, ...]:
         """The sentinel's connector is imported only by the connect-time ``creator``."""
@@ -252,21 +443,31 @@ class SnowflakeDialect(SqlDialect):
         cur = dbapi_connection.cursor()
         try:
             # Role first: it gates warehouse access; database before schema for bare names.
-            if role:
-                cur.execute(f"USE ROLE {role}")
-            if warehouse:
-                cur.execute(f"USE WAREHOUSE {warehouse}")
-            if database:
-                cur.execute(f"USE DATABASE {database}")
-            if schema_name:
-                cur.execute(f"USE SCHEMA {schema_name}")
+            uses = (("ROLE", role), ("WAREHOUSE", warehouse), ("DATABASE", database), ("SCHEMA", schema_name))
+            for kind, name in uses:
+                if name:
+                    target = exp.Table(this=exp.Identifier(this=name, quoted=False))
+                    cur.execute(exp.Use(kind=exp.Var(this=kind), this=target).sql(dialect="snowflake"))
         finally:
             cur.close()
 
-    def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
-        """Session-wide ``STATEMENT_TIMEOUT_IN_SECONDS``."""
-        return f"ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = {timeout_seconds}"
+    def autocommit_in_force(self, dbapi_connection: Any) -> bool:
+        """The connector tracks the session's AUTOCOMMIT parameter as the server reports it."""
+        return bool(getattr(dbapi_connection, "_session_parameters", {}).get("AUTOCOMMIT"))
 
-    def map_cursor_type_code(self, type_code: int) -> str | None:
-        """Map a connector ``FieldType`` code to a SLayer category; None if unknown."""
-        return _SNOWFLAKE_TYPE_MAP.get(type_code)
+    def statement_timeout(self, timeout_seconds: int) -> Expression | None:
+        """Session-wide ``STATEMENT_TIMEOUT_IN_SECONDS``."""
+        return exp.Alter(kind="SESSION", actions=[exp.AlterSession(
+            expressions=[setting(name="STATEMENT_TIMEOUT_IN_SECONDS", value=timeout_seconds)])])
+
+    def describe_cursor_column(self, description_row: Sequence[Any]) -> ResultColumnType | None:
+        """A connector ``FieldType`` code; ``FIXED`` is INT at scale 0, DOUBLE otherwise; ``None`` if unknown."""
+        code, precision, scale = description_row[1], description_row[4], description_row[5]
+        if code == _FIXED:
+            known = precision is not None and scale is not None
+            return ResultColumnType(
+                type=DataType.INT if scale == 0 else DataType.DOUBLE,
+                db_type=f"NUMBER({precision},{scale})" if known else "NUMBER",
+            )
+        name = _FIELD_TYPE_NAMES.get(code) if isinstance(code, int) else None
+        return None if name is None else result_column_type_of_name(name)

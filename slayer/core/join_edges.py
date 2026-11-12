@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
-from slayer.core.join_walker import OrientedJoin
-from slayer.core.models import ModelJoin, SlayerModel, _validate_model_name
+from slayer.core.enums import JoinCardinality, JoinType, invert_cardinality
+from slayer.core.errors import QueryExtensionError
+from slayer.core.join_walker import OrientedJoin, canonical_token, orient_join
+from slayer.core.models import ModelJoin, SlayerModel, _check_join_keys, _validate_model_name
 
 __all__ = [
+    "EdgeMerge",
+    "ExtensionEdge",
     "JoinEdgeRef",
     "RelationshipSignature",
     "edge_reference",
@@ -56,6 +60,168 @@ class JoinEdgeRef(BaseModel):
 
 def _pair_set(pairs: list[list[str]]) -> frozenset[tuple[str, str]]:
     return frozenset((p[0], p[1]) for p in pairs)
+
+
+class ExtensionEdge(BaseModel):
+    """A query extension's join as merged: the edge oriented from its declaring model, and the token reaching it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    edge: OrientedJoin
+    token: str
+
+
+class _Candidate(BaseModel):
+    """An edge between the declaring model and the target, read from the declaring model."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    declaring: str
+    index: int
+    join: ModelJoin
+    pairs: frozenset[tuple[str, str]]
+    cardinality: JoinCardinality | None
+
+
+def _check_unique(matches: list[_Candidate], *, label: str) -> None:
+    if len(matches) > 1:
+        names = ", ".join(repr(c.join.name or c.join.target_model) for c in matches)
+        raise QueryExtensionError(f"The {label} matches {len(matches)} edges ({names}); name the edge it means.")
+
+
+def _cardinality_label(cardinality: JoinCardinality | None) -> str:
+    return cardinality.value if cardinality is not None else "unset"
+
+
+class EdgeMerge:
+    """Merges query extension joins into a model universe: a join repeating an edge, in either orientation, is it."""
+
+    def __init__(
+        self, *, models: Mapping[str, SlayerModel], reserved_names: Iterable[str] = (),
+        stored_edge_names: Iterable[str] | None = None,
+    ) -> None:
+        self.models: dict[str, SlayerModel] = dict(models)
+        self._reserved = frozenset(reserved_names)
+        self._edge_names = frozenset(
+            stored_edge_names if stored_edge_names is not None
+            else (j.name for m in models.values() for j in m.joins if j.name and not j.query_local)
+        )
+        self._local_names: set[str] = set()
+        self._alias_edges: dict[str, tuple[str, int]] = {}
+
+    def add(self, *, declaring: str, join: ModelJoin) -> ExtensionEdge:
+        """Merge ``join``, declared by an extension of ``declaring``; raises ``QueryExtensionError`` on a conflict."""
+        source = self.models[declaring]
+        target = self.models.get(join.target_model)
+        label = f"extension {_describe(join)} of {source.spelling!r}"
+        if join.target_model == declaring:
+            raise QueryExtensionError(f"The {label} joins the model to itself.")
+        candidates = self._candidates(source=source, target_name=join.target_model)
+        pairs = _pair_set(join.join_pairs)
+        named = [c for c in candidates if join.name is not None and c.join.name == join.name]
+        _check_unique(named, label=label)
+        if named:
+            match = named[0]
+            if match.pairs != pairs:
+                raise QueryExtensionError(
+                    f"The {label} is named like the edge {join.name!r}, which joins on "
+                    f"{sorted(match.pairs)}; use another name or the edge's join_pairs."
+                )
+            return self._reuse(match, join=join, extended=declaring, label=label, alias=None)
+        matches = [c for c in candidates if c.pairs == pairs]
+        _check_unique(matches, label=label)
+        target_spelling = target.spelling if target is not None else join.target_model
+        declared = join.name if join.name != target_spelling else None
+        if matches:
+            return self._reuse(matches[0], join=join, extended=declaring, label=label, alias=declared)
+        return self._add_new(source=source, target=target, join=join, name=declared, label=label)
+
+    def _candidates(self, *, source: SlayerModel, target_name: str) -> list[_Candidate]:
+        out = [
+            _Candidate(declaring=source.name, index=i, join=j, pairs=_pair_set(j.join_pairs), cardinality=j.cardinality)
+            for i, j in enumerate(source.joins) if j.target_model == target_name
+        ]
+        target = self.models.get(target_name)
+        for i, j in enumerate(target.joins if target is not None else []):
+            if j.target_model == source.name:
+                out.append(_Candidate(
+                    declaring=target_name, index=i, join=j, pairs=frozenset((t, s) for s, t in _pair_set(j.join_pairs)),
+                    cardinality=invert_cardinality(j.cardinality),
+                ))
+        return out
+
+    def _reuse(
+        self, match: _Candidate, *, join: ModelJoin, extended: str, label: str, alias: str | None,
+    ) -> ExtensionEdge:
+        if None not in (join.cardinality, match.cardinality) and join.cardinality != match.cardinality:
+            raise QueryExtensionError(
+                f"The {label} declares cardinality {_cardinality_label(join.cardinality)}, but that edge is "
+                f"{_cardinality_label(match.cardinality)} in the same direction."
+            )
+        stored = match.join
+        if stored.query_local:
+            stored = self._name_local(match, name=alias, label=label)
+            alias = None
+        elif alias is not None and alias in self._edge_names:
+            raise QueryExtensionError(f"The {label} names another stored edge {alias!r}.")
+        elif alias is not None:
+            self._claim_alias(alias, edge=(match.declaring, match.index), label=label)
+        if alias is not None and alias not in stored.aliases:
+            stored = self._replace(match, stored.with_aliases((*stored.aliases, alias)))
+        return self._edge(declaring=match.declaring, join=stored, from_model=extended, token=alias)
+
+    def _name_local(self, match: _Candidate, *, name: str | None, label: str) -> ModelJoin:
+        """A query-local edge declared again: one name, or none, is one edge."""
+        local = match.join
+        if name is None or name == local.name:
+            return local
+        if local.name is not None:
+            raise QueryExtensionError(
+                f"The {label} names the relationship {name!r}, which another extension names {local.name!r}; "
+                f"declare one name."
+            )
+        self._check_new_name(name, label=label)
+        return self._replace(match, local.model_copy(update={"name": name}))
+
+    def _add_new(
+        self, *, source: SlayerModel, target: SlayerModel | None, join: ModelJoin, name: str | None, label: str,
+    ) -> ExtensionEdge:
+        if name is not None:
+            self._check_new_name(name, label=label)
+        new = join.model_copy(update={"name": name, "join_type": JoinType.LEFT}).as_query_local()
+        if not source.awaits_columns:
+            _check_join_keys(model_name=source.name, columns=source.columns, joins=[new])
+        self.models[source.name] = source.model_copy(update={"joins": [*source.joins, new]})
+        edge = orient_join(join=new, declaring=self.models[source.name], other=target, from_model=source.name)
+        return ExtensionEdge(edge=edge, token=canonical_token(edge))
+
+    def _check_new_name(self, name: str, *, label: str) -> None:
+        if name in self._edge_names or name in self._local_names:
+            raise QueryExtensionError(f"The {label} is named {name!r}, which names another edge.")
+        if name in self._reserved:
+            raise QueryExtensionError(f"The {label} is named {name!r}, which names a model or stage.")
+        self._local_names.add(name)
+
+    def _claim_alias(self, alias: str, *, edge: tuple[str, int], label: str) -> None:
+        """Register ``alias`` for the stored ``edge``; one alias names one edge."""
+        if self._alias_edges.get(alias) == edge:
+            return
+        self._check_new_name(alias, label=label)
+        self._alias_edges[alias] = edge
+
+    def _replace(self, match: _Candidate, join: ModelJoin) -> ModelJoin:
+        model = self.models[match.declaring]
+        joins = list(model.joins)
+        joins[match.index] = join
+        self.models[match.declaring] = model.model_copy(update={"joins": joins})
+        return join
+
+    def _edge(self, *, declaring: str, join: ModelJoin, from_model: str, token: str | None) -> ExtensionEdge:
+        """``join`` (stored on ``declaring``) oriented from the extended model ``from_model``."""
+        edge = orient_join(
+            join=join, declaring=self.models[declaring], other=self.models.get(join.target_model), from_model=from_model,
+        )
+        return ExtensionEdge(edge=edge, token=token or canonical_token(edge))
 
 
 def _joins_to(model: SlayerModel, target: str) -> list[ModelJoin]:

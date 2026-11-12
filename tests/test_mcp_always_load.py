@@ -14,6 +14,7 @@ import slayer.cli as cli
 from slayer.api.server import create_app
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._fake_uvicorn import fake_uvicorn
 
 _ALWAYS_LOAD = "anthropic/alwaysLoad"
 _ENV = "SLAYER_MCP_ALWAYS_LOAD_QUERY"
@@ -65,7 +66,7 @@ async def test_create_app_default_leaves_the_embedded_server_unmarked(tmp_path, 
 # --------------------------------------------------------------------------- #
 def _args(**overrides: Any) -> argparse.Namespace:
     base = {
-        "storage": None, "models_dir": None, "demo": False, "ingest_on_startup": False,
+        "storage": None, "demo": False, "ingest_on_startup": False,
         "always_load_query": False, "host": "127.0.0.1", "port": 5143,
     }
     base.update(overrides)
@@ -85,9 +86,7 @@ def _patch_entry_points(monkeypatch: pytest.MonkeyPatch, capture: list) -> None:
     fake_api = types.ModuleType("slayer.api.server")
     fake_api.create_app = lambda *a, **kw: capture.append(("app", kw)) or "APP"  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "slayer.api.server", fake_api)
-    fake_uvicorn = types.ModuleType("uvicorn")
-    fake_uvicorn.run = lambda *a, **kw: None  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "uvicorn", fake_uvicorn)
+    monkeypatch.setitem(sys.modules, "uvicorn", fake_uvicorn())
 
 
 @pytest.mark.parametrize("command", ["serve", "mcp"])

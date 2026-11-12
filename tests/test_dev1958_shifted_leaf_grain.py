@@ -10,7 +10,6 @@ import re
 import pytest
 
 from tests._dev1832_fixtures import (
-    ColumnRef,
     ModelMeasure,
     dev1832_models,
     TimeDimension,
@@ -22,7 +21,7 @@ from tests._dev1832_fixtures import (
     monthly_q,
 )
 
-SHARE = "amount:sum / amount:sum(partition_by=[ordered_at])"
+SHARE = "sum(amount) / sum(amount, partition_by=[ordered_at])"
 N, S, W = "North", "South", "West"
 JAN, FEB, MAR = "2024-01", "2024-02", "2024-03"
 #: Every (region, month) cell of the unfiltered query / the Feb–Mar date range.
@@ -66,7 +65,7 @@ async def filtered_engine(request):
 
 
 def _dr_td() -> list:
-    return [TimeDimension(dimension=ColumnRef(name="ordered_at"),
+    return [TimeDimension(dimension="ordered_at",
                           granularity=TimeGranularity.MONTH,
                           date_range=["2024-02-01", "2024-03-31"])]
 
@@ -112,23 +111,23 @@ class TestPartitionedLeafKeepsItsGrain:
 
     async def test_single_partitioned_leaf_in_trivial_composite(self, exec_engine) -> None:
         resp = await exec_engine.execute(
-            _q("time_shift(amount:sum(partition_by=[ordered_at]) / 2, -1)"))
+            _q("time_shift(sum(amount, partition_by=[ordered_at]) / 2, -1)"))
         _assert_cells(_cells(resp), cells=ALL_CELLS, expected=HALF_MONTH_TOTAL)
 
     async def test_all_time_grained_leaves_shift_at_the_operand_grain(self, exec_engine) -> None:
-        p = "amount:sum(partition_by=[ordered_at])"
+        p = "sum(amount, partition_by=[ordered_at])"
         resp = await exec_engine.execute(_q(f"time_shift({p} + {p}, -1)"))
         _assert_cells(_cells(resp), cells=ALL_CELLS, expected=DOUBLE_MONTH_TOTAL)
 
     async def test_non_time_partition_is_constant_along_the_axis(self, exec_engine) -> None:
         resp = await exec_engine.execute(
-            _q("time_shift(amount:sum / amount:sum(partition_by=[region]), -1)"))
+            _q("time_shift(sum(amount) / sum(amount, partition_by=[region]), -1)"))
         _assert_cells(_cells(resp), cells=ALL_CELLS, expected=REGION_TOTAL_SHARE)
 
     async def test_reaggregation_over_shifted_composite(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            "avg(time_shift(amount:sum(partition_by=[region, ordered_at]) "
-            "/ amount:sum(partition_by=[ordered_at]), -1))", dimensions=[]))
+            "avg(time_shift(sum(amount, partition_by=[region, ordered_at]) "
+            "/ sum(amount, partition_by=[ordered_at]), -1))", dimensions=[]))
         got = {month_key(r["monthly.ordered_at"]): r["monthly.t"] for r in resp.data}
         assert set(got) == set(REAGG_BY_MONTH)
         for month, want in REAGG_BY_MONTH.items():
@@ -141,36 +140,36 @@ class TestPartitionedLeafKeepsItsGrain:
 class TestFrameRule:
     async def test_bare_partitioned_leaf_reaches_outside_date_range(self, exec_engine) -> None:
         resp = await exec_engine.execute(
-            _q("time_shift(amount:sum(partition_by=[ordered_at]), -1)", date_range=True))
+            _q("time_shift(sum(amount, partition_by=[ordered_at]), -1)", date_range=True))
         # West Feb is not pinned by the scenario.
         _assert_cells(_cells(resp), cells=DR_CELLS, expected=DR_MONTH_TOTAL,
                       unpinned=frozenset({(W, FEB)}))
 
     async def test_bare_ranked_leaf_reaches_outside_date_range(self, exec_engine) -> None:
-        resp = await exec_engine.execute(_q("time_shift(amount:last, -1)", date_range=True))
+        resp = await exec_engine.execute(_q("time_shift(last(amount), -1)", date_range=True))
         _assert_cells(_cells(resp), cells=DR_CELLS, expected=DR_LAST)
 
     async def test_bare_windowed_leaf_reaches_outside_date_range(self, exec_engine) -> None:
         resp = await exec_engine.execute(
-            _q("time_shift(amount:sum(window='90d'), -1)", date_range=True))
+            _q("time_shift(sum(amount, window='90d'), -1)", date_range=True))
         _assert_cells(_cells(resp), cells=DR_CELLS, expected=DR_WINDOW)
 
     async def test_non_time_partition_keeps_in_frame_value(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            "time_shift(amount:sum / amount:sum(partition_by=[region]), -1)",
+            "time_shift(sum(amount) / sum(amount, partition_by=[region]), -1)",
             date_range=True))
         _assert_cells(_cells(resp), cells=DR_CELLS, expected=DR_IN_FRAME_REGION_SHARE)
 
     async def test_model_filter_applies_to_shifted_evaluation(self, filtered_engine) -> None:
         resp = await filtered_engine.execute(
-            _q("time_shift(amount:sum(partition_by=[ordered_at]), -1)", date_range=True))
+            _q("time_shift(sum(amount, partition_by=[ordered_at]), -1)", date_range=True))
         _assert_cells(_cells(resp), cells={(N, FEB), (N, MAR), (S, FEB)},
                       expected={(N, FEB): 10.0, (S, FEB): 10.0, (N, MAR): 35.0})
 
     async def test_population_predicate_conjoined_with_frame_bound(self, exec_engine) -> None:
         """Regression guard: already correct before the producer rewrite."""
         resp = await exec_engine.execute(_q(
-            "time_shift(amount:sum + amount:sum(partition_by=[ordered_at]), -1)",
+            "time_shift(sum(amount) + sum(amount, partition_by=[ordered_at]), -1)",
             filters=["ordered_at >= '2024-02-01' and region = 'North'"]))
         _assert_cells(_cells(resp), cells={(N, FEB), (N, MAR)},
                       expected={(N, FEB): 20.0, (N, MAR): 40.0})
@@ -178,11 +177,11 @@ class TestFrameRule:
 
 class TestRankedAndWindowedLeavesInComposite:
     async def test_ranked_leaf_executes(self, exec_engine) -> None:
-        resp = await exec_engine.execute(_q("time_shift(amount:last / 2, -1)"))
+        resp = await exec_engine.execute(_q("time_shift(last(amount) / 2, -1)"))
         _assert_cells(_cells(resp), cells=ALL_CELLS, expected=HALF_LAST)
 
     async def test_windowed_leaf_keeps_its_window(self, exec_engine) -> None:
-        resp = await exec_engine.execute(_q("time_shift(amount:sum(window='90d') / 2, -1)"))
+        resp = await exec_engine.execute(_q("time_shift(sum(amount, window='90d') / 2, -1)"))
         _assert_cells(_cells(resp), cells=ALL_CELLS, expected=HALF_WINDOW)
 
 
@@ -205,11 +204,11 @@ class TestSharedShiftedRelation:
 
     async def test_bare_partitioned_leaf_computes_one_producer(self) -> None:
         """Without a frame mask the shift interns with the base's own producer."""
-        sql = await gen(_q("time_shift(amount:sum(partition_by=[ordered_at]), -1)"))
+        sql = await gen(_q("time_shift(sum(amount, partition_by=[ordered_at]), -1)"))
         assert len(set(re.findall(r"\b(_cm_\w+) AS \(", sql))) == 1, sql
 
 
 class TestUnalignedShift:
     async def test_reads_bucket_containing_offset_instant(self, exec_engine) -> None:
-        resp = await exec_engine.execute(_q("time_shift(amount:sum, -1, 'day')"))
+        resp = await exec_engine.execute(_q("time_shift(sum(amount), -1, 'day')"))
         _assert_cells(_cells(resp), cells=ALL_CELLS, expected=DAY_BACK)

@@ -1,4 +1,4 @@
-"""DEV-1825 — regroup-planner contracts beyond the DEV-1740 B2 acceptance:
+"""Regroup-planner contracts beyond the basic acceptance:
 placeholder minting is injective by structural key identity, one producer
 serves N outputs, the filter classifier is total over AND/OR/NOT/scalar-call
 trees, and the discovery guards (joined aggregate source, reserved-prefix
@@ -21,7 +21,7 @@ from slayer.engine.compile.regroup import (
 
 from tests._dev1740_fixtures import cm_cte_bodies, gen
 
-BAND = "CASE WHEN amount:sum(partition_by=city) > 5000 THEN 1 ELSE 0 END"
+BAND = "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END"
 
 
 def _q(**kw) -> SlayerQuery:
@@ -88,11 +88,11 @@ class TestPlaceholderRegistry:
 # --------------------------------------------------------------------------- #
 class TestMultiOutputProducer:
     async def test_two_aggregates_one_partition_set_share_one_cte(self) -> None:
-        band = ("CASE WHEN amount:sum(partition_by=city) > 5000 "
-                "AND amount:count(partition_by=city) > 1 THEN 1 ELSE 0 END")
+        band = ("CASE WHEN sum(amount, partition_by=city) > 5000 "
+                "AND count(amount, partition_by=city) > 1 THEN 1 ELSE 0 END")
         sql = await gen(_q(
             dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         assert _count_isolated_ctes(sql) == 1
 
@@ -101,10 +101,10 @@ class TestMultiOutputProducer:
             dimensions=[
                 "region",
                 {"expression": BAND, "name": "band_hi"},
-                {"expression": "CASE WHEN amount:count(partition_by=city) > 1 "
+                {"expression": "CASE WHEN count(amount, partition_by=city) > 1 "
                                "THEN 1 ELSE 0 END", "name": "band_n"},
             ],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         assert _count_isolated_ctes(sql) == 1
 
@@ -117,16 +117,16 @@ class TestFilterClassifier:
         sql = await gen(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
             filters=["not (band == 1)"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         assert "5000" not in cm_cte_bodies(sql)
 
     async def test_mixed_and_in_one_filter_splits_per_conjunct(self) -> None:
-        """DEV-1837 (D9) — top-level AND conjuncts route independently: the
+        """Top-level AND conjuncts route independently: the
         one-string form renders identically to the separate-filters form."""
         base_kwargs = dict(
             dimensions=["region", {"expression": BAND, "name": "band"}],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         anded = await gen(_q(
             filters=["band == 1 and status == 'ok'"], **base_kwargs,
@@ -137,12 +137,12 @@ class TestFilterClassifier:
         assert anded == separate
 
     async def test_mixed_or_in_one_filter_now_types_as_field(self) -> None:
-        # DEV-1825 lift (DEV-1865): the attached band value and the base column
+        # Lifted: the attached band value and the base column
         # both resolve at row scope, so the OR row-masks before re-aggregation.
         query = _q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
             filters=["band == 1 or status == 'ok'"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         sql = await gen(query)
         assert "status" in sql
@@ -151,7 +151,7 @@ class TestFilterClassifier:
         sql = await gen(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
             filters=["coalesce(city, 'x') != 'Lyon'"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         assert "Lyon" in cm_cte_bodies(sql)
 
@@ -162,7 +162,7 @@ class TestFilterClassifier:
         sql = await gen(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
             filters=["status == 'ok'"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         assert "status" in cm_cte_bodies(sql)
         assert "status" in _consumer_body(sql)
@@ -172,8 +172,8 @@ class TestFilterClassifier:
         # a HAVING on the final stage, never inside the producer.
         sql = await gen(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
-            filters=["amount:sum > 0"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            filters=["sum(amount) > 0"],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))
         assert "> 0" not in cm_cte_bodies(sql)
         assert "HAVING" in _consumer_body(sql).upper()
@@ -184,42 +184,45 @@ class TestFilterClassifier:
 # --------------------------------------------------------------------------- #
 class TestDiscoveryGuards:
     async def test_joined_aggregate_source_raises_stage_three(self) -> None:
-        # DEV-1836: the cross-model SOURCE is now supported via a target-rooted
+        # The cross-model SOURCE is now supported via a target-rooted
         # producer, but the explicit ``partition_by=city`` is unattributable
         # from the aggregate's root (customers) — a hard error (F4).
         q = _q(
             dimensions=[
                 "region",
-                {"expression": "CASE WHEN customers.spend:sum(partition_by=city) "
+                {"expression": "CASE WHEN sum(customers.spend, partition_by=city) "
                                "> 100 THEN 1 ELSE 0 END", "name": "band"},
             ],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            to_many_handling="broadcast",
         )
         with pytest.raises(ValueError, match=r"attributable from customers"):
             await gen(q)
 
     async def test_reserved_prefix_column_rejected_when_regroup_active(self) -> None:
         q = SlayerQuery(
-            source_model=ModelExtension.model_validate({
+            source_model="orders",
+            extensions=[ModelExtension.model_validate({
                 "source_name": "orders",
                 "columns": [{"name": "__regroup__x", "sql": "amount",
                              "type": "DOUBLE"}],
-            }),
+            })],
             dimensions=["region", {"expression": BAND, "name": "band"}],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         with pytest.raises(ValueError, match=r"__regroup__"):
             await gen(q)
 
     async def test_reserved_prefix_column_fine_without_regroup(self) -> None:
         q = SlayerQuery(
-            source_model=ModelExtension.model_validate({
+            source_model="orders",
+            extensions=[ModelExtension.model_validate({
                 "source_name": "orders",
                 "columns": [{"name": "__regroup__x", "sql": "amount",
                              "type": "DOUBLE"}],
-            }),
+            })],
             dimensions=["region"],
-            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            measures=[ModelMeasure(formula="sum(amount)", name="s")],
         )
         sql = await gen(q)
         assert "SELECT" in sql

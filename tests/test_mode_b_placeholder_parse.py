@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 from slayer.core.errors import QueryTypeError, SlayerError, UnresolvedPlaceholderError
-from slayer.engine.syntax import (
+from slayer.core.syntax import (
     AggCall,
     Arith,
     Cmp,
     Literal,
+    NamedArg,
     Placeholder,
     Ref,
     ScalarCall,
@@ -19,7 +22,6 @@ from slayer.engine.syntax import (
     UnaryOp,
     canonical_measure_text,
     parse_expr,
-    parse_filter_expr,
 )
 
 K = Placeholder(name="k")
@@ -37,10 +39,9 @@ AMOUNT_SUM = AggCall(source=AMOUNT, agg="sum")
     ("region in ({k})", Cmp(op="in", left=Ref(name="region"), right=K)),
     ("region not in ({k})", Cmp(op="not in", left=Ref(name="region"), right=K)),
     ("sum({k})", AggCall(source=K, agg="sum")),
-    ("amount:percentile({k})", AggCall(source=AMOUNT, agg="percentile", args=(K,))),
-    ("amount:sum(window={k})", AggCall(source=AMOUNT, agg="sum", kwargs=(("window", K),))),
-    ("lag(amount:sum, {k})", TransformCall(op="lag", input=AMOUNT_SUM, args=(K,))),
-    ("lag(amount:sum, offset={k})", TransformCall(op="lag", input=AMOUNT_SUM, kwargs=(("offset", K),))),
+    ("percentile(amount, {k})", AggCall(source=AMOUNT, agg="percentile", args=(K,))),
+    ("sum(amount, window={k})", AggCall(source=AMOUNT, agg="sum", args=(NamedArg(name="window", value=K),))),
+    ("lag(sum(amount), {k})", TransformCall(op="lag", input=AMOUNT_SUM, args=(K,))),
     ("round(amount, {k})", ScalarCall(name="round", args=(AMOUNT, K))),
     (
         "CASE WHEN amount > {k} THEN {k} ELSE 0 END",
@@ -52,24 +53,39 @@ AMOUNT_SUM = AggCall(source=AMOUNT, agg="sum")
     ("CASE WHEN amount > 1 THEN 0 ELSE {k} END", ScalarCall(
         name="iif", args=(Cmp(op=">", left=AMOUNT, right=Literal(value=Decimal(1))), Literal(value=Decimal(0)), K),
     )),
-    ("amount:sum * {k}", Arith(op="*", left=AMOUNT_SUM, right=K)),
+    ("sum(amount) * {k}", Arith(op="*", left=AMOUNT_SUM, right=K)),
 ])
 def test_placeholder_position(text: str, expected) -> None:
     assert parse_expr(text) == expected
 
 
+def _contains(node: Any, target: Any) -> bool:
+    if node == target:
+        return True
+    if isinstance(node, BaseModel):
+        return any(_contains(getattr(node, field), target) for field in type(node).model_fields)
+    return isinstance(node, (tuple, list)) and any(_contains(item, target) for item in node)
+
+
+def test_placeholder_on_the_right_of_a_call_argument_equals() -> None:
+    # Keyword or comparison is decided at binding, so only the call and the placeholder are pinned here.
+    parsed = parse_expr("lag(sum(amount), offset={k})")
+    assert isinstance(parsed, TransformCall)
+    assert (parsed.op, parsed.input) == ("lag", AMOUNT_SUM)
+    assert _contains(parsed, K)
+
+
 def test_filter_parser_admits_placeholder() -> None:
-    assert parse_filter_expr("amount = {k}") == Cmp(op="==", left=AMOUNT, right=K)
+    assert parse_expr("amount = {k}") == Cmp(op="==", left=AMOUNT, right=K)
 
 
-@pytest.mark.parametrize("text", ["amount:sum * {k} / 100", "sum(amount) * {k} / 100"])
-def test_canonical_text_renders_placeholder(text: str) -> None:
-    assert canonical_measure_text(parse_expr(text)) == "amount:sum * {k} / 100"
+def test_canonical_text_renders_placeholder() -> None:
+    assert canonical_measure_text(parse_expr("sum(amount) * {k} / 100")) == "sum(amount) * {k} / 100"
 
 
 @pytest.mark.parametrize("text", ["amount * {a, b}", "amount * {1}", "amount * {a.b}", "amount * {}"])
 def test_other_brace_shapes_stay_unsupported(text: str) -> None:
-    with pytest.raises(ValueError, match="unsupported AST node"):
+    with pytest.raises(ValueError, match="': a brace expression is not a variable placeholder"):
         parse_expr(text)
 
 

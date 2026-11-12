@@ -2,8 +2,8 @@
 
 SLayer can import [Cube](https://cube.dev) (Cube.js / Cube.dev) data models —
 cubes and views, in **YAML or JavaScript** — and convert them to SLayer models.
-The conversion is **fully offline**: data types come from Cube's declared
-dimension / measure types, so no database connection is required. Everything that
+The conversion works offline (data types then come from Cube's declared dimension /
+measure types) and types from the live schema when `--datasource` resolves. Everything that
 can't be mapped cleanly is captured in a structured JSON report rather than
 silently dropped.
 
@@ -21,6 +21,12 @@ to the storage directory, and writes `cube_import_report.json` next to it.
 `--datasource` is just the SLayer datasource name to file the models under — it
 does not need to exist or be reachable. After importing, run `slayer ingest`
 against a live connection to profile sample values and refine numeric types.
+
+> **Worked example.** [From Cube to SLayer](../examples/17_cube_import/cube_import.md)
+> imports a small jaffle-shop project end-to-end — YAML cubes, a view, and a JS
+> `FILTER_PARAMS` cube — and queries the result. Its
+> [notebook](../examples/17_cube_import/cube_import_nb.ipynb) runs the whole flow
+> offline against a deterministic DuckDB.
 
 ## What gets converted
 
@@ -53,13 +59,17 @@ measures:
   - { name: total_revenue, formula: "sum(amount)" }
 ```
 
-- `count` with no `sql` → `count(*)`; `count_distinct_approx` → `count_distinct`.
-- Conditional `filters:` become a `CASE WHEN` on the column's `filter`. Two
-  measures over the same expression but different filters get distinct columns.
+- `count` with no `sql` → `count(*)`; `count_distinct_approx` stays `count_distinct_approx`.
+- Conditional `filters:` become a `CASE WHEN` on the `filter` of a hidden `<measure>_col` column, shared by
+  measures with the same expression, filter and type.
 - A finite trailing `rolling_window` becomes a windowed aggregation
   (`sum(amount, window='30d')`).
 - Calculated measures (`type: number/string/time/boolean`) referencing other
   measures become a `ModelMeasure` formula (`{revenue} / {count}` → `revenue / count`).
+- A calculated measure with SQL aggregates (`SUM({CUBE}.amount) FILTER (WHERE {CUBE}.status = 'paid') / COUNT(*)`)
+  is translated: a bare operand aggregates its column, any other operand and a `FILTER` go to a hidden column
+  holding Cube's SQL, and a window function, an undeclared member or an operand reading another cube drops
+  the measure with a report.
 - `format` maps to `NumberFormat` (`percent`, `currency`, `number`).
 
 ### Dimensions → columns
@@ -68,10 +78,27 @@ measures:
 `primary_key: true` carries over. A `case:` dimension becomes a `CASE WHEN`
 column.
 
+`{CUBE}.x` always reads the physical column `x`, `{customers}.x` reads the physical column `x` of the joined cube
+`customers` (a cube that is not joined drops the member with a report), and `{orders.member}` inside cube `orders`
+means `{member}`; a
+member whose SQL reads a physical column another member's name holds, or transforms the physical column of its own name
+(`status: UPPER({CUBE}.status)`), is dropped with a report, as is an unquoted reserved word (`{CUBE}.from`; write
+`{CUBE}."from"`).
+
+Column types come from the live datasource when `--datasource` resolves (a list column as a list of its element
+type), else from an explicit dimension `type` or the measure's aggregation; an aggregation SLayer refuses over a
+list, or a `min`/`max` over a column nothing types, drops the measure with a report, and an offline import notes
+that types were not checked against the database.
+
+Unquoted names in a cube's SQL (`sql_table`, `sql`, member, join and `FILTER_PARAMS` SQL) are read as the datasource's
+database reads them, so on Postgres, Redshift, Snowflake and Oracle `Sales.OrderItems` and `{CUBE}.OrderAmount` are
+stored as `sales.orderitems` and `orderamount` (quoted names, string literals and comments are kept as written), and an
+import whose datasource is not configured is refused when its SQL holds an unquoted name with an upper-case letter.
+
 ### Joins
 
 A join's ON clause (`{CUBE}.customer_id = {customers.id}`) becomes
-`join_pairs` keyed by member name (an operand naming no member becomes a hidden column, and a non-base member drops the join). Composite
+`join_pairs` naming the columns that read each side (a `{cube}.col` operand reads the physical column, through a hidden column when no member reads it; a `{cube.member}` operand names that member, which must be a base column; a physical column another member's name holds drops the join). Composite
 (`AND`-joined) keys are supported. All joins emit as `LEFT`. When a Cube schema
 declares both directions of one relationship (`orders belongs_to customers` and
 `customers has_many orders` over the same columns), the importer keeps a single

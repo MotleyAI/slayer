@@ -8,38 +8,27 @@ from typing import AbstractSet, Annotated, Any, Optional
 from pydantic import (
     BaseModel,
     BeforeValidator,
+    ConfigDict,
     Field,
+    ModelWrapValidatorHandler,
     PrivateAttr,
     field_validator,
     model_validator,
 )
 from sqlalchemy.engine import URL as _SA_URL
 
-from slayer.core.enums import (
-    BUILTIN_AGGREGATION_FORMULAS,
-    BUILTIN_AGGREGATIONS,
-    DEFAULT_AGGREGATIONS_BY_TYPE,
-    GRANULARITY_NAMES,
-    DataType,
-    JoinCardinality,
-    JoinType,
-    ObjectKind,
-    PRIMARY_KEY_AGGREGATIONS,
-    RANKED_AGGREGATIONS,
-    RESERVED_DATE_SYNTAX_NAMES,
-    _coerce_legacy_datatype,
-    builtin_empty_value,
-)
-from slayer.core.errors import GranularityDefinitionError, JoinKeyError
+from slayer.core.enums import BUILTIN_AGGREGATION_FORMULAS, BUILTIN_AGGREGATIONS, DEFAULT_AGGREGATIONS_BY_TYPE, GRANULARITY_NAMES, LIST_AGGREGATIONS, DataType, type_display, JoinCardinality, JoinType, ObjectKind, PRIMARY_KEY_AGGREGATIONS, RANKED_AGGREGATIONS, RESERVED_DATE_SYNTAX_NAMES, RESERVED_NAMES, _coerce_legacy_datatype, builtin_empty_value, ALL_TRANSFORMS
+from slayer.core.errors import AmbiguousAggregationError, AmbiguousReferenceError, GranularityDefinitionError, JoinKeyError
+from slayer.core.names import folded_collisions, match_name
+from slayer.core.warnings import NameCollisionWarning
 from slayer.core.format import NumberFormat
-from slayer.core.formula import ALL_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, GranularitySpec, definition_error, granularity_key
-from slayer.core.keys import SCALAR_FUNCTIONS
+from slayer.core.keys import RESERVED_SCALAR_NAMES
 from slayer.core.refs import IDENTIFIER_RE
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
-from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema
+from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema, migrating_document
 
 _NAME_PATTERN = re.compile(r"^[a-zA-Z_]\w*$", re.ASCII)
 
@@ -165,6 +154,19 @@ def physical_column_sql(*, sql: str | None, name: str) -> str:
     return (_bare_identifier(sql) if sql is not None else None) or name
 
 
+def check_element_type(*, name: str, data_type: DataType, element_type: DataType | None) -> None:
+    """``element_type`` is rejected off a list and is never itself a list (the model requires it on one)."""
+    if data_type is not DataType.ARRAY and element_type is not None:
+        raise ValueError(
+            f"Column {name!r} declares element_type {element_type.value} but its type is {data_type.value}; "
+            f"only an ARRAY column has an element_type."
+        )
+    if element_type is DataType.ARRAY:
+        raise ValueError(
+            f"Column {name!r}: element_type ARRAY is not supported; a nested list's elements are UNKNOWN."
+        )
+
+
 def _coerce_legacy_type_field(data: Any) -> Any:
     """Map a legacy lowercase ``type`` string in a raw payload; drop pseudo-types."""
     if isinstance(data, dict) and "type" in data:
@@ -180,14 +182,24 @@ class Column(BaseModel):
     """A row-level column, usable per-query as a GROUP BY dimension or an aggregation measure."""
     name: str
     sql: str | None = None
-    type: DataType = DataType.TEXT
+    type: DataType = Field(
+        default=DataType.TEXT,
+        description="TEXT, INT, DOUBLE, BOOLEAN, DATE, TIMESTAMP, UNKNOWN (opaque), or ARRAY (a list).",
+    )
+    element_type: DataType | None = Field(
+        default=None,
+        description=(
+            "A list's element type, any type but ARRAY; forbidden off ARRAY. Required on a table-backed "
+            "model's list; an sql-mode model's undeclared one is UNKNOWN."
+        ),
+    )
     db_type: str | None = Field(
         default=None,
         description=(
             "Raw database type string (e.g. 'point', 'DECIMAL(18, 2)'), "
             "retained when the declared DataType loses information. Populated "
-            "by ingestion for UNKNOWN (opaque) and exact NUMERIC/DECIMAL "
-            "columns; None when the mapped type carries everything needed."
+            "by ingestion for UNKNOWN (opaque), exact NUMERIC/DECIMAL, JSON, "
+            "zoned-timestamp and list columns; None when the mapped type carries everything needed."
         ),
     )
     primary_key: bool = False
@@ -245,6 +257,11 @@ class Column(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _validate_element_type(self) -> "Column":
+        check_element_type(name=self.name, data_type=self.type, element_type=self.element_type)
+        return self
+
     @property
     def _sql_is_nontrivial(self) -> bool:
         """The value SQL is not the bare self-name; a QUOTED self-name counts, since
@@ -266,6 +283,12 @@ class Column(BaseModel):
         return physical_column_sql(sql=self.sql, name=self.name)
 
     @property
+    def physical_quoted(self) -> bool:
+        """Whether this base column's ``sql`` quotes its physical name (an exact-case name)."""
+        text = (self.sql or "").strip()
+        return self.is_base and len(text) > 1 and text[0] == text[-1] == '"'
+
+    @property
     def needs_expansion(self) -> bool:
         """The reference resolves to more than a bare physical column — a derived
         ``sql`` or an attached ``filter`` — so its uses expand to that definition."""
@@ -279,6 +302,20 @@ class Column(BaseModel):
         out = self.model_copy()
         out._respellings = tuple(respellings)
         return out
+
+
+def list_operations_hint(column: Column) -> str:
+    """One line naming what a list column takes."""
+    n = column.name
+    return (f"list: contains({n}, x), contains_any / contains_all({n}, [...]), length({n}) (distinct elements); "
+            f"it groups and compares as the set of its distinct elements; its elements are {n}.value")
+
+
+def column_type_text(column: Column) -> str:
+    """``ARRAY<TEXT> (list: …)`` for a list column, else its type."""
+    if column.type is not DataType.ARRAY:
+        return str(column.type)
+    return f"{type_display(column.type, column.element_type)} ({list_operations_hint(column)})"
 
 
 def is_identifier(*, column: Column, columns: list[Column]) -> bool:
@@ -342,16 +379,23 @@ class ModelMeasure(BaseModel):
     meta: dict[str, Any] | None = None
     # Pre-substitution formula; names derive from it so result keys never carry variable values.
     _template: str | None = PrivateAttr(default=None)
+    # The effective variables a whole-``IN`` placeholder left unwritten by binding reads (``parse_bound_expr``).
+    _bound_variables: dict[str, Any] = PrivateAttr(default_factory=dict)
 
     @property
     def template(self) -> str:
         """The formula as written, before ``{var}`` substitution."""
         return self._template or self.formula
 
-    def substituted(self, formula: str) -> "ModelMeasure":
-        """A copy carrying the substituted ``formula`` and remembering its template."""
+    @property
+    def bound_variables(self) -> dict[str, Any]:
+        return self._bound_variables
+
+    def substituted(self, formula: str, *, variables: dict[str, Any]) -> "ModelMeasure":
+        """A copy carrying the substituted ``formula`` and its ``variables``, remembering its template."""
         out = self.model_copy(update={"formula": formula})
         out._template = self.template
+        out._bound_variables = dict(variables)
         return out
 
     @model_validator(mode="before")
@@ -463,49 +507,71 @@ class Aggregation(BaseModel):
                 f"transform function. Reserved names: "
                 f"{', '.join(sorted(transform_only))}"
             )
-        # Scalar-function names would shadow the scalar in functional
-        # form (``round(x)`` must stay the scalar call), so every legal
-        # aggregation stays reachable as ``agg(col)``. Case-insensitive to
-        # match the parser's scalar dispatch.
-        if self.name.lower() in SCALAR_FUNCTIONS:
-            raise ValueError(
-                f"Aggregation name '{self.name}' conflicts with a scalar "
-                f"function. Scalar-allowlist names are reserved: "
-                f"{', '.join(sorted(SCALAR_FUNCTIONS))}"
-            )
-        if self.name.lower() in RESERVED_DATE_SYNTAX_NAMES:
-            raise ValueError(
-                f"Aggregation name '{self.name}' is a reserved date function or "
-                f"date-part alias: {', '.join(sorted(RESERVED_DATE_SYNTAX_NAMES))}"
-            )
-        # A granularity-named aggregation would shadow the functional ``gran(col)``
-        # time-bucket form in a query dimension.
+        # A granularity name reads as a time bucket unit.
         if self.name.lower() in GRANULARITY_NAMES:
             raise ValueError(
                 f"Aggregation name '{self.name}' conflicts with a time "
                 f"granularity. Reserved granularity names: "
                 f"{', '.join(sorted(GRANULARITY_NAMES))}"
             )
+        if self.name.lower() in RESERVED_DATE_SYNTAX_NAMES:
+            raise ValueError(
+                f"Aggregation name '{self.name}' is a reserved date function or "
+                f"date-part alias: {', '.join(sorted(RESERVED_DATE_SYNTAX_NAMES))}"
+            )
         return self
 
 
 def aggregation_definition(*, owner: "SlayerModel | None", agg: str) -> Aggregation | None:
-    """``owner``'s declaration of ``agg``, else ``None``."""
+    """``owner``'s declaration of ``agg``: an exact-case match, else the unique case-insensitive one (a built-in name
+    matches only its exact lowercase definition); ``None`` when it declares none. Several case-insensitive matches
+    and no exact one raise ``AmbiguousAggregationError``."""
     if owner is None:
         return None
-    return next((a for a in (owner.aggregations or []) if a.name == agg), None)
+    declared = owner.aggregations or []
+    if agg.lower() in BUILTIN_AGGREGATIONS:
+        return next((a for a in declared if a.name == agg.lower()), None)
+    try:
+        name = match_name(name=agg, declared=[a.name for a in declared], quoted=False)
+    except AmbiguousReferenceError as e:
+        raise AmbiguousAggregationError(model=owner.name, call=agg, candidates=e.candidates) from None
+    return None if name is None else next(a for a in declared if a.name == name)
 
 
-def empty_value(*, agg: str, definition: Aggregation | None) -> int | None:
-    """``agg``'s value over no rows; a declared ``formula`` overrides the built-in's."""
-    if definition is not None and definition.formula is not None:
+def shadows_library_function(aggregation: Aggregation) -> bool:
+    """Whether ``aggregation`` takes a Mode-B function or function-spelling name."""
+    return aggregation.name.lower() in RESERVED_SCALAR_NAMES
+
+
+def builtin_semantics(definition: Aggregation | None) -> bool:
+    """Whether a call keeps its built-in aggregation's semantics: its owner declares no formula for it."""
+    return definition is None or definition.formula is None
+
+
+class EmptyList(BaseModel):
+    """The empty list of ``element_type`` elements (``None``: unknown) — ``collect``'s value over no rows."""
+
+    model_config = ConfigDict(frozen=True)
+
+    element_type: DataType | None = None
+
+
+EmptyValue = int | EmptyList | None
+
+
+def empty_value(*, agg: str, definition: Aggregation | None, element_type: DataType | None = None) -> EmptyValue:
+    """``agg``'s value over no rows (``element_type``: a list aggregation's input type); a declared ``formula``
+    overrides the built-in's."""
+    if not builtin_semantics(definition):
         return None
+    if agg in LIST_AGGREGATIONS:
+        return EmptyList(element_type=element_type)
     return builtin_empty_value(agg)
 
 
 def rendered_formula(*, agg: str, definition: Aggregation | None) -> str | None:
     """The template ``agg`` renders through (a definition's override wins); ``None``: a built-in builder."""
-    if agg in RANKED_AGGREGATIONS:
+    if agg in RANKED_AGGREGATIONS and builtin_semantics(definition):
         return None
     return (definition.formula if definition else None) or BUILTIN_AGGREGATION_FORMULAS.get(agg)
 
@@ -558,6 +624,28 @@ class ModelJoin(BaseModel):
     # Optional human/agent metadata; additive, so no schema-version bump needed.
     description: str | None = None
     meta: dict[str, Any] | None = None
+    # Runtime-only: a query object's local aliases of this edge.
+    _aliases: tuple[str, ...] = PrivateAttr(default=())
+    # Runtime-only: declared by a query extension, not stored.
+    _query_local: bool = PrivateAttr(default=False)
+
+    @property
+    def aliases(self) -> tuple[str, ...]:
+        return self._aliases
+
+    @property
+    def query_local(self) -> bool:
+        return self._query_local
+
+    def with_aliases(self, aliases: tuple[str, ...]) -> "ModelJoin":
+        out = self.model_copy()
+        out._aliases = aliases
+        return out
+
+    def as_query_local(self) -> "ModelJoin":
+        out = self.model_copy()
+        out._query_local = True
+        return out
 
     @field_validator("name")
     @classmethod
@@ -671,6 +759,13 @@ class SlayerModel(BaseModel):
     measures: list[ModelMeasure] = Field(default_factory=list)
     aggregations: list[Aggregation] = Field(default_factory=list)
 
+    @model_validator(mode="wrap")
+    @classmethod
+    def _name_nested_migrations(cls, data: Any, handler: ModelWrapValidatorHandler["SlayerModel"]) -> "SlayerModel":
+        is_dict = isinstance(data, dict)
+        with migrating_document(data.get("name") if is_dict else None, stored=is_dict and "version" in data):
+            return handler(data)
+
     @model_validator(mode="before")
     @classmethod
     def _apply_schema_migrations(cls, data: Any) -> Any:
@@ -728,6 +823,15 @@ class SlayerModel(BaseModel):
     _population_spine: bool = PrivateAttr(default=False)
     # Runtime-only: datasets no join path reaches that this query frame's population names.
     _unrelated: frozenset[str] = PrivateAttr(default=frozenset())
+    # Runtime-only: a list child's ``(parent model, list column)``.
+    _list_of: tuple[str, str] | None = PrivateAttr(default=None)
+    # Runtime-only: the list children built from this model (``join_walker.list_child``).
+    _list_children: dict[tuple[str, str | None, str, DataType | None, bool], "SlayerModel"] = PrivateAttr(
+        default_factory=dict)
+    # Runtime-only: the column and measure names a query extension added.
+    _query_local: frozenset[str] = PrivateAttr(default=frozenset())
+    # Runtime-only: the query's own inline source definition, never a persisted model.
+    _inline: bool = PrivateAttr(default=False)
 
     @field_validator("filters")
     @classmethod
@@ -767,6 +871,17 @@ class SlayerModel(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _validate_list_element_types(self) -> "SlayerModel":
+        """A list column needs an ``element_type``; an sql-mode model's undeclared one is ``UNKNOWN``."""
+        for c in self.columns:
+            if c.type is not DataType.ARRAY or c.element_type is not None:
+                continue
+            if not self.sql:
+                raise ValueError(f"Column {c.name!r} is a list (type ARRAY) and needs an element_type.")
+            c.element_type = DataType.UNKNOWN
+        return self
+
+    @model_validator(mode="after")
     def _validate_allowed_aggregations(self) -> "SlayerModel":
         """Enforce that ``Column.allowed_aggregations`` is a subset of the type/PK eligibility set."""
         custom_agg_names = {a.name for a in self.aggregations}
@@ -781,6 +896,12 @@ class SlayerModel(BaseModel):
                     f"cannot be declared on a column of type {c.type} — "
                     f"aggregations are not supported for that type. Remove "
                     f"allowed_aggregations, or give the column an operable type."
+                )
+            if c.type is DataType.ARRAY and set(c.allowed_aggregations) - DEFAULT_AGGREGATIONS_BY_TYPE[DataType.ARRAY]:
+                raise ValueError(
+                    f"Column '{c.name}' is a list: its only aggregations are 'count' and 'count_distinct', got "
+                    f"allowed_aggregations "
+                    f"{c.allowed_aggregations}. Aggregate its elements through '{c.name}.value' instead."
                 )
             identifier = is_identifier(column=c, columns=self.columns)
             for agg_name in c.allowed_aggregations:
@@ -897,6 +1018,53 @@ class SlayerModel(BaseModel):
         return out
 
     @property
+    def query_local_names(self) -> frozenset[str]:
+        """The column and measure names a query extension added to this model."""
+        return self._query_local
+
+    def with_query_local(self, names: frozenset[str]) -> "SlayerModel":
+        out = self.model_copy()
+        out._query_local = names
+        return out
+
+    @property
+    def inline(self) -> bool:
+        """Whether this is a query's inline source definition rather than a persisted model."""
+        return self._inline
+
+    def as_inline(self) -> "SlayerModel":
+        out = self.model_copy()
+        out._inline = True
+        return out
+
+    @property
+    def extended(self) -> bool:
+        """Whether a query extension added anything to this model."""
+        return bool(self._query_local) or any(j.query_local or j.aliases for j in self.joins)
+
+    def definition_view(self) -> "SlayerModel":
+        """This model as stored definitions see it: without anything a query extension added."""
+        if not self.extended:
+            return self
+        local = self._query_local
+        out = self.model_copy(update={
+            "columns": [c for c in self.columns if c.name not in local],
+            "measures": [m for m in self.measures if m.name not in local],
+            "joins": [j.with_aliases(()) if j.aliases else j for j in self.joins if not j.query_local],
+        })
+        out._query_local = frozenset()
+        return out
+
+    @property
+    def list_of(self) -> tuple[str, str] | None:
+        """``(parent model, list column)`` when this is a list column's element child (semantics Axiom 3.2)."""
+        return self._list_of
+
+    def list_columns(self) -> list[Column]:
+        """The list columns whose elements are reachable as a child (opaque elements excluded)."""
+        return [c for c in self.columns if c.type is DataType.ARRAY and not (c.element_type or DataType.UNKNOWN).is_opaque]
+
+    @property
     def awaits_columns(self) -> bool:
         """Query-backed with its output columns not yet populated."""
         return bool(self.source_queries) and not self.columns
@@ -909,23 +1077,20 @@ class SlayerModel(BaseModel):
         temporal = [c.name for c in self.columns if c.type in (DataType.DATE, DataType.TIMESTAMP)]
         return temporal[0] if len(temporal) == 1 else None
 
-    def get_column(self, name: str) -> Column | None:
-        for c in self.columns:
-            if c.name == name:
-                return c
-        return None
+    def get_column(self, name: str, *, quoted: bool = False) -> Column | None:
+        """The column ``name`` reaches (``slayer.core.names.match_name``)."""
+        found = match_name(name=name, declared=[c.name for c in self.columns], quoted=quoted)
+        return None if found is None else next(c for c in self.columns if c.name == found)
 
-    def get_measure(self, name: str) -> ModelMeasure | None:
-        for m in self.measures:
-            if m.name == name:
-                return m
-        return None
+    def get_measure(self, name: str, *, quoted: bool = False) -> ModelMeasure | None:
+        """The saved measure ``name`` reaches (``slayer.core.names.match_name``)."""
+        found = match_name(name=name, declared=[m.name for m in self.measures if m.name], quoted=quoted)
+        return None if found is None else next(m for m in self.measures if m.name == found)
 
-    def get_aggregation(self, name: str) -> Aggregation | None:
-        for a in self.aggregations:
-            if a.name == name:
-                return a
-        return None
+    def get_aggregation(self, name: str, *, quoted: bool = False) -> Aggregation | None:
+        """The aggregation ``name`` reaches (``slayer.core.names.match_name``)."""
+        found = match_name(name=name, declared=[a.name for a in self.aggregations], quoted=quoted)
+        return None if found is None else next(a for a in self.aggregations if a.name == found)
 
 
 class DatasourceConfig(BaseModel):
@@ -954,6 +1119,8 @@ class DatasourceConfig(BaseModel):
     # BigQuery-specific. A per-end-user OAuth authorized-user grant as JSON;
     # mutually exclusive with ``credentials_json`` (which carries a service account).
     oauth_credentials_json: str | None = Field(default=None, repr=False)
+    # Postgres-specific: reached through a transaction-mode pooler (e.g. PgBouncer), so session state is never set.
+    transaction_pooler: bool = False
     granularities: list[CustomGranularity] = Field(
         default_factory=list,
         description=(
@@ -1000,7 +1167,7 @@ class DatasourceConfig(BaseModel):
 
     def check_granularities(self) -> None:
         """Raise ``GranularityDefinitionError`` for the first entry breaking a save-time rule."""
-        reserved = _reserved_granularity_names()
+        reserved = reserved_granularity_names()
         seen: set[str] = set()
         for g in self.granularities:
             rule = definition_error(g, reserved=reserved)
@@ -1100,13 +1267,14 @@ class DatasourceConfig(BaseModel):
         return DatasourceConfig(**data)
 
 
-def _reserved_granularity_names() -> dict[str, str]:
+def reserved_granularity_names() -> dict[str, str]:
     """Names a custom granularity may not take, lowercased, with the kind they belong to."""
-    out: dict[str, str] = dict.fromkeys(SCALAR_FUNCTIONS, "Mode-B function")
+    out: dict[str, str] = dict.fromkeys(RESERVED_SCALAR_NAMES, "Mode-B function")
     out.update(dict.fromkeys(RESERVED_DATE_SYNTAX_NAMES, "Mode-B date function"))
     out.update(dict.fromkeys(ALL_TRANSFORMS, "transform"))
     out.update(dict.fromkeys(BUILTIN_AGGREGATIONS, "aggregation"))
     out.update(dict.fromkeys(GRANULARITY_NAMES, "granularity"))
+    out.update(dict.fromkeys(RESERVED_NAMES, "reserved function"))
     return out
 
 
@@ -1116,3 +1284,30 @@ def _resolve_env_string(value: str) -> str:
         return os.environ.get(var_name, match.group(0))
 
     return re.sub(r"\$\{(\w+)\}", replacer, value)
+
+
+def case_collisions(model: SlayerModel) -> list[tuple[str, list[str]]]:
+    """Each group of ``model``'s names that differ only in case, per namespace: fields (columns and measures),
+    aggregations, join names, and a saved query's stage names and each stage's result names."""
+    namespaces: list[tuple[str, list[str]]] = [
+        ("fields", [c.name for c in model.columns] + [m.name for m in model.measures if m.name]),
+        ("aggregations", [a.name for a in model.aggregations]),
+        ("joins", [j.name for j in model.joins if j.name]),
+    ]
+    stages = model.source_queries or []
+    namespaces.append(("stages", [n for q in stages if (n := _item_name(q))]))
+    for q in stages:
+        where = f"result names of stage {_item_name(q)!r}" if _item_name(q) else "result names"
+        measures = q.get("measures") if isinstance(q, dict) else q.measures
+        namespaces.append((where, [n for m in measures or [] if (n := _item_name(m))]))
+    return [(where, group) for where, names in namespaces for group in folded_collisions(names)]
+
+
+def _item_name(item: Any) -> str | None:
+    """A stage's or measure's name, validated or a raw dict."""
+    return item.get("name") if isinstance(item, dict) else getattr(item, "name", None)
+
+
+def name_collision_warnings(model: SlayerModel) -> list[NameCollisionWarning]:
+    """The ``NameCollisionWarning`` per case collision ``model`` holds."""
+    return [NameCollisionWarning(model=model.name, namespace=where, names=names) for where, names in case_collisions(model)]

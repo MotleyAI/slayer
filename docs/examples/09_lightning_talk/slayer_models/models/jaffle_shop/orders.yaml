@@ -1,4 +1,4 @@
-version: 15
+version: 19
 name: orders
 sql_table: orders
 source_kind: table
@@ -39,6 +39,7 @@ columns:
 - name: subtotal
   sql: subtotal
   type: DOUBLE
+  db_type: DECIMAL(12,2)
   primary_key: false
   unique: false
   description: Pre-tax order amount, in dollars.
@@ -51,6 +52,7 @@ columns:
 - name: tax_paid
   sql: tax_paid
   type: DOUBLE
+  db_type: DECIMAL(12,2)
   primary_key: false
   unique: false
   description: Tax charged on the order, in dollars.
@@ -63,6 +65,7 @@ columns:
 - name: order_total
   sql: order_total
   type: DOUBLE
+  db_type: DECIMAL(12,2)
   primary_key: false
   unique: false
   description: Final order amount including tax, in dollars.
@@ -72,6 +75,25 @@ columns:
     type: currency
     precision: 2
     symbol: $
+- name: status
+  sql: status
+  type: TEXT
+  primary_key: false
+  unique: false
+  description: 'Order status: completed, refunded or cancelled. Refunded and cancelled
+    orders keep their order_total.'
+  label: Status
+  hidden: false
+- name: item_skus
+  sql: item_skus
+  type: ARRAY
+  element_type: TEXT
+  db_type: VARCHAR[]
+  primary_key: false
+  unique: false
+  description: The SKU of each item on the order, one entry per unit (repeats kept).
+  label: Item SKUs
+  hidden: false
 measures:
 - formula: sum(order_total)
   name: total_revenue

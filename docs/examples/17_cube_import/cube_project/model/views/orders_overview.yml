@@ -1,0 +1,15 @@
+# A Cube view owns no table — it becomes a thin SLayer facade model over the
+# `orders` join path. Included dimensions become derived columns; included
+# measures become model measures. No `prefix`, no `default_filters`, so the
+# included `region` stays named `region` and no WHERE is always applied.
+views:
+  - name: orders_overview
+    cubes:
+      - join_path: orders
+        includes:
+          - count
+          - total_amount
+          - status
+      - join_path: orders.customers
+        includes:
+          - region

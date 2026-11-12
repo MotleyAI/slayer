@@ -14,6 +14,8 @@ import sqlite3
 from collections.abc import Hashable
 from typing import Any
 
+from sqlglot import exp
+
 from slayer.core.errors import StoredDocumentLoadError
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
@@ -22,6 +24,7 @@ from slayer.storage.base import (
     StorageBackend,
     _validate_path_component,
     _write_sample_fields,
+    without_none,
 )
 from slayer.storage.content_fingerprint import stat_key
 from slayer.storage.document_loading import Loaded, stored_document_boundary
@@ -192,7 +195,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         return f"{counter.hex()}:{stat_key(self.db_path)}"
 
     def _save_model_sync(self, model: SlayerModel) -> None:
-        data = json.dumps(model.model_dump(mode="json", exclude_none=True))
+        data = json.dumps(without_none(model.model_dump(mode="json")))
         with transaction(self.db_path) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO models (data_source, name, data) VALUES (?, ?, ?)",
@@ -223,7 +226,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
             return cursor.rowcount > 0
 
     def _save_datasource_sync(self, datasource: DatasourceConfig) -> None:
-        data = json.dumps(datasource.model_dump(mode="json", exclude_none=True))
+        data = json.dumps(without_none(datasource.model_dump(mode="json")))
         with transaction(self.db_path) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO datasources (name, data) VALUES (?, ?)",
@@ -313,6 +316,42 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
             return None
         return data if isinstance(data, dict) else None
 
+    def _raw_rows_sync(self, sql: str) -> list[tuple[str, dict]]:
+        with transaction(self.db_path) as conn:
+            rows = conn.execute(sql).fetchall()
+        out = []
+        for key, raw in rows:
+            try:
+                data = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(data, dict):
+                out.append((key, data))
+        return out
+
+    def _update_sync(self, sql: str, params: tuple) -> None:
+        with transaction(self.db_path) as conn:
+            conn.execute(sql, params)
+
+    async def _write_raw_model_dict(self, *, name: str, data_source: str, data: dict) -> None:
+        await asyncio.to_thread(
+            self._update_sync, "UPDATE models SET data = ? WHERE data_source = ? AND name = ?",
+            (json.dumps(data), data_source, name),
+        )
+        self._forget_raw(data_source=data_source, name=name)
+
+    async def _raw_datasource_dicts(self) -> dict[str, dict]:
+        return dict(await asyncio.to_thread(self._raw_rows_sync, "SELECT name, data FROM datasources ORDER BY name"))
+
+    async def _write_raw_datasource_dict(self, *, name: str, data: dict) -> None:
+        await asyncio.to_thread(self._update_sync, "UPDATE datasources SET data = ? WHERE name = ?", (json.dumps(data), name))
+
+    async def _raw_memory_dicts(self) -> dict[str, dict]:
+        return dict(await asyncio.to_thread(self._raw_rows_sync, "SELECT id, data FROM memories ORDER BY id"))
+
+    async def _write_raw_memory_dict(self, *, memory_id: str, data: dict) -> None:
+        await asyncio.to_thread(self._update_sync, "UPDATE memories SET data = ? WHERE id = ?", (json.dumps(data), memory_id))
+
     async def _delete_model_row(
         self, *, data_source: str, name: str,
     ) -> bool:
@@ -385,7 +424,8 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         raw = await asyncio.to_thread(self._get_datasource_sync, name)
         if raw is None:
             return None
-        ds = DatasourceConfig.model_validate(json.loads(raw))
+        data = await self._with_library_granularities_renamed(name=name, data=json.loads(raw))
+        ds = DatasourceConfig.model_validate(data)
         return ds.resolve_env_vars()
 
     async def list_datasources(self) -> list[str]:
@@ -482,7 +522,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
                 memory = Memory(**kwargs)
                 conn.execute(
                     "INSERT OR REPLACE INTO memories (id, data) VALUES (?, ?)",
-                    (memory_id, json.dumps(memory.model_dump(mode="json"))),
+                    (memory_id, json.dumps(without_none(memory.model_dump(mode="json")))),
                 )
                 conn.execute(
                     "DELETE FROM memory_entities WHERE memory_id = ?",
@@ -540,7 +580,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
     # directly to avoid triggering ``EmbeddingRetriever.upsert_memory``.
 
     def _save_memory_sync(self, memory: Memory) -> None:
-        data = json.dumps(memory.model_dump(mode="json"))
+        data = json.dumps(without_none(memory.model_dump(mode="json")))
         with transaction(self.db_path) as conn:
             conn.execute(_PRAGMA_FOREIGN_KEYS_ON)
             conn.execute(
@@ -590,14 +630,13 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
             elif not entities:
                 return []
             else:
-                placeholders = ",".join("?" * len(entities))
-                rows = conn.execute(
-                    f"SELECT DISTINCT m.id, m.data FROM memories m "
-                    f"JOIN memory_entities me ON me.memory_id = m.id "
-                    f"WHERE me.entity IN ({placeholders}) "
-                    f"ORDER BY m.id",
-                    tuple(entities),
-                ).fetchall()
+                select = (
+                    exp.select("m.id", "m.data").distinct().from_("memories AS m")
+                    .join("memory_entities AS me", on="me.memory_id = m.id")
+                    .where(exp.column("entity", table="me").isin(*(exp.Placeholder() for _ in entities)))
+                    .order_by("m.id")
+                )
+                rows = conn.execute(select.sql(dialect="sqlite"), tuple(entities)).fetchall()
         return [(r[0], r[1]) for r in rows]
 
     async def _list_memories_rows(

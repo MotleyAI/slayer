@@ -22,11 +22,29 @@ class DataType(StrEnum):
     DATE = "DATE"
     TIMESTAMP = "TIMESTAMP"
     UNKNOWN = "UNKNOWN"
+    ARRAY = "ARRAY"
 
     @property
     def is_opaque(self) -> bool:
         """True when SLayer can store/display the column but not operate on it."""
         return self is DataType.UNKNOWN
+
+    @property
+    def is_list(self) -> bool:
+        return self is DataType.ARRAY
+
+
+#: The types a list's elements may have (``UNKNOWN``: opaque elements).
+ELEMENT_TYPES: frozenset[DataType] = frozenset(t for t in DataType if t is not DataType.ARRAY)
+
+
+def type_display(data_type: Optional[DataType], element_type: Optional[DataType] = None) -> str:
+    """``ARRAY<TEXT>`` for a list, else the type's value (``?`` when unknown)."""
+    if data_type is None:
+        return "?"
+    if data_type is DataType.ARRAY:
+        return f"ARRAY<{element_type.value if element_type is not None else 'UNKNOWN'}>"
+    return data_type.value
 
 
 # Legacy lowercase type spellings; pseudo-types drop to None (field default fires).
@@ -147,6 +165,8 @@ class DatePart(StrEnum):
 
 # Lowercased spellings meaning one ``date_part`` part, as ``<alias>(x)`` and as a part word.
 DATE_PART_ALIASES: dict[str, DatePart] = {
+    "year": DatePart.YEAR, "quarter": DatePart.QUARTER, "month": DatePart.MONTH, "week": DatePart.WEEK,
+    "day": DatePart.DAY, "hour": DatePart.HOUR, "minute": DatePart.MINUTE, "second": DatePart.SECOND,
     "isodow": DatePart.DAY_OF_WEEK, "day_of_week": DatePart.DAY_OF_WEEK,
     "doy": DatePart.DAY_OF_YEAR, "dayofyear": DatePart.DAY_OF_YEAR, "day_of_year": DatePart.DAY_OF_YEAR,
     "isoyear": DatePart.ISO_YEAR, "iso_year": DatePart.ISO_YEAR,
@@ -157,6 +177,8 @@ DATE_PART_ALIASES: dict[str, DatePart] = {
 AMBIGUOUS_WEEKDAY_NAMES: frozenset[str] = frozenset({"dow", "dayofweek", "weekday"})
 # Date spellings a custom aggregation or granularity may not take (lowercased).
 RESERVED_DATE_SYNTAX_NAMES: frozenset[str] = frozenset({*DATE_PART_ALIASES, "extract"})
+# Function names reserved for evaluation (Ossie's ``AGG``); a field may still take one.
+RESERVED_NAMES: frozenset[str] = frozenset({"agg"})
 
 
 def ambiguous_weekday_message(name: str) -> str:
@@ -267,10 +289,32 @@ BUILTIN_AGGREGATIONS: frozenset[str] = frozenset({
     "stddev_samp", "stddev_pop",
     "var_samp", "var_pop",
     "corr", "covar_samp", "covar_pop",
+    "collect",
 })
+
+# Aggregations whose result is a list of their input's type.
+LIST_AGGREGATIONS: frozenset[str] = frozenset({"collect"})
 
 # Named once so classifier, planner and renderer agree.
 RANKED_AGGREGATIONS = ("first", "last")
+
+# Transforms that require a time dimension for ORDER BY
+TIME_TRANSFORMS = {
+    "cumsum",
+    "change",
+    "change_pct",
+    "time_shift",
+    "first",
+    "last",
+    "lag",
+    "lead",
+    "consecutive_periods",
+}
+
+# Transforms that don't need time ordering
+TIMELESS_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}
+
+ALL_TRANSFORMS = TIME_TRANSFORMS | TIMELESS_TRANSFORMS
 
 # Default partition is the whole result set, not the group-by dimensions;
 # ``partition_by=`` opts into per-partition ranking.
@@ -317,6 +361,7 @@ class AggregationValueClass(StrEnum):
     PRESERVING = "preserving"                  # source type & format
     FLOAT_SOURCE_UNITS = "float_source_units"  # DOUBLE type, source format (else FLOAT)
     FLOAT_PLAIN = "float_plain"                # DOUBLE type, plain FLOAT format
+    LIST = "list"                              # ARRAY of the source type, no format
 
 
 def classify_aggregation(
@@ -331,6 +376,8 @@ def classify_aggregation(
         return AggregationValueClass.COUNT
     if aggregation in INTEGER_AGGREGATIONS:
         return AggregationValueClass.COUNT
+    if aggregation in LIST_AGGREGATIONS:
+        return AggregationValueClass.LIST
     if source_type is DataType.BOOLEAN and aggregation == "sum":
         return AggregationValueClass.COUNT
     if aggregation in FLOAT_SOURCE_UNIT_AGGREGATIONS:
@@ -365,14 +412,14 @@ def normalize_aggregation_name(name: str) -> str:
 # Built-in aggregation SQL formulas (for aggregations that use a template).
 # {value} = measure's SQL expression; {param_name} = parameter values.
 # Note: percentile is dialect-dependent (no single template works on
-# SQLite/ClickHouse/MySQL) and lives in generator._build_percentile instead.
+# SQLite/ClickHouse/MySQL) and lives in render_aggregate instead.
 BUILTIN_AGGREGATION_FORMULAS: dict[str, str] = {
     # A NULL value's weight is skipped like the value; ``* 1.0`` keeps integer inputs from dividing as integers.
     "weighted_avg": "SUM({value} * {weight}) * 1.0 / NULLIF(SUM(CASE WHEN {value} IS NOT NULL THEN {weight} END), 0)",
 }
 
 # Built-in aggregations that require specific parameters.
-# Percentile's required-param check lives in generator._build_percentile.
+# Percentile's required-param check lives in render_aggregate.
 BUILTIN_AGGREGATION_REQUIRED_PARAMS: dict[str, list[str]] = {
     "weighted_avg": ["weight"],
     "corr": ["other"],
@@ -408,7 +455,10 @@ _NUMERIC_AGGREGATIONS: frozenset[str] = frozenset({
     "sum", "avg", "min", "max", "count", "count_distinct", "count_distinct_approx",
     "median", "weighted_avg", "percentile", "first", "last",
     "stddev_samp", "stddev_pop", "var_samp", "var_pop",
-    "corr", "covar_samp", "covar_pop",
+    "corr", "covar_samp", "covar_pop", "collect",
+})
+_ORDERED_AGGREGATIONS: frozenset[str] = frozenset({
+    "count", "count_distinct", "count_distinct_approx", "first", "last", "min", "max", "collect",
 })
 
 DEFAULT_AGGREGATIONS_BY_TYPE: dict[DataType, frozenset[str]] = {
@@ -416,20 +466,16 @@ DEFAULT_AGGREGATIONS_BY_TYPE: dict[DataType, frozenset[str]] = {
     # narrowing is for CAST emission, not for what's aggregable.
     DataType.INT: _NUMERIC_AGGREGATIONS,
     DataType.DOUBLE: _NUMERIC_AGGREGATIONS,
-    DataType.TEXT: frozenset({
-        "count", "count_distinct", "count_distinct_approx", "first", "last", "min", "max",
-    }),
+    DataType.TEXT: _ORDERED_AGGREGATIONS,
     # A boolean is its integer inside a numeric aggregation.
     DataType.BOOLEAN: _NUMERIC_AGGREGATIONS,
-    DataType.DATE: frozenset({
-        "count", "count_distinct", "count_distinct_approx", "first", "last", "min", "max",
-    }),
-    DataType.TIMESTAMP: frozenset({
-        "count", "count_distinct", "count_distinct_approx", "first", "last", "min", "max",
-    }),
+    DataType.DATE: _ORDERED_AGGREGATIONS,
+    DataType.TIMESTAMP: _ORDERED_AGGREGATIONS,
+    # A list counts as a whole or by distinct element sets; its elements aggregate through ``<column>.value``.
+    DataType.ARRAY: frozenset({"count", "count_distinct"}),
 }
 
-# A sole primary key is restricted to counting and min/max, regardless of data type.
+# A sole primary key is restricted to counting, min/max and collect, regardless of data type.
 PRIMARY_KEY_AGGREGATIONS: frozenset[str] = frozenset({
-    "count", "count_distinct", "count_distinct_approx", "min", "max",
+    "count", "count_distinct", "count_distinct_approx", "min", "max", "collect",
 })

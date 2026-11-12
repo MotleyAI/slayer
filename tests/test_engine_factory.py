@@ -10,14 +10,17 @@ strategy class carries the runtime hooks; this module covers:
 * Engine caching is keyed on connection_string + a runtime fingerprint so
   two snowflake datasources differing only in warehouse get different
   cached engines.
-* Production engine consumers (ingestion, schema_drift, type_refinement,
-  CLI, MCP, SlayerSQLClient) all reference ``engine_factory`` instead of
-  bare ``sa.create_engine``.
+* ``SlayerSQLClient`` builds its engines through ``engine_factory``; no other
+  production module opens a database (``tests/test_law_database_door.py``).
 """
 
+import asyncio
 import gc
 import json
 import logging
+import os
+import select
+import signal
 import sqlite3
 import sys
 import threading
@@ -27,15 +30,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.pool import QueuePool
 
-from slayer import cli
 from slayer.core.models import DatasourceConfig
-from slayer.engine import ingestion, schema_drift
+from slayer.live_schema import schema_drift
 from slayer.engine.query_engine import _sql_client_cache_key
-from slayer.mcp import server
-from slayer.sql import client as sql_client
-from slayer.sql import engine_factory
-from slayer.storage import type_refinement
+from slayer.database import client as sql_client
+from slayer.database import engine_factory
+from slayer.sql.dialects import dialect_for_ds_type
+from slayer.sql.dialects.drivers import load_driver
 from tests._engine_helpers import disposable_engine
 
 
@@ -81,14 +84,24 @@ class TestGetEngine:
         ds = DatasourceConfig(
             name="pg", type="postgres", host="h", username="u", password="p", database="db",  # NOSONAR(S2068) — test fixture; obvious placeholder value
         )
-        with patch("slayer.sql.engine_factory.sa.create_engine") as create_engine_mock:
+        with patch("slayer.database.engine_factory.sa.create_engine") as create_engine_mock:
             fake = MagicMock()
             create_engine_mock.return_value = fake
             result = engine_factory.get_engine(ds)
         assert result is fake
         args, kwargs = create_engine_mock.call_args
-        assert args[0].startswith("postgresql+psycopg2://")
-        assert kwargs.get("pool_pre_ping") is True
+        assert args[0].startswith("postgresql+psycopg://")
+        assert "pool_pre_ping" not in kwargs
+
+
+def _recording_listens_for(registered: list[tuple[str, str]]) -> Any:
+    """A ``listens_for`` stand-in recording ``(event, listener name)`` for every registration."""
+    def _listens_for(_target: Any, event: str, *_a: Any, **_k: Any) -> Any:
+        def _register(fn: Any) -> Any:
+            registered.append((event, fn.__name__))
+            return fn
+        return _register
+    return _listens_for
 
 
 class TestSessionOverridesListener:
@@ -107,15 +120,14 @@ class TestSessionOverridesListener:
             "slayer.sql.dialects.snowflake.SnowflakeDialect.build_engine",
             return_value=MagicMock(),
         ):
+            # Warm-up: the driver's first import registers its own listeners.
+            load_driver(ds, ds.get_connection_string(), dialect=dialect_for_ds_type(ds.type), is_async=False)
+            registered: list[tuple[str, str]] = []
             with patch.object(engine_factory.sa_event, "listens_for") as listens_for_mock:
-                listens_for_mock.return_value = lambda fn: fn
+                listens_for_mock.side_effect = _recording_listens_for(registered)
                 engine_factory.get_engine(ds)
-        listens_for_mock.assert_called_once()
-        _engine_arg, event_name = listens_for_mock.call_args.args
-        # Use ``checkout`` (not ``connect``) so session state
-        # is re-applied on every pool checkout, not just on the first
-        # physical connection.
-        assert event_name == "checkout"
+        # Once per physical connection: ``connect``, not ``checkout``.
+        assert [event for event, name in registered if name == "_slayer_session_overrides"] == ["connect"]
 
     def test_non_snowflake_engine_skips_session_overrides_listener(self) -> None:
         """Postgres / SQLite / etc. don't override apply_session_overrides,
@@ -127,10 +139,11 @@ class TestSessionOverridesListener:
             warehouse="should_not_fire",
             role="should_not_fire",
         )
+        registered: list[tuple[str, str]] = []
         with patch.object(engine_factory.sa_event, "listens_for") as listens_for_mock:
-            listens_for_mock.return_value = lambda fn: fn
+            listens_for_mock.side_effect = _recording_listens_for(registered)
             engine_factory.get_engine(ds)
-        listens_for_mock.assert_not_called()
+        assert "_slayer_session_overrides" not in [name for _event, name in registered]
 
     def test_session_listener_invokes_dialect_apply_session_overrides(self) -> None:
         """When the engine opens a connection, the listener body must
@@ -150,7 +163,7 @@ class TestSessionOverridesListener:
                 ) as apply_mock:
                     engine = engine_factory.get_engine(ds)
                     with engine.connect() as _:
-                        pass  # NOSONAR(S108) — empty body is intentional; opening + closing fires the checkout-event listener under test
+                        pass  # NOSONAR(S108) — empty body is intentional; opening fires the connect-event listener under test
         assert apply_mock.call_count >= 1
         # Listener calls ``apply_session_overrides(dbapi_connection=..., datasource=...)``
         # by name; the datasource is the kwarg, not a positional arg.
@@ -221,25 +234,9 @@ class TestCallSiteMigration:
     needs to be.
     """
 
-    def test_ingestion_uses_engine_factory(self) -> None:
-        source = open(ingestion.__file__).read()
-        assert "engine_factory.get_engine" in source or "from slayer.sql.engine_factory" in source
-
     def test_schema_drift_uses_engine_factory(self) -> None:
         source = open(schema_drift.__file__).read()
-        assert "engine_factory.get_engine" in source or "from slayer.sql.engine_factory" in source
-
-    def test_type_refinement_uses_engine_factory(self) -> None:
-        source = open(type_refinement.__file__).read()
-        assert "engine_factory.get_engine" in source or "from slayer.sql.engine_factory" in source
-
-    def test_cli_uses_engine_factory(self) -> None:
-        source = open(cli.__file__).read()
-        assert "engine_factory" in source
-
-    def test_mcp_server_uses_engine_factory(self) -> None:
-        source = open(server.__file__).read()
-        assert "engine_factory" in source
+        assert "engine_factory.get_engine" in source or "from slayer.database.engine_factory" in source
 
     def test_sql_client_uses_engine_factory_for_engine_creation(self) -> None:
         source = open(sql_client.__file__).read()
@@ -534,6 +531,13 @@ class TestReleaseIdle:
             return True
         return False
 
+    @staticmethod
+    async def _drift_probe(ds: DatasourceConfig) -> None:
+        """Drift's connectivity check through a client, then its release."""
+        client = sql_client.SlayerSQLClient(datasource=ds)
+        await client.ping()
+        await client.aclose()
+
     def test_release_closes_idle_connections_and_keeps_the_engine_usable(self, tmp_path) -> None:
         engine_factory.reset_cache()
         engine = engine_factory.get_engine(DatasourceConfig(name="f", type="sqlite", database=str(tmp_path / "f.db")))
@@ -555,7 +559,7 @@ class TestReleaseIdle:
         try:
             with engine.connect() as conn:
                 held = conn.connection.driver_connection
-                schema_drift._probe_connect(ds)
+                asyncio.run(self._drift_probe(ds))
         finally:
             engine_factory.reset_cache()
         gc.collect()
@@ -772,7 +776,7 @@ class TestConfigSnapshot:
         engine_factory.reset_cache()
 
     def test_session_overrides_listener_is_insulated_from_later_mutation(self) -> None:
-        """The listener fires on every checkout for the life of the engine. It
+        """The listener fires on every new connection for the life of the engine. It
         must keep applying the fields this engine was cached under, not whatever
         the caller's config says later — those fields *are* its cache key."""
         pytest.importorskip("snowflake.connector")
@@ -794,7 +798,7 @@ class TestConfigSnapshot:
                 engine = engine_factory.get_engine(ds)
                 ds.warehouse = "WH_MUTATED_AFTER"
                 with engine.connect() as _:
-                    pass  # NOSONAR(S108) — opening + closing fires the checkout listener
+                    pass  # NOSONAR(S108) — opening fires the connect listener
         assert apply_mock.call_args.kwargs["datasource"].warehouse == "WH_AT_BUILD"
         engine_factory.reset_cache()
 
@@ -821,20 +825,26 @@ def _in_worker(fn):
     return box.get("value")
 
 
-class TestInMemorySqliteBuilder:
-    """The factory's single StaticPool builder for in-memory SQLite."""
+def _assert_one_slot_pool(engine: sa.Engine) -> None:
+    pool = engine.pool
+    assert isinstance(pool, QueuePool), pool
+    assert (pool.size(), pool._max_overflow) == (1, 0)
 
-    def test_builder_uses_static_pool(self) -> None:
+
+class TestInMemorySqliteBuilder:
+    """The factory's single in-memory SQLite builder."""
+
+    def test_builder_uses_one_slot_pool(self) -> None:
         engine = engine_factory.build_in_memory_sqlite_engine("sqlite:///:memory:")
         try:
-            assert type(engine.pool).__name__ == "StaticPool"
+            _assert_one_slot_pool(engine)
         finally:
             engine.dispose()
 
     def test_builder_normalizes_bare_memory(self) -> None:
         engine = engine_factory.build_in_memory_sqlite_engine(":memory:")
         try:
-            assert type(engine.pool).__name__ == "StaticPool"
+            _assert_one_slot_pool(engine)
         finally:
             engine.dispose()
 
@@ -861,6 +871,18 @@ class TestInMemorySqliteBuilder:
                     return conn.exec_driver_sql("SELECT v FROM t").scalar()
 
             assert _in_worker(read_v) == 42, "worker thread must see the same in-memory db"
+        finally:
+            engine.dispose()
+
+    def test_an_invalidated_connection_comes_back_as_a_fresh_db(self) -> None:
+        engine = engine_factory.build_in_memory_sqlite_engine(":memory:")
+        try:
+            with engine.connect() as conn:
+                conn.exec_driver_sql("CREATE TABLE t (v INTEGER)")
+                conn.commit()
+                conn.invalidate()
+            with engine.connect() as conn:
+                assert conn.exec_driver_sql("SELECT count(*) FROM sqlite_master WHERE name = 't'").scalar() == 0
         finally:
             engine.dispose()
 
@@ -934,3 +956,31 @@ class TestInMemoryFactoryCoherence:
         if _ON_313:
             unclosed = [w for w in caught if "unclosed database" in str(w.message).lower()]
             assert not unclosed, [str(w.message) for w in unclosed]
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX fork")
+@pytest.mark.filterwarnings("ignore:.*fork.*:DeprecationWarning")
+def test_a_child_forked_while_the_cache_lock_is_held_can_build_engines(tmp_path) -> None:
+    ds = DatasourceConfig(name="f", type="sqlite", database=str(tmp_path / "fork.db"))
+    read_fd, write_fd = os.pipe()
+    with engine_factory._cache_lock:
+        pid = os.fork()
+        if pid == 0:  # pragma: no cover - child
+            try:
+                os.close(read_fd)
+                with engine_factory.get_engine(ds).connect() as conn:
+                    conn.exec_driver_sql("SELECT 1")
+                os.write(write_fd, b"ok")
+            finally:
+                os._exit(0)
+    os.close(write_fd)
+    try:
+        ready, _, _ = select.select([read_fd], [], [], 15)
+        if not ready:
+            os.kill(pid, signal.SIGKILL)
+        report = os.read(read_fd, 64) if ready else b"child deadlocked"
+    finally:
+        os.close(read_fd)
+        os.waitpid(pid, 0)
+        engine_factory.invalidate_engine(ds)
+    assert report == b"ok"

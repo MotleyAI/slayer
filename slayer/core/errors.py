@@ -10,7 +10,6 @@ from slayer.core.enums import TimeGranularity
 
 if TYPE_CHECKING:
     from slayer.core.join_walker import OrientedJoin  # noqa: F401
-    from slayer.engine.schema_drift import ToDeleteEntry  # noqa: F401
 
 
 class SlayerError(ValueError):
@@ -74,8 +73,20 @@ class AmbiguousJoinPathError(SlayerError):
         super().__init__("\n".join(lines))
 
 
+class QueryExtensionError(SlayerError):
+    """A query extension that cannot apply: a join conflicting with the join graph, or an INNER join the population cannot reach."""
+
+
 class EntityResolutionError(SlayerError):
     """An entity ref can't resolve to canonical ``<datasource>.<model>[.<leaf>]`` form; distinct from ``AmbiguousModelError`` (the model leg of bare-name resolution)."""
+
+
+class ModelNotFoundError(SlayerError):
+    """A query names a model that does not exist in storage; ``context`` names where it was named."""
+
+    def __init__(self, name: str, *, context: str | None = None) -> None:
+        self.name = name
+        super().__init__(f"{context}: model '{name}' not found" if context else f"Model '{name}' not found")
 
 
 class MemoryNotFoundError(SlayerError):
@@ -83,26 +94,28 @@ class MemoryNotFoundError(SlayerError):
 
     def __init__(self, memory_id: str) -> None:
         self.memory_id = str(memory_id)
-        # Back-compat alias for callers that still use ``.identifier``.
-        self.identifier = self.memory_id
         super().__init__(f"No memory with id '{self.memory_id}'.")
 
 
 class SchemaDriftError(SlayerError):
-    """A query failed and schema drift in the models it read explains it; carries the drifted models, their ``to_delete`` entries, and the DBAPI cause (as ``__cause__``)."""
+    """A query failed and schema drift in the models it read explains it; carries the drifted models, their
+    ``to_delete`` entries, the report-only ``findings`` and the DBAPI cause (as ``__cause__``)."""
 
     def __init__(
         self,
         models: list[str],
         to_delete: list[Any],
         original: BaseException,
+        findings: list[Any] | None = None,
     ) -> None:
         self.models = list(models)
         self.to_delete = list(to_delete)
+        self.findings = list(findings or [])
+        notes = "".join(f" {getattr(f, 'summary', f)}" for f in self.findings)
         super().__init__(
             f"Schema drift detected on models {sorted(self.models)}. "
             f"Run validate_models to inspect the {len(self.to_delete)} "
-            f"pending delete(s). Original error: {original}"
+            f"pending delete(s).{notes} Original error: {original}"
         )
         self.__cause__ = original
 
@@ -114,6 +127,18 @@ class ColumnCycleError(SlayerError, ValueError):
         self.cycle: list[tuple[str, str]] = list(cycle)
         chain = " → ".join(f"{m}.{c}" for m, c in self.cycle)
         super().__init__(f"Circular column reference detected: {chain}")
+
+
+class ModelFilterCycleError(SlayerError, ValueError):
+    """A model's filters read its own dataset; carries the ordered model ``cycle``."""
+
+    def __init__(self, cycle: Sequence[str]) -> None:
+        self.cycle: list[str] = list(cycle)
+        super().__init__(
+            f"Circular model filters: {' → '.join(self.cycle)}. A model's filters read the "
+            f"filtered dataset of every model they join, so these models' datasets depend on "
+            f"themselves; drop the filter that closes the cycle."
+        )
 
 
 class DerivedColumnFanningError(SlayerError, ValueError):
@@ -225,6 +250,25 @@ class MissingDriverError(SlayerError, ImportError):
             suggestion=hint,
         ))
         self.name = missing
+
+
+class UnsupportedDriverError(SlayerError):
+    """A datasource's URL names a driver SLayer cannot serve the type through; ``hint`` names one it can."""
+
+    def __init__(self, *, datasource_name: str, ds_type: str | None, driver: str, reason: str, hint: str) -> None:
+        self.datasource_name = datasource_name
+        self.ds_type = ds_type
+        self.driver = driver
+        self.hint = hint
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Datasource {datasource_name!r} (type {ds_type!r}) cannot use driver {driver!r}: {reason}",
+            suggestion=hint,
+        ))
+
+
+class ExplainUnsupportedError(SlayerError):
+    """An EXPLAIN its dialect, or the client serving it, cannot run."""
 
 
 class ModelSqlValidationError(SlayerError, ValueError):
@@ -394,10 +438,6 @@ class UnknownGranularityError(QueryTypeError):
     """A granularity name that is neither built-in nor defined on the query's datasource."""
 
 
-class GranularityShapeError(QueryTypeError):
-    """A datasource-granularity call that is not a single column reference ``gran(col)``."""
-
-
 class TimeSpineError(QueryTypeError):
     """A query shape the time spine cannot take: no lower bound, spine rows counted, the spine column
     outside a bucketed time dimension or a bound, or a stored model shadowing ``time_spine``."""
@@ -405,6 +445,37 @@ class TimeSpineError(QueryTypeError):
 
 class UnrelatedDatasetError(QueryTypeError):
     """A row-level read of a dataset no join path reaches, outside an aggregation or a one-sided filter."""
+
+
+class CastTypeError(QueryTypeError):
+    """A CAST target type the query's dialect cannot express."""
+
+
+class AggregationFilterError(QueryTypeError):
+    """A ``FILTER (WHERE …)`` condition that is not a row-level predicate of its aggregation."""
+
+
+class ScalarArgumentError(QueryTypeError):
+    """A scalar function argument outside its contract: a pattern, path, flag or index the library does not
+    take, or a literal outside the function's domain."""
+
+
+class ScalarOperandTypeError(QueryTypeError):
+    """A scalar function or operator over an operand of a type it does not read (a number function over TEXT,
+    a JSON read of a non-JSON value, a TEXT literal that is not a number beside a number)."""
+
+
+class ListTypeError(QueryTypeError):
+    """A list where a scalar is required (or the reverse), a malformed list literal, or a list construct on a
+    database without native lists."""
+
+
+class ServerVersionError(QueryTypeError):
+    """A function the connected server's version does not provide."""
+
+
+class UnsupportedServerFunctionError(QueryTypeError):
+    """A library function the connected database cannot yet run with its portable meaning."""
 
 
 class UnreachableDefinitionError(SlayerError, ValueError):
@@ -566,16 +637,40 @@ class ModeASqlParseError(SlayerError, ValueError):
         ))
 
 
+class NotReadOnlyQueryError(SlayerError):
+    """SQL that must be a read-only query is not one."""
+
+    def __init__(self, *, sql: str) -> None:
+        self.sql = sql
+        super().__init__(f"Not a read-only query: {sql!r}.")
+
+
 class AmbiguousReferenceError(SlayerError, ValueError):
     """A reference matches multiple candidates in scope."""
 
-    def __init__(self, name: str, candidates: List[str]) -> None:
+    def __init__(self, name: str, candidates: List[str], suggestion: str | None = None) -> None:
         self.name = name
         self.candidates = sorted(candidates)
         super().__init__(_format_error_message(
             cls_name=type(self).__name__,
             summary=f"Reference {name!r} has multiple candidates.",
             extras=[("candidates", repr(self.candidates))],
+            suggestion=suggestion,
+        ))
+
+
+class AmbiguousAggregationError(SlayerError):
+    """A call matches several of its model's aggregations case-insensitively and none exactly."""
+
+    def __init__(self, *, model: str, call: str, candidates: List[str]) -> None:
+        self.model = model
+        self.call = call
+        self.candidates = sorted(candidates)
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Aggregation call {call!r} is ambiguous on model {model!r}: it matches "
+            f"{', '.join(self.candidates)} case-insensitively.",
+            suggestion="Spell the call exactly as one of them.",
         ))
 
 
@@ -702,6 +797,10 @@ class MeasureCycleError(SlayerError, ValueError):
         ))
 
 
+class VariableError(SlayerError):
+    """A ``{name}`` placeholder whose name is invalid or whose variable is undefined."""
+
+
 class UnresolvedPlaceholderError(SlayerError):
     """A ``{name}`` placeholder reached binding unsubstituted."""
 
@@ -722,15 +821,20 @@ class UnresolvedPlaceholderError(SlayerError):
 class BroadcastGrainWarning(UserWarning):
     """A cross-model aggregate's implicit grain lost a dimension (not attributable from its root) to broadcasting; result grain unchanged. Visibility warning, not an error."""
 
-    def __init__(self, measure: str, reason: str) -> None:
-        super().__init__(measure, reason)  # args mirror params so cls(*w.args) reconstructs across pytest-xdist
+    def __init__(self, measure: str, reason: str, association_unsupported: str | None = None) -> None:
+        super().__init__(measure, reason, association_unsupported)  # args mirror params so cls(*w.args) reconstructs across pytest-xdist
         self.measure = measure
         self.reason = reason
+        self.association_unsupported = association_unsupported
 
     def __str__(self) -> str:
+        fallback = (
+            "" if self.association_unsupported is None
+            else f" (association does not support {self.association_unsupported})"
+        )
         return (
             f"Metric {self.measure!r} broadcast across an unattributable "
-            f"dimension: {self.reason}"
+            f"dimension{fallback}: {self.reason}"
         )
 
 
@@ -869,16 +973,56 @@ class ForcedFilterError(SlayerError):
 
 
 class GranularityCallError(SlayerError, ValueError):
-    """A functional ``gran(col)`` query entry is malformed or unresolvable: wrong-shape granularity call, an unknown ``name(col)`` dimension, a bare ``time_dimensions`` string, a same-column+granularity metadata conflict, or an order key with no matching projected time dimension."""
+    """A time-bucket query entry is malformed or unresolvable: a ``date_trunc`` of the wrong shape, a granularity called like a function, a ``time_dimensions`` string that is not ``date_trunc('<unit>', expr)``, a same-column+granularity metadata conflict, or an order key with no matching projected time dimension."""
 
     @classmethod
     def wrong_shape(cls, entry: str) -> "GranularityCallError":
-        """A granularity callee with any argument shape other than one column reference."""
+        """A time bucket written in any shape other than ``date_trunc('<unit>', expr)``."""
         return cls(
-            f"Granularity call {entry!r} must be a single column reference "
-            f"``gran(col)`` (e.g. ``month(created_at)``) for one of: "
-            f"{', '.join(g.value for g in TimeGranularity)}."
+            f"Time bucket {entry!r} must be written date_trunc('<unit>', expr) with one row-level expr, e.g. "
+            f"date_trunc('month', created_at); units: {', '.join(g.value for g in TimeGranularity)} or a "
+            f"datasource granularity."
         )
+
+    @classmethod
+    def no_call_form(cls, unit: str, *, operand: str) -> "GranularityCallError":
+        """A granularity name called like a function."""
+        return cls(f"{unit}(…) is not a function: write the time bucket as date_trunc('{unit}', {operand}).")
+
+
+class ReservedFunctionNameError(SlayerError, ValueError):
+    """A call of, or a new aggregation named, a reserved function name (``agg``)."""
+
+    def __init__(self, *, name: str, where: str) -> None:
+        self.name = name
+        super().__init__(
+            f"{where}: {name!r} is reserved — AGG (`agg` in any case) names measure evaluation, so it is never a "
+            f"function or an aggregation name. A field, metric or column may still be named agg."
+        )
+
+
+class CaseCollisionError(SlayerError, ValueError):
+    """A save would introduce names that differ only in case into one namespace."""
+
+    def __init__(self, *, names: List[str], namespace: str) -> None:
+        self.names = list(names)
+        super().__init__(
+            f"{' and '.join(repr(n) for n in names)} in {namespace} differ only in case; names match in any case, "
+            f"so they would collide. Rename one of them."
+        )
+
+
+class CallArgumentError(SlayerError, ValueError):
+    """A call's arguments in an order or repetition no signature reads."""
+
+
+class ColonSpellingError(SlayerError, ValueError):
+    """A removed colon spelling (``x:agg``, ``col:gran``); ``twin`` is its functional spelling."""
+
+    def __init__(self, *, span: str, twin: str) -> None:
+        self.span = span
+        self.twin = twin
+        super().__init__(f"The colon spelling {span!r} was removed in SLayer 2.0; write {twin} instead.")
 
 
 class UnresolvableOrderColumnError(SlayerError, ValueError):

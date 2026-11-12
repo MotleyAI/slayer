@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Dict, Literal, Optional, Tuple
 
 import sqlglot
@@ -11,11 +12,13 @@ from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.time_spine import TIME_SPINE_MODEL
+from slayer.core.enums import DataType
 from slayer.core.errors import IdentifierCollisionError
 from slayer.core.keys import (
     AggregateKey,
     ColumnKey,
     ColumnSqlKey,
+    ListSetKey,
     Phase,
     StarKey,
     TimeTruncKey,
@@ -25,6 +28,7 @@ from slayer.core.keys import (
     column_path,
     source_anchor_path,
 )
+from slayer.core.models import Column, SlayerModel
 from slayer.core.refs import (
     EXPRESSION_SOURCE_KINDS,
     agg_kwarg_canonical_str,
@@ -33,7 +37,9 @@ from slayer.core.refs import (
     key_display,
     partition_by_suffix,
 )
+from slayer.core.syntax import AggCall, DottedRef, Ref, StarSource, canonical_measure_text, legacy_result_name_seed
 from slayer.sql._identifier_fit import fit_identifier
+from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, get_dialect
 from slayer.sql.naming_bijection import (  # noqa: F401
     _ALIAS_SEP,
     decode_alias,
@@ -120,7 +126,7 @@ class AliasAllocator(BaseModel):
         else:
             parent = self.alias_for(root=root, path=path[:-1], limit=limit)
             base = f"{parent}__{path[-1]}"
-        used = self._join_alias_used.setdefault(root, set())
+        used = self._join_alias_used.setdefault(root, {self._fold(root)})
         candidate = fit_identifier(name=base, limit=limit)
         suffix = 2
         while self._fold(candidate) in used:
@@ -177,13 +183,13 @@ def _joined_row_path(slot: "ValueSlot") -> Optional[Tuple[Tuple[str, ...], str]]
     """``(path, leaf)`` of a ROW slot reading a joined column, else ``None``."""
     if slot.phase != Phase.ROW:
         return None
-    key = slot.key
+    key = slot.key.source if isinstance(slot.key, ListSetKey) else slot.key
     if isinstance(key, ColumnKey):
         path, leaf = key.path, key.leaf
     elif isinstance(key, ColumnSqlKey):
         path, leaf = key.path, key.column_name
-    elif isinstance(key, TimeTruncKey):
-        path, leaf = column_path(key.column), column_leaf(key.column)
+    elif isinstance(key, TimeTruncKey) and isinstance(key.source, (ColumnKey, ColumnSqlKey)):
+        path, leaf = column_path(key.source), column_leaf(key.source)
     else:
         return None
     return (path, leaf) if path else None
@@ -235,6 +241,18 @@ def flat_name(dotted: str, *, strip_relation: Optional[str] = None) -> str:
 
 OUTER_WRAP_ALIAS = "_outer"
 STAGE_INNER_ALIAS = "_stage_inner"
+#: A keyless association home's per-query row number (``__slayer_`` is reserved at save time: no model column collides).
+ROW_IDENTITY_COLUMN = "__slayer_row_id"
+
+
+def with_row_identity(model: SlayerModel) -> SlayerModel:
+    """``model`` keyed by its per-query row number, which the relation door mints."""
+    row_id = Column.model_construct(name=ROW_IDENTITY_COLUMN, type=DataType.INT, primary_key=True)
+    return model.model_copy(update={"columns": [*model.columns, row_id]})
+
+
+def is_row_identity(key: ValueKey) -> bool:
+    return isinstance(key, ColumnKey) and not key.path and key.leaf == ROW_IDENTITY_COLUMN
 
 
 # Written out, not ``\W``: Python's ``\W`` is Unicode-aware and would let non-ASCII letters into a bare ASCII identifier.
@@ -294,6 +312,23 @@ def expression_source_leaf(source: ValueKey) -> str:
     return auto_name_from_expression(key_display(rendered))
 
 
+_PLAIN_SOURCE_RE = re.compile(r"\*|[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*(?:\.\*)?")
+_PLAIN_NAME_RE = re.compile(r"[a-zA-Z_]\w*")
+
+
+def formula_text_alias(parsed: object) -> str:
+    """The public alias of a parsed measure formula: ``<source>_<agg>`` for a bare aggregation of a plainly named
+    column or star, else the sanitised legacy naming seed."""
+    if (isinstance(parsed, AggCall) and not parsed.args and not parsed.kwargs and parsed.filter is None
+            and isinstance(parsed.source, (Ref, DottedRef, StarSource)) and _PLAIN_NAME_RE.fullmatch(parsed.agg)):
+        base = canonical_measure_text(parsed.source)
+        if _PLAIN_SOURCE_RE.fullmatch(base):
+            if base.endswith(".*"):
+                return f"{base[:-2]}.{canonical_agg_name(measure_name='*', aggregation_name=parsed.agg)}"
+            return canonical_agg_name(measure_name=base, aggregation_name=parsed.agg)
+    return auto_name_from_expression(legacy_result_name_seed(parsed))
+
+
 def _alias_param(value) -> str:
     """A parameter's alias token; a boolean spells itself, never as ``1``."""
     if isinstance(value, bool):
@@ -349,6 +384,9 @@ def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over th
         agg_args=[_alias_param(a) for a in key.args] or None,
         agg_kwargs={k: _alias_param(v) for k, v in key.kwargs} or None,
     )
+    # A hint only: distinct keys stay distinct by key identity, never by this suffix.
+    if key.filter is not None:
+        canonical = f"{canonical}_filter_{auto_name_from_expression(key_display(key.filter))}"
 
     # Host-grain and target-grain aggregates intern separately; ``_host`` keeps their columns distinct.
     if key.locus == "host":
@@ -386,6 +424,14 @@ def maybe_quote_ident(ident: Optional[Expression]) -> None:
         ident.set("quoted", True)
 
 
+def key_identifier(name: str, *, quoted: bool) -> exp.Identifier:
+    """A physical column ``name`` as SLayer reads it: quoted when its stored SQL quotes it or it holds an upper-case
+    letter."""
+    ident = exp.to_identifier(name, quoted=True if quoted else None)
+    maybe_quote_ident(ident)
+    return ident
+
+
 def quote_mixed_case_identifiers(node: Expression) -> Expression:
     """Quote mixed-case DB identifiers (``.transform`` callback): a ``Column``'s name leaf and a ``Table``'s physical parts only. Idempotent."""
     if isinstance(node, exp.Column):
@@ -395,6 +441,40 @@ def quote_mixed_case_identifiers(node: Expression) -> Expression:
         maybe_quote_ident(node.args.get("db"))
         maybe_quote_ident(node.args.get("catalog"))
     return node
+
+
+def as_sql_dialect(dialect: str | SqlDialect | None) -> SqlDialect | None:
+    """``dialect`` by sqlglot name; ``None`` for an unknown or absent one."""
+    if dialect is None or isinstance(dialect, SqlDialect):
+        return dialect
+    return get_dialect(dialect) if dialect in SQLGLOT_NAMES else None
+
+
+def denoted_name(ident: exp.Identifier, *, dialect: str | SqlDialect | None) -> str:
+    """The exact name SLayer reads ``ident`` as: quoted or holding an upper-case letter as written, else folded."""
+    if ident.quoted or any(c.isupper() for c in ident.name):
+        return ident.name
+    found = as_sql_dialect(dialect)
+    return found.unquoted_identifier(ident.name) if found is not None else ident.name
+
+
+_PLAIN_PART_RE = re.compile(r"[^\W\d]\w*")
+
+
+def _quoted_part(part: str, *, dialect: SqlDialect) -> bool:
+    """Whether a live name part needs quotes to read back as itself (reserved words: the generator quotes them)."""
+    if not _PLAIN_PART_RE.fullmatch(part):
+        return True
+    # SQLAlchemy's ``quoted_name``: a name SLayer would otherwise read with the database's folding.
+    return getattr(part, "quote", None) is True and denoted_name(exp.to_identifier(part), dialect=dialect) != part
+
+
+def render_table_name(*, parts: Sequence[str], dialect: SqlDialect) -> str:
+    """The stored ``sql_table`` naming the live table ``parts`` (``[[catalog.]schema.]table``)."""
+    *qualifiers, name = [exp.Identifier(this=str(p), quoted=_quoted_part(p, dialect=dialect)) for p in parts]
+    table = exp.Table(this=name, db=qualifiers[-1] if qualifiers else None,
+                      catalog=qualifiers[-2] if len(qualifiers) > 1 else None)
+    return table.sql(dialect=dialect.sqlglot_name)
 
 
 def assert_unique_cte_names(sql: str, *, dialect: str = "postgres") -> None:

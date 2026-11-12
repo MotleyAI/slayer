@@ -9,7 +9,9 @@ re-raises untouched.
 
 from __future__ import annotations
 
+import contextlib
 import tempfile
+from collections.abc import AsyncIterator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,15 +29,26 @@ from slayer.core.models import (
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import (
+from slayer.live_schema.schema_drift import (
     IntrospectionUnavailable,
     WholeModelDelete,
     _collect_sql_table_diffs,
     _live_schema_for_datasource,
 )
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import disposable_engine
+
+
+@contextlib.asynccontextmanager
+async def _client(ds: DatasourceConfig) -> AsyncIterator[SlayerSQLClient]:
+    client = SlayerSQLClient(datasource=ds)
+    try:
+        yield client
+    finally:
+        await client.aclose()
+        client.close()
 
 
 @pytest.fixture
@@ -115,10 +128,10 @@ class TestSchemaDriftErrorWrap:
         with transaction(db_path) as conn:
             conn.execute("DROP TABLE orders")
 
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:sum", "name": "total"}],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)", "name": "total"}],
+        })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
         # Original error preserved as __cause__
@@ -148,10 +161,10 @@ class TestSchemaDriftErrorWrap:
         )
         await engine.storage.save_model(broken_model)
 
-        q = SlayerQuery(
-            source_model="broken",
-            measures=[{"formula": "amount:sum", "name": "total"}],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "broken",
+            "measures": [{"formula": "sum(amount)", "name": "total"}],
+        })
         # Original SQLAlchemy/DBAPI error should bubble up — NOT
         # SchemaDriftError. Assert on the original error class so a
         # regression that re-wraps as something else still fails here.
@@ -222,10 +235,10 @@ class TestSchemaDriftErrorWrap:
         with transaction(db_path) as conn:
             conn.execute("ALTER TABLE orders DROP COLUMN amount")
 
-        q = SlayerQuery(
-            source_model="orders_view",
-            measures=[{"formula": "amount:sum", "name": "total"}],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders_view",
+            "measures": [{"formula": "sum(amount)", "name": "total"}],
+        })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
         assert "orders_view" in exc.value.models
@@ -255,10 +268,10 @@ class TestSchemaDriftErrorWrap:
         with transaction(db_path) as conn:
             conn.execute("ALTER TABLE orders DROP COLUMN batch_tag")
 
-        q = SlayerQuery(
-            source_model="orders_by_batch",
-            measures=[{"formula": "amount:sum", "name": "total"}],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders_by_batch",
+            "measures": [{"formula": "sum(amount)", "name": "total"}],
+        })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
         assert "orders_by_batch" in exc.value.models
@@ -286,10 +299,10 @@ class TestSchemaDriftErrorWrap:
         with transaction(db_path) as conn:
             conn.execute("ALTER TABLE orders DROP COLUMN amount")
 
-        q = SlayerQuery(
-            source_model="orders_cte",
-            measures=[{"formula": "amount:sum", "name": "total"}],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders_cte",
+            "measures": [{"formula": "sum(amount)", "name": "total"}],
+        })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
         assert "orders_cte" in exc.value.models
@@ -312,10 +325,10 @@ class TestSchemaDriftErrorWrap:
         with transaction(db_path) as conn:
             conn.execute("DROP TABLE orders")
 
-        q = SlayerQuery(
-            source_model="orders_view",
-            measures=[{"formula": "amount:sum", "name": "total"}],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders_view",
+            "measures": [{"formula": "sum(amount)", "name": "total"}],
+        })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
         assert "orders_view" in exc.value.models
@@ -333,10 +346,10 @@ class TestSchemaDriftErrorWrap:
             raise RuntimeError("validate_models exploded")
 
         with patch.object(engine, "_validate_read_set", side_effect=_boom):
-            q = SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "amount:sum", "name": "total"}],
-            )
+            q = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(amount)", "name": "total"}],
+            })
             # The original DBAPI error should bubble up — NOT SchemaDriftError
             # and NOT the RuntimeError from the failing attribution.
             with pytest.raises(SQLAlchemyError) as exc:
@@ -356,10 +369,10 @@ class TestHealthyPathNoOverhead:
         ) as mock, patch.object(
             engine, "_validate_read_set", side_effect=AssertionError("called!")
         ) as scoped:
-            q = SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "amount:sum", "name": "total"}],
-            )
+            q = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "sum(amount)", "name": "total"}],
+            })
             resp = await engine.execute(q)
             assert resp.data is not None
             mock.assert_not_called()
@@ -375,11 +388,11 @@ class TestModelsTouchedComputation:
         with transaction(db_path) as conn:
             conn.execute("DROP TABLE customers")
 
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "amount:sum", "name": "total"}],
-            dimensions=["customers.region"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)", "name": "total"}],
+            "dimensions": ["customers.region"],
+        })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
         # Both source_model and the join target must be reported as touched.
@@ -399,14 +412,15 @@ class TestIntrospectionUnavailable:
                 c.commit()
         return DatasourceConfig(name="live", type="sqlite", database=db_path)
 
-    def test_live_schema_raises_when_every_table_fails(self) -> None:
+    async def test_live_schema_raises_when_every_table_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             ds = self._ds_with_one_table(tmpdir)
-            with patch(
-                "slayer.engine.schema_drift._introspect_one_table",
-                side_effect=PermissionError("403 Access Denied"),
-            ), pytest.raises(IntrospectionUnavailable):
-                _live_schema_for_datasource(datasource=ds)
+            async with _client(ds) as client:
+                with patch(
+                    "slayer.live_schema.schema_drift._introspect_one_table",
+                    side_effect=PermissionError("403 Access Denied"),
+                ), pytest.raises(IntrospectionUnavailable):
+                    await _live_schema_for_datasource(client=client, datasource=ds)
 
     async def test_drift_verdict_skipped_when_introspection_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -415,13 +429,15 @@ class TestIntrospectionUnavailable:
                 name="t", sql_table="t", data_source="live",
                 columns=[Column(name="id", sql="id", type=DataType.INT)],
             )
-            with patch(
-                "slayer.engine.schema_drift._introspect_one_table",
-                side_effect=PermissionError("403 Access Denied"),
-            ):
-                diffs = await _collect_sql_table_diffs(
-                    datasource=ds,
-                    sql_table_models=[model],
-                    available_in_ds={"t"},
-                )
+            async with _client(ds) as client:
+                with patch(
+                    "slayer.live_schema.schema_drift._introspect_one_table",
+                    side_effect=PermissionError("403 Access Denied"),
+                ):
+                    diffs = await _collect_sql_table_diffs(
+                        datasource=ds,
+                        client=client,
+                        sql_table_models=[model],
+                        available_in_ds={"t"},
+                    )
             assert diffs == {}, f"must not recommend deletes: {diffs}"

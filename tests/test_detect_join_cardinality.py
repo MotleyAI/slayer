@@ -7,14 +7,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from sqlglot import exp
 
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.errors import ForcedFilterError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
-from slayer.engine.cardinality import CardinalityVerdict, JoinCardinalityReport
-from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.client import SlayerSQLClient
+from slayer.engine.cardinality.inference import CardinalityVerdict, JoinCardinalityReport
+from slayer.engine.query_engine import SlayerQueryEngine, _physical_keys
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
 
@@ -484,22 +485,48 @@ class TestSessionPolicyAppliedToProfiling:
         assert f.detected is JoinCardinality.MANY_TO_ONE
 
 
+def _side_stats_sql(**kwargs) -> tuple[str, str]:
+    """The two profiling statements, rendered as ``_side_stats`` executes them."""
+    rows, dist = SlayerQueryEngine._side_stats_sql(**kwargs)
+    dialect = kwargs["sqlglot_name"]
+    return rows.sql(dialect=dialect), dist.sql(dialect=dialect)
+
+
 class TestSideStatsSqlShape:
     """The profiling SQL is built via sqlglot, not string concatenation."""
 
+    def test_keys_read_as_slayer_reads_them_on_snowflake(self) -> None:
+        model = SlayerModel(name="orders", data_source="ds", sql_table="orders", columns=[
+            Column(name="customer_id", type=DataType.INT), Column(name="exact", sql='"exact_key"', type=DataType.INT)])
+        rows_sql, _ = _side_stats_sql(
+            table="orders", key_cols=_physical_keys(model=model, keys=["customer_id", "exact"]),
+            sqlglot_name="snowflake",
+        )
+        assert "FROM orders" in rows_sql
+        assert "NOT customer_id IS NULL" in rows_sql
+        assert 'NOT "exact_key" IS NULL' in rows_sql
+
     def test_identifiers_are_quoted_and_nulls_excluded(self) -> None:
-        rows_sql, dist_sql = SlayerQueryEngine._side_stats_sql(
-            table="public.orders", key_cols=["customer_id"], sqlglot_name="postgres",
+        rows_sql, dist_sql = _side_stats_sql(
+            table="public.orders", key_cols=[exp.to_identifier("customer_id", quoted=True)], sqlglot_name="postgres",
         )
         for sql in (rows_sql, dist_sql):
             assert 'NOT "customer_id" IS NULL' in sql
-            assert '"public"."orders"' in sql
+            assert "public.orders" in sql
         assert "DISTINCT" in dist_sql
         assert "DISTINCT" not in rows_sql
 
+    def test_mixed_case_table_stays_quoted_on_postgres(self) -> None:
+        rows_sql, dist_sql = _side_stats_sql(
+            table="Sales.Orders", key_cols=[exp.to_identifier("id", quoted=True)], sqlglot_name="postgres",
+        )
+        for sql in (rows_sql, dist_sql):
+            assert 'FROM "Sales"."Orders"' in sql
+
     def test_composite_keys_exclude_nulls_on_every_column(self) -> None:
-        rows_sql, dist_sql = SlayerQueryEngine._side_stats_sql(
-            table="t", key_cols=["a", "b"], sqlglot_name="postgres",
+        rows_sql, dist_sql = _side_stats_sql(
+            table="t", key_cols=[exp.to_identifier("a", quoted=True), exp.to_identifier("b", quoted=True)],
+            sqlglot_name="postgres",
         )
         for sql in (rows_sql, dist_sql):
             assert 'NOT "a" IS NULL' in sql
@@ -507,8 +534,9 @@ class TestSideStatsSqlShape:
 
     def test_hostile_identifier_stays_a_single_identifier(self) -> None:
         payload = 'a"; DROP TABLE users; --'
-        rows_sql, _ = SlayerQueryEngine._side_stats_sql(
-            table="t", key_cols=[payload, "b"], sqlglot_name="postgres",
+        rows_sql, _ = _side_stats_sql(
+            table="t", key_cols=[exp.to_identifier(payload, quoted=True), exp.to_identifier("b", quoted=True)],
+            sqlglot_name="postgres",
         )
         # sqlglot doubles the embedded quote, so the payload cannot terminate
         # the identifier and start a new statement.

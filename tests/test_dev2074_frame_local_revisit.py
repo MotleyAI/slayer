@@ -15,9 +15,10 @@ from slayer.core.errors import CircularJoinPathError
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.join_walker import follow, resolved_terminal, walk, walk_cancelling
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import _build_stage_graph, _stage_referenced_columns_for_base
+from slayer.engine.extensions import QueryScope, query_scopes
+from slayer.live_schema.schema_drift import _refs_on_base, _stage_dependency_refs
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import disposable_engine, seeded_exec_engine
@@ -157,6 +158,10 @@ def _ab_models() -> list[SlayerModel]:
 
 def _all_models() -> list[SlayerModel]:
     return [_orders(), _customers(), *_cycle_models(), *_ab_models()]
+
+def _stage_scope(stage: SlayerQuery, models_by_name: dict) -> QueryScope:
+    return query_scopes([stage], models_by_ds={"ds": models_by_name}, data_source="ds")[0][0]
+
 
 
 class _Ctx:
@@ -327,17 +332,19 @@ class TestSavedMeasuresCompose:
         (total,), = ctx.oracle(
             "SELECT SUM(o2.amount) FROM orders o2 WHERE o2.customer_id IN (SELECT customer_id FROM orders)")
         assert _num(total) == 35.0
-        resp = await ctx.engine.execute(_q(dimensions=["id"], measures=["customer.order_total"]))
+        resp = await ctx.engine.execute(_q(
+            dimensions=["id"], measures=["customer.order_total"], to_many_handling="broadcast"))
         assert [_num(v) for (v,) in _rows(resp, "orders.customer.order_total")] == [35.0] * 3
         assert _broadcasts(resp) != []
 
-    async def test_unattributable_host_dimension_associates(self, ctx: _Ctx) -> None:
+    @pytest.mark.parametrize("mode", [None, "associate"])
+    async def test_unattributable_host_dimension_associates(self, ctx: _Ctx, mode: str | None) -> None:
         oracle = [(i, _num(v)) for i, v in ctx.oracle(
             "SELECT o.id, (SELECT SUM(o2.amount) FROM orders o2 WHERE o2.customer_id = o.customer_id) "
             "FROM orders o ORDER BY o.id")]
         assert oracle == [(11, 30.0), (12, 30.0), (21, 5.0)]
         resp = await ctx.engine.execute(_q(
-            dimensions=["id"], measures=["customer.order_total"], to_many_handling="associate",
+            dimensions=["id"], measures=["customer.order_total"], to_many_handling=mode,
             order=[{"column": "id", "direction": "asc"}]))
         assert [(i, _num(v)) for i, v in _rows(resp, "orders.id", "orders.customer.order_total")] == oracle
 
@@ -412,7 +419,7 @@ class TestComposedOccurrenceMetadata:
             f"SELECT CAST(lo.ordered_at AS VARCHAR), COUNT(*) {_ORDERS_THROUGH_LAST} "
             "GROUP BY lo.ordered_at ORDER BY lo.ordered_at DESC")
         assert [(str(t)[:7], n) for t, n in oracle] == [("2024-03", 1), ("2024-02", 2)]
-        td = TimeDimension(dimension=ColumnRef(name="customer.last_ordered_at"),
+        td = TimeDimension(dimension="customer.last_ordered_at",
                            granularity=TimeGranularity.MONTH)
         resp = await ctx.engine.execute(_q(
             time_dimensions=[td], measures=[{"formula": "count(*)", "name": "n"}],
@@ -460,16 +467,16 @@ class TestComposedWalk:
     def test_typed_revisit_attributes_to_nothing_in_drift(self) -> None:
         models = _by_name()
         stage = SlayerQuery.model_validate({"source_model": "orders", "dimensions": ["customer.last_order.amount"]})
-        graph = _build_stage_graph(stage=stage, stage_source_name="orders", models_by_name=models)
-        assert _stage_referenced_columns_for_base(stage=stage, base_name="orders", graph=graph) == set()
+        graph = _stage_scope(stage, models)
+        assert _refs_on_base(refs=_stage_dependency_refs(stage=stage, scope=graph), base_name="orders", scope=graph) == set()
 
     def test_composed_reference_attributes_to_its_declaring_model(self) -> None:
         models = _by_name()
         stage = SlayerQuery.model_validate({"source_model": "orders", "dimensions": ["customer.last_amount"]})
-        graph = _build_stage_graph(stage=stage, stage_source_name="orders", models_by_name=models)
-        assert _stage_referenced_columns_for_base(stage=stage, base_name="customers", graph=graph) == {
+        graph = _stage_scope(stage, models)
+        assert _refs_on_base(refs=_stage_dependency_refs(stage=stage, scope=graph), base_name="customers", scope=graph) == {
             "last_amount"}
-        assert _stage_referenced_columns_for_base(stage=stage, base_name="orders", graph=graph) == set()
+        assert _refs_on_base(refs=_stage_dependency_refs(stage=stage, scope=graph), base_name="orders", scope=graph) == set()
 
 
 class TestCancellationToTheNearestOccurrence:

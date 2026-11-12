@@ -30,12 +30,13 @@ from slayer.core.query import (
     SlayerQuery,
     TimeDimension,
 )
-from slayer.engine.ingestion import ingest_datasource, ingest_datasource_idempotent
+from slayer.live_schema import ingestion
+from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.profiling import refresh_all_table_backed_sampled
 from slayer.search.service import handle_edit_refresh
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.search.service import SearchService
-from slayer.sql import engine_factory
+from slayer.database import engine_factory
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -147,7 +148,7 @@ async def test_count_query(integration_env):
 
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
     )
     response = await engine.execute(query)
 
@@ -162,7 +163,7 @@ async def test_sum_measure(integration_env):
 
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="total_amount:sum")],
+        measures=[ModelMeasure(formula="sum(total_amount)")],
     )
     response = await engine.execute(query)
 
@@ -170,43 +171,24 @@ async def test_sum_measure(integration_env):
     assert response.data[0]["orders.total_amount_sum"] == pytest.approx(750.0)
 
 
-async def test_functional_aggregation_parity(integration_env):
-    """sum(total_amount) returns the same rows as total_amount:sum (DEV-1826)."""
-    engine = integration_env
-
-    colon = await engine.execute(SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="total_amount:sum")],
-    ))
-    func = await engine.execute(SlayerQuery(
+async def test_functional_aggregation(integration_env):
+    func = await integration_env.execute(SlayerQuery(
         source_model="orders",
         measures=[ModelMeasure(formula="sum(total_amount)")],
     ))
-
     assert func.data[0]["orders.total_amount_sum"] == pytest.approx(750.0)
-    assert func.data == colon.data
-    assert list(func.columns) == list(colon.columns)
 
 
-async def test_functional_star_count_parity(integration_env):
-    """count(*) returns the same rows as *:count (DEV-1826)."""
-    engine = integration_env
-
-    colon = await engine.execute(SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="*:count")],
-    ))
-    func = await engine.execute(SlayerQuery(
+async def test_functional_star_count(integration_env):
+    func = await integration_env.execute(SlayerQuery(
         source_model="orders",
         measures=[ModelMeasure(formula="count(*)")],
     ))
-
     assert func.data[0]["orders._count"] == 6
-    assert func.data == colon.data
 
 
 async def test_expression_aggregation_executes(integration_env):
-    """sum(amount + amount) aggregates the row-level expression (DEV-1826)."""
+    """sum(amount + amount) aggregates the row-level expression."""
     engine = integration_env
 
     response = await engine.execute(SlayerQuery(
@@ -224,7 +206,7 @@ async def test_dimensions_groupby(integration_env):
 
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
         dimensions=[ColumnRef(name="status")],
     )
     response = await engine.execute(query)
@@ -242,7 +224,7 @@ async def test_filter_equals(integration_env):
 
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
         filters=["status == 'completed'"],
     )
     response = await engine.execute(query)
@@ -257,7 +239,7 @@ async def test_filter_gt(integration_env):
 
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
         filters=["amount > 50"],
     )
     response = await engine.execute(query)
@@ -268,7 +250,7 @@ async def test_filter_gt(integration_env):
 
 
 async def test_filter_in_tuple(integration_env):
-    """DEV-1475: ``IN`` filter with literal-tuple RHS.
+    """``IN`` filter with literal-tuple RHS.
 
     Smoke test for the typed-pipeline ``InKey`` render path against a
     real SQLite engine. Orders with status in ('completed', 'pending')
@@ -278,7 +260,7 @@ async def test_filter_in_tuple(integration_env):
 
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
         filters=["status in ('completed', 'pending')"],
     )
     response = await engine.execute(query)
@@ -288,7 +270,7 @@ async def test_filter_in_tuple(integration_env):
 
 
 async def test_filter_not_in_tuple(integration_env):
-    """DEV-1475: ``NOT IN`` filter with literal-tuple RHS.
+    """``NOT IN`` filter with literal-tuple RHS.
 
     Inverse smoke test: status NOT IN ('cancelled') matches the same 5
     rows.
@@ -297,7 +279,7 @@ async def test_filter_not_in_tuple(integration_env):
 
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
         filters=["status not in ('cancelled',)"],
     )
     response = await engine.execute(query)
@@ -312,7 +294,7 @@ async def test_order_by(integration_env):
 
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
         dimensions=[ColumnRef(name="status")],
         order=[
             OrderItem(column=ColumnRef(name="count"), direction="desc"),
@@ -333,7 +315,7 @@ async def test_limit(integration_env):
 
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
         dimensions=[ColumnRef(name="status")],
         order=[
             OrderItem(column=ColumnRef(name="count"), direction="desc"),
@@ -352,8 +334,8 @@ async def test_multiple_measures(integration_env):
     query = SlayerQuery(
         source_model="orders",
         measures=[
-            ModelMeasure(formula="*:count"),
-            ModelMeasure(formula="total_amount:sum"),
+            ModelMeasure(formula="count(*)"),
+            ModelMeasure(formula="sum(total_amount)"),
         ],
     )
     response = await engine.execute(query)
@@ -371,12 +353,12 @@ async def test_cumsum_change_identity(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
-            ModelMeasure(formula="*:count"),
-            ModelMeasure(formula="cumsum(change(*:count))", name="cumsum_change"),
+            ModelMeasure(formula="count(*)"),
+            ModelMeasure(formula="cumsum(change(count(*)))", name="cumsum_change"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -402,13 +384,13 @@ async def test_nested_cumsum_of_cumsum(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
-            ModelMeasure(formula="*:count"),
-            ModelMeasure(formula="cumsum(*:count)", name="cs"),
-            ModelMeasure(formula="cumsum(cumsum(*:count))", name="cs_cs"),
+            ModelMeasure(formula="count(*)"),
+            ModelMeasure(formula="cumsum(count(*))", name="cs"),
+            ModelMeasure(formula="cumsum(cumsum(count(*)))", name="cs_cs"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -429,12 +411,12 @@ async def test_consecutive_periods_counts_trailing_true_run(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
-            ModelMeasure(formula="total_amount:sum"),
-            ModelMeasure(formula="consecutive_periods(total_amount:sum > 200)", name="positive_run"),
+            ModelMeasure(formula="sum(total_amount)"),
+            ModelMeasure(formula="consecutive_periods(sum(total_amount) > 200)", name="positive_run"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -457,12 +439,12 @@ async def test_consecutive_periods_with_non_boolean_argument(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
-            ModelMeasure(formula="total_amount:sum"),
-            ModelMeasure(formula="consecutive_periods(total_amount:sum)", name="any_revenue_run"),
+            ModelMeasure(formula="sum(total_amount)"),
+            ModelMeasure(formula="consecutive_periods(sum(total_amount))", name="any_revenue_run"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -482,12 +464,12 @@ async def test_consecutive_periods_partitions_by_dimension(integration_env):
         source_model="orders",
         dimensions=[ColumnRef(name="status")],
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
-            ModelMeasure(formula="*:count"),
-            ModelMeasure(formula="consecutive_periods(*:count > 0)", name="status_run"),
+            ModelMeasure(formula="count(*)"),
+            ModelMeasure(formula="consecutive_periods(count(*) > 0)", name="status_run"),
         ],
         order=[
             OrderItem(column=ColumnRef(name="status"), direction="asc"),
@@ -513,11 +495,11 @@ async def test_consecutive_periods_comparison_is_selectable(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
-            ModelMeasure(formula="consecutive_periods(total_amount:sum > 0) >= 2", name="has_two_month_run"),
+            ModelMeasure(formula="consecutive_periods(sum(total_amount) > 0) >= 2", name="has_two_month_run"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -533,11 +515,11 @@ async def test_consecutive_periods_comparison_is_filterable(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="total_amount:sum")],
-        filters=["consecutive_periods(total_amount:sum > 0) >= 2"],
+        measures=[ModelMeasure(formula="sum(total_amount)")],
+        filters=["consecutive_periods(sum(total_amount) > 0) >= 2"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
@@ -553,9 +535,9 @@ async def test_arithmetic_expression(integration_env):
     query = SlayerQuery(
         source_model="orders",
         measures=[
-            ModelMeasure(formula="*:count"),
-            ModelMeasure(formula="total_amount:sum"),
-            ModelMeasure(formula="total_amount:sum / *:count", name="avg_amount"),
+            ModelMeasure(formula="count(*)"),
+            ModelMeasure(formula="sum(total_amount)"),
+            ModelMeasure(formula="sum(total_amount) / count(*)", name="avg_amount"),
         ],
     )
     response = await engine.execute(query)
@@ -579,14 +561,14 @@ async def test_time_shift_default_granularity_calendar(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
-            ModelMeasure(formula="total_amount:sum"),
-            ModelMeasure(formula="time_shift(total_amount:sum, -1)", name="prev"),
-            ModelMeasure(formula="time_shift(total_amount:sum, -2)", name="prev2"),
-            ModelMeasure(formula="time_shift(total_amount:sum, 1)", name="next"),
+            ModelMeasure(formula="sum(total_amount)"),
+            ModelMeasure(formula="time_shift(sum(total_amount), -1)", name="prev"),
+            ModelMeasure(formula="time_shift(sum(total_amount), -2)", name="prev2"),
+            ModelMeasure(formula="time_shift(sum(total_amount), 1)", name="next"),
         ],
         filters=["status == 'completed'"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
@@ -618,12 +600,12 @@ async def test_time_shift_calendar_based(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
-            ModelMeasure(formula="total_amount:sum"),
-            ModelMeasure(formula="time_shift(total_amount:sum, -1, 'month')", name="prev_month"),
+            ModelMeasure(formula="sum(total_amount)"),
+            ModelMeasure(formula="time_shift(sum(total_amount), -1, 'month')", name="prev_month"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -641,7 +623,7 @@ async def test_time_shift_calendar_based(integration_env):
 
 
 async def test_multiple_time_shifts_in_one_query(integration_env):
-    """DEV-1692: two arithmetic-wrapped time_shifts in one query.
+    """Two arithmetic-wrapped time_shifts in one query.
 
     Used to fail outright with a duplicate-CTE error; the offsets are kept
     distinct here (-1 vs -2) so a regression that re-collapses them onto one
@@ -652,17 +634,17 @@ async def test_multiple_time_shifts_in_one_query(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
-            ModelMeasure(formula="total_amount:sum"),
+            ModelMeasure(formula="sum(total_amount)"),
             ModelMeasure(
-                formula="total_amount:sum - time_shift(total_amount:sum, -1, 'month')",
+                formula="sum(total_amount) - time_shift(sum(total_amount), -1, 'month')",
                 name="growth_1m",
             ),
             ModelMeasure(
-                formula="total_amount:sum - time_shift(total_amount:sum, -2, 'month')",
+                formula="sum(total_amount) - time_shift(sum(total_amount), -2, 'month')",
                 name="growth_2m",
             ),
         ],
@@ -694,13 +676,13 @@ async def test_time_shift_with_date_range(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2025-03-01", "2025-03-31"],
         )],
         measures=[
-            ModelMeasure(formula="total_amount:sum"),
-            ModelMeasure(formula="time_shift(total_amount:sum, -1, 'month')", name="prev_month"),
+            ModelMeasure(formula="sum(total_amount)"),
+            ModelMeasure(formula="time_shift(sum(total_amount), -1, 'month')", name="prev_month"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -721,13 +703,13 @@ async def test_change_with_date_range(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2025-03-01", "2025-03-31"],
         )],
         measures=[
-            ModelMeasure(formula="total_amount:sum"),
-            ModelMeasure(formula="change(total_amount:sum)", name="amount_change"),
+            ModelMeasure(formula="sum(total_amount)"),
+            ModelMeasure(formula="change(sum(total_amount))", name="amount_change"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -745,13 +727,13 @@ async def test_change_pct_with_date_range(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2025-03-01", "2025-03-31"],
         )],
         measures=[
-            ModelMeasure(formula="total_amount:sum"),
-            ModelMeasure(formula="change_pct(total_amount:sum)", name="pct"),
+            ModelMeasure(formula="sum(total_amount)"),
+            ModelMeasure(formula="change_pct(sum(total_amount))", name="pct"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -770,14 +752,14 @@ async def test_multiple_date_range_shifts(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2025-02-01", "2025-02-28"],
         )],
         measures=[
-            ModelMeasure(formula="total_amount:sum"),
-            ModelMeasure(formula="time_shift(total_amount:sum, -1, 'month')", name="prev"),
-            ModelMeasure(formula="time_shift(total_amount:sum, 1, 'month')", name="next"),
+            ModelMeasure(formula="sum(total_amount)"),
+            ModelMeasure(formula="time_shift(sum(total_amount), -1, 'month')", name="prev"),
+            ModelMeasure(formula="time_shift(sum(total_amount), 1, 'month')", name="next"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -799,13 +781,13 @@ async def test_forward_row_shift_with_date_range(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2025-02-01", "2025-02-28"],
         )],
         measures=[
-            ModelMeasure(formula="total_amount:sum"),
-            ModelMeasure(formula="time_shift(total_amount:sum, 1)", name="next_period"),
+            ModelMeasure(formula="sum(total_amount)"),
+            ModelMeasure(formula="time_shift(sum(total_amount), 1)", name="next_period"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -827,12 +809,12 @@ async def test_post_filter_on_change(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
-            ModelMeasure(formula="total_amount:sum"),
-            ModelMeasure(formula="change(total_amount:sum)", name="amount_change"),
+            ModelMeasure(formula="sum(total_amount)"),
+            ModelMeasure(formula="change(sum(total_amount))", name="amount_change"),
         ],
         filters=["amount_change < 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
@@ -859,12 +841,12 @@ async def test_post_filter_with_base_filter(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
-            ModelMeasure(formula="total_amount:sum"),
-            ModelMeasure(formula="change(total_amount:sum)", name="amount_change"),
+            ModelMeasure(formula="sum(total_amount)"),
+            ModelMeasure(formula="change(sum(total_amount))", name="amount_change"),
         ],
         filters=["status != 'cancelled'", "amount_change > 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
@@ -886,11 +868,11 @@ async def test_inline_transform_filter(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="total_amount:sum")],
-        filters=["change(total_amount:sum) < 0"],
+        measures=[ModelMeasure(formula="sum(total_amount)")],
+        filters=["change(sum(total_amount)) < 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
@@ -910,11 +892,11 @@ async def test_inline_last_change_filter(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="total_amount:sum")],
-        filters=["last(change(total_amount:sum)) > 0"],
+        measures=[ModelMeasure(formula="sum(total_amount)")],
+        filters=["last(change(sum(total_amount))) > 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
@@ -926,11 +908,11 @@ async def test_inline_last_change_filter(integration_env):
     query2 = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="total_amount:sum")],
-        filters=["last(change(total_amount:sum)) < 0"],
+        measures=[ModelMeasure(formula="sum(total_amount)")],
+        filters=["last(change(sum(total_amount))) < 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
     response2 = await engine.execute(query2)
@@ -948,11 +930,11 @@ async def test_arithmetic_transform_filter(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="total_amount:sum")],
-        filters=["change(total_amount:sum) / total_amount:sum > 0"],
+        measures=[ModelMeasure(formula="sum(total_amount)")],
+        filters=["change(sum(total_amount)) / sum(total_amount) > 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
@@ -973,11 +955,11 @@ async def test_transform_on_filter_rhs(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="total_amount:sum")],
-        filters=["total_amount:sum > time_shift(total_amount:sum, -1)"],
+        measures=[ModelMeasure(formula="sum(total_amount)")],
+        filters=["sum(total_amount) > time_shift(sum(total_amount), -1)"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
@@ -997,12 +979,12 @@ async def test_last_measure_type(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
-            ModelMeasure(formula="total_amount:sum"),
-            ModelMeasure(formula="latest_amount:last"),
+            ModelMeasure(formula="sum(total_amount)"),
+            ModelMeasure(formula="last(latest_amount)"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -1027,12 +1009,12 @@ async def test_last_function(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
-            ModelMeasure(formula="total_amount:sum"),
-            ModelMeasure(formula="last(total_amount:sum)", name="latest"),
+            ModelMeasure(formula="sum(total_amount)"),
+            ModelMeasure(formula="last(sum(total_amount))", name="latest"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -1054,7 +1036,7 @@ async def test_having_filter(integration_env):
     query = SlayerQuery(
         source_model="orders",
         dimensions=[ColumnRef(name="status")],
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
         filters=["_count > 1"],
         order=[OrderItem(column=ColumnRef(name="_count"), direction="desc")],
     )
@@ -1076,7 +1058,7 @@ async def test_having_filter_with_sum(integration_env):
     query = SlayerQuery(
         source_model="orders",
         dimensions=[ColumnRef(name="status")],
-        measures=[ModelMeasure(formula="total_amount:sum")],
+        measures=[ModelMeasure(formula="sum(total_amount)")],
         filters=["total_amount_sum > 100"],
         order=[OrderItem(column=ColumnRef(name="total_amount_sum"), direction="desc")],
     )
@@ -1095,10 +1077,10 @@ async def test_filter_mixing_measure_and_row_conjuncts_splits(integration_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
         filters=["_count > 1 and status == 'completed'"],
     )
     response = await engine.execute(query)
@@ -1190,12 +1172,12 @@ async def test_last_with_joined_time_dimension(joined_time_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="stores.opened_at"),
+            dimension="stores.opened_at",
             granularity=TimeGranularity.YEAR,
         )],
         measures=[
-            ModelMeasure(formula="total_amount:sum"),
-            ModelMeasure(formula="latest_amount:last"),
+            ModelMeasure(formula="sum(total_amount)"),
+            ModelMeasure(formula="last(latest_amount)"),
         ],
         order=[OrderItem(column=ColumnRef(name="stores.opened_at"), direction="asc")],
     )
@@ -1219,12 +1201,12 @@ async def test_last_with_multihop_joined_time_dimension(joined_time_env):
     query = SlayerQuery(
         source_model="order_items",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="orders.created_at"),
+            dimension="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
-            ModelMeasure(formula="qty_sum:sum"),
-            ModelMeasure(formula="latest_qty:last"),
+            ModelMeasure(formula="sum(qty_sum)"),
+            ModelMeasure(formula="last(latest_qty)"),
         ],
         order=[OrderItem(column=ColumnRef(name="orders.created_at"), direction="asc")],
     )
@@ -1298,34 +1280,29 @@ async def test_cross_model_measure_monthly(cross_model_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            dimension="created_at", granularity=TimeGranularity.MONTH,
         )],
         measures=[
-            ModelMeasure(formula="*:count"),
-            ModelMeasure(formula="customers.avg_score:avg"),
+            ModelMeasure(formula="count(*)"),
+            ModelMeasure(formula="avg(customers.avg_score)"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
     assert response.row_count == 3
-    # customers model has no join back to orders, so the time dimension is
-    # unreachable from the re-rooted CTE → dropped → scalar AVG CROSS JOINed.
-    # Global avg: (90 + 60 + 80) / 3 = 76.67
-    global_avg = pytest.approx((90.0 + 60.0 + 80.0) / 3)
-    assert response.data[0]["orders.customers.avg_score_avg"] == global_avg
-    assert response.data[1]["orders.customers.avg_score_avg"] == global_avg
-    assert response.data[2]["orders.customers.avg_score_avg"] == global_avg
+    # Associated: each month averages the distinct customers its orders reach (Mar: Charlie, Alice).
+    assert [r["orders.customers.avg_score_avg"] for r in response.data] == pytest.approx([90.0, 60.0, 85.0])
 
 
 async def test_cross_model_measure_no_join_raises(cross_model_env):
-    """An unreachable cross-model measure target is route-aware-rejected (DEV-1856):
+    """An unreachable cross-model measure target is route-aware-rejected:
     ``UnresolvableDimensionJoinError`` (a ``ValueError``) with no route to target."""
     engine = cross_model_env
 
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="nonexistent.some_measure:sum")],
+        measures=[ModelMeasure(formula="count(*)"), ModelMeasure(formula="sum(nonexistent.some_measure)")],
     )
     with pytest.raises(UnresolvableDimensionJoinError, match="no route to target"):
         await engine.execute(query)
@@ -1417,7 +1394,7 @@ Column(name="total_policy_amount", sql="policy_amount", type=DataType.DOUBLE)
     # Q9-style query: cross-model measure with filters on target's join graph
     query = SlayerQuery(
         source_model="policy",
-        measures=[ModelMeasure(formula="policy_amount.total_policy_amount:sum")],
+        measures=[ModelMeasure(formula="sum(policy_amount.total_policy_amount)")],
         dimensions=[ColumnRef(name="policy_number")],
         filters=[
             "agreement_party_role.party_role_code = 'PH'",
@@ -1447,22 +1424,18 @@ async def test_transform_on_cross_model(cross_model_env):
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            dimension="created_at", granularity=TimeGranularity.MONTH,
         )],
         measures=[
-            ModelMeasure(formula="customers.avg_score:avg"),
-            ModelMeasure(formula="cumsum(customers.avg_score:avg)", name="running"),
+            ModelMeasure(formula="avg(customers.avg_score)"),
+            ModelMeasure(formula="cumsum(avg(customers.avg_score))", name="running"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
-    # customers has no join back to orders → time dim dropped → scalar avg
-    # CROSS JOINed. cumsum of a constant = constant * row_number.
-    global_avg = (90.0 + 60.0 + 80.0) / 3
-    assert response.data[0]["orders.running"] == pytest.approx(global_avg)
-    assert response.data[1]["orders.running"] == pytest.approx(global_avg * 2)
-    assert response.data[2]["orders.running"] == pytest.approx(global_avg * 3)
+    # cumsum over the associated monthly averages 90, 60, 85.
+    assert [r["orders.running"] for r in response.data] == pytest.approx([90.0, 150.0, 235.0])
 
 
 # ---------------------------------------------------------------------------
@@ -1478,13 +1451,13 @@ async def test_query_backed_model_count(integration_env):
         name="monthly",
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            dimension="created_at", granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total_amount:sum")],
+        measures=[ModelMeasure(formula="count(*)"), ModelMeasure(formula="sum(total_amount)")],
     )
 
     # Outer: count how many months exist (references "monthly" by name)
-    outer = SlayerQuery(source_model="monthly", measures=[ModelMeasure(formula="*:count")])
+    outer = SlayerQuery(source_model="monthly", measures=[ModelMeasure(formula="count(*)")])
     response = await engine.execute(query=[inner, outer])
 
     assert response.row_count == 1
@@ -1499,12 +1472,12 @@ async def test_query_backed_model_aggregate(integration_env):
         name="monthly",
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            dimension="created_at", granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="total_amount:sum")],
+        measures=[ModelMeasure(formula="sum(total_amount)")],
     )
 
-    outer = SlayerQuery(source_model="monthly", measures=[ModelMeasure(formula="total_amount_sum:sum")])
+    outer = SlayerQuery(source_model="monthly", measures=[ModelMeasure(formula="sum(total_amount_sum)")])
     response = await engine.execute(query=[inner, outer])
 
     assert response.row_count == 1
@@ -1519,9 +1492,9 @@ async def test_create_model_from_query(integration_env):
     source_query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            dimension="created_at", granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total_amount:sum")],
+        measures=[ModelMeasure(formula="count(*)"), ModelMeasure(formula="sum(total_amount)")],
     )
     saved = await engine.create_model_from_query(
         query=source_query, name="monthly_summary",
@@ -1536,13 +1509,13 @@ async def test_create_model_from_query(integration_env):
 
     # Query the saved model by name
     result = await engine.execute(query=SlayerQuery(
-        source_model="monthly_summary", measures=[ModelMeasure(formula="*:count")],
+        source_model="monthly_summary", measures=[ModelMeasure(formula="count(*)")],
     ))
     assert result.data[0]["monthly_summary._count"] == 3
 
     # Re-aggregate over saved model
     result2 = await engine.execute(query=SlayerQuery(
-        source_model="monthly_summary", measures=[ModelMeasure(formula="total_amount_sum:sum")],
+        source_model="monthly_summary", measures=[ModelMeasure(formula="sum(total_amount_sum)")],
     ))
     assert result2.data[0]["monthly_summary.total_amount_sum_sum"] == pytest.approx(750.0)
 
@@ -1556,23 +1529,24 @@ async def test_query_list_with_joins(cross_model_env):
         name="customer_scores",
         source_model="customers",
         dimensions=[ColumnRef(name="id")],
-        measures=[ModelMeasure(formula="avg_score:avg")],
+        measures=[ModelMeasure(formula="avg(avg_score)")],
     )
 
     # Main query: monthly orders joined to customer_scores
     # In the virtual model, inner measures become dimensions with auto-generated
     # SUM/AVG measures. Use avg_score_avg to re-average the inner avg_score.
     main = SlayerQuery(
-        source_model=ModelExtension.model_validate({
+        source_model="orders",
+        extensions=[ModelExtension.model_validate({
             "source_name": "orders",
             "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}],
-        }),
+        })],
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            dimension="created_at", granularity=TimeGranularity.MONTH,
         )],
         measures=[
-            ModelMeasure(formula="*:count"),
-            ModelMeasure(formula="customer_scores.avg_score_avg:avg"),
+            ModelMeasure(formula="count(*)"),
+            ModelMeasure(formula="avg(customer_scores.avg_score_avg)"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -1580,17 +1554,14 @@ async def test_query_list_with_joins(cross_model_env):
     response = await engine.execute(query=[sub, main])
 
     assert response.row_count == 3
-    # customer_scores has no join back to orders → time dim dropped → scalar avg
-    global_avg = pytest.approx((90.0 + 60.0 + 80.0) / 3)
-    assert response.data[0]["orders.customer_scores.avg_score_avg_avg"] == global_avg
-    assert response.data[1]["orders.customer_scores.avg_score_avg_avg"] == global_avg
-    assert response.data[2]["orders.customer_scores.avg_score_avg_avg"] == global_avg
+    # Associated: each month averages the distinct customer_scores rows its orders reach.
+    assert [r["orders.customer_scores.avg_score_avg_avg"] for r in response.data] == pytest.approx([90.0, 60.0, 85.0])
 
 
 async def test_sibling_stage_joins_dag(cross_model_env):
     """3-stage DAG: a non-final named stage joins a prior named stage.
 
-    Regression for DEV-1340. ``kpis`` aggregates per customer; ``tagged``
+    ``kpis`` aggregates per customer; ``tagged``
     is a non-final named stage whose source is ``customers`` extended with
     a join back to ``kpis`` and pulls the kpis sum in as a join-traversed
     dimension; the final stage re-aggregates ``tagged`` across the
@@ -1606,21 +1577,22 @@ async def test_sibling_stage_joins_dag(cross_model_env):
             name="kpis",
             source_model="orders",
             dimensions=[ColumnRef(name="customer_id")],
-            measures=[ModelMeasure(formula="total_amount:sum")],
+            measures=[ModelMeasure(formula="sum(total_amount)")],
         ),
         SlayerQuery(
             name="tagged",
-            source_model=ModelExtension.model_validate({
+            source_model="customers",
+            extensions=[ModelExtension.model_validate({
                 "source_name": "customers",
                 "joins": [{"target_model": "kpis", "join_pairs": [["id", "customer_id"]]}],
-            }),
+            })],
             # ``kpis.total_amount_sum`` is a join-traversed dimension, so
             # each customer row carries their own kpis sum.
             dimensions=[ColumnRef(name="name"), ColumnRef(name="kpis.total_amount_sum")],
         ),
         SlayerQuery(
             source_model="tagged",
-            measures=[ModelMeasure(formula="kpis__total_amount_sum:max")],
+            measures=[ModelMeasure(formula="max(kpis__total_amount_sum)")],
         ),
     ]
     response = await engine.execute(query=queries)
@@ -1642,12 +1614,13 @@ async def test_sql_dimension_via_model_extension(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model=ModelExtension.model_validate({
+        source_model="orders",
+        extensions=[ModelExtension.model_validate({
             "source_name": "orders",
             "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
-        }),
+        })],
         dimensions=[ColumnRef(name="tier")],
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
     )
     response = await engine.execute(query)
 
@@ -1661,12 +1634,13 @@ async def test_sql_dimension_with_regular(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model=ModelExtension.model_validate({
+        source_model="orders",
+        extensions=[ModelExtension.model_validate({
             "source_name": "orders",
             "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
-        }),
+        })],
         dimensions=[ColumnRef(name="status"), ColumnRef(name="tier")],
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
     )
     response = await engine.execute(query)
 
@@ -1685,20 +1659,21 @@ async def test_formula_dimension_via_query_list(integration_env):
         name="monthly",
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            dimension="created_at", granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="total_amount:sum")],
+        measures=[ModelMeasure(formula="sum(total_amount)")],
     )
 
     # Outer: group by amount tier via ModelExtension on the inner query's result
     outer = SlayerQuery(
-        source_model=ModelExtension.model_validate({
+        source_model="monthly",
+        extensions=[ModelExtension.model_validate({
             "source_name": "monthly",
             "columns": [{"name": "amount_tier",
                          "sql": "CASE WHEN total_amount_sum > 200 THEN 'high' ELSE 'low' END"}],
-        }),
+        })],
         dimensions=[ColumnRef(name="amount_tier")],
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
     )
 
     response = await engine.execute(query=[inner, outer])
@@ -1710,13 +1685,13 @@ async def test_formula_dimension_via_query_list(integration_env):
 
 
 async def test_multistage_renamed_measure_returns_non_null(integration_env):
-    """DEV-1335 canary. A 2-stage query-backed model where the inner stage
+    """A 2-stage query-backed model where the inner stage
     renames its aggregated measure via ``name=`` must return non-NULL values
     for the renamed column when executed end-to-end.
 
     Before the fix: the inner-stage wrap silently emits ``amount_sum``
     (canonical) instead of the user-supplied ``rev``, so the outer stage's
-    ``rev:sum`` either errors at SQL-gen time or surfaces NULLs in the result
+    ``sum(rev)`` either errors at SQL-gen time or surfaces NULLs in the result
     column. After the fix: the inner stage exposes ``rev`` and the outer
     stage's sum equals the precomputed total.
     """
@@ -1730,11 +1705,11 @@ async def test_multistage_renamed_measure_returns_non_null(integration_env):
                 name="raw",
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="amount:sum", name="rev")],
+                measures=[ModelMeasure(formula="sum(amount)", name="rev")],
             ),
             SlayerQuery(
                 source_model="raw",
-                measures=[ModelMeasure(formula="rev:sum")],
+                measures=[ModelMeasure(formula="sum(rev)")],
             ),
         ],
     )
@@ -1761,16 +1736,16 @@ async def test_multistage_renamed_measure_returns_non_null(integration_env):
 
 async def test_circular_query_reference_raises(integration_env):
     """Mutually-referential named queries should error clearly. The
-    runtime list path auto-sorts via Kahn's algorithm (DEV-1340 follow-up);
+    runtime list path auto-sorts via Kahn's algorithm;
     when two stages reference each other neither can ever drop to in-degree
     zero, so the cycle surfaces as a ``ValueError`` naming both stages and
     explaining the rule rather than a generic "Circular reference" trace.
     """
     engine = integration_env
 
-    q1 = SlayerQuery(name="a", source_model="b", measures=[ModelMeasure(formula="*:count")])
-    q2 = SlayerQuery(name="b", source_model="a", measures=[ModelMeasure(formula="*:count")])
-    main = SlayerQuery(source_model="a", measures=[ModelMeasure(formula="*:count")])
+    q1 = SlayerQuery(name="a", source_model="b", measures=[ModelMeasure(formula="count(*)")])
+    q2 = SlayerQuery(name="b", source_model="a", measures=[ModelMeasure(formula="count(*)")])
+    main = SlayerQuery(source_model="a", measures=[ModelMeasure(formula="count(*)")])
     with pytest.raises(ValueError, match=r"[Cc]ycle in query list|cyclic dependency"):
         await engine.execute(query=[q1, q2, main])
 
@@ -1814,12 +1789,12 @@ def _b_a_unique_field_query(hop1: str, hop2: str) -> SlayerQuery:
     return SlayerQuery(
         source_model="a",
         dimensions=[ColumnRef(name=f"{hop1}.{hop2}.unique_b_field")],
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
     )
 
 
 async def test_unnamed_parallel_edges_fail_closed(tmp_path):
-    """Two unnamed edges between the same pair make the hop ambiguous (DEV-1853)."""
+    """Two unnamed edges between the same pair make the hop ambiguous."""
     engine = await _mutual_join_engine(tmp_path)
     query = _b_a_unique_field_query("b", "a")
     with pytest.raises(AmbiguousJoinPathError, match="2 edges"):
@@ -1878,7 +1853,7 @@ Column(name="total", sql="amount", type=DataType.DOUBLE)
     result = await engine.execute(SlayerQuery(
         source_model="orders",
         dimensions=[ColumnRef(name="customers.name")],
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
     ))
 
     names = {r["orders.customers.name"] for r in result.data}
@@ -1933,11 +1908,11 @@ async def diamond_env(tmp_path):
     storage = YAMLStorage(base_dir=str(tmp_path / "slayer_data"))
     ds = DatasourceConfig(name="diamond_db", type="sqlite", database=str(db_path))
     await storage.save_datasource(ds)
-    models = ingest_datasource(datasource=ds)
+    engine = SlayerQueryEngine(storage=storage)
+    models = await ingestion.ingest_datasource_async(ds, client=engine.client_for(ds))
     for m in models:
         await storage.save_model(m)
 
-    engine = SlayerQueryEngine(storage=storage)
     return engine, storage
 
 
@@ -1960,7 +1935,7 @@ async def test_diamond_joins_both_paths(diamond_env):
             ColumnRef(name="customers.regions.name"),
             ColumnRef(name="warehouses.regions.name"),
         ],
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
     ))
 
     # Should have 4 rows: (US, US), (US, Asia), (EU, US), (EU, Asia)
@@ -1993,7 +1968,7 @@ async def test_query_filter_on_joined_dimension(diamond_env):
 
     result = await engine.execute(query=SlayerQuery(
         source_model="shipments",
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
         filters=["customers.regions.name == 'US'"],
     ))
 
@@ -2009,7 +1984,7 @@ async def test_diamond_joins_single_path(diamond_env):
     result = await engine.execute(query=SlayerQuery(
         source_model="shipments",
         dimensions=[ColumnRef(name="customers.regions.name")],
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
     ))
 
     by_region = {r["shipments.customers.regions.name"]: r["shipments._count"] for r in result.data}
@@ -2037,8 +2012,8 @@ async def test_filtered_measure_sum(integration_env):
     result = await engine.execute(query=SlayerQuery(
         source_model="orders",
         measures=[
-            ModelMeasure(formula="total_amount:sum"),
-            ModelMeasure(formula="completed_revenue:sum"),
+            ModelMeasure(formula="sum(total_amount)"),
+            ModelMeasure(formula="sum(completed_revenue)"),
         ],
     ))
     assert result.row_count == 1
@@ -2063,8 +2038,8 @@ async def test_filtered_measure_count(integration_env):
     result = await engine.execute(query=SlayerQuery(
         source_model="orders",
         measures=[
-            ModelMeasure(formula="*:count"),
-            ModelMeasure(formula="completed_count:count"),
+            ModelMeasure(formula="count(*)"),
+            ModelMeasure(formula="count(completed_count)"),
         ],
     ))
     row = result.data[0]
@@ -2087,7 +2062,7 @@ async def test_filtered_measure_with_dimensions(integration_env):
 
     result = await engine.execute(query=SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="completed_revenue:sum")],
+        measures=[ModelMeasure(formula="sum(completed_revenue)")],
         dimensions=[ColumnRef(name="status")],
     ))
     # Completed status row should have a value; others should be NULL
@@ -2122,13 +2097,13 @@ async def test_filtered_last_picks_correct_row(integration_env):
         source_model="orders",
         time_dimensions=[
             TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             ),
         ],
         measures=[
-            ModelMeasure(formula="completed_latest:last"),
-            ModelMeasure(formula="latest_amount:last"),
+            ModelMeasure(formula="last(completed_latest)"),
+            ModelMeasure(formula="last(latest_amount)"),
         ],
     ))
     rows_by_month = {row["orders.created_at"]: row for row in result.data}
@@ -2164,11 +2139,11 @@ async def test_time_dimension_label_fallback(integration_env):
         source_model="orders",
         time_dimensions=[
             TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             ),
         ],
-        measures=[ModelMeasure(formula="total_amount:sum")],
+        measures=[ModelMeasure(formula="sum(total_amount)")],
     ))
     # The model-level label should propagate through
     td_meta = result.attributes.dimensions.get("orders.created_at")
@@ -2193,7 +2168,7 @@ async def test_label_propagation_enrichment(integration_env):
 
     result = await engine.execute(query=SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="labeled_rev:sum")],
+        measures=[ModelMeasure(formula="sum(labeled_rev)")],
         dimensions=[ColumnRef(name="status")],
     ))
     # Labels should appear in result meta
@@ -2219,7 +2194,7 @@ async def test_median_sqlite(integration_env):
     engine = integration_env
     response = await engine.execute(SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="total_amount:median")],
+        measures=[ModelMeasure(formula="median(total_amount)")],
     ))
     assert response.row_count == 1
     assert response.data[0]["orders.total_amount_median"] == pytest.approx(87.5)
@@ -2231,8 +2206,8 @@ async def test_percentile_sqlite_quartiles(integration_env):
     response = await engine.execute(SlayerQuery(
         source_model="orders",
         measures=[
-            ModelMeasure(formula="total_amount:percentile(p=0.25)"),
-            ModelMeasure(formula="total_amount:percentile(p=0.75)"),
+            ModelMeasure(formula="percentile(total_amount, p=0.25)"),
+            ModelMeasure(formula="percentile(total_amount, p=0.75)"),
         ],
     ))
     assert response.row_count == 1
@@ -2251,7 +2226,7 @@ async def test_median_grouped_sqlite(integration_env):
     engine = integration_env
     response = await engine.execute(SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="total_amount:median")],
+        measures=[ModelMeasure(formula="median(total_amount)")],
         dimensions=[ColumnRef(name="status")],
     ))
     by_status = {
@@ -2268,7 +2243,7 @@ async def test_median_empty_result_sqlite(integration_env):
     engine = integration_env
     response = await engine.execute(SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="total_amount:median")],
+        measures=[ModelMeasure(formula="median(total_amount)")],
         filters=["status == 'nonexistent'"],
     ))
     assert response.row_count == 1
@@ -2282,7 +2257,7 @@ async def test_sqlite_udf_pool_reuse(integration_env):
     connection, which forces the connect listener to fire again.
     """
     engine = integration_env
-    q = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="total_amount:median")])
+    q = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="median(total_amount)")])
     r1 = await engine.execute(q)
     # Dispose the cached engine so the second execute opens a fresh physical
     # connection and the connect listener (UDF registration) fires again.
@@ -2293,7 +2268,7 @@ async def test_sqlite_udf_pool_reuse(integration_env):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1317 — math/stat UDFs end-to-end on SQLite
+# Math/stat UDFs end-to-end on SQLite
 # ---------------------------------------------------------------------------
 
 
@@ -2361,7 +2336,7 @@ async def test_stddev_samp_sqlite(stat_env):
     response = await engine.execute(
         SlayerQuery(
             source_model="samples",
-            measures=[ModelMeasure(formula="x:stddev_samp")],
+            measures=[ModelMeasure(formula="stddev_samp(x)")],
         )
     )
     assert response.data[0]["samples.x_stddev_samp"] == pytest.approx(
@@ -2374,7 +2349,7 @@ async def test_stddev_pop_sqlite(stat_env):
     response = await engine.execute(
         SlayerQuery(
             source_model="samples",
-            measures=[ModelMeasure(formula="x:stddev_pop")],
+            measures=[ModelMeasure(formula="stddev_pop(x)")],
         )
     )
     assert response.data[0]["samples.x_stddev_pop"] == pytest.approx(
@@ -2387,7 +2362,7 @@ async def test_var_samp_sqlite(stat_env):
     response = await engine.execute(
         SlayerQuery(
             source_model="samples",
-            measures=[ModelMeasure(formula="x:var_samp")],
+            measures=[ModelMeasure(formula="var_samp(x)")],
         )
     )
     assert response.data[0]["samples.x_var_samp"] == pytest.approx(
@@ -2400,7 +2375,7 @@ async def test_var_pop_sqlite(stat_env):
     response = await engine.execute(
         SlayerQuery(
             source_model="samples",
-            measures=[ModelMeasure(formula="x:var_pop")],
+            measures=[ModelMeasure(formula="var_pop(x)")],
         )
     )
     assert response.data[0]["samples.x_var_pop"] == pytest.approx(
@@ -2414,7 +2389,7 @@ async def test_corr_sqlite(stat_env):
     response = await engine.execute(
         SlayerQuery(
             source_model="samples",
-            measures=[ModelMeasure(formula="x:corr(other=y)")],
+            measures=[ModelMeasure(formula="corr(x, other=y)")],
             dimensions=[ColumnRef(name="bucket")],
         )
     )
@@ -2433,7 +2408,7 @@ async def test_covar_samp_sqlite(stat_env):
     response = await engine.execute(
         SlayerQuery(
             source_model="samples",
-            measures=[ModelMeasure(formula="x:covar_samp(other=y)")],
+            measures=[ModelMeasure(formula="covar_samp(x, other=y)")],
             dimensions=[ColumnRef(name="bucket")],
         )
     )
@@ -2455,7 +2430,7 @@ async def test_covar_pop_sqlite(stat_env):
     response = await engine.execute(
         SlayerQuery(
             source_model="samples",
-            measures=[ModelMeasure(formula="x:covar_pop(other=y)")],
+            measures=[ModelMeasure(formula="covar_pop(x, other=y)")],
             dimensions=[ColumnRef(name="bucket")],
         )
     )
@@ -2476,7 +2451,7 @@ async def test_stat_aggs_per_group_sqlite(stat_env):
     response = await engine.execute(
         SlayerQuery(
             source_model="samples",
-            measures=[ModelMeasure(formula="x:stddev_samp")],
+            measures=[ModelMeasure(formula="stddev_samp(x)")],
             dimensions=[ColumnRef(name="bucket")],
         )
     )
@@ -2496,7 +2471,7 @@ async def test_scalar_ln_in_column_sql(stat_env):
     response = await engine.execute(
         SlayerQuery(
             source_model="samples",
-            measures=[ModelMeasure(formula="ln_x:sum")],
+            measures=[ModelMeasure(formula="sum(ln_x)")],
         )
     )
     expected = sum(math.log(v) for v in [1, 2, 3, 4, 5, 1, 2, 3, 4, 5])
@@ -2508,7 +2483,7 @@ async def test_scalar_sqrt_in_column_sql(stat_env):
     response = await engine.execute(
         SlayerQuery(
             source_model="samples",
-            measures=[ModelMeasure(formula="sqrt_x:sum")],
+            measures=[ModelMeasure(formula="sum(sqrt_x)")],
         )
     )
     expected = sum(math.sqrt(v) for v in [1, 2, 3, 4, 5, 1, 2, 3, 4, 5])
@@ -2521,7 +2496,7 @@ async def test_scalar_pow_in_column_sql(stat_env):
     response = await engine.execute(
         SlayerQuery(
             source_model="samples",
-            measures=[ModelMeasure(formula="x_squared:sum")],
+            measures=[ModelMeasure(formula="sum(x_squared)")],
         )
     )
     expected = sum(v ** 2 for v in [1, 2, 3, 4, 5, 1, 2, 3, 4, 5])
@@ -2557,28 +2532,28 @@ async def test_n_one_bucket_returns_postgres_semantics(tmp_path):
     engine = SlayerQueryEngine(storage=storage)
 
     r_samp = await engine.execute(
-        SlayerQuery(source_model="one", measures=[ModelMeasure(formula="x:stddev_samp")])
+        SlayerQuery(source_model="one", measures=[ModelMeasure(formula="stddev_samp(x)")])
     )
     assert r_samp.data[0]["one.x_stddev_samp"] is None
 
     r_var_samp = await engine.execute(
-        SlayerQuery(source_model="one", measures=[ModelMeasure(formula="x:var_samp")])
+        SlayerQuery(source_model="one", measures=[ModelMeasure(formula="var_samp(x)")])
     )
     assert r_var_samp.data[0]["one.x_var_samp"] is None
 
     r_pop = await engine.execute(
-        SlayerQuery(source_model="one", measures=[ModelMeasure(formula="x:stddev_pop")])
+        SlayerQuery(source_model="one", measures=[ModelMeasure(formula="stddev_pop(x)")])
     )
     assert r_pop.data[0]["one.x_stddev_pop"] == 0
 
     r_var_pop = await engine.execute(
-        SlayerQuery(source_model="one", measures=[ModelMeasure(formula="x:var_pop")])
+        SlayerQuery(source_model="one", measures=[ModelMeasure(formula="var_pop(x)")])
     )
     assert r_var_pop.data[0]["one.x_var_pop"] == 0
 
 
 # ---------------------------------------------------------------------------
-# DEV-1336 — window functions in filters (single-stage)
+# Window functions in filters (single-stage)
 # ---------------------------------------------------------------------------
 
 
@@ -2640,8 +2615,8 @@ async def planets_env(tmp_path):
 
 async def test_filter_on_windowed_column_sqlite_raises(planets_env):
     """End-to-end: filtering on a `Column.sql` with a window function used to
-    auto-promote to a post-aggregation outer WHERE (DEV-1336). DEV-1369
-    removes that escape hatch — users must use rank-family transforms
+    auto-promote to a post-aggregation outer WHERE. That escape
+    hatch is removed — users must use rank-family transforms
     (`rank(<measure>, direction='desc') <= 3`) or factor the windowed column into a
     multi-stage `source_queries` model instead. The engine raises a
     clear error with that suggestion."""
@@ -2656,9 +2631,7 @@ async def test_filter_on_windowed_column_sqlite_raises(planets_env):
 
 
 async def test_json_extract_case_when_matches_in_sqlite(tmp_path):
-    """DEV-1331 reproduction.
-
-    A derived ``Column.sql`` that uses ``json_extract`` inside a CASE WHEN
+    """A derived ``Column.sql`` that uses ``json_extract`` inside a CASE WHEN
     must return the expected aggregate. Pre-fix the SQLite emitter rewrites
     ``json_extract(...)`` to ``col -> '$.path'``, which returns the
     JSON-quoted form (``'"Owned"'``); CASE WHEN against the bare-string
@@ -2709,14 +2682,14 @@ async def test_json_extract_case_when_matches_in_sqlite(tmp_path):
     response = await engine.execute(
         SlayerQuery(
             source_model="households",
-            measures=[ModelMeasure(formula="is_owner:sum")],
+            measures=[ModelMeasure(formula="sum(is_owner)")],
         )
     )
     assert response.data[0]["households.is_owner_sum"] == 2
 
 
 # ---------------------------------------------------------------------------
-# DEV-1333: cross-model and local derived ``Column.sql`` chaining (SQLite)
+# Cross-model and local derived ``Column.sql`` chaining (SQLite)
 # ---------------------------------------------------------------------------
 
 
@@ -2796,7 +2769,7 @@ async def derived_chain_env(tmp_path):
 
 
 async def test_integration_cross_model_derived_columnsql(derived_chain_env):
-    """The original DEV-1333 repro must execute and produce the expected ratios."""
+    """The original repro must execute and produce the expected ratios."""
     engine = derived_chain_env
     response = await engine.execute(
         SlayerQuery(
@@ -2830,7 +2803,7 @@ async def test_integration_local_derived_chain(derived_chain_env):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1334: filter-only references to derived columns whose sql crosses a
+# Filter-only references to derived columns whose sql crosses a
 # join must auto-add the join (no need to also list the column in
 # ``dimensions``).
 # ---------------------------------------------------------------------------
@@ -2897,7 +2870,7 @@ async def test_filter_on_derived_column_with_cross_table_ref_executes(
     engine = orders_customers_env
     response = await engine.execute(SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="*:count", name="n")],
+        measures=[ModelMeasure(formula="count(*)", name="n")],
         filters=["is_eu = 1"],
     ))
     # Orders 10, 12, 13 hit EU customers → 3 rows.
@@ -2908,12 +2881,12 @@ async def test_filter_on_derived_column_with_cross_table_ref_executes(
 
 
 # ---------------------------------------------------------------------------
-# DEV-1337: log10 / log2 round-trip preservation (SQLite)
+# log10 / log2 round-trip preservation (SQLite)
 # ---------------------------------------------------------------------------
 
 
 async def test_log10_round_trip_sqlite(tmp_path):
-    """DEV-1337: a user-written `log10(x)` formula must (a) execute correctly
+    """A user-written `log10(x)` formula must (a) execute correctly
     end-to-end on SQLite (via the registered `log10` UDF) and (b) appear
     verbatim as `log10(...)` in the emitted SQL — not the canonicalised
     `LOG(10, ...)` form. Same shape for `log2(x)` (which depends on the
@@ -2950,7 +2923,7 @@ async def test_log10_round_trip_sqlite(tmp_path):
 
     # Numeric correctness — log10
     r10 = await engine.execute(
-        SlayerQuery(source_model="players", measures=[ModelMeasure(formula="log_score:max")])
+        SlayerQuery(source_model="players", measures=[ModelMeasure(formula="max(log_score)")])
     )
     assert r10.data[0]["players.log_score_max"] == pytest.approx(4.0)
 
@@ -2958,7 +2931,7 @@ async def test_log10_round_trip_sqlite(tmp_path):
     r2 = await engine.execute(
         SlayerQuery(
             source_model="players",
-            measures=[ModelMeasure(formula="log2_score:max")],
+            measures=[ModelMeasure(formula="max(log2_score)")],
             filters=["raw_score == 8.0"],
         )
     )
@@ -2966,7 +2939,7 @@ async def test_log10_round_trip_sqlite(tmp_path):
 
     # SQL-shape: dry-run must contain the literal log10(...) / log2(...) form.
     dry10 = await engine.execute(
-        SlayerQuery(source_model="players", measures=[ModelMeasure(formula="log_score:max")]),
+        SlayerQuery(source_model="players", measures=[ModelMeasure(formula="max(log_score)")]),
         dry_run=True,
     )
     assert dry10.sql is not None
@@ -2979,7 +2952,7 @@ async def test_log10_round_trip_sqlite(tmp_path):
     )
 
     dry2 = await engine.execute(
-        SlayerQuery(source_model="players", measures=[ModelMeasure(formula="log2_score:max")]),
+        SlayerQuery(source_model="players", measures=[ModelMeasure(formula="max(log2_score)")]),
         dry_run=True,
     )
     assert dry2.sql is not None
@@ -2989,7 +2962,7 @@ async def test_log10_round_trip_sqlite(tmp_path):
 
 
 async def test_dev1341_count_over_nullif_max_executes(integration_env):
-    """DEV-1341: a multistage final stage combining ``*:count`` with another
+    """A multistage final stage combining ``count(*)`` with another
     aggregation inside a ``nullif`` wrapper must emit clean SQL — no
     ``__aggN__`` placeholder leak — and execute successfully.
     """
@@ -3004,10 +2977,10 @@ async def test_dev1341_count_over_nullif_max_executes(integration_env):
     summary = SlayerQuery(
         source_model="filtered",
         measures=[
-            ModelMeasure(formula="*:count"),
-            ModelMeasure(formula="amount:max"),
+            ModelMeasure(formula="count(*)"),
+            ModelMeasure(formula="max(amount)"),
             ModelMeasure(
-                formula="*:count / nullif(amount:max, 0)",
+                formula="count(*) / nullif(max(amount), 0)",
                 name="violation_rate",
             ),
         ],
@@ -3028,7 +3001,7 @@ async def test_dev1341_count_over_nullif_max_executes(integration_env):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1361: type-aware CAST emission — json_extract over JSON-stored numeric
+# Type-aware CAST emission — json_extract over JSON-stored numeric
 # data must produce REAL result tuples (matching a hand-written gold using
 # CAST AS REAL), not the TEXT that SQLite's json_extract returns by default.
 # ---------------------------------------------------------------------------
@@ -3037,7 +3010,7 @@ async def test_dev1341_count_over_nullif_max_executes(integration_env):
 async def test_json_extract_double_casts_to_real_in_sqlite(tmp_path):
     """A ``Column(sql="json_extract(...)", type=DataType.DOUBLE)`` over JSON-
     encoded numeric data must produce native float result tuples on SQLite.
-    Without the DEV-1361 cast emission, json_extract returns TEXT and the
+    Without the cast emission, json_extract returns TEXT and the
     benchmark's tuple comparison fails (TEXT '"1.5"' != REAL 1.5).
     """
     db_path = tmp_path / "blobs.db"
@@ -3080,7 +3053,7 @@ async def test_json_extract_double_casts_to_real_in_sqlite(tmp_path):
 
     query = SlayerQuery(
         source_model="blobs",
-        measures=[ModelMeasure(formula="score:sum")],
+        measures=[ModelMeasure(formula="sum(score)")],
     )
     response = await engine.execute(query)
     total = response.data[0]["blobs.score_sum"]
@@ -3094,7 +3067,7 @@ async def test_json_extract_double_casts_to_real_in_sqlite(tmp_path):
     # generator must produce a CAST(... AS REAL). SQLite's json_extract
     # already returns numerics on this fixture, so the runtime assertions
     # above pass with or without the CAST — the dry-run check is what
-    # actually fails if DEV-1361 emission regresses.
+    # actually fails if the CAST emission regresses.
     dry = await engine.execute(query, dry_run=True)
     sql_lower = dry.sql.lower() if dry.sql else ""
     assert "cast(" in sql_lower
@@ -3109,7 +3082,7 @@ async def test_json_extract_double_casts_to_real_in_sqlite(tmp_path):
 
 
 async def test_dense_rank_partition_by_customer_executes(integration_env):
-    """DEV-1353: dense_rank with partition_by= must execute on SQLite and produce
+    """dense_rank with partition_by= must execute on SQLite and produce
     per-partition ranks.
 
     The integration_env has 6 orders across 3 customers and 3 months. We rank
@@ -3120,12 +3093,12 @@ async def test_dense_rank_partition_by_customer_executes(integration_env):
         source_model="orders",
         dimensions=[ColumnRef(name="customer_id")],
         time_dimensions=[
-            TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+            TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)
         ],
         measures=[
-            ModelMeasure(formula="amount:sum"),
+            ModelMeasure(formula="sum(amount)"),
             ModelMeasure(
-                formula="dense_rank(amount:sum, partition_by=customer_id, direction='desc')",
+                formula="dense_rank(sum(amount), partition_by=customer_id, direction='desc')",
                 name="amt_rank",
             ),
         ],
@@ -3155,7 +3128,7 @@ async def test_dense_rank_partition_by_customer_executes(integration_env):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1375 — semantic search end-to-end on SQLite
+# Semantic search end-to-end on SQLite
 # ---------------------------------------------------------------------------
 
 
@@ -3217,16 +3190,16 @@ async def search_env(tmp_path):
     )
     await storage.save_datasource(datasource)
 
+    engine = SlayerQueryEngine(storage=storage)
     # Live ingest — populates Column.sampled on every non-pk column via the
     # production code path.
-    await ingest_datasource_idempotent(datasource=datasource, storage=storage)
+    await ingest_datasource_idempotent(datasource=datasource, storage=storage, client=engine.client_for(datasource))
 
     await storage.save_memory(
         learning="orders.amount is gross of refunds.",
         entities=["test_sqlite.orders"],
     )
 
-    engine = SlayerQueryEngine(storage=storage)
     return engine, storage
 
 
@@ -3292,7 +3265,7 @@ async def test_search_entity_filter_finds_memory(search_env):
     """``search(entities=["test_sqlite.orders"])`` returns the seeded
     memory with ``matched_entities`` listing the orders canonical id."""
     _engine, storage = search_env
-    # DEV-1549: opt out of compact-by-default — this test pins the full
+    # Opt out of compact-by-default — this test pins the full
     # learning body in ``hit.text``.
     response = await SearchService(storage=storage).search(
         entities=["test_sqlite.orders"],
@@ -3346,13 +3319,13 @@ async def test_search_edit_model_filter_refreshes_sampled(search_env):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1378 — Mode A SQL filter end-to-end via parse_sql_predicate
+# Mode A SQL filter end-to-end via parse_sql_predicate
 # ---------------------------------------------------------------------------
 
 
 async def _setup_items_db(tmp_path) -> YAMLStorage:
     """Build the shared SQLite ``items`` table + storage used by the
-    DEV-1378 ``lower(...)`` filter tests below."""
+    ``lower(...)`` filter tests below."""
     db_path = tmp_path / "ds.db"
     with transaction(str(db_path)) as conn:
         cur = conn.cursor()
@@ -3371,8 +3344,8 @@ async def _setup_items_db(tmp_path) -> YAMLStorage:
 
 async def test_model_filter_with_lower_function_runs(tmp_path):
     """Mode A: ``SlayerModel.filters`` with arbitrary SQL function call
-    (``lower(...)``) must execute end-to-end against SQLite. Before
-    DEV-1378 the engine raised ``Unknown filter function 'lower'`` at
+    (``lower(...)``) must execute end-to-end against SQLite. Previously
+    the engine raised ``Unknown filter function 'lower'`` at
     enrichment time."""
     storage = await _setup_items_db(tmp_path)
 
@@ -3391,7 +3364,7 @@ async def test_model_filter_with_lower_function_runs(tmp_path):
 
     engine = SlayerQueryEngine(storage=storage)
     response = await engine.execute(
-        SlayerQuery(source_model="items", measures=[ModelMeasure(formula="*:count")])
+        SlayerQuery(source_model="items", measures=[ModelMeasure(formula="count(*)")])
     )
     # Three rows match: "Active", "ACTIVE", "active" (case-folded match for "active").
     assert response.data[0]["items._count"] == 3
@@ -3422,7 +3395,7 @@ async def test_column_filter_with_lower_function_runs(tmp_path):
 
     engine = SlayerQueryEngine(storage=storage)
     response = await engine.execute(
-        SlayerQuery(source_model="items", measures=[ModelMeasure(formula="active_amount:sum")])
+        SlayerQuery(source_model="items", measures=[ModelMeasure(formula="sum(active_amount)")])
     )
     # Active rows total: 10 + 20 + 30 = 60
     assert response.data[0]["items.active_amount_sum"] == pytest.approx(60.0)
@@ -3494,7 +3467,7 @@ async def test_model_filter_with_double_underscore_join_path_runs(tmp_path):
 
     engine = SlayerQueryEngine(storage=storage)
     response = await engine.execute(
-        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="*:count")])
+        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="count(*)")])
     )
     # Customers in EU: id=2 only. Their orders: id=2 (amount 50) and id=4 (amount 25) = 2 orders.
     assert response.data[0]["orders._count"] == 2
@@ -3502,7 +3475,7 @@ async def test_model_filter_with_double_underscore_join_path_runs(tmp_path):
 
 async def test_model_filter_with_json_extract_runs(tmp_path):
     """Mode A: ``SlayerModel.filters`` with ``json_extract(...)`` (a SQLite
-    built-in function) executes end-to-end. Pre-DEV-1378 this raised
+    built-in function) executes end-to-end. Previously this raised
     ``Unknown filter function 'json_extract'`` at enrichment time."""
     db_path = tmp_path / "ds.db"
     with transaction(str(db_path)) as conn:
@@ -3539,7 +3512,7 @@ async def test_model_filter_with_json_extract_runs(tmp_path):
 
     engine = SlayerQueryEngine(storage=storage)
     response = await engine.execute(
-        SlayerQuery(source_model="items", measures=[ModelMeasure(formula="*:count")])
+        SlayerQuery(source_model="items", measures=[ModelMeasure(formula="count(*)")])
     )
     # Two rows have active=1.
     assert response.data[0]["items._count"] == 2
@@ -3557,7 +3530,7 @@ async def test_query_filter_with_lower_function_runs(integration_env):
     # actually goes through the engine, not just round-trip.
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
         filters=["lower(status) = 'completed'"],
     )
     response = await engine.execute(query)
@@ -3565,7 +3538,7 @@ async def test_query_filter_with_lower_function_runs(integration_env):
 
 
 async def test_query_filter_with_replace_runs(integration_env):
-    """DEV-1378: ``replace(...)`` in a ``SlayerQuery.filters`` predicate
+    """``replace(...)`` in a ``SlayerQuery.filters`` predicate
     runs end-to-end on SQLite. Pre-fix, ``sqlglot.parse_one`` falls back
     to a ``Command`` (REPLACE INTO) parse and the emitted SQL is
     malformed; ``SQLGenerator._parse_predicate`` wraps in SELECT
@@ -3576,7 +3549,7 @@ async def test_query_filter_with_replace_runs(integration_env):
     # statuses contain commas, so this is identity — match `completed`.
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
         filters=["replace(status, ',', '') = 'completed'"],
     )
     response = await engine.execute(query)
@@ -3584,7 +3557,7 @@ async def test_query_filter_with_replace_runs(integration_env):
 
 
 async def test_filter_renamed_measure_colon_syntax(integration_env):
-    """DEV-1443: filter on the raw colon-syntax formula must resolve to the
+    """Filter on the raw colon-syntax formula must resolve to the
     user alias when the measure is renamed on the same node. Without the
     fix the query fails at execution time (column-not-found on the inner
     SELECT). With the fix it executes correctly as HAVING on the aggregate.
@@ -3595,9 +3568,9 @@ async def test_filter_renamed_measure_colon_syntax(integration_env):
         source_model="orders",
         dimensions=[ColumnRef(name="status")],
         measures=[
-            ModelMeasure(formula="customer_id:count_distinct", name="num_customers"),
+            ModelMeasure(formula="count_distinct(customer_id)", name="num_customers"),
         ],
-        filters=["customer_id:count_distinct >= 2"],
+        filters=["count_distinct(customer_id) >= 2"],
     )
     response = await engine.execute(query)
 
@@ -3611,7 +3584,7 @@ async def test_filter_renamed_measure_colon_syntax(integration_env):
 
 
 async def test_dev1501_order_by_two_last_with_different_time_cols(tmp_path):
-    """DEV-1501 integration: ORDER BY two ``last()`` aggregates over
+    """ORDER BY two ``last()`` aggregates over
     different explicit time columns must execute end-to-end against real
     SQLite and return rows ordered by the correct distinct rank keys
     (no dangling ``_last_rn``, no collapsed ranks). Uses a tied primary
@@ -3636,8 +3609,7 @@ async def test_dev1501_order_by_two_last_with_different_time_cols(tmp_path):
         # secondary ORDER BY last(updated_at) ASC must break the tie with
         # B (10) before A (99). The expected order intentionally CONTRADICTS
         # natural alphabetical status ordering so a silently-dropped secondary
-        # ORDER BY would surface as a test failure (CR PR #153 thread
-        # r3350000263).
+        # ORDER BY would surface as a test failure.
         rows = [
             # Status A: last(created_at)=50, last(updated_at)=99.
             (1, "A", 50.0, "2025-03-01", "2025-01-01"),
@@ -3669,15 +3641,15 @@ async def test_dev1501_order_by_two_last_with_different_time_cols(tmp_path):
     await storage.save_model(orders_model)
     engine = SlayerQueryEngine(storage=storage)
 
-    query = SlayerQuery(
-        source_model="orders",
-        measures=["*:count"],
-        dimensions=[ColumnRef(name="status")],
-        order=[
-            OrderItem(column="amount:last(created_at)", direction="desc"),
-            OrderItem(column="amount:last(updated_at)", direction="asc"),
+    query = SlayerQuery.model_validate({
+        "source_model": "orders",
+        "measures": ["count(*)"],
+        "dimensions": [ColumnRef(name="status")],
+        "order": [
+            OrderItem.model_validate({"column": "last(amount, created_at)", "direction": "desc"}),
+            OrderItem.model_validate({"column": "last(amount, updated_at)", "direction": "asc"}),
         ],
-    )
+    })
     response: SlayerResponse = await engine.execute(query)
 
     # Hidden materialised aliases must not leak into result columns.
@@ -3695,7 +3667,7 @@ async def test_dev1501_order_by_two_last_with_different_time_cols(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1502: measure-source Column.sql with __-delimited path alias must
+# Measure-source Column.sql with __-delimited path alias must
 # (a) execute end-to-end on SQLite (no `no such column` error from a
 # missing JOIN) and (b) return the right cardinality.
 # ---------------------------------------------------------------------------
@@ -3773,7 +3745,7 @@ async def test_measure_source_sql_with_path_alias_executes_sqlite(tmp_path):
     # Total: 350.
     response = await engine.execute(SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="region_pop:sum")],
+        measures=[ModelMeasure(formula="sum(region_pop)")],
     ))
     assert response.row_count == 1
     assert response.data[0]["orders.region_pop_sum"] == pytest.approx(350.0), (
@@ -3783,9 +3755,9 @@ async def test_measure_source_sql_with_path_alias_executes_sqlite(tmp_path):
     )
     engine_factory.reset_cache()
 # ---------------------------------------------------------------------------
-# DEV-1538: end-to-end SQLite affinity probe — vaccine-style fixture.
+# End-to-end SQLite affinity probe — vaccine-style fixture.
 #
-# Reproduces the Linear issue's vaccine_3 failure mode: a column declared
+# Reproduces the vaccine_3 failure mode: a column declared
 # ``INTEGER`` storing mostly REAL values. Pre-fix, the auto-ingested
 # Column.type=INT propagates through downstream SQL generation and produces
 # AVG values ~0 instead of ~0.9. Post-fix, the affinity probe widens to
@@ -3820,8 +3792,8 @@ async def test_sqlite_mixed_real_int_ingest_query_no_truncation(tmp_path):
     storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
     ds = DatasourceConfig(name="vac", type="sqlite", database=str(db_path))
     await storage.save_datasource(ds)
-    await ingest_datasource_idempotent(datasource=ds, storage=storage)
     engine = SlayerQueryEngine(storage=storage)
+    await ingest_datasource_idempotent(datasource=ds, storage=storage, client=engine.client_for(ds))
 
     # Persisted model carries Column.type=DOUBLE for tempstabidx.
     persisted = await storage.get_model("sensordata", data_source="vac")
@@ -3833,7 +3805,7 @@ async def test_sqlite_mixed_real_int_ingest_query_no_truncation(tmp_path):
     query = SlayerQuery(
         source_model="sensordata",
         measures=[
-            ModelMeasure(formula="tempstabidx:avg", name="avg_temp"),
+            ModelMeasure(formula="avg(tempstabidx)", name="avg_temp"),
         ],
     )
     response = await engine.execute(query)
@@ -3847,7 +3819,7 @@ async def test_sqlite_mixed_real_int_ingest_query_no_truncation(tmp_path):
 
 @pytest.fixture
 async def composite_score_env(tmp_path):
-    """DEV-1539 fixture: a model whose ``Column.sql`` is a multi-term
+    """A model whose ``Column.sql`` is a multi-term
     arithmetic expression. Used by both the WHERE-side and HAVING-side
     paren-wrap integration tests.
     """
@@ -3898,7 +3870,7 @@ async def composite_score_env(tmp_path):
 
 
 async def test_dev1539_where_multiterm_filter_emits_outer_parens(composite_score_env):
-    """DEV-1539: the SQL emitted for a filter on a multi-term Column.sql
+    """The SQL emitted for a filter on a multi-term Column.sql
     must wrap the inlined arithmetic expression in outer parens.
 
     Asserts both:
@@ -3948,7 +3920,7 @@ async def test_dev1539_where_multiterm_filter_emits_outer_parens(composite_score
 
 
 async def test_dev1539_having_multiterm_measure_emits_outer_parens(composite_score_env):
-    """DEV-1539 HAVING-side: when a custom multi-term aggregation is
+    """HAVING-side: when a custom multi-term aggregation is
     referenced by name in a HAVING filter, the substituted SQL must be
     wrapped in outer parens before the comparator.
     """
@@ -3970,7 +3942,7 @@ async def test_dev1539_having_multiterm_measure_emits_outer_parens(composite_sco
     query = SlayerQuery(
         source_model="entities",
         dimensions=[ColumnRef(name="id")],
-        measures=[ModelMeasure(formula="a:wavg", name="wavg_a")],
+        measures=[ModelMeasure(formula="wavg(a)", name="wavg_a")],
         filters=["wavg_a > 0"],
     )
     response = await engine.execute(query)
@@ -4015,7 +3987,7 @@ async def test_dev1539_having_multiterm_measure_emits_outer_parens(composite_sco
 
 
 # ---------------------------------------------------------------------------
-# DEV-1576 — round()/abs() execution + aggregation-alias healing (SQLite)
+# round()/abs() execution + aggregation-alias healing (SQLite)
 # ---------------------------------------------------------------------------
 
 
@@ -4024,7 +3996,7 @@ async def test_round_two_args_executes(integration_env):
     engine = integration_env
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="round(total_amount:sum / 7.0, 2)", name="r")],
+        measures=[ModelMeasure(formula="round(sum(total_amount) / 7.0, 2)", name="r")],
     )
     response = await engine.execute(query)
     assert response.data[0]["orders.r"] == pytest.approx(107.14)
@@ -4034,7 +4006,7 @@ async def test_round_zero_ndigits_executes(integration_env):
     engine = integration_env
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="round(total_amount:sum / 7.0, 0)", name="r")],
+        measures=[ModelMeasure(formula="round(sum(total_amount) / 7.0, 0)", name="r")],
     )
     response = await engine.execute(query)
     assert response.data[0]["orders.r"] == pytest.approx(107.0)
@@ -4045,18 +4017,18 @@ async def test_abs_executes(integration_env):
     engine = integration_env
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="abs(total_amount:sum - 1000.0)", name="a")],
+        measures=[ModelMeasure(formula="abs(sum(total_amount) - 1000.0)", name="a")],
     )
     response = await engine.execute(query)
     assert response.data[0]["orders.a"] == pytest.approx(250.0)
 
 
 async def test_count_distinct_alias_executes(integration_env):
-    """``status:countd`` heals to count_distinct and executes."""
+    """``countd(status)`` heals to count_distinct and executes."""
     engine = integration_env
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="status:countd")],
+        measures=[ModelMeasure(formula="countd(status)")],
     )
     response = await engine.execute(query)
     # completed / pending / cancelled → 3 distinct statuses.
@@ -4064,11 +4036,11 @@ async def test_count_distinct_alias_executes(integration_env):
 
 
 async def test_stddev_alias_maps_to_sample_variant(integration_env):
-    """``amount:stddev`` heals to stddev_samp (sample, not population)."""
+    """``stddev(amount)`` heals to stddev_samp (sample, not population)."""
     engine = integration_env
     query = SlayerQuery(
         source_model="orders",
-        measures=[ModelMeasure(formula="amount:stddev")],
+        measures=[ModelMeasure(formula="stddev(amount)")],
     )
     response = await engine.execute(query)
     # Sample stddev of [100,200,50,75,300,25] = sqrt(55000/5) ≈ 104.88

@@ -1,4 +1,4 @@
-"""Law (sql.arc42.md §3.1): statements are composed as AST and rendered to text once.
+"""Law (python.sql.arc42.md §3.1): statements are composed as AST and rendered to text once.
 
 The conftest autouse fixture (``tests/_statement_render_law.py``) fails any test
 in which an AST statement builder renders a query node to SQL text; these are
@@ -169,7 +169,7 @@ class TestLiveGenerator:
             _inner().sql()
 
         monkeypatch.setattr(SQLGenerator, "_assert_stages_assigned", staticmethod(_renders))
-        query = q(dimensions=["status"], measures=["amount:sum"])
+        query = q(dimensions=["status"], measures=["sum(amount)"])
         with pytest.raises(law.StatementRenderedDuringComposition):
             await gen(query, dialect="postgres")
 
@@ -192,30 +192,30 @@ def _stats_models() -> list[SlayerModel]:
 
 _SEAMS = {
     "plain_hidden_order": q(
-        dimensions=["status"], measures=["amount:sum"],
-        order=[{"column": "amount:max", "direction": "desc"}], limit=2,
+        dimensions=["status"], measures=["sum(amount)"],
+        order=[{"column": "max(amount)", "direction": "desc"}], limit=2,
     ),
     "where_having": q(
-        dimensions=["region"], measures=["amount:sum"],
-        filters=["amount > 15", "region == 'US' or region == 'EU'", "amount:sum > 55 or amount:count > 2"],
+        dimensions=["region"], measures=["sum(amount)"],
+        filters=["amount > 15", "region == 'US' or region == 'EU'", "sum(amount) > 55 or count(amount) > 2"],
     ),
     "chain_post_filter_paginated": cumsum_chain(
-        filters=["cumsum(amount:sum) > 50"],
+        filters=["cumsum(sum(amount)) > 50"],
         order=[{"column": "created_at", "direction": "desc"}], limit=2, offset=1,
     ),
     "windowed_producer": q(
         time_dimensions=month_td(),
-        measures=[{"formula": "amount:covar_samp(other=qty, window='90d')", "name": "cv"}],
+        measures=[{"formula": "covar_samp(amount, other=qty, window='90d')", "name": "cv"}],
     ),
     "cross_model_combined": q(
         dimensions=["status"],
-        measures=[{"formula": "amount:sum / customers.id:count", "name": "r"}],
+        measures=[{"formula": "sum(amount) / count(customers.id)", "name": "r"}],
     ),
     "multi_stage": [
         {"name": "s1", "source_model": "orders", "dimensions": ["status"],
          "time_dimensions": month_td(),
-         "measures": [{"formula": "amount:covar_samp(other=qty, window='90d')", "name": "cv"}]},
-        {"source_model": "s1", "dimensions": ["status"], "measures": [{"formula": "cv:max", "name": "m"}]},
+         "measures": [{"formula": "covar_samp(amount, other=qty, window='90d')", "name": "cv"}]},
+        {"source_model": "s1", "dimensions": ["status"], "measures": [{"formula": "max(cv)", "name": "m"}]},
     ],
 }
 

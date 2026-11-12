@@ -1,6 +1,8 @@
-"""SqlDialect registry: strict lookup by sqlglot name, lenient lookup by datasource type."""
+"""SqlDialect registry: strict lookup by sqlglot name, lenient lookups by datasource type and SQLAlchemy backend."""
 
 from __future__ import annotations
+
+from collections.abc import Iterable
 
 from slayer.sql.dialects._tier2 import (
     DatabricksDialect,
@@ -15,6 +17,7 @@ from slayer.sql.dialects.clickhouse import ClickhouseDialect
 from slayer.sql.dialects.duckdb import DuckdbDialect
 from slayer.sql.dialects.mysql import MariadbDialect, MysqlDialect
 from slayer.sql.dialects.postgres import PostgresDialect
+from slayer.sql.dialects.reflection import ReflectedColumn, ReflectedForeignKey, TableKeys
 from slayer.sql.dialects.snowflake import SnowflakeDialect
 from slayer.sql.dialects.sqlite import SqliteDialect
 from slayer.sql.dialects.trino import TrinoDialect
@@ -39,9 +42,14 @@ __all__ = [
     "DatabricksDialect",
     "SparkDialect",
     "OracleDialect",
+    "ReflectedColumn",
+    "ReflectedForeignKey",
+    "TableKeys",
     "SQLGLOT_NAMES",
     "get_dialect",
     "dialect_for_ds_type",
+    "build_sa_backend_registry",
+    "dialect_for_sa_backend",
 ]
 
 
@@ -78,6 +86,25 @@ _BY_DS_TYPE: dict[str, SqlDialect] = {
 }
 
 
+def build_sa_backend_registry(dialects: Iterable[SqlDialect]) -> dict[str, SqlDialect]:
+    """``{backend: dialect}`` over each dialect's ``sa_backend_names``; a backend declared twice raises."""
+    registry: dict[str, SqlDialect] = {}
+    for dialect in dialects:
+        for backend in dialect.sa_backend_names:
+            prior = registry.get(backend)
+            if prior is not None:
+                raise ValueError(
+                    f"SQLAlchemy backend {backend!r} is declared by both "
+                    f"{type(prior).__name__} and {type(dialect).__name__}"
+                )
+            registry[backend] = dialect
+    return registry
+
+
+_BY_SA_BACKEND = build_sa_backend_registry((*_ALL_DIALECTS, *_DS_TYPE_ONLY_DIALECTS))
+_UNDECLARED_BACKEND_DIALECT = SqlDialect()
+
+
 def get_dialect(sqlglot_name: str) -> SqlDialect:
     """Strict lookup by sqlglot name; raises ``KeyError`` on unknown."""
     return _BY_SQLGLOT_NAME[sqlglot_name]
@@ -86,6 +113,11 @@ def get_dialect(sqlglot_name: str) -> SqlDialect:
 def dialect_for_ds_type(ds_type: str | None) -> SqlDialect:
     """Lenient lookup by datasource type; ``None``, empty and unknown types get Postgres."""
     return _BY_DS_TYPE.get(ds_type or "", _BY_SQLGLOT_NAME["postgres"])
+
+
+def dialect_for_sa_backend(backend: str | None) -> SqlDialect:
+    """The dialect declaring SQLAlchemy ``backend``; an undeclared one gets the Postgres-shaped base."""
+    return _BY_SA_BACKEND.get(backend or "", _UNDECLARED_BACKEND_DIALECT)
 
 
 # Quote reserved-word identifiers in every dialect's emission; runs at import, idempotent.

@@ -69,12 +69,12 @@ def _bundle() -> ResolvedSourceBundle:
 
 
 def _outer_where_query() -> SlayerQuery:
-    return SlayerQuery(
-        source_model="orders",
-        dimensions=[{"formula": "status", "name": "status"}],
-        measures=[{"formula": "eu_amount:sum", "name": "eu"}],
-        filters=["eu_amount:sum > 100"],
-    )
+    return SlayerQuery.model_validate({
+        "source_model": "orders",
+        "dimensions": [{"formula": "status", "name": "status"}],
+        "measures": [{"formula": "sum(eu_amount)", "name": "eu"}],
+        "filters": ["sum(eu_amount) > 100"],
+    })
 
 
 # --------------------------------------------------------------------------- #
@@ -97,12 +97,12 @@ class TestPlanCarriesOuterWhereRouting:
         )
 
     def test_routing_is_empty_without_an_isolated_aggregate(self) -> None:
-        plain = SlayerQuery(
-            source_model="orders",
-            dimensions=[{"formula": "status", "name": "status"}],
-            measures=[{"formula": "amount:sum", "name": "a"}],
-            filters=["amount:sum > 100"],
-        )
+        plain = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": [{"formula": "status", "name": "status"}],
+            "measures": [{"formula": "sum(amount)", "name": "a"}],
+            "filters": ["sum(amount) > 100"],
+        })
         planned = plan_query(query=plain, bundle=_bundle())
         assert _lower_positions(planned).outer_where_ids == []
 
@@ -176,15 +176,11 @@ class TestFrameBoundColumnsStayPlanSide:
     not re-introduce a render-time derivation."""
 
     def _windowed_query(self) -> SlayerQuery:
-        return SlayerQuery(
-            source_model="orders",
-            time_dimensions=[{
+        return SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [{
                 "dimension": "created_at",
                 "granularity": TimeGranularity.MONTH,
                 "date_range": ["2024-01-01", "2024-12-31"],
-            }],
-            measures=[{"formula": "amount:sum", "name": "a"}],
-        )
+            }], "measures": [{"formula": "sum(amount)", "name": "a"}]})
 
     def test_plan_carries_frame_bound_columns(self) -> None:
         """A DECLARED field, checked the same way as masks.

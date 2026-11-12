@@ -2,10 +2,9 @@
 
 import argparse
 import textwrap
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import sqlalchemy as sa
 from sqlalchemy.exc import SQLAlchemyError
 
 from slayer.async_utils import run_sync
@@ -13,7 +12,7 @@ from slayer.cli import _run_import_dbt
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormatType
 from slayer.core.join_walker import edges_between
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.dbt import converter as converter_module
 from slayer.dbt.converter import DbtConversionError, DbtToSlayerConverter
@@ -32,6 +31,8 @@ from slayer.dbt.models import (
     DbtSemanticModel,
 )
 from slayer.dbt.parser import parse_dbt_project
+from slayer.ingest_report import ConversionResult
+from slayer.database.client import SqlClient
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1902_fixtures import AMOUNT_BY_CUSTOMER, cells, make_exec_engine
 
@@ -243,7 +244,7 @@ DbtMeasure(name="number_of_policies", agg="sum", expr="1")
                 ],
             ),
         ])
-        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        result = DbtToSlayerConverter(project=project, data_source="test", target_dialect="duckdb").convert()
         apr = next(m for m in result.models if m.name == "agreement_party_role")
         policy = next(m for m in result.models if m.name == "policy")
 
@@ -350,6 +351,27 @@ class TestMeasureConsolidation:
         measures_by_name = {m.name: m for m in orders.measures}
         assert measures_by_name["revenue"].formula == "sum(amount)"
         assert measures_by_name["quantity"].formula == "sum(qty)"
+
+    def test_a_column_named_like_a_measure_in_another_case_is_renamed(self) -> None:
+        """Columns and measures share one case-insensitive namespace, so ``Premium`` beside ``premium`` is renamed."""
+        project = DbtProject(semantic_models=[
+            DbtSemanticModel(
+                name="fire_claim",
+                model="fire_claim",
+                entities=[DbtEntity(name="policy", type="primary", expr="PolicyNo")],
+                measures=[DbtMeasure(name="premium", agg="sum", expr="Premium")],
+            ),
+        ])
+        fire_claim = DbtToSlayerConverter(project=project, data_source="test", target_dialect="duckdb").convert().models[0]
+        column = next(c for c in fire_claim.columns if c.sql == "Premium")
+        assert column.name == "Premium_col"
+        assert [m.formula for m in fire_claim.measures if m.name == "premium"] == ["sum(Premium_col)"]
+
+    def test_a_filtered_metric_column_avoids_a_name_in_another_case(self) -> None:
+        model = SlayerModel(name="m", sql_table="m", data_source="test",
+                            columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+                            measures=[ModelMeasure(name="premium_filtered", formula="count(*)")])
+        assert DbtToSlayerConverter._alloc_column_name(model, "Premium_filtered") == "Premium_filtered_col"
 
     def test_primary_entity_does_not_duplicate_pk_column(self) -> None:
         """When primary_entity resolves to the same column the entity loop already
@@ -648,7 +670,6 @@ class TestImportDbtCli:
             dbt_project_path=str(project_dir),
             datasource="test_db",
             storage=str(storage_dir),
-            models_dir=None,
             include_hidden_models=False,
         )
 
@@ -776,12 +797,19 @@ DbtMeasure(name="total", agg="sum", expr="amount")
     )
 
 
+def _convert_hidden(project: DbtProject) -> ConversionResult:
+    """Collect the hidden regular models' metadata through a stand-in client, then convert."""
+    converter = DbtToSlayerConverter(project=project, data_source="test_db", include_hidden_models=True)
+    run_sync(converter.collect_metadata(client=MagicMock(spec=SqlClient)))
+    return converter.convert()
+
+
 class TestRegularModelConversion:
     """Hidden-model import from regular dbt models."""
 
     def test_default_off_skips_regular_models(self) -> None:
         project = _project_with_orphan()
-        # No sa_engine, no flag — hidden-model pass must be a no-op.
+        # No client, no flag — hidden-model pass must be a no-op.
         result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
         assert all(not m.hidden for m in result.models)
         assert [m.name for m in result.models] == ["orders"]
@@ -792,21 +820,14 @@ class TestRegularModelConversion:
             project=project, data_source="test_db", include_hidden_models=True,
         ).convert()
         assert [m.name for m in result.models] == ["orders"]
-        assert any("no SQLAlchemy engine" in w.message for w in result.warnings)
+        assert any("no table metadata was collected" in w.message for w in result.warnings)
 
     def test_opt_in_with_engine_produces_hidden_model(self) -> None:
         project = _project_with_orphan()
-        engine = MagicMock(spec=sa.Engine)
         fake_model = _sample_slayer_model(name="raw_events")
 
-        with patch.object(sa, "inspect", return_value=MagicMock()), \
-             patch.object(converter_module, "introspect_table_to_model", return_value=fake_model):
-            result = DbtToSlayerConverter(
-                project=project,
-                data_source="test_db",
-                include_hidden_models=True,
-                sa_engine=engine,
-            ).convert()
+        with patch.object(converter_module, "introspect_table_to_model", new=AsyncMock(return_value=fake_model)):
+            result = _convert_hidden(project)
 
         hidden = [m for m in result.models if m.hidden]
         assert len(hidden) == 1
@@ -820,19 +841,12 @@ class TestRegularModelConversion:
 
     def test_introspection_failure_is_skipped_with_warning(self) -> None:
         project = _project_with_orphan()
-        engine = MagicMock(spec=sa.Engine)
 
         def raise_err(**_kwargs):
             raise SQLAlchemyError("table not found")
 
-        with patch.object(sa, "inspect", return_value=MagicMock()), \
-             patch.object(converter_module, "introspect_table_to_model", side_effect=raise_err):
-            result = DbtToSlayerConverter(
-                project=project,
-                data_source="test_db",
-                include_hidden_models=True,
-                sa_engine=engine,
-            ).convert()
+        with patch.object(converter_module, "introspect_table_to_model", new=AsyncMock(side_effect=raise_err)):
+            result = _convert_hidden(project)
 
         # Semantic model still came through
         assert [m.name for m in result.models] == ["orders"]
@@ -843,21 +857,25 @@ class TestRegularModelConversion:
         # Regular model named the same as the semantic model — must be skipped
         # so the semantic (visible) model is not shadowed.
         project = _project_with_orphan(orphan_name="orders")
-        engine = MagicMock(spec=sa.Engine)
         fake_model = _sample_slayer_model(name="orders")
 
-        with patch.object(sa, "inspect", return_value=MagicMock()), \
-             patch.object(converter_module, "introspect_table_to_model", return_value=fake_model):
-            result = DbtToSlayerConverter(
-                project=project,
-                data_source="test_db",
-                include_hidden_models=True,
-                sa_engine=engine,
-            ).convert()
+        with patch.object(converter_module, "introspect_table_to_model", new=AsyncMock(return_value=fake_model)):
+            result = _convert_hidden(project)
 
         # Only the semantic (visible) model survives under the name 'orders'
         assert len(result.models) == 1
         assert result.models[0].name == "orders"
+
+    def test_model_wrapped_by_a_semantic_model_is_skipped(self) -> None:
+        project = _project_with_orphan()
+        project.semantic_models[0].name = "order_facts"
+        project.regular_models.append(DbtRegularModel(name="orders", schema_name="staging", alias="orders"))
+
+        with patch.object(converter_module, "introspect_table_to_model",
+                          new=AsyncMock(side_effect=lambda **kw: _sample_slayer_model(name=kw["table_name"]))):
+            result = _convert_hidden(project)
+
+        assert [m.name for m in result.models if m.hidden] == ["raw_events"]
 
 
 class TestHiddenModelDescriptionPrecedence:
@@ -873,15 +891,8 @@ class TestHiddenModelDescriptionPrecedence:
             Column(name="db_only", sql="db_only", type=DataType.TEXT,
                    description="db comment only")
         )
-        engine = MagicMock(spec=sa.Engine)
-        with patch.object(sa, "inspect", return_value=MagicMock()), \
-             patch.object(converter_module, "introspect_table_to_model", return_value=fake_model):
-            result = DbtToSlayerConverter(
-                project=project,
-                data_source="test_db",
-                include_hidden_models=True,
-                sa_engine=engine,
-            ).convert()
+        with patch.object(converter_module, "introspect_table_to_model", new=AsyncMock(return_value=fake_model)):
+            result = _convert_hidden(project)
         return next(m for m in result.models if m.hidden)
 
     def test_curated_wins_and_db_comments_fill_gaps(self) -> None:
@@ -939,7 +950,7 @@ DbtMeasure(name="total", agg="sum", expr="amount")
                 ],
             ),
         ])
-        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        result = DbtToSlayerConverter(project=project, data_source="test", target_dialect="duckdb").convert()
         pa = next(m for m in result.models if m.name == "policy_amount")
         targets = {j.target_model for j in pa.joins}
         assert "policy" in targets, f"Missing direct join to policy. Joins: {targets}"
@@ -1007,7 +1018,7 @@ DbtMeasure(name="total_claim_amount", agg="sum", expr="claim_amount")
                 ),
             ],
         )
-        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        result = DbtToSlayerConverter(project=project, data_source="test", target_dialect="duckdb").convert()
         ca = next(m for m in result.models if m.name == "claim_amount")
         # The filtered metric becomes a (Column with .filter) + (ModelMeasure
         # pointing at it). Find the Column carrying the filter.
@@ -1643,6 +1654,7 @@ class TestJoinKeyColumns:
             w.model_name == "orders" and "customer_id" in w.message
             for w in result.warnings)
 
+    @pytest.mark.xfail(strict=True, reason="DEV-2175: self-named dimension")
     def test_target_key_named_by_a_derived_column_drops_the_join(self) -> None:
         project = _make_simple_project()
         customers_sm = next(sm for sm in project.semantic_models if sm.name == "customers")

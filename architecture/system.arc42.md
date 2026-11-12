@@ -20,6 +20,8 @@ flowchart TD
   core["Core domain models"]
   sql["SQL generation"]
   engine["Query engine"]
+  database["Database access"]
+  live_schema["Live schema"]
   ir["Intermediate representation"]
   storage["Storage backends"]
   importers("Importers")
@@ -28,19 +30,30 @@ flowchart TD
   protocols("BI wire protocols")
   usage_reporting["Usage reporting"]
   surfaces("User-facing surfaces")
-  core -.-> engine
   core -.-> sql
   core -.-> storage
   engine --> core
+  database --> core
+  database --> sql
+  engine --> database
+  engine --> live_schema
   engine --> ir
   engine --> memories
-  engine --> search
   engine --> sql
   engine --> storage
   importers --> core
+  importers --> database
+  importers --> live_schema
   importers --> engine
   importers --> sql
   ir --> core
+  live_schema --> core
+  live_schema --> database
+  live_schema --> engine
+  live_schema --> memories
+  live_schema --> search
+  live_schema --> sql
+  live_schema --> storage
   memories --> core
   memories --> engine
   memories --> search
@@ -55,17 +68,20 @@ flowchart TD
   sql --> core
   sql --> ir
   storage --> core
+  storage --> database
   storage --> engine
+  storage --> live_schema
   storage --> memories
   storage --> search
   storage --> sql
   surfaces --> core
+  surfaces --> database
   surfaces --> engine
   surfaces --> importers
+  surfaces --> live_schema
   surfaces --> memories
   surfaces --> protocols
   surfaces --> search
-  surfaces --> sql
   surfaces --> storage
   protocols --> usage_reporting
   surfaces --> usage_reporting
@@ -75,77 +91,46 @@ flowchart TD
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:landscape -->
 
-Eleven nodes: precise `core`, `sql`, `ir`,
-`engine`, `storage` around the query pipeline, and `usage_reporting`; virtual buckets `importers`,
-`search`, `memories`, `protocols`, `surfaces` for the rest. Package claims and
-spec mapping are node metadata in [model.c4](model.c4); the
+Nodes, package claims and spec mapping are node metadata in [model.c4](model.c4); the
 legacy-arrow baseline is in [index.yaml](index.yaml).
 
 ## 3. Principles
 
 All code, old and new, MUST obey these.
 
-1. **Target layering**: `engine` → `sql` → `ir` → `core`. The grandfathered
-   crossings (declared `#legacy` child arrows, count = the `legacy_arrows`
-   baseline in index.yaml) are dying, never growing.
-   [enforced: arch_check:model-truth]
-2. **`core` imports no other SLayer node.** The remaining crossings are the
-   grandfathered child-level `#legacy` doors (`core.query`/`core.models` →
-   `engine.syntax`, `sql.*`, `storage.migrations`), slated to die.
-   [enforced: arch_check:model-truth]
-3. **Every top-level `slayer.*` package/module belongs to exactly one node.**
+1. **Every top-level `slayer.*` package/module belongs to exactly one node.**
    A new top-level package must be claimed in a node's model metadata in the same change.
    [enforced: arch_check:claims-exactly-once]
-4. **Model truth**: the LikeC4 relation set covers the AST-measured runtime
+2. **Model truth**: the LikeC4 relation set covers the AST-measured runtime
    import edges at every declared granularity — each module attributes to its
    finest declared child else its node, every edge is licensed by its
    most-specific arrow, and TYPE_CHECKING-guarded imports are excluded. The
    model describes the code as it IS; `#legacy` marks edges slated to die.
    [enforced: arch_check:model-truth]
-5. **Ratchet**: `#legacy` arrows are only ever removed; their count equals the
+3. **Ratchet**: `#legacy` arrows are only ever removed; their count equals the
    `legacy_arrows` baseline in index.yaml, so deleting one lowers the baseline
    in the same commit. The count check is a stateless backstop — review of the
    paired `.c4` + index diff owns monotonicity. Adding a legacy arrow means the
    architecture is changing: do it deliberately, with explicit user OK.
    [enforced: arch_check:baseline-ratchet]
-6. **SQL is built as sqlglot AST**, never by string concatenation of fragments.
-   [review]
-7. **Async-first**: engine and storage methods are async; sync entry points
+4. **SQL is built as sqlglot AST**, never by string concatenation of fragments,
+   save a dialect's EXPLAIN keywords before one rendered statement, which
+   sqlglot cannot represent.
+   [review] [enforced: test:tests/test_law_sql_built_as_ast.py]
+5. **Async-first**: engine and storage methods are async; sync entry points
    bridge via `execute_sync` / `run_sync`. [review]
-8. **The query algebra** lives in `semantics.arc42.md`; its observable face:
-   adding a measure never changes result cardinality or other fields'
-   values. [enforced: test:tests/test_dev1837_dimension_measure_matrix.py]
-9. **Dotted-canonical references**: dots denote join paths in queries and model
-   SQL; the legacy `__` split-alias input form is a hard error; `__` survives
-   only as an internal generated-SQL join alias (`__slayer_` prefix reserved).
-   A resolved path is **canonical**: each hop spelled by its edge name, else its
-   target model — a query stage by its name in its own query list, which precedes
-   a same-named model (`customers.regions ≡ customers.hr` for an edge named `hr`); keys,
-   join aliases and result names carry only canonical paths.
-   [enforced: test:tests/test_dev1743_resolution.py]
-   [enforced: test:tests/test_dev1954_canonical_paths.py]
-10. **Two expression layers**: Mode A free SQL (`Column.sql`, model `filters`)
-    vs Mode B Python-AST DSL (formulas, query fields, scalar allowlist only) —
-    one canonical scalar allowlist, extended never forked. [review]
-11. **Versioned persistence**: models/queries/datasource configs carry
-    `version`; migrations run automatically on load. [review]
-12. **Pydantic v2 for all models; never dataclasses.** [review]
-13. **One key kind per meaning**: a construct with an existing kind's shape and
-    meaning reuses it; anything else is a new kind, never a reserved name
-    bending an existing kind's contract. Every kind dispatch fails closed on a
-    kind it does not handle. [review]
-14. **Ingestion is idempotent and additive-only**: user metadata is never
-    overwritten by a re-ingest (`source_kind` refresh is the one documented
-    exception). [review]
-15. **Row-level security fails closed**: anything a session policy cannot
-    confirm is rejected, never passed through unscoped. [review]
-16. **Logical names, physical once**: every model-level column reference —
-    query fields, `join_pairs`, unique-key sets — names a column by
-    `Column.name`; the physical spelling (`Column.physical_name`: a base
-    column's bare `sql`, else its name) is applied once, where a reference
-    becomes SQL or meets the live schema, and is never the key two references
-    are matched on.
-    [enforced: test:tests/test_dev1902_join_key_spelling.py]
+6. **Pydantic v2 for all models; never dataclasses.** [review]
+7. **Row-level security fails closed**: anything a session policy cannot
+   confirm is rejected, never passed through unscoped. [review]
+8. **One reader of Mode B**: Mode B text is parsed only by `core.syntax`; no
+   consumer re-tokenises it. [enforced: test:tests/test_dev2172_one_mode_b_reader.py]
+   [enforced: test:tests/test_dev2187_one_reader_law.py]
+9. **One writer of result values**: every output path encodes result values
+   with one codec in `core.format`; none encodes a value itself.
+   [enforced: test:tests/test_dev2172_value_codec.py]
+10. **One typing**: a value's type is derived from its key in one place; every
+    check, coercion and metadata lift reads that derivation. [target: DEV-2180]
+11. **Fail at save time**: a stored definition guaranteed to fail every query that reads it is refused when saved, wherever the check is affordable; query time keeps the same check as a fail-closed backstop for definitions stored without it. [review]
 
 ## 4. Enforcement
 
@@ -209,5 +194,5 @@ parser of the constrained convention `arch_check` enforces (`model-identity`, `m
 ## 6. Rationale
 
 The wedge is focused on the query pipeline because that is where boundary
-violations accumulate (see `sql.arc42.md`); buckets stay coarse until real work
+violations accumulate (see `python.sql.arc42.md`); buckets stay coarse until real work
 touches them.

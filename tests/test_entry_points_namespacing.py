@@ -7,9 +7,9 @@ Storage-layer behavior is pinned in ``test_storage_namespacing.py`` and
 Surfaces covered:
 
 * MCP tools — ``set_datasource_priority`` / ``get_datasource_priority``;
-  ``edit_model`` / ``inspect_model`` / ``delete_model`` / ``create_model``
-  accept a ``data_source`` argument; ambiguity errors mention both fixes
-  (priority list + explicit arg).
+  ``edit_model`` / ``delete_model`` / ``create_model`` accept a ``data_source``
+  argument (``inspect`` a qualified reference); ambiguity errors mention both
+  fixes (priority list + explicit arg).
 * HTTP API — ``GET /models/{name}?data_source=`` / ``DELETE`` / ``409`` on
   ambiguity; ``GET /datasources/priority`` / ``PUT /datasources/priority``.
 * Python client — ``client.get_model(name, data_source=...)`` and
@@ -20,6 +20,7 @@ storage-namespacing tests + the new API endpoints.
 """
 
 import tempfile
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
@@ -46,8 +47,10 @@ def storage():
 
 
 @pytest.fixture
-def mcp_server(storage):
-    return create_mcp_server(storage=storage)
+async def mcp_server(storage) -> AsyncIterator[Any]:
+    server: Any = create_mcp_server(storage=storage)
+    yield server
+    await server._slayer_engine.aclose()
 
 
 @pytest.fixture
@@ -112,7 +115,7 @@ class TestMCPDatasourcePriority:
 
 
 # ---------------------------------------------------------------------------
-# MCP — edit_model / inspect_model / delete_model accept data_source
+# MCP — edit_model / delete_model accept data_source; inspect a qualified reference
 # ---------------------------------------------------------------------------
 
 
@@ -166,8 +169,8 @@ class TestMCPModelToolsDataSourceArg:
 
         result = await _call_mcp(
             mcp_server,
-            name="inspect_model",
-            arguments={"model_name": "users", "data_source": "db_a"},
+            name="inspect",
+            arguments={"entity_type": "model", "reference": "db_a.users", "compact": False},
         )
         # Output identifies the datasource so the agent can verify it picked
         # the right one.
@@ -176,7 +179,7 @@ class TestMCPModelToolsDataSourceArg:
     async def test_inspect_model_helper_chain_scoped_to_data_source(
         self, mcp_server, storage, monkeypatch
     ) -> None:
-        """The helpers backing ``inspect_model`` (``_get_row_count``, sample
+        """The helpers backing the model ``inspect`` (``_get_row_count``, sample
         profiling, the sample-data query) all run ``engine.execute`` against the model.
         After v4 each of those calls must forward
         ``data_source=model.data_source`` so the engine's bare-name resolution
@@ -187,7 +190,7 @@ class TestMCPModelToolsDataSourceArg:
         await storage.save_model(_model("users", data_source="db_a"))
         await storage.save_model(_model("users", data_source="db_b"))
 
-        # Capture every engine.execute call made by the inspect_model helpers.
+        # Capture every engine.execute call made by the model inspect helpers.
         captured: list[dict[str, Any]] = []
         original_execute = qe_mod.SlayerQueryEngine.execute
 
@@ -205,20 +208,20 @@ class TestMCPModelToolsDataSourceArg:
 
         await _call_mcp(
             mcp_server,
-            name="inspect_model",
-            arguments={"model_name": "users", "data_source": "db_a"},
+            name="inspect",
+            arguments={"entity_type": "model", "reference": "db_a.users", "compact": False},
         )
 
         # Helpers should have called engine.execute at least once on the
         # ``users`` model, and *every* such call must carry data_source="db_a".
         users_calls = [c for c in captured if c["source_model"] == "users"]
         assert users_calls, (
-            "expected inspect_model helpers to run at least one ``users`` "
+            "expected model inspect helpers to run at least one ``users`` "
             f"query; got: {captured!r}"
         )
         bad = [c for c in users_calls if c["data_source_kwarg"] != "db_a"]
         assert not bad, (
-            "inspect_model helper(s) called engine.execute on 'users' "
+            "model inspect helper(s) called engine.execute on 'users' "
             f"without data_source='db_a': {bad!r}"
         )
 

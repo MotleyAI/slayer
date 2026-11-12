@@ -21,7 +21,7 @@ Actually there's a bit more to it — for example, automatic propagation of meta
 
 ## How queries as models enable multi-stage queries
 
-Combined with another powerful SLayer feature — [inline joins and dimensions](../../concepts/queries.md#modelextension) — this makes multi-stage queries a natural, effortless thing.
+Combined with another powerful SLayer feature — [inline joins and dimensions](../../concepts/queries.md#query-extensions) — this makes multi-stage queries a natural, effortless thing.
 
 For the first example above, all you need to do is use the (revenue by store and month) query as the root model of a second query. Pass both as a [query list](../../concepts/queries.md#query-lists):
 
@@ -37,12 +37,12 @@ For the first example above, all you need to do is use the (revenue by store and
   {
     "source_model": "monthly_store_revenue",
     "measures": ["avg(order_total_sum)"],
-    "dimensions": ["stores.name"]
+    "dimensions": ["stores__name"]
   }
 ]
 ```
 
-The inner query produces (store, month, revenue) rows. The outer query uses the inner's name as `source_model` and requests `avg(order_total_sum)` — aggregating the inner query's `order_total_sum` measure with `avg` at query time.
+The inner query produces (store, month, revenue) rows. The outer query uses the inner's name as `source_model`, groups by `stores__name` (the inner query's flat output column for `stores.name`) and requests `avg(order_total_sum)` — aggregating the inner query's `order_total_sum` measure with `avg` at query time.
 
 If you'd rather not type `order_total_sum` everywhere, give the inner measure an explicit `name` and reference that. The user-supplied `name` overrides the canonical `col_agg` naming for both simple aggregations and arithmetic/transform formulas, and downstream stages reference it directly:
 
@@ -58,7 +58,7 @@ If you'd rather not type `order_total_sum` everywhere, give the inner measure an
   {
     "source_model": "monthly_store_revenue",
     "measures": [{"formula": "avg(rev)"}],
-    "dimensions": ["stores.name"]
+    "dimensions": ["stores__name"]
   }
 ]
 ```
@@ -69,7 +69,7 @@ The inner stage emits a column called `rev`; the outer stage averages `avg(rev)`
 
 The second example is more elaborate, as we have two logical steps: first, calculate the order count per customer; then, bucket it and use the bucketed value as a dimension in the parent query.
 
-As we want to use a result of a child query as a dimension, we use a [dynamic join](../../concepts/queries.md#modelextension) inside the parent query to make it available. For the bucketing, we use an inline dimension with a CASE expression; since the child query is a joined model like any other, we reference its columns using the standard `table.column` syntax in the dimension's SQL:
+As we want to use a result of a child query as a dimension, we use a [dynamic join](../../concepts/queries.md#query-extensions) inside the parent query to make it available. For the bucketing, we use an inline dimension with a CASE expression; since the child query is a joined model like any other, we reference its columns using the standard `table.column` syntax in the dimension's SQL:
 
 ```json
 [
@@ -80,18 +80,19 @@ As we want to use a result of a child query as a dimension, we use a [dynamic jo
     "dimensions": ["customer_id"]
   },
   {
-    "source_model": {
+    "source_model": "orders",
+    "extensions": [{
       "source_name": "orders",
       "joins": [{"target_model": "customer_activity", "join_pairs": [["customer_id", "customer_id"]]}],
-      "columns": [{"name": "activity_bucket", "sql": "CASE WHEN customer_activity._count >= 500 THEN 'High' WHEN customer_activity._count >= 200 THEN 'Medium' ELSE 'Low' END", "type": "string"}]
-    },
+      "columns": [{"name": "activity_bucket", "sql": "CASE WHEN customer_activity._count >= 500 THEN 'High' WHEN customer_activity._count >= 200 THEN 'Medium' ELSE 'Low' END", "type": "TEXT"}]
+    }],
     "measures": ["count(*)", "sum(order_total)"],
     "dimensions": ["activity_bucket"]
   }
 ]
 ```
 
-The inner query computes total orders per customer. The outer query joins this result to `orders` via `ModelExtension`, defines a CASE-based bucket dimension, and groups orders by that bucket.
+The inner query computes total orders per customer. The outer query joins this result to `orders` through its `extensions`, defines a CASE-based bucket dimension, and groups orders by that bucket.
 
 ## Stages can reference each other — DAGs, not just chains
 
@@ -107,10 +108,11 @@ Stages in a query list are not restricted to a linear pipeline. Any stage may us
   },
   {
     "name": "tagged",
-    "source_model": {
+    "source_model": "customers",
+    "extensions": [{
       "source_name": "customers",
       "joins": [{"target_model": "kpis", "join_pairs": [["id", "customer_id"]]}]
-    },
+    }],
     "dimensions": ["name", "kpis.order_total_sum"]
   },
   {

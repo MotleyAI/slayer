@@ -17,6 +17,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.engine.extensions import apply_query_extensions
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.yaml_storage import YAMLStorage
 import slayer.engine.bundle_builder
@@ -157,8 +158,9 @@ class TestSourceModelShapes:
             columns=[Column(name="discount", type=DataType.DOUBLE)],
             joins=[],
         )
-        query = SlayerQuery(source_model=ext)
-        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
+        query = SlayerQuery(source_model="orders", extensions=[ext])
+        built = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
+        _, bundle = apply_query_extensions(query=query, scope=None, bundle=built)
         assert bundle.source_model is not None
         assert bundle.source_model.name == "orders"
         col_names = {c.name for c in bundle.source_model.columns}
@@ -176,12 +178,14 @@ class TestSourceModelShapes:
     async def test_dict_model_extension_source(self, tmp_path):
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
         query = SlayerQuery.model_validate({
-            "source_model": {
+            "source_model": "orders",
+            "extensions": [{
                 "source_name": "orders",
                 "columns": [{"name": "discount", "type": "DOUBLE"}],
-            },
+            }],
         })
-        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
+        built = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
+        _, bundle = apply_query_extensions(query=query, scope=None, bundle=built)
         assert bundle.source_model is not None
         assert bundle.source_model.name == "orders"
         assert "discount" in {c.name for c in bundle.source_model.columns}
@@ -307,12 +311,12 @@ class TestVariablePrecedence:
 class TestMultiStage:
     async def test_named_queries_passthrough(self, tmp_path):
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
-        stage1 = SlayerQuery(
-            name="stage1",
-            source_model="orders",
-            dimensions=["status"],
-            measures=[{"formula": "amount:sum"}],
-        )
+        stage1 = SlayerQuery.model_validate({
+            "name": "stage1",
+            "source_model": "orders",
+            "dimensions": ["status"],
+            "measures": [{"formula": "sum(amount)"}],
+        })
         root = SlayerQuery(source_model="stage1", dimensions=["status"])
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage, named_queries={"stage1": stage1}
@@ -325,12 +329,12 @@ class TestMultiStage:
         # must be the REAL base model the non-sibling stages bind against
         # (plan_query uses bundle.source_model for every non-sibling stage).
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
-        stage1 = SlayerQuery(
-            name="stage1",
-            source_model="orders",
-            dimensions=["status"],
-            measures=[{"formula": "amount:sum"}],
-        )
+        stage1 = SlayerQuery.model_validate({
+            "name": "stage1",
+            "source_model": "orders",
+            "dimensions": ["status"],
+            "measures": [{"formula": "sum(amount)"}],
+        })
         root = SlayerQuery(source_model="stage1", dimensions=["status"])
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage, named_queries={"stage1": stage1}
@@ -342,12 +346,12 @@ class TestMultiStage:
         # A sibling stage over orders joins customers → those targets must
         # be in referenced_models so the sibling's plan_query can hop them.
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
-        stage1 = SlayerQuery(
-            name="stage1",
-            source_model="orders",
-            dimensions=["status"],
-            measures=[{"formula": "customers.revenue:sum"}],
-        )
+        stage1 = SlayerQuery.model_validate({
+            "name": "stage1",
+            "source_model": "orders",
+            "dimensions": ["status"],
+            "measures": [{"formula": "sum(customers.revenue)"}],
+        })
         root = SlayerQuery(source_model="stage1", dimensions=["status"])
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage, named_queries={"stage1": stage1}
@@ -364,10 +368,11 @@ class TestMultiStage:
         )
         sibling = SlayerQuery(
             name="aux",
-            source_model=ModelExtension(
+            source_model="bare",
+            extensions=[ModelExtension(
                 source_name="bare",
                 joins=[ModelJoin(target_model="audit", join_pairs=[["audit_id", "id"]])],
-            ),
+            )],
             dimensions=["status"],
         )
         root = SlayerQuery(source_model="orders", dimensions=["status"])
@@ -380,12 +385,12 @@ class TestMultiStage:
     async def test_sibling_chain_to_inline_model_collects_joins(self, tmp_path):
         # The chain bottoms out at an inline SlayerModel with its own joins.
         storage = await _storage(tmp_path, _regions(), _customers())
-        stage1 = SlayerQuery(
-            name="stage1",
-            source_model=_orders(),  # inline, carries the customers join
-            dimensions=["status"],
-            measures=[{"formula": "amount:sum"}],
-        )
+        stage1 = SlayerQuery.model_validate({
+            "name": "stage1",
+            "source_model": _orders(),
+            "dimensions": ["status"],
+            "measures": [{"formula": "sum(amount)"}],
+        })
         root = SlayerQuery(source_model="stage1", dimensions=["status"])
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage, named_queries={"stage1": stage1}
@@ -433,12 +438,17 @@ class TestStorageReadEconomy:
         storage = _CountingStorage(
             await _storage(tmp_path, _orders(), _customers(), _regions(), _warehouses())
         )
-        stage_a = SlayerQuery(name="stage_a", source_model="orders",
-                              measures=[{"formula": "*:count"}])
-        stage_b = SlayerQuery(name="stage_b", source_model="orders",
-                              measures=[{"formula": "amount:sum"}])
-        root = SlayerQuery(source_model="stage_a",
-                           measures=[{"formula": "*:count"}])
+        stage_a = SlayerQuery.model_validate({
+            "name": "stage_a",
+            "source_model": "orders",
+            "measures": [{"formula": "count(*)"}],
+        })
+        stage_b = SlayerQuery.model_validate({
+            "name": "stage_b",
+            "source_model": "orders",
+            "measures": [{"formula": "sum(amount)"}],
+        })
+        root = SlayerQuery.model_validate({"source_model": "stage_a", "measures": [{"formula": "count(*)"}]})
         await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage,
             named_queries={"stage_a": stage_a, "stage_b": stage_b},

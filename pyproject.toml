@@ -1,6 +1,6 @@
 [project]
 name = "motley-slayer"
-version = "1.4.0"
+version = "2.0.0.dev0"
 description = "A lightweight, agent-first semantic layer for AI agents"
 requires-python = ">=3.11"
 license = "MIT"
@@ -30,9 +30,10 @@ Discord = "https://discord.gg/egWxMctHCA"
 [tool.poetry.dependencies]
 python = "^3.11"
 sqlglot = {version = ">=30.17", extras = ["c"]}
-sqlalchemy = ">=2.0,<2.1"
+sqlalchemy = ">=2.0.43,<2.1"
 greenlet = ">=1"
 pydantic = ">=2.0"
+pyparsing = ">=3.1"
 python-dateutil = ">=2.8"
 pyyaml = ">=6.0"
 fastapi = ">=0.100"
@@ -43,16 +44,14 @@ pandas = {version = ">=2.0", optional = true}
 # imports (renamed to `mcp.server.mcpserver.MCPServer`); cap until the 2.x migration
 # lands. Floor 1.19: the first `FastMCP.tool` accepting `meta` (always-load option).
 mcp = ">=1.19,<2"
-psycopg2-binary = {version = ">=2.9", optional = true}
-asyncpg = {version = ">=0.27", optional = true}
+psycopg = {version = ">=3.1", extras = ["binary"], optional = true}
 pymysql = {version = ">=1.0", optional = true}
-aiomysql = {version = ">=0.2", optional = true}
 clickhouse-sqlalchemy = {version = ">=0.3", optional = true}
 pyodbc = {version = ">=5.0", optional = true}
 sqlalchemy-bigquery = {version = ">=1.11", optional = true, python = "<3.15"}
 # DuckDB + jafgen are core deps so the bundled `slayer datasources create demo`
-# works after a single `pip install motley-slayer`.
-duckdb = ">=0.9"
+# works after a single `pip install motley-slayer`. 1.1 is the first catalog with every key column ingestion reads.
+duckdb = ">=1.1"
 duckdb-engine = ">=0.13"
 jafgen = "^0.4.14"
 # esprima is a pure-Python ESTree parser (zero transitive deps) used by the
@@ -87,8 +86,8 @@ trino = {version = ">=0.340", optional = true}
 
 [tool.poetry.extras]
 client = ["httpx", "pandas"]
-postgres = ["psycopg2-binary", "asyncpg"]
-mysql = ["pymysql", "aiomysql"]
+postgres = ["psycopg"]
+mysql = ["pymysql"]
 clickhouse = ["clickhouse-sqlalchemy"]
 sqlserver = ["pyodbc"]
 snowflake = ["snowflake-connector-python", "snowflake-sqlalchemy"]
@@ -98,7 +97,7 @@ dbt = ["dbt-core"]
 flight = ["pyarrow", "protobuf"]
 advanced_search = ["litellm", "numpy", "ladybug"]
 embedding_search = ["litellm", "numpy"]  # legacy alias for advanced_search without graph support
-all = ["httpx", "pandas", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "pyodbc", "snowflake-connector-python", "snowflake-sqlalchemy", "sqlalchemy-bigquery", "trino", "dbt-core", "pyarrow", "protobuf", "litellm", "numpy", "ladybug"]
+all = ["httpx", "pandas", "psycopg", "pymysql", "clickhouse-sqlalchemy", "pyodbc", "snowflake-connector-python", "snowflake-sqlalchemy", "sqlalchemy-bigquery", "trino", "dbt-core", "pyarrow", "protobuf", "litellm", "numpy", "ladybug"]
 
 [project.scripts]
 slayer = "slayer.cli:main"
@@ -110,8 +109,10 @@ pytest-timeout = ">=2.3"
 ruff = ">=0.4"
 pytest-postgresql = "^8.0.0"
 psycopg2-binary = "^2.9.11"
+asyncpg = ">=0.27"
+aiomysql = ">=0.2"
 pytest-benchmark = "^5.2.3"
-duckdb = ">=0.9"
+duckdb = ">=1.1"
 duckdb-engine = ">=0.13"
 nbclient = ">=0.10"
 nbformat = ">=5.10"
@@ -132,7 +133,10 @@ jpype1 = "^1.5.0"
 testcontainers = {extras = ["mysql", "clickhouse", "mssql", "trino"], version = "^4.0"}
 basedpyright = "^1.39.10"
 pytest-xdist = ">=3.6"
-living-architecture = "0.3.1"
+living-architecture = "0.6.0"
+jsonschema = "^4.23"
+filelock = ">=3.12,<4"
+pg8000 = "^1.31.6"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -140,6 +144,7 @@ addopts = "--ignore=tests/perf"
 markers = [
     "integration: marks tests as integration tests (require a real database)",
     "metabase_e2e: live-Metabase end-to-end suite (requires Docker)",
+    "abandons_async_engines: the test abandons closed loops' async engines (tests/_async_engine_release_law.py)",
 ]
 asyncio_mode = "auto"
 # Resource-ownership gate: a leaked sqlite connection / undisposed engine is an error on

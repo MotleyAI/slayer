@@ -29,8 +29,9 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType, JoinCardinality, JoinType, invert_cardinality
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
-from slayer.core.keys import ColumnKey, ColumnSqlKey, ColumnTypeFn, ValueKey, source_anchor_path
-from slayer.core.models import ModelJoin, SlayerModel, is_key_set_unique, join_key_error
+from slayer.core.keys import ColumnElementFn, ColumnKey, ColumnSqlKey, ColumnTypeFn, ValueKey, source_anchor_path
+from slayer.core.models import Column, ModelJoin, SlayerModel, is_key_set_unique, join_key_error
+from slayer.core.names import match_name
 from slayer.core.time_spine import PRODUCT_JOIN_TYPE, TIME_SPINE_MODEL, axis_column, is_spine, spine_joins
 
 __all__ = [
@@ -45,11 +46,17 @@ __all__ = [
     "follow",
     "incident_model_names",
     "is_product_edge",
+    "is_lateral_edge",
     "is_unrelated_edge",
+    "list_child",
+    "list_child_name",
+    "with_list_children",
+    "model_column_element",
+    "join_key_columns",
     "matching_edges",
     "neighbors",
+    "orient_join",
     "observe_traversals",
-    "physical_join_pairs",
     "provably_to_one",
     "resolve_hop",
     "resolved_terminal",
@@ -93,6 +100,10 @@ class OrientedJoin(BaseModel):
     target_spelling: str | None = None
     # A keyless hop pairing every source row with every target row; ``None`` for a declared join.
     product: ProductKind | None = None
+    # A list column's hop between its model and its element child (the list column's name); ``None`` otherwise.
+    lateral: str | None = None
+    # A query object's local aliases of the edge.
+    aliases: tuple[str, ...] = ()
 
 
 _traversals: ContextVar[Optional[Dict[str, bool]]] = ContextVar(
@@ -108,6 +119,16 @@ def observe_traversals() -> Iterator[Dict[str, bool]]:
     token = _traversals.set(sink)
     try:
         yield sink
+    finally:
+        _traversals.reset(token)
+
+
+@contextmanager
+def unobserved() -> Iterator[None]:
+    """Traversals in the block go unrecorded: a validation walk, not a read the planner must serve."""
+    token = _traversals.set(None)
+    try:
+        yield
     finally:
         _traversals.reset(token)
 
@@ -130,18 +151,25 @@ def reverse_token(edge: OrientedJoin) -> str:
     return edge.name or edge.source_spelling or edge.source_model
 
 
-def matching_edges(edges: list[OrientedJoin], token: str) -> list[OrientedJoin]:
-    """The edges ``token`` names, by precedence: edge name, then a query stage's
-    spelling (it shadows a same-named model), then a model name — never a
-    stage's minted identity."""
-    for match in (
-        lambda e: e.name == token,
-        lambda e: e.target_spelling == token,
-        lambda e: e.target_spelling is None and e.target_model == token,
-    ):
-        hits = [e for e in edges if match(e)]
-        if hits:
-            return hits
+def _spellings(edge: OrientedJoin) -> tuple[tuple[str, ...], ...]:
+    """An edge's names by precedence: edge name, a query stage's spelling (it shadows a same-named model), model name
+    (never a stage's minted identity), then its query-local aliases."""
+    model = edge.target_model if edge.target_spelling is None else None
+    return (
+        tuple(n for n in (edge.name,) if n is not None), tuple(n for n in (edge.target_spelling,) if n is not None),
+        tuple(n for n in (model,) if n is not None), tuple(edge.aliases),
+    )
+
+
+def matching_edges(edges: list[OrientedJoin], token: str, *, quoted: bool = False) -> list[OrientedJoin]:
+    """The edges ``token`` names, by precedence (``_spellings``): an exact spelling at any precedence, else (unquoted)
+    a case-insensitive one."""
+    for exact in (True,) if quoted else (True, False):
+        for tier in range(4):
+            names = [n for e in edges for n in _spellings(e)[tier]]
+            found = match_name(name=token, declared=names, quoted=exact)
+            if found is not None:
+                return [e for e in edges if found in _spellings(e)[tier]]
     return []
 
 
@@ -173,7 +201,16 @@ def _orient(
         declaring_model=declaring,
         source_spelling=spellings.get(from_model),
         target_spelling=spellings.get(to_model),
+        aliases=join.aliases,
     )
+
+
+def orient_join(*, join: ModelJoin, declaring: SlayerModel, other: SlayerModel | None, from_model: str) -> OrientedJoin:
+    """``join`` (declared on ``declaring``, reaching ``other``) oriented so its source is ``from_model``."""
+    spellings = {declaring.name: declaring.explicit_spelling}
+    if other is not None:
+        spellings[other.name] = other.explicit_spelling
+    return _orient(join=join, declaring=declaring.name, from_model=from_model, spellings=spellings)
 
 
 def _product_edge(model: SlayerModel) -> OrientedJoin:
@@ -255,6 +292,87 @@ def _unrelated_edge(*, source: SlayerModel, target: SlayerModel) -> OrientedJoin
     )
 
 
+#: The element column of a list child.
+LIST_ELEMENT_COLUMN = "value"
+
+
+#: A list child's identity prefix (reserved: no stored model carries it).
+LIST_CHILD_PREFIX = "__slayer_list__"
+
+
+def list_child_name(*, parent: str, column: str) -> str:
+    """A list child's minted model identity; the length prefix keeps ``__`` in names unambiguous."""
+    return f"{LIST_CHILD_PREFIX}{len(parent)}_{parent}__{column}"
+
+
+def list_child(*, parent: SlayerModel, column: Column) -> SlayerModel:
+    """The element child of ``parent``'s list ``column``: one row per non-NULL element, its value ``value``.
+    Cached on ``parent`` under everything the child is built from, so a copied or edited parent never reuses a
+    stale one."""
+    key = (parent.name, parent.data_source, column.name, column.element_type, parent.inline)
+    cached = parent._list_children.get(key)
+    if cached is not None:
+        return cached
+    name = list_child_name(parent=parent.name, column=column.name)
+    # Built valid, then renamed: the name validator refuses the reserved prefix. Never a relation of its own.
+    child = SlayerModel(
+        name="list_child", sql_table="list_child", data_source=parent.data_source or "list_child",
+        columns=[Column(name=LIST_ELEMENT_COLUMN, type=column.element_type or DataType.UNKNOWN)],
+    ).model_copy(update={"name": name, "sql_table": name, "data_source": parent.data_source})
+    child._list_of = (parent.name, column.name)
+    child._inline = parent.inline
+    return parent._list_children.setdefault(key, child)
+
+
+def with_list_children(models_by_name: Dict[str, SlayerModel]) -> Dict[str, SlayerModel]:
+    """``models_by_name`` plus the element child of every list column."""
+    out = dict(models_by_name)
+    for model in models_by_name.values():
+        for column in model.list_columns():
+            name = list_child_name(parent=model.name, column=column.name)
+            if name not in out:
+                out[name] = list_child(parent=model, column=column)
+    return out
+
+
+def _lateral_edge(*, parent: SlayerModel, column: str, forward: bool) -> OrientedJoin:
+    """The hop between ``parent`` and its ``column`` child: one-to-many forward, the child's own row back."""
+    child = list_child_name(parent=parent.name, column=column)
+    return OrientedJoin(
+        source_model=parent.name if forward else child, target_model=child if forward else parent.name,
+        join_pairs=[], join_type=JoinType.INNER,
+        cardinality=JoinCardinality.ONE_TO_MANY if forward else JoinCardinality.MANY_TO_ONE,
+        name=column, declaring_model=parent.name,
+        source_spelling=parent.explicit_spelling if forward else None,
+        target_spelling=None if forward else parent.explicit_spelling,
+        lateral=column,
+    )
+
+
+def _list_edges(*, model: SlayerModel, models_by_name: dict[str, SlayerModel]) -> list[OrientedJoin]:
+    """``model``'s hops to its list children, and a list child's hop back to its parent."""
+    out = [_lateral_edge(parent=model, column=c.name, forward=True) for c in model.list_columns()]
+    if model.list_of is not None:
+        parent = models_by_name.get(model.list_of[0])
+        if parent is not None:
+            out.append(_lateral_edge(parent=parent, column=model.list_of[1], forward=False))
+    return out
+
+
+def is_lateral_edge(edge: OrientedJoin) -> bool:
+    return edge.lateral is not None
+
+
+def _hop_target(*, edge: OrientedJoin, current: SlayerModel, models_by_name: dict[str, SlayerModel]) -> SlayerModel | None:
+    """The model ``edge`` reaches from ``current``; a list child is minted when the map lacks it."""
+    target = models_by_name.get(edge.target_model)
+    if target is None and edge.lateral is not None and edge.cardinality is JoinCardinality.ONE_TO_MANY:
+        column = current.get_column(edge.lateral)
+        if column is not None:
+            return list_child(parent=current, column=column)
+    return target
+
+
 def is_product_edge(edge: OrientedJoin) -> bool:
     """A keyless product hop (never a declared or axis edge)."""
     return edge.product is not None
@@ -286,27 +404,29 @@ def edges_between(*, source: SlayerModel, target: SlayerModel) -> list[OrientedJ
     for j in _declared_toward(target, source.name, spine=is_spine(source)):
         out.append(_orient(join=j, declaring=target.name, from_model=source.name,
                            spellings=spellings))
+    out.extend(e for e in _list_edges(model=source, models_by_name={target.name: target})
+               if e.target_model == target.name)
     _observe((e.target_model for e in out), strict=False)
     return out
 
 
-def physical_join_pairs(
+def join_key_columns(
     *, edge: OrientedJoin, source: SlayerModel, target: SlayerModel,
-) -> list[tuple[str, str]]:
-    """``edge``'s key pairs in physical spelling; raises ``JoinKeyError`` on a non-base key."""
+) -> list[tuple[Column, Column]]:
+    """``edge``'s key pairs as their declared columns; raises ``JoinKeyError`` on a non-base key."""
     declared_target = (edge.target_model if edge.declaring_model == edge.source_model
                        else edge.source_model)
 
-    def physical(key: str, model: SlayerModel) -> str:
+    def column(key: str, model: SlayerModel) -> Column:
         err = join_key_error(model=edge.declaring_model, target=declared_target, key=key,
                              side=model.name, columns=model.columns)
         if err is not None:
             raise err
         col = model.get_column(key)
         assert col is not None
-        return col.physical_name
+        return col
 
-    return [(physical(src, source), physical(tgt, target)) for src, tgt in edge.join_pairs]
+    return [(column(src, source), column(tgt, target)) for src, tgt in edge.join_pairs]
 
 
 def _virtual_spine_edges(*, model: SlayerModel, models_by_name: dict[str, SlayerModel]) -> list[OrientedJoin]:
@@ -335,6 +455,7 @@ def neighbors(
     spellings = {n: m.explicit_spelling for n, m in models_by_name.items()}
     spellings[model.name] = model.explicit_spelling
     out = _virtual_spine_edges(model=model, models_by_name=models_by_name)
+    out.extend(_list_edges(model=model, models_by_name=models_by_name))
     for j in spine_joins(model, models_by_name=models_by_name):
         out.append(_orient(join=j, declaring=model.name, from_model=model.name,
                            spellings=spellings))
@@ -350,8 +471,8 @@ def neighbors(
 
 
 def incident_model_names(*, model: SlayerModel, models_by_name: dict[str, SlayerModel]) -> list[str]:
-    """Names of every model sharing an edge with ``model``, loaded or not."""
-    return sorted({e.target_model for e in neighbors(model=model, models_by_name=models_by_name)})
+    """Names of every model sharing a declared edge with ``model``, loaded or not."""
+    return sorted({e.target_model for e in neighbors(model=model, models_by_name=models_by_name) if e.lateral is None})
 
 
 def resolve_hop(
@@ -359,6 +480,7 @@ def resolve_hop(
     current: SlayerModel,
     token: str,
     models_by_name: dict[str, SlayerModel],
+    quoted: bool = False,
 ) -> OrientedJoin | None:
     """Resolve one path ``token`` from ``current``.
 
@@ -367,9 +489,9 @@ def resolve_hop(
     reference error) and raises :class:`AmbiguousJoinPathError` when two or more
     edges qualify.
     """
-    candidates = matching_edges(neighbors(model=current, models_by_name=models_by_name), token)
+    candidates = matching_edges(neighbors(model=current, models_by_name=models_by_name), token, quoted=quoted)
     if not candidates:
-        candidates = _unrelated_hops(current=current, token=token, models_by_name=models_by_name)
+        candidates = _unrelated_hops(current=current, token=token, models_by_name=models_by_name, quoted=quoted)
     if not candidates:
         return None
     if len(candidates) > 1:
@@ -384,11 +506,11 @@ def resolve_hop(
 
 
 def _unrelated_hops(
-    *, current: SlayerModel, token: str, models_by_name: dict[str, SlayerModel],
+    *, current: SlayerModel, token: str, models_by_name: dict[str, SlayerModel], quoted: bool = False,
 ) -> list[OrientedJoin]:
     """The product hop from a query frame's population to the unrelated dataset ``token`` names."""
     targets = [models_by_name[n] for n in sorted(current.unrelated_datasets) if n in models_by_name]
-    return matching_edges([_unrelated_edge(source=current, target=t) for t in targets], token)
+    return matching_edges([_unrelated_edge(source=current, target=t) for t in targets], token, quoted=quoted)
 
 
 def addresses_alone(*, edge: OrientedJoin, incident: list[OrientedJoin]) -> bool:
@@ -421,6 +543,7 @@ def _walk(
     path: Sequence[str],
     models_by_name: dict[str, SlayerModel],
     revisits: bool,
+    quoted: Sequence[bool] = (),
 ) -> tuple[list[OrientedJoin] | None, WalkMiss | None]:
     current = root
     visited = {root.name}
@@ -428,7 +551,9 @@ def _walk(
     for i, token in enumerate(path):
         if chain and is_spine(current):
             return None, WalkMiss(index=i, token=token, kind="spine")  # a path may end at the spine, never cross it
-        edge = resolve_hop(current=current, token=token, models_by_name=models_by_name)
+        edge = resolve_hop(
+            current=current, token=token, models_by_name=models_by_name, quoted=i < len(quoted) and quoted[i],
+        )
         if edge is None:
             return None, WalkMiss(index=i, token=token, kind="no_edge")
         if not revisits and edge.target_model in visited:
@@ -439,7 +564,7 @@ def _walk(
                 hop=token,
                 via=current.name,
             )
-        nxt = models_by_name.get(edge.target_model)
+        nxt = _hop_target(edge=edge, current=current, models_by_name=models_by_name)
         if nxt is None:
             return None, WalkMiss(index=i, token=token, kind="unloaded", target=edge.target_model)
         visited.add(edge.target_model)
@@ -453,6 +578,7 @@ def walk(
     root: SlayerModel,
     path: Sequence[str],
     models_by_name: dict[str, SlayerModel],
+    quoted: Sequence[bool] = (),
 ) -> list[OrientedJoin] | None:
     """Resolve a full ``path`` of tokens spelled in one frame from ``root`` into an oriented chain.
 
@@ -461,7 +587,7 @@ def walk(
     :class:`CircularJoinPathError` when a hop revisits a model already on the path
     (a definite malformation, not a miss).
     """
-    return _walk(root=root, path=path, models_by_name=models_by_name, revisits=False)[0]
+    return _walk(root=root, path=path, models_by_name=models_by_name, revisits=False, quoted=quoted)[0]
 
 
 def walk_miss(
@@ -469,9 +595,10 @@ def walk_miss(
     root: SlayerModel,
     path: Sequence[str],
     models_by_name: dict[str, SlayerModel],
+    quoted: Sequence[bool] = (),
 ) -> WalkMiss | None:
     """Why :func:`walk` returns ``None`` for ``path`` (``None`` when it does not); raises as :func:`walk` does."""
-    return _walk(root=root, path=path, models_by_name=models_by_name, revisits=False)[1]
+    return _walk(root=root, path=path, models_by_name=models_by_name, revisits=False, quoted=quoted)[1]
 
 
 def walk_terminal(
@@ -479,10 +606,11 @@ def walk_terminal(
     root: SlayerModel,
     path: Sequence[str],
     models_by_name: dict[str, SlayerModel],
+    quoted: Sequence[bool] = (),
 ) -> tuple[SlayerModel, tuple[str, ...]] | None:
     """``(terminal model, canonical path)`` of :func:`walk`, ``None`` where it misses; raises as it does."""
-    models = {**models_by_name, root.name: models_by_name.get(root.name, root)}
-    chain = walk(root=root, path=path, models_by_name=models)
+    models = with_list_children({**models_by_name, root.name: models_by_name.get(root.name, root)})
+    chain = walk(root=root, path=path, models_by_name=models, quoted=quoted)
     if chain is None:
         return None
     return (models[chain[-1].target_model] if chain else root), canonical_path(chain)
@@ -510,7 +638,8 @@ def _owner_stack(
         return None
     if chain is None:
         return None
-    return [root, *(models_by_name[e.target_model] for e in chain)]
+    models = with_list_children(models_by_name)
+    return [root, *(models[e.target_model] for e in chain)]
 
 
 def _incident_named(
@@ -579,6 +708,7 @@ def _cancelling_walk(
 ) -> tuple[tuple[str, ...] | None, tuple[str, str, str] | None]:
     models = dict(models_by_name)
     models.setdefault(root.name, root)
+    models = with_list_children(models)
     stack = _owner_stack(root=root, owner_path=owner_path, models_by_name=models)
     if stack is None:
         return None, None
@@ -609,6 +739,7 @@ def _terminal(
 ) -> SlayerModel | None:
     models = dict(models_by_name)
     models.setdefault(root.name, root)
+    models = with_list_children(models)
     try:
         chain, _miss = _walk(root=root, path=path, models_by_name=models, revisits=revisits)
     except (AmbiguousJoinPathError, CircularJoinPathError):
@@ -640,20 +771,35 @@ def resolved_terminal(
     return _terminal(root=root, path=path, models_by_name=models_by_name, revisits=True)
 
 
+def model_column(
+    *, model: SlayerModel, models_by_name: dict[str, SlayerModel], key: object,
+) -> Optional[Column]:
+    """The column leaf ``key`` names, rooted at ``model``; ``None`` for anything unresolvable."""
+    if isinstance(key, ColumnSqlKey):
+        owner = model if key.model == model.name else models_by_name.get(key.model)
+        leaf = key.column_name
+    elif isinstance(key, ColumnKey):
+        owner = resolved_terminal(root=model, path=key.path, models_by_name=models_by_name)
+        leaf = key.leaf
+    else:
+        return None
+    return owner.get_column(leaf) if owner is not None else None
+
+
 def model_column_type(*, model: SlayerModel, models_by_name: dict[str, SlayerModel]) -> ColumnTypeFn:
     """Declared types of column leaves rooted at ``model``; ``None`` for anything unresolvable."""
     def column_type(key: ValueKey) -> Optional[DataType]:
-        if isinstance(key, ColumnSqlKey):
-            owner = model if key.model == model.name else models_by_name.get(key.model)
-            leaf = key.column_name
-        elif isinstance(key, ColumnKey):
-            owner = resolved_terminal(root=model, path=key.path, models_by_name=models_by_name)
-            leaf = key.leaf
-        else:
-            return None
-        col = owner.get_column(leaf) if owner is not None else None
+        col = model_column(model=model, models_by_name=models_by_name, key=key)
         return col.type if col is not None else None
     return column_type
+
+
+def model_column_element(*, model: SlayerModel, models_by_name: dict[str, SlayerModel]) -> ColumnElementFn:
+    """Element types of list-typed column leaves rooted at ``model``; ``None`` for anything else."""
+    def column_element(key: ValueKey) -> Optional[DataType]:
+        col = model_column(model=model, models_by_name=models_by_name, key=key)
+        return col.element_type if col is not None else None
+    return column_element
 
 
 def aggregation_owner(

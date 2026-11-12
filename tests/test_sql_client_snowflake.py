@@ -2,16 +2,14 @@
 
 Where the **dialect-class methods** are tested in
 ``tests/dialects/test_snowflake.py``, this module covers
-``slayer.sql.client``'s **delegation** to those methods:
+``slayer.database.client``'s **delegation** to those methods:
 
-* ``_map_type_code`` consults
-  ``SqlDialect.map_cursor_type_code`` before falling through to
-  Postgres OIDs.
+* The typed probe reads cursor descriptions through
+  ``SqlDialect.describe_cursor_column``, never through Postgres OIDs.
 * ``_execute_sql_sync`` / ``_execute_sql_async`` emit the dialect's
-  ``statement_timeout_sql`` when the standard if/elif chain doesn't
+  ``statement_timeout`` when the standard if/elif chain doesn't
   cover the dialect.
-* The type-probe path (``_get_column_types_sync`` /
-  ``_get_column_types_async``) also applies the dialect's timeout SQL.
+* The type-probe door also applies the dialect's timeout SQL.
 * Snowflake has no async driver (sync driver only).
 * The ``LIMIT 0`` type probe is preserved on Snowflake (no LIMIT 1 fallback).
 """
@@ -20,9 +18,13 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy.engine.url import make_url
+from sqlglot import exp
 
-from slayer.sql import client
-from slayer.sql.dialects import dialect_for_ds_type
+from slayer.core.enums import DataType
+from slayer.database import client
+from slayer.database.client import ResultColumnType
+from slayer.sql.dialects import SnowflakeDialect
 
 
 # ---------------------------------------------------------------------------
@@ -30,38 +32,39 @@ from slayer.sql.dialects import dialect_for_ds_type
 # ---------------------------------------------------------------------------
 
 
-class TestMapTypeCodeDelegatesToDialect:
-    """``_map_type_code(int, db_type="snowflake")`` must consult
-    ``SnowflakeDialect.map_cursor_type_code`` before falling through to
-    the Postgres OID map. The dispatch order matters — code 16 is
-    "boolean" in PG-OID land but undefined in Snowflake, so a Snowflake
-    call MUST NOT return "boolean" for code 16.
+def _probe_code(code: int) -> ResultColumnType:
+    """The typed probe's answer for one Snowflake column described with ``code``."""
+    fake_engine = MagicMock()
+    fake_conn = MagicMock()
+    fake_engine.connect.return_value.__enter__.return_value = fake_conn
+    fake_result = MagicMock()
+    fake_result.keys.return_value = ["col"]
+    fake_result.cursor.description = [("col", code, None, None, 38, 0, True)]
+    fake_conn.exec_driver_sql.return_value = fake_result
+    return client.get_result_column_types_sync(sql="SELECT 1 AS col", db_type="snowflake", engine=fake_engine)["col"]
+
+
+class TestCursorDescriptionDelegatesToDialect:
+    """Snowflake codes are read by ``SnowflakeDialect.describe_cursor_column``,
+    never through the Postgres OID table — code 16 is "boolean" in PG-OID land
+    but undefined in Snowflake, so a Snowflake column MUST NOT read as boolean.
     """
 
     @pytest.mark.parametrize(
         "code,expected",
         [
-            (0, "number"),   # FIXED
-            (2, "string"),   # TEXT
-            (8, "time"),     # TIMESTAMP_NTZ
-            (13, "boolean"), # BOOLEAN
+            (0, DataType.INT),        # FIXED
+            (2, DataType.TEXT),       # TEXT
+            (8, DataType.TIMESTAMP),  # TIMESTAMP_NTZ
+            (13, DataType.BOOLEAN),   # BOOLEAN
         ],
     )
-    def test_known_snowflake_codes_routed_to_dialect(self, code: int, expected: str) -> None:
-        assert client._map_type_code(code, db_type="snowflake") == expected
+    def test_known_snowflake_codes_routed_to_dialect(self, code: int, expected: DataType) -> None:
+        assert _probe_code(code).type == expected
 
-    def test_unknown_snowflake_code_defaults_to_string(self) -> None:
-        """Unknown Snowflake codes return None from the dialect; the
-        ``snowflake``-specific branch in ``_map_type_code`` then defaults
-        to ``"string"`` rather than falling through to ``_PG_OID_MAP``.
-        Code 16 is ``"boolean"`` in PG-OID but undefined on Snowflake —
-        a fall-through would mis-classify."""
-        assert client._map_type_code(16, db_type="snowflake") == "string"
-
-    def test_unknown_snowflake_code_with_no_pg_match_defaults_to_string(self) -> None:
-        """A code that's unknown to both Snowflake AND Postgres OIDs
-        falls through to the existing string default."""
-        assert client._map_type_code(999, db_type="snowflake") == "string"
+    @pytest.mark.parametrize("code", [16, 999])
+    def test_unknown_snowflake_code_defaults_to_text(self, code: int) -> None:
+        assert _probe_code(code) == ResultColumnType(type=DataType.TEXT)
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +85,7 @@ class TestSnowflakeStatementTimeout:
 
     def test_execute_sync_emits_dialect_timeout_sql(self) -> None:
         """Snowflake falls past the postgres/mysql/clickhouse if-elif
-        and uses the dialect's ``statement_timeout_sql``."""
+        and uses the dialect's ``statement_timeout``."""
         fake_engine = MagicMock()
         fake_conn = MagicMock()
         fake_engine.connect.return_value.__enter__.return_value = fake_conn
@@ -134,20 +137,20 @@ class TestSnowflakeStatementTimeout:
 
         asyncio.run(_run())
 
-    def test_get_column_types_sync_emits_dialect_timeout_sql(self) -> None:
+    def test_get_result_column_types_sync_emits_dialect_timeout_sql(self) -> None:
         """Type-probe path (``LIMIT 0``) compiles a Snowflake query and
         consumes warehouse compute. The ALTER SESSION must precede it."""
         fake_engine = MagicMock()
         fake_conn = MagicMock()
         fake_engine.connect.return_value.__enter__.return_value = fake_conn
-        fake_cursor_desc = [("col", 0, None, None, None, None, None)]  # FIXED → number
+        fake_cursor_desc = [("col", 0, None, None, None, None, None)]  # FIXED
         fake_result = MagicMock()
         fake_result.keys.return_value = ["col"]
         fake_result.cursor.description = fake_cursor_desc
         fake_conn.exec_driver_sql.return_value = fake_result
 
-        client._get_column_types_sync(
-            sql="SELECT 1 AS col",
+        client.get_result_column_types_sync(
+            client.render_type_probe(exp.select(exp.Literal.number(1).as_("col")), dialect=SnowflakeDialect()),
             db_type="snowflake",
             engine=fake_engine,
         )
@@ -166,12 +169,9 @@ class TestSnowflakeAsyncRouting:
     """snowflake-connector-python is sync only; SlayerSQLClient must NOT
     treat it as an async-capable driver."""
 
-    def test_snowflake_has_no_async_driver(self) -> None:
-        assert dialect_for_ds_type("snowflake").async_driver is None
-
-    def test_async_connection_string_returns_none_for_snowflake(self) -> None:
-        cs = "snowflake://?connection_name=default"
-        assert client._async_connection_string(connection_string=cs, db_type="snowflake") is None
+    def test_snowflake_url_is_not_async_capable(self) -> None:
+        pytest.importorskip("snowflake.sqlalchemy")
+        assert not make_url("snowflake://?connection_name=default").get_dialect(_is_async=True).is_async
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +190,7 @@ class TestTypeProbeUsesLimitZero:
     """
 
     def test_snowflake_uses_limit_zero(self) -> None:
-        probe = client._build_type_probe_sql("SELECT * FROM orders", db_type="snowflake")
+        probe = client.render_type_probe(exp.select("*").from_("orders"), dialect=SnowflakeDialect()).sql
         assert "LIMIT 0" in probe
         assert "LIMIT 1" not in probe
         assert "SELECT TOP" not in probe.upper()

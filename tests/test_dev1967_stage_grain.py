@@ -13,7 +13,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from tests._dev1836_fixtures import dev1836_models
 
 MONTH = [{"dimension": "ordered_at", "granularity": "month"}]
-AMOUNT = {"formula": "amount:sum", "name": "t"}
+AMOUNT = {"formula": "sum(amount)", "name": "t"}
 CHANNEL_TOTAL = {"expression": "sum(amount, partition_by=channel)", "name": "ct"}
 
 
@@ -49,7 +49,7 @@ class TestGrainEmission:
     def test_aggregate_valued_computed_dimension_is_a_member(self) -> None:
         grain = _grain(
             dimensions=["status", CHANNEL_TOTAL],
-            measures=[{"formula": "*:count", "name": "n"}],
+            measures=[{"formula": "count(*)", "name": "n"}],
         )
         assert grain == ["status", "ct"]
 
@@ -66,14 +66,14 @@ class TestGrainEmission:
     def test_transform_valued_computed_dimension_is_a_member(self) -> None:
         grain = _grain(
             dimensions=["status", {"expression": "rank(sum(amount, partition_by=channel), direction='desc')", "name": "rk"}],
-            measures=[{"formula": "*:count", "name": "n"}],
+            measures=[{"formula": "count(*)", "name": "n"}],
         )
         assert grain == ["status", "rk"]
 
     def test_cumsum_stage_grain_includes_its_time_bucket(self) -> None:
         grain = _grain(
             time_dimensions=MONTH,
-            measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],
+            measures=[{"formula": "cumsum(sum(amount))", "name": "cs"}],
         )
         assert grain == ["ordered_at"]
 
@@ -97,11 +97,11 @@ class TestSiblingStageGrain:
     def test_named_sibling_stage_schema_carries_its_grain(self) -> None:
         sibling = SlayerQuery.model_validate({
             "name": "c", "source_model": "customers", "dimensions": ["id"],
-            "measures": [{"formula": "tier:max", "name": "tr"}],
+            "measures": [{"formula": "max(tier)", "name": "tr"}],
         })
         root = SlayerQuery.model_validate({
             "source_model": "c", "dimensions": ["tr"],
-            "measures": [{"formula": "*:count", "name": "n"}],
+            "measures": [{"formula": "count(*)", "name": "n"}],
         })
         customers = next(m for m in dev1836_models() if m.name == "customers")
         bundle = _bundle().model_copy(update={"stage_source_models": {"c": customers}})

@@ -11,7 +11,7 @@ from __future__ import annotations
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.join_walker import provably_to_one
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.engine.join_safety import may_inline_crossing_inputs, safe_reachable
+from slayer.engine.cardinality.join_safety import may_inline_crossing_inputs, safe_reachable
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 
@@ -24,7 +24,7 @@ from tests._dev1836_fixtures import (
     regions_model,
     segments_model,
 )
-from slayer.engine import join_safety
+from slayer.engine.cardinality import join_safety
 
 
 def _models_by_name() -> dict[str, SlayerModel]:
@@ -249,7 +249,7 @@ class TestMayInlineSeam:
         )
         query = q(
             dimensions=[{"name": "status"}],
-            measures=[{"formula": "gold_amount:sum", "name": "g"}],
+            measures=[{"formula": "sum(gold_amount)", "name": "g"}],
         )
         planned = plan_query(query=query, bundle=bundle)
         assert planned.regroup_attach_plans, (

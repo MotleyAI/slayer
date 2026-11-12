@@ -18,7 +18,7 @@ from slayer.core.enums import DataType
 from slayer.core.policy import JoinFilterRule, JoinFilterRuleset, SessionPolicy
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.client import SlayerSQLClient
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -132,7 +132,8 @@ class TestAxes:
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_two_temporal_columns_mean_no_axis(self, backend) -> None:
         async with spine_engine(backend, models=spine_models(shipments="two_dates")) as eng:
-            resp = await eng.execute(spine_query(measures=[m("sum(shipments.weight)", "w")]))
+            resp = await eng.execute(spine_query(measures=[m("sum(shipments.weight)", "w")],
+                                                 to_many_handling="broadcast"))
             assert by_bucket(resp, ["w"]) == {k: (7.0,) for k in MONTHS}
             assert [w.measure for w in broadcast_warnings(resp)]
             assert "w" in broadcast_warnings(resp)[0].measure
@@ -142,7 +143,7 @@ class TestAxes:
 
     async def test_a_measure_on_an_axisless_p_broadcasts(self, engine) -> None:
         query = spine_query(measures=[m("count(customers.id)", "c")], date_range=JAN_MAR,
-                            dimensions=["customers.region"])
+                            dimensions=["customers.region"], to_many_handling="broadcast")
         resp = await engine.execute(query)
         assert by_bucket(resp, ["c"], by=["region"]) == {(g, k): (1.0,) for g in "NSE" for k in MONTHS[:3]}
         assert [w.measure for w in broadcast_warnings(resp)] == ["c"]
@@ -153,7 +154,8 @@ class TestAxes:
 
     async def test_a_dataset_with_no_to_one_route_broadcasts(self, engine) -> None:
         # customers shares a component with the facts, but every hop toward them fans.
-        query = spine_query(measures=[m("count(customers.id)", "c")], date_range=JAN_MAR)
+        query = spine_query(measures=[m("count(customers.id)", "c")], date_range=JAN_MAR,
+                            to_many_handling="broadcast")
         resp = await engine.execute(query)
         assert by_bucket(resp, ["c"]) == {k: (3.0,) for k in MONTHS[:3]}
         assert [w.measure for w in broadcast_warnings(resp)] == ["c"]
@@ -163,9 +165,18 @@ class TestAxes:
         assert "metric 'c' would broadcast" in str(exc.value)
         assert "time_spine" in str(exc.value)
 
+    async def test_a_dataset_with_no_to_one_route_associates_by_default(self, engine) -> None:
+        query = spine_query(measures=[m("count(customers.id)", "c")], date_range=JAN_MAR)
+        default = await engine.execute(query)
+        assoc = await engine.execute(query.model_copy(update={"to_many_handling": "associate"}))
+        assert sorted(map(str, default.data)) == sorted(map(str, assoc.data))
+        assert [w.measure for w in default.warnings or [] if w.kind == "associated"] == ["c"]
+        assert not broadcast_warnings(default)
+
     async def test_only_the_routeless_measure_broadcasts_beside_a_fact(self, engine) -> None:
         resp = await engine.execute(spine_query(
             measures=[m("sum(orders.amount)", "o"), m("count(customers.id)", "c")], date_range=JAN_MAR,
+            to_many_handling="broadcast",
         ))
         assert by_bucket(resp, ["o", "c"]) == {k: (TWO_FACT_ROWS[k][0], 3.0) for k in MONTHS[:3]}
         assert [w.measure for w in broadcast_warnings(resp)] == ["c"]
@@ -245,13 +256,23 @@ class TestRouting:
             assert by_bucket(resp, ["o", "r", "n"]) == TWO_FACT_ROWS
 
     async def test_existing_queries_never_route_through_the_spine(self, engine) -> None:
+        query = {
+            "source_model": "orders",
+            "time_dimensions": [{"dimension": "order_date", "granularity": "month"}],
+            "measures": [m("sum(returns.amount)", "r")],
+        }
+        resp = await engine.execute(SlayerQuery.model_validate({**query, "to_many_handling": "broadcast"}))
+        assert by_bucket(resp, ["r"], bucket="orders.order_date") == {"2025-01": (35.0,), "2025-02": (35.0,)}
+        assert broadcast_warnings(resp)
+        assert "time_spine" not in (resp.sql or "")
+
+    async def test_existing_queries_associate_by_default_without_the_spine(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
             "source_model": "orders",
             "time_dimensions": [{"dimension": "order_date", "granularity": "month"}],
             "measures": [m("sum(returns.amount)", "r")],
         }))
-        assert by_bucket(resp, ["r"], bucket="orders.order_date") == {"2025-01": (35.0,), "2025-02": (35.0,)}
-        assert broadcast_warnings(resp)
+        assert [w for w in resp.warnings or [] if w.kind == "associated"]
         assert "time_spine" not in (resp.sql or "")
 
 
@@ -489,7 +510,7 @@ class TestNoCountableRows:
         {"distinct_dimension_values": False, "measures": []},
         {"dimensions": [{"expression": "date_part('month', time_spine.timestamp)", "name": "mo"}],
          "measures": TWO_FACTS},
-        {"order": [{"column": "day(time_spine.timestamp)"}], "measures": TWO_FACTS},
+        {"order": [{"column": "date_trunc('day', time_spine.timestamp)"}], "measures": TWO_FACTS},
     ], ids=["plain-dimension", "raw-rows", "computed-dimension-operand", "unprojected-order-key"])
     async def test_spine_column_only_as_a_bucketed_time_dimension(self, engine, extra) -> None:
         extra = dict(extra)  # the parametrized dict is shared across backends

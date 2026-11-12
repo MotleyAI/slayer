@@ -11,7 +11,7 @@ from slayer.core.errors import SlayerError
 from slayer.core.keys import AggregateKey, TransformKey
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import _source_is_reaggregation, bind_expr
-from slayer.engine.syntax import AggCall, parse_expr
+from slayer.core.syntax import AggCall, parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1847_fixtures import (

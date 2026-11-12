@@ -49,32 +49,32 @@ class TestExplicitTwinParity:
     async def test_canonical_customers_population(self, chain_engine) -> None:
         await _assert_twin(
             chain_engine,
-            rootless=SlayerQuery(
-                dimensions=["customers.region"],
-                measures=[{"formula": "orders.amount:sum", "name": "rev"}],
-            ),
-            explicit=SlayerQuery(
-                source_model="customers",
-                dimensions=["customers.region"],
-                measures=[{"formula": "orders.amount:sum", "name": "rev"}],
-            ),
+            rootless=SlayerQuery.model_validate({
+                "dimensions": ["customers.region"],
+                "measures": [{"formula": "sum(orders.amount)", "name": "rev"}],
+            }),
+            explicit=SlayerQuery.model_validate({
+                "source_model": "customers",
+                "dimensions": ["customers.region"],
+                "measures": [{"formula": "sum(orders.amount)", "name": "rev"}],
+            }),
             population="customers",
         )
 
     async def test_field_filter_pulls_to_orders(self, chain_engine) -> None:
         await _assert_twin(
             chain_engine,
-            rootless=SlayerQuery(
-                dimensions=["customers.region"],
-                measures=[{"formula": "amount:sum", "name": "rev"}],
-                filters=["orders.status = 'ok'"],
-            ),
-            explicit=SlayerQuery(
-                source_model="orders",
-                dimensions=["customers.region"],
-                measures=[{"formula": "amount:sum", "name": "rev"}],
-                filters=["orders.status = 'ok'"],
-            ),
+            rootless=SlayerQuery.model_validate({
+                "dimensions": ["customers.region"],
+                "measures": [{"formula": "sum(amount)", "name": "rev"}],
+                "filters": ["orders.status = 'ok'"],
+            }),
+            explicit=SlayerQuery.model_validate({
+                "source_model": "orders",
+                "dimensions": ["customers.region"],
+                "measures": [{"formula": "sum(amount)", "name": "rev"}],
+                "filters": ["orders.status = 'ok'"],
+            }),
             population="orders",
         )
 
@@ -104,11 +104,11 @@ class TestExplicitOverride:
     async def test_explicit_root_bypasses_inference(self, chain_engine) -> None:
         """Explicit source_model=orders is honored even though inference would
         pick customers — proven by West (a region with no orders) being absent."""
-        resp = await chain_engine.execute(SlayerQuery(
-            source_model="orders",
-            dimensions=["customers.region"],
-            measures=[{"formula": "amount:sum", "name": "rev"}],
-        ))
+        resp = await chain_engine.execute(SlayerQuery.model_validate({
+            "source_model": "orders",
+            "dimensions": ["customers.region"],
+            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+        }))
         assert resp.population == "orders"
         assert resp.population_inferred is False
         regions = {r["orders.customers.region"] for r in resp.data}
@@ -128,10 +128,10 @@ class TestExplicitOverride:
 
 class TestNullAttachment:
     async def test_region_without_orders_attaches_null(self, chain_engine) -> None:
-        resp = await chain_engine.execute(SlayerQuery(
-            dimensions=["customers.region"],
-            measures=[{"formula": "orders.amount:sum", "name": "rev"}],
-        ))
+        resp = await chain_engine.execute(SlayerQuery.model_validate({
+            "dimensions": ["customers.region"],
+            "measures": [{"formula": "sum(orders.amount)", "name": "rev"}],
+        }))
         assert resp.population == "customers"
         assert resp.population_inferred is True
         got = rows_by(resp, key="customers.region", value="customers.rev")

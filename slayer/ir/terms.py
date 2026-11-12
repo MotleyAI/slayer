@@ -13,8 +13,8 @@ from typing import Protocol, Tuple, Union, runtime_checkable
 
 from pydantic import BaseModel, model_validator
 
-from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.keys import AggregateKey, Grain, TransformKey, ValueKey
+import slayer.core.enums
 
 
 @runtime_checkable
@@ -60,7 +60,7 @@ class Aggregate(_Term, frozen=True):
 
     ``home_path`` is the resolved home dataset (Axiom 2) as a join path relative
     to the environment's host: the deepest dataset that determines every input;
-    ``()`` is the host itself. Resolved once in the elaborator (``engine/home``).
+    ``()`` is the host itself. Resolved once in the elaborator (``engine/population/home``).
     """
 
     home: DatasetT
@@ -84,7 +84,7 @@ class Transform(_Term, frozen=True):
 
     @model_validator(mode="after")
     def _require_time_axis(self) -> "Transform":
-        if self.recipe.op in TIME_TRANSFORMS and self.recipe.time_key is None:
+        if self.recipe.op in slayer.core.enums.TIME_TRANSFORMS and self.recipe.time_key is None:
             raise ValueError(
                 f"Transform {self.recipe.op!r} requires a time axis "
                 f"(recipe.time_key is unset).",

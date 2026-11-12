@@ -132,7 +132,7 @@ async def _generate(query: SlayerQuery, *, dialect: str = "postgres") -> str:
 
 
 _MONTH = TimeDimension(
-    dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+    dimension="created_at", granularity=TimeGranularity.MONTH,
 )
 
 
@@ -143,27 +143,27 @@ _FILTER_SHAPES = {
     "host_where_scalar": SlayerQuery(
         source_model="orders",
         dimensions=[ColumnRef(name="status")],
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
         filters=["ifnull(disc, 0) > 1"],
     ),
     "host_where_derived": SlayerQuery(
         source_model="orders",
         dimensions=[ColumnRef(name="status")],
-        measures=[ModelMeasure(formula="*:count")],
+        measures=[ModelMeasure(formula="count(*)")],
         filters=["net > 5"],
     ),
     "host_having_aggregate": SlayerQuery(
         source_model="orders",
         dimensions=[ColumnRef(name="status")],
-        measures=[ModelMeasure(formula="qty:sum", name="q")],
-        filters=["qty:sum > 5"],
+        measures=[ModelMeasure(formula="sum(qty)", name="q")],
+        filters=["sum(qty) > 5"],
     ),
     "shifted_cte_where": SlayerQuery(
         source_model="orders",
         time_dimensions=[_MONTH],
         measures=[
-            ModelMeasure(formula="amount:sum", name="amt"),
-            ModelMeasure(formula="time_shift(amount:sum, -1, 'month')", name="prev"),
+            ModelMeasure(formula="sum(amount)", name="amt"),
+            ModelMeasure(formula="time_shift(sum(amount), -1, 'month')", name="prev"),
         ],
         filters=["status = 'new'"],
     ),
@@ -171,8 +171,8 @@ _FILTER_SHAPES = {
         source_model="orders",
         time_dimensions=[_MONTH],
         measures=[
-            ModelMeasure(formula="amount:sum", name="amt"),
-            ModelMeasure(formula="time_shift(amount:sum, -1, 'month')", name="prev"),
+            ModelMeasure(formula="sum(amount)", name="amt"),
+            ModelMeasure(formula="time_shift(sum(amount), -1, 'month')", name="prev"),
         ],
         filters=["MixedCol > 5"],
     ),
@@ -211,7 +211,7 @@ class TestOptionalScopeFailsClosed:
             ("column", ColumnKey(leaf="amount")),
             ("derived", ColumnSqlKey(model="orders", column_name="net")),
             ("time_trunc", TimeTruncKey(
-                column=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH)),
+                source=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH)),
             ("aggregate", AggregateKey(source=ColumnKey(leaf="amount"), agg="sum")),
             ("nested_in_arithmetic", ArithmeticKey(
                 op="+",
@@ -521,7 +521,7 @@ _SLOTTED_KINDS = {
     "column": ColumnKey(leaf="amount"),
     "derived": ColumnSqlKey(model="orders", column_name="net"),
     "time_trunc": TimeTruncKey(
-        column=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH),
+        source=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH),
     "aggregate": AggregateKey(source=ColumnKey(leaf="amount"), agg="sum"),
     "transform": TransformKey(
         op="cumsum",

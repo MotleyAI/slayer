@@ -18,11 +18,12 @@ import yaml
 
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
+from slayer.engine.query_engine import SlayerResponse
 from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._engine_helpers import owned_query_engine
 
 DS = "shop"
 BACKENDS = ["yaml", "sqlite"]
@@ -212,12 +213,9 @@ async def raw_doc(storage: StorageBackend, name: str) -> dict:
 # Execution.
 # --------------------------------------------------------------------------- #
 async def run(storage: StorageBackend, query: SlayerQuery | dict, *, dry_run: bool = False) -> SlayerResponse:
-    engine = SlayerQueryEngine(storage=storage)
-    try:
+    async with owned_query_engine(storage=storage) as engine:
         q = query if isinstance(query, SlayerQuery) else SlayerQuery.model_validate(query)
         return await engine.execute(q, dry_run=dry_run)
-    finally:
-        engine.close()
 
 
 def measure_total(resp: SlayerResponse, *, measure: str) -> float:

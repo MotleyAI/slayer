@@ -52,7 +52,7 @@ async def test_temporal_max_returns_full_date(backend: str) -> None:
         eng = await _engine(backend, tmp)
         resp = await eng.execute(SlayerQuery.model_validate({
             "source_model": "orders", "dimensions": ["customer_id"],
-            "measures": [{"formula": "created_at:max"}],
+            "measures": [{"formula": "max(created_at)"}],
         }))
         got = {r["orders.customer_id"]: date_str(r["orders.created_at_max"]) for r in resp.data}
         assert got == {100: "2025-03-20", 101: "2025-02-25", 102: "2025-05-05"}
@@ -65,7 +65,7 @@ async def test_partitioned_temporal_aggregate_returns_full_date(backend: str) ->
         eng = await _engine(backend, tmp)
         resp = await eng.execute(SlayerQuery.model_validate({
             "source_model": "orders", "dimensions": ["customer_id"],
-            "measures": [{"formula": "created_at:max(partition_by=customer_id)"}],
+            "measures": [{"formula": "max(created_at, partition_by=customer_id)"}],
         }))
         key = "orders.created_at_max_partition_by_customer_id"
         got = {r["orders.customer_id"]: date_str(r[key]) for r in resp.data}
@@ -79,7 +79,7 @@ async def test_derived_temporal_column_returns_full_date(backend: str) -> None:
         eng = await _engine(backend, tmp, extra_columns=[_LAST_TOUCH])
         resp = await eng.execute(SlayerQuery.model_validate({
             "source_model": "orders", "dimensions": ["customer_id"],
-            "measures": [{"formula": "last_touch:max"}],
+            "measures": [{"formula": "max(last_touch)"}],
         }))
         got = {r["orders.customer_id"]: date_str(r["orders.last_touch_max"]) for r in resp.data}
         assert got == {100: "2025-03-22", 101: "2025-02-25", 102: "2025-05-06"}
@@ -90,7 +90,7 @@ async def test_sqlite_sql_has_no_temporal_cast() -> None:
     sql = await _engine_generate(
         query=SlayerQuery.model_validate({
             "source_model": "orders", "dimensions": ["customer_id"],
-            "measures": [{"formula": "created_at:max"}],
+            "measures": [{"formula": "max(created_at)"}],
         }),
         model=orders_model(), dialect="sqlite",
     )
@@ -105,7 +105,7 @@ async def test_sqlite_derived_column_sql_has_no_temporal_cast() -> None:
     sql = await _engine_generate(
         query=SlayerQuery.model_validate({
             "source_model": "orders", "dimensions": ["customer_id"],
-            "measures": [{"formula": "last_touch:max"}],
+            "measures": [{"formula": "max(last_touch)"}],
         }),
         model=orders_model(extra_columns=[_LAST_TOUCH]), dialect="sqlite",
     )
@@ -118,22 +118,26 @@ _EXPECTED_SQL = {
     "postgres": (
         'SELECT orders.customer_id AS "orders.customer_id", '
         'CAST(MAX(orders.created_at) AS TIMESTAMP) AS "orders.created_at_max" '
-        "FROM orders AS orders GROUP BY orders.customer_id"
+        "FROM orders AS orders GROUP BY orders.customer_id "
+        'ORDER BY "orders.customer_id" ASC'
     ),
     "duckdb": (
         'SELECT orders.customer_id AS "orders.customer_id", '
         'CAST(MAX(orders.created_at) AS TIMESTAMP) AS "orders.created_at_max" '
-        "FROM orders AS orders GROUP BY orders.customer_id"
+        "FROM orders AS orders GROUP BY orders.customer_id "
+        'ORDER BY "orders.customer_id" ASC'
     ),
     "tsql": (
         "SELECT orders.customer_id AS [orders___customer_id], "
         "CAST(MAX(orders.created_at) AS DATETIME2) AS [orders___created_at_max] "
-        "FROM orders AS orders GROUP BY orders.customer_id"
+        "FROM orders AS orders GROUP BY orders.customer_id "
+        "ORDER BY [orders___customer_id] ASC"
     ),
     "bigquery": (
         "SELECT orders.customer_id AS `orders___customer_id`, "
         "CAST(MAX(orders.created_at) AS DATETIME) AS `orders___created_at_max` "
-        "FROM orders AS orders GROUP BY orders.customer_id"
+        "FROM orders AS orders GROUP BY `orders___customer_id` "
+        "ORDER BY `orders___customer_id` ASC NULLS LAST"
     ),
 }
 
@@ -143,7 +147,7 @@ async def test_other_dialects_keep_their_casts(dialect: str) -> None:
     sql = await _engine_generate(
         query=SlayerQuery.model_validate({
             "source_model": "orders", "dimensions": ["customer_id"],
-            "measures": [{"formula": "created_at:max"}],
+            "measures": [{"formula": "max(created_at)"}],
         }),
         model=orders_model(), dialect=dialect,
     )

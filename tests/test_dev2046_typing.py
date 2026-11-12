@@ -23,7 +23,7 @@ from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.binding import bind_expr
 from slayer.engine.key_metadata import aggregated_type, measure_key_type, stage_measure_type
 from slayer.engine.response_meta import _infer_aggregated_format
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 from slayer.facade.catalog import build_local_view
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
@@ -111,9 +111,9 @@ class TestMeasureKeyType:
         assert measure_key_type(model=ORDERS, key=_bind(text), bundle=BUNDLE) is expected
 
     def test_mixed_coalesce_is_not_boolean_typed(self) -> None:
-        """Scenario: mixed-type coalesce is not boolean — no boolean typing."""
+        """Scenario: mixed-type coalesce is not boolean — the boolean branch reads as its integer."""
         key = _bind("sum(coalesce(flag, amount))")
-        assert measure_key_type(model=ORDERS, key=key, bundle=BUNDLE) is None
+        assert measure_key_type(model=ORDERS, key=key, bundle=BUNDLE) is DataType.INT
 
 
 class TestStageMeasureType:
@@ -171,4 +171,4 @@ class TestFacadeAgreement:
         assert checked > 0
         assert "flag_avg" in by_name
         assert by_name["flag_sum"].data_type is DataType.INT
-        assert by_name["flag_wsum"].data_type is DataType.BOOLEAN
+        assert by_name["flag_wsum"].data_type is None

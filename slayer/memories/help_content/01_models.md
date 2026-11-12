@@ -13,11 +13,12 @@ first two become the FROM clause at query time.
 ## Columns
 
 Row-level SQL expressions; the role (group-by key or aggregation source) is decided
-per query. A column's `sql` is Mode-A SQL: any dialect expression, dotted join paths
-allowed, but no aggregations or {{product}} transforms. A column `filter` becomes
+per query. A list column (`type: ARRAY`) groups and compares as the set of its distinct elements and
+takes only `count` / `count_distinct`; aggregate its elements through `<column>.value` (e.g. `tags.value`).
+A column's `sql` is Mode-A SQL: any dialect expression, dotted join paths allowed, but no aggregations or {{product}} transforms. A column `filter` becomes
 CASE WHEN inside aggregates — `sum(active_revenue)` counts only matching rows,
 without affecting sibling measures. `allowed_aggregations` whitelists what may
-aggregate the column; a sole `primary_key: true` column is restricted to count / count_distinct / count_distinct_approx / min / max.
+aggregate the column; a sole `primary_key: true` column is restricted to count / count_distinct / count_distinct_approx / min / max / collect.
 
 Advanced escape hatch: a `Column.sql` MAY be a raw window expression
 (`row_number() over (...)`); filtering on such a column auto-promotes to a

@@ -48,7 +48,7 @@ def _flat(sql: str) -> str:
 
 @pytest.mark.parametrize("dialect", TIER1)
 async def test_lowered_bounds_render(dialect) -> None:
-    sql = await _sql(dialect, date_range="2025-Q1", filters=["ts > 'last 6 hours'", "month(ts) = month(shipped_at)"])
+    sql = await _sql(dialect, date_range="2025-Q1", filters=["ts > 'last 6 hours'", "date_trunc('month', ts) = date_trunc('month', shipped_at)"])
     assert "2025-01-01" in sql, sql
     assert "2025-04-01" in sql, sql
     assert "2026-09-29 12:00:00" in sql, sql  # > last 6 hours ⇔ >= next_start
@@ -76,12 +76,13 @@ async def test_date_operand_gets_a_date_literal(dialect) -> None:
 async def test_one_sided_range_renders_a_single_bound(dialect) -> None:
     sql = await _sql(dialect, date_range=["2024-01-01", None], filters=[])
     assert "2024-01-01" in sql, sql
-    assert "NULL" not in sql.upper(), sql
+    # The default result order's NULL placement is not a bound.
+    assert "NULL" not in sql.upper().rsplit("ORDER BY", 1)[0], sql
 
 
 @pytest.mark.parametrize("dialect", TIER1)
 async def test_granularity_call_non_literal_comparison_truncates_both_sides(dialect) -> None:
-    sql = _flat(await _sql(dialect, filters=["month(ts) = month(shipped_at)"], granularity="day"))
+    sql = _flat(await _sql(dialect, filters=["date_trunc('month', ts) = date_trunc('month', shipped_at)"], granularity="day"))
     d = get_dialect(dialect)
     for col in ("ts", "shipped_at"):
         trunc = d.build_date_trunc(exp.column(col, table="ev"), TimeGranularity.MONTH).sql(dialect=d.sqlglot_name)
@@ -90,7 +91,7 @@ async def test_granularity_call_non_literal_comparison_truncates_both_sides(dial
 
 @pytest.mark.parametrize("dialect", TIER1)
 async def test_granularity_call_literal_comparison_is_a_raw_column_bound(dialect) -> None:
-    sql = await _sql(dialect, filters=["month(ts) >= '2024-03-15'"], granularity="day")
+    sql = await _sql(dialect, filters=["date_trunc('month', ts) >= '2024-03-15'"], granularity="day")
     assert "2024-04-01" in sql, sql
     assert "2024-03-15" not in sql, sql
 
@@ -100,7 +101,7 @@ async def test_granularity_call_literal_comparison_is_a_raw_column_bound(dialect
     ("date_add(ts, 1, 'day') >= '2025-Q1'", None),
     ("date_add(d, 1, 'day') >= '2025-Q1'", None),
     ("date_add(d, 2, 'hour') >= '2025-Q1'", None),
-    ("month(ts) >= '2025-Q1'", None),
+    ("date_trunc('month', ts) >= '2025-Q1'", None),
     ("now() >= '2025-Q1'", None),
     ("max(ts) >= '2025-Q1'", [{"formula": "count(*)", "name": "n"}]),
 ], ids=["column", "timestamp_add", "date_add", "datetime_add", "trunc", "now", "aggregate"])

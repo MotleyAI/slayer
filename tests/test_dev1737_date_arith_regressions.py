@@ -43,7 +43,7 @@ async def test_hourly_time_shift(backend: str) -> None:
     ]
     got = await _run(backend, rows, {
         "time_dimensions": [{"dimension": "ts", "granularity": "hour"}],
-        "measures": ["v:sum", {"formula": "time_shift(v:sum, -1, 'hour')", "name": "x"}],
+        "measures": ["sum(v)", {"formula": "time_shift(sum(v), -1, 'hour')", "name": "x"}],
     }, width=16)
     assert got == {"2024-01-01 10:00": None, "2024-01-01 11:00": 1.0, "2024-01-01 12:00": 2.0}
 
@@ -57,7 +57,7 @@ async def test_month_shift_of_month_end_daily_bucket(backend: str) -> None:
     ]
     got = await _run(backend, rows, {
         "time_dimensions": [{"dimension": "d", "granularity": "day"}],
-        "measures": ["v:sum", {"formula": "time_shift(v:sum, -1, 'month')", "name": "x"}],
+        "measures": ["sum(v)", {"formula": "time_shift(sum(v), -1, 'month')", "name": "x"}],
     }, width=10)
     assert got == {"2024-02-29": None, "2024-03-02": None, "2024-03-31": 10.0}
 
@@ -72,7 +72,7 @@ async def test_one_month_window_ending_at_month_end(backend: str) -> None:
     ]
     got = await _run(backend, rows, {
         "time_dimensions": [{"dimension": "d", "granularity": "day"}],
-        "measures": [{"formula": "v:sum(window='1m')", "name": "x"}],
+        "measures": [{"formula": "sum(v, window='1m')", "name": "x"}],
     }, width=10)
     assert got["2024-03-30"] == 1110.0
     assert got["2024-03-01"] == 111.0
@@ -86,7 +86,7 @@ async def test_sub_day_window_part_before_a_day_part_keeps_its_time(backend: str
     ]
     got = await _run(backend, rows, {
         "time_dimensions": [{"dimension": "d", "granularity": "day"}],
-        "measures": [{"formula": "v:sum(window='6h1d')", "name": "x"}],
+        "measures": [{"formula": "sum(v, window='6h1d')", "name": "x"}],
     }, width=10)
     # [03-04 00:00 - 6h - 1d, 03-04 00:00) starts at 03-02 18:00, excluding 03-02.
     assert got["2024-03-03"] == 100.0
@@ -111,14 +111,13 @@ async def test_consecutive_periods_over_date_column(
 @pytest.mark.parametrize("dim", ["d", "d_expr", "ts"])  # DATE, DATETIME and TIMESTAMP buckets
 @pytest.mark.parametrize("formula,comparison", [
     ("consecutive_periods(sum(v) > 0)",
-     "CAST(`_cp_prev_ev___x` AS TIMESTAMP) = "
-     "CAST(DATETIME_ADD(CAST(CAST(`ev___{dim}` AS TIMESTAMP) AS DATETIME), INTERVAL -1 MONTH) AS TIMESTAMP)"),
-    ("time_shift(v:sum, -1, 'month')",
-     "CAST(DATETIME_ADD(CAST(CAST(base.`ev___{dim}` AS TIMESTAMP) AS DATETIME), INTERVAL -1 MONTH) AS TIMESTAMP) "
-     "IS NOT DISTINCT FROM CAST(shifted_x.`ev___{dim}` AS TIMESTAMP)"),
+     "CAST(`_cp_prev_ev___x` AS DATETIME) = DATETIME_ADD(CAST(`ev___{dim}` AS DATETIME), INTERVAL -1 MONTH)"),
+    ("time_shift(sum(v), -1, 'month')",
+     "DATETIME_ADD(CAST(base.`ev___{dim}` AS DATETIME), INTERVAL -1 MONTH) "
+     "IS NOT DISTINCT FROM CAST(shifted_x.`ev___{dim}` AS DATETIME)"),
 ])
-async def test_bigquery_bucket_comparisons_are_timestamps(dim: str, formula: str, comparison: str) -> None:
-    # BigQuery compares none of DATE / DATETIME / TIMESTAMP with another; buckets meet as TIMESTAMP.
+async def test_bigquery_bucket_comparisons_are_datetimes(dim: str, formula: str, comparison: str) -> None:
+    # BigQuery compares none of DATE / DATETIME / TIMESTAMP with another; buckets meet as DATETIME.
     model = _ev_model()
     model.columns.append(Column(name="d_expr", sql="DATE(ts)", type=DataType.DATE))
     sql = await _engine_generate(query=SlayerQuery.model_validate({

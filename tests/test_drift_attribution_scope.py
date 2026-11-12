@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 from collections.abc import AsyncIterator
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -15,15 +15,17 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
-import slayer.engine.schema_drift as schema_drift
+import slayer.live_schema.schema_drift as schema_drift
 from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.engine import ingestion
+from slayer.live_schema import ingestion
+from slayer.live_schema.ingestion import IngestableObject
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import EditModelDelete, LiveTable, WholeModelDelete
-from slayer.engine.schema_scope import SchemaRef
-from slayer.sql import sqlite_introspect
+from slayer.live_schema.schema_drift import EditModelDelete, LiveTable, WholeModelDelete
+from slayer.live_schema.schema_scope import SchemaRef
+from slayer.database import sqlite_introspect
+from slayer.database.client import DatabaseUnavailable, SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -131,13 +133,23 @@ class _Spies:
         return [c.kwargs["table_name"] for c in self.introspect.call_args_list]
 
     def listed_databases(self) -> set[str]:
-        return {str(c.kwargs["inspector"].bind.url.database) for c in self.listing.call_args_list}
+        return {str(c.kwargs["client"].datasource.database) for c in self.listing.call_args_list}
 
     def trialled(self) -> list[str]:
         return [c.kwargs["model"].name for c in self.trial.call_args_list]
 
     def probed_tables(self) -> set[str]:
         return {c.kwargs["table"] for c in self.probe.call_args_list}
+
+
+@contextlib.asynccontextmanager
+async def _client(ds: DatasourceConfig) -> AsyncIterator[SlayerSQLClient]:
+    client = SlayerSQLClient(datasource=ds)
+    try:
+        yield client
+    finally:
+        await client.aclose()
+        client.close()
 
 
 def _install_clock(engine: SlayerQueryEngine, clock: _Clock) -> None:
@@ -185,8 +197,9 @@ def spies(env: _Env) -> Any:
 
 async def _fails_unwrapped(
     engine: SlayerQueryEngine, query: Any, *, explain: bool = False,
-) -> SQLAlchemyError:
-    with pytest.raises(SQLAlchemyError) as exc:
+    expected: type[Exception] = SQLAlchemyError,
+) -> Exception:
+    with pytest.raises(expected) as exc:
         await engine.execute(query, explain=explain)
     assert not isinstance(exc.value, SchemaDriftError)
     return exc.value
@@ -549,8 +562,8 @@ class TestSnapshotReuse:
         ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
         listed_objects: dict[str | None, list[str]] = {"a": ["orders"], "b": []}
 
-        def _listing(*, inspector: Any, ref: SchemaRef, include_views: bool) -> list[Any]:
-            return [SimpleNamespace(name=n) for n in listed_objects[ref.name]]
+        def _listing(*, client: Any, ref: SchemaRef, include_views: bool) -> list[Any]:
+            return [IngestableObject(name=n, kind="table") for n in listed_objects[ref.name]]
 
         def _orders(schema: str) -> SlayerModel:
             return SlayerModel(
@@ -559,21 +572,22 @@ class TestSnapshotReuse:
             )
 
         snapshot = schema_drift.DriftSnapshot(created_at=0.0)
-        with patch.object(
-            schema_drift, "_live_schema_refs", return_value=[SchemaRef(name="a"), SchemaRef(name="b")],
-        ), patch.object(
-            ingestion, "list_ingestable_objects", side_effect=_listing,
-        ) as listing, patch.object(
-            schema_drift, "_introspect_one_table", return_value=LiveTable(columns={"id": DataType.TEXT}),
-        ):
-            first = await schema_drift.validate_datasource(
-                datasource=ds, models=[_orders("a")], snapshot=snapshot,
-            )
-            # b.orders is created after the listing; only its basename was listed (in a).
-            listed_objects["b"].append("orders")
-            second = await schema_drift.validate_datasource(
-                datasource=ds, models=[_orders("b")], snapshot=snapshot,
-            )
+        async with _client(ds) as client:
+            with patch.object(
+                schema_drift, "_live_schema_refs", return_value=[SchemaRef(name="a"), SchemaRef(name="b")],
+            ), patch.object(
+                ingestion, "list_ingestable_objects", side_effect=_listing,
+            ) as listing, patch.object(
+                schema_drift, "_introspect_one_table", return_value=LiveTable(columns={"id": DataType.TEXT}),
+            ):
+                first = await schema_drift.validate_datasource(
+                    datasource=ds, models=[_orders("a")], client=client, snapshot=snapshot,
+                )
+                # b.orders is created after the listing; only its basename was listed (in a).
+                listed_objects["b"].append("orders")
+                second = await schema_drift.validate_datasource(
+                    datasource=ds, models=[_orders("b")], client=client, snapshot=snapshot,
+                )
         assert first == []
         assert second == []
         assert listing.call_count == 4
@@ -589,18 +603,19 @@ class TestSnapshotReuse:
             name="orders", sql_table="a.orders", data_source="ds",
             columns=[Column(name="id", type=DataType.TEXT, primary_key=True)],
         )
-        with patch.object(
-            schema_drift, "_live_schema_refs", return_value=[SchemaRef(name="a"), SchemaRef(name="b")],
-        ), patch.object(
-            ingestion, "list_ingestable_objects",
-            side_effect=lambda **_: [SimpleNamespace(name="orders")],
-        ), patch.object(
-            schema_drift, "_introspect_one_table", return_value=LiveTable(columns={"id": DataType.TEXT}),
-        ) as introspect:
-            entries = await schema_drift.validate_datasource(
-                datasource=ds, models=[model],
-                snapshot=schema_drift.DriftSnapshot(created_at=0.0),
-            )
+        async with _client(ds) as client:
+            with patch.object(
+                schema_drift, "_live_schema_refs", return_value=[SchemaRef(name="a"), SchemaRef(name="b")],
+            ), patch.object(
+                ingestion, "list_ingestable_objects",
+                side_effect=lambda **_: [IngestableObject(name="orders", kind="table")],
+            ), patch.object(
+                schema_drift, "_introspect_one_table", return_value=LiveTable(columns={"id": DataType.TEXT}),
+            ) as introspect:
+                entries = await schema_drift.validate_datasource(
+                    datasource=ds, models=[model], client=client,
+                    snapshot=schema_drift.DriftSnapshot(created_at=0.0),
+                )
         assert entries == []
         assert [c.kwargs["ref"].name for c in introspect.call_args_list] == ["a"]
 
@@ -648,10 +663,10 @@ class TestResolvedDatasource:
 _INTROSPECT = schema_drift._introspect_one_table
 
 
-def _customers_unreadable(**kwargs: Any) -> LiveTable:
+async def _customers_unreadable(**kwargs: Any) -> LiveTable:
     if kwargs["table_name"] == "customers":
         raise SQLAlchemyError("metadata read timed out")
-    return _INTROSPECT(**kwargs)
+    return await _INTROSPECT(**kwargs)
 
 
 class TestUnreadableTable:
@@ -712,15 +727,15 @@ class TestUnreachableDatasource:
         query = {"source_model": source, "measures": [{"formula": "count(*)"}]}
         try:
             with patch.object(
-                schema_drift._LiveConnection, "open", autospec=True,
-                side_effect=schema_drift._LiveConnection.open,
+                SlayerSQLClient, "_metadata", autospec=True,
+                side_effect=SlayerSQLClient._metadata,
             ) as connect, patch.object(
                 schema_drift, "_live_columns_for_sql_model",
                 wraps=schema_drift._live_columns_for_sql_model,
             ) as trial:
-                await _fails_unwrapped(engine, query)
+                await _fails_unwrapped(engine, query, expected=DatabaseUnavailable)
                 attempts = connect.call_count + trial.call_count
-                await _fails_unwrapped(engine, query)
+                await _fails_unwrapped(engine, query, expected=DatabaseUnavailable)
             assert attempts >= 1
             assert connect.call_count + trial.call_count == attempts
         finally:
@@ -736,7 +751,7 @@ class TestUnreachableDatasource:
         await storage.save_model(_sql_model(name="sq_customers", sql="SELECT id, region FROM customers"))
         engine = SlayerQueryEngine(storage=storage)
         try:
-            with pytest.raises(SQLAlchemyError):
+            with pytest.raises(DatabaseUnavailable):
                 await engine.validate_models(data_source="ds")
         finally:
             await engine.aclose()
@@ -840,7 +855,7 @@ async def _render(engine: SlayerQueryEngine, payload: Any) -> tuple[Expression, 
     )
     rendered = await engine._plan_and_render(
         query=main, named_queries=named, runtime_kwarg={}, prefer_data_source=ds,
-        splice_chain=chain, as_statement=True,
+        splice_chain=chain,
     )
     prepared = await engine._prepare_pipeline(
         query=main, named_queries=named, runtime_kwarg={}, prefer_data_source=ds,

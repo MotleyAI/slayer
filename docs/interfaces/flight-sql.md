@@ -100,13 +100,21 @@ SLayer accepts a single-`FROM` `SELECT` that translates to a `SlayerQuery`:
 | Feature | Notes |
 |---|---|
 | `SELECT <metric> [, ...]` | Each item must be a metric, dimension, or time-grain expression on the resolved table. |
-| `month(<col>)`, `quarter(...)`, etc. | Time-grain wrappers on time-typed columns. Equivalent to `date_trunc('month', <col>)`. |
+| `month(<col>)`, `quarter(...)`, `EXTRACT(<part> FROM <col>)`, `date_part('<part>', <col>)` | Integer extraction (month of year, …) of a time-typed column, grouped under one column name. Buckets are `date_trunc('<unit>', <col>)`. |
 | `WHERE <col> BETWEEN '...' AND '...'` | On time-typed columns, lifts to `time_dimensions[*].date_range`, a date-only bound carried as its midnight instant so SQL's meaning is kept. |
 | `WHERE <col> >= '...'` / `<=` / `>` / `<` | Passed verbatim into `SlayerQuery.filters` (a date-only literal on a DATE / TIMESTAMP column carried as its midnight instant); comparators are never lifted. |
 | `WHERE ...` (everything else) | Passed verbatim into `SlayerQuery.filters`. |
 | `GROUP BY` | Strict on extras, lenient on omissions. User items must be in the derived dimension set; missing ones are silently filled in from the projection. |
 | `ORDER BY <col> [DESC \| ASC]` | Resolved against projected names. |
 | `LIMIT N OFFSET M` | Integer literals only. |
+
+A projection with no aggregate, metric, `GROUP BY`, `HAVING` or `DISTINCT` (and no metric in `WHERE`) returns
+one row per record, as in SQL; `DISTINCT` or `GROUP BY` returns one row per distinct combination.
+
+List columns travel as their JSON array text in a UTF-8 column (a NULL list as NULL), and JSON values as their
+JSON text; grouping on a list groups by its element set (`["go","sql"]` for `['sql', 'go', 'sql']`), and ordering by one is refused. Every other text-typed
+value follows SLayer's one encoding: a UUID as its string, bytes as `\x` followed by lowercase hex, an interval
+as an ISO-8601 duration (`P1DT2H`).
 
 **`SELECT *` is rejected** on Flight tables; the error includes a pointer to
 `SELECT * FROM INFORMATION_SCHEMA.METRICS WHERE table_name=...` for discovery. `SELECT *`

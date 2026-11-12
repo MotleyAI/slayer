@@ -10,16 +10,16 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.dialects import registry
-from sqlalchemy.dialects.postgresql.psycopg2 import PGDialect_psycopg2
+from sqlalchemy.dialects.postgresql.psycopg import PGDialect_psycopg
 from sqlalchemy.exc import NoSuchModuleError
 
 from slayer.api.server import create_app
 from slayer.core.enums import DataType
 from slayer.core.errors import MissingDriverError, SlayerError
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.sql import client as client_module
-from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.database import client as client_module
+from slayer.database import engine_factory
+from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects import PostgresDialect
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -77,8 +77,8 @@ def _assert_names(err: MissingDriverError, *, ds: DatasourceConfig, missing: str
 @pytest.mark.parametrize(
     "ds_type,blocked_module,extra",
     [
-        ("postgres", "psycopg2", "postgres"),
-        ("postgresql", "psycopg2", "postgres"),
+        ("postgres", "psycopg", "postgres"),
+        ("postgresql", "psycopg", "postgres"),
         ("mysql", "pymysql", "mysql"),
         ("mariadb", "pymysql", "mysql"),
         ("sqlserver", "pyodbc", "sqlserver"),
@@ -140,12 +140,12 @@ def test_missing_transitive_module_of_default_driver_still_names_extra(monkeypat
     ds = _structured("postgres")
 
     def _fail():
-        raise ModuleNotFoundError("No module named 'psycopg2._psycopg'", name="psycopg2._psycopg")
+        raise ModuleNotFoundError("No module named 'psycopg.pq'", name="psycopg.pq")
 
-    monkeypatch.setattr(PGDialect_psycopg2, "import_dbapi", classmethod(lambda cls: _fail()))
+    monkeypatch.setattr(PGDialect_psycopg, "import_dbapi", classmethod(lambda cls: _fail()))
     with pytest.raises(MissingDriverError) as info:
         engine_factory.get_engine(ds)
-    _assert_names(info.value, ds=ds, missing="psycopg2._psycopg")
+    _assert_names(info.value, ds=ds, missing="psycopg.pq")
     assert "pip install 'motley-slayer[postgres]'" in str(info.value)
 
 
@@ -155,16 +155,23 @@ def test_missing_transitive_module_of_default_driver_still_names_extra(monkeypat
 
 
 @pytest.mark.parametrize(
-    "ds_type,blocked_module,extra",
+    "ds,blocked_module,extra",
     [
-        ("postgres", "asyncpg", "postgres"),
-        ("mysql", "aiomysql", "mysql"),
+        (_structured("postgres"), "psycopg", "postgres"),
+        (
+            DatasourceConfig(name="pg_ds", type="postgres", connection_string=f"postgresql+asyncpg://u:p@{_HOST}:5432/d"),
+            "asyncpg", None,
+        ),
+        (
+            DatasourceConfig(name="my_ds", type="mysql", connection_string=f"mysql+aiomysql://u:p@{_HOST}:3306/d"),
+            "aiomysql", None,
+        ),
     ],
+    ids=["default-psycopg", "named-asyncpg", "named-aiomysql"],
 )
 async def test_async_missing_driver_raises_without_sync_fallback(
-    monkeypatch, ds_type, blocked_module, extra,
+    monkeypatch, ds, blocked_module, extra,
 ) -> None:
-    ds = _structured(ds_type)
     _block_modules(monkeypatch, blocked_module)
     sync_engine = MagicMock(side_effect=AssertionError("fell back to the sync engine"))
     monkeypatch.setattr(engine_factory, "get_engine", sync_engine)
@@ -172,7 +179,11 @@ async def test_async_missing_driver_raises_without_sync_fallback(
     with pytest.raises(MissingDriverError) as info:
         await client.execute("SELECT 1")
     _assert_names(info.value, ds=ds, missing=blocked_module)
-    assert f"pip install 'motley-slayer[{extra}]'" in str(info.value)
+    if extra is None:
+        assert "connection_string" in str(info.value)
+        assert "motley-slayer[" not in str(info.value)
+    else:
+        assert f"pip install 'motley-slayer[{extra}]'" in str(info.value)
     sync_engine.assert_not_called()
 
 
@@ -191,7 +202,7 @@ async def test_async_psycopg_kept_without_asyncpg(monkeypatch) -> None:
         await client.aclose()
 
 
-async def test_async_missing_custom_driver_names_connection_string(monkeypatch) -> None:
+async def test_async_missing_named_default_driver_names_extra(monkeypatch) -> None:
     ds = DatasourceConfig(
         name="pg3", type="postgres", connection_string=f"postgresql+psycopg://u:p@{_HOST}:5432/d",
     )
@@ -200,6 +211,18 @@ async def test_async_missing_custom_driver_names_connection_string(monkeypatch) 
     with pytest.raises(MissingDriverError) as info:
         await client.execute("SELECT 1")
     _assert_names(info.value, ds=ds, missing="psycopg")
+    assert "pip install 'motley-slayer[postgres]'" in str(info.value)
+
+
+def test_missing_psycopg2_is_not_attributed_to_the_extra(monkeypatch) -> None:
+    ds = DatasourceConfig(
+        name="pg2", type="postgres", connection_string=f"postgresql+psycopg2://u:p@{_HOST}:5432/d",
+    )
+    _block_modules(monkeypatch, "psycopg2")
+    client = SlayerSQLClient(ds)
+    with pytest.raises(MissingDriverError) as info:
+        client.execute_sync("SELECT 1")
+    _assert_names(info.value, ds=ds, missing="psycopg2")
     assert "connection_string" in str(info.value)
     assert "motley-slayer[" not in str(info.value)
 
@@ -358,7 +381,7 @@ async def test_rest_query_reports_install_hint(monkeypatch, tmp_path) -> None:
         ),
         _validate=False,
     )
-    _block_modules(monkeypatch, "psycopg2", "asyncpg")
+    _block_modules(monkeypatch, "psycopg")
     resp = TestClient(create_app(storage=storage)).post(
         "/query", json={"source_model": "orders", "dimensions": ["id"]},
     )

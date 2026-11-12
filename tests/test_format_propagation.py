@@ -8,6 +8,7 @@ from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
     DataType,
     FLOAT_PLAIN_AGGREGATIONS,
+    LIST_AGGREGATIONS,
     FLOAT_SOURCE_UNIT_AGGREGATIONS,
     INTEGER_AGGREGATIONS,
     PRESERVING_AGGREGATIONS,
@@ -246,6 +247,7 @@ class TestSharedClassifier:
             PRESERVING_AGGREGATIONS,
             FLOAT_SOURCE_UNIT_AGGREGATIONS,
             FLOAT_PLAIN_AGGREGATIONS,
+            LIST_AGGREGATIONS,
         ]
         union = set().union(*sets)
         assert union == BUILTIN_AGGREGATIONS

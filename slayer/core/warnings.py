@@ -3,9 +3,28 @@ structured payloads. Live in ``slayer.core`` so schemas reference them without e
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Optional, Union
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Annotated, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+_caller_announces: ContextVar[bool] = ContextVar("slayer_caller_announces", default=False)
+
+
+@contextmanager
+def announced_by_caller() -> Iterator[None]:
+    """Inside the block the caller (a query response, a save) announces stored-document advisories, so loads do not."""
+    token = _caller_announces.set(True)
+    try:
+        yield
+    finally:
+        _caller_announces.reset(token)
+
+
+def caller_announces() -> bool:
+    return _caller_announces.get()
 
 
 class SlayerWarning(BaseModel):
@@ -50,22 +69,37 @@ class BroadcastDimension(BaseModel):
     reason: str
 
 
-#: Unconditional dice–slice disclosure on every broadcast payload.
+#: Dice–slice disclosure on every requested broadcast.
 DICE_SLICE_HINT = (
     "filtering on this dimension restricts the metric by association while "
-    "slicing only repeats the value; set to_many_handling='associate' to "
-    "reconcile the two."
+    "slicing only repeats the value; omit to_many_handling (or set 'associate') "
+    "to reconcile the two."
 )
 
 
+def association_fallback_hint(reason: str) -> str:
+    """The hint of a broadcast the default mode fell back to because association does not support ``reason``."""
+    return (
+        f"association does not support {reason} yet, so the value repeats across the cells; "
+        "filter on the dimension instead, or drop the dimension(s) it cannot be attributed to."
+    )
+
+
 class BroadcastGrainWarningPayload(SlayerWarning):
-    """A cross-model aggregate whose implicit grain lost query dimensions to broadcasting; ``measure`` names the metric, ``dimensions`` lists each broadcast dimension and its reason."""
+    """A cross-model aggregate whose implicit grain lost query dimensions to broadcasting; ``measure`` names the metric, ``dimensions`` lists each broadcast dimension and its reason, ``association_unsupported`` why the default mode could not associate."""
 
     kind: Literal["broadcast"] = "broadcast"
     measure: str
     location: str
     dimensions: list[BroadcastDimension]
+    association_unsupported: Optional[str] = None
     hint: str = DICE_SLICE_HINT
+
+    @model_validator(mode="after")
+    def _fallback_hint(self) -> "BroadcastGrainWarningPayload":
+        if self.association_unsupported is not None and "hint" not in self.model_fields_set:
+            self.hint = association_fallback_hint(self.association_unsupported)
+        return self
 
     def human_message(self) -> str:
         dims = ", ".join(f"{d.dimension} ({d.reason})" for d in self.dimensions)
@@ -234,6 +268,89 @@ class NarrowedAccessWarning(SlayerWarning):
         )
 
 
+class LibraryNameShadowWarning(SlayerWarning):
+    """Model ``model``'s aggregation ``aggregation`` shadows the library function written ``function`` in its own model."""
+
+    kind: Literal["library_name_shadow"] = "library_name_shadow"
+    model: str
+    aggregation: str
+    function: str
+
+    def human_message(self) -> str:
+        return (
+            f"model {self.model!r} defines the aggregation {self.aggregation!r}, so {self.function}(…) over its "
+            f"columns is that aggregation, not the library function {self.function.lower()}()"
+        )
+
+
+class BrokenDependentWarning(SlayerWarning):
+    """A re-ingest re-typed ``column`` to a list, and the stored definition ``name`` that planned before it fails
+    after (``checked=False``: the check could not run, for ``reason``)."""
+
+    kind: Literal["broken_dependent"] = "broken_dependent"
+    model: str
+    data_source: str
+    dependent_kind: Literal["measure", "column", "filter", "saved_query"]
+    name: str
+    column: str
+    checked: bool = True
+    error_type: Optional[str] = None
+    error: Optional[str] = None
+    reason: Optional[str] = None
+
+    def human_message(self) -> str:
+        where = f"{self.dependent_kind} {self.data_source}.{self.model}.{self.name}"
+        if not self.checked:
+            return _single_line(f"{where} reads {self.column}, re-typed to a list, and could not be checked: "
+                                f"{self.reason}")
+        return _single_line(f"{where} breaks now that {self.column} is a list: {self.error}")
+
+
+class WholeListWarning(SlayerWarning):
+    """A query reads the whole list ``list`` as its element set: grouping by it (``operation="group"``) or counting
+    its distinct element sets (``operation="count_distinct"``)."""
+
+    kind: Literal["whole_list"] = "whole_list"
+    operation: Literal["group", "count_distinct"]
+    list: str
+
+    def human_message(self) -> str:
+        if self.operation == "group":
+            return (f"grouping by the list {self.list!r} reads each whole list as a set of its distinct elements; "
+                    f"group by {self.list}.value for one row per element")
+        return (f"count_distinct({self.list}) counts distinct whole lists, each read as a set of its distinct "
+                f"elements; count_distinct({self.list}.value) counts distinct elements")
+
+
+class NameCollisionWarning(SlayerWarning):
+    """Stored model ``model`` holds ``names`` in one ``namespace``, differing only in case; each resolves only when
+    spelled exactly (or double-quoted)."""
+
+    kind: Literal["name_collision"] = "name_collision"
+    model: str
+    namespace: str
+    names: List[str]
+
+    def human_message(self) -> str:
+        return (f"model {self.model!r} declares {' and '.join(repr(n) for n in self.names)} in its {self.namespace}, "
+                f"differing only in case; spell one exactly or double-quote it, and rename one to remove the "
+                f"ambiguity")
+
+
+class DeprecatedSpellingWarning(SlayerWarning):
+    """A deprecated Mode-B ``spelling`` was read (``written``); ``canonical`` is its twin, removed in ``removal``."""
+
+    kind: Literal["deprecated_spelling"] = "deprecated_spelling"
+    spelling: str
+    written: str
+    canonical: str
+    removal: str = "3.0"
+
+    def human_message(self) -> str:
+        return (f"the {self.spelling} spelling `{self.written}` is deprecated and removed in SLayer {self.removal}; "
+                f"write `{self.canonical}`")
+
+
 # Discriminated union, not the bare base: a ``List[SlayerWarning]`` would validate
 # down to the base type and drop subclass fields. Keyed on ``kind``, each round-trips.
 AnySlayerWarning = Annotated[
@@ -249,6 +366,11 @@ AnySlayerWarning = Annotated[
         WholePeriodsNonNestingWarningPayload,
         UnloadableDocumentWarning,
         NarrowedAccessWarning,
+        LibraryNameShadowWarning,
+        BrokenDependentWarning,
+        WholeListWarning,
+        DeprecatedSpellingWarning,
+        NameCollisionWarning,
     ],
     Field(discriminator="kind"),
 ]
@@ -318,3 +440,48 @@ class SlayerStatementTimeoutSkippedWarning(UserWarning):
 
     def __str__(self) -> str:
         return self.payload.human_message()
+
+
+class SlayerLibraryNameShadowWarning(UserWarning):
+    """Carrier ``UserWarning`` for a ``LibraryNameShadowWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: LibraryNameShadowWarning) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerBrokenDependentWarning(UserWarning):
+    """Carrier ``UserWarning`` for a ``BrokenDependentWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: BrokenDependentWarning) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerWholeListWarning(UserWarning):
+    """Carrier ``UserWarning`` for a ``WholeListWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: WholeListWarning) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerNameCollisionWarning(UserWarning):
+    """Carrier ``UserWarning`` for a ``NameCollisionWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: NameCollisionWarning) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+

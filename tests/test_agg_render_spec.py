@@ -17,7 +17,7 @@ so existing call sites flip with a one-line return-type swap. The logic
 mirrors the legacy synthesizer (``slayer/sql/generator.py:7033``) verbatim:
 
 * ``StarKey`` rejects any non-count aggregation, and any args/kwargs on
-  ``*:count``.
+  ``count(*)``.
 * ``ColumnKey`` / ``ColumnSqlKey`` resolves the source column on
   ``source_model``; aggregations outside the built-in slice look up the
   custom ``Aggregation`` definition on ``source_model.aggregations`` and
@@ -46,7 +46,7 @@ from slayer.core.keys import (
 from slayer.core.models import Aggregation, AggregationParam, Column, SlayerModel
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 from slayer.ir.planned import ValueSlot
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.generator import (  # type: ignore[attr-defined]
@@ -183,6 +183,7 @@ class TestAggRenderSpecConstruction:
             "column_type",
             "input_type",
             "value",
+            "element_type",
         }
 
     def test_minimal_count_star(self):
@@ -447,7 +448,7 @@ class TestBuilderCustomAggregation:
         # builder carries the override's formula.
         orders = _orders_model()
         key = bind_expr(
-            parse_expr("amount:weighted_avg"), scope=ModelScope(source_model=orders),
+            parse_expr("weighted_avg(amount)"), scope=ModelScope(source_model=orders),
             bundle=ResolvedSourceBundle(dialect="postgres", source_model=orders),
         ).value_key
         assert isinstance(key, AggregateKey)
@@ -696,7 +697,7 @@ class TestBuilderTypePropagation:
         # Codex finding #4: ``spec.type`` (outer agg result type) MUST
         # come from ``slot.type``; ``spec.column_type`` (inner
         # pre-aggregation expression CAST) MUST come from the resolved
-        # source column. ``*:count`` on a DOUBLE-typed column is the
+        # source column. ``count(*)`` on a DOUBLE-typed column is the
         # canonical case where slot.type (INT — count returns integer)
         # differs from column_type (which is moot for star — DOUBLE).
         # Use an explicit ColumnKey case so both fields are populated and

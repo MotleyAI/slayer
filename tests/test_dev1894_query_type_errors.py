@@ -48,8 +48,8 @@ from tests._engine_helpers import _engine_generate
 
 Case = Callable[[], Tuple[SlayerQuery, List[SlayerModel]]]
 
-_MONTH = [TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)]
-_NO_AXIS = "sum(cumsum(amount:sum(partition_by=region)))"
+_MONTH = [TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)]
+_NO_AXIS = "sum(cumsum(sum(amount, partition_by=region)))"
 
 
 def _m(formula: str, name: str) -> ModelMeasure:
@@ -88,7 +88,7 @@ def _time_axis() -> Tuple[SlayerQuery, List[SlayerModel]]:
 
 
 def _no_time_dimension() -> Tuple[SlayerQuery, List[SlayerModel]]:
-    return orders_q(dimensions=["region"], measures=[_m("amount:sum(window='90d')", "w")]), f1739.dev1739_models()
+    return orders_q(dimensions=["region"], measures=[_m("sum(amount, window='90d')", "w")]), f1739.dev1739_models()
 
 
 def _bad_window() -> Tuple[SlayerQuery, List[SlayerModel]]:
@@ -100,7 +100,7 @@ def _bad_window() -> Tuple[SlayerQuery, List[SlayerModel]]:
 
 
 def _rank_partition() -> Tuple[SlayerQuery, List[SlayerModel]]:
-    return orders_q(dimensions=["region"], measures=[_m("rank(amount:sum, partition_by=city, direction='desc')", "r")]), f1739.dev1739_models()
+    return orders_q(dimensions=["region"], measures=[_m("rank(sum(amount), partition_by=city, direction='desc')", "r")]), f1739.dev1739_models()
 
 
 #: (id, case, class, location, has suggestion)
@@ -110,25 +110,27 @@ FAMILY_CASES = [
     ("window-duration", _bad_window, WindowDurationError, None, True),
     ("rank-partition-key", _rank_partition, PartitionKeyError, "transform 'rank'", True),
     ("aggregate-partition-key",
-     lambda: (orders_q(dimensions=["region"], measures=[_m("amount:sum(partition_by=city)", "p")]), f1739.dev1739_models()),
+     lambda: (orders_q(dimensions=["region"], measures=[_m("sum(amount, partition_by=city)", "p")]), f1739.dev1739_models()),
      PartitionKeyError, "measure 'p'", True),
     ("unsafe-join-input",
-     lambda: (f1945.orders_q(measures=[f1945.measure("amount:last(li_ts)")]), f1945.dev1945_models(orders_default="created_at")),
+     lambda: (f1945.orders_q(measures=[f1945.measure("last(amount, li_ts)")]), f1945.dev1945_models(orders_default="created_at")),
      UnsafeJoinInputError, "measure 'amount_last_li_ts'", True),
     ("unanalyzable-dependency",
-     lambda: (f1945.orders_q(measures=[f1945.measure("amount:last")]), f1945.dev1945_models(orders_default="bad_ts")),
+     lambda: (f1945.orders_q(measures=[f1945.measure("last(amount)")]), f1945.dev1945_models(orders_default="bad_ts")),
      UnanalyzableDependencyError, "measure 'amount_last'", True),
     ("transform-input",
      lambda: (f1832.orders_q(measures=[_m("sum(cumsum(weight) - 1)", "m")], time_dimensions=f1832.month_td()), f1832.dev1832_models()),
      TransformInputError, "transform 'cumsum'", True),
     ("computed-dimension",
      lambda: (SlayerQuery.model_validate({
-         "source_model": "orders", "measures": [{"formula": "amount:sum", "name": "t"}],
-         "dimensions": ["region", {"expression": "CASE WHEN amount:sum > 5000 THEN 1 ELSE 0 END", "name": "band"}],
+         "source_model": "orders", "measures": [{"formula": "sum(amount)", "name": "t"}],
+         "dimensions": ["region", {"expression": "CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END", "name": "band"}],
      }), f1740.dev1740_models()),
      ComputedDimensionError, "dimension 'band'", False),
     ("association",
-     lambda: (f1841.assoc_q(dimensions=["status"], measures=[_m("customers.spend:sum", "cm")]), f1841.keyless_root_models()),
+     lambda: (f1841.assoc_q(dimensions=["status"], measures=[_m("sum(customers.spend, window='90d')", "cm")],
+                            time_dimensions=[TimeDimension(dimension="customers.signup_at", granularity=TimeGranularity.MONTH)]),
+              f1841.dev1840_models()),
      AssociationError, "measure 'cm'", True),
     ("parameter-grain",
      lambda: (f1847.sales_q(dimensions=["region"], measures=[_m(f"wavg({f1847.INNER_CR}, weight=id)", "w")]), f1847.dev1847_models()),
@@ -136,19 +138,19 @@ FAMILY_CASES = [
     ("reaggregation",
      lambda: (orders_q(
          dimensions=["region"], time_dimensions=f1739.month_td(),
-         measures=[_m("sum(amount:sum(partition_by=[region, city]), window='90d')", "w")],
+         measures=[_m("sum(sum(amount, partition_by=[region, city]), window='90d')", "w")],
      ), f1739.dev1739_models()),
      ReaggregationError, "measure 'w'", True),
     ("name-collision",
      lambda: (SlayerQuery.model_validate({
-         "source_model": "orders", "measures": [{"formula": "amount:sum", "name": "rev"}],
+         "source_model": "orders", "measures": [{"formula": "sum(amount)", "name": "rev"}],
          "dimensions": ["region", {"expression": "lower(city)", "name": "rev"}],
      }), f1740.dev1740_models()),
      NameCollisionError, "dimension 'rev'", True),
     ("stage-flatten-collision",
      lambda: (SlayerQuery(
          source_model="orders", time_dimensions=_MONTH,
-         measures=[_m("cumsum(amount:sum)", "dup"), _m("cumsum(amount:sum)", "dup")],
+         measures=[_m("cumsum(sum(amount))", "dup"), _m("cumsum(sum(amount))", "dup")],
      ), [_orders(default_time_dimension="created_at")]),
      NameCollisionError, None, True),
     ("dimension-type",
@@ -156,25 +158,25 @@ FAMILY_CASES = [
               [_orders(extra_columns=(Column(name="loc", type=DataType.UNKNOWN, db_type="point"),))]),
      DimensionTypeError, "dimension 'loc'", True),
     ("model-filter",
-     lambda: (SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="*:count")]),
-              [_orders(measures=[_m("amount:sum", "tot")], filters=["tot > 100"])]),
+     lambda: (SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="count(*)")]),
+              [_orders(measures=[_m("sum(amount)", "tot")], filters=["tot > 100"])]),
      ModelFilterError, "model filter 'tot > 100'", True),
     ("position-typing",
      lambda: (SlayerQuery(
-         source_model="orders", time_dimensions=_MONTH, measures=[ModelMeasure(formula="*:count")],
+         source_model="orders", time_dimensions=_MONTH, measures=[ModelMeasure(formula="count(*)")],
          filters=["_count > 1 or status == 'ok'"],
      ), [_orders()]),
      PositionTypingError, None, True),
     ("raw-rows",
      lambda: (SlayerQuery(
          source_model="orders", dimensions=[ColumnRef(name="status")],
-         filters=["amount:sum > 100"], distinct_dimension_values=False,
+         filters=["sum(amount) > 100"], distinct_dimension_values=False,
      ), [_orders()]),
-     DistinctDimensionValuesError, "filter 'amount:sum > 100'", True),
+     DistinctDimensionValuesError, "filter 'sum(amount) > 100'", True),
     ("time-dimension-column",
      lambda: (SlayerQuery(
-         source_model="orders", measures=[_m("amount:sum", "t")],
-         time_dimensions=[TimeDimension(dimension=ColumnRef(name="status"), granularity=TimeGranularity.MONTH)],
+         source_model="orders", measures=[_m("sum(amount)", "t")],
+         time_dimensions=[TimeDimension(dimension="status", granularity=TimeGranularity.MONTH)],
      ), [_orders()]),
      TimeDimensionColumnError, "time dimension 'status'", False),
 ]
@@ -207,15 +209,15 @@ async def test_family_error_layout(
 
 @pytest.mark.parametrize(("case", "cls", "location"), [
     pytest.param(lambda: (SlayerQuery(
-        source_model="orders", dimensions=[ColumnRef(name="id")], measures=[_m("amount:sum", "status")],
+        source_model="orders", dimensions=[ColumnRef(name="id")], measures=[_m("sum(amount)", "status")],
     ), [_orders()]), MeasureNameCollidesWithColumnError, "measure 'status'", id="measure-collides-with-column"),
     pytest.param(lambda: (SlayerQuery(
-        source_model="orders", dimensions=[ColumnRef(name="status")], measures=[_m("amount:sum", "rev2")],
+        source_model="orders", dimensions=[ColumnRef(name="status")], measures=[_m("sum(amount)", "rev2")],
     ), [_orders(extra_columns=(Column(name="amount_sum", type=DataType.DOUBLE),))]),
         CanonicalAliasShadowsColumnError, "measure 'rev2'", id="canonical-alias-shadows"),
     pytest.param(lambda: (SlayerQuery(
         source_model="orders", dimensions=[ColumnRef(name="status")],
-        measures=[_m("revenue:sum", "profit_avg"), ModelMeasure(formula="profit:avg")],
+        measures=[_m("sum(revenue)", "profit_avg"), ModelMeasure(formula="avg(profit)")],
     ), [_orders()]), DuplicateMeasureNameError, "measure 'profit_avg'", id="duplicate-measure-name"),
 ])
 async def test_structured_name_collisions(case: Case, cls: type, location: str) -> None:

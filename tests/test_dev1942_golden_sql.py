@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 
 from tests._dev1832_fixtures import dev1832_models
 from tests._engine_helpers import _engine_generate
@@ -23,13 +23,13 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1942_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MONTH_TD = [TimeDimension(dimension=ColumnRef(name="ordered_at"),
+_MONTH_TD = [TimeDimension(dimension="ordered_at",
                            granularity=TimeGranularity.MONTH)]
-_X = "amount:sum(partition_by=[region, ordered_at])"
+_X = "sum(amount, partition_by=[region, ordered_at])"
 _STANDALONE = f"min({_X}, partition_by=region)"
 _MIXED = f"sum(amount * min({_X}, partition_by=region))"
-_POP_MIXED = "sum(spend * avg(spend:sum(partition_by=[tier, plan_code]), partition_by=tier))"
-_POP_AVG = "avg(spend:sum(partition_by=[tier, plan_code]), partition_by=tier)"
+_POP_MIXED = "sum(spend * avg(sum(spend, partition_by=[tier, plan_code]), partition_by=tier))"
+_POP_AVG = "avg(sum(spend, partition_by=[tier, plan_code]), partition_by=tier)"
 _OK = "orders.status = 'ok'"
 
 
@@ -57,7 +57,7 @@ def _cases() -> dict:
             "kw": {"dimensions": ["region"], "time_dimensions": _MONTH_TD,
                    "measures": [{"formula": _STANDALONE, "name": "a"},
                                 {"formula": _MIXED, "name": "b"},
-                                {"formula": "cumsum(amount:sum)", "name": "c"}]}},
+                                {"formula": "cumsum(sum(amount))", "name": "c"}]}},
         # population/* — the fanning-hop population filter over a mixed constituent.
         "population/mixed_reagg_constituent": {
             "source": "customers", "mode": None,

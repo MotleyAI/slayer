@@ -1,0 +1,153 @@
+## MODIFIED Requirements
+
+### Requirement: Stage outputs carry their provable uniqueness
+Every stage output that another model or stage reads as a model — a model created from a query, and a named sibling stage read by a later stage of the same query (as its source, through a `ModelExtension` over it, or as a join target) — SHALL declare its result grain's uniqueness when the stage provably deduplicates that grain: it aggregates, or is a dimension-only stage with distinct dimension values. The grain is the stage's dimension and time-dimension columns — including computed dimensions whose value derives from an aggregate or a transform — and never a column in measure position. A single-column grain SHALL be declared unique; a multi-column grain SHALL be declared as one composite key, provable only when fully covered. A stage that preserves duplicates, or has no dimensions, MUST NOT have uniqueness stamped.
+
+#### Scenario: Aggregated backing query proves N:1 joins onto it
+- WHEN a model is created from an aggregating query and another model joins onto its complete grain columns
+- THEN that join is provably many-to-one and cross-model metrics over it keep exact per-dimension values
+
+#### Scenario: Duplicate-preserving backing query stamps nothing
+- WHEN a model is created from a measure-less query with `distinct_dimension_values=false`
+- THEN its columns carry no uniqueness claims and joins onto it remain unproven
+
+#### Scenario: A join onto a sibling stage's grain is proven
+- WHEN a multi-stage query declares a stage `c` over `customers` with dimensions `["id"]` and measure `{"formula": "max(tier)", "name": "tr"}`, and a later stage over `orders` joins `c` on `customer_id → id` and reports `c.tr` with `sum(amount)`
+- THEN the join is provably many-to-one: each tier's total is exact and no broadcast warning is raised
+
+#### Scenario: A join covering part of a sibling's composite grain stays unproven
+- WHEN a sibling stage has dimensions `["id", "tier"]` and a later stage joins it on `id` alone
+- THEN the join is unproven and a metric across it is unattributable — associated by default, broadcast under `to_many_handling: "broadcast"`, with a warning either way
+
+#### Scenario: An extension over a sibling keeps the sibling's grain
+- WHEN a stage's source is a `ModelExtension` over a sibling stage and adds columns or joins
+- THEN a join onto the extended sibling's complete grain is still provably many-to-one
+
+#### Scenario: An aggregate-valued computed dimension is part of the grain
+- WHEN a model is created from a query with dimensions `["status", {"expression": "sum(amount, partition_by=city)", "name": "ct"}]`, and another model joins onto it on `status` alone
+- THEN the join is unproven — a metric across it is unattributable (associated by default, broadcast under `to_many_handling: "broadcast"`), warned, and never multiplied
+
+#### Scenario: A measure is never part of the grain
+- WHEN a query's dimensions are `["status", "city"]` and its measure is `{"formula": "sum(amount, partition_by=status)", "name": "st"}`
+- THEN its grain is `status` and `city`, and `st` carries no uniqueness claim
+
+#### Scenario: A single-column grain is unique, not an identifier
+- WHEN a model is created from a query with dimensions `["tier"]` and measure `count(*)`
+- THEN `tier` is declared unique (not a primary key), a join onto it on `tier` is provably many-to-one, and `max(tier)` over the model succeeds
+
+#### Scenario: Composite grain members stay aggregatable
+- WHEN a stage has dimensions `["id", "tier"]` and a later stage or query computes `max(tier)` over it
+- THEN the aggregation succeeds
+
+### Requirement: Validation surfaces unproven and contradicted joins
+Model validation and import reports SHALL flag every join neither declared
+many-to-one/one-to-one nor structurally proven *in its declared orientation*, stating
+that dimensions across it are evaluated by association (or broadcast under
+`to_many_handling: "broadcast"`) while aggregation inputs crossing it are refused, and
+naming the remedies (declare
+`cardinality`, declare a covering unique key, or run cardinality detection). The
+audit SHALL report each edge once with the provability of both orientations, so
+diagnostics can explain why an inverted hop was classified safe or fanning. Where a
+cardinality detection report exists, validation SHALL also flag declarations the
+detected data hard-contradicts.
+
+#### Scenario: Unproven join is flagged with remedies
+- WHEN model validation runs over a model whose join has no declaration and no structural proof
+- THEN the report flags that join with the association / input-refusal consequence and the remedies
+
+#### Scenario: Contradicted declaration is flagged
+- WHEN a join declares many-to-one but a detection report records observed duplicates on the target side
+- THEN validation flags the contradiction
+
+#### Scenario: Audit explains both orientations
+- WHEN the safety audit runs over a declared `many_to_one` edge
+- THEN its finding records the declared orientation as provably to-one and the reverse
+  orientation as one-to-many
+
+### Requirement: Determination through to-one chains
+A model SHALL determine a joined column iff a chain of provably many-to-one hops (per
+the per-orientation provable-arity rules of this spec) leads from the model to that
+column along stored join edges, traversed in either orientation. Between a model on
+one join path from the query root and a column on another, the chain SHALL be the one
+that steps back from the model only as far as the two paths' longest common prefix and
+forward from there — never a round trip through the root — so a model reached over a
+provably to-one reverse hop from a dataset on its own path determines that dataset's
+columns, and a model whose reverse suffix fans does not. What a model determines has
+exactly one value per model row and behaves as the model's own field;
+determination is the evidence attribution and filter-inlining decisions consume
+(`queries/semantics`). References name their join path explicitly as dotted paths —
+with an edge-name segment where parallel edges would otherwise make a hop ambiguous —
+so a reference never leaves the chain ambiguous.
+
+#### Scenario: A chain of proven hops determines
+- **WHEN** `orders` joins `customers` and `customers` joins `regions`, both hops
+  provably many-to-one
+- **THEN** `orders` determines `customers.regions.name` and metrics attribute exact
+  per-region values from an orders-rooted query
+
+#### Scenario: An inverted declared one-to-many hop determines
+- **WHEN** the only stored edge is `customers → orders (one_to_many)`
+- **THEN** `orders` determines the customers columns over the inverted (oriented
+  `many_to_one`) hop, with no reverse declaration
+
+#### Scenario: One unproven hop breaks determination
+- **WHEN** the first hop of a two-hop chain is provably many-to-one but the second is
+  undeclared and structurally unproven
+- **THEN** the chain's terminal columns are not determined, and metrics resolve
+  across them per `to_many_handling` (associated by default) instead of joining
+  through the unproven hop
+
+#### Scenario: A to-one reverse suffix determines
+- **WHEN** `regions → region_events` fans and its inverse is provably to-one, and a
+  query rooted at `orders` selects
+  `sum(customers.regions.region_events.value * customers.regions.pop)` or the explicit
+  `wsum_rp(customers.regions.region_events.value, weight=customers.regions.pop)`
+- **THEN** `region_events` determines `customers.regions.pop` over the one reverse hop
+  back to `regions`, the aggregation homes at `customers.regions.region_events`, and
+  each event is counted once (16000 on the reference dataset), never refused as a
+  revisiting round trip through `orders`
+
+#### Scenario: A fanning reverse suffix does not determine
+- **WHEN** `regions → countries` is provably to-one and a query rooted at `orders`
+  needs `customers.regions.pop` from a `countries`-rooted aggregation
+- **THEN** `countries` does not determine it — the reverse hop to `regions` fans — and
+  the home falls to `customers.regions`, never to `countries`
+
+#### Scenario: Paths sharing only the root keep the route through the root
+- **WHEN** a query rooted at `orders` needs `stores.rent` from a `customers`-rooted
+  aggregation, `orders → customers` and `orders → stores` sharing no hop
+- **THEN** the route is back through `orders` and then to `stores`, judged exactly as
+  before this change — the reverse `customers → orders` hop fans, so `customers` does
+  not determine `stores.rent`
+
+### Requirement: Provable to-one arity per orientation
+A join hop SHALL count as provably many-to-one iff, on the hop's *traversal
+orientation*, (a) the traversal-target-side join columns cover a declared primary-key
+or unique set of the traversal-target model (structural proof), or (b) the oriented
+cardinality — the declared label when traversed as declared, its inverse when
+traversed in reverse — is `many_to_one` or `one_to_one`. Declarations are trusted at
+query time. An undeclared, unproven orientation is unproven and MUST be treated as
+unsafe (fail-closed). Both orientations of every declared edge participate in safety;
+proof is per orientation, so one direction of an edge may be provably to-one while the
+other fans out.
+
+#### Scenario: Structural proof from a covered primary key
+- WHEN a join's target-side columns cover the target model's declared primary key
+- THEN the hop is provably many-to-one with no cardinality declaration needed
+
+#### Scenario: Unknown arity fails closed
+- WHEN a join has no cardinality declaration and its target-side columns cover no declared unique set
+- THEN the engine treats the hop as unsafe for value paths (metrics resolve across it per `to_many_handling` rather than join through it)
+
+#### Scenario: Inverted declared one-to-many proves many-to-one
+- WHEN the only stored edge is `customers → orders (one_to_many)` and a hop traverses
+  `orders → customers`
+- THEN the oriented cardinality is `many_to_one` and dimensions across that hop keep
+  exact attributed values instead of resolving per `to_many_handling`
+
+#### Scenario: Inverting a to-one hop yields fan-out
+- WHEN a hop traverses `customers → orders` over a stored
+  `orders → customers (many_to_one)` edge whose source columns cover no unique set of
+  `orders`
+- THEN that orientation is one-to-many, is not provably to-one, and metrics crossing
+  it resolve per `to_many_handling`

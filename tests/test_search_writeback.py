@@ -4,11 +4,11 @@ Pins the four refresh trigger paths from §7 of the spec:
 
 1. ``ingest`` populates ``Column.sampled`` for every column on every
    table-backed model in the touched datasource.
-2. ``slayer search refresh-samples`` does the same on demand.
+2. ``slayer datasources refresh-samples`` does the same on demand.
 3. ``edit_model`` invalidates and immediately recomputes:
    - column sql/filter/type/name change → just that column;
    - SlayerModel.filters / sql / source_queries change → every column.
-4. ``inspect_model`` lazily fills the cache on a miss (read cached when
+4. The model ``inspect`` lazily fills the cache on a miss (read cached when
    present; if None, profile live and persist via
    ``update_column_sampled`` before returning).
 """
@@ -19,8 +19,8 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.core.query import ModelExtension, SlayerQuery
-from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.core.query import SlayerQuery
+from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.profiling import refresh_all_table_backed_sampled
 from slayer.search.service import handle_edit_refresh
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -53,11 +53,16 @@ def sqlite_table_setup(tmp_path):
 async def test_ingest_does_not_profile_columns(sqlite_table_setup) -> None:
     """Ingest is fast: it no longer fires a per-column full-table scan.
     Column samples are populated lazily on the first ``inspect`` of the
-    column (or explicitly via ``slayer search refresh-samples``)."""
+    column (or explicitly via ``slayer datasources refresh-samples``)."""
     storage, db_file = sqlite_table_setup
     ds = DatasourceConfig(name="ds", type="sqlite", database=db_file)
     await storage.save_datasource(ds)
-    await ingest_datasource_idempotent(datasource=ds, storage=storage)
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        await ingest_datasource_idempotent(datasource=ds, storage=storage, client=engine.client_for(ds))
+    finally:
+        await engine.aclose()
+        engine.close()
     loaded = await storage.get_model("orders", data_source="ds")
     # Columns are ingested but NOT profiled — samples stay unpopulated.
     assert loaded.get_column("amount").sampled is None
@@ -66,7 +71,7 @@ async def test_ingest_does_not_profile_columns(sqlite_table_setup) -> None:
 
 
 # ---------------------------------------------------------------------------
-# (2) slayer search refresh-samples
+# (2) slayer datasources refresh-samples
 # ---------------------------------------------------------------------------
 
 
@@ -165,7 +170,7 @@ async def test_edit_model_model_level_change_recomputes_all_columns(
 
 
 # ---------------------------------------------------------------------------
-# (4) inspect_model lazy fill on miss
+# (4) model inspect lazy fill on miss
 # ---------------------------------------------------------------------------
 
 
@@ -187,9 +192,8 @@ async def test_inspect_model_writes_back_on_sampled_miss(
     ))
     mcp = create_mcp_server(storage=storage)
     # First call: sampled is None → live profile + writeback
-    result = await mcp.call_tool("inspect_model", {
-        "model_name": "orders", "data_source": "ds",
-        "sections": ["columns"],
+    result = await mcp.call_tool("inspect", {
+        "entity_type": "model", "reference": "ds.orders", "compact": False, "sections": ["columns"],
     })
     assert result is not None
     loaded = await storage.get_model("orders", data_source="ds")
@@ -202,7 +206,7 @@ async def test_inspect_model_writes_back_on_sampled_miss(
 async def test_inspect_model_reads_cached_sampled_without_recompute(
     sqlite_table_setup, monkeypatch,
 ) -> None:
-    """When Column.sampled is set, inspect_model uses it and runs no profiling query."""
+    """When Column.sampled is set, the model inspect uses it and runs no profiling query."""
     storage, db_file = sqlite_table_setup
     await storage.save_datasource(DatasourceConfig(
         name="ds", type="sqlite", database=db_file,
@@ -218,15 +222,14 @@ async def test_inspect_model_reads_cached_sampled_without_recompute(
 
     async def counting_execute(self, *args, **kwargs):
         q = kwargs.get("query", args[0] if args else None)
-        if isinstance(q, SlayerQuery) and (q.dimensions or isinstance(q.source_model, ModelExtension)):
+        if isinstance(q, SlayerQuery) and (q.dimensions or bool(q.extensions)):
             profile_call_count["n"] += 1
         return await original(self, *args, **kwargs)
 
     monkeypatch.setattr(SlayerQueryEngine, "execute", counting_execute)
 
     mcp = create_mcp_server(storage=storage)
-    await mcp.call_tool("inspect_model", {
-        "model_name": "orders", "data_source": "ds",
-        "sections": ["columns"],
+    await mcp.call_tool("inspect", {
+        "entity_type": "model", "reference": "ds.orders", "compact": False, "sections": ["columns"],
     })
     assert profile_call_count["n"] == 0

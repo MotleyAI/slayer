@@ -19,9 +19,9 @@ import slayer
 
 from slayer.core.models import Aggregation, AggregationParam, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.engine_factory import get_engine, invalidate_engine
+from slayer.database.engine_factory import get_engine, invalidate_engine
 from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
@@ -189,7 +189,7 @@ async def _populate(storage: StorageBackend) -> None:
     await storage.set_datasource_priority([SHOP, CUBE, LITE])
     shop = await storage.get_datasource(SHOP)
     assert shop is not None
-    await ingest_datasource_idempotent(datasource=shop, storage=storage)
+    await ingest_datasource_idempotent(datasource=shop, storage=storage)  # pyright: ignore[reportCallIssue] — the 0.10.2 API this script runs against
     orders = await storage.get_model("orders", data_source=SHOP)
     assert orders is not None
     orders.aggregations.append(Aggregation(
@@ -199,7 +199,7 @@ async def _populate(storage: StorageBackend) -> None:
     await storage.save_model(orders)
     lite = await storage.get_datasource(LITE)
     assert lite is not None
-    await ingest_datasource_idempotent(datasource=lite, storage=storage)
+    await ingest_datasource_idempotent(datasource=lite, storage=storage)  # pyright: ignore[reportCallIssue] — the 0.10.2 API this script runs against
     sales = await storage.get_model("sales", data_source=LITE)
     assert sales is not None
     sales.aggregations.append(Aggregation(

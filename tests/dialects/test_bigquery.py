@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import tempfile
+from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -12,9 +13,11 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.errors import ExplainUnsupportedError
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.database.engine_factory import client_cache_key
 from slayer.sql.dialects import (
     BigqueryDialect,
     PostgresDialect,
@@ -23,9 +26,10 @@ from slayer.sql.dialects import (
     dialect_for_ds_type,
     get_dialect,
 )
-from slayer.sql.client import ExecutionResult
+from slayer.database.client import DelegatingSqlClient, ExecutionResult, ResultColumnType, SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
+from tests import _emitted_reparse_law as emitted_reparse_law
 from tests._dev1965_fixtures import cumsum_chain, gen, outer_order, parse
 from tests._engine_helpers import _engine_generate
 
@@ -66,20 +70,20 @@ def test_ds_type_aliases() -> None:
 
 
 def test_explain_prefix_is_none() -> None:
-    """BigQuery has no SQL-level EXPLAIN; ``explain_prefix is None`` signals ``build_explain_sql`` to raise."""
+    """BigQuery has no SQL-level EXPLAIN; ``explain_prefix is None`` signals ``explain_statements`` to raise."""
     assert BigqueryDialect().explain_prefix is None
 
 
 def test_log_native_flags() -> None:
     d = BigqueryDialect()
     assert d.should_use_native_log(10) is True
-    assert d.should_use_native_log(2) is True
+    assert d.should_use_native_log(2) is False
 
 
-def test_build_explain_sql_raises() -> None:
+def test_explain_statements_raise() -> None:
     d = BigqueryDialect()
-    with pytest.raises(ValueError, match="EXPLAIN is not supported"):
-        d.build_explain_sql("SELECT 1")
+    with pytest.raises(ExplainUnsupportedError):
+        d.explain_statements("SELECT 1")
 
 
 # build_date_trunc — WEEK_SUNDAY override
@@ -319,8 +323,8 @@ async def test_engine_dispatches_through_decode_result_keys_hook() -> None:
         )
         await storage.save_model(model)
         engine = SlayerQueryEngine(storage=storage)
-        engine._sql_clients[_sql_client_cache_key(ds)] = _FakeBigQueryClient(
-            rows=[{"orders.status": "paid"}]
+        engine._sql_clients[client_cache_key(ds)] = _FakeBigQueryClient(
+            rows=[{"orders.status": "paid"}], datasource=ds,
         )
         with patch.object(
             PostgresDialect,
@@ -344,13 +348,14 @@ async def test_engine_dispatches_through_decode_result_keys_hook() -> None:
 # Engine-level integration: SlayerResponse round-trip for the BigQuery dialect
 
 
-class _FakeBigQueryClient:
+class _FakeBigQueryClient(DelegatingSqlClient):
     """Stub SQL client that returns BigQuery-mangled row keys."""
 
-    def __init__(self, rows: list[dict]) -> None:
+    def __init__(self, rows: list[dict], *, datasource: DatasourceConfig) -> None:
+        super().__init__(inner=SlayerSQLClient(datasource=datasource))
         self._rows = rows
 
-    async def execute(self, *, sql: str) -> ExecutionResult:  # noqa: ARG002 — stub signature  # NOSONAR(S7503) — must remain async to match SlayerSQLClient.execute (awaited by engine.execute)
+    async def execute(self, sql: str) -> ExecutionResult:  # noqa: ARG002 — stub signature  # NOSONAR(S7503) — must remain async to match SlayerSQLClient.execute (awaited by engine.execute)
         return ExecutionResult(rows=[dict(row) for row in self._rows])
 
 
@@ -375,7 +380,7 @@ async def _build_bigquery_engine(rows: list[dict]) -> tuple[SlayerQueryEngine, t
     )
     await storage.save_model(model)
     engine = SlayerQueryEngine(storage=storage)
-    engine._sql_clients[_sql_client_cache_key(ds)] = _FakeBigQueryClient(rows)
+    engine._sql_clients[client_cache_key(ds)] = _FakeBigQueryClient(rows, datasource=ds)
     return engine, tmp, ds
 
 
@@ -383,7 +388,7 @@ class TestEngineDecodeIntegration:
     """End-to-end: stub client returns mangled keys; engine decodes them before packaging into ``SlayerResponse``."""
 
     async def test_non_empty_rows_decoded_in_response(self) -> None:
-        # ``*:count`` measure has alias ``orders._count`` (canonical, with
+        # ``count(*)`` measure has alias ``orders._count`` (canonical, with
         # leading underscore). Encoding: ``.`` -> ``___``, no other change
         # (no pre-existing ``___`` to escape). Result: ``orders____count``
         # (3 underscores from the dot + 1 from ``_count`` = 4 underscores).
@@ -392,11 +397,11 @@ class TestEngineDecodeIntegration:
         rows = [{"orders____count": 42, "orders___status": "paid"}]
         engine, tmp, _ = await _build_bigquery_engine(rows)
         try:
-            query = SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "*:count"}],
-                dimensions=["status"],
-            )
+            query = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "count(*)"}],
+                "dimensions": ["status"],
+            })
             resp = await engine.execute(query)
             # Keys must be decoded back to dotted form on the response.
             assert resp.data == [{"orders._count": 42, "orders.status": "paid"}]
@@ -407,11 +412,11 @@ class TestEngineDecodeIntegration:
         """When rows are empty, ``columns = expected_columns`` per the engine's response shape contract."""
         engine, tmp, _ = await _build_bigquery_engine(rows=[])
         try:
-            query = SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "*:count"}],
-                dimensions=["status"],
-            )
+            query = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "count(*)"}],
+                "dimensions": ["status"],
+            })
             resp = await engine.execute(query)
             assert resp.data == []
             # Expected-columns fallback fires when rows is empty.
@@ -463,7 +468,7 @@ def test_build_engine_with_credentials_json_passes_info_to_create_engine() -> No
     assert engine is not None
     assert captured["url"] == "bigquery://my-project"
     assert captured["kwargs"]["credentials_info"] == sa_info
-    assert captured["kwargs"]["pool_pre_ping"] is True
+    assert "pool_pre_ping" not in captured["kwargs"]
 
 
 def test_build_engine_with_invalid_credentials_json_raises() -> None:
@@ -512,7 +517,7 @@ async def _build_labeled_bigquery_engine(
     )
     await storage.save_model(model)
     engine = SlayerQueryEngine(storage=storage)
-    engine._sql_clients[_sql_client_cache_key(ds)] = _FakeBigQueryClient(rows)
+    engine._sql_clients[client_cache_key(ds)] = _FakeBigQueryClient(rows, datasource=ds)
     return engine, tmp, ds
 
 
@@ -532,18 +537,22 @@ async def test_bigquery_attributes_survive_alias_mangling() -> None:
         tmp.cleanup()
 
 
-class _EchoTypesClient:
+class _EchoTypesClient(DelegatingSqlClient):
     """Stub client echoing the probe SQL's mangled column names as types."""
 
-    async def execute(self, *, sql: str) -> ExecutionResult:  # noqa: ARG002  # NOSONAR(S7503)
+    def __init__(self, *, datasource: DatasourceConfig) -> None:
+        super().__init__(inner=SlayerSQLClient(datasource=datasource))
+
+    async def execute(self, sql: str) -> ExecutionResult:  # noqa: ARG002  # NOSONAR(S7503)
         return ExecutionResult(rows=[])
 
-    async def get_column_types(self, *, sql: str) -> dict:
-        parsed = sqlglot.parse_one(sql, dialect="bigquery")
-        return {name: "DOUBLE" for name in parsed.named_selects}
+    async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
+        with emitted_reparse_law.as_database():
+            probed = cast(exp.Select, sqlglot.parse_one(sql, dialect="bigquery").args["from_"].this.this)
+        return {name: ResultColumnType(type=DataType.DOUBLE) for name in probed.named_selects}
 
 
-async def test_get_column_types_decodes_bigquery_mangled_probe_keys() -> None:
+async def test_get_result_column_types_decodes_bigquery_mangled_probe_keys() -> None:
     """The mangled type-probe keys are decoded back."""
     tmp = tempfile.TemporaryDirectory()
     try:
@@ -561,8 +570,8 @@ async def test_get_column_types_decodes_bigquery_mangled_probe_keys() -> None:
         )
         await storage.save_model(model)
         engine = SlayerQueryEngine(storage=storage)
-        engine._sql_clients[_sql_client_cache_key(ds)] = _EchoTypesClient()
-        types = await engine.get_column_types("orders")
+        engine._sql_clients[client_cache_key(ds)] = _EchoTypesClient(datasource=ds)
+        types = await engine.get_result_column_types("orders")
         # Without the decode fix, the mangled probe keys never match the dotted
         # ``full`` lookups and this is empty for BigQuery.
         assert types, f"expected a non-empty type map, got {types!r}"
@@ -577,11 +586,11 @@ async def test_virtual_model_wrapped_refs_match_mangled_inner_bigquery() -> None
         model = SlayerModel(
             name="qb_orders",
             data_source="bq",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "*:count"}],
-                dimensions=["status"],
-            )],
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "count(*)"}],
+                "dimensions": ["status"],
+            })],
         )
         vmodel = await engine._expand_query_backed_model(
             model=model,
@@ -670,7 +679,7 @@ def test_build_engine_oauth_uses_user_supplied_client() -> None:
     assert engine is not None
     assert captured["url"].query["user_supplied_client"] == "true"
     assert captured["kwargs"]["connect_args"] == {"client": fake_client}
-    assert captured["kwargs"]["pool_pre_ping"] is True
+    assert "pool_pre_ping" not in captured["kwargs"]
     # No ``credentials_info`` — that kwarg would send us back through
     # ``service_account.Credentials`` and defeat the whole path.
     assert "credentials_info" not in captured["kwargs"]
@@ -832,7 +841,7 @@ def test_build_engine_oauth_validates_before_importing_optional_driver() -> None
 
 @pytest.mark.parametrize(
     ("column", "alias"),
-    [("created_at", "orders___created_at"), ("amount:max", "orders___amount_max")],
+    [("created_at", "orders___created_at"), ("max(amount)", "orders___amount_max")],
 )
 async def test_bigquery_outer_wrap_order_by_keeps_full_alias(column: str, alias: str) -> None:
     """No empty backtick qualifier; the alias keeps its model prefix (public or hidden)."""
@@ -861,7 +870,7 @@ async def test_bigquery_computed_measure_with_order_by_resolves() -> None:
         time_dimensions=[
             TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)
         ],
-        measures=[ModelMeasure(formula="revenue:sum / quantity:sum", name="aov")],
+        measures=[ModelMeasure(formula="sum(revenue) / sum(quantity)", name="aov")],
         order=[OrderItem(column="created_at", direction="desc")],
         limit=6,
     )

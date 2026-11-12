@@ -1,4 +1,4 @@
-"""DEV-1842 tasks 1.1 / 1.2 — a dotted saved-measure reference is bound-tree-
+"""A dotted saved-measure reference is bound-tree-
 identical to the hand-written host-prefixed formula.
 
 Each ``EQUIV_PAIRS`` entry pairs a dotted spelling (``customers.aov``) with its
@@ -90,14 +90,15 @@ def _approx(actual, expected) -> None:
 
 
 class TestExecutedValuesAgainstOracles:
-    """Independent anchors (DEV-1836 hand-computed oracles) so a shared
+    """Independent anchors (hand-computed oracles) so a shared
     regression that produces identical-but-wrong dotted/hand values can't pass."""
 
     async def test_nested_join_broadcasts_pop_total(self, exec_backend) -> None:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"],
-            measures=[{"formula": "customers.pop_total", "name": "x"}]))
+            measures=[{"formula": "customers.pop_total", "name": "x"}],
+            to_many_handling="broadcast"))
         for row in resp.data:
             _approx(row["orders.x"], POP_TOTAL)
 
@@ -125,14 +126,14 @@ class TestComputedDimensionSource:
     """1.1 — a dotted saved measure used inside a computed-dimension expression
     (the aggregate carries ``partition_by=`` as computed dimensions require)."""
 
-    _HAND = ("CASE WHEN customers.spend:sum(partition_by=customers.tier) > 100 "
+    _HAND = ("CASE WHEN sum(customers.spend, partition_by=customers.tier) > 100 "
              "THEN 'hi' ELSE 'lo' END")
     _DOTTED = "CASE WHEN customers.spend_by_tier > 100 THEN 'hi' ELSE 'lo' END"
 
     def _dim_query(self, expr: str):
         return q(
             dimensions=[{"expression": expr, "name": "band"}],
-            measures=[{"formula": "amount:sum", "name": "a"}],
+            measures=[{"formula": "sum(amount)", "name": "a"}],
         )
 
     async def test_computed_dimension_sql_equals_hand(self) -> None:
@@ -149,7 +150,7 @@ class TestComputedDimensionSource:
 
 class TestUnsafeInputParity:
     """1.2 — a column filter crossing the OWNER's UNPROVEN join inherits the
-    DEV-1836 unsafe-input rejection. The dotted spelling raises the SAME error
+    cross-model unsafe-input rejection. The dotted spelling raises the SAME error
     as the hand-written form (parity is 'both raise', not 'same values')."""
 
     @pytest.mark.parametrize("label", list(PARITY_ERROR_PAIRS))

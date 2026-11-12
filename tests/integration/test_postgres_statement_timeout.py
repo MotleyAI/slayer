@@ -1,11 +1,21 @@
-"""Postgres statement timeout on real asyncpg + psycopg: transaction-local, and the probe keeps its read-only guard."""
+"""Postgres statement timeout on real asyncpg + psycopg: in force, and the probe keeps its read-only guard."""
 
 import uuid
+from collections.abc import AsyncIterator
 
 import pytest
+import sqlglot
 
+from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
-from slayer.sql.client import SlayerSQLClient, get_column_types_sync
+from slayer.database.client import (
+    ResultColumnType,
+    SlayerSQLClient,
+    TypeProbe,
+    get_result_column_types_sync,
+    render_type_probe,
+)
+from slayer.sql.dialects import PostgresDialect
 
 factories = pytest.importorskip("pytest_postgresql.factories")
 psycopg = pytest.importorskip("psycopg")
@@ -14,6 +24,14 @@ pg_sql = pytest.importorskip("psycopg.sql")
 postgresql_proc = factories.postgresql_proc(port=None)
 
 _TIMEOUT_SQL = "SELECT current_setting('statement_timeout') AS t"
+
+
+def _probe(sql: str) -> TypeProbe:
+    return render_type_probe(sqlglot.parse_one(sql, dialect="postgres"), dialect=PostgresDialect())
+
+
+def _types(types: dict[str, ResultColumnType]) -> dict[str, DataType]:
+    return {name: column.type for name, column in types.items()}
 
 
 def _admin(info, dbname: str):
@@ -43,8 +61,13 @@ def _pg_datasource(postgresql_proc):
 
 
 @pytest.fixture
-def pg_client(_pg_datasource) -> SlayerSQLClient:
-    return SlayerSQLClient(datasource=_pg_datasource)
+async def pg_client(_pg_datasource) -> AsyncIterator[SlayerSQLClient]:
+    client = SlayerSQLClient(datasource=_pg_datasource)
+    try:
+        yield client
+    finally:
+        await client.aclose()
+        client.close()
 
 
 @pytest.mark.integration
@@ -59,25 +82,23 @@ class TestPostgresStatementTimeout:
         assert result.rows == [{"t": "7s"}]
         assert result.warnings == []
 
-    def test_timeout_is_transaction_local(self, pg_client: SlayerSQLClient) -> None:
-        pg_client.execute_sync(_TIMEOUT_SQL, timeout_seconds=7)
-        with pg_client._get_sync_engine_for_client().connect() as conn:
-            assert conn.exec_driver_sql("SHOW statement_timeout").scalar() == "0"
-
     async def test_async_probe_infers_types(self, pg_client: SlayerSQLClient) -> None:
-        assert await pg_client.get_column_types("SELECT 1 AS n, 'a' AS s") == {"n": "number", "s": "string"}
+        types = await pg_client.get_result_column_types(_probe("SELECT 1 AS n, 'a' AS s"))
+        assert _types(types) == {"n": DataType.INT, "s": DataType.TEXT}
 
     def test_sync_probe_infers_types(self, pg_client: SlayerSQLClient) -> None:
-        types = get_column_types_sync(
-            "SELECT 1 AS n, 'a' AS s", engine=pg_client._get_sync_engine_for_client(), db_type="postgres",
+        types = get_result_column_types_sync(
+            _probe("SELECT 1 AS n, 'a' AS s"), engine=pg_client._get_sync_engine_for_client(), db_type="postgres",
         )
-        assert types == {"n": "number", "s": "string"}
+        assert _types(types) == {"n": DataType.INT, "s": DataType.TEXT}
 
     async def test_async_probe_keeps_read_only_guard(self, pg_client: SlayerSQLClient) -> None:
+        probe = _probe("SELECT bump() AS n")
         with pytest.raises(Exception, match="read-only transaction"):
-            await pg_client.get_column_types("SELECT bump() AS n")
+            await pg_client.get_result_column_types(probe)
 
     def test_sync_probe_keeps_read_only_guard(self, pg_client: SlayerSQLClient) -> None:
         engine = pg_client._get_sync_engine_for_client()
+        probe = _probe("SELECT bump() AS n")
         with pytest.raises(Exception, match="read-only transaction"):
-            get_column_types_sync("SELECT bump() AS n", engine=engine, db_type="postgres")
+            get_result_column_types_sync(probe, engine=engine, db_type="postgres")

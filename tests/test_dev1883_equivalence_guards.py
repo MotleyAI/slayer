@@ -11,7 +11,7 @@ import pytest
 from slayer.core.enums import TimeGranularity
 from slayer.core.errors import AmbiguousReferenceError, GranularityCallError
 from slayer.core.keys import ColumnKey, TimeTruncKey
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.bind_inputs import (
     _assert_equivalent_tds_agree,
     _resolve_main_time_dimension,
@@ -29,7 +29,7 @@ def _mtd(*grans_and_cols: tuple) -> SlayerQuery:
     return fx.q(
         source_model="orders",
         time_dimensions=[{"dimension": c, "granularity": g} for g, c in grans_and_cols],
-        measures=[{"formula": "amount:sum"}],
+        measures=[{"formula": "sum(amount)"}],
         main_time_dimension="created_at",
     )
 
@@ -45,15 +45,15 @@ class TestMainTimeDimensionAmbiguity:
     async def test_two_same_column_buckets_raise_via_execute(self, engine) -> None:
         q = fx.q(
             source_model="orders",
-            dimensions=["month(created_at)", "year(created_at)"],
+            dimensions=["date_trunc('month', created_at)", "date_trunc('year', created_at)"],
             main_time_dimension="created_at",
-            measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],
+            measures=[{"formula": "cumsum(sum(amount))", "name": "cs"}],
         )
         with pytest.raises(AmbiguousReferenceError) as ei:
             await engine.execute(q, dry_run=True)
         msg = str(ei.value)
-        assert "month(created_at)" in msg
-        assert "year(created_at)" in msg
+        assert "date_trunc('month', created_at)" in msg
+        assert "date_trunc('year', created_at)" in msg
 
     async def test_unit_resolve_raises_on_same_column_buckets(self, engine) -> None:
         model = await _orders_model(engine)
@@ -63,7 +63,7 @@ class TestMainTimeDimensionAmbiguity:
 
     async def test_single_bucket_still_resolves(self, engine) -> None:
         model = await _orders_model(engine)
-        td = TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+        td = TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)
         q = SlayerQuery(source_model="orders", time_dimensions=[td], main_time_dimension="created_at")
         # A lone TD ignores main_time_dimension and resolves regardless.
         assert _resolve_main_time_dimension(query=q, model=model) is td
@@ -73,7 +73,7 @@ class TestMainTimeDimensionAmbiguity:
         q = _mtd(("month", "created_at"), ("year", "customers.created_at"))
         resolved = _resolve_main_time_dimension(query=q, model=model)
         assert resolved is not None
-        assert resolved.dimension.full_name == "created_at"
+        assert resolved.dimension == "created_at"
 
     async def test_ambiguous_default_resolves_to_none(self, engine) -> None:
         # A passive model default can't pick a bucket: resolve to None (lenient) so
@@ -85,7 +85,7 @@ class TestMainTimeDimensionAmbiguity:
                 {"dimension": "created_at", "granularity": "month"},
                 {"dimension": "created_at", "granularity": "year"},
             ],
-            measures=[{"formula": "amount:sum"}],
+            measures=[{"formula": "sum(amount)"}],
         )
         assert _resolve_main_time_dimension(query=q, model=model) is None
 
@@ -97,11 +97,11 @@ class TestMainTimeDimensionAmbiguity:
                 {"dimension": "created_at", "granularity": "month"},
                 {"dimension": "customers.created_at", "granularity": "year"},
             ],
-            measures=[{"formula": "amount:sum"}],
+            measures=[{"formula": "sum(amount)"}],
         )
         resolved = _resolve_main_time_dimension(query=q, model=model)
         assert resolved is not None
-        assert resolved.dimension.full_name == "created_at"
+        assert resolved.dimension == "created_at"
 
     async def _orders_with_default_axis(self, tmp_path):
         engine = await fx.build_engine(tmp_path)
@@ -118,7 +118,7 @@ class TestMainTimeDimensionAmbiguity:
                 {"dimension": "created_at", "granularity": "month"},
                 {"dimension": "created_at", "granularity": "year"},
             ],
-            measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],
+            measures=[{"formula": "cumsum(sum(amount))", "name": "cs"}],
         )
         with pytest.raises(ValueError, match="unambiguous time dimension"):
             await engine.execute(q, dry_run=True)
@@ -131,20 +131,20 @@ class TestMainTimeDimensionAmbiguity:
                 {"dimension": "created_at", "granularity": "month"},
                 {"dimension": "created_at", "granularity": "year"},
             ],
-            measures=[{"formula": "amount:sum"}],
+            measures=[{"formula": "sum(amount)"}],
         )
         resp = await engine.execute(q, dry_run=True)
         assert resp.sql
 
 
 def _bound_td(col: str, gran: str, key: TimeTruncKey, **meta) -> tuple:
-    td = TimeDimension(dimension=ColumnRef(name=col), granularity=TimeGranularity(gran), **meta)
+    td = TimeDimension(dimension=col, granularity=TimeGranularity(gran), **meta)
     return (td, BoundExpr(value_key=key), col)
 
 
 class TestEquivalentTimeDimensionMetadataGuard:
-    K_MONTH = TimeTruncKey(column=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH)
-    K_YEAR = TimeTruncKey(column=ColumnKey(leaf="created_at"), granularity=TimeGranularity.YEAR)
+    K_MONTH = TimeTruncKey(source=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH)
+    K_YEAR = TimeTruncKey(source=ColumnKey(leaf="created_at"), granularity=TimeGranularity.YEAR)
 
     def test_conflicting_date_range_raises(self) -> None:
         tds = [

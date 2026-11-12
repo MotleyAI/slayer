@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelMeasure, SlayerModel
-from slayer.engine.ingestion import _additive_merge_existing
+from slayer.live_schema.ingestion import _additive_merge_existing
 
 
 def _stored(*, amount_type: DataType = DataType.DOUBLE) -> SlayerModel:
@@ -68,3 +68,15 @@ def test_column_named_like_the_physical_spelling_keeps_its_own_match():
     column = result.merged.get_column("y")
     assert column is not None
     assert column.type is DataType.DOUBLE
+
+
+def test_live_column_named_like_a_measure_in_another_case_is_renamed():
+    stored = SlayerModel(name="t", sql_table="t", data_source="ds",
+                         columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+                         measures=[ModelMeasure(formula="count(*)", name="premium")])
+    live = SlayerModel(name="t", sql_table="t", data_source="ds",
+                       columns=[Column(name="id", type=DataType.INT, primary_key=True),
+                                Column(name="Premium", type=DataType.DOUBLE)])
+    result = _additive_merge_existing(persisted=stored, fresh=live)
+    column = result.merged.columns[-1]
+    assert (column.name, column.physical_name) == ("Premium_2", "Premium")

@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.live_schema.ingestion import ingest_datasource_idempotent
+from slayer.live_schema.schema_drift import IdempotentIngestResult
+from slayer.database.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -21,6 +24,15 @@ def workspace():
         yield Path(tmp.name)
     finally:
         tmp.cleanup()
+
+
+async def _ingest(*, datasource: DatasourceConfig, **kwargs: Any) -> IdempotentIngestResult:
+    client = SlayerSQLClient(datasource=datasource)
+    try:
+        return await ingest_datasource_idempotent(datasource=datasource, client=client, **kwargs)
+    finally:
+        await client.aclose()
+        client.close()
 
 
 def _create_schema(db_path: str) -> None:
@@ -49,7 +61,7 @@ async def _setup(workspace: Path) -> tuple:
     storage = YAMLStorage(base_dir=str(workspace / "storage"))
     ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
     await storage.save_datasource(ds)
-    await ingest_datasource_idempotent(datasource=ds, storage=storage)
+    await _ingest(datasource=ds, storage=storage)
     return storage, ds
 
 
@@ -68,7 +80,7 @@ class TestFillsMetadataAndPersists:
         orders.joins[0] = _order_join(orders).model_copy(update={"cardinality": None})
         await storage.save_model(orders)
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _ingest(datasource=ds, storage=storage)
 
         reloaded = await storage.get_model("orders", data_source="ds")
         # Refilled AND persisted (reloaded from storage proves the save).
@@ -83,7 +95,7 @@ class TestFillsMetadataAndPersists:
         customers.columns[idx] = email.model_copy(update={"unique": False})
         await storage.save_model(customers)
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _ingest(datasource=ds, storage=storage)
 
         reloaded = await storage.get_model("customers", data_source="ds")
         email = next(c for c in reloaded.columns if c.name == "email")
@@ -103,7 +115,7 @@ class TestAdditiveContract:
         )
         await storage.save_model(orders)
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _ingest(datasource=ds, storage=storage)
 
         reloaded = await storage.get_model("orders", data_source="ds")
         assert _order_join(reloaded).cardinality is JoinCardinality.ONE_TO_ONE
@@ -120,7 +132,7 @@ class TestAdditiveContract:
         customers.columns[idx] = region.model_copy(update={"unique": True})
         await storage.save_model(customers)
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _ingest(datasource=ds, storage=storage)
 
         reloaded = await storage.get_model("customers", data_source="ds")
         region = next(c for c in reloaded.columns if c.name == "region")
@@ -153,13 +165,13 @@ class TestLegacyJoinTargetNormalisation:
         storage = YAMLStorage(base_dir=str(workspace / "store"))
         ds = DatasourceConfig(name="ds", type="sqlite", database=db)
         await storage.save_datasource(ds)
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _ingest(datasource=ds, storage=storage)
 
         # The faithful target is what fresh ingest already wrote.
         visits = await storage.get_model("visits", data_source="ds")
         assert [j.target_model for j in visits.joins] == ["reports__patient__drug"]
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _ingest(datasource=ds, storage=storage)
 
         reloaded = await storage.get_model("visits", data_source="ds")
         assert [j.target_model for j in reloaded.joins] == ["reports__patient__drug"]
@@ -208,7 +220,7 @@ class TestLegacyJoinTargetNormalisation:
         ))
 
         for _ in range(3):
-            await ingest_datasource_idempotent(datasource=ds, storage=storage)
+            await _ingest(datasource=ds, storage=storage)
             reloaded = await storage.get_model("src", data_source="ds")
             targets = [j.target_model for j in reloaded.joins]
             assert targets == ["a_b", "a___b"], targets

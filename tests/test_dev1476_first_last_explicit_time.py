@@ -18,11 +18,11 @@ from slayer.core.keys import (
     Phase,
 )
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.ir.planned import ValueSlot
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.ranked_planner import (
-    explicit_ranking_time_arg,
+    explicit_ranking_key,
     resolve_ranking_time_key,
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -138,11 +138,11 @@ async def test_b_no_time_dimension_with_explicit_time_arg(
     engine_with_seeded_data,
 ) -> None:
     engine = engine_with_seeded_data
-    resp = await engine.execute(SlayerQuery(
-        source_model="orders",
-        dimensions=["status"],
-        measures=[{"formula": "amount:last(created_at)"}],
-    ))
+    resp = await engine.execute(SlayerQuery.model_validate({
+        "source_model": "orders",
+        "dimensions": ["status"],
+        "measures": [{"formula": "last(amount, created_at)"}],
+    }))
     assert resp.data, resp.sql
     by_status = {row["orders.status"]: row for row in resp.data}
     last_key = next(
@@ -158,11 +158,11 @@ async def test_c_cross_model_bare_column_explicit_time_arg(
     engine_with_seeded_data,
 ) -> None:
     engine = engine_with_seeded_data
-    resp = await engine.execute(SlayerQuery(
-        source_model="orders",
-        dimensions=["customers.region"],
-        measures=[{"formula": "customers.amount:last(customers.signup_at)"}],
-    ))
+    resp = await engine.execute(SlayerQuery.model_validate({
+        "source_model": "orders",
+        "dimensions": ["customers.region"],
+        "measures": [{"formula": "last(customers.amount, customers.signup_at)"}],
+    }))
     assert resp.data, resp.sql
     by_region = {row["orders.customers.region"]: row for row in resp.data}
     last_key = next(
@@ -192,11 +192,11 @@ async def test_local_first_last_over_derived_column_expands_inner_refs(
     })
     await engine.storage.save_model(orders)
 
-    resp = await engine.execute(SlayerQuery(
-        source_model="orders",
-        dimensions=["status"],
-        measures=[{"formula": "net_amount:last(created_at)"}],
-    ))
+    resp = await engine.execute(SlayerQuery.model_validate({
+        "source_model": "orders",
+        "dimensions": ["status"],
+        "measures": [{"formula": "last(net_amount, created_at)"}],
+    }))
     assert resp.data, resp.sql
 
 
@@ -238,11 +238,11 @@ async def test_cross_model_first_last_uses_target_default_time_dimension() -> No
         ],
     )
 
-    resp = await engine.execute(SlayerQuery(
-        source_model="orders",
-        dimensions=["customers.region"],
-        measures=[{"formula": "customers.amount:last"}],  # ← NO explicit time arg
-    ))
+    resp = await engine.execute(SlayerQuery.model_validate({
+        "source_model": "orders",
+        "dimensions": ["customers.region"],
+        "measures": [{"formula": "last(customers.amount)"}],
+    }))
     by_region = {row["orders.customers.region"]: row for row in resp.data}
     assert set(by_region) == {"NA"}, resp.sql
     last_key = next(k for k in by_region["NA"].keys() if "last" in k.lower())
@@ -289,7 +289,7 @@ async def test_cross_model_first_last_with_no_time_at_all_raises() -> None:
     query = SlayerQuery.model_validate({
         "source_model": "orders",
         "dimensions": ["customers.region"],
-        "measures": [{"formula": "customers.amount:last"}],
+        "measures": [{"formula": "last(customers.amount)"}],
     })
     with pytest.raises(ValueError, match=r"first/last.*ranking time"):
         await engine.execute(query)
@@ -302,12 +302,13 @@ async def test_d_cross_cross_model_derived_time_arg(
     resp = await engine.execute(SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.DAY,
         )],
         measures=[{
-            "formula": "customers.amount:last(customers.signup_at_alias)",
+            "formula": "last(customers.amount, customers.signup_at_alias)",
         }],
+        to_many_handling="broadcast",
     ))
     assert resp.data, resp.sql
 
@@ -349,13 +350,14 @@ async def test_cross_model_last_with_target_filter_ranks_filtered_rows() -> None
         ],
     )
 
-    resp = await engine.execute(SlayerQuery(
-        source_model="orders",
-        dimensions=["customers.region"],
-        measures=[{"formula": "customers.amount:last"}],
-    ))
+    resp = await engine.execute(SlayerQuery.model_validate({
+        "source_model": "orders",
+        "dimensions": ["customers.region"],
+        "measures": [{"formula": "last(customers.amount)"}],
+    }))
     by_region = {row["orders.customers.region"]: row for row in resp.data}
-    assert set(by_region) == {"NA"}, resp.sql
+    # Orders of a deleted customer read the filtered-out target as NULL.
+    assert set(by_region) == {"NA", None}, resp.sql
     last_key = next(k for k in by_region["NA"].keys() if "last" in k.lower())
     # The newer (999.0) row is deleted; ranking should skip it and surface
     # the older active row's amount (100.0). A NULL here is the regression.
@@ -364,7 +366,7 @@ async def test_cross_model_last_with_target_filter_ranks_filtered_rows() -> None
 
 async def test_cross_model_last_over_column_filter_masks_the_newest_row() -> None:
     """A ``Column.filter`` masks the value; it never restricts the
-    ranking. ``customers.active_amount:last`` ranks customers by ``signup_at`` and
+    ranking. ``last(customers.active_amount)`` ranks customers by ``signup_at`` and
     the newest (id 3, 2023-09-01) is ``inactive``, so its masked value is NULL —
     the older active 100.0 is not reached (a row-restricting WHERE belongs in the
     query, not the column)."""
@@ -408,11 +410,11 @@ async def test_cross_model_last_over_column_filter_masks_the_newest_row() -> Non
         ],
     )
 
-    resp = await engine.execute(SlayerQuery(
-        source_model="orders",
-        dimensions=["customers.region"],
-        measures=[{"formula": "customers.active_amount:last"}],
-    ))
+    resp = await engine.execute(SlayerQuery.model_validate({
+        "source_model": "orders",
+        "dimensions": ["customers.region"],
+        "measures": [{"formula": "last(customers.active_amount)"}],
+    }))
     by_region = {row["orders.customers.region"]: row for row in resp.data}
     assert set(by_region) == {"NA"}, resp.sql
     last_key = next(k for k in by_region["NA"].keys() if "last" in k.lower())
@@ -474,11 +476,11 @@ async def test_local_last_over_derived_complex_time_col_qualifies_under_join() -
         ],
     )
 
-    resp = await engine.execute(SlayerQuery(
-        source_model="orders",
-        dimensions=["customers.region"],  # pulls the join into the ranked subquery
-        measures=[{"formula": "amount:last(created_day)"}],
-    ))
+    resp = await engine.execute(SlayerQuery.model_validate({
+        "source_model": "orders",
+        "dimensions": ["customers.region"],
+        "measures": [{"formula": "last(amount, created_day)"}],
+    }))
     assert resp.data, resp.sql
     by_region = {row["orders.customers.region"]: row for row in resp.data}
     last_key = next(k for k in by_region["NA"].keys() if "last" in k.lower())
@@ -633,20 +635,22 @@ class TestTimeArgJoinDiscovery:
 
     def test_single_hop_time_arg_registers_join(self) -> None:
         scope = self._run(
-            SlayerQuery(
-                source_model="orders", dimensions=["status"],
-                measures=[{"formula": "amount:last(customers.signup_at)"}],
-            ),
+            SlayerQuery.model_validate({
+                "source_model": "orders",
+                "dimensions": ["status"],
+                "measures": [{"formula": "last(amount, customers.signup_at)"}],
+            }),
             _u_orders(),
         )
         assert ("customers",) in scope.join_paths.as_list()
 
     def test_multi_hop_time_arg_registers_every_prefix(self) -> None:
         scope = self._run(
-            SlayerQuery(
-                source_model="orders", dimensions=["status"],
-                measures=[{"formula": "amount:last(customers.regions.opened_at)"}],
-            ),
+            SlayerQuery.model_validate({
+                "source_model": "orders",
+                "dimensions": ["status"],
+                "measures": [{"formula": "last(amount, customers.regions.opened_at)"}],
+            }),
             _u_orders(),
         )
         assert ("customers",) in scope.join_paths.as_list()
@@ -657,10 +661,11 @@ class TestTimeArgJoinDiscovery:
             Column(name="cust_signup", sql="customers.signup_at", type=DataType.TIMESTAMP),
         ])
         scope = self._run(
-            SlayerQuery(
-                source_model="orders", dimensions=["status"],
-                measures=[{"formula": "amount:last(cust_signup)"}],
-            ),
+            SlayerQuery.model_validate({
+                "source_model": "orders",
+                "dimensions": ["status"],
+                "measures": [{"formula": "last(amount, cust_signup)"}],
+            }),
             orders,
         )
         assert ("customers",) in scope.join_paths.as_list()
@@ -670,7 +675,7 @@ class TestTimeArgJoinDiscovery:
             SlayerQuery(
                 source_model="orders", dimensions=["status"],
                 measures=[{
-                    "formula": "amount:last(customers.signup_at) + 1", "name": "plus1",
+                    "formula": "last(amount, customers.signup_at) + 1", "name": "plus1",
                 }],
             ),
             _u_orders(),
@@ -678,10 +683,10 @@ class TestTimeArgJoinDiscovery:
         assert ("customers",) in scope.join_paths.as_list()
 
     def test_cross_model_time_arg_not_registered_on_host(self) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "customers.amount:last(customers.signup_at)"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "last(customers.amount, customers.signup_at)"}],
+        })
         bundle = _u_bundle(_u_orders())
         order, slots = _planned_slots(query, bundle)
         planned = plan_query(query=query, bundle=bundle)
@@ -749,7 +754,7 @@ class TestGateUsesSharedArgSelection:
         )
 
     def test_scalar_first_positional_is_not_an_explicit_time_arg(self) -> None:
-        assert explicit_ranking_time_arg(self._scalar_first_arg_key()) is None
+        assert explicit_ranking_key(self._scalar_first_arg_key()) is None
 
     def test_scalar_first_arg_gate_requires_default_time(self) -> None:
         # no default_time_dimension, and two temporal columns: no sole-column default
@@ -797,11 +802,11 @@ async def _multi_hop_engine() -> SlayerQueryEngine:
 
 async def test_e2e_noncomposite_local_crossing_time_arg() -> None:
     engine = await _multi_hop_engine()
-    resp = await engine.execute(SlayerQuery(
-        source_model="orders",
-        dimensions=["status"],
-        measures=[{"formula": "amount:last(customers.signup_at)"}],
-    ))
+    resp = await engine.execute(SlayerQuery.model_validate({
+        "source_model": "orders",
+        "dimensions": ["status"],
+        "measures": [{"formula": "last(amount, customers.signup_at)"}],
+    }))
     assert resp.data, resp.sql
     assert re.search(r"JOIN\s+customers\b", resp.sql, re.I), resp.sql
     by_status = {row["orders.status"]: row for row in resp.data}
@@ -812,11 +817,11 @@ async def test_e2e_noncomposite_local_crossing_time_arg() -> None:
 
 async def test_e2e_multi_hop_local_crossing_time_arg() -> None:
     engine = await _multi_hop_engine()
-    resp = await engine.execute(SlayerQuery(
-        source_model="orders",
-        dimensions=["status"],
-        measures=[{"formula": "amount:last(customers.regions.opened_at)"}],
-    ))
+    resp = await engine.execute(SlayerQuery.model_validate({
+        "source_model": "orders",
+        "dimensions": ["status"],
+        "measures": [{"formula": "last(amount, customers.regions.opened_at)"}],
+    }))
     assert resp.data, resp.sql
     assert re.search(r"JOIN\s+customers\b", resp.sql, re.I), resp.sql
     assert re.search(r"customers__regions", resp.sql, re.I), resp.sql
@@ -853,11 +858,11 @@ async def test_e2e_local_derived_crossing_time_arg() -> None:
         ],
         models=[_u_regions(), _u_customers(), orders],
     )
-    resp = await engine.execute(SlayerQuery(
-        source_model="orders",
-        dimensions=["status"],
-        measures=[{"formula": "amount:last(cust_signup)"}],
-    ))
+    resp = await engine.execute(SlayerQuery.model_validate({
+        "source_model": "orders",
+        "dimensions": ["status"],
+        "measures": [{"formula": "last(amount, cust_signup)"}],
+    }))
     assert resp.data, resp.sql
     assert re.search(r"JOIN\s+customers\b", resp.sql, re.I), resp.sql
     by_status = {row["orders.status"]: row for row in resp.data}
@@ -868,11 +873,11 @@ async def test_e2e_local_derived_crossing_time_arg() -> None:
 async def test_e2e_time_arg_join_dedup_with_dimension() -> None:
     """A crossing time arg isolates the aggregate into its own ``_cm_`` CTE; the ``customers`` join appears once per scope (host base + CTE), never twice within one."""
     engine = await _multi_hop_engine()
-    resp = await engine.execute(SlayerQuery(
-        source_model="orders",
-        dimensions=["customers.region"],
-        measures=[{"formula": "amount:last(customers.signup_at)"}],
-    ))
+    resp = await engine.execute(SlayerQuery.model_validate({
+        "source_model": "orders",
+        "dimensions": ["customers.region"],
+        "measures": [{"formula": "last(amount, customers.signup_at)"}],
+    }))
     assert resp.data, resp.sql
     assert "_cm_" in resp.sql, (
         f"crossing time arg must isolate:\n{resp.sql}"

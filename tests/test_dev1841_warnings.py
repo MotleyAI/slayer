@@ -1,7 +1,7 @@
-"""DEV-1841 task 2.3 / 3.5 — warnings both ways: the corrected fanning reason,
+"""Warnings both ways: the corrected fanning reason,
 the unconditional dice–slice hint on broadcast payloads, the ``associated``
 warning for non-additive cells, and the response-only informational entry for
-semi-join-pushed filters (amending DEV-1840's silence).
+semi-join-pushed filters.
 
 Spec: openspec …/specs/queries/semantics — "Loud degradation"; and
 queries/cross-model-aggregates — "Broadcast metadata", "Producer filter
@@ -32,7 +32,7 @@ from tests._dev1841_fixtures import (
     status_key,
 )
 
-CM = ModelMeasure(formula="customers.spend:sum", name="cm")
+CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
 
 #: SLayer's own to-many warnings — scope past incidental (e.g. 3.14) warnings.
 _SLAYER_TO_MANY_WARNINGS = (
@@ -52,7 +52,8 @@ class TestBroadcastReason:
         orders-level ``status`` is reachable from customers over the reverse
         (fanning) hop, so its reason must not say 'unreachable'."""
         _, engine = exec_backend
-        resp = await engine.execute(q(dimensions=["status"], measures=[CM]))
+        resp = await engine.execute(q(
+            dimensions=["status"], measures=[CM], to_many_handling="broadcast"))
         (w,) = broadcast_warnings(resp)
         reason = " ".join(d.reason for d in w.dimensions).lower()
         assert "unreachable" not in reason
@@ -67,7 +68,7 @@ class TestDiceSliceHint:
         """Scenario: broadcast warning carries the dice–slice hint — present
         whether or not the query contains a filter, naming associate mode."""
         _, engine = exec_backend
-        kw = {"dimensions": ["status"], "measures": [CM]}
+        kw = {"dimensions": ["status"], "measures": [CM], "to_many_handling": "broadcast"}
         if filters:
             kw["filters"] = filters
         resp = await engine.execute(q(**kw))
@@ -100,7 +101,7 @@ class TestAssociatedWarning:
         resp = await engine.execute(assoc_q(
             dimensions=["status"],
             measures=[ModelMeasure(
-                formula="customers.spend:sum(partition_by=status)", name="cm")]))
+                formula="sum(customers.spend, partition_by=status)", name="cm")]))
         assert associated_warnings(resp) == []
         by = status_key(resp)
         for status, spend in ASSOC_SPEND_BY_STATUS.items():

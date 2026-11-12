@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.sql.naming import STAGE_INNER_ALIAS, flat_name
 
@@ -19,11 +20,19 @@ def _select_source_names(select: exp.Select) -> set:
     # sqlglot stores the FROM clause under ``from`` or ``from_`` by version.
     frm = select.args.get("from") or select.args.get("from_")
     if frm is not None and frm.this is not None:
-        names.add(frm.this.alias_or_name)
+        names |= _source_names(frm.this)
     for join in select.args.get("joins") or []:
         if join.this is not None:
-            names.add(join.this.alias_or_name)
+            names |= _source_names(join.this)
     return names
+
+
+def _source_names(source: Expression) -> set:
+    """A FROM item's name; a BigQuery ``UNNEST(…) AS x`` is named by its element alias ``x``."""
+    alias = source.args.get("alias")
+    if isinstance(source, exp.Unnest) and isinstance(alias, exp.TableAlias) and not alias.name:
+        return {c.name for c in alias.columns}
+    return {source.alias_or_name}
 
 
 def _visible_source_names(select: exp.Select) -> set:
@@ -33,7 +42,7 @@ def _visible_source_names(select: exp.Select) -> set:
     LATERAL) but keeps climbing, so one nested in an EXISTS sees the EXISTS's
     ancestors (the semi-join spine); a CTE stops the climb."""
     names: set = set(_select_source_names(select))
-    node: exp.Expression = select
+    node: Expression = select
     while True:
         parent = node.parent
         siblings_hidden = False
@@ -53,7 +62,7 @@ def _visible_source_names(select: exp.Select) -> set:
         node = parent
 
 
-def _dot_segments(node: exp.Expression) -> Optional[List[str]]:  # pyright: ignore[reportPrivateImportUsage] — sqlglot re-export, pervasive in this file
+def _dot_segments(node: Expression) -> Optional[List[str]]:
     """Identifier names along a (nested) ``Dot`` chain; ``None`` for anything else."""
     if isinstance(node, exp.Identifier):
         return [node.name]
@@ -63,7 +72,7 @@ def _dot_segments(node: exp.Expression) -> Optional[List[str]]:  # pyright: igno
     return None
 
 
-def unmangle_dotted_table_refs(node: exp.Expression) -> None:
+def unmangle_dotted_table_refs(node: Expression) -> None:
     """Undo a BigQuery / T-SQL round-trip mis-parse of a hoisted statement.
 
     Re-parsing a dotted result-key column splits its dots across the column's

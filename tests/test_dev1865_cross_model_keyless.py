@@ -16,10 +16,10 @@ from tests._dev1865_fixtures import ModelMeasure, q
 
 # gold spend=150, silver spend=200 → only silver clears 175 ('hi').
 CM_BAND = (
-    "CASE WHEN customers.spend:sum(partition_by=customers.tier) > 175 "
+    "CASE WHEN sum(customers.spend, partition_by=customers.tier) > 175 "
     "THEN 'hi' ELSE 'lo' END"
 )
-KEYLESS_AGG = "customers.spend:sum(partition_by=customers.tier)"
+KEYLESS_AGG = "sum(customers.spend, partition_by=customers.tier)"
 RK_REGION = "orders.customers.regions.name"
 
 
@@ -30,12 +30,12 @@ class TestKeylessFilterRowRoutes:
         dims = [{"expression": CM_BAND, "name": "band"}, "customers.regions.name"]
         unfiltered = (await exec_engine.execute(q(
             dimensions=dims,
-            measures=[ModelMeasure(formula="customers.spend:sum", name="sp")],
+            measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],
         ))).data
         filtered = (await exec_engine.execute(q(
             dimensions=dims,
             filters=[f"{KEYLESS_AGG} > 175"],
-            measures=[ModelMeasure(formula="customers.spend:sum", name="sp")],
+            measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],
         ))).data
         assert 0 < len(filtered) <= len(unfiltered)
         # Row-routed against the attached tier-total: only silver rows survive → 'hi'.
@@ -56,7 +56,7 @@ class TestKeylessOrderByDimensionName:
         dims = [{"expression": CM_BAND, "name": "band"}, "customers.regions.name"]
         resp = await exec_engine.execute(q(
             dimensions=dims,
-            measures=[ModelMeasure(formula="customers.spend:sum", name="sp")],
+            measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],
             order=[{"column": "band", "direction": "asc"}],
         ))
         bands = [r["orders.band"] for r in resp.data]

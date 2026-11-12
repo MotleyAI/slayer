@@ -15,17 +15,18 @@ from sqlglot import exp
 
 import slayer.sql._identifier_fit as fitmod
 from slayer.core.enums import DataType
-from slayer.core.errors import IdentifierCollisionError
+from slayer.core.errors import IdentifierCollisionError, SlayerError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.client import ExecutionResult
+from slayer.database.client import ExecutionResult, ResultColumnType, TypeProbe
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.postgres import PostgresDialect
 from slayer.sql.generator import SQLGenerator  # noqa: F401 — used by the skipped TestVirtualModelShorts
 from slayer.sql.naming import AliasAllocator, cte_name_from_alias, dialect_folds_case, encode_alias
 from slayer.storage.yaml_storage import YAMLStorage
 
+from tests import _emitted_reparse_law as emitted_reparse_law
 from tests._engine_helpers import _engine_generate
 
 # Marker a length-fit leaves in an alias: ``_<8 hex digits>_``. Its ABSENCE is
@@ -165,7 +166,7 @@ def _chain_models(
     ]
 
 
-async def _build_engine(tmp_path, **kw) -> tuple[SlayerQueryEngine, SlayerModel]:
+async def _build_engine(tmp_path, *, validate: bool = True, **kw) -> tuple[SlayerQueryEngine, SlayerModel]:
     storage = YAMLStorage(base_dir=str(tmp_path))
     await storage.save_datasource(DatasourceConfig(
         name=DS, type="postgres", host="localhost", port=5432,
@@ -173,7 +174,7 @@ async def _build_engine(tmp_path, **kw) -> tuple[SlayerQueryEngine, SlayerModel]
     ))
     models = _chain_models(**kw)
     for m in models:
-        await storage.save_model(m)
+        await storage.save_model(m, _validate=validate)
     return SlayerQueryEngine(storage=storage), models[0]
 
 
@@ -187,25 +188,20 @@ def _repro_query(*, with_order: bool = False) -> SlayerQuery:
     """The exact query from the original identifier-length report."""
     kwargs = {}
     if with_order:
-        kwargs["order"] = [OrderItem(column="totalAmount:avg", direction="desc")]
+        kwargs["order"] = [OrderItem.model_validate({"column": "avg(totalAmount)", "direction": "desc"})]
         kwargs["limit"] = 10
-    return SlayerQuery(
-        source_model="SandboxInvoiceV2",
-        dimensions=[
+    return SlayerQuery.model_validate({"source_model": "SandboxInvoiceV2", "dimensions": [
             ColumnRef(name=f"{DEEP}.name"),
             ColumnRef(name=f"{DEEP}.email"),
             ColumnRef(name="status"),
-        ],
-        measures=[{"formula": "totalAmount:sum"}, {"formula": "*:count"}],
-        **kwargs,
-    )
+        ], "measures": [{"formula": "sum(totalAmount)"}, {"formula": "count(*)"}], **kwargs})
 
 
-SHORT_QUERY = SlayerQuery(
-    source_model="SandboxInvoiceV2",
-    dimensions=[ColumnRef(name="status")],
-    measures=[{"formula": "totalAmount:sum"}],
-)
+SHORT_QUERY = SlayerQuery.model_validate({
+    "source_model": "SandboxInvoiceV2",
+    "dimensions": [ColumnRef(name="status")],
+    "measures": [{"formula": "sum(totalAmount)"}],
+})
 
 
 # Identifier-inspection helpers — only the namespaces this issue owns (aliases,
@@ -580,7 +576,7 @@ class TestAllProjectionAliases:
             assert a in every
 
     async def test_includes_hidden_order_by_hoist(self, chain) -> None:
-        """``totalAmount:avg`` is projected only for ORDER BY; the pass must still see it."""
+        """``avg(totalAmount)`` is projected only for ORDER BY; the pass must still see it."""
         engine, model = chain
         public = await _public_aliases(engine, model, _repro_query(with_order=True))
         every = await _all_aliases(engine, model, _repro_query(with_order=True))
@@ -602,9 +598,9 @@ class TestAllProjectionAliases:
 
 
 def _deep_cross_model_query(*, two_measures: bool = False) -> SlayerQuery:
-    measures = [ModelMeasure(formula=f"{DEEP}.lifetimeValue:sum")]
+    measures = [ModelMeasure(formula=f"sum({DEEP}.lifetimeValue)")]
     if two_measures:
-        measures.append(ModelMeasure(formula=f"{DEEP}.lifetimeValue:avg"))
+        measures.append(ModelMeasure(formula=f"avg({DEEP}.lifetimeValue)"))
     return SlayerQuery(
         source_model="SandboxInvoiceV2",
         dimensions=[ColumnRef(name="status")],
@@ -717,8 +713,8 @@ class TestCteNames:
                 source_model="ShiftOrders",
                 time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
                 measures=[
-                    {"formula": "revenue:sum"},
-                    {"formula": "time_shift(revenue:sum, -1)", "name": long_transform_name},
+                    {"formula": "sum(revenue)"},
+                    {"formula": "time_shift(sum(revenue), -1)", "name": long_transform_name},
                 ],
             ),
             named_queries={}, runtime_kwarg={},
@@ -856,29 +852,28 @@ class TestVirtualModelShorts:
         assert fitted in sources, f"wrapper does not reference the fitted alias\n{vm.sql}"
         assert LONG_EMAIL not in vm.sql
 
-    async def test_case_colliding_shorts_raise(self, tmp_path) -> None:
-        """``email`` and ``Email`` yield shorts differing only by case; must be caught."""
-        engine, _ = await _build_engine(tmp_path, case_colliding_columns=True)
-        query = SlayerQuery(
-            source_model="SandboxInvoiceV2",
-            dimensions=[
+    async def test_case_colliding_result_names_are_refused(self, tmp_path) -> None:
+        """``email`` and ``Email`` (grandfathered) as two result names: refused before SQL generation."""
+        engine, _ = await _build_engine(tmp_path, validate=False, case_colliding_columns=True)
+        query = SlayerQuery.model_validate({"source_model": "SandboxInvoiceV2", "dimensions": [
                 ColumnRef(name=f"{DEEP}.email"),
                 ColumnRef(name=f"{DEEP}.Email"),
-            ],
-            measures=[{"formula": "*:count"}],
-        )
-        with pytest.raises(IdentifierCollisionError):
+            ], "measures": [{"formula": "count(*)"}]})
+        with pytest.raises(SlayerError) as exc:
             await engine._query_as_model(inner_query=query)
+        assert not isinstance(exc.value, IdentifierCollisionError), exc.value
+        assert "email" in str(exc.value)
+        assert "Email" in str(exc.value)
 
     async def test_two_dimensions_landing_on_one_short_raise(self, tmp_path) -> None:
         """Two dimensions whose shorts are exactly equal must be caught at the emission boundary."""
         flat = "SandboxSubscription__SandboxCustomer__SandboxConsumer__name"
         engine, _ = await _build_engine(tmp_path, decoy_root_column=flat)
-        query = SlayerQuery(
-            source_model="SandboxInvoiceV2",
-            dimensions=[ColumnRef(name=f"{DEEP}.name"), ColumnRef(name=flat)],
-            measures=[{"formula": "*:count"}],
-        )
+        query = SlayerQuery.model_validate({
+            "source_model": "SandboxInvoiceV2",
+            "dimensions": [ColumnRef(name=f"{DEEP}.name"), ColumnRef(name=flat)],
+            "measures": [{"formula": "count(*)"}],
+        })
         with pytest.raises(IdentifierCollisionError) as exc:
             await engine._query_as_model(inner_query=query)
         assert "query-backed model column" in str(exc.value)
@@ -894,8 +889,8 @@ class TestVirtualModelShorts:
             source_model="SandboxInvoiceV2",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                {"formula": "totalAmount:sum", "name": long_a},
-                {"formula": "totalAmount:avg", "name": long_b},
+                {"formula": "sum(totalAmount)", "name": long_a},
+                {"formula": "avg(totalAmount)", "name": long_b},
             ],
         )
         vm = await engine._query_as_model(inner_query=query)
@@ -916,11 +911,11 @@ class TestVirtualModelShorts:
         stage1 = _repro_query().model_copy(update={"name": "stage1"})
         vm = await engine._query_as_model(inner_query=stage1, override_name="stage1")
         short = next(c.name for c in vm.columns if "email" in c.name.lower())
-        stage2 = SlayerQuery(
-            source_model="stage1",
-            dimensions=[ColumnRef(name=short)],
-            measures=[{"formula": "totalAmount_sum:sum"}],
-        )
+        stage2 = SlayerQuery.model_validate({
+            "source_model": "stage1",
+            "dimensions": [ColumnRef(name=short)],
+            "measures": [{"formula": "sum(totalAmount_sum)"}],
+        })
         resp = await engine.execute(query=[stage1, stage2], dry_run=True)
         _assert_within_limit(resp.sql, 63)
         _assert_no_namespace_collision(resp.sql)
@@ -949,22 +944,22 @@ class TestEngineContract:
         for key in resp.attributes.dimensions:
             assert key in resp.columns
 
-    async def test_get_column_types_decodes_fitted_aliases(
+    async def test_get_result_column_types_decodes_fitted_aliases(
         self, chain, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """``get_column_types`` probe keys are fitted aliases and must decode back to canonical."""
+        """``get_result_column_types`` probe keys are fitted aliases and must decode back to canonical."""
         engine, _ = chain
         over_limit = "totalAmount_" + "x" * 60   # 72-char measure name
 
-        captured: dict[str, str] = {}
+        captured: dict[str, ResultColumnType] = {}
 
         class _FakeClient:
-            async def get_column_types(self, sql: str) -> dict[str, str]:
+            async def get_result_column_types(self, probe: TypeProbe) -> dict[str, ResultColumnType]:
                 # Echo back server keys exactly as emitted.
-                for name, _ in _projection_aliases(
-                    next(iter(sqlglot.parse_one(sql, dialect="postgres").find_all(exp.Select)))
-                ):
-                    captured[name] = "double precision"
+                with emitted_reparse_law.as_database():
+                    tree = sqlglot.parse_one(probe.sql, dialect="postgres")
+                for name, _ in _projection_aliases(next(iter(tree.args["from_"].this.find_all(exp.Select)))):
+                    captured[name] = ResultColumnType(type=DataType.DOUBLE, db_type="double precision")
                 return dict(captured)
 
             async def aclose(self) -> None:  # pragma: no cover — not reached
@@ -982,10 +977,10 @@ class TestEngineContract:
             engine, "_sql_clients", {k: _FakeClient() for k in ("x",)},
         )
         monkeypatch.setattr(
-            "slayer.engine.query_engine._sql_client_cache_key", lambda ds: "x",
+            "slayer.engine.query_engine.client_cache_key", lambda ds: "x",
         )
 
-        types = await engine.get_column_types(model_name="TypeProbe")
+        types = await engine.get_result_column_types(model_name="TypeProbe")
         assert captured, "probe must have emitted at least one alias"
         emitted = [k for k in captured if _nbytes(k) > 63]
         assert not emitted, f"probe SQL should carry fitted aliases, got {emitted}"
@@ -1011,16 +1006,16 @@ class TestSweep:
                 source_model="SandboxInvoiceV2",
                 dimensions=[ColumnRef(name=f"{DEEP}.email")],
                 measures=[
-                    {"formula": "totalAmount:sum"},
-                    {"formula": "totalAmount:sum / *:count", "name": "avg_ticket"},
+                    {"formula": "sum(totalAmount)"},
+                    {"formula": "sum(totalAmount) / count(*)", "name": "avg_ticket"},
                 ],
             ),
-            SlayerQuery(                                      # filter on a long dotted dim
-                source_model="SandboxInvoiceV2",
-                dimensions=[ColumnRef(name=f"{DEEP}.name")],
-                measures=[{"formula": "*:count"}],
-                filters=[f"{DEEP}.email IS NOT NULL"],
-            ),
+            SlayerQuery.model_validate({
+                "source_model": "SandboxInvoiceV2",
+                "dimensions": [ColumnRef(name=f"{DEEP}.name")],
+                "measures": [{"formula": "count(*)"}],
+                "filters": [f"{DEEP}.email IS NOT NULL"],
+            }),
         ]
 
     async def test_no_over_limit_identifier_anywhere(self, chain, queries) -> None:

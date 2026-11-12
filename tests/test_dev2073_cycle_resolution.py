@@ -18,7 +18,7 @@ class TestLiteralEdgeFirst:
             await lv.ingest()
             resp = await lv.query(
                 source_model="x", dimensions=["id"],
-                measures=[{"formula": "z.amount:sum", "name": "s"}],
+                measures=[{"formula": "sum(z.amount)", "name": "s"}],
             )
             # Direct z.x_id edge: x2 owns both z rows; via y.z it would be {1: 10, 2: 5}.
             assert {r["x.id"]: r["x.s"] for r in resp.data} == {1: None, 2: 15.0}

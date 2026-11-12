@@ -17,7 +17,7 @@ from slayer.core.errors import AmbiguousModelError
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.embeddings import client as embedding_client
-from slayer.engine.population import infer_population
+from slayer.engine.population.inference import infer_population
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.inspect.service import InspectService
 from slayer.pg_facade.connection import PgConnection
@@ -211,7 +211,8 @@ class TestQueries:
         {"source_model": "fin", "dimensions": ["hr.dept"], "measures": [{"formula": "sum(amount)"}]},
         {"source_model": "fin", "measures": [{"formula": "sum(hr.salary)"}]},
         {"source_model": "fin", "measures": [{"formula": "sum(amount)"}], "filters": ["hr.dept = 'eng'"]},
-        {"source_model": {"source_name": "fin", "joins": [{"target_model": "hr", "join_pairs": [["staff_id", "id"]]}]},
+        {"source_model": "fin",
+         "extensions": [{"source_name": "fin", "joins": [{"target_model": "hr", "join_pairs": [["staff_id", "id"]]}]}],
          "dimensions": ["hr.dept"]},
         {"source_model": "fin", "dimensions": ["dept"], "measures": [{"formula": "sum(amount)"}]},
         {"source_model": "fin", "dimensions": ["hrr.dept"], "measures": [{"formula": "sum(amount)"}]},

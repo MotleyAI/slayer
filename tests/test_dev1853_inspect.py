@@ -12,7 +12,7 @@ import tempfile
 
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.engine.join_safety import audit_join_safety
+from slayer.engine.cardinality.join_safety import audit_join_safety
 from slayer.inspect.model_render import render_model_inspection
 from slayer.inspect.service import InspectService
 from slayer.storage.yaml_storage import YAMLStorage
@@ -54,7 +54,7 @@ class TestInspectShowsIncomingEdges:
             storage = await _storage(d)
             md = await render_model_inspection(
                 model=_customers(), storage=storage, engine=None,
-                format="markdown", compact=False)
+                format="markdown")
             assert "orders" in md
             assert "one_to_many" in md
 
@@ -63,7 +63,7 @@ class TestInspectShowsIncomingEdges:
             storage = await _storage(d)
             out = await render_model_inspection(
                 model=_customers(), storage=storage, engine=None,
-                format="json", compact=False)
+                format="json")
             text = json.dumps(json.loads(out))
             assert '"orders"' in text
             assert '"one_to_many"' in text
