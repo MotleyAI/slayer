@@ -69,7 +69,7 @@ _ERROR_TOKENS = {
     "slayer.core.errors.UnknownReferenceError": "unknown_reference",
     "slayer.core.errors.PopulationInferenceError": "population_inference",
     "slayer.core.errors.MissingDriverError": "missing_driver",
-    "slayer.database.client.SqlClientError": "db_error",
+    "slayer.database.errors.SqlClientError": "db_error",
     "slayer.facade.translator.TranslationError": "translation",
     "mcp.server.fastmcp.exceptions.ToolError": "tool_error",
 }

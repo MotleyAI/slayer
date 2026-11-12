@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import duckdb
 import psycopg
 import pytest
 import sqlalchemy as sa
@@ -139,6 +140,7 @@ def test_pooler_datasource_stays_transactional(engine_kwargs: EngineKwargs, url:
 
 
 def test_sqlite_keeps_its_transaction_mode(engine_kwargs: EngineKwargs, tmp_path: Path) -> None:
+    (tmp_path / "f.db").touch()  # a missing local database file is refused
     engine_factory.get_engine(_ds(f"sqlite:///{tmp_path / 'f.db'}", ds_type="sqlite"))
     assert [_mode(k) for k in engine_kwargs.sync] == [
         {"isolation_level": None, "skip_autocommit_rollback": None, "pool_pre_ping": None},
@@ -309,10 +311,15 @@ def _release(client: SlayerSQLClient) -> None:
 
 @pytest.mark.parametrize("ds_type", ["sqlite", "duckdb"])
 def test_release_drains_a_file_backed_pool(tmp_path: Path, ds_type: str) -> None:
-    ds = DatasourceConfig(name="f", type=ds_type, database=str(tmp_path / f"f.{ds_type}"))
+    path = tmp_path / f"f.{ds_type}"
+    if ds_type == "duckdb":
+        duckdb.connect(str(path)).close()
+    else:
+        path.touch()
+    ds = DatasourceConfig(name="f", type=ds_type, database=str(path))
     client = SlayerSQLClient(ds)
     try:
-        client.execute_sync("SELECT 1 AS x")
+        asyncio.run(client.execute("SELECT 1 AS x"))  # ``execute_sync`` releases on return
         pool = cast(QueuePool, engine_factory.get_engine(ds).pool)
         assert pool.checkedin() == 1
         _release(client)
