@@ -437,11 +437,15 @@ A negated condition on a joined model does not mean "has none": `not orders.stat
 
 ### List columns
 
-A list column `skills` is also a join hop to its elements, one row per non-NULL element with the single column `skills.value`, so `skills.value = 'go'` keeps the contractors having a `go` element, `skills.value` groups by element with `count(skills.*)` counting occurrences, `to_many_handling: "associate"` turns `count(*)` by `skills.value` into the number of contractors per skill (no key needed), every `skills.value` condition in one query reads the same element (so require several with `contains_all(skills, ['go', 'sql'])`, not `AND`), and absence is `NOT contains(skills, 'go')`, since `NOT (skills.value = 'go')` keeps rows with some other element.
+A list column `skills` (type `ARRAY`, see [Data types](models.md#data-types)) is also a join hop to its elements: one row per non-NULL element, with the single column `skills.value`. So `skills.value = 'go'` keeps the contractors having a `go` element, `skills.value` groups by element with `count(skills.*)` counting occurrences, and `to_many_handling: "associate"` turns `count(*)` by `skills.value` into the number of contractors per skill (no key needed). Every `skills.value` condition in one query reads the same element, so require several with `contains_all(skills, ['go', 'sql'])`, not `AND`; absence is `NOT contains(skills, 'go')`, since `NOT (skills.value = 'go')` keeps rows with some other element.
 
 ```json
 {"source_model": "contractors", "dimensions": ["skills.value"], "measures": ["count(*)"], "to_many_handling": "associate"}
 ```
+
+The list itself is not a scalar: it is never a group-by key or compared with `=`, and it aggregates only as [Aggregation eligibility](models.md#aggregation-eligibility) allows; group and aggregate its elements instead. The [list functions](references.md#lists) test a whole list, and [Database support](../database-support.md) names the databases that run lists.
+
+`collect(x)` goes the other way: the distinct non-NULL values of `x` in each cell, sorted, and `[]` for a cell with none. `x` is a column, a list's elements or an expression, of the query's model or a joined one (`collect(orders.status)` by customer is each customer's order statuses), and a collected list stays a list in a later stage, with the same functions and elements.
 
 ### Window functions in filters
 

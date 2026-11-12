@@ -66,6 +66,21 @@ The `collect` function also works on regular columns, for example to list the pr
 }
 ```
 
+It also collects a column of a joined model, one list per parent row. Here are each customer's order statuses, fewest orders first:
+
+```json
+{
+  "source_model": "customers",
+  "dimensions": ["name"],
+  "measures": [
+    {"formula": "count(orders.*)", "name": "order_count"},
+    {"formula": "collect(orders.status)", "name": "statuses"}
+  ],
+  "order": [{"column": "order_count", "direction": "asc"}, {"column": "name"}],
+  "limit": 5
+}
+```
+
 The [notebook](list_columns_nb.ipynb) runs every query on this page; the full rules are in [List columns](../../concepts/queries.md#list-columns) and [Lists](../../concepts/references.md#lists).
 
 So next time you need to ask a question that involves a list-valued column, fear not: SLayer can do that for you!

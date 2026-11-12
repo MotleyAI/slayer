@@ -221,7 +221,7 @@ Five consequences worth knowing:
 
 ### Lists
 
-Over a [list column](queries.md#list-columns) `contains(skills, 'go')`, `contains_any(skills, ['go', 'rust'])`, `contains_all(skills, {wanted})` and `length(skills)` read only its non-NULL elements and are `NULL` only for a `NULL` argument; elements compare within one type family (a numeric string literal beside number elements is its number, any other mismatch is an error), `contains` on text is an error pointing at `LIKE`, an array literal's elements are literals of one type family (`[]` takes the type of its context), and on databases without native lists every list construct is a plan-time error.
+Over a [list column](queries.md#list-columns) `contains(skills, 'go')`, `contains_any(skills, ['go', 'rust'])`, `contains_all(skills, {wanted})` and `length(skills)` read only its non-NULL elements and are `NULL` only for a `NULL` argument; elements compare within one type family (a numeric string literal beside number elements is its number, any other mismatch is an error), `contains` on text is an error pointing at `LIKE`, and an array literal's elements are literals of one type family (`[]` takes the type of its context). [Database support](../database-support.md) names the databases that run lists.
 
 ## Date and time functions
 
