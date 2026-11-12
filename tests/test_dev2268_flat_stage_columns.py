@@ -185,6 +185,15 @@ async def test_a_downstream_stages_dotted_spelling_names_the_flat_column() -> No
     assert "customers__name" in err.reason
 
 
+async def test_a_downstream_dotted_spelling_shaped_like_a_list_element_names_the_flat_column() -> None:
+    valued = customers().model_copy(update={"columns": [
+        *customers().columns, Column(name="value", sql="credit", type=DataType.DOUBLE)]})
+    stage = {**_S, "dimensions": ["customers.value"]}
+    err = await _refused([q(**stage), q(source_model="s", dimensions=["s.customers.value"])],
+                         models=with_models(valued), exc=IllegalScopeReferenceError)
+    assert "customers__value" in err.reason
+
+
 async def test_an_unrelated_short_form_suggests_the_populations_flat_column() -> None:
     err = await _refused([q(**_S), q(source_model="s", dimensions=["customers.name"])], exc=UnrelatedDatasetError)
     assert "customers__name" in err.suggestion

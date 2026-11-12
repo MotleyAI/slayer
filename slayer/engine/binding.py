@@ -1046,13 +1046,13 @@ def _stage_list_scope(
     """The stage's model scope for ``L.value`` / ``L.*`` over its list column ``L``; any other dotted ref is illegal."""
     element_shaped = len(parts) == 2 and match_name(name=parts[1], declared=[leaf], quoted=quoted[1]) is not None
     head = scope.resolve_flat_name(parts[0], quoted=quoted[0]) if element_shaped else None
-    if element_shaped and head is None:
+    flat = scope.peek_flat_name("__".join(parts), quoted=any(quoted))
+    if element_shaped and head is None and flat is None:
         raise UnknownReferenceError(
             name=".".join(parts), scope_kind="StageSchema",
             scope_summary=f"{scope.label} columns: {[c.name for c in scope.columns]}", suggestion=None,
         )
     if head is None or head.type != DataType.ARRAY or bundle.source_model is None:
-        flat = scope.peek_flat_name("__".join(parts), quoted=any(quoted))
         raise IllegalScopeReferenceError(
             name=".".join(parts),
             scope_kind="StageSchema",
