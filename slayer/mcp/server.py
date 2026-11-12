@@ -31,7 +31,7 @@ from slayer.core.models import (
 from slayer.core.format import encode_json, encode_text
 from slayer.core.granularity import CustomGranularity
 from slayer.core.join_edges import JoinEdgeRef, edge_reference, resolve_join_refs, without_joins
-from slayer.core.query import QueryRefinement, SlayerQuery
+from slayer.core.query import QueryRefinement, SlayerQuery, deprecated_inputs_of
 from slayer.core.recommend import render_recommendation_markdown
 from slayer.core.warnings import ResponseTruncationWarning, SlayerWarning
 from slayer import async_utils
@@ -1175,6 +1175,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         # Query-backed models route through engine.save_model so the
         # engine-managed column cache is refreshed and user-supplied cache
         # fields are rejected.
+        # Before the round trip below, which drops what the converted source queries carry.
+        notes: list[SlayerWarning] = [*deprecated_inputs_of(model.source_queries or [])]
         try:
             validated = SlayerModel.model_validate(model.model_dump(mode="json"))
         except Exception as exc:
@@ -1192,7 +1194,6 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             # Strip the cached columns so save_model repopulates them from a
             # fresh expansion of the backing query.
             validated = validated.model_copy(update={"columns": []})
-        notes: list[SlayerWarning] = []
         # save_model refreshes a query-backed model's cache (and may recompute its
         # data_source, so cleanup below uses the returned identity); otherwise it
         # normalizes, validates Mode-A join paths and trial-executes a raw-sql source.

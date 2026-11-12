@@ -66,6 +66,7 @@ from slayer.core.query import (
     OrderItem,
     QueryRefinement,
     SlayerQuery,
+    deprecated_inputs_of,
     extract_variable_refs,
     refine_query,
     render_probe_text,
@@ -90,6 +91,7 @@ from slayer.core.warnings import (
     DegenerateReaggregationWarningPayload,
     BroadcastDimension,
     BroadcastGrainWarningPayload,
+    DeprecatedInputWarning,
     LibraryNameShadowWarning,
     NameCollisionWarning,
     NarrowedAccessWarning,
@@ -99,9 +101,9 @@ from slayer.core.warnings import (
     SlayerNameCollisionWarning,
     SlayerNarrowedAccessWarning,
     SlayerUnrelatedDatasetWarning,
+    SlayerWarning,
     SlayerWholeListWarning,
     SlayerDateOnlyMidnightWarning,
-    SlayerWarning,
     DateOnlyMidnightWarning,
     SlayerWholePeriodsWarning,
     UnrelatedDatasetWarningPayload,
@@ -193,7 +195,7 @@ from slayer.sql.generator import (
 from slayer.sql.physical_tables import physical_tables
 from slayer.sql.session_policy import HasColumn, ScopedTable, apply_session_policy, policy_column_checks
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
-from slayer.storage.base import StorageBackend
+from slayer.storage.base import StorageBackend, with_canonical_spellings
 from slayer.storage.engine_view import EngineStorage
 from slayer.storage.document_loading import DocumentLoadFailures
 from slayer.storage.yaml_storage import YAMLStorage
@@ -227,10 +229,16 @@ def _read_model_collisions(*, reads: StatementReads, bundle: ResolvedSourceBundl
     return [w for name in sorted(read) if name in models for w in name_collision_warnings(models[name])]
 
 
+def _validated_run_input(run_input: Any) -> Any:
+    """``run_input`` with each query mapping validated once, so an input form it converts is reported once."""
+    if isinstance(run_input, list):
+        return [SlayerQuery.model_validate(item) if isinstance(item, dict) else item for item in run_input]
+    return SlayerQuery.model_validate(run_input) if isinstance(run_input, dict) else run_input
+
+
 def _check_fresh_result_names(run_input: Any) -> None:
     """The result names a caller writes may not differ only in case; a stored query is never refused."""
-    for item in run_input if isinstance(run_input, list) else [run_input]:
-        query = SlayerQuery.model_validate(item) if isinstance(item, dict) else item
+    for query in run_input if isinstance(run_input, list) else [run_input]:
         if isinstance(query, SlayerQuery):
             check_result_names_case(names=[
                 *(m.name for m in query.measures or [] if m.name),
@@ -240,13 +248,14 @@ def _check_fresh_result_names(run_input: Any) -> None:
 
 
 def resolve_run_input(query: _QueryT, refine: "QueryRefinement | dict | None") -> "_QueryT | SavedQueryRun":
-    """Pack a saved-query name with its refinement; an empty refinement of a name is none."""
+    """Pack a saved-query name with its refinement; a refinement carrying no clause and no deprecation is none."""
     if refine is None:
         return SavedQueryRun(name=query) if isinstance(query, str) else query
     if not isinstance(query, str):
         raise ValueError(REFINE_REQUIRES_NAME)
     refinement = QueryRefinement.model_validate(refine) if isinstance(refine, dict) else refine
-    return SavedQueryRun(name=query, refinement=refinement if refinement.model_fields_set else None)
+    kept = refinement.model_fields_set or refinement.deprecated_inputs
+    return SavedQueryRun(name=query, refinement=refinement if kept else None)
 
 
 class _ResolvedItem(BaseModel):
@@ -1023,11 +1032,13 @@ class SlayerQueryEngine:
         refine: "QueryRefinement | dict | None" = None,
     ) -> SlayerResponse:
         runtime_kwarg = variables or {}
+        deprecations: List[DeprecatedInputWarning] = []
         with collect_legacy_spellings() as legacy, announced_by_caller():
-            run_input = resolve_run_input(query, refine)
+            run_input = _validated_run_input(resolve_run_input(query, refine))
             _check_fresh_result_names(run_input)
             main_query, named_queries, prefer_data_source, splice_chain = await self._normalize_input(
-                run_input, runtime_kwarg=runtime_kwarg, prefer_data_source=data_source
+                run_input, runtime_kwarg=runtime_kwarg, prefer_data_source=data_source,
+                deprecations_out=deprecations,
             )
             response = await self._execute_pipeline(
                 query=main_query,
@@ -1041,6 +1052,8 @@ class SlayerQueryEngine:
                 original_input=run_input,
                 original_data_source=data_source,
             )
+        if deprecations:
+            response = response.model_copy(update={"warnings": [*response.warnings, *deprecations]})
         # The one Python-warnings emission: after the response is built (under
         # ``-W error`` this raises) and path-independent (dry_run/explain/execute).
         response.warnings.extend(emit_deprecations(legacy))
@@ -1053,9 +1066,12 @@ class SlayerQueryEngine:
         *,
         runtime_kwarg: Dict[str, Any],
         prefer_data_source: Optional[str],
+        deprecations_out: Optional[List[DeprecatedInputWarning]] = None,
     ) -> "tuple[SlayerQuery, Dict[str, SlayerQuery], Optional[str], Tuple[str, ...]]":
         """Resolve the user input union into ``(main_query, named_queries, prefer_data_source,
-        splice_chain)``; running a query-backed model by name seeds the chain with it."""
+        splice_chain)``; running a query-backed model by name seeds the chain with it.
+        The deprecations of the query objects and refinement it consumed go to ``deprecations_out``."""
+        out = deprecations_out if deprecations_out is not None else []
         # Run-by-name: ``execute("model_name", ...)`` runs the backing query.
         if isinstance(query, str):
             query = SavedQueryRun(name=query)
@@ -1064,6 +1080,7 @@ class SlayerQueryEngine:
                 run=query,
                 runtime_kwarg=runtime_kwarg,
                 prefer_data_source=prefer_data_source,
+                deprecations_out=out,
             )
 
         if isinstance(query, list):
@@ -1072,6 +1089,7 @@ class SlayerQueryEngine:
                     "'query' must be a non-empty list when passing staged queries."
                 )
             queries = [SlayerQuery.model_validate(q) if isinstance(q, dict) else q for q in query]
+            out.extend(deprecated_inputs_of(q for q in queries if isinstance(q, SlayerQuery)))
             # Reorder so each stage follows the siblings it references (last stays
             # the entry point); validates names / dups / self-refs / cycles.
             queries = self._topologically_order_queries(queries)
@@ -1080,6 +1098,7 @@ class SlayerQueryEngine:
         else:
             if isinstance(query, dict):
                 query = SlayerQuery.model_validate(query)
+            out.extend(deprecated_inputs_of([query] if isinstance(query, SlayerQuery) else []))
             main_query = query
             named_queries = {}
 
@@ -1097,8 +1116,10 @@ class SlayerQueryEngine:
         run: SavedQueryRun,
         runtime_kwarg: Dict[str, Any],
         prefer_data_source: Optional[str],
+        deprecations_out: List[DeprecatedInputWarning],
     ) -> "tuple[SlayerQuery, Dict[str, SlayerQuery], Optional[str], Tuple[str, ...]]":
-        """Normalize a run-by-name input into the shared prepare tuple (``prefer_data_source`` pins the lookup)."""
+        """Normalize a run-by-name input into the shared prepare tuple (``prefer_data_source`` pins the lookup).
+        The deprecations of the stored stages and the refinement go to ``deprecations_out``."""
         name = run.name
         model = await self.storage.get_model(name, data_source=prefer_data_source)
         if model is None:
@@ -1108,8 +1129,9 @@ class SlayerQueryEngine:
                 f"Model '{name}' is not query-backed; pass a SlayerQuery "
                 f"with source_model='{name}'."
             )
+        deprecations_out.extend(deprecated_inputs_of([*model.source_queries, run.refinement]))
         prefer_data_source = model.data_source or prefer_data_source
-        if run.refinement is not None:
+        if run.refinement is not None and run.refinement.model_fields_set:
             # Legacy unpinned stages pin from the unrefined stage, so a refinement never moves the source.
             model = await self._pin_populations(model=model, prefer_data_source=prefer_data_source)
             *earlier, final = model.source_queries or []
@@ -1390,6 +1412,11 @@ class SlayerQueryEngine:
         warnings.extend(stale_spelling_warnings(list(dict.fromkeys([
             *(s for p in plans for s in p.stale_spellings), *render_stale_spellings,
         ]))))
+        # Stored query-backed models the statement reads: their stages' input deprecations.
+        warnings.extend(deprecated_inputs_of(
+            stage for name in sorted(reads) if name in bundle.query_backed
+            for stage in bundle.query_backed[name].source_queries or []
+        ))
         return _Rendered(
             built=built, dialect=dialect, datasource=datasource, bundle=bundle,
             planned_list=planned_list, emitted_list=plans, model=model, reads=reads, associated=built.associated,
@@ -2961,8 +2988,13 @@ class SlayerQueryEngine:
     async def save_model(
         self, model: SlayerModel, *, warnings_out: Optional[List[SlayerWarning]] = None,
     ) -> SlayerModel:
-        """Persist a SlayerModel verbatim (author spelling preserved); query-backed models reject cache fields and validate via dry-run.
-        Narrowed-access warnings go to ``warnings_out`` when given, else are emitted as Python warnings."""
+        """Persist a SlayerModel, each deprecated spelling stored as its twin; query-backed models reject cache fields and validate via dry-run.
+        The source queries' input deprecations, the spelling deprecations and narrowed-access warnings go to
+        ``warnings_out`` when given; without it, narrowed-access warnings are emitted as Python warnings."""
+        deprecated_inputs = deprecated_inputs_of(model.source_queries or [])
+        model, spellings = with_canonical_spellings(model)
+        if warnings_out is not None:
+            warnings_out.extend([*deprecated_inputs, *spellings])
         with announced_by_caller():
             return await self._save_model(model, warnings_out=warnings_out)
 

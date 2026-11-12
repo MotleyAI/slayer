@@ -537,6 +537,20 @@ class ReservedModelNameError(SlayerError):
         )
 
 
+class UnrecognizedStrictValueError(SlayerError):
+    """A query's deprecated ``strict`` flag holds a value that is neither true nor false."""
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+        super().__init__(
+            f"Unrecognized strict value {value!r}; strict is deprecated, use "
+            f"to_many_handling='error' (one of broadcast|associate|error) instead."
+        )
+
+    def __reduce__(self) -> tuple[type, tuple[Any]]:
+        return type(self), (self.value,)
+
+
 class DefaultTimeDimensionTypeError(SlayerError):
     """A model's declared ``default_time_dimension`` names a column of a non-temporal type."""
 

@@ -17,8 +17,9 @@ from urllib.parse import quote
 
 from slayer.async_utils import run_sync
 from slayer.core.format import NumberFormat
-from slayer.core.query import QueryRefinement, SlayerQuery
+from slayer.core.query import QueryRefinement, SlayerQuery, deprecated_inputs_of
 from slayer.core.recommend import RootModelRecommendation
+from slayer.core.warnings import DeprecatedInputWarning
 from slayer.engine.query_engine import (
     ClientFactory,
     FieldMetadata,
@@ -137,19 +138,16 @@ class SlayerClient:
             return resp.json()
 
     @staticmethod
-    def _validated_dump(payload: Mapping[str, Any]) -> dict[str, Any]:
-        """Normalise a single-query payload through ``SlayerQuery`` so the
-        server's ``QueryRequest`` accepts string-shorthand measures/dimensions."""
-        return SlayerQuery.model_validate(dict(payload)).model_dump(
-            mode="json", exclude_none=True
-        )
+    def _dump(query: SlayerQuery) -> dict[str, Any]:
+        """A query as the server's ``QueryRequest`` accepts it (string shorthands already lifted)."""
+        return query.model_dump(mode="json", exclude_none=True)
 
     @staticmethod
-    def _dump_stage(*, index: int, item: Any) -> dict[str, Any]:
+    def _stage(*, index: int, item: Any) -> SlayerQuery:
         if isinstance(item, SlayerQuery):
-            return item.model_dump(mode="json", exclude_none=True)
+            return item
         if isinstance(item, ABCMapping):
-            return SlayerClient._validated_dump(item)
+            return SlayerQuery.model_validate(dict(item))
         raise TypeError(
             f"query[{index}] must be SlayerQuery or Mapping; got "
             f"{type(item).__name__}"
@@ -163,32 +161,40 @@ class SlayerClient:
         variables: Variables = None,
         dry_run: bool = False,
         explain: bool = False,
+        deprecations_out: list[DeprecatedInputWarning] | None = None,
     ) -> dict[str, Any]:
         """Build the ``POST /query`` JSON body from any accepted input shape
         (``str`` run-by-name with optional ``refine``, list DAG, ``Mapping``, or
-        ``SlayerQuery``); never mutates caller-owned data. Shared by sync + async transports."""
+        ``SlayerQuery``); never mutates caller-owned data. Shared by sync + async transports.
+        The deprecations of the query objects and refinement it sends go to ``deprecations_out``."""
         run = resolve_run_input(query, SlayerClient._normalize_refine(refine))
+        sent: list[SlayerQuery | QueryRefinement | None] = []
         if isinstance(run, SavedQueryRun):
             body: dict[str, Any] = {"name": run.name}
+            sent.append(run.refinement)
             if run.refinement is not None:
                 body["refine"] = run.refinement.model_dump(mode="json", exclude_unset=True)
         elif isinstance(query, SlayerQuery):
-            body = query.model_dump(mode="json", exclude_none=True)
+            sent.append(query)
+            body = SlayerClient._dump(query)
         elif isinstance(query, ABCSequence) and not isinstance(
             query, (bytes, bytearray)
         ):
             # bytes are Sequences too; route them to the else-branch below.
-            body = {"queries": [
-                SlayerClient._dump_stage(index=i, item=item)
-                for i, item in enumerate(query)
-            ]}
+            stages = [SlayerClient._stage(index=i, item=item) for i, item in enumerate(query)]
+            sent.extend(stages)
+            body = {"queries": [SlayerClient._dump(q) for q in stages]}
         elif isinstance(query, ABCMapping):
-            body = SlayerClient._validated_dump(query)
+            validated = SlayerQuery.model_validate(dict(query))
+            sent.append(validated)
+            body = SlayerClient._dump(validated)
         else:
             raise TypeError(
                 "query must be SlayerQuery, Mapping, Sequence, or str; got "
                 f"{type(query).__name__}"
             )
+        if deprecations_out is not None:
+            deprecations_out.extend(deprecated_inputs_of(sent))
         if variables:
             # Runtime wins over a single query's own ``variables``, as in ``engine.execute``.
             body["variables"] = {**body.get("variables", {}), **variables}
@@ -226,8 +232,8 @@ class SlayerClient:
         return dict(variables) if variables else None
 
     @staticmethod
-    def _parse_response(result: dict) -> SlayerResponse:
-        """Parse an API JSON response into a SlayerResponse."""
+    def _parse_response(result: dict, *, deprecations: list[DeprecatedInputWarning] | None = None) -> SlayerResponse:
+        """Parse an API JSON response into a SlayerResponse; its warnings are the server's plus the client's ``deprecations``."""
         def _parse_meta_dict(d: dict) -> dict[str, FieldMetadata]:
             out = {}
             for k, v in (d or {}).items():
@@ -247,6 +253,7 @@ class SlayerClient:
             columns=result.get("columns") or [],
             sql=result.get("sql"),
             attributes=attributes,
+            warnings=[*(result.get("warnings") or []), *(deprecations or [])],
             population=result.get("population"),
             population_inferred=bool(result.get("population_inferred", False)),
         )
@@ -273,11 +280,13 @@ class SlayerClient:
                 explain=explain,
                 refine=self._normalize_refine(refine),
             )
+        deprecations: list[DeprecatedInputWarning] = []
         body = self._build_query_body(
-            query, refine=refine, variables=variables, dry_run=dry_run, explain=explain
+            query, refine=refine, variables=variables, dry_run=dry_run, explain=explain,
+            deprecations_out=deprecations,
         )
         result = await self._request(method="POST", path="/query", json=body)
-        return self._parse_response(result)
+        return self._parse_response(result, deprecations=deprecations)
 
     async def sql(
         self, query: QueryInput, *, refine: Refinement = None, variables: Variables = None,
@@ -310,7 +319,7 @@ class SlayerClient:
         params = {"data_source": data_source} if data_source else None
         return await self._request(method="GET", path=f"/models/{name}", params=params)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
 
-    async def create_model(self, model: dict[str, Any]) -> dict[str, str]:
+    async def create_model(self, model: dict[str, Any]) -> dict[str, Any]:
         return await self._request(method="POST", path="/models", json=model)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
 
     async def list_datasources(self) -> list[str]:
@@ -364,13 +373,10 @@ class SlayerClient:
         to extract them from). ``id`` pins the canonical id; ``description`` is
         a ≤500-char preview surfaced by search/inspect."""
         if self._storage is not None:
-            response = await self._memory_service().save_memory(
-                learning=learning,
-                linked_entities=self._coerce_linked_entities(linked_entities),
-                id=id,
-                description=description,
+            # A prebuilt SlayerQuery goes through as is, so the service reports its input deprecations.
+            return await self._memory_service().save_memory(
+                learning=learning, linked_entities=linked_entities, id=id, description=description,
             )
-            return response
         body: dict[str, Any] = {
             "learning": learning,
             "linked_entities": self._coerce_linked_entities(linked_entities),
@@ -380,7 +386,11 @@ class SlayerClient:
         if description is not None:
             body["description"] = description
         result = await self._request(method="POST", path="/memories", json=body)
-        return SaveMemoryResponse.model_validate(result)
+        response = SaveMemoryResponse.model_validate(result)
+        if isinstance(linked_entities, SlayerQuery):
+            # The server only sees the converted form; the deprecations are the client's to report.
+            response.warnings.extend(p.human_message() for p in linked_entities.deprecated_inputs)
+        return response
 
     async def forget_memory(
         self, identifier: int | str
@@ -535,11 +545,13 @@ class SlayerClient:
                 explain=explain,
                 refine=self._normalize_refine(refine),
             )
+        deprecations: list[DeprecatedInputWarning] = []
         body = self._build_query_body(
-            query, refine=refine, variables=variables, dry_run=dry_run, explain=explain
+            query, refine=refine, variables=variables, dry_run=dry_run, explain=explain,
+            deprecations_out=deprecations,
         )
         result = self._request_sync(method="POST", path="/query", json=body)
-        return self._parse_response(result)
+        return self._parse_response(result, deprecations=deprecations)
 
     def sql_sync(
         self, query: QueryInput, *, refine: Refinement = None, variables: Variables = None,
