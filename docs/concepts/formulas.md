@@ -248,11 +248,11 @@ The operand may compose several attached aggregates (their grains union), and
 attached aggregate itself. A `first`/`last` or windowed aggregate is a legal operand too — `sum(last(balance, partition_by=[account_id, customer_id]))` by `customer_id` sums each account's latest balance per customer. The outer aggregation's parameters (`weight=` and friends) are typed by the operand grain — a cell of the operand dataset (`weighted_avg(sum(amount, partition_by=[city, region]), weight=count(id, partition_by=[city, region]))`), a grained transform over such cells, or a column that grain determines; anything else is a typed error naming the `partition_by=` remedy.
 An outer dimension that is a row-level expression over fields the operand grain determines (`city == 'Alpha'` over `[city, region]` cells) partitions the cells exactly.
 An outer dimension not determined by the operand's
-grain resolves per `to_many_handling` (broadcast + warning by default), and an
+grain resolves per `to_many_handling` (associated + warning by default), and an
 operand grain equal to the outer grain is the identity plus a degenerate
 warning naming the `partition_by=` remedy.
 The outer `partition_by=` follows the combined-position rule above: only inside a computed dimension may it be finer than the query dimensions, where the re-aggregation is computed at that grain and broadcast onto its rows.
-An outer dimension or explicit outer `partition_by=` key that the operand's grain determines is attributed even when the query root reaches it only across a to-many join (e.g. a joined model's time bucket); an explicit outer key the grain does not determine is an error outside `associate` mode.
+An outer dimension or explicit outer `partition_by=` key that the operand's grain determines is attributed even when the query root reaches it only across a to-many join (e.g. a joined model's time bucket); an explicit outer key the grain does not determine is associated by default and under `associate`, and an error under `broadcast` or `error`.
 
 ---
 

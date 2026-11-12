@@ -1,4 +1,4 @@
-"""DEV-1747 — golden SQL baseline for the ordering / re-rooting / chain surfaces.
+"""Golden SQL baseline for the ordering / re-rooting / chain surfaces.
 
 Same harness and same protocol as ``tests/test_dev1745_golden_sql.py`` (read its
 module docstring for the four-step blessing loop); only the matrix differs. This
@@ -69,6 +69,7 @@ def _cases() -> dict:
             order=[{"column": "max(amount)", "direction": "desc"}],
         ),
         "order/combined_cross_model": _q(
+            to_many_handling="broadcast",
             dimensions=["status"],
             measures=[
                 {"formula": "sum(amount)", "name": "rev"},
@@ -77,6 +78,7 @@ def _cases() -> dict:
             order=[{"column": "cs", "direction": "desc"}],
         ),
         "order/outer_composite": _q(
+            to_many_handling="broadcast",
             dimensions=["status"],
             measures=[{"formula": "sum(customers.spend) + sum(amount)", "name": "mix"}],
             order=[{"column": "mix", "direction": "desc"}],
@@ -86,7 +88,7 @@ def _cases() -> dict:
             measures=[{"formula": "sum(amount, window='90d')", "name": "w"}],
             order=[{"column": "w", "direction": "desc"}],
         ),
-        # DEV-1777 C-a: a windowed measure WITH a well-formed date_range mints a
+        # A windowed measure WITH a well-formed date_range mints a
         # date-range filter routed via ``date_range_fids`` (the src-row-phase
         # gate the coupling re-derives). Pins the emitted BETWEEN so capturing
         # the minted fid set instead of re-deriving it stays byte-identical.
@@ -139,7 +141,7 @@ def _cases() -> dict:
             ],
             filters=["customers.regions.name == 'Alpha'"],
         ),
-        # Both push into the producer by semi-join since DEV-1853 (ids kept
+        # Both push into the producer by semi-join now (ids kept
         # stable; "unreachable" is historical — the inverted hop resolves now).
         "reroot/host_local_filter": _q(
             dimensions=["customers.regions.name"],
@@ -174,13 +176,14 @@ def _cases() -> dict:
             ],
         ),
         "chain/cross_model_window": _q(
+            to_many_handling="broadcast",
             time_dimensions=_MONTH,
             measures=[
                 {"formula": "sum(customers.spend)", "name": "cs"},
                 {"formula": "cumsum(sum(customers.spend))", "name": "run"},
             ],
         ),
-        # DEV-1798 (C13): one transform key projected under TWO names — the
+        # One transform key projected under TWO names — the
         # step CTE must surface both, not re-emit the first.
         "chain/transform_two_names": _q(
             time_dimensions=_MONTH,
@@ -189,7 +192,7 @@ def _cases() -> dict:
                 {"formula": "cumsum(sum(amount))", "name": "run_b"},
             ],
         ),
-        # DEV-1798: consecutive_periods (own cp_reset/cp_value CTE path) under
+        # consecutive_periods (own cp_reset/cp_value CTE path) under
         # TWO names must surface both, not re-emit the first.
         "chain/consecutive_periods_two_names": _q(
             time_dimensions=_MONTH,
@@ -198,8 +201,8 @@ def _cases() -> dict:
                 {"formula": "consecutive_periods(sum(amount))", "name": "streak_b"},
             ],
         ),
-        # DEV-1795: two aggregates of one column in the base CTE surface in
-        # plan order, not hash-seed order (fixed by DEV-1839).
+        # Two aggregates of one column in the base CTE surface in
+        # plan order, not hash-seed order.
         "chain/multi_agg_base_order": _q(
             time_dimensions=_MONTH,
             measures=[
@@ -207,7 +210,7 @@ def _cases() -> dict:
                 {"formula": "cumsum(max(amount))", "name": "c2"},
             ],
         ),
-        # --- DEV-1777 A0: dependency-split step-CTE shapes (Codex finding 2). ---
+        # --- Dependency-split step-CTE shapes. ---
         # A window over a window -> two dependent batches -> step1 then step2
         # (the dependency-split the extracted helper's ordering invariant guards).
         "chain/local_nested_window": _q(
@@ -215,6 +218,7 @@ def _cases() -> dict:
             measures=[{"formula": "cumsum(cumsum(sum(amount)))", "name": "cc"}],
         ),
         "chain/cross_model_nested_window": _q(
+            to_many_handling="broadcast",
             time_dimensions=_MONTH,
             measures=[{"formula": "cumsum(cumsum(sum(customers.spend)))", "name": "cc"}],
         ),
@@ -309,7 +313,7 @@ def test_reroot_cases_actually_reroot(baseline) -> None:
         )
 
 
-#: DEV-1777 (Codex plan-review finding 2): the step-CTE structure each
+#: The step-CTE structure each
 #: transform-chain case must still emit. ``step2`` distinguishes a dependency
 #: split (a second Kahn batch, or a window followed by an unmaterialised POST)
 #: from a single batch — the ``_emit_step_cte`` extraction must not collapse or

@@ -785,6 +785,9 @@ class SqlDialect(BaseModel):
     # An ``IN`` subquery and its joins run once on the initiator (``GLOBAL``): exact over shards.
     global_in_subqueries: bool = False
 
+    # ``ROW_NUMBER()`` rejects an empty window, so ``row_number`` orders by a constant.
+    row_number_needs_order: bool = False
+
     # URL scheme (``None`` = datasource type; its ``+driver`` is the default driver), extra URL
     # backends served, the pip extra, the drivers it installs (driver → distribution) and the
     # event-loop classes each driver's async mode refuses; read through ``driver_facts``.
@@ -1315,6 +1318,12 @@ class SqlDialect(BaseModel):
 
     def list_contains_all(self, values: Expression, other: Expression) -> Expression:  # NOSONAR(S1172) — hook signature
         self.refuse("contains_all")
+
+    def row_number(self) -> Expression:
+        """An arbitrary distinct number per row of the enclosing relation."""
+        if self.row_number_needs_order:
+            return exp.Window(this=exp.RowNumber(), order=exp.Order(expressions=[exp.Ordered(this=exp.Null())]))
+        return exp.Window(this=exp.RowNumber())
 
     def result_readers(self, description: Sequence[Any]) -> dict[int, Callable[[Any], Any]]:  # NOSONAR(S1172) — hook default
         """Per result-column position, how to read a non-NULL cell the driver returns as text (default: none)."""

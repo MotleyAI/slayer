@@ -1200,8 +1200,9 @@ class SlayerQuery(BaseModel):
             "consecutive_periods(sum(amount) > 0) trailing run length.\n"
             "- A joined model's aggregate such as sum(customers.credit) from orders is computed "
             "over that model's own rows, each customer once. Sliced by a dimension it cannot "
-            "be attributed to (an order's status), it repeats its total on every row with a "
-            "warning; to_many_handling='associate' splits it per group. Rooted at customers, "
+            "be attributed to (an order's status), each group aggregates the distinct customers "
+            "reaching it, with an associated warning (groups may overlap); "
+            "to_many_handling='broadcast' repeats the total instead. Rooted at customers, "
             "sum(orders.amount) and sum(returns.amount) in one query are each computed over their "
             "own rows: several child models never fan out or double count. A child row without a "
             "parent (an order with no customer) has NULL parent columns: it counts in the NULL "
@@ -1377,14 +1378,16 @@ class SlayerQuery(BaseModel):
     )
 
     # Filters keep EXISTS pushdown in every mode.
-    to_many_handling: Literal["broadcast", "associate", "error"] = Field(
-        default="broadcast",
+    to_many_handling: Literal["broadcast", "associate", "error"] | None = Field(
+        default=None,
         description=(
             "What happens when an aggregation is sliced by a dimension not "
-            "attributable to it: broadcast (default — repeat the value across "
-            "the cells, with a warning) | associate (aggregate per cell over "
-            "the distinct associated entities, e.g. per list element "
-            "tags.value) | error (refuse)."
+            "attributable to it. Omitted (default): aggregate per cell over the "
+            "distinct associated rows, e.g. per list element tags.value, falling "
+            "back to broadcast with a warning where association is unsupported "
+            "(window=, first/last) | associate (the same, but refuse what it cannot "
+            "associate) | broadcast (repeat the value across the cells, with a "
+            "warning) | error (refuse)."
         ),
     )
 
@@ -1499,7 +1502,7 @@ def _refinement_field(name: str) -> Any:
     )
 
 
-_NON_NULLABLE_SETTINGS = ("whole_periods_only", "distinct_dimension_values", "to_many_handling")
+_NON_NULLABLE_SETTINGS = ("whole_periods_only", "distinct_dimension_values")
 
 
 class QueryRefinement(BaseModel):
@@ -1680,6 +1683,8 @@ def refine_query(*, saved: SlayerQuery, refinement: QueryRefinement) -> SlayerQu
     for name in ("limit", "offset", "main_time_dimension", *_NON_NULLABLE_SETTINGS):
         if name in supplied:
             data[name] = getattr(refinement, name)
+    if refinement.to_many_handling is not None:
+        data["to_many_handling"] = refinement.to_many_handling
     if "order" in supplied:
         data["order"] = refinement.order or None
     return SlayerQuery.model_validate(data)

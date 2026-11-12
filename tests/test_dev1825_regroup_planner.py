@@ -1,4 +1,4 @@
-"""DEV-1825 — regroup-planner contracts beyond the DEV-1740 B2 acceptance:
+"""Regroup-planner contracts beyond the basic acceptance:
 placeholder minting is injective by structural key identity, one producer
 serves N outputs, the filter classifier is total over AND/OR/NOT/scalar-call
 trees, and the discovery guards (joined aggregate source, reserved-prefix
@@ -122,7 +122,7 @@ class TestFilterClassifier:
         assert "5000" not in cm_cte_bodies(sql)
 
     async def test_mixed_and_in_one_filter_splits_per_conjunct(self) -> None:
-        """DEV-1837 (D9) — top-level AND conjuncts route independently: the
+        """Top-level AND conjuncts route independently: the
         one-string form renders identically to the separate-filters form."""
         base_kwargs = dict(
             dimensions=["region", {"expression": BAND, "name": "band"}],
@@ -137,7 +137,7 @@ class TestFilterClassifier:
         assert anded == separate
 
     async def test_mixed_or_in_one_filter_now_types_as_field(self) -> None:
-        # DEV-1825 lift (DEV-1865): the attached band value and the base column
+        # Lifted: the attached band value and the base column
         # both resolve at row scope, so the OR row-masks before re-aggregation.
         query = _q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
@@ -184,7 +184,7 @@ class TestFilterClassifier:
 # --------------------------------------------------------------------------- #
 class TestDiscoveryGuards:
     async def test_joined_aggregate_source_raises_stage_three(self) -> None:
-        # DEV-1836: the cross-model SOURCE is now supported via a target-rooted
+        # The cross-model SOURCE is now supported via a target-rooted
         # producer, but the explicit ``partition_by=city`` is unattributable
         # from the aggregate's root (customers) — a hard error (F4).
         q = _q(
@@ -194,6 +194,7 @@ class TestDiscoveryGuards:
                                "> 100 THEN 1 ELSE 0 END", "name": "band"},
             ],
             measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            to_many_handling="broadcast",
         )
         with pytest.raises(ValueError, match=r"attributable from customers"):
             await gen(q)

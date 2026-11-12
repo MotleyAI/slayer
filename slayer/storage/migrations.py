@@ -18,8 +18,8 @@ from typing import Any
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
-    "SlayerModel": 20,
-    "SlayerQuery": 11,
+    "SlayerModel": 21,
+    "SlayerQuery": 12,
     "DatasourceConfig": 3,
     "Memory": 9,
     "Embedding": 1,
@@ -156,7 +156,7 @@ _STRICT_FALSE_TOKENS = frozenset({"0", "false", "f", "no", "n", "off", ""})
 @register_migration(entity="SlayerQuery", source_version=3)
 def _query_v3_to_v4(data: dict) -> dict:
     """v4: retire ``strict`` — ``strict: true`` → ``to_many_handling: "error"``;
-    ``false``/absent drops to the ``"broadcast"`` default."""
+    ``false``/absent leaves the mode omitted (the default)."""
     if "strict" not in data:
         return data
     strict = data.pop("strict")
@@ -227,3 +227,4 @@ from slayer.storage import time_dimension_text_migration  # noqa: E402, F401  # 
 from slayer.storage import distinct_column_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import colon_spelling_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import ossie_alignment_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import many_handling_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here

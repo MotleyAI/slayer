@@ -57,31 +57,31 @@
   },
   "fanning/dim_error_mode::bigquery": {
     "error": "SlayerError",
-    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers.regions.bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
+    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers.regions.bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, omit to_many_handling to associate, or remove the dimension."
   },
   "fanning/dim_error_mode::duckdb": {
     "error": "SlayerError",
-    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers.regions.bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
+    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers.regions.bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, omit to_many_handling to associate, or remove the dimension."
   },
   "fanning/dim_error_mode::mysql": {
     "error": "SlayerError",
-    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers.regions.bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
+    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers.regions.bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, omit to_many_handling to associate, or remove the dimension."
   },
   "fanning/dim_error_mode::postgres": {
     "error": "SlayerError",
-    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers.regions.bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
+    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers.regions.bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, omit to_many_handling to associate, or remove the dimension."
   },
   "fanning/dim_error_mode::snowflake": {
     "error": "SlayerError",
-    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers.regions.bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
+    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers.regions.bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, omit to_many_handling to associate, or remove the dimension."
   },
   "fanning/dim_error_mode::sqlite": {
     "error": "SlayerError",
-    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers.regions.bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
+    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers.regions.bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, omit to_many_handling to associate, or remove the dimension."
   },
   "fanning/dim_error_mode::tsql": {
     "error": "SlayerError",
-    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers.regions.bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
+    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers.regions.bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, omit to_many_handling to associate, or remove the dimension."
   },
   "fanning/local_kwarg::bigquery": {
     "error": "UnsafeJoinInputError",

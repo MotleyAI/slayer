@@ -295,11 +295,6 @@ ROWS: Tuple[LedgerRow, ...] = (
          + AT + "measure …"
          + SUGGEST + "Drop the window/first-last or attribute the dimension.",
          category="checker", family="association", user=True, owner="checker"),
-    _row(module=_EE, function="check_association_root_unique_key", exc="AssociationError",
-         message="The aggregate needs distinct-entity association, but its root model … declares no primary or unique key to deduplicate entities by."
-         + AT + "measure …"
-         + SUGGEST + "Declare a primary or unique key on ….",
-         category="checker", family="association", user=True, owner="checker"),
     _row(module=_EE, function="check_parameter_determined", exc="ParameterGrainError",
          message="Parameter … is not determined by the operand grain (…); the aggregation reads one value per cell of that grain."
          + AT + "measure …"
@@ -330,7 +325,7 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_EE, function="check_reaggregation_outer_keys_determined", exc="PartitionKeyError",
          message="The re-aggregation's explicit outer partition_by key(s) … are not determined by its operand grain (…)."
          + AT + "measure …"
-         + SUGGEST + "Add them to the inner partition_by= so the operand is grained by them, or choose to_many_handling='associate'.",
+         + SUGGEST + "Add them to the inner partition_by= so the operand is grained by them, or omit to_many_handling (or set 'associate').",
          category="checker", family="reaggregation", user=True, owner="checker"),
     _row(module=_SP, function="_assert_total_routing", exc="ValueError",
          message="Aggregate … in a … received no routing disposition (inline, producer substitution, or explicit rejection) — the planner cannot compile this shape.",

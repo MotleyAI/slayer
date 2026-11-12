@@ -468,6 +468,7 @@ probes:
                              columns: [{name: order_month, sql: "date_trunc('month', order_date)", type: date}]},
               dimensions: [region], time_dimensions: [{dimension: order_date, granularity: year}],
               measures: [{formula: "avg(sum(amount, partition_by=[region, order_month]))", name: v}]}
+      options: {to_many_handling: broadcast}
       expect: {warning: broadcast}
 
   - id: F9e
@@ -1099,11 +1100,12 @@ probes:
   # ------------------------------------------------------------------ Q6 fields from many models, fan-out safe
   - id: Q6a
     row: Q6
-    title: sum(customers.credit) by order status broadcasts the grand total (warned)
+    title: sum(customers.credit) by order status with to_many_handling=broadcast repeats the grand total (warned)
     truth_sql: select status, (select sum(credit) from customers) from orders group by 1
     compare: {keys: [status], values: [v]}
     slayer:
       query: {source_model: orders, dimensions: [status], measures: [{formula: "sum(customers.credit)", name: v}]}
+      options: {to_many_handling: broadcast}
       expect: {warning: broadcast}
     metricflow:
       note: customers are not reachable from order status without a fan-out join, so the query is refused
@@ -1966,13 +1968,14 @@ probes:
 
   - id: Q9d
     row: Q9
-    title: customers grouped by a to-many orders.status broadcast sum(credit) (warned)
+    title: customers grouped by a to-many orders.status, sum(credit) with to_many_handling=broadcast (warned)
     truth_sql: |
       select s.status, (select sum(credit) from customers)
       from (select distinct o.status from customers c left join orders o on o.customer_id = c.id) s
     compare: {keys: [orders.status], values: [total_credit]}
     slayer:
       query: {source_model: customers, dimensions: [orders.status], measures: [{formula: "sum(credit)", name: total_credit}]}
+      options: {to_many_handling: broadcast}
       expect: {warning: broadcast}
 
   - id: Q9d-assoc
@@ -1999,12 +2002,13 @@ probes:
 
   - id: F6
     row: Q9
-    title: sum(sum(amount, partition_by=city)) by region broadcasts the all-city total (warned)
+    title: sum(sum(amount, partition_by=city)) by region with to_many_handling=broadcast repeats the all-city total (warned)
     truth_sql: select region, (select sum(amount) from orders_flat) from orders_flat group by 1
     compare: {keys: [region], values: [v]}
     slayer:
       query: {source_model: orders_flat, dimensions: [region],
               measures: [{formula: "sum(sum(amount, partition_by=city))", name: v}]}
+      options: {to_many_handling: broadcast}
       expect: {warning: broadcast}
 
   - id: F6-assoc

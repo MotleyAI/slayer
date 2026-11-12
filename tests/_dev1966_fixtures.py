@@ -179,7 +179,7 @@ def bcast_qb_model() -> SlayerModel:
     """Private stage ``bstage`` broadcasts ``sum(customers.spend)`` across ``status``."""
     return _qb(
         "bcast_qb",
-        query(name="bstage", source_model="orders", dimensions=["status"],
+        query(name="bstage", source_model="orders", dimensions=["status"], to_many_handling="broadcast",
               measures=[m("sum(amount)", "amt"), m("sum(customers.spend)", "cs")]),
         query(source_model="bstage", dimensions=["status"], measures=[m("sum(amt)", "amt2")]),
     )

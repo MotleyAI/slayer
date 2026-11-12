@@ -1,4 +1,4 @@
-"""DEV-1840 task 1.2 — conjunct disposition (design D1/D2/D4).
+"""Conjunct disposition (design D1/D2/D4).
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Producer filter
 inheritance". Each test names the delta scenario it pins. Contract: a pushed
@@ -80,7 +80,7 @@ class TestSemiJoinPushdown:
     async def test_declared_reverse_edge_pushes_identically(self):
         """The edge declared on the customers side pushes exactly like the
         forward declaration — which model stores it is storage trivia
-        (DEV-1853 mirror parity)."""
+        (mirror parity)."""
         query = q(dimensions=["customers.tier"], measures=[CM],
                   filters=["channel = 'app'"])
         att = _attach(_plan(
@@ -140,7 +140,7 @@ class TestExpandedDependencies:
         it must not inline."""
         att = _attach(_plan(q(
             dimensions=["status"], measures=[CM],
-            filters=["cust_tier = 'gold'"],
+            filters=["cust_tier = 'gold'"], to_many_handling="broadcast",
         )), "customers")
         sjs = list(att.producer_plan.semi_join_filters)
         assert len(sjs) == 1
@@ -160,7 +160,7 @@ class TestExpandedDependencies:
 
 
 class TestBooleanTotalPushdown:
-    """DEV-1935: out-of-scope conjuncts (OR/NOT mixing a local and a cross-path
+    """Out-of-scope conjuncts (OR/NOT mixing a local and a cross-path
     ref, several branches, or a cross-branch atom) flip from dropped-and-warned to
     a boolean-total semi-join on the producer."""
 
@@ -201,7 +201,7 @@ class TestExcludedConjuncts:
     def test_ambiguous_measure_hop_fails_closed(self):
         """Scenario: ambiguous hops fail closed — two unnamed edges
         tickets→agents make the measure's hop an error, retiring the silent
-        first-match. DEV-1853 divergences.md class (d)."""
+        first-match. Divergence class (d)."""
         query = tq(measures=[SM], filters=["effort > 2"])
         models = ambiguity_models()
         with pytest.raises(AmbiguousJoinPathError) as ei:
@@ -213,7 +213,7 @@ class TestExcludedConjuncts:
     def test_ambiguous_filter_hop_fails_closed(self):
         """Scenario: ambiguous correlation hop fails closed — the measure's
         path is clean (tickets→reviews) but the filter crosses the ambiguous
-        pair; drop+warn is retired. DEV-1853 divergences.md class (d)."""
+        pair; drop+warn is retired. Divergence class (d)."""
         query = tq(measures=[RV], filters=["agents.name = 'Ann'"])
         models = ambiguity_models()
         with pytest.raises(AmbiguousJoinPathError) as ei:

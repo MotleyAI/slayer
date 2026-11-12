@@ -304,12 +304,13 @@ class TestAttributabilityModes:
     FORMULA = "sum(last(balance, partition_by=[account_id]))"
 
     async def test_broadcast_repeats_the_global_value(self, exec_engine):
-        resp = await exec_engine.execute(_by_customer_q(self.FORMULA))
+        resp = await exec_engine.execute(_by_customer_q(self.FORMULA, to_many_handling="broadcast"))
         _approx(by_customer(resp), {100: GLOBAL_LAST_BY_ACCOUNT, 200: GLOBAL_LAST_BY_ACCOUNT})
         assert warnings_of(resp, "broadcast")
 
-    async def test_associate_reconciles_per_customer(self, exec_engine):
-        resp = await exec_engine.execute(_by_customer_q(self.FORMULA, to_many_handling="associate"))
+    @pytest.mark.parametrize("mode", [None, "associate"])
+    async def test_associate_reconciles_per_customer(self, exec_engine, mode):
+        resp = await exec_engine.execute(_by_customer_q(self.FORMULA, to_many_handling=mode))
         _approx(by_customer(resp), LAST_BY_CUSTOMER)
         assert warnings_of(resp, "associated")
 
@@ -320,17 +321,22 @@ class TestAttributabilityModes:
 
 
 class TestAssociatedRankedPickStaysTyped:
+    KW = {
+        "dimensions": ["status"],
+        "time_dimensions": [f1841.TimeDimension(
+            dimension="customers.signup_at", granularity=f1841.TimeGranularity.MONTH)],
+        "measures": [f1841.ModelMeasure(formula="last(customers.spend)", name="l")],
+    }
+
     async def test_cross_model_last_needing_association(self, dev1841_engine):
-        query = f1841.assoc_q(
-            dimensions=["status"],
-            time_dimensions=[f1841.TimeDimension(
-                dimension="customers.signup_at",
-                granularity=f1841.TimeGranularity.MONTH,
-            )],
-            measures=[f1841.ModelMeasure(formula="last(customers.spend)", name="l")],
-        )
+        query = f1841.assoc_q(**self.KW)
         with pytest.raises(AssociationError):
             await dev1841_engine.execute(query)
+
+    async def test_default_mode_broadcasts_with_the_reason(self, dev1841_engine):
+        resp = await dev1841_engine.execute(f1841.q(**self.KW))
+        (w,) = warnings_of(resp, "broadcast")
+        assert w.association_unsupported
 
 
 # --------------------------------------------------------------------------- #

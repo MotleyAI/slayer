@@ -1,4 +1,4 @@
-"""DEV-1748 — golden SQL baseline for every first/last emission shape.
+"""Golden SQL baseline for every first/last emission shape.
 
 Same harness and same four-step blessing loop as ``tests/test_dev1747_golden_sql.py``
 (read its module docstring for the mechanics); only the matrix differs.
@@ -6,7 +6,7 @@ Same harness and same four-step blessing loop as ``tests/test_dev1747_golden_sql
 This one exists because B9 changes the emitted SQL for **every** first/last
 query. ``tests/test_dev1748_first_last_matrix.py`` proves no ANSWER changes;
 this proves exactly WHAT changed, as a diff a reviewer can read line by line
-before approving it — which is what the DEV-1742 per-test surfacing protocol
+before approving it — which is what the per-test surfacing protocol
 asks for. It also reaches where execution cannot: BigQuery and T-SQL mangle
 dotted aliases at emission, and Snowflake-style null-safe equality never runs in
 the SQLite/DuckDB integration suites.
@@ -84,6 +84,7 @@ def _cases() -> dict:
             ],
         ),
         "sibling/cross_model_measure": _q(
+            to_many_handling="broadcast",
             dimensions=["status"],
             measures=[
                 {"formula": "last(amount)", "name": "l"},
@@ -126,7 +127,7 @@ def _cases() -> dict:
             dimensions=["status"],
             measures=[{"formula": "last(amount, created_alias)", "name": "l"}],
         ),
-        # The DEV-1476 remnant. Recorded a raise before B9 — the ranking ran
+        # The ranked-join remnant. Recorded a raise before B9 — the ranking ran
         # in the host base, which could not pull the residual join — and emits
         # real SQL now that the ranked CTE resolves its ranking key through its
         # own scope.
@@ -256,7 +257,7 @@ def test_every_case_actually_ranks(baseline) -> None:
     emission; one that stopped emitting a ranking at all would still "match
     golden" forever once the degenerate form was blessed.
 
-    NO entry is a recorded raise any more — the last one (the DEV-1476 remnant)
+    NO entry is a recorded raise any more — the last one (the ranked-join remnant)
     started emitting SQL when B9 landed — so the check is unconditional. Stating
     that explicitly matters: a tolerated error arm would let a future shape
     degrade to a raise and be blessed as "one of the known ones"."""

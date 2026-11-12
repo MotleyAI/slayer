@@ -26,6 +26,7 @@ from tests._dev2215_fixtures import (
     q,
     sorted_rows,
 )
+from tests._engine_helpers import owned_query_engine
 
 pytest.importorskip("pytest_postgresql")
 
