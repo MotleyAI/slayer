@@ -139,7 +139,9 @@ class TestClientClose:
 
     def test_close_never_disposes_a_factory_engine(self) -> None:
         engine_factory.reset_cache()
-        ds = DatasourceConfig(name="file", type="sqlite", database="/tmp/slayer-own.db")
+        db = Path(tempfile.gettempdir()) / "slayer-own.db"
+        db.touch()  # a missing local database file is refused
+        ds = DatasourceConfig(name="file", type="sqlite", database=str(db))
         with _dispose_spy() as spy:
             client = SlayerSQLClient(datasource=ds)
             factory_engine = client._get_sync_engine_for_client()
@@ -323,6 +325,7 @@ class TestQueryEngineClose:
 
     async def test_aclose_still_spares_the_sync_engine(self, workspace: Path) -> None:
         engine = self._engine(workspace)
+        (workspace / "s.db").touch()
         ds = DatasourceConfig(name="file", type="sqlite", database=str(workspace / "s.db"))
         client = SlayerSQLClient(datasource=ds)
         sync_engine = client._get_sync_engine_for_client()

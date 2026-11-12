@@ -91,7 +91,7 @@ def _check_product_hops(
     """Only aggregates and one-sided field filters read across a product hop (semantics Axiom 3.1)."""
     if not sides.tokens:
         return
-    population = sides.host.spelling
+    population = sides.host
     roots: List[Tuple[ValueKey, str]] = [
         (dm.bound.value_key, f"{'dimension' if dm.is_dimension else 'measure'} {dm.public_name!r}")
         for dm in prebound.declared_measures
@@ -100,7 +100,9 @@ def _check_product_hops(
     for bf, typing in zip(prebound.bound_filters, filter_typings, strict=True):
         if typing.typing == MaskTyping.FIELD:
             for cj in split_top_level_and(bf.value_key):
-                check_unrelated_filter_sides(conjunct=cj, datasets=sides.mixed_sides(cj), population=population)
+                check_unrelated_filter_sides(
+                    conjunct=cj, datasets=sides.mixed_sides(cj), population=population.spelling,
+                )
         else:
             roots.append((bf.value_key, "filter"))
     for root, location in roots:

@@ -32,6 +32,8 @@ from tests._dev2102_fixtures import (
 
 TIER_LABEL = {"name": "tier_label", "sql": "upper(tier)", "type": "TEXT"}
 AMOUNT = {"formula": "sum(amount)", "name": "a"}
+CREDIT_TOTAL = {"name": "credit_total", "formula": "sum(credit)"}
+COUNT_X = {"name": "x", "formula": "count(*)"}
 
 
 @pytest.fixture(params=DIALECTS)
@@ -48,10 +50,10 @@ def _cust_spend() -> SlayerModel:
 class TestExtendingAnyModel:
     async def test_extending_a_joined_model_adds_a_dimension(self, dialect) -> None:
         stored = customers().model_copy(update={"columns": [*customers().columns, Column.model_validate(TIER_LABEL)]})
-        extended = q(source_model="orders", dimensions=["customers.tier_label"], measures=[AMOUNT],
-                     extensions=[ext("customers", columns=[TIER_LABEL])])
+        computed = q(source_model="orders", dimensions=[{"expression": "upper(customers.tier)", "name": "tier_label"}],
+                     measures=[AMOUNT])
         async with shop(dialect) as engine:
-            got = by_key(await engine.execute(extended), "orders.customers.tier_label", "orders.a")
+            got = by_key(await engine.execute(computed), "orders.tier_label", "orders.a")
         async with shop(dialect, with_models(stored)) as engine:
             expected = by_key(await engine.execute(q(
                 source_model="orders", dimensions=["customers.tier_label"], measures=[AMOUNT])),
@@ -80,14 +82,15 @@ class TestExtendingAnyModel:
             "North": 15.0, "South": 35.0, "East": 40.0, None: 37.0}
 
     async def test_extension_of_a_query_backed_join_target_applies_once(self, dialect) -> None:
-        query = q(source_model="orders", dimensions=["cust_spend.spent2"], measures=[AMOUNT], extensions=[
+        query = q(source_model="orders", dimensions=["customer_id"],
+                  measures=[AMOUNT, {"formula": "cust_spend.spent2", "name": "s2"}], extensions=[
             ext("orders", joins=[join("cust_spend", [["customer_id", "customer_id"]])]),
-            ext("cust_spend", columns=[{"name": "spent2", "sql": "spent * 2", "type": "DOUBLE"}]),
+            ext("cust_spend", measures=[{"name": "spent2", "formula": "sum(spent * 2)"}]),
         ])
         async with shop(dialect, with_models(_cust_spend())) as engine:
             resp = await engine.execute(query)
-        assert by_key(resp, "orders.cust_spend.spent2", "orders.a") == {
-            60.0: 60.0, 10.0: 5.0, 80.0: 40.0, 30.0: 15.0, None: 7.0}
+        assert by_key(resp, "orders.customer_id", "orders.s2") == {
+            1: 60.0, 2: 60.0, 3: 10.0, 4: 80.0, 5: 30.0, None: 14.0}
 
     async def test_query_backed_measure_extension_in_a_non_root_stage(self, dialect) -> None:
         mm = {"name": "mm", "formula": "sum(spent)"}
@@ -112,8 +115,8 @@ class TestExtendingAnyModel:
 class TestScope:
     async def test_extension_is_invisible_to_the_next_stage(self, dialect) -> None:
         stage = q(name="s1", source_model="orders", dimensions=["status"], measures=[AMOUNT],
-                  extensions=[ext("customers", columns=[TIER_LABEL])])
-        root = q(source_model="orders", dimensions=["customers.tier_label"],
+                  extensions=[ext("customers", measures=[CREDIT_TOTAL])])
+        root = q(source_model="orders", measures=[{"formula": "customers.credit_total", "name": "ct"}],
                  extensions=[ext("orders", joins=[join("s1", [["status", "status"]])])])
         async with shop(dialect) as engine:
             with pytest.raises(UnknownReferenceError):
@@ -121,26 +124,28 @@ class TestScope:
 
     async def test_extension_is_invisible_to_a_stored_query_backed_stage(self, dialect) -> None:
         qb = SlayerModel(name="tl_rev", data_source=DS, source_queries=[SlayerQuery.model_validate({
-            "source_model": "orders", "dimensions": ["customers.tier_label"], "measures": [AMOUNT]})])
+            "source_model": "orders", "dimensions": ["status"],
+            "measures": [{"formula": "customers.credit_total", "name": "a"}]})])
         query = q(source_model="tl_rev", measures=[{"formula": "sum(a)", "name": "t"}],
-                  extensions=[ext("customers", columns=[TIER_LABEL])])
+                  extensions=[ext("customers", measures=[CREDIT_TOTAL])])
         async with shop(dialect, with_models(qb)) as engine:
-            with pytest.raises(SlayerError, match="tier_label"):
+            with pytest.raises(SlayerError, match="credit_total"):
                 await engine.execute(query)
 
     async def test_extension_is_invisible_to_a_saved_measure(self, dialect) -> None:
         stored = orders().model_copy(update={"measures": [
-            ModelMeasure(name="labels", formula="count_distinct(customers.tier_label)")]})
-        query = q(source_model="orders", measures=["labels"], extensions=[ext("customers", columns=[TIER_LABEL])])
+            ModelMeasure(name="labels", formula="count_distinct(regions.name)")]})
+        query = q(source_model="orders", measures=["labels"],
+                  extensions=[ext("orders", joins=[join("regions", [["ship_region_id", "id"]])])])
         async with shop(dialect, with_models(stored)) as engine:
-            with pytest.raises(SlayerError, match="tier_label"):
+            with pytest.raises(SlayerError, match="regions"):
                 await engine.execute(query)
 
     async def test_a_stage_shadows_a_same_named_model(self, dialect) -> None:
         stage = q(name="customers", source_model="orders", dimensions=["customer_id"],
                   measures=[{"formula": "sum(amount)", "name": "spent"}])
-        root = q(source_model="customers", measures=[{"formula": "sum(double_spent)", "name": "t"}],
-                 extensions=[ext("customers", columns=[{"name": "double_spent", "sql": "spent * 2", "type": "DOUBLE"}])])
+        root = q(source_model="customers", measures=[{"formula": "double_spent", "name": "t"}],
+                 extensions=[ext("customers", measures=[{"name": "double_spent", "formula": "sum(spent * 2)"}])])
         async with shop(dialect) as engine:
             resp = await engine.execute([stage, root])
         assert float(resp.data[0]["customers.t"]) == 2 * TOTAL_AMOUNT
@@ -153,50 +158,38 @@ class TestScope:
             resp = await engine.execute([stage, root])
         assert {r["s.customers.name"] for r in resp.data} == {"Ann", "Bob", "Cid", "Dee", "Eve", None}
 
-    async def test_the_inline_source_wins_over_a_stored_model(self, dialect) -> None:
-        inline = {"name": "customers", "data_source": DS, "sql_table": "customers", "columns": [
-            {"name": "id", "type": "INT", "primary_key": True}, {"name": "credit", "type": "DOUBLE"},
-            {"name": "credit10", "sql": "credit * 10", "type": "DOUBLE"}]}
-        query = q(source_model=inline, measures=[{"formula": "c10", "name": "t"}],
-                  extensions=[ext("customers", measures=[{"name": "c10", "formula": "sum(credit10)"}])])
-        async with shop(dialect) as engine:
-            resp = await engine.execute(query)
-        assert float(resp.data[0]["customers.t"]) == 10 * TOTAL_CREDIT
-
 
 class TestModelNameCase:
     """An extension names a model as any unquoted reference does: the stored spelling in any case."""
 
     @pytest.mark.parametrize("spelled", ["Customers", "customers", "CUSTOMERS"])
     async def test_an_extension_reaches_a_model_saved_in_another_case(self, dialect, spelled: str) -> None:
-        query = q(source_model="orders", dimensions=["Customers.tier_label"], measures=[AMOUNT],
-                  extensions=[ext(spelled, columns=[TIER_LABEL])])
+        query = q(source_model="orders", measures=[{"formula": "Customers.credit_total", "name": "ct"}],
+                  extensions=[ext(spelled, measures=[CREDIT_TOTAL])])
         async with shop(dialect, respelled_model(base_models(), name="customers", spelling="Customers")) as engine:
             resp = await engine.execute(query)
-        assert {r[resp.columns[0]] for r in resp.data} == {"GOLD", "SILVER", "BRONZE", None}
+        assert float(resp.data[0]["orders.ct"]) == TOTAL_CREDIT
 
-    async def test_an_inline_source_joins_a_model_saved_in_another_case(self, dialect) -> None:
-        inline = {"name": "big_orders", "data_source": DS, "sql_table": "orders", "columns": [
-            {"name": "id", "type": "INT", "primary_key": True}, {"name": "customer_id", "type": "INT"}],
-            "joins": [{"target_model": "customers", "join_pairs": [["customer_id", "id"]]}]}
+    async def test_a_stage_joins_a_model_saved_in_another_case(self, dialect) -> None:
+        stage = q(name="big_orders", source_model="orders", dimensions=["id", "customer_id"])
+        root = q(source_model="big_orders", dimensions=["customers.name"],
+                 extensions=[ext("big_orders", joins=[join("customers", [["customer_id", "id"]])])])
         async with shop(dialect, respelled_model(base_models(), name="customers", spelling="Customers")) as engine:
-            resp = await engine.execute(q(source_model=inline, dimensions=["customers.name"]))
+            resp = await engine.execute([stage, root])
         assert {r[resp.columns[0]] for r in resp.data} == {"Ann", "Bob", "Cid", "Dee", "Eve", None}
 
-    async def test_the_inline_source_shadows_a_stored_model_whatever_the_case(self, dialect) -> None:
-        inline = {"name": "customers", "data_source": DS, "sql_table": "addresses", "columns": [
-            {"name": "id", "type": "INT", "primary_key": True}, {"name": "city", "type": "TEXT"}]}
-        shout = {"name": "shout", "sql": "upper(city)", "type": "TEXT"}
-        query = q(source_model=inline, dimensions=["city", "shout"], extensions=[ext("CUSTOMERS", columns=[shout])])
+    async def test_a_stage_shadows_a_stored_model_whatever_the_case(self, dialect) -> None:
+        stage = q(name="customers", source_model="addresses", dimensions=["id", "city"])
+        root = q(source_model="customers", measures=[{"formula": "cities", "name": "t"}],
+                 extensions=[ext("CUSTOMERS", measures=[{"name": "cities", "formula": "count_distinct(upper(city))"}])])
         async with shop(dialect, respelled_model(base_models(), name="customers", spelling="Customers")) as engine:
-            resp = await engine.execute(query)
-        assert resp.data
-        assert all(r["customers.shout"] == r["customers.city"].upper() for r in resp.data if r["customers.city"])
+            resp = await engine.execute([stage, root])
+        assert resp.data[0]["customers.t"] == 4
 
 
 class TestRejectedTargets:
     @pytest.mark.parametrize("extension", [
-        ext("nope", columns=[TIER_LABEL]),
+        ext("nope", measures=[COUNT_X]),
         ext("orders", joins=[join("nope", [["customer_id", "id"]])]),
     ], ids=["source_name", "join-target"])
     async def test_unknown_extension_target(self, dialect, extension: dict) -> None:
@@ -207,7 +200,7 @@ class TestRejectedTargets:
 
     async def test_extending_the_time_spine_is_rejected(self, dialect) -> None:
         query = q(source_model="orders", dimensions=["status"],
-                  extensions=[ext("time_spine", columns=[{"name": "x", "sql": "1", "type": "INT"}])])
+                  extensions=[ext("time_spine", measures=[COUNT_X])])
         async with shop(dialect) as engine:
             with pytest.raises(SlayerError, match="time_spine") as info:
                 await engine.execute(query)
@@ -218,7 +211,7 @@ class TestSaveTimeRefusal:
     @pytest.mark.parametrize(("extension", "named"), [
         (ext("orders", joins=[join("addresses", [["ship_region_id", "id"]], name="billing_address")]),
          "billing_address"),
-        (ext("nope", columns=[TIER_LABEL]), "nope"),
+        (ext("nope", measures=[COUNT_X]), "nope"),
         (ext("events", joins=[join("users", [["user_id", "id"]], join_type="inner")]), "events"),
     ], ids=["edge-conflict", "unresolvable", "unreachable-inner"])
     async def test_save_refuses_a_stage_whose_extension_always_fails(self, dialect, extension, named) -> None:
@@ -244,7 +237,7 @@ class TestStageOrdering:
         e = q(name="e", source_model="orders", dimensions=["status"])
         b = q(name="b", source_model="a", extensions=[
             ext("a", joins=[join("c", [["customer_id", "id"]]), join("d", [["customer_id", "id"]])]),
-            ext("e", columns=[{"name": "x", "sql": "1", "type": "INT"}]),
+            ext("e", measures=[COUNT_X]),
         ])
         ordered = [s.name for s in topologically_order_stages([b, e, d, c, a, q(source_model="b")])]
         assert all(ordered.index(name) < ordered.index("b") for name in "acde"), ordered

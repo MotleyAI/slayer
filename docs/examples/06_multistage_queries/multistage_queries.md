@@ -69,7 +69,7 @@ The inner stage emits a column called `rev`; the outer stage averages `avg(rev)`
 
 The second example is more elaborate, as we have two logical steps: first, calculate the order count per customer; then, bucket it and use the bucketed value as a dimension in the parent query.
 
-As we want to use a result of a child query as a dimension, we use a [dynamic join](../../concepts/queries.md#query-extensions) inside the parent query to make it available. For the bucketing, we use an inline dimension with a CASE expression; since the child query is a joined model like any other, we reference its columns using the standard `table.column` syntax in the dimension's SQL:
+As we want to use a result of a child query as a dimension, we use a [dynamic join](../../concepts/queries.md#query-extensions) inside the parent query to make it available. For the bucketing, we use a computed dimension with a CASE expression; since the child query is a joined model like any other, we reference its columns using the standard `table.column` syntax in the expression:
 
 ```json
 [
@@ -83,11 +83,10 @@ As we want to use a result of a child query as a dimension, we use a [dynamic jo
     "source_model": "orders",
     "extensions": [{
       "source_name": "orders",
-      "joins": [{"target_model": "customer_activity", "join_pairs": [["customer_id", "customer_id"]]}],
-      "columns": [{"name": "activity_bucket", "sql": "CASE WHEN customer_activity._count >= 500 THEN 'High' WHEN customer_activity._count >= 200 THEN 'Medium' ELSE 'Low' END", "type": "TEXT"}]
+      "joins": [{"target_model": "customer_activity", "join_pairs": [["customer_id", "customer_id"]]}]
     }],
     "measures": ["count(*)", "sum(order_total)"],
-    "dimensions": ["activity_bucket"]
+    "dimensions": [{"expression": "CASE WHEN customer_activity._count >= 500 THEN 'High' WHEN customer_activity._count >= 200 THEN 'Medium' ELSE 'Low' END", "name": "activity_bucket"}]
   }
 ]
 ```

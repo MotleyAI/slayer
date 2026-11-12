@@ -47,6 +47,7 @@ async def _ingest(*, datasource: DatasourceConfig, **kwargs: Any) -> IdempotentI
 @pytest.fixture
 async def storage() -> AsyncIterator[StorageBackend]:
     with tempfile.TemporaryDirectory() as tmpdir:
+        open(os.path.join(tmpdir, "live.db"), "wb").close()  # a missing local database file is refused
         s = YAMLStorage(base_dir=os.path.join(tmpdir, "store"))
         await s.save_datasource(
             DatasourceConfig(

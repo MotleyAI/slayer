@@ -219,19 +219,15 @@ class TestBucketCalls:
         assert model is not None
         assert [m.formula for m in model.measures] == ["count_distinct(date_trunc('fiscal_year', ordered_at))"]
 
-    def test_inline_source_model_and_extension_are_rewritten(self) -> None:
-        inline = {"name": "orders_x", "sql_table": "orders", "data_source": DS, "columns": _COLUMNS,
-                  "measures": [{"name": "months", "formula": "count_distinct(month(ordered_at))"}]}
+    def test_extension_is_rewritten(self) -> None:
         extension = {"source_name": "orders",
-                     "measures": [{"name": "ok", "formula": "sum(iif(status == 'ok', amount, None))"}]}
-        for source in (inline, extension):
-            query = SlayerQuery.model_validate({"version": PRE["SlayerQuery"], "source_model": source})
-            text = dumped(query)
-            assert not _BUCKET_CALL.search(text), text
-            assert "==" not in text, text
-            assert "None)" not in text, text
-        assert "count_distinct(date_trunc('month', ordered_at))" in dumped(
-            SlayerQuery.model_validate({"version": PRE["SlayerQuery"], "source_model": inline}))
+                     "measures": [{"name": "months", "formula": "count_distinct(month(ordered_at))"},
+                                  {"name": "ok", "formula": "sum(iif(status == 'ok', amount, None))"}]}
+        text = dumped(SlayerQuery.model_validate({"version": PRE["SlayerQuery"], "source_model": extension}))
+        assert not _BUCKET_CALL.search(text), text
+        assert "==" not in text, text
+        assert "None)" not in text, text
+        assert "count_distinct(date_trunc('month', ordered_at))" in text, text
 
     def test_nested_saved_query_stages_are_rewritten(self) -> None:
         model = SlayerModel.model_validate(saved_query_doc(

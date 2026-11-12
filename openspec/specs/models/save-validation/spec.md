@@ -78,8 +78,7 @@ definite rejection from a reachable datasource blocks the save.
 
 When a raw-`sql` model's `sql` itself contains `{var}` or `{? ?}` placeholders,
 the system SHALL skip the trial-execute (logging at informational level) and
-persist the model, because a placeholder in identifier position cannot be safely
-filled for a trial run. A placeholder that appears only in a column expression or
+persist the model, because a placeholder's value is not known at save time. A placeholder that appears only in a column expression or
 filter, and not in the model's `sql`, SHALL NOT cause the model `sql` check to be
 skipped.
 
@@ -143,53 +142,6 @@ persistence SHALL remain out of scope and unaffected.
 
 - **WHEN** a model is persisted through the ingestion / YAML-load path
 - **THEN** the save-time trial-execute is not performed
-
-### Requirement: Model source SQL must be read-only
-
-A raw-`sql` model's source SHALL be a read-only query. Before any trial-execution
-the source SHALL be statically parsed and admitted only when its root is a query
-(SELECT / set-operation / subquery) with no data-modifying statement nested (e.g.
-a data-modifying CTE). Anything else — a non-query statement (INSERT / UPDATE /
-DELETE / MERGE / DDL / COPY / GRANT / CALL / …) or SQL that cannot be parsed at
-all — SHALL be rejected with no database round-trip, so persisting a model can
-never mutate the datasource and SQL the query generator could not run either
-fails fast. A parameterized source (`{var}` / `{? ?}`) SHALL still be classified
-via SLayer's canonical probe render, so a parameterized non-read-only statement
-is still rejected; but a parameterized source that is merely *unparseable* SHALL
-be skipped rather than rejected, since it may parse only once its identifiers are
-filled at query time. The trial-execute that follows for a parsed read-only query
-SHALL run read-only where the dialect supports it and SHALL always roll back.
-
-#### Scenario: Data-modifying model SQL is rejected without executing
-
-- **WHEN** a raw-`sql` model whose `sql` holds a data-modifying statement (e.g.
-  `WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x`) is saved
-- **THEN** the save fails with an error and the SQL is never executed against
-  the datasource
-
-#### Scenario: Unparseable (non-parameterized) model SQL is rejected without a database call
-
-- **WHEN** a raw-`sql` model whose `sql` carries no placeholders and cannot be
-  parsed is saved
-- **THEN** the save fails with an error and no query is run against the datasource
-
-#### Scenario: A parameterized source that only parses once filled is skipped, not rejected
-
-- **WHEN** a raw-`sql` model whose `sql` has an identifier-position placeholder
-  (e.g. `SELECT * FROM {table}`) is saved
-- **THEN** the trial-execute is skipped and the model is persisted
-
-#### Scenario: Parameterized data-modifying SQL is rejected
-
-- **WHEN** a raw-`sql` model whose `sql` is data-modifying but carries a
-  placeholder (e.g. `DELETE FROM orders WHERE id = {id}`) is saved
-- **THEN** the save fails with an error and no query is run against the datasource
-
-#### Scenario: The trial-execute cannot persist a mutation
-
-- **WHEN** a raw-`sql` model is trial-executed at save time
-- **THEN** the probe runs in a rolled-back transaction (read-only where the
-  dialect supports it), so nothing it runs is committed
 
 ### Requirement: Aggregation formulas are parse-checked at save time
 
@@ -256,3 +208,51 @@ cycle path. **BREAKING**: such models previously saved through a cached-SQL shor
 #### Scenario: Transitive self-reference
 - **WHEN** query-backed model `A` sources `B` and `B` sources `A`, and `A` is saved
 - **THEN** the save fails with the cycle error naming the path
+
+### Requirement: Model source SQL must be read-only and parse with its placeholders as literals
+
+A raw-`sql` model's source SHALL be a read-only query. Before any trial-execution
+the source SHALL be statically parsed and admitted only when its root is a query
+(SELECT / set-operation / subquery) with no data-modifying statement nested (e.g.
+a data-modifying CTE). Anything else — a non-query statement (INSERT / UPDATE /
+DELETE / MERGE / DDL / COPY / GRANT / CALL / …) or SQL that cannot be parsed at
+all — SHALL be rejected with no database round-trip, so persisting a model can
+never mutate the datasource and SQL the query generator could not run either
+fails fast. A parameterized source (`{var}` / `{? ?}`) SHALL be parsed with each
+placeholder standing for a literal, so a parameterized non-read-only statement is
+rejected, a parameterized source that does not parse is rejected, and a placeholder
+in a non-literal position is rejected with the literal-values error
+(`queries/variables` › Mode-A surfaces bind variables as literals). The trial-execute that follows for a parsed read-only query
+SHALL run read-only where the dialect supports it and SHALL always roll back.
+
+#### Scenario: Data-modifying model SQL is rejected without executing
+
+- **WHEN** a raw-`sql` model whose `sql` holds a data-modifying statement (e.g.
+  `WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x`) is saved
+- **THEN** the save fails with an error and the SQL is never executed against
+  the datasource
+
+#### Scenario: Unparseable (non-parameterized) model SQL is rejected without a database call
+
+- **WHEN** a raw-`sql` model whose `sql` carries no placeholders and cannot be
+  parsed is saved
+- **THEN** the save fails with an error and no query is run against the datasource
+
+#### Scenario: An identifier-position placeholder is rejected
+
+- **WHEN** a raw-`sql` model whose `sql` has an identifier-position placeholder
+  (e.g. `SELECT * FROM {table}`) is saved
+- **THEN** the save fails with the literal-values error and no query is run against
+  the datasource
+
+#### Scenario: Parameterized data-modifying SQL is rejected
+
+- **WHEN** a raw-`sql` model whose `sql` is data-modifying but carries a
+  placeholder (e.g. `DELETE FROM orders WHERE id = {id}`) is saved
+- **THEN** the save fails with an error and no query is run against the datasource
+
+#### Scenario: The trial-execute cannot persist a mutation
+
+- **WHEN** a raw-`sql` model is trial-executed at save time
+- **THEN** the probe runs in a rolled-back transaction (read-only where the
+  dialect supports it), so nothing it runs is committed

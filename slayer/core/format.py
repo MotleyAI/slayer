@@ -143,9 +143,11 @@ def format_number(value: float | decimal.Decimal, format_spec: NumberFormat) -> 
     Returns:
         Formatted string representation of the value
     """
-    # numbers.Real covers numpy scalars; NaN / ±Infinity render verbatim.
-    if not isinstance(value, (numbers.Real, decimal.Decimal)) or _is_non_finite(value):
+    # numbers.Real covers numpy scalars; NaN / ±Infinity take the one cell text form.
+    if not isinstance(value, (numbers.Real, decimal.Decimal)):
         return str(value)
+    if _is_non_finite(value):
+        return _non_finite_text(value)
     if isinstance(value, numbers.Integral):
         value = int(value)  # fixed-width (numpy) ints wrap on abs()
         if value.bit_length() > 1023:  # int / int overflows float
@@ -160,7 +162,7 @@ def format_number(value: float | decimal.Decimal, format_spec: NumberFormat) -> 
     elif format_type == NumberFormatType.PERCENT:
         percent_value = _times_hundred(value)
         if _is_non_finite(percent_value):  # overflow
-            return f"{percent_value}%"
+            return f"{_non_finite_text(percent_value)}%"
         formatted_value, suffix, calc_precision = _format_with_notation(
             value=percent_value, default_precision=2, explicit_precision=precision
         )

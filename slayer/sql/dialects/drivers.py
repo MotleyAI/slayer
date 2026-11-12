@@ -97,6 +97,13 @@ def load_driver(
 ) -> None:
     """Load ``url``'s dialect and DBAPI exactly as engine construction would, failing typed."""
     parsed = make_url(url)
+    named = parsed.drivername.partition("+")[2]
+    if named and dialect.supported_drivers is not None and named not in dialect.supported_drivers:
+        raise UnsupportedDriverError(
+            datasource_name=datasource.name, ds_type=datasource.type, driver=named,
+            reason="SLayer makes this type's connections read-only only through its supported driver",
+            hint=f"use a {dialect.url_scheme}:// URL",
+        )
     with plugin_errors(datasource, url, dialect=dialect):
         sa_dialect = parsed.get_dialect(_is_async=is_async)
     if sa_dialect.is_async and dialect.needs_sync_connections:

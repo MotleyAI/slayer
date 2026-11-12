@@ -64,6 +64,9 @@ jobs:
     needs: deps-changed
     if: needs.deps-changed.outputs.run == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
 
@@ -81,6 +84,9 @@ jobs:
           poetry run pip install --upgrade --only-binary :all: "sqlalchemy>=2.0,<2.1" duckdb duckdb-engine
           poetry run python -c "import duckdb, duckdb_engine, sqlalchemy; print('sqlalchemy', sqlalchemy.__version__, '| duckdb', duckdb.__version__, '| duckdb-engine', duckdb_engine.__version__)"
 
-      - name: Run unit tests
-        timeout-minutes: 30
-        run: poetry run pytest tests/ -m "not integration" --timeout=120 -n logical --durations=25
+      - name: Run unit tests (shard ${{ matrix.shard }}/3)
+        timeout-minutes: 20
+        # The same duration-balanced module groups as ci.yml's unit tests (tests/_sharding.py).
+        run: >-
+          poetry run pytest tests/ -m "not integration" --timeout=120 -n logical --durations=25
+          --shard ${{ matrix.shard }}/3

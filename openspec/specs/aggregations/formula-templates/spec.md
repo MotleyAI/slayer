@@ -123,10 +123,12 @@ indistinguishable from the same value supplied explicitly: identical results, id
 behaviour in every producer kind and position, and a single computation when both
 appear in one query; only the public auto-generated name follows the query's own
 spelling (`wpop(amount)` keeps the name `amount_wpop`). A string argument naming a
-formula placeholder SHALL resolve exactly as the same text written unquoted; any other
-string argument (e.g. `window='90d'`) is a setting, never SQL. Parameter text that
-cannot be analysed — it does not parse in the datasource's dialect, or it contains an
-aggregate, a window function or a subquery — SHALL fail when the query is bound with a
+formula placeholder SHALL be read as Mode B and resolve exactly as the same text written
+unquoted, never as SQL of the datasource's dialect; any other string argument (e.g.
+`window='90d'`) is a setting, never SQL. A definition default is Mode A. Parameter text
+that cannot be analysed — a default that does not parse in the datasource's dialect, a
+string argument that is not valid Mode B (including one calling a function outside the
+Mode-B library), or text containing an aggregate, a window function or a subquery — SHALL fail when the query is bound with a
 typed error naming the aggregation, the parameter and the text, never emit invalid SQL
 or be treated as referencing nothing.
 
@@ -165,8 +167,9 @@ or be treated as referencing nothing.
 #### Scenario: Unparseable parameter text fails at binding
 
 - **WHEN** a query uses an aggregation whose default for a referenced parameter does
-  not parse in the datasource's dialect, or passes such text as a string argument
-  naming a placeholder
+  not parse in the datasource's dialect, or passes as a string argument naming a
+  placeholder text that is not valid Mode B, such as `'length(sqlite_version())'` or
+  `'(SELECT count(*) FROM users)'`
 - **THEN** the query fails with a typed error naming the aggregation, the parameter and
   the text, before any SQL is generated
 
@@ -182,6 +185,10 @@ or be treated as referencing nothing.
   resolves to
 - **THEN** a query using it fails with the same unknown-column error the explicit
   argument spelling raises
+
+#### Scenario: A string expression argument equals its unquoted expression
+- **WHEN** one query selects `weighted_avg(amount, weight='id * 2')` and another `weighted_avg(amount, weight=id * 2)`
+- **THEN** both return identical values on SQLite and DuckDB
 
 ### Requirement: Placeholders are recognised as SQL tokens and inside string literals
 
@@ -221,7 +228,7 @@ Brace text inside a quoted identifier or a comment SHALL NOT be a placeholder an
 
 ### Requirement: A quoted placeholder renders its binding's literal value
 
-A placeholder inside an ordinary string literal SHALL be bound exactly as an unquoted placeholder is: a parameter default or a query-time argument is SQL text, and a string argument resolves like its unquoted spelling. The binding MUST be a literal: a number, a string literal, or a negated number.
+A placeholder inside an ordinary string literal SHALL be bound exactly as an unquoted placeholder is: a parameter default is SQL text, and a query-time argument is Mode B, a string argument resolving like its unquoted spelling. The binding MUST be a literal: a number, a string literal, or a negated number.
 
 The rendered string literal SHALL carry the original literal's text, with each placeholder replaced by the binding's value (`2` gives `2`, and `'x'` gives `x`) and each doubled brace collapsed to one brace. The literal SHALL be escaped for the target dialect, so that no character of the value can end the literal.
 
@@ -239,7 +246,7 @@ A non-literal binding SHALL be rejected with a typed template error naming the p
 
 #### Scenario: A quoted string argument cannot escape the literal
 
-- **WHEN** a query passes for `n` the target dialect's spelling of a SQL string literal whose value is `a'b\c` (`'a''b\c'` on DuckDB and Postgres) to an aggregation whose formula reads `'{n}'`
+- **WHEN** a query passes for `n` the Mode-B string literal `'a''b\c'`, whose value is `a'b\c`, to an aggregation whose formula reads `'{n}'`
 - **THEN** the emitted literal's value is exactly `a'b\c`, quoted correctly on quote-doubling dialects (DuckDB, Postgres), backslash-escaping dialects (MySQL, ClickHouse) and BigQuery
 
 #### Scenario: The aggregated value inside quotes is rejected

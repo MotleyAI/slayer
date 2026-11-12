@@ -32,7 +32,7 @@ Every stage output that another model or stage reads as a model — a model crea
 - THEN the join is unproven and a metric across it broadcasts with a warning
 
 #### Scenario: An extension over a sibling keeps the sibling's grain
-- WHEN a stage reads a sibling stage as its source and extends it with columns or joins
+- WHEN a stage reads a sibling stage as its source and extends it with measures or joins
 - THEN a join onto the extended sibling's complete grain is still provably many-to-one
 
 #### Scenario: An aggregate-valued computed dimension is part of the grain

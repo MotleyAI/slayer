@@ -59,11 +59,14 @@ flowchart TD
    [enforced: test:tests/test_one_driver_per_client.py]
 5. **One request per statement**: on a warm connection a statement costs the database one
    request — session state is set once per connection and re-set only when it changes, liveness is
-   checked only after idle, and connections persist across calls, synchronous ones included; a
-   datasource marked as reached through a transaction-mode pooler keeps its timeout
-   transaction-local instead. [enforced: test:tests/test_law_one_request_per_statement.py]
+   checked only after idle, and connections persist across calls, synchronous ones included, save idle
+   ones holding a local database file, which a synchronous call releases on return; a datasource
+   marked as reached through a transaction-mode pooler keeps its timeout transaction-local instead. [enforced: test:tests/test_law_one_request_per_statement.py]
 6. **One thread per connection**: a database connection is used by one thread at a time.
    [enforced: test:tests/test_law_one_thread_per_connection.py]
+7. **Read-only datasources**: except into an in-memory database, a connection is read-only wherever
+   its backend is live-tested and allows it, and the client sends no statement it cannot classify as a
+   read. [enforced: test:tests/test_law_read_only_datasources.py]
 
 ## 4. Rationale
 

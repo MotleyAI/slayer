@@ -20,7 +20,6 @@ from slayer.core.models import (
     _check_join_keys,
 )
 from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
-
 from slayer.core.scope import ModelScope, StageDisplay, StageSchema
 
 __all__ = [
@@ -30,7 +29,7 @@ __all__ = [
     "apply_extension_overlay",
     "follow_sibling_chain",
     "model_from_stage_schema",
-    "overlay_columns_and_measures",
+    "overlay_measures",
     "source_name_if_sibling",
     "stage_bundle_with_siblings",
 ]
@@ -55,7 +54,6 @@ class ResolvedSourceBundle(BaseModel):
 
     source_model: Optional[SlayerModel] = None
     referenced_models: List[SlayerModel] = Field(default_factory=list)
-    inline_extensions: List[ModelExtension] = Field(default_factory=list)
     named_queries: Dict[str, SlayerQuery] = Field(default_factory=dict)
     # The root query as resolved; with ``named_queries``, the stages the planner reads.
     query: Optional[SlayerQuery] = None
@@ -86,14 +84,6 @@ class ResolvedSourceBundle(BaseModel):
     datasource_edge_names: FrozenSet[str] = frozenset()
     # The stage's query-declared INNER joins, read as population filters.
     inner_restrictions: Tuple[InnerRestriction, ...] = ()
-    # Every other stage's universe when the root's inline source shadows a stored model of its name.
-    stage_referenced_models: Optional[List[SlayerModel]] = None
-
-    def for_non_root_stage(self) -> "ResolvedSourceBundle":
-        """This bundle as a stage other than the root reads it: the root's inline source stays in the root."""
-        if self.stage_referenced_models is None:
-            return self
-        return self.model_copy(update={"referenced_models": self.stage_referenced_models})
 
     def definition_view(self) -> "ResolvedSourceBundle":
         """This bundle as stored definitions see it: without anything a query extension added."""
@@ -147,14 +137,13 @@ class ResolvedSourceBundle(BaseModel):
         return with_list_children(out)
 
 
-def overlay_columns_and_measures(base: SlayerModel, ext: ModelExtension) -> SlayerModel:
-    """``base`` with ``ext``'s columns and measures, marked query-local."""
-    columns, measures = list(ext.columns or []), list(ext.measures or [])
-    if not columns and not measures:
+def overlay_measures(base: SlayerModel, ext: ModelExtension) -> SlayerModel:
+    """``base`` with ``ext``'s measures, marked query-local."""
+    measures = list(ext.measures or [])
+    if not measures:
         return base
-    merged = base.model_copy(update={
-        "columns": [*base.columns, *columns], "measures": [*base.measures, *measures],
-    }).with_query_local(base.query_local_names | {c.name for c in columns} | {m.name for m in measures if m.name})
+    merged = base.model_copy(update={"measures": [*base.measures, *measures]}).with_query_local(
+        base.query_local_names | {m.name for m in measures if m.name})
     if not merged.source_queries:
         _check_column_measure_namespace(model_name=merged.name, columns=merged.columns, measures=merged.measures)
     return merged
@@ -162,7 +151,7 @@ def overlay_columns_and_measures(base: SlayerModel, ext: ModelExtension) -> Slay
 
 def apply_extension_overlay(base: SlayerModel, ext: ModelExtension) -> SlayerModel:
     """``base`` extended by ``ext`` alone: its joins merged with ``base``'s own edges."""
-    merge = EdgeMerge(models={base.name: overlay_columns_and_measures(base, ext)})
+    merge = EdgeMerge(models={base.name: overlay_measures(base, ext)})
     for join in ext.joins or []:
         merge.add(declaring=base.name, join=join)
     return merge.models[base.name]

@@ -170,19 +170,17 @@ def test_a_failed_probe_leaves_no_transaction_open(postgresql_logged: Any, drive
     with _logged(postgresql_logged, driver=driver) as (ds, _log):
         client = SlayerSQLClient(ds)
 
-        async def _work() -> tuple[Any, Any]:
+        async def _work() -> tuple[Any, Any, Any]:
             before = (await client.execute(_STATE_SQL)).rows[0]
             with pytest.raises(Exception, match="missing_table"):
                 await client.get_result_column_types("SELECT * FROM missing_table")
             after = (await client.execute(_STATE_SQL)).rows[0]
-            await client.execute("INSERT INTO t VALUES (1)")
-            return before, after
+            return before, after, _admin(ds, f"SELECT state FROM pg_stat_activity WHERE pid = {int(after['p'])}")
 
-        before, after = _in_one_loop(client, _work)
-        committed = _admin(ds, "SELECT count(*) FROM t")
+        before, after, state = _in_one_loop(client, _work)
     assert after["p"] == before["p"]
-    assert (after["t"], after["ro"]) == ("2min", "off")
-    assert committed == [(1,)]
+    assert (after["t"], after["ro"]) == ("2min", "on")
+    assert state == [("idle",)]
 
 
 def test_a_probe_whose_rollback_fails_leaves_a_usable_pool(postgresql_logged: Any, driver: str) -> None:
@@ -197,7 +195,7 @@ def test_a_probe_whose_rollback_fails_leaves_a_usable_pool(postgresql_logged: An
 
         before, after = _in_one_loop(client, _work)
     assert after["p"] != before["p"]
-    assert (after["t"], after["ro"]) == ("2min", "off")
+    assert (after["t"], after["ro"]) == ("2min", "on")
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +229,7 @@ def test_pooler_probe_is_transaction_local_and_read_only(postgresql_logged: Any,
         after = _in_one_loop(client, _work)
         sent = [e.sql for e in log.statements(until="pg_backend_pid") if "statement_timeout = " in e.sql]
     assert sent == ["SET LOCAL statement_timeout = 60000"] * 2 + ["SET LOCAL statement_timeout = 120000"]
-    assert (after["t"], after["ro"]) == ("2min", "off")
+    assert (after["t"], after["ro"]) == ("2min", "on")
 
 
 def test_pooler_leaves_the_session_timeout_unchanged(postgresql_logged: Any) -> None:

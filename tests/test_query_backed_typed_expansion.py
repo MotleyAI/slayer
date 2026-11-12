@@ -704,8 +704,8 @@ class TestInlineNestedSourceQueriesIntegrated:
     def test_inline_nested_source_rejected_at_construction(self) -> None:
         """An inline query-backed stage source is rejected before any save-time cycle walk."""
         inline = SlayerModel(name="_inline_a", source_queries=[SlayerQuery(source_model="b")])
-        with pytest.raises(ValueError, match=r"(?is)_inline_a.*named stages?|named stages?.*_inline_a"):
-            SlayerQuery(name="a", source_model=inline)
+        with pytest.raises(ValueError, match="(?i)inline"):
+            SlayerQuery(name="a", source_model=inline)  # pyright: ignore[reportArgumentType] — the refused form, on purpose
 
 
 class TestNestedQueryBackedSavePath:
@@ -932,8 +932,7 @@ class TestNestedQueryBackedExpansion:
 
     async def test_modelextension_overlay_over_query_backed_base(self) -> None:
         """A query-backed model used as a ``ModelExtension`` base preserves
-        the overlay's extra columns after expansion (bundle.inline_extensions
-        re-application).
+        the overlay's extra measure after expansion.
         """
         qb = SlayerModel(
             name="qb_base",
@@ -946,19 +945,18 @@ class TestNestedQueryBackedExpansion:
         )
         engine, tmp = await _engine(qb)
         try:
-            # Apply an overlay that adds an extra dimension column.
             q = SlayerQuery.model_validate({
                 "source_model": "qb_base",
                 "extensions": [ModelExtension(
                     source_name="qb_base",
-                    columns=[Column(name="extra", sql="'lit'", type=DataType.TEXT)],
+                    measures=[ModelMeasure(name="extra", formula="sum(amount_sum)")],
                 )],
-                "dimensions": ["extra", "status"],
-                "measures": [{"formula": "sum(amount_sum)"}],
+                "dimensions": ["status"],
+                "measures": ["extra"],
             })
             resp = await engine.execute(q, dry_run=True)
             assert resp.sql is not None
-            # The overlay column appears in the outer projection.
+            # The overlay measure appears in the outer projection.
             assert "extra" in resp.sql.lower()
         finally:
             tmp.cleanup()

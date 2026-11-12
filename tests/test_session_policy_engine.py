@@ -59,6 +59,7 @@ async def _scoped(engine, sql, *, dialect, datasource):
 
 
 def _ds(tmp_path, *, schema_name=None):
+    (tmp_path / "probe.db").touch()  # a missing local database file is refused
     return DatasourceConfig(
         name="ds1",
         type="sqlite",

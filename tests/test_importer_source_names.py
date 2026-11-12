@@ -237,6 +237,7 @@ def test_mixed_case_schema_qualified_table(live: Live) -> None:
 async def _rows(live: Live, tmp_path: Path, models: Iterable[SlayerModel],
                 payload: dict[str, Any]) -> list[dict[str, Any]]:
     storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
+    live.engine.dispose()  # SLayer opens a DuckDB file read-only, which a held read-write connection refuses
     async with owned_query_engine(storage=storage, datasources=[live.datasource]) as engine:
         for model in models:
             await storage.save_model(model)

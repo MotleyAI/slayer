@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.engine.extensions import apply_query_extensions
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -141,21 +141,11 @@ class TestSourceModelShapes:
         # doesn't special-case it.
         assert bundle.get_referenced_model("orders") is not None
 
-    async def test_inline_slayer_model_source(self, tmp_path):
-        storage = await _storage(tmp_path, _regions(), _customers())
-        inline = _orders()
-        query = SlayerQuery(source_model=inline)
-        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
-        assert bundle.source_model is not None
-        assert bundle.source_model.name == "orders"
-        # Join targets still resolve from storage.
-        assert bundle.get_referenced_model("customers") is not None
-
     async def test_model_extension_overlay(self, tmp_path):
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
         ext = ModelExtension(
             source_name="orders",
-            columns=[Column(name="discount", type=DataType.DOUBLE)],
+            measures=[ModelMeasure(name="discount", formula="sum(amount)")],
             joins=[],
         )
         query = SlayerQuery(source_model="orders", extensions=[ext])
@@ -163,17 +153,8 @@ class TestSourceModelShapes:
         _, bundle = apply_query_extensions(query=query, scope=None, bundle=built)
         assert bundle.source_model is not None
         assert bundle.source_model.name == "orders"
-        col_names = {c.name for c in bundle.source_model.columns}
-        assert "discount" in col_names  # overlay applied
-        assert "amount" in col_names  # base columns retained
-
-    async def test_dict_slayer_model_source(self, tmp_path):
-        storage = await _storage(tmp_path, _regions(), _customers())
-        inline = _orders().model_dump()
-        query = SlayerQuery.model_validate({"source_model": inline})
-        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
-        assert bundle.source_model is not None
-        assert bundle.source_model.name == "orders"
+        assert "discount" in {m.name for m in bundle.source_model.measures}  # overlay applied
+        assert "amount" in {c.name for c in bundle.source_model.columns}  # base columns retained
 
     async def test_dict_model_extension_source(self, tmp_path):
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
@@ -181,14 +162,14 @@ class TestSourceModelShapes:
             "source_model": "orders",
             "extensions": [{
                 "source_name": "orders",
-                "columns": [{"name": "discount", "type": "DOUBLE"}],
+                "measures": [{"name": "discount", "formula": "sum(amount)"}],
             }],
         })
         built = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
         _, bundle = apply_query_extensions(query=query, scope=None, bundle=built)
         assert bundle.source_model is not None
         assert bundle.source_model.name == "orders"
-        assert "discount" in {c.name for c in bundle.source_model.columns}
+        assert "discount" in {m.name for m in bundle.source_model.measures}
 
     async def test_missing_model_raises(self, tmp_path):
         storage = await _storage(tmp_path, _regions())
@@ -381,22 +362,6 @@ class TestMultiStage:
         )
         assert bundle.source_model.name == "orders"
         assert bundle.get_referenced_model("audit") is not None
-
-    async def test_sibling_chain_to_inline_model_collects_joins(self, tmp_path):
-        # The chain bottoms out at an inline SlayerModel with its own joins.
-        storage = await _storage(tmp_path, _regions(), _customers())
-        stage1 = SlayerQuery.model_validate({
-            "name": "stage1",
-            "source_model": _orders(),
-            "dimensions": ["status"],
-            "measures": [{"formula": "sum(amount)"}],
-        })
-        root = SlayerQuery(source_model="stage1", dimensions=["status"])
-        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
-            query=root, storage=storage, named_queries={"stage1": stage1}
-        )
-        assert bundle.source_model.name == "orders"
-        assert bundle.get_referenced_model("customers") is not None
 
     async def test_sibling_chain_cycle_raises(self, tmp_path):
         storage = await _storage(tmp_path, _orders())

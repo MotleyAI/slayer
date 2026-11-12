@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from slayer.core.enums import DataType
 from slayer.core.models import Aggregation, Column, ModelJoin, SlayerModel
-from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.core.query import SlayerQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 
@@ -65,7 +65,6 @@ class TestConstruction:
         b = ResolvedSourceBundle(dialect="postgres", source_model=m, referenced_models=[m])
         assert b.source_model is m
         assert b.referenced_models == [m]
-        assert b.inline_extensions == []
         assert b.named_queries == {}
         assert b.query_variables == {}
         assert b.datasource_hint is None
@@ -76,15 +75,6 @@ class TestConstruction:
         r = _model("regions")
         b = ResolvedSourceBundle(dialect="postgres", source_model=m, referenced_models=[m, c, r])
         assert b.referenced_models == [m, c, r]
-
-    def test_with_extensions(self):
-        m = _model("orders")
-        ext = ModelExtension(source_name="orders")
-        b = ResolvedSourceBundle(
-            dialect="postgres",
-            source_model=m, referenced_models=[m], inline_extensions=[ext]
-        )
-        assert b.inline_extensions == [ext]
 
     def test_with_named_queries(self):
         m = _model("orders")

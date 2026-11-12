@@ -22,10 +22,13 @@ from slayer.core.query import (
     OrderItem,
     SlayerQuery,
     TimeDimension,
-    substitute_variables,
 )
+from slayer.sql.dialects import SqliteDialect
+from slayer.sql.mode_a_variables import bind_mode_a
 from slayer.storage.migrations import CURRENT_VERSIONS
 from tests._engine_helpers import _engine_generate
+
+_SQLITE = SqliteDialect()
 
 
 class TestColumnRef:
@@ -1637,66 +1640,38 @@ class TestMeasureFilter:
 class TestSubstituteVariables:
     def test_string_variable(self) -> None:
 
-        result = substitute_variables(
-            filter_str="status = '{status_val}'",
-            variables={"status_val": "active"},
-            backslash_escapes=False,
-        )
+        result = bind_mode_a("status = '{status_val}'", {"status_val": "active"}, dialect=_SQLITE, field="f")
         assert result == "status = 'active'"
 
     def test_number_variable(self) -> None:
 
-        result = substitute_variables(
-            filter_str="amount > {min_amount}",
-            variables={"min_amount": 100},
-            backslash_escapes=False,
-        )
+        result = bind_mode_a("amount > {min_amount}", {"min_amount": 100}, dialect=_SQLITE, field="f")
         assert result == "amount > 100"
 
     def test_float_variable(self) -> None:
 
-        result = substitute_variables(
-            filter_str="rate < {max_rate}",
-            variables={"max_rate": 0.05},
-            backslash_escapes=False,
-        )
+        result = bind_mode_a("rate < {max_rate}", {"max_rate": 0.05}, dialect=_SQLITE, field="f")
         assert result == "rate < 0.05"
 
     def test_multiple_variables(self) -> None:
 
-        result = substitute_variables(
-            filter_str="status = '{status}' AND amount > {min}",
-            variables={"status": "completed", "min": 50},
-            backslash_escapes=False,
-        )
+        result = bind_mode_a("status = '{status}' AND amount > {min}", {"status": "completed", "min": 50}, dialect=_SQLITE, field="f")
         assert result == "status = 'completed' AND amount > 50"
 
     def test_escaped_braces(self) -> None:
 
-        result = substitute_variables(
-            filter_str="name LIKE '{{prefix}}%' AND status = '{val}'",
-            variables={"val": "ok"},
-            backslash_escapes=False,
-        )
+        result = bind_mode_a("name LIKE '{{prefix}}%' AND status = '{val}'", {"val": "ok"}, dialect=_SQLITE, field="f")
         assert result == "name LIKE '{prefix}%' AND status = 'ok'"
 
     def test_undefined_variable_raises(self) -> None:
 
         with pytest.raises(ValueError, match="Undefined variable 'missing'"):
-            substitute_variables(
-                filter_str="status = '{missing}'",
-                variables={},
-                backslash_escapes=False,
-            )
+            bind_mode_a("status = '{missing}'", {}, dialect=_SQLITE, field="f")
 
     def test_invalid_variable_name_raises(self) -> None:
 
         with pytest.raises(ValueError, match="Invalid variable name"):
-            substitute_variables(
-                filter_str="status = '{bad-name}'",
-                variables={"bad-name": "x"},
-                backslash_escapes=False,
-            )
+            bind_mode_a("status = '{bad-name}'", {"bad-name": "x"}, dialect=_SQLITE, field="f")
 
     def test_invalid_type_raises(self) -> None:
 
@@ -1704,19 +1679,11 @@ class TestSubstituteVariables:
         # valid IN-list body, covered in
         # tests/test_mode_a_variable_substitution.py.)
         with pytest.raises(ValueError, match="must be a string, number, or list/tuple"):
-            substitute_variables(
-                filter_str="status = '{val}'",
-                variables={"val": {"a": 1}},
-                backslash_escapes=False,
-            )
+            bind_mode_a("status = '{val}'", {"val": {"a": 1}}, dialect=_SQLITE, field="f")
 
     def test_no_variables_no_change(self) -> None:
 
-        result = substitute_variables(
-            filter_str="status = 'active'",
-            variables={},
-            backslash_escapes=False,
-        )
+        result = bind_mode_a("status = 'active'", {}, dialect=_SQLITE, field="f")
         assert result == "status = 'active'"
 
     def test_variable_in_slayer_query(self) -> None:
@@ -1766,8 +1733,6 @@ async def _prefix_sql(query: dict) -> str:
 
 
 _MONTH = {"dimension": "created_at", "granularity": "month"}
-_INLINE_ORDERS = {"name": "orders", "sql_table": "orders", "data_source": "test",
-                  "columns": [{"name": "id", "primary_key": True}, {"name": "status"}]}
 
 # (root-qualified, bare) spellings of one query.
 _ROOT_QUALIFIED = {
@@ -1823,8 +1788,7 @@ class TestRootQualifier:
     @pytest.mark.parametrize("source", [
         {"source_model": "orders", "extensions": [{"source_name": "orders"}]},
         {"source_model": "orders", "extensions": [ModelExtension(source_name="orders")]},
-        {"source_model": _INLINE_ORDERS},
-    ], ids=["extension-dict", "extension-object", "inline-model"])
+    ], ids=["extension-dict", "extension-object"])
     async def test_every_root_spec_takes_its_name(self, source: dict) -> None:
         assert await _prefix_sql({**source, "dimensions": ["orders.status"]}) == await _prefix_sql(
             {**source, "dimensions": ["status"]})

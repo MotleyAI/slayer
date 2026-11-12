@@ -1072,9 +1072,8 @@ change SHALL load with every `rank(` / `dense_rank(` call lacking a top-level
 `direction=` in its Mode-B fields rewritten to carry `direction='desc'`,
 preserving its pre-change ordering. The Mode-B fields are `ModelMeasure.formula`
 and a query's `measures`, `filters`, `dimensions`, `time_dimensions`, `order` and
-`main_time_dimension`, including queries nested in `source_queries`, an inline
-query `source_model`, the measures of an inline `ModelExtension` `source_model`,
-and `Memory.query`. Mode-A SQL (`Column.sql`, model
+`main_time_dimension`, including queries nested in `source_queries`, the measures of a
+stored query's extensions (in either stored spelling), and `Memory.query`. Mode-A SQL (`Column.sql`, model
 `filters`, `Column.filter`, aggregation templates) and `ntile` / `percent_rank`
 calls SHALL never be rewritten. The rewrite SHALL apply only to a payload read
 from storage or one that declares an explicit schema version older than the

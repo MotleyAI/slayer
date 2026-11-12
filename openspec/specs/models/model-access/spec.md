@@ -52,8 +52,8 @@ A store wrapped with a caller's tags and a `bypass` flag (both required, with no
 
 A model SHALL read every model that one of the following references, and every model on the path of such a reference:
 
-- the source of each stage of a query-backed model (a model name, an extension's base, or an inline model);
-- the targets of extension and inline joins;
+- the source of each stage of a query-backed model (a model name or an extension's base);
+- the targets of extension joins;
 - every dotted reference path in its stages' fields: dimensions, time dimensions, measures, filters and order;
 - every dotted reference path in its own definitions: column SQL, column filters, model filters, saved measure formulas (including saved measures they reference), and aggregation parameters.
 
@@ -212,7 +212,7 @@ A store wrapped with `bypass=True` SHALL read and write exactly as the store it 
 
 ### Requirement: Narrowed access is reported
 
-A model's access is narrowed when it reads, transitively, a tagged model whose tags do not include all of its own (an untagged model reading a tagged one is narrowed). Saving a narrowed model SHALL emit a structured `narrowed_access` warning naming the models that narrow it. Saving a tagged model SHALL emit the warning for each model that becomes narrowed because it reads it. Model validation SHALL report every narrowed model. A narrowed model SHALL still save.
+A model's access is narrowed when it reads, transitively, a tagged model whose tags do not include all of its own (an untagged model reading a tagged one is narrowed). Saving a narrowed model SHALL emit a structured `narrowed_access` warning naming the models that narrow it. Saving a tagged model SHALL emit the warning for each model that becomes narrowed because it reads it. A save through MCP or REST SHALL return each such warning in its response. Model validation SHALL report every narrowed model. A narrowed model SHALL still save.
 
 #### Scenario: Saving a public model that reads a tagged one warns
 
@@ -228,6 +228,11 @@ A model's access is narrowed when it reads, transitively, a tagged model whose t
 
 - **WHEN** model validation runs over a datasource holding a narrowed model
 - **THEN** the report lists it as narrowed, naming the models that narrow it
+
+#### Scenario: A REST model save returns the warning
+
+- **WHEN** an untagged query-backed model reading `hr` is saved through `POST /models`, and again through `PUT /models/{name}`
+- **THEN** each response carries a `warnings` list holding the structured `narrowed_access` warning naming `hr`
 
 ### Requirement: Cached views are never shared across callers
 

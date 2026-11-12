@@ -13,13 +13,13 @@ from slayer.inspect.model_render import render_model_inspection
 from tests._dev1966_fixtures import customers_model, dev1966_engine, m, orders_model, query
 from tests._dev2102_fixtures import DS, countries, customers, ext, join, orders, q, regions
 
-_OVER = {"source_name": "orders", "columns": [
-    {"name": "over", "sql": "CASE WHEN amount >= {floor} THEN amount ELSE 0 END", "type": "DOUBLE"}]}
+_OVER = {"source_name": "orders", "measures": [
+    {"name": "rev", "formula": "sum(iif(amount >= {floor}, amount, 0))"}]}
 
 
 def _over_rev(**fields) -> SlayerModel:
     return SlayerModel(name="over_rev", data_source="test", source_queries=[query(
-        source_model="orders", extensions=[_OVER], dimensions=["customer_id"], measures=[m("sum(over)", "rev")])],
+        source_model="orders", extensions=[_OVER], dimensions=["customer_id"], measures=["rev"])],
         **fields)
 
 
@@ -48,9 +48,8 @@ async def test_inspection_reports_an_extension_variable_as_required() -> None:
 
 
 @pytest.mark.parametrize("extension", [
-    ext("customers", columns=[{"name": "region_name", "sql": "regions.name", "type": "TEXT"}]),
     ext("customers", measures=[{"name": "region_count", "formula": "count(regions.id)"}]),
-], ids=["column", "measure"])
+], ids=["measure"])
 def test_a_joined_models_extension_reads_what_its_definitions_read(extension: dict) -> None:
     home = ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])
     query = q(source_model="orders", dimensions=["status"], extensions=[extension])
@@ -64,10 +63,10 @@ _TO_REGIONS = join("regions", [["region_id", "id"]])
 @pytest.mark.parametrize(("source", "dimensions", "extension"), [
     ({"source_model": "orders"}, ["customers.regions.countries.name"], ext("customers", joins=[_TO_REGIONS])),
     ({"source_model": "orders"}, ["status"], ext("customers", joins=[_TO_REGIONS],
-                                               columns=[{"name": "country", "sql": "regions.countries.name",
-                                                         "type": "TEXT"}])),
+                                               measures=[{"name": "countries_n",
+                                                          "formula": "count_distinct(regions.countries.name)"}])),
     ({}, ["customers.regions.countries.name"], ext("customers", joins=[_TO_REGIONS])),
-], ids=["query-reference", "extension-column", "anchorless"])
+], ids=["query-reference", "extension-measure", "anchorless"])
 def test_a_path_through_an_extension_join_reads_its_downstream_models(
     source: dict, dimensions: list, extension: dict,
 ) -> None:
@@ -82,10 +81,10 @@ _TO_CUSTOMERS = join("customers", [["customer_id", "id"]])
 
 @pytest.mark.parametrize(("dimensions", "extension"), [
     (["customer_id"], ext("s", joins=[_TO_CUSTOMERS], measures=[{"name": "n", "formula": "count(customers.regions.id)"}])),
-    (["customer_id"], ext("s", joins=[_TO_CUSTOMERS],
-                          columns=[{"name": "region", "sql": "customers.regions.name", "type": "TEXT"}])),
+    (["customer_id", {"expression": "upper(customers.regions.name)", "name": "region"}],
+     ext("s", joins=[_TO_CUSTOMERS])),
     (["customer_id", "customers.regions.name"], ext("s", joins=[_TO_CUSTOMERS])),
-], ids=["measure", "column", "query-reference"])
+], ids=["measure", "computed-dimension", "query-reference"])
 @pytest.mark.parametrize("data_source", [DS, ""], ids=["datasource", "no-datasource"])
 def test_a_sibling_stage_extension_reads_through_its_joins(dimensions: list, extension: dict, data_source: str) -> None:
     home = ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])
@@ -99,8 +98,8 @@ def test_a_sibling_stage_extension_reads_through_its_joins(dimensions: list, ext
 def test_a_sibling_stage_shadows_a_same_named_stored_model(column: str) -> None:
     backed = SlayerModel(name="backed", data_source=DS, source_queries=[
         q(name="customers", source_model="orders", dimensions=["customer_id"]),
-        q(source_model="customers", dimensions=[column], extensions=[
-            ext("customers", columns=[{"name": column, "sql": "customer_id * 10", "type": "INT"}])])])
+        q(source_model="customers", measures=[column], extensions=[
+            ext("customers", measures=[{"name": column, "formula": "sum(customer_id * 10)"}])])])
     assert models_read_by(backed, models=[orders(), customers(), regions()]) == {(DS, "orders")}
 
 
@@ -139,16 +138,8 @@ def test_a_rootless_sibling_stage_extension_reads_through_its_joins() -> None:
 def test_a_sibling_join_key_its_extension_defines_is_one_column() -> None:
     home = ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])
     backed = SlayerModel(name="backed", data_source=DS, source_queries=[
-        q(name="s", source_model="orders", dimensions=["customer_id"]),
+        q(name="s", source_model="orders", dimensions=[{"expression": "customer_id", "name": "customer_key"}]),
         q(source_model="s", dimensions=["customers.regions.name"], extensions=[ext(
-            "s", columns=[{"name": "customer_key", "sql": "customer_id", "type": "INT"}],
-            joins=[join("customers", [["customer_key", "id"]])])])])
+            "s", joins=[join("customers", [["customer_key", "id"]])])])])
     assert (DS, "regions") in models_read_by(backed, models=[orders(), customers(home), regions()])
 
-
-def test_an_inline_source_shadows_a_same_named_stored_model() -> None:
-    inline = {"name": "customers", "data_source": DS, "sql_table": "customers", "columns": [
-        {"name": "id", "type": "INT", "primary_key": True}, {"name": "credit", "type": "DOUBLE"}]}
-    query = q(source_model=inline, measures=[{"formula": "c10", "name": "t"}],
-              extensions=[ext("customers", measures=[{"name": "c10", "formula": "sum(credit)"}])])
-    assert (DS, "customers") not in models_read_by(query, models=[orders(), customers(), regions()], data_source=DS)

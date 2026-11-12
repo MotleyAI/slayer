@@ -624,10 +624,7 @@ class TestQueryListBody:
 
 
 class TestQueryInlineSourceModel:
-    """POST /query accepts ``source_model`` as a string OR a dict (inline
-    ``ModelExtension`` / ``SlayerModel``), matching the MCP ``query`` tool
-    and ``SlayerQuery.source_model`` polymorphism.
-    """
+    """POST /query refuses extension columns and inline models with 422, as the MCP ``query`` tool does."""
 
     @staticmethod
     def _setup_orders(client: TestClient) -> None:
@@ -646,9 +643,6 @@ class TestQueryInlineSourceModel:
         assert resp.status_code in (200, 201), resp.text
 
     def test_inline_model_extension_dict(self, client: TestClient) -> None:
-        """``extensions: [{"source_name": "orders", "columns": [...]}]``
-        extends the stored model with an extra column for this one query.
-        """
         self._setup_orders(client)
         resp = client.post("/query", json={
             "source_model": "orders",
@@ -661,14 +655,10 @@ class TestQueryInlineSourceModel:
             "measures": [{"formula": "sum(double_amount)"}],
             "dry_run": True,
         })
-        assert resp.status_code == 200, resp.text
-        sql = resp.json()["sql"].lower()
-        assert "amount * 2" in sql or "amount*2" in sql
+        assert resp.status_code == 422, resp.text
+        assert "columns" in resp.text
 
     def test_inline_slayer_model_dict(self, client: TestClient) -> None:
-        """``source_model: {"name": ..., "sql_table": ..., ...}`` defines
-        an ad-hoc model for this one query.
-        """
         # Datasource only — table need not exist for dry_run.
         resp = client.post("/datasources", json={
             "name": "ds_adhoc", "type": "sqlite", "database": ":memory:",
@@ -684,8 +674,8 @@ class TestQueryInlineSourceModel:
             "measures": [{"formula": "sum(x)"}],
             "dry_run": True,
         })
-        assert resp.status_code == 200, resp.text
-        assert "things" in resp.json()["sql"].lower()
+        assert resp.status_code == 422, resp.text
+        assert "inline" in resp.text.lower()
 
 
 class TestOpenAPI400Documentation:

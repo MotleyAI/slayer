@@ -13,6 +13,7 @@ import sqlalchemy as sa
 import sqlalchemy.exc
 
 from slayer.core.models import DatasourceConfig
+from slayer.database import client as sql_client
 from slayer.database import engine_factory
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning
 from slayer.database.client import AuthenticationRefused, ExecutionResult, SlayerSQLClient
@@ -32,6 +33,12 @@ from tests._explain_fakes import (
     threaded_pg_client,
     tsql_statements,
 )
+
+@pytest.fixture(autouse=True)
+def _any_plan_statement(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests exercise how a plan runs; which plan statements are admitted is tested elsewhere."""
+    monkeypatch.setattr(sql_client, "admit_explain", lambda *_a, **_k: None)
+
 
 _EXPLAIN = (SESSION_ON, PLAN_SQL, SESSION_OFF)
 _BOUND = 5.0
@@ -334,6 +341,13 @@ def _pragma_db(tmp_path: Path) -> str:
 _PRAGMA_ON, _PRAGMA_OFF = "PRAGMA cache_size = 1234", "PRAGMA cache_size = 4321"
 
 
+def _cache_size(client: SlayerSQLClient) -> int:
+    """Read on the caller's engine: the client's ``execute`` refuses ``PRAGMA``."""
+    assert client._sync_engine is not None
+    with client._sync_engine.connect() as conn:
+        return conn.exec_driver_sql("PRAGMA cache_size").scalar()
+
+
 class TestOnARealConnection:
     """One pooled connection: what the next statement sees is what the explain left behind."""
 
@@ -348,7 +362,7 @@ class TestOnARealConnection:
             statement="PRAGMA cache_size", session_on=_PRAGMA_ON, session_off=_PRAGMA_OFF,
         ))
         assert result.rows == [{"cache_size": 1234}]
-        assert (await client.execute("PRAGMA cache_size")).rows == [{"cache_size": 4321}]
+        assert _cache_size(client) == 4321
 
     async def test_the_session_is_restored_after_a_failing_plan_statement(self, client: SlayerSQLClient) -> None:
         statements = ExplainStatements(
@@ -356,5 +370,5 @@ class TestOnARealConnection:
         )
         with pytest.raises(sqlalchemy.exc.OperationalError, match="no such table"):
             await client.explain(statements)
-        assert (await client.execute("PRAGMA cache_size")).rows == [{"cache_size": 4321}]
+        assert _cache_size(client) == 4321
         assert (await client.execute("SELECT id FROM t")).rows == [{"id": 1}]

@@ -62,7 +62,7 @@ Each piece of query-language guidance SHALL appear in exactly one place across t
 - `order`: sorting by any aggregate or transform, displayed or not, with `limit` for top N; returning only the columns the question asks for, never adding the sort value to the measures.
 - `time_dimensions`: buckets without rows are absent; a time dimension on `time_spine.timestamp` with a lower `date_range` bound returns every bucket, empty ones included, and lines several models up on one time axis.
 - a time dimension's `date_range`: its forms; that `change`, `change_pct`, `time_shift` and `window=` read rows before the range (a forward `time_shift`, after it) so the range is not widened; that `cumsum` starts at the range start.
-- `source_model`: rooting at the model whose every row must appear when the question asks for every such row, with a named conditional aggregate; otherwise rooting where the facts are, so rows without facts drop out, or omitting it to infer the smallest model determining every dimension and row-level condition column; a per-query column written as an expression in the position that uses it, never as an inline extension column.
+- `source_model`: rooting at the model whose every row must appear when the question asks for every such row, with a named conditional aggregate; otherwise rooting where the facts are, so rows without facts drop out, or omitting it to infer the smallest model determining every dimension and row-level condition column; a per-query column written as an expression in the position that uses it.
 - `name` (stages): what needs no stage (top N per group, averaging or bucketing per-entity totals, shares and totals); that a filter on a transform's value applies after it, which is computed over every row the other filters keep; that a stage is needed only to drop rows by a dimension or time condition that a cross-row value must still see, or to join or reuse a whole result, because a row filter or `date_range` applies before a running total, `lag` / `lead`, rank, `ntile`, `consecutive_periods` or `partition_by` total while `change`, `change_pct`, `time_shift` and `window=` read past `date_range` or a filter on their own time dimension only; and that an outer stage references inner dotted columns by their flattened `__` names.
 
 The one-query rule SHALL appear only in the server `instructions` and the `query` tool description. The gap-filling, several-child-models, parentless-child-row, cross-model-ratio, unrelated-model, projection, conditional-rooting and stage guidance SHALL also appear in no help topic and not in the server `instructions`; the instructions' fan-out reason SHALL appear only in the instructions. No description, the instructions or a help topic SHALL tell agents to use a stage to filter after a rank or window, to re-query a whole result, or to answer with one query only "whenever" it can.
@@ -79,7 +79,7 @@ Fields that reuse another field's syntax (a refinement's clauses, a measure's `f
 
 #### Scenario: No inline-extension-column advice remains
 - **WHEN** the same texts are collected
-- **THEN** none advises an inline extension's `columns` for adding a per-query column
+- **THEN** none mentions an extension's `columns` or an inline model, and none advises anything but an expression for adding a per-query column
 
 #### Scenario: Moved guidance has no second copy
 - **WHEN** the `query` tool description, every description in its input schema, the server instructions and every help topic body are collected

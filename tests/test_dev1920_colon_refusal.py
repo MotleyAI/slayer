@@ -161,15 +161,6 @@ class TestFreshQueries:
         exc = await _query_failure(storage, {"source_model": "orders", "measures": [f"amount:{agg}"]})
         assert_colon_refused(exc, span=f"amount:{agg}", twin=f"{agg}(amount)")
 
-    async def test_inline_model_measure(self, make_store: StoreFactory) -> None:  # noqa: F811
-        storage = await make_store()
-        inline = {"name": "inline_orders", "sql_table": "orders", "data_source": DS,
-                  "columns": [{"name": "order_id", "type": "INT", "primary_key": True},
-                              {"name": "amount", "type": "DOUBLE"}],
-                  "measures": [{"name": "m", "formula": "amount:sum"}]}
-        exc = await _query_failure(storage, {"source_model": inline, "measures": ["m"]})
-        assert_colon_refused(exc, span="amount:sum", twin="sum(amount)")
-
     async def test_custom_granularity(self, make_store: StoreFactory) -> None:  # noqa: F811
         storage = await make_store(granularities=[FISCAL_QUARTER])
         exc = await _query_failure(storage, {"source_model": "orders", "measures": ["count(*)"],

@@ -18,7 +18,9 @@ import slayer.database.conformance as conformance
 from slayer.core.models import DatasourceConfig
 from slayer.database import engine_factory
 from slayer.core.enums import DataType
-from slayer.database.client import DelegatingSqlClient, ExecutionResult, ObjectNotFound, ResultColumnType, SlayerSQLClient
+from slayer.database.client import (
+    DelegatingSqlClient, ExecutionResult, ObjectNotFound, ResultColumnType, SlayerSQLClient, SqlClientError,
+)
 from slayer.sql.dialects.base import ExplainStatements
 from slayer.database.conformance import ConformanceReport, capabilities_for, fixture_statements, run_conformance
 from slayer.storage.sqlite_conn import transaction
@@ -150,7 +152,23 @@ class _IntegersAsDouble(DelegatingSqlClient):
         }
 
 
+class _GenericErrors(DelegatingSqlClient):
+    """Broken: a database error reaches the caller as a generic one."""
+
+    async def execute(self, sql: str, **kwargs: Any) -> ExecutionResult:
+        try:
+            return await self.inner.execute(sql, **kwargs)
+        except SqlClientError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — the broken behaviour under test
+            raise RuntimeError("query failed") from exc
+
+
 class TestBrokenClientsAreCaught:
+    async def test_a_rewritten_database_error_fails_its_check(self, sqlite_ds: DatasourceConfig) -> None:
+        report = await _run(_GenericErrors(inner=SlayerSQLClient(datasource=sqlite_ds)), dialect="sqlite")
+        assert "execute_error_unchanged" in report.failed, report.failures
+
     async def test_each_failed_check_is_named(self, sqlite_ds: DatasourceConfig) -> None:
         good = await _run(SlayerSQLClient(datasource=sqlite_ds), dialect="sqlite")
         empty = await _run(_EmptyForMissing(inner=SlayerSQLClient(datasource=sqlite_ds)), dialect="sqlite")
