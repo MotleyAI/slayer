@@ -95,12 +95,13 @@ def _has_fresh_strict(data: dict[str, Any]) -> bool:
 
 def _convert_strict(data: dict[str, Any]) -> tuple[dict[str, Any], DeprecatedInputWarning]:
     """Fresh input's deprecated ``strict`` converted to ``to_many_handling``, with its deprecation."""
-    to_error = strict_flag(data["strict"]) and "to_many_handling" not in data
-    converted = without_strict(data)
-    payload = deprecated_input(
-        "strict", 'to_many_handling: "error"' if to_error else "to_many_handling", removal="3.0",
-    )
-    return converted, payload
+    if not strict_flag(data["strict"]):
+        new = "the query without `strict`"
+    elif "to_many_handling" in data:
+        new = "to_many_handling"
+    else:
+        new = 'to_many_handling: "error"'
+    return without_strict(data), deprecated_input("strict", new, removal="3.0")
 
 _NAME_PATTERN = re.compile(r"^[a-zA-Z_]\w*$", re.ASCII)
 _VAR_PATTERN = re.compile(r"\{\{|\}\}|\{([a-zA-Z_]\w*)\}|\{([^}]*)\}", re.ASCII)

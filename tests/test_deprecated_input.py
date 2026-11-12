@@ -93,3 +93,11 @@ class TestAttribution:
         assert "strict" in payload.old
         assert "to_many_handling" in payload.new
         assert payload.removal == "3.0"
+
+    def test_a_false_payload_says_to_drop_strict(self) -> None:
+        with recorded() as caught:
+            SlayerQuery(source_model="orders", strict=False)  # pyright: ignore[reportCallIssue]  # the deprecated form under test
+        [w] = deprecations(caught)
+        payload = payload_of(w)
+        assert "strict" in payload.old
+        assert "to_many_handling" not in payload.new
