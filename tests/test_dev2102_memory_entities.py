@@ -269,3 +269,41 @@ class TestRootlessQueries:
         q = SlayerQuery(dimensions=[ColumnRef(name="customers.name")], measures=[ModelMeasure(formula="count(*)")])
         result = await extract_entities_from_query(q, storage=storage)
         assert result.canonical_forms == ["mydb.customers", "mydb.customers.name"]
+
+
+@pytest_asyncio.fixture
+async def cased_storage(tmp_path: Path) -> AsyncIterator[StorageBackend]:
+    s = YAMLStorage(base_dir=str(tmp_path / "cased"))
+    await s.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="x"))
+    await s.save_model(SlayerModel(
+        name="Orders", data_source="mydb", sql_table="orders",
+        columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                 Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                 Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE)],
+        joins=[ModelJoin(target_model="Customers", join_pairs=[["customer_id", "id"]])],
+    ))
+    await s.save_model(SlayerModel(
+        name="Customers", data_source="mydb", sql_table="customers",
+        columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                 Column(name="name", sql="name", type=DataType.TEXT)],
+    ))
+    yield s
+
+
+class TestModelNameCase:
+    async def test_a_source_model_written_in_another_case(self, cased_storage: StorageBackend) -> None:
+        q = SlayerQuery(source_model="orders", dimensions=[ColumnRef(name="amount")],
+                        measures=[ModelMeasure(formula="count(*)")])
+        result = await extract_entities_from_query(q, storage=cased_storage)
+        assert {"mydb.Orders", "mydb.Orders.amount"} <= set(result.canonical_forms)
+
+    async def test_an_extension_written_in_another_case(self, cased_storage: StorageBackend) -> None:
+        q = SlayerQuery(
+            source_model="Orders", dimensions=[ColumnRef(name="Customers.shout")],
+            measures=[ModelMeasure(formula="count(*)")],
+            extensions=[ModelExtension(source_name="customers",
+                                       columns=[Column(name="shout", sql="upper(name)", type=DataType.TEXT)])],
+        )
+        result = await extract_entities_from_query(q, storage=cased_storage)
+        assert "mydb.Customers.name" in result.canonical_forms
+        assert "mydb.Customers.shout" not in result.canonical_forms

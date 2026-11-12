@@ -92,7 +92,7 @@ def _close_columns(reads: StatementReads, *, models: dict[str, SlayerModel]) -> 
     while pending:
         model_name, column_name = pending.pop()
         host = models.get(model_name)
-        column = host.get_column(column_name) if host is not None else None
+        column = host.get_column(column_name, quoted=True) if host is not None else None
         if host is None or column is None:
             continue
         for read in definition_reads(column=column, host=host, reachable=models):

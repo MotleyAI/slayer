@@ -15,6 +15,7 @@ from slayer.core.scope import StageDisplay
 from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine, query_host, spine_model
 from slayer.engine.column_dependency import definition_heads
 from slayer.engine.cardinality.unrelated import first_hop_names
+from slayer.engine.extensions import respelled_stages
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
     follow_sibling_chain,
@@ -91,6 +92,13 @@ async def build_resolved_source_bundle(
     spine_clash = walk_ds is not None and (
         await storage.get_model(TIME_SPINE_MODEL, data_source=walk_ds)
     ) is not None
+    peer_names, peer_edge_names = await _datasource_names(storage=storage, data_source=walk_ds, failures=failures)
+    query, named_queries = respelled_stages(query, named_queries, models=peer_names)
+    # Again: an inline source's join targets are respelled now.
+    source_model = await _resolve_source_spec(
+        follow_sibling_chain(spec=query.source_model, named_queries=named_queries),
+        storage=storage, data_source=data_source,
+    )
     referenced_models, query_backed = await _referenced_models(
         query=query, source_model=source_model, named_queries=named_queries,
         storage=storage, data_source=walk_ds, chain=splice_chain, spine_clash=spine_clash, failures=failures,
@@ -105,8 +113,6 @@ async def build_resolved_source_bundle(
     stage_source_models = await _stage_source_models(
         named_queries=named_queries, storage=storage, data_source=walk_ds or data_source,
     )
-    peer_names, peer_edge_names = await _datasource_names(storage=storage, data_source=walk_ds, failures=failures)
-
     query_variables = merge_query_variables(
         runtime=runtime_variables,
         stage=query.variables,
@@ -123,6 +129,7 @@ async def build_resolved_source_bundle(
         referenced_models=referenced_models,
         inline_extensions=[e for q in [*named_queries.values(), query] for e in q.extensions or []],
         named_queries=dict(named_queries),
+        query=query,
         stage_source_models=stage_source_models,
         query_variables=query_variables,
         datasource_hint=data_source,
@@ -147,7 +154,7 @@ async def _shadowed_stage_universe(
     """The other stages' universe and its query-backed models when the root's inline source shadows a stored model
     of its name, else ``(None, {})``."""
     stored = (
-        await storage.get_model(source_model.name, data_source=data_source)
+        await stored_model(storage, name=source_model.name, data_source=data_source)
         if source_model.inline and named_queries and data_source is not None else None
     )
     if stored is None:
@@ -453,14 +460,14 @@ async def _resolve_source_spec(
     if spec == TIME_SPINE_MODEL and data_source is not None:
         return spine_model(data_source=data_source)
     if isinstance(spec, str):
-        model = await _stored_model(storage, name=spec, data_source=data_source)
+        model = await stored_model(storage, name=spec, data_source=data_source)
         if model is None:
             raise ModelNotFoundError(spec)
         return model
     raise ValueError(f"Invalid source_model type: {type(spec)!r}")
 
 
-async def _stored_model(
+async def stored_model(
     storage: "StorageBackend", *, name: str, data_source: Optional[str],
 ) -> Optional[SlayerModel]:
     """The stored model ``name`` reaches (``slayer.core.names.match_name``)."""

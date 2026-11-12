@@ -57,6 +57,8 @@ class ResolvedSourceBundle(BaseModel):
     referenced_models: List[SlayerModel] = Field(default_factory=list)
     inline_extensions: List[ModelExtension] = Field(default_factory=list)
     named_queries: Dict[str, SlayerQuery] = Field(default_factory=dict)
+    # The root query as resolved; with ``named_queries``, the stages the planner reads.
+    query: Optional[SlayerQuery] = None
     # Per-named-stage source model (sibling-sourced stages omitted).
     stage_source_models: Dict[str, SlayerModel] = Field(default_factory=dict)
     query_variables: Dict[str, Any] = Field(default_factory=dict)

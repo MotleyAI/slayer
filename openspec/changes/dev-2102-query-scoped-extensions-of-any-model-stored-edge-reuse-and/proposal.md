@@ -6,7 +6,7 @@ A query can extend only its root (`source_model: ModelExtension`). An extension 
 
 - New `SlayerQuery.extensions: list[ModelExtension]`: query-scoped columns, measures and joins on any model a stage reads (stored, inline, sibling stage, stored query-backed), with one extension per model per stage.
 - **BREAKING** `source_model` accepts only a name or an inline model. The legacy extension object in `source_model` is converted to `source_model: <name>` plus `extensions`:
-  - stored queries: silently, by the SlayerQuery v10 → v11 migration;
+  - stored queries: silently, by the SlayerQuery v12 → v13 migration, after main's v10 → v11 Ossie-alignment and v11 → v12 associate-default upgrades;
   - fresh input: with a deprecation warning, removed in 3.0;
   - the extension form is no longer documented or advertised in the JSON schema.
 - An extension join is matched against the edges between its two models in either orientation, on its key pairs:
@@ -41,7 +41,7 @@ A query can extend only its root (`source_model: ModelExtension`). An extension 
   - `slayer/core/query.py` (`SlayerQuery`, `SourceSpec`), `slayer/core/join_edges.py` (edge merge replaces `same_edge`);
   - `slayer/ir/source_bundle.py`, `slayer/engine/{bundle_builder,plan,model_reads,stage_ordering,profiling}.py`, the binder's path resolution (stage alias map), population and filter assembly;
   - `slayer/storage/migrations.py` plus dict walkers, `slayer/live_schema/schema_drift.py`, `slayer/memories/resolver.py`, `slayer/inspect/model_render.py`, `slayer/usage_reporting/features`, `slayer/facade/translator.py`, the MCP / REST field descriptions.
-- Stored data: SlayerQuery documents move to v11 on load; saves write v11.
+- Stored data: SlayerQuery documents move to v13 on load; saves write v13.
 - Docs:
   - `docs/concepts/queries.md`, `docs/reference/mcp.md`, `docs/getting-started/mcp.md`, `docs/concepts/ingestion.md`;
   - examples 02, 06, 08, 13 and 14, with their notebooks re-executed;
