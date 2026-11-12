@@ -31,7 +31,7 @@ from slayer.core.models import (
     is_base_column_sql,
     physical_column_sql,
 )
-from slayer.core.query import SlayerQuery, extension_model_names
+from slayer.core.query import ComputedDimension, SlayerQuery, extension_model_names
 from slayer.core.refs import IDENTIFIER_RE
 from slayer.core.warnings import BrokenDependentWarning
 from slayer.sql.dialects.reflection import TableKeyReadFailure
@@ -875,7 +875,10 @@ def _stage_refs(stage: SlayerQuery) -> list[str]:
         ref for m in stage.measures or [] if (formula := getattr(m, "formula", None))
         for ref in _measure_formula_refs(formula)
     ]
-    refs += [getattr(d, "full_name", None) or str(d) for d in stage.dimensions or []]
+    refs += [
+        ref for d in stage.dimensions or []
+        for ref in (sorted(_measure_formula_refs(d.expression)) if isinstance(d, ComputedDimension) else [d.full_name])
+    ]
     refs += [ref for td in stage.time_dimensions or [] for ref in _measure_formula_refs(td.dimension)]
     # Mode-B (DSL) filters: use the DSL parser so aggregations/transforms surface.
     refs += [col for f in stage.filters or [] for col in _filter_refs_dsl(f)]

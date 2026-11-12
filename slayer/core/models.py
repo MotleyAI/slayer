@@ -827,10 +827,12 @@ class SlayerModel(BaseModel):
     # Runtime-only: a list child's ``(parent model, list column)``.
     _list_of: tuple[str, str] | None = PrivateAttr(default=None)
     # Runtime-only: the list children built from this model (``join_walker.list_child``).
-    _list_children: dict[tuple[str, str | None, str, DataType | None], "SlayerModel"] = PrivateAttr(
+    _list_children: dict[tuple[str, str | None, str, DataType | None, bool], "SlayerModel"] = PrivateAttr(
         default_factory=dict)
     # Runtime-only: the column and measure names a query extension added.
     _query_local: frozenset[str] = PrivateAttr(default=frozenset())
+    # Runtime-only: the query's own inline source definition, never a persisted model.
+    _inline: bool = PrivateAttr(default=False)
 
     @field_validator("filters")
     @classmethod
@@ -1024,6 +1026,16 @@ class SlayerModel(BaseModel):
     def with_query_local(self, names: frozenset[str]) -> "SlayerModel":
         out = self.model_copy()
         out._query_local = names
+        return out
+
+    @property
+    def inline(self) -> bool:
+        """Whether this is a query's inline source definition rather than a persisted model."""
+        return self._inline
+
+    def as_inline(self) -> "SlayerModel":
+        out = self.model_copy()
+        out._inline = True
         return out
 
     @property

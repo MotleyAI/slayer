@@ -184,7 +184,7 @@ class QueryScope(BaseModel):
     data_source: str
     # The query's source as bound; ``None`` when inferred.
     host: Optional[SlayerModel] = None
-    # The stored or inline model a sibling stage's chain ends on, by sibling name; ``""`` keys the host's own chain.
+    # The stored model a sibling stage's chain ends on (``None``: inline or unresolved); ``""`` keys the host's own.
     bases: Dict[str, Optional[str]] = Field(default_factory=dict)
     models: Dict[str, SlayerModel] = Field(default_factory=dict)
     # Each INNER extension join's population filter reference from the host: hops, edge token, target key.
@@ -230,6 +230,12 @@ def _chain_base(spec, *, named: Mapping[str, SlayerQuery]) -> Tuple[bool, Option
     return True, base, None
 
 
+def _stored_base(spec, *, named: Mapping[str, SlayerQuery]) -> Optional[str]:
+    """The stored model a sibling chain ends on; ``None`` for an inline end or a cycle."""
+    resolved, base, inline = _chain_base(spec, named=named)
+    return base if resolved and inline is None else None
+
+
 def _chain(query: SlayerQuery, *, named: Mapping[str, SlayerQuery]) -> Iterator[SlayerQuery]:
     """``query`` and the sibling stages its source chain passes through."""
     seen: set = set()
@@ -269,7 +275,7 @@ def _scope(
     models: Dict[str, SlayerModel] = {
         **stored, **{n: _sibling_host(n, query=query, data_source=data_source) for n in siblings}}
     spec = query.source_model
-    resolved, base, _ = _chain_base(spec, named=named)
+    resolved = _chain_base(spec, named=named)[0]
     host_name = spec if isinstance(spec, str) and resolved else None
     if isinstance(spec, SlayerModel):
         models[spec.name] = spec
@@ -277,7 +283,7 @@ def _scope(
     models, restrictions = extend_models(
         query, models, lookup=lambda name, universe: universe.get(name), on_conflict=lambda _exc: None)
     host = models.get(host_name) if host_name is not None else None
-    bases = {"": base if resolved else None, **{n: _chain_base(n, named=named)[1] for n in siblings}}
+    bases = {"": _stored_base(spec, named=named), **{n: _stored_base(n, named=named) for n in siblings}}
     inline = {spec.name} if isinstance(spec, SlayerModel) else set()
     return QueryScope.model_construct(
         data_source=data_source, host=host, bases=bases, models=models, shadowed=frozenset({*siblings, *inline}),

@@ -302,7 +302,7 @@ def list_child(*, parent: SlayerModel, column: Column) -> SlayerModel:
     """The element child of ``parent``'s list ``column``: one row per non-NULL element, its value ``value``.
     Cached on ``parent`` under everything the child is built from, so a copied or edited parent never reuses a
     stale one."""
-    key = (parent.name, parent.data_source, column.name, column.element_type)
+    key = (parent.name, parent.data_source, column.name, column.element_type, parent.inline)
     cached = parent._list_children.get(key)
     if cached is not None:
         return cached
@@ -313,6 +313,7 @@ def list_child(*, parent: SlayerModel, column: Column) -> SlayerModel:
         columns=[Column(name=LIST_ELEMENT_COLUMN, type=column.element_type or DataType.UNKNOWN)],
     ).model_copy(update={"name": name, "sql_table": name, "data_source": parent.data_source})
     child._list_of = (parent.name, column.name)
+    child._inline = parent.inline
     return parent._list_children.setdefault(key, child)
 
 

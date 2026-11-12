@@ -94,6 +94,11 @@ async def build_resolved_source_bundle(
         query=query, source_model=source_model, named_queries=named_queries,
         storage=storage, data_source=walk_ds, chain=splice_chain, spine_clash=spine_clash, failures=failures,
     )
+    stage_referenced_models, stage_backed = await _shadowed_stage_universe(
+        query=query, source_model=source_model, named_queries=named_queries,
+        storage=storage, data_source=walk_ds, chain=splice_chain, spine_clash=spine_clash, failures=failures,
+    )
+    query_backed = {**stage_backed, **query_backed}
     source_model = query_host(source_model, query=query)
 
     stage_source_models = await _stage_source_models(
@@ -116,8 +121,6 @@ async def build_resolved_source_bundle(
         source_model=source_model,
         referenced_models=referenced_models,
         inline_extensions=[e for q in [*named_queries.values(), query] for e in q.extensions or []],
-        inline_sources=frozenset(
-            q.source_model.name for q in [*named_queries.values(), query] if isinstance(q.source_model, SlayerModel)),
         named_queries=dict(named_queries),
         stage_source_models=stage_source_models,
         query_variables=query_variables,
@@ -131,6 +134,26 @@ async def build_resolved_source_bundle(
         spine_clash=spine_clash,
         datasource_model_names=peer_names,
         datasource_edge_names=peer_edge_names,
+        stage_referenced_models=stage_referenced_models,
+    )
+
+
+async def _shadowed_stage_universe(
+    *, query: SlayerQuery, source_model: SlayerModel, named_queries: Dict[str, SlayerQuery],
+    storage: "StorageBackend", data_source: Optional[str], chain: Tuple[str, ...], spine_clash: bool,
+    failures: DocumentLoadFailures,
+) -> Tuple[Optional[List[SlayerModel]], Dict[str, SlayerModel]]:
+    """The other stages' universe and its query-backed models when the root's inline source shadows a stored model
+    of its name, else ``(None, {})``."""
+    stored = (
+        await storage.get_model(source_model.name, data_source=data_source)
+        if source_model.inline and named_queries and data_source is not None else None
+    )
+    if stored is None:
+        return None, {}
+    return await _referenced_models(
+        query=query, source_model=stored, named_queries=named_queries,
+        storage=storage, data_source=data_source, chain=chain, spine_clash=spine_clash, failures=failures,
     )
 
 
@@ -302,11 +325,13 @@ async def _preseed_sibling_models(
     storage: "StorageBackend",
     data_source: Optional[str],
 ) -> Dict[str, SlayerModel]:
-    """Models held concretely: host + each sibling's overlay-resolved base.
+    """Models held concretely: host + each sibling's overlay-resolved stored base (an inline one stays in its stage).
     Best-effort — a sibling whose base is absent is skipped."""
     preseeded: Dict[str, SlayerModel] = {source_model.name: source_model}
     for sib in named_queries.values():
         spec = follow_sibling_chain(spec=sib.source_model, named_queries=named_queries)
+        if isinstance(spec, SlayerModel):
+            continue
         try:
             sib_model = await _resolve_source_spec(
                 spec, storage=storage, data_source=data_source
@@ -423,7 +448,7 @@ async def _resolve_source_spec(
 ) -> SlayerModel:
     """Resolve any ``source_model`` spec to a concrete ``SlayerModel`` (read-only)."""
     if isinstance(spec, SlayerModel):
-        return spec
+        return spec.as_inline()
     if spec == TIME_SPINE_MODEL and data_source is not None:
         return spine_model(data_source=data_source)
     if isinstance(spec, str):

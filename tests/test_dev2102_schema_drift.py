@@ -195,3 +195,17 @@ def test_an_inline_source_shadows_the_stored_model_it_is_named_like() -> None:
         SlayerQuery.model_validate({"source_model": inline, "measures": [{"formula": "count(code)", "name": "c"}]})])
     entries = column_dependents(models=[_customers(), qb], model=_customers(), column="code")
     assert {e.model_name for e in entries if isinstance(e, WholeModelDelete)} == set()
+
+
+def test_a_sibling_over_an_inline_source_is_not_a_dependent_of_its_stored_namesake() -> None:
+    inline = _customers().model_copy(update={"sql_table": "crm_customers"})
+    qb = SlayerModel(name="qb", data_source="ds", source_queries=[
+        SlayerQuery.model_validate({"name": "s", "source_model": inline, "dimensions": ["code"]}),
+        SlayerQuery.model_validate({"source_model": "s", "dimensions": ["code"]})])
+    entries = column_dependents(models=[_customers(), qb], model=_customers(), column="code")
+    assert {e.model_name for e in entries} == {"customers"}
+
+
+def test_a_computed_dimension_over_an_extension_column_depends_on_its_definition() -> None:
+    qb = _qb(extension=_NET, dimensions=[{"expression": "net + 1", "name": "net1"}], measures=[{"formula": "count(*)"}])
+    assert _whole_dropped(qb=qb, model=_orders(), column="tax") == {"qb"}

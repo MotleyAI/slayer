@@ -201,7 +201,7 @@ class _StagePlanner:
     # -- stages ---------------------------------------------------------------
     def plan_stage(
         self, query: SlayerQuery, *, chain: Tuple[str, ...], stage_model: Optional[SlayerModel],
-        single: bool = False, owner: Optional[str] = None,
+        single: bool = False, owner: Optional[str] = None, root: bool = False,
     ) -> None:
         """Plan ``query`` after every query-backed model it names or reads is spliced."""
         for name in self._explicit_demands(query, chain=chain):
@@ -210,7 +210,7 @@ class _StagePlanner:
             self.ensure(name, chain=chain, explicit=False)
         while True:
             planned, failure, seen, stamped = self._attempt(
-                query, stage_model=stage_model, single=single and not self.state.schemas,
+                query, stage_model=stage_model, single=single and not self.state.schemas, root=root,
             )
             if self._splice_demand(seen, chain=chain):
                 continue
@@ -224,10 +224,10 @@ class _StagePlanner:
             return
 
     def _attempt(
-        self, query: SlayerQuery, *, stage_model: Optional[SlayerModel], single: bool,
+        self, query: SlayerQuery, *, stage_model: Optional[SlayerModel], single: bool, root: bool,
     ) -> "Tuple[Optional[PlannedQuery], Optional[Exception], Dict[str, bool], ResolvedSourceBundle]":
         """One planning attempt over the placeholders: its result or failure, and what it traversed."""
-        scope, stamped = self._universe(query, stage_model=stage_model, single=single)
+        scope, stamped = self._universe(query, stage_model=stage_model, single=single, root=root)
         attempt = stamped.model_copy(update={"referenced_models": [
             *stamped.referenced_models, *self._placeholders(),
         ]})
@@ -287,9 +287,10 @@ class _StagePlanner:
         return planned.model_copy(update={"stale_spellings": spellings})
 
     def _universe(
-        self, query: SlayerQuery, *, stage_model: Optional[SlayerModel], single: bool,
+        self, query: SlayerQuery, *, stage_model: Optional[SlayerModel], single: bool, root: bool,
     ) -> "Tuple[ModelScope | StageSchema | None, ResolvedSourceBundle]":
-        base = self.bundle.model_copy(update={"stage_displays": dict(self.state.displays)})
+        own = self.bundle if root else self.bundle.for_non_root_stage()
+        base = own.model_copy(update={"stage_displays": dict(self.state.displays)})
         if single:
             _, base = apply_query_extensions(query=query, scope=None, bundle=base)
             return _framed(query=query, scope=None, bundle=base, placeholders=self._placeholders())
@@ -466,7 +467,7 @@ class _StagePlanner:
         if source_name_if_sibling(spec=spec, sibling_names=set(self.state.schemas)) is not None:
             return None
         if isinstance(spec, SlayerModel):
-            return spec
+            return spec.as_inline()
         base = self.bundle.models_by_name.get(spec) if isinstance(spec, str) else None
         if base is None or base.source_queries:
             raise ValueError(f"Model {spec!r} not found")
@@ -527,7 +528,7 @@ def plan_stages(
     planner = _StagePlanner(bundle=bundle, outer_variables=dict(ordered[-1].variables or {}))
     for q in ordered:
         planner.plan_stage(
-            q, chain=bundle.splice_chain, single=len(ordered) == 1,
+            q, chain=bundle.splice_chain, single=len(ordered) == 1, root=q is ordered[-1],
             stage_model=(
                 bundle.stage_source_models.get(q.name) if q.name and q is not ordered[-1] else None
             ),

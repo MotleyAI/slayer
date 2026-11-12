@@ -6,7 +6,9 @@ from typing import Any
 
 import pytest
 
-from slayer.core.models import ModelJoin, SlayerModel
+from slayer.core.join_walker import LIST_CHILD_PREFIX
+from slayer.core.enums import DataType
+from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.model_reads import models_read_by
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -204,3 +206,86 @@ async def test_an_inline_stage_source_is_not_a_read_of_its_stored_namesake() -> 
         touched, reads = await _planned(engine, stages)
     assert touched == set()
     assert not {m for m, _ in reads.columns} & {"customers"}
+
+
+@pytest.mark.parametrize("stages", [
+    [q(name="s", source_model=_INLINE_OVER_ADDRESSES, dimensions=["city"]),
+     q(source_model="customers", dimensions=["name"], measures=[{"formula": "count(*)", "name": "n"}])],
+    [q(name="s", source_model="customers", dimensions=["name"]),
+     q(source_model=_INLINE_OVER_ADDRESSES, dimensions=["city"])],
+], ids=["stored-root", "stored-stage"])
+async def test_a_stage_sourced_from_the_stored_namesake_still_reads_it(stages: list[SlayerQuery]) -> None:
+    async with shop("sqlite", _models()) as engine:
+        touched, reads = await _planned(engine, stages)
+    assert touched == {"customers"}
+    assert ("customers", "name") in reads.columns
+    assert ("customers", "city") not in reads.columns
+
+
+async def test_an_inline_sources_saved_measure_is_not_a_read_of_its_stored_namesake() -> None:
+    inline = {**_INLINE_OVER_ADDRESSES, "measures": [{"name": "n_city", "formula": "count_distinct(city)"}]}
+    async with shop("sqlite", _models()) as engine:
+        _, reads = await _planned(engine, q(source_model=inline, measures=["n_city"]))
+    assert not reads.measures
+
+
+async def test_a_spliced_stage_with_an_inline_source_is_not_a_read_of_its_stored_namesake() -> None:
+    async with shop("sqlite", _models()) as engine:
+        await engine.create_model_from_query(
+            query=q(source_model=_INLINE_OVER_ADDRESSES, dimensions=["city"]), name="cities")
+        touched, reads = await _planned(engine, q(source_model="cities", dimensions=["city"]))
+    assert "customers" not in touched
+    assert not {m for m, _ in reads.columns} & {"customers"}
+
+
+async def test_a_list_child_of_an_inline_source_is_not_a_persisted_read() -> None:
+    inline = {"name": "customers", "data_source": DS, "sql": "SELECT 1 AS id, ['a', 'b'] AS tags", "columns": [
+        {"name": "id", "type": "INT", "primary_key": True},
+        {"name": "tags", "type": "ARRAY", "element_type": "TEXT"}]}
+    async with shop("duckdb", _models()) as engine:
+        _, reads = await _planned(engine, q(source_model=inline, dimensions=["tags.value"]))
+    assert not {m for m, _ in reads.columns if m.startswith(LIST_CHILD_PREFIX)}
+
+
+_CUSTOMER_NAMES = {"source_model": "orders", "dimensions": ["customers.name"],
+                   "measures": [{"formula": "count(*)", "name": "n"}]}
+
+
+@pytest.mark.parametrize(("stages", "column"), [
+    pytest.param([q(name="s", source_model=_INLINE_OVER_ADDRESSES, dimensions=["city"]), q(**_CUSTOMER_NAMES)],
+                 "orders.customers.name", id="inline-stage"),
+    pytest.param([q(name="s", **_CUSTOMER_NAMES),
+                  q(source_model=_INLINE_OVER_ADDRESSES, dimensions=["city", "s.customers.name"],
+                    extensions=[ext("customers", joins=[join("s", [["id", "n"]])])])],
+                 "customers.s.customers.name", id="inline-root",
+                 marks=pytest.mark.xfail(strict=True, reason="DEV-2268: a joined stage's dotted output field "
+                                                             "is unresolvable from a model-scoped root")),
+])
+async def test_an_inline_source_is_local_to_its_own_stage(stages: list[SlayerQuery | dict], column: str) -> None:
+    async with shop("sqlite", _models()) as engine:
+        touched, reads = await _planned(engine, stages)
+        resp = await engine.execute(stages)
+    assert {"orders", "customers"} <= touched
+    assert ("customers", "name") in reads.columns
+    assert {row[column] for row in resp.data} - {None} <= {"Ann", "Bob", "Cid", "Dee", "Eve"}
+
+
+_INLINE_LABEL = {**_INLINE_OVER_ADDRESSES, "columns": [
+    *_INLINE_OVER_ADDRESSES["columns"], {"name": "label", "sql": "city", "type": "TEXT"}]}
+_STORED_LABEL_READ = {"source_model": "orders", "dimensions": ["customers.label"],
+                      "measures": [{"formula": "count(*)", "name": "n"}]}
+
+
+@pytest.mark.parametrize("stages", [
+    [q(name="s", source_model=_INLINE_LABEL, dimensions=["label"]), q(**_STORED_LABEL_READ)],
+    [q(name="s", **_STORED_LABEL_READ), q(source_model=_INLINE_LABEL, dimensions=["label"])],
+], ids=["inline-stage", "inline-root"])
+async def test_a_stored_derived_column_closes_over_its_own_definition_beside_an_inline_namesake(
+    stages: list[SlayerQuery | dict],
+) -> None:
+    labelled = customers(ModelJoin(target_model="regions", join_pairs=_REGION_PAIRS)).model_copy(update={"columns": [
+        *customers().columns, Column(name="label", sql="upper(name)", type=DataType.TEXT)]})
+    async with shop("sqlite", [labelled if m.name == "customers" else m for m in _models()]) as engine:
+        _, reads = await _planned(engine, stages)
+    assert {("customers", "label"), ("customers", "name")} <= reads.columns
+    assert ("customers", "city") not in reads.columns

@@ -1084,7 +1084,7 @@ def _resolve_saved_measure(
             chain=_fmt_measure_chain(child.chain), limit=measure_ctx.depth_limit,
         )
     records = _bind_records.get()
-    if records is not None:
+    if records is not None and not terminal_model.inline:
         records.measures[(terminal_model.name, measure.name)] = None
     parsed = parse_bound_expr(measure.formula, measure.bound_variables)
     _reject_placeholders(parsed, text=measure.formula)

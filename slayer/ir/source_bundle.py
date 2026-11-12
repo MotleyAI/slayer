@@ -56,8 +56,6 @@ class ResolvedSourceBundle(BaseModel):
     source_model: Optional[SlayerModel] = None
     referenced_models: List[SlayerModel] = Field(default_factory=list)
     inline_extensions: List[ModelExtension] = Field(default_factory=list)
-    # Names the query's own inline source definitions take, in every stage: never a persisted model's read.
-    inline_sources: FrozenSet[str] = frozenset()
     named_queries: Dict[str, SlayerQuery] = Field(default_factory=dict)
     # Per-named-stage source model (sibling-sourced stages omitted).
     stage_source_models: Dict[str, SlayerModel] = Field(default_factory=dict)
@@ -86,6 +84,14 @@ class ResolvedSourceBundle(BaseModel):
     datasource_edge_names: FrozenSet[str] = frozenset()
     # The stage's query-declared INNER joins, read as population filters.
     inner_restrictions: Tuple[InnerRestriction, ...] = ()
+    # Every other stage's universe when the root's inline source shadows a stored model of its name.
+    stage_referenced_models: Optional[List[SlayerModel]] = None
+
+    def for_non_root_stage(self) -> "ResolvedSourceBundle":
+        """This bundle as a stage other than the root reads it: the root's inline source stays in the root."""
+        if self.stage_referenced_models is None:
+            return self
+        return self.model_copy(update={"referenced_models": self.stage_referenced_models})
 
     def definition_view(self) -> "ResolvedSourceBundle":
         """This bundle as stored definitions see it: without anything a query extension added."""
