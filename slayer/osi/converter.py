@@ -268,9 +268,9 @@ class _ExtensionCheck:
             if ext.checked(vendor_name=entry.vendor_name, data=data) is None:
                 self.notes.append(ConversionWarning(
                     model_name=model_name, metric_name=metric_name, category=_EXTENSION, severity="dropped",
-                    message=f"The {entry.vendor_name!r} non-portable extension on the {label} is dropped: its "
-                            f"data is not a JSON object (dates, timestamps, non-finite numbers and non-string "
-                            f"keys are not JSON).",
+                    message=f"The {entry.vendor_name!r} non-portable extension on the {label} is dropped: it "
+                            f"needs a non-blank vendor_name and data that is a JSON object (dates, timestamps, "
+                            f"non-finite numbers and non-string keys are not JSON).",
                     suggestion="Fix the entry's data in the document."))
                 continue
             kept.append(OSINonportableExtension(vendor_name=entry.vendor_name, data=data))

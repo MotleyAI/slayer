@@ -88,9 +88,12 @@ def test_mixed_entries_handled_one_by_one() -> None:
         {"vendor_name": "C", "data": "[1, 2]"}, {"vendor_name": "D", "data": {"x": 1}}, {"vendor_name": "E"}]
 
 
-def test_too_deep_string_left_unchanged() -> None:
+def test_too_deep_string_does_not_abort_the_load() -> None:
+    # Whether json.loads reaches this depth depends on the interpreter (3.14 does).
     deep = '{"a":' * 20000 + "1" + "}" * 20000
-    assert _migrated("column", [{"vendor_name": "A", "data": deep}]) == [{"vendor_name": "A", "data": deep}]
+    [entry] = _migrated("column", [{"vendor_name": "A", "data": deep}])
+    assert entry["vendor_name"] == "A"
+    assert entry["data"] is deep or isinstance(entry["data"], dict)
 
 
 @pytest.mark.parametrize("value", ["garbage", {"vendor_name": "ACME"}, 3])

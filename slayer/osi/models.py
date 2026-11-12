@@ -48,8 +48,8 @@ class OSINonportableExtension(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    vendor_name: str
-    data: Any
+    vendor_name: Any = None
+    data: Any = None
     _legacy: bool = PrivateAttr(default=False)
 
     @property
