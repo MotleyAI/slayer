@@ -253,3 +253,19 @@ class TestStoredNamedJoinsWithoutExtensions:
         assert "otherdb.regions.name" in result.canonical_forms
         assert "mydb.regions.name" not in result.canonical_forms
 
+
+
+class TestRootlessQueries:
+    async def test_extension_field_of_the_inferred_population(self, storage: StorageBackend) -> None:
+        q = SlayerQuery(
+            extensions=[_orders_extension()], dimensions=[ColumnRef(name="orders.id")],
+            measures=[ModelMeasure(formula="avg(orders.premium)")],
+        )
+        result = await extract_entities_from_query(q, storage=storage)
+        assert {"mydb.orders", "mydb.orders.amount"} <= set(result.canonical_forms)
+        assert "mydb.orders.premium" not in result.canonical_forms
+
+    async def test_inferred_population_is_the_engines(self, storage: StorageBackend) -> None:
+        q = SlayerQuery(dimensions=[ColumnRef(name="customers.name")], measures=[ModelMeasure(formula="count(*)")])
+        result = await extract_entities_from_query(q, storage=storage)
+        assert result.canonical_forms == ["mydb.customers", "mydb.customers.name"]

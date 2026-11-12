@@ -40,13 +40,16 @@ from slayer.core.errors import (
     ColonSpellingError,
     CircularJoinPathError,
     EntityResolutionError,
+    PopulationInferenceError,
     UnknownFunctionError,
 )
 from slayer.core.join_walker import walk_miss, walk_terminal
 from slayer.core.models import SlayerModel
 from slayer.core.query import ComputedDimension, SlayerQuery, extension_model_names
+from slayer.core.time_spine import is_spine_query
 from slayer.engine.column_dependency import definition_reads
 from slayer.engine.extensions import FieldKind, QueryScope, query_field_texts, query_scopes
+from slayer.engine.population.inference import infer_population, infer_spine_population
 from slayer.core.syntax import (
     AggCall,
     DottedRef,
@@ -583,6 +586,26 @@ class _ExtensionScope(BaseModel):
         return [r for token in _field_entity_tokens("formula", measure.formula) for r in await self.resolve(token, host=owner)]
 
 
+async def _rooted(query: SlayerQuery, *, storage: StorageBackend) -> tuple[SlayerQuery, SlayerModel]:
+    """``query`` with its source model; a rootless query is rooted at the population the engine infers."""
+    src = query.source_model
+    if isinstance(src, SlayerModel):
+        return query, src
+    data_source = None
+    if src is None:
+        try:
+            choice = await (infer_spine_population if is_spine_query(query) else infer_population)(
+                query=query, storage=storage)
+        except PopulationInferenceError as exc:
+            raise EntityResolutionError(f"Could not infer the query's population: {exc}") from exc
+        src, data_source = choice.model_name, choice.data_source
+        query = query.model_copy(update={"source_model": src})
+    model = await storage.get_model(src, data_source=data_source)
+    if model is None:
+        raise EntityResolutionError(f"Source model not found: {src!r}.")
+    return query, model
+
+
 async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk over each SlayerQuery field (source_model → dimensions → time_dimensions → measures → filters); each branch is independently simple and parallels the SlayerQuery shape
     query: SlayerQuery,
     *,
@@ -599,20 +622,9 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
                 seen.add(f)
                 canonical.append(f)
 
-    # 1. source_model — a saved model name or an inline model — then the models its extensions name.
-    src = query.source_model
-    if isinstance(src, str):
-        source_model = await storage.get_model(src)
-    elif isinstance(src, SlayerModel):
-        source_model = src
-    else:
-        raise EntityResolutionError(
-            "Could not derive a model name from query.source_model."
-        )
-    if source_model is None:
-        raise EntityResolutionError(
-            f"Source model not found: {src!r}."
-        )
+    # 1. source_model — a saved model name, an inline model, or the population the engine infers — then the models
+    # its extensions name.
+    query, source_model = await _rooted(query, storage=storage)
     _add([f"{source_model.data_source}.{source_model.name}"])
     for name in extension_model_names(query):
         extended = await storage.get_model(name, data_source=source_model.data_source or None)

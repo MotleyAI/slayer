@@ -35,7 +35,7 @@ from slayer.core.syntax import (
     root_relative,
     walk_parsed_refs,
 )
-from slayer.memories.resolver import _all_models_in_datasource
+from slayer.storage.document_loading import all_or_raise
 from slayer.storage.base import StorageBackend
 
 # Probe verdicts per (candidate, determination item).
@@ -447,7 +447,7 @@ async def _classification_scopes(
         )
     scopes: dict[str, dict[str, SlayerModel]] = {}
     for ds in sorted(candidates):
-        scopes[ds] = {m.name: m for m in await _all_models_in_datasource(storage, ds)}
+        scopes[ds] = {m.name: m for m in all_or_raise(await storage.load_models(data_source=ds))}
     return scopes, ds_by_model
 
 
