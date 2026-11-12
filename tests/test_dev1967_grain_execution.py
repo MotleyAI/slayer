@@ -55,7 +55,7 @@ TIERS_BY_ID = {1: "gold", 2: "silver", 3: "gold", 4: "bronze"}
 class TestSiblingJoins:
     async def test_join_onto_sibling_grain_is_proven(self, engine) -> None:
         resp = await engine.execute(_stages(C_BY_ID, {
-            "source_model": ORDERS_JOIN_C, "dimensions": ["c.tr"],
+            "source_model": "orders", "extensions": [ORDERS_JOIN_C], "dimensions": ["c.tr"],
             "measures": [{"formula": "sum(amount)", "name": "amt"}],
         }))
         assert _by(resp, "orders.c.tr", "orders.amt") == pytest.approx(AMOUNT_BY_TIER)
@@ -63,7 +63,7 @@ class TestSiblingJoins:
 
     async def test_join_onto_sibling_grain_through_a_chain(self, engine) -> None:
         b = {
-            "name": "b", "source_model": ORDERS_JOIN_C, "dimensions": ["c.tr"],
+            "name": "b", "source_model": "orders", "extensions": [ORDERS_JOIN_C], "dimensions": ["c.tr"],
             "measures": [{"formula": "sum(amount)", "name": "amt"}],
         }
         root = {
@@ -76,7 +76,7 @@ class TestSiblingJoins:
 
     async def test_join_on_part_of_composite_sibling_grain_broadcasts(self, engine) -> None:
         resp = await engine.execute(_stages(C_BY_ID_TIER, {
-            "source_model": ORDERS_JOIN_C, "dimensions": ["c.tier"],
+            "source_model": "orders", "extensions": [ORDERS_JOIN_C], "dimensions": ["c.tier"],
             "measures": [{"formula": "sum(amount)", "name": "amt"}], "to_many_handling": "broadcast",
         }))
         assert len(broadcast_warnings(resp)) == 1
@@ -99,7 +99,7 @@ class TestSiblingJoins:
             "joins": [{"target_model": "orders", "join_pairs": [["id", "customer_id"]]}],
         }
         resp = await engine.execute(_stages(C_BY_ID, {
-            "source_model": ext, "dimensions": ["tr_up"],
+            "source_model": "c", "extensions": [ext], "dimensions": ["tr_up"],
             "measures": [{"formula": "sum(orders.amount)", "name": "amt"}],
         }))
         assert _by(resp, "c.tr_up", "c.amt") == pytest.approx(

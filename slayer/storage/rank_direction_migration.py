@@ -169,6 +169,12 @@ def rewrite_query_texts_at(data: dict, fn: FieldRewrite) -> dict:
                                                                                 "source_model.measures")}
         else:
             data["source_model"] = stamp_stored(source)
+    if isinstance(data.get("extensions"), list):
+        data["extensions"] = [
+            {**e, "measures": _measure_formulas(e["measures"], fn, f"extensions[{i}].measures")}
+            if isinstance(e, dict) and isinstance(e.get("measures"), list) else e
+            for i, e in enumerate(data["extensions"])
+        ]
     return data
 
 

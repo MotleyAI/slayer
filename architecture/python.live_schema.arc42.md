@@ -22,7 +22,6 @@ flowchart TD
   engine["Query engine"]
   database["Database access"]
   live_schema["Live schema"]
-  ir["Intermediate representation"]
   storage["Storage backends"]
   importers("Importers")
   search("Search & embeddings")
@@ -33,7 +32,6 @@ flowchart TD
   live_schema --> core
   live_schema --> database
   live_schema --> engine
-  live_schema --> ir
   live_schema --> memories
   live_schema --> search
   live_schema --> sql

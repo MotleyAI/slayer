@@ -125,14 +125,15 @@ class TestPostgresVerbatimExecution:
 
     async def test_regexp_replace_extension_end_to_end(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
-            source_model=ModelExtension(
+            source_model="orders",
+            extensions=[ModelExtension(
                 source_name="orders",
                 columns=[Column(
                     name="rx",
                     sql=f"REGEXP_REPLACE(status, '{_REGEX_LITERAL}', 'X')",
                     type=DataType.TEXT,
                 )],
-            ),
+            )],
             dimensions=[ColumnRef(name="rx")],
             measures=[ModelMeasure(formula="count(*)")],
         )

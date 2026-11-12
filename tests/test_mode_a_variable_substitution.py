@@ -1097,7 +1097,8 @@ class TestModelExtensionDirectSource:
                 ],
             )
             q = SlayerQuery.model_validate({
-                "source_model": ext,
+                "source_model": "orders",
+                "extensions": [ext],
                 "measures": [{"formula": "sum(scaled)"}],
                 "variables": {"mult": 2},
             })

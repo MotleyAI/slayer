@@ -23,6 +23,7 @@ from pydantic import (
     model_validator,
 )
 
+from slayer.core.deprecation import warn_deprecated
 from slayer.core.direction import normalize_direction
 from slayer.core.enums import TimeGranularity
 from slayer.core.errors import (
@@ -59,7 +60,14 @@ from slayer.core.syntax import (
     variable_names,
 )
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
-from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema
+from slayer.storage.migrations import (
+    CURRENT_VERSIONS,
+    hoist_root_extension,
+    in_stored_document,
+    is_legacy_root_extension,
+    migrate as _migrate_schema,
+    with_root_extension,
+)
 
 #: The SlayerQuery version whose migration retired ``strict``.
 _STRICT_RETIRED_AT = 4
@@ -504,6 +512,19 @@ def extract_variable_refs(text: str) -> tuple[set[str], set[str]]:
                 continue
             if match.group(1):
                 target.add(match.group(1))
+    return bare, blocked
+
+
+def extension_variable_refs(query: "SlayerQuery") -> tuple[set[str], set[str]]:
+    """``(bare_names, blocked_names)`` of ``query``'s extensions: column SQL and filters, and measure formulas."""
+    bare: set[str] = set()
+    blocked: set[str] = set()
+    for extension in query.extensions or []:
+        for text in (t for c in extension.columns or [] for t in (c.sql, c.filter) if t):
+            text_bare, text_blocked = extract_variable_refs(text)
+            bare |= text_bare
+            blocked |= text_blocked
+        bare |= {name for m in extension.measures or [] for name in variable_names(m.formula)}
     return bare, blocked
 
 
@@ -1063,25 +1084,66 @@ OrderField = Annotated[list[OrderItem] | None, BeforeValidator(_coerce_order)]
 
 
 class ModelExtension(BaseModel):
-    """Extend a model inline on a query with extra columns, measures, or joins, without modifying the stored model."""
+    """Query-scoped columns, measures and joins added to one model a query object reads."""
 
     model_config = ConfigDict(extra="forbid")
 
-    source_name: str                                # Model/query to extend
+    source_name: str                                # Model/stage to extend
     columns: list[Column] | None = None
     measures: list[ModelMeasure] | None = None
     joins: list[ModelJoin] | None = None
 
 
 def _source_spec_tag(value: Any) -> str:
-    """Classify a raw ``source_model``: an object carrying ``source_name`` is always an extension."""
-    if isinstance(value, ModelExtension):
-        return "extension"
-    if isinstance(value, SlayerModel):
-        return "model"
-    if isinstance(value, dict):
-        return "extension" if "source_name" in value else "model"
-    return "name"
+    return "model" if isinstance(value, (SlayerModel, dict)) else "name"
+
+
+def _reject_retired_strict(data: dict) -> None:
+    """Reject retired `strict` unless a pre-v4 integer stored version migrates it (v3→v4: strict:true→'error').
+
+    ``version`` is raw here, so only int / integer-string forms count; a float or other malformed value never
+    truncates into a stale version.
+    """
+    if "strict" not in data:
+        return
+    raw_version = data.get("version")
+    version: int | None = None
+    if isinstance(raw_version, int) and not isinstance(raw_version, bool):
+        version = raw_version
+    elif isinstance(raw_version, str):
+        try:
+            version = int(raw_version)
+        except ValueError:
+            version = None
+    if version is None or version >= _STRICT_RETIRED_AT:
+        raise ValueError(
+            "`strict` is retired; set to_many_handling='error' instead "
+            "(one of broadcast|associate|error)."
+        )
+
+
+def convert_legacy_root_extension(data: dict) -> dict:
+    """Fresh input's legacy root extension, moved into ``extensions`` with a deprecation warning."""
+    source = data.get("source_model")
+    if isinstance(source, ModelExtension):
+        data = with_root_extension(data, extension=source, base=source.source_name)
+    elif "version" not in data and is_legacy_root_extension(source):
+        data = hoist_root_extension(data)
+    else:
+        return data
+    if not in_stored_document():
+        warn_deprecated(
+            "An extension object in `source_model` is deprecated and will be removed in SLayer 3.0; "
+            "name the model in `source_model` and put the extension in `extensions`.",
+            removal="3.0", stacklevel=4,
+        )
+    return data
+
+
+def prepare_query_input(data: dict) -> dict:
+    """``data`` in the shape ``SlayerQuery``'s typed fields read: a legacy root extension converted, a versioned payload migrated."""
+    data = convert_legacy_root_extension(data)
+    return _migrate_schema(entity="SlayerQuery", data=data) if "version" in data else data
 
 
 def _reject_inline_query_backed(value: Any) -> Any:
@@ -1098,12 +1160,29 @@ def _reject_inline_query_backed(value: Any) -> Any:
 SourceSpec = Annotated[
     Union[
         Annotated[str, Tag("name")],
-        Annotated[ModelExtension, Tag("extension")],
         Annotated[SlayerModel, Tag("model")],
     ],
     Discriminator(_source_spec_tag),
     AfterValidator(_reject_inline_query_backed),
 ]
+
+
+def extension_model_names(query: "SlayerQuery") -> list[str]:
+    """The models ``query``'s extensions name: each extended model, then its joins' targets."""
+    names = [n for e in query.extensions or [] for n in (e.source_name, *(j.target_model for j in e.joins or []))]
+    return list(dict.fromkeys(names))
+
+
+def check_unique_extensions(extensions: list[ModelExtension] | None) -> None:
+    """Reject a second extension of one model."""
+    seen: set[str] = set()
+    for extension in extensions or ():
+        if extension.source_name in seen:
+            raise ValueError(
+                f"Model {extension.source_name!r} is extended twice; merge its columns, measures "
+                f"and joins into one `extensions` entry."
+            )
+        seen.add(extension.source_name)
 
 
 def _root_relative_ref(ref: ColumnRef, root: str | None) -> ColumnRef:
@@ -1162,10 +1241,23 @@ class SlayerQuery(BaseModel):
             "over no rows is 0, any other aggregate NULL). Always name a conditional aggregate. "
             "Otherwise root where the facts are (rows without facts then drop out), or omit to "
             "infer the smallest model determining every dimension and row-level condition column "
-            '(reported in the response). A saved model or stage name, an inline extension '
-            '{"source_name": ..., "columns" / "measures" / "joins": [...]}, or a full inline '
-            "model. Write a per-query column as an expression in the position that uses it (a "
+            "(reported in the response). A saved model or stage name, or a full inline model. "
+            "Write a per-query column as an expression in the position that uses it (a "
             "dimension, a filter, an aggregation's argument)."
+        ),
+    )
+    extensions: list[ModelExtension] | None = Field(
+        default=None,
+        description=(
+            "Query-scoped columns, measures and joins added to any model this query object reads "
+            "(its population, a joined model, or a stage), at most one entry per model, visible "
+            "only in this query object. A join repeating a stored relationship, in either "
+            "direction, is that edge, and its name is a local alias. An `inner` join keeps only "
+            "the rows with a match; it never multiplies rows. Rooted at orders: "
+            '[{"source_name": "customers", "columns": [{"name": "tier_label", "sql": '
+            '"upper(tier)"}], "joins": [{"target_model": "vip_list", "join_pairs": '
+            '[["id", "customer_id"]], "join_type": "inner"}]}] adds customers.tier_label and '
+            "keeps only the orders of customers on the vip list."
         ),
     )
     measures: MeasuresField = Field(
@@ -1223,28 +1315,16 @@ class SlayerQuery(BaseModel):
         # Single before-validator: migrate, THEN rewrite the functional granularity
         # form. Pydantic runs before-validators in reverse declaration order, so
         # sequencing them explicitly here keeps the rewrite on migrated input.
-        # `strict` is retired. Reject it for fresh (no version), v4-or-later,
-        # or malformed payloads; only a pre-v4 *integer* stored version
-        # migrates it (v3→v4 maps strict:true→to_many_handling='error'). ``version``
-        # is raw here (pre-coercion), so accept only int / integer-string forms —
-        # never truncate a float or other malformed value into a stale version.
-        if isinstance(data, dict) and "strict" in data:
-            raw_version = data.get("version")
-            version: int | None = None
-            if isinstance(raw_version, int) and not isinstance(raw_version, bool):
-                version = raw_version
-            elif isinstance(raw_version, str):
-                try:
-                    version = int(raw_version)
-                except ValueError:
-                    version = None
-            if version is None or version >= _STRICT_RETIRED_AT:
-                raise ValueError(
-                    "`strict` is retired; set to_many_handling='error' instead "
-                    "(one of broadcast|associate|error)."
-                )
+        if isinstance(data, dict):
+            _reject_retired_strict(data)
+            data = convert_legacy_root_extension(data)
         data = _migrate_schema(entity="SlayerQuery", data=data)
         if isinstance(data, dict):
+            if is_legacy_root_extension(data.get("source_model")):
+                raise ValueError(
+                    "`source_model` names a model or holds an inline model; put a query-scoped "
+                    "extension in `extensions`."
+                )
             data = _rewrite_functional_granularity(data)
         return data
 
@@ -1402,6 +1482,7 @@ class SlayerQuery(BaseModel):
         if self.main_time_dimension is not None:
             _parsed_or_none(self.main_time_dimension)
         self._validate_distinct_dimension_values()
+        check_unique_extensions(self.extensions)
         return self
 
     @model_validator(mode="after")
@@ -1481,11 +1562,9 @@ class SlayerQuery(BaseModel):
 
     @property
     def source_model_name(self) -> str | None:
-        """The population's model name before resolution (an extension names its base)."""
+        """The population's model name before resolution."""
         match self.source_model:
             case str() as name:
-                return name
-            case ModelExtension(source_name=name):
                 return name
             case SlayerModel(name=name):
                 return name

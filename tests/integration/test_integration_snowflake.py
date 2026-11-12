@@ -398,7 +398,8 @@ def test_dev1933_regex_literal_extension_column(sf_storage_with_models) -> None:
     LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
     engine = SlayerQueryEngine(storage=sf_storage_with_models)
     result = run_sync(engine.execute(SlayerQuery(
-        source_model=ModelExtension(
+        source_model="orders",
+        extensions=[ModelExtension(
             source_name="orders",
             columns=[Column(
                 name="rx",
@@ -406,7 +407,7 @@ def test_dev1933_regex_literal_extension_column(sf_storage_with_models) -> None:
                     "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END",
                 type=DataType.DOUBLE,
             )],
-        ),
+        )],
         dimensions=[ColumnRef(name="rx")],
         measures=[ModelMeasure(formula="count(*)")],
     )))

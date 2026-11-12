@@ -23,7 +23,14 @@ from slayer.core.errors import (
 )
 from slayer.core.format import NumberFormat, encode_json
 from slayer.core.models import DatasourceConfig, SlayerModel
-from slayer.core.query import QueryRefinement, SlayerQuery, SourceSpec
+from slayer.core.query import (
+    ModelExtension,
+    QueryRefinement,
+    SlayerQuery,
+    SourceSpec,
+    check_unique_extensions,
+    prepare_query_input,
+)
 from slayer.async_utils import run_sync
 from slayer.live_schema import ingestion as engine_ingestion
 from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine
@@ -48,6 +55,7 @@ class QueryRequest(BaseModel):
 
     name: str | None = None  # Run-by-name: backing query for a query-backed model
     source_model: SourceSpec | None = None
+    extensions: list[ModelExtension] | None = None
     # ``measures`` and ``dimensions`` accept bare strings as a shorthand,
     # mirroring the Python API: ``"count(*)"`` is lifted to
     # ``{"formula": "count(*)"}``, ``"status"`` to ``{"name": "status"}``.
@@ -76,6 +84,16 @@ class QueryRequest(BaseModel):
     variables: dict[str, Any] | None = None
     # Run-by-name only: clauses merged into the saved query's final stage.
     refine: QueryRefinement | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _prepare_query_input(cls, data: Any) -> Any:
+        return prepare_query_input(data) if isinstance(data, dict) else data
+
+    @model_validator(mode="after")
+    def _one_extension_per_model(self) -> "QueryRequest":
+        check_unique_extensions(self.extensions)
+        return self
 
 
 _RUN_BY_NAME_FIELDS = frozenset({"name", "variables", "dry_run", "explain", "refine"})

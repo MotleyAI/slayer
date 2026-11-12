@@ -287,7 +287,8 @@ class TestTrinoQueries:
     async def test_regex_literal_extension_column(self, trino_env: SlayerQueryEngine) -> None:
         """A ``(?:...)`` regex literal and a ``%`` LIKE pattern execute verbatim."""
         query = SlayerQuery(
-            source_model=ModelExtension(
+            source_model="orders",
+            extensions=[ModelExtension(
                 source_name="orders",
                 columns=[Column(
                     name="rx",
@@ -295,7 +296,7 @@ class TestTrinoQueries:
                         "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END",
                     type=DataType.DOUBLE,
                 )],
-            ),
+            )],
             dimensions=[ColumnRef(name="rx")],
             measures=[ModelMeasure(formula="count(*)")],
         )
@@ -695,10 +696,11 @@ class TestCrossModelAndMultistageTrino:
 
     async def test_sql_dimension(self, trino_cross_model_env: SlayerQueryEngine) -> None:
         result = await trino_cross_model_env.execute(query=SlayerQuery(
-            source_model=ModelExtension.model_validate({
+            source_model="orders",
+            extensions=[ModelExtension.model_validate({
                 "source_name": "orders",
                 "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
-            }),
+            })],
             dimensions=[ColumnRef(name="tier")],
             measures=[ModelMeasure(formula="count(*)")],
         ))

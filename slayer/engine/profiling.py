@@ -194,7 +194,8 @@ async def _profile_numeric_temporal(
         for c in columns for agg in ("min", "max")
     ]
     q = SlayerQuery.model_validate({
-        "source_model": {"source_name": model.name, "columns": ext_columns},
+        "source_model": model.name,
+        "extensions": [{"source_name": model.name, "columns": ext_columns}],
         "measures": measures,
     })
     r = await engine.execute(query=q, data_source=model.data_source or None)

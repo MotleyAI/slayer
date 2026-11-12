@@ -61,8 +61,8 @@ def _cases() -> dict:
 async def _generate_one(case, dialect: str):
     models = dev1908_models()
     try:
-        source = ship_region_extension() if case.get("ext") else "orders"
-        query = SlayerQuery(source_model=source, **case["kw"])
+        extension = {"extensions": [ship_region_extension()]} if case.get("ext") else {}
+        query = SlayerQuery(source_model="orders", **extension, **case["kw"])
         return await _engine_generate(
             query=query, model=models[0], extra_models=models[1:],
             dialect=dialect, validate=False)

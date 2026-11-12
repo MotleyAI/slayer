@@ -1820,11 +1820,14 @@ class TestRootQualifier:
         assert await _prefix_sql({"source_model": "orders", **qualified}) == await _prefix_sql(
             {"source_model": "orders", **bare})
 
-    @pytest.mark.parametrize("source", [{"source_name": "orders"}, ModelExtension(source_name="orders"), _INLINE_ORDERS],
-                             ids=["extension-dict", "extension-object", "inline-model"])
-    async def test_every_root_spec_takes_its_name(self, source: object) -> None:
-        assert await _prefix_sql({"source_model": source, "dimensions": ["orders.status"]}) == await _prefix_sql(
-            {"source_model": source, "dimensions": ["status"]})
+    @pytest.mark.parametrize("source", [
+        {"source_model": "orders", "extensions": [{"source_name": "orders"}]},
+        {"source_model": "orders", "extensions": [ModelExtension(source_name="orders")]},
+        {"source_model": _INLINE_ORDERS},
+    ], ids=["extension-dict", "extension-object", "inline-model"])
+    async def test_every_root_spec_takes_its_name(self, source: dict) -> None:
+        assert await _prefix_sql({**source, "dimensions": ["orders.status"]}) == await _prefix_sql(
+            {**source, "dimensions": ["status"]})
 
     @pytest.mark.parametrize("query", [
         {"measures": ["count(customers.orders.id)"]},

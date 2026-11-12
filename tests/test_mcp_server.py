@@ -2604,12 +2604,13 @@ class TestQueryAcceptsInlineSourceModel:
         await self._setup_orders(storage)
         result = await _call(mcp_server, name="query", arguments={
             "query": {
-                "source_model": {
+                "source_model": "orders",
+                "extensions": [{
                     "source_name": "orders",
                     "columns": [
                         {"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"},
                     ],
-                },
+                }],
                 "measures": [{"formula": "sum(double_amount)"}],
             },
             "dry_run": True,

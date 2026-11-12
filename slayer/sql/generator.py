@@ -5303,7 +5303,7 @@ class SQLGenerator:
                 )
             finally:
                 self._gen_filter_stack = self._gen_filter_stack[:-1]
-        if model.sql_table not in self._gen_stage_relations:
+        if model.sql_table not in self._gen_stage_relations and not model.inline:
             relation = _stamp_model(relation, model=model)
         if any(c.name == ROW_IDENTITY_COLUMN for c in model.columns):
             relation = self._numbered_relation(relation, alias=alias)
@@ -6711,7 +6711,8 @@ def _build_planned_stages_ast(
         single = SQLGenerator(dialect=dialect)
         single._gen_splice_chain = getattr(bundle, "splice_chain", ())
         single._gen_splice_failures = getattr(bundle, "splice_failures", {})
-        return single._build_from_planned(planned_queries[0], bundle=bundle)
+        # The stage's own universe: its query extensions overlaid.
+        return single._build_from_planned(planned_queries[0], bundle=planned_queries[0].stage_bundle or bundle)
 
     schema_by_name = {
         p.stage_schema.relation_name: p.stage_schema

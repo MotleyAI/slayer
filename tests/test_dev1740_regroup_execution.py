@@ -147,10 +147,11 @@ class TestExtensionColumnPartition:
         # stage must resolve it. Doubling preserves the >5000 banding.
         band = "CASE WHEN sum(amount2, partition_by=city) > 10000 THEN 1 ELSE 0 END"
         resp = await exec_engine.execute(SlayerQuery(
-            source_model=ModelExtension.model_validate({
+            source_model="orders",
+            extensions=[ModelExtension.model_validate({
                 "source_name": "orders",
                 "columns": [{"name": "amount2", "sql": "amount * 2", "type": "DOUBLE"}],
-            }),
+            })],
             dimensions=["region", {"expression": band, "name": "band"}],
             measures=[ModelMeasure(formula="sum(amount)", name="s")],
         ))

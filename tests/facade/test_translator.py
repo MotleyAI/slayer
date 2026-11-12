@@ -2449,8 +2449,9 @@ def test_left_join_dynamic_when_parent_has_no_join_to_target(dialect, caplog) ->
     with caplog.at_level(logging.WARNING, logger="slayer.facade.translator"):
         result = translate(sql=sql, catalog=cat, dialect=dialect)
     assert isinstance(result, QueryResult)
-    assert isinstance(result.query.source_model, ModelExtension)
-    ext = result.query.source_model
+    assert result.query.source_model == "orders"
+    (ext,) = result.query.extensions or []
+    assert isinstance(ext, ModelExtension)
     assert ext.source_name == "orders"
     assert ext.joins is not None
     assert len(ext.joins) == 1
@@ -2487,8 +2488,8 @@ def test_left_join_dynamic_supports_filter_on_joined_col(dialect, caplog) -> Non
     with caplog.at_level(logging.WARNING, logger="slayer.facade.translator"):
         result = translate(sql=sql, catalog=cat, dialect=dialect)
     assert isinstance(result, QueryResult)
-    assert isinstance(result.query.source_model, ModelExtension)
-    assert result.query.source_model.source_name == "orders"
+    assert result.query.source_model == "orders"
+    assert [e.source_name for e in result.query.extensions or []] == ["orders"]
     assert result.query.filters == ["stores.name = 'Acme'"]
 
 

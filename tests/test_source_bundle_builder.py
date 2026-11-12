@@ -17,6 +17,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.engine.extensions import apply_query_extensions
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.yaml_storage import YAMLStorage
 import slayer.engine.bundle_builder
@@ -157,8 +158,9 @@ class TestSourceModelShapes:
             columns=[Column(name="discount", type=DataType.DOUBLE)],
             joins=[],
         )
-        query = SlayerQuery(source_model=ext)
-        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
+        query = SlayerQuery(source_model="orders", extensions=[ext])
+        built = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
+        _, bundle = apply_query_extensions(query=query, scope=None, bundle=built)
         assert bundle.source_model is not None
         assert bundle.source_model.name == "orders"
         col_names = {c.name for c in bundle.source_model.columns}
@@ -176,12 +178,14 @@ class TestSourceModelShapes:
     async def test_dict_model_extension_source(self, tmp_path):
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
         query = SlayerQuery.model_validate({
-            "source_model": {
+            "source_model": "orders",
+            "extensions": [{
                 "source_name": "orders",
                 "columns": [{"name": "discount", "type": "DOUBLE"}],
-            },
+            }],
         })
-        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
+        built = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
+        _, bundle = apply_query_extensions(query=query, scope=None, bundle=built)
         assert bundle.source_model is not None
         assert bundle.source_model.name == "orders"
         assert "discount" in {c.name for c in bundle.source_model.columns}
@@ -364,10 +368,11 @@ class TestMultiStage:
         )
         sibling = SlayerQuery(
             name="aux",
-            source_model=ModelExtension(
+            source_model="bare",
+            extensions=[ModelExtension(
                 source_name="bare",
                 joins=[ModelJoin(target_model="audit", join_pairs=[["audit_id", "id"]])],
-            ),
+            )],
             dimensions=["status"],
         )
         root = SlayerQuery(source_model="orders", dimensions=["status"])

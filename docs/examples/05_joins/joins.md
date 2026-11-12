@@ -34,7 +34,7 @@ If that is not the desired behavior, add a filter `B.C.column1 = D.C.column1` to
 
 ## Dynamic joins
 
-Finally, it’s worth reminding the reader that joins can be added to a model at query time via [dynamic model extension](../../concepts/queries.md#modelextension). This is especially useful to join models that are themselves dynamically created as the result of a query (see the upcoming post on how that mechanism enables powerful and elegant multi-stage query semantics).
+Finally, it’s worth reminding the reader that joins can be added to a model at query time via [query extensions](../../concepts/queries.md#query-extensions). This is especially useful to join models that are themselves dynamically created as the result of a query (see the upcoming post on how that mechanism enables powerful and elegant multi-stage query semantics).
 
 ---
 

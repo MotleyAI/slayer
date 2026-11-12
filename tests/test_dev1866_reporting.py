@@ -64,10 +64,11 @@ class TestExplicitVsInferredReporting:
 
     async def test_explicit_extension_reports_source_name(self, engine) -> None:
         resp = await engine.execute(SlayerQuery(
-            source_model=ModelExtension.model_validate({
+            source_model="customers",
+            extensions=[ModelExtension.model_validate({
                 "source_name": "customers",
                 "columns": [{"name": "region_copy", "sql": "region"}],
-            }),
+            })],
             dimensions=["region"],
         ))
         assert resp.population == "customers"

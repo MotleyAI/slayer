@@ -97,8 +97,9 @@ class Memory(BaseModel):
     @model_validator(mode="wrap")
     @classmethod
     def _name_nested_migrations(cls, data: Any, handler: ModelWrapValidatorHandler["Memory"]) -> "Memory":
-        memory_id = data.get("id") if isinstance(data, dict) else None
-        with migrating_document(None if memory_id is None else str(memory_id)):
+        is_dict = isinstance(data, dict)
+        memory_id = data.get("id") if is_dict else None
+        with migrating_document(None if memory_id is None else str(memory_id), stored=is_dict and "version" in data):
             return handler(data)
 
     @model_validator(mode="before")

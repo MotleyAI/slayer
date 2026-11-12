@@ -39,7 +39,7 @@ A query then asks for `sum(revenue)` (aggregate the `revenue` column), `aov` (th
 | `hidden` | bool | No | Hide from listings (still queryable by name and joinable). Set automatically at ingest for recognised ELT/migration internals — see [Recognised internals](../reference/cli.md#recognised-internals) |
 | `access_tags` | list[str] | No | Access groups: through an [access-filtered store](../configuration/storage.md#access-filtered-storage) a caller sees the model only if it is untagged or shares a tag, else it reads as deleted (unlike `hidden`, which curates listings for everyone) |
 | `meta` | dict | No | Arbitrary JSON metadata for caller bookkeeping. Ingestion writes `internal_table: <tool>` on auto-hidden internals |
-| `version` | int | No | Schema version stamp (currently `18`) |
+| `version` | int | No | Schema version stamp (currently `19`) |
 
 ## Source modes
 
@@ -592,7 +592,7 @@ Query results use `model_name.column_name` keys. Aggregations map to keys: `sum(
 
 ## Schema versioning
 
-Every persisted SLayer entity (`SlayerModel`, `SlayerQuery`, `DatasourceConfig`, `Memory`) carries a `version: int` field — currently `18` for `SlayerModel`, `9` for `SlayerQuery`, `3` for `DatasourceConfig`, `7` for `Memory`. Behaviour:
+Every persisted SLayer entity (`SlayerModel`, `SlayerQuery`, `DatasourceConfig`, `Memory`) carries a `version: int` field — currently `19` for `SlayerModel`, `11` for `SlayerQuery`, `3` for `DatasourceConfig`, `8` for `Memory`. Behaviour:
 
 - **On save**, SLayer always writes the current schema version.
 - **On load**, an older `version` triggers a chain of pure dict→dict converters before Pydantic validation. Hand-edited and older files keep working as the schema evolves.

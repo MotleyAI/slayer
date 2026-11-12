@@ -624,6 +624,28 @@ class ModelJoin(BaseModel):
     # Optional human/agent metadata; additive, so no schema-version bump needed.
     description: str | None = None
     meta: dict[str, Any] | None = None
+    # Runtime-only: a query object's local aliases of this edge.
+    _aliases: tuple[str, ...] = PrivateAttr(default=())
+    # Runtime-only: declared by a query extension, not stored.
+    _query_local: bool = PrivateAttr(default=False)
+
+    @property
+    def aliases(self) -> tuple[str, ...]:
+        return self._aliases
+
+    @property
+    def query_local(self) -> bool:
+        return self._query_local
+
+    def with_aliases(self, aliases: tuple[str, ...]) -> "ModelJoin":
+        out = self.model_copy()
+        out._aliases = aliases
+        return out
+
+    def as_query_local(self) -> "ModelJoin":
+        out = self.model_copy()
+        out._query_local = True
+        return out
 
     @field_validator("name")
     @classmethod
@@ -740,7 +762,8 @@ class SlayerModel(BaseModel):
     @model_validator(mode="wrap")
     @classmethod
     def _name_nested_migrations(cls, data: Any, handler: ModelWrapValidatorHandler["SlayerModel"]) -> "SlayerModel":
-        with migrating_document(data.get("name") if isinstance(data, dict) else None):
+        is_dict = isinstance(data, dict)
+        with migrating_document(data.get("name") if is_dict else None, stored=is_dict and "version" in data):
             return handler(data)
 
     @model_validator(mode="before")
@@ -803,8 +826,12 @@ class SlayerModel(BaseModel):
     # Runtime-only: a list child's ``(parent model, list column)``.
     _list_of: tuple[str, str] | None = PrivateAttr(default=None)
     # Runtime-only: the list children built from this model (``join_walker.list_child``).
-    _list_children: dict[tuple[str, str | None, str, DataType | None], "SlayerModel"] = PrivateAttr(
+    _list_children: dict[tuple[str, str | None, str, DataType | None, bool], "SlayerModel"] = PrivateAttr(
         default_factory=dict)
+    # Runtime-only: the column and measure names a query extension added.
+    _query_local: frozenset[str] = PrivateAttr(default=frozenset())
+    # Runtime-only: the query's own inline source definition, never a persisted model.
+    _inline: bool = PrivateAttr(default=False)
 
     @field_validator("filters")
     @classmethod
@@ -988,6 +1015,44 @@ class SlayerModel(BaseModel):
     def with_unrelated(self, names: frozenset[str]) -> "SlayerModel":
         out = self.model_copy()
         out._unrelated = names
+        return out
+
+    @property
+    def query_local_names(self) -> frozenset[str]:
+        """The column and measure names a query extension added to this model."""
+        return self._query_local
+
+    def with_query_local(self, names: frozenset[str]) -> "SlayerModel":
+        out = self.model_copy()
+        out._query_local = names
+        return out
+
+    @property
+    def inline(self) -> bool:
+        """Whether this is a query's inline source definition rather than a persisted model."""
+        return self._inline
+
+    def as_inline(self) -> "SlayerModel":
+        out = self.model_copy()
+        out._inline = True
+        return out
+
+    @property
+    def extended(self) -> bool:
+        """Whether a query extension added anything to this model."""
+        return bool(self._query_local) or any(j.query_local or j.aliases for j in self.joins)
+
+    def definition_view(self) -> "SlayerModel":
+        """This model as stored definitions see it: without anything a query extension added."""
+        if not self.extended:
+            return self
+        local = self._query_local
+        out = self.model_copy(update={
+            "columns": [c for c in self.columns if c.name not in local],
+            "measures": [m for m in self.measures if m.name not in local],
+            "joins": [j.with_aliases(()) if j.aliases else j for j in self.joins if not j.query_local],
+        })
+        out._query_local = frozenset()
         return out
 
     @property

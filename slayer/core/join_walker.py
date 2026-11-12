@@ -55,6 +55,7 @@ __all__ = [
     "join_key_columns",
     "matching_edges",
     "neighbors",
+    "orient_join",
     "observe_traversals",
     "provably_to_one",
     "resolve_hop",
@@ -101,6 +102,8 @@ class OrientedJoin(BaseModel):
     product: ProductKind | None = None
     # A list column's hop between its model and its element child (the list column's name); ``None`` otherwise.
     lateral: str | None = None
+    # A query object's local aliases of the edge.
+    aliases: tuple[str, ...] = ()
 
 
 _traversals: ContextVar[Optional[Dict[str, bool]]] = ContextVar(
@@ -148,20 +151,25 @@ def reverse_token(edge: OrientedJoin) -> str:
     return edge.name or edge.source_spelling or edge.source_model
 
 
-def _spellings(edge: OrientedJoin) -> tuple[str | None, str | None, str | None]:
-    """An edge's names by precedence: edge name, a query stage's spelling (it shadows a same-named model), model name."""
-    return edge.name, edge.target_spelling, edge.target_model if edge.target_spelling is None else None
+def _spellings(edge: OrientedJoin) -> tuple[tuple[str, ...], ...]:
+    """An edge's names by precedence: edge name, a query stage's spelling (it shadows a same-named model), model name
+    (never a stage's minted identity), then its query-local aliases."""
+    model = edge.target_model if edge.target_spelling is None else None
+    return (
+        tuple(n for n in (edge.name,) if n is not None), tuple(n for n in (edge.target_spelling,) if n is not None),
+        tuple(n for n in (model,) if n is not None), tuple(edge.aliases),
+    )
 
 
 def matching_edges(edges: list[OrientedJoin], token: str, *, quoted: bool = False) -> list[OrientedJoin]:
     """The edges ``token`` names, by precedence (``_spellings``): an exact spelling at any precedence, else (unquoted)
-    a case-insensitive one — never a stage's minted identity."""
+    a case-insensitive one."""
     for exact in (True,) if quoted else (True, False):
-        for tier in range(3):
-            names = [n for e in edges if (n := _spellings(e)[tier]) is not None]
+        for tier in range(4):
+            names = [n for e in edges for n in _spellings(e)[tier]]
             found = match_name(name=token, declared=names, quoted=exact)
             if found is not None:
-                return [e for e in edges if _spellings(e)[tier] == found]
+                return [e for e in edges if found in _spellings(e)[tier]]
     return []
 
 
@@ -193,7 +201,16 @@ def _orient(
         declaring_model=declaring,
         source_spelling=spellings.get(from_model),
         target_spelling=spellings.get(to_model),
+        aliases=join.aliases,
     )
+
+
+def orient_join(*, join: ModelJoin, declaring: SlayerModel, other: SlayerModel | None, from_model: str) -> OrientedJoin:
+    """``join`` (declared on ``declaring``, reaching ``other``) oriented so its source is ``from_model``."""
+    spellings = {declaring.name: declaring.explicit_spelling}
+    if other is not None:
+        spellings[other.name] = other.explicit_spelling
+    return _orient(join=join, declaring=declaring.name, from_model=from_model, spellings=spellings)
 
 
 def _product_edge(model: SlayerModel) -> OrientedJoin:
@@ -292,7 +309,7 @@ def list_child(*, parent: SlayerModel, column: Column) -> SlayerModel:
     """The element child of ``parent``'s list ``column``: one row per non-NULL element, its value ``value``.
     Cached on ``parent`` under everything the child is built from, so a copied or edited parent never reuses a
     stale one."""
-    key = (parent.name, parent.data_source, column.name, column.element_type)
+    key = (parent.name, parent.data_source, column.name, column.element_type, parent.inline)
     cached = parent._list_children.get(key)
     if cached is not None:
         return cached
@@ -303,6 +320,7 @@ def list_child(*, parent: SlayerModel, column: Column) -> SlayerModel:
         columns=[Column(name=LIST_ELEMENT_COLUMN, type=column.element_type or DataType.UNKNOWN)],
     ).model_copy(update={"name": name, "sql_table": name, "data_source": parent.data_source})
     child._list_of = (parent.name, column.name)
+    child._inline = parent.inline
     return parent._list_children.setdefault(key, child)
 
 

@@ -481,7 +481,8 @@ def test_query_v1_to_v2_inline_model_extension() -> None:
         "fields": [{"formula": "revenue:sum"}],
     })
     assert q.version == mig.CURRENT_VERSIONS["SlayerQuery"]
-    sm = q.source_model
+    assert q.source_model == "orders"
+    (sm,) = q.extensions or []
     assert isinstance(sm, ModelExtension)
     assert sm.source_name == "orders"
     assert [c.name for c in sm.columns or []] == ["region", "revenue"]
@@ -559,7 +560,8 @@ def test_model_v1_to_v2_source_queries_with_inline_extension() -> None:
     })
     inner = m.source_queries[0]
     assert isinstance(inner, SlayerQuery)
-    src = inner.source_model
+    assert inner.source_model == "orders"
+    (src,) = inner.extensions or []
     assert isinstance(src, ModelExtension)
     # Merged into columns (status from dimensions + revenue from measures)
     assert sorted(c.name for c in src.columns or []) == ["revenue", "status"]

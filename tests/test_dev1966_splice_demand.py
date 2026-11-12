@@ -198,8 +198,8 @@ class TestModeAVariables:
                   _wrap("wrap_a", 20), _wrap("wrap_b", 30)]
         s1 = query(name="s1", source_model="wrap_a", dimensions=["customer_id"], measures=[m("sum(r)", "a")])
         s2 = query(name="s2", source_model="wrap_b", dimensions=["customer_id"], measures=[m("sum(r)", "b")])
-        root = query(source_model={"source_name": "s1", "joins": [
-            {"target_model": "s2", "join_pairs": [["customer_id", "customer_id"]]}]},
+        root = query(source_model="s1", extensions=[{"source_name": "s1", "joins": [
+            {"target_model": "s2", "join_pairs": [["customer_id", "customer_id"]]}]}],
             dimensions=["customer_id", "a", "s2.b"])
         async with dev1966_engine("sqlite", models=models) as e:
             with pytest.raises(ValueError, match="floored_rev"):
