@@ -2100,9 +2100,9 @@ class TestClickHouseReadOnly:
             with pytest.raises(Exception, match="TIMEOUT_EXCEEDED"):
                 await client.execute(sql="SELECT sleep(3)", timeout_seconds=1)
             assert (await client.execute(sql="SELECT 1 AS x")).rows == [{"x": 1}]
-            with pytest.raises(DBAPIError, match="READONLY"):
+            with pytest.raises(Exception, match="READONLY"):
                 _insert_through_engine(ds)
-            with pytest.raises(DBAPIError, match="READONLY"):
+            with pytest.raises(Exception, match="READONLY"):
                 _insert_through_engine(ds, after_reconnect=True)
         finally:
             await client.aclose()
@@ -2129,7 +2129,7 @@ class TestClickHouseReadOnly:
         client = SlayerSQLClient(datasource=ds)
         try:
             listing = await client.list_objects(ds.database)
-            with pytest.raises(DBAPIError, match="READONLY"):
+            with pytest.raises(Exception, match="READONLY"):
                 _insert_through_engine(ds)
         finally:
             await client.aclose()

@@ -240,6 +240,7 @@ def test_execute_sync_releases_a_duckdb_file(tmp_path: Path) -> None:
         ("sqlite:///file://localhost/abs/c.db?uri=true", "file", "/abs/c.db"),
         ("sqlite:///file:rel.db", "file", "file:rel.db"),
         ("sqlite:///file::memory:?uri=true", "memory", None),
+        ("sqlite:///file:reports:memory:.db?uri=true", "file", "reports:memory:.db"),
         ("duckdb:///md:analytics", "remote", None),
         ("duckdb://", "memory", None),
         ("postgresql+psycopg://u@h/d", "remote", None),

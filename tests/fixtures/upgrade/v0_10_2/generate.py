@@ -5,6 +5,7 @@
 """
 
 import asyncio
+import importlib
 import json
 import shutil
 import subprocess
@@ -19,12 +20,14 @@ import slayer
 
 from slayer.core.models import Aggregation, AggregationParam, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.base import StorageBackend
-from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
+
+# 0.10.2's modules; this repo's of those names only point at their 2.0 homes.
+_engine_factory = importlib.import_module("slayer.sql.engine_factory")
+ingest_datasource_idempotent = importlib.import_module("slayer.engine.ingestion").ingest_datasource_idempotent
 
 OUT = Path(__file__).resolve().parent
 DB = OUT / "data.duckdb"
@@ -160,9 +163,13 @@ def _seed_db() -> None:
 
 def _seed_lite() -> None:
     LITE_DB.unlink(missing_ok=True)
-    with transaction(LITE_DB) as conn:
-        conn.execute("CREATE TABLE sales (id INTEGER PRIMARY KEY, status TEXT, amount REAL)")
-        conn.executemany("INSERT INTO sales VALUES (?,?,?)", [(o[0], o[2], o[4]) for o in _ORDERS])
+    datasource = DatasourceConfig(name=LITE, type="sqlite", database=str(LITE_DB))
+    try:
+        with _engine_factory.get_engine(datasource).begin() as conn:
+            conn.exec_driver_sql("CREATE TABLE sales (id INTEGER PRIMARY KEY, status TEXT, amount REAL)")
+            conn.exec_driver_sql("INSERT INTO sales VALUES (?,?,?)", [(o[0], o[2], o[4]) for o in _ORDERS])
+    finally:
+        _engine_factory.invalidate_engine(datasource)
 
 
 def _import_cube(*, storage_path: Path) -> None:
@@ -185,7 +192,7 @@ async def _populate(storage: StorageBackend) -> None:
     await storage.set_datasource_priority([SHOP, CUBE, LITE])
     shop = await storage.get_datasource(SHOP)
     assert shop is not None
-    await ingest_datasource_idempotent(datasource=shop, storage=storage)  # pyright: ignore[reportCallIssue] — the 0.10.2 API this script runs against
+    await ingest_datasource_idempotent(datasource=shop, storage=storage)
     orders = await storage.get_model("orders", data_source=SHOP)
     assert orders is not None
     orders.aggregations.append(Aggregation(
@@ -195,7 +202,7 @@ async def _populate(storage: StorageBackend) -> None:
     await storage.save_model(orders)
     lite = await storage.get_datasource(LITE)
     assert lite is not None
-    await ingest_datasource_idempotent(datasource=lite, storage=storage)  # pyright: ignore[reportCallIssue] — the 0.10.2 API this script runs against
+    await ingest_datasource_idempotent(datasource=lite, storage=storage)
     sales = await storage.get_model("sales", data_source=LITE)
     assert sales is not None
     sales.aggregations.append(Aggregation(

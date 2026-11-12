@@ -15,7 +15,7 @@ from slayer.core.models import DatasourceConfig
 from slayer.database import client as sql_client
 from slayer.database import engine_factory
 from slayer.database.client import SessionStatementRefused, SlayerSQLClient, SqlClientError
-from slayer.sql.dialects import PostgresDialect, TsqlDialect
+from slayer.sql.dialects import PostgresDialect, TsqlDialect, dialect_for_ds_type
 from slayer.sql.dialects.base import ExplainStatements
 
 _NETWORKED = {
@@ -126,6 +126,52 @@ _READS = [
 def test_reads_run(tmp_path: Path, ds_type: str, sql: str, rows: list[dict[str, Any]]) -> None:
     with _file_backed(tmp_path, ds_type) as client:
         assert client.execute_sync(sql).rows == rows
+
+
+# ---------------------------------------------------------------------------
+# Statements without separators are refused unsent
+# ---------------------------------------------------------------------------
+
+_UNSEPARATED = ["SELECT 1 AS x TRUNCATE TABLE t", "SELECT 1 AS x DROP TABLE t", "SELECT 1 AS x DBCC SHRINKDATABASE(0)"]
+
+
+@pytest.mark.usefixtures("nothing_sent")
+@pytest.mark.parametrize("sql", _UNSEPARATED)
+def test_statements_without_separators_are_refused(sql: str) -> None:
+    client = SlayerSQLClient(DatasourceConfig(name="ds", type="sqlserver", connection_string=_NETWORKED["sqlserver"]))
+    with pytest.raises(_write_refused()):
+        client.execute_sync(sql)
+    executing = client.execute(sql)
+    with pytest.raises(_write_refused()):
+        asyncio.run(executing)
+
+
+@pytest.mark.parametrize(
+    ("ds_type", "sql"),
+    [
+        ("duckdb", "FROM t"),
+        ("postgres", "SHOW statement_timeout"),
+        ("clickhouse", "SHOW TABLES"),
+        ("postgres", "VALUES (1)"),
+        ("postgres", "DESCRIBE t"),
+        ("postgres", "(SELECT 1) UNION ALL (SELECT 2)"),
+    ],
+)
+def test_parsed_reads_are_admitted(ds_type: str, sql: str) -> None:
+    assert sql_client.admit_statement(sql, dialect=dialect_for_ds_type(ds_type)) is False
+
+
+@pytest.mark.parametrize(
+    ("ds_type", "sql"),
+    [
+        ("postgres", "TABLE t"), ("duckdb", "SUMMARIZE t"), ("postgres", "SELECT FROM WHERE"),
+        ("mysql", "SHOW TABLES INTO OUTFILE '/tmp/x'"), ("clickhouse", "SHOW TABLES INTO OUTFILE 'x'"),
+    ],
+)
+def test_texts_not_parsed_as_reads_are_refused(ds_type: str, sql: str) -> None:
+    dialect, refused = dialect_for_ds_type(ds_type), _write_refused()
+    with pytest.raises(refused):
+        sql_client.admit_statement(sql, dialect=dialect)
 
 
 # ---------------------------------------------------------------------------

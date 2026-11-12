@@ -64,6 +64,7 @@
   - refuse non-`clickhouse+http` drivers.
 
   Verified by 1.6, then 1.7 in CI.
+- [x] 2.6 Postgres refuses drivers other than psycopg, psycopg2, asyncpg and pg8000 (design decision 24). Verified by the "Another Postgres driver is refused" test.
 
 ## 3. Engine doors and client
 
@@ -77,6 +78,7 @@
 
   Verified by 1.4.
 - [x] 3.4 `SlayerSQLClient.execute_sync` releases idle local-file connections at the end of its sync-driver branch, as the bridged branch does. Verified by 1.5.
+- [x] 3.5 `admit_statement` classifies reads by parse (design decision 23); `admit_statement` joins `VALIDATORS` in `tests/_emitted_reparse_law.py`. Verified by 1.4 and the "Statements without separators are refused" test.
 
 ## 4. Architecture and docs
 

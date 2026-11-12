@@ -12,9 +12,13 @@ Usage:
 import sys
 from datetime import datetime
 from decimal import Decimal
-from urllib.parse import urlparse
 
 import sqlalchemy as sa
+
+try:
+    import snowflake.connector as snowflake_connector
+except ImportError:  # only the Snowflake connection_name URL needs it
+    snowflake_connector = None
 
 
 DROP_SQL = """
@@ -319,30 +323,21 @@ ORDERS = [
 ]
 
 
+def _writable_engine(connection_string: str) -> sa.Engine:
+    """A plain driver engine: SLayer's own engines connect read-only."""
+    url = sa.engine.make_url(connection_string)
+    connection_name = url.query.get("connection_name")
+    if url.get_backend_name() == "snowflake" and connection_name:
+        connector = snowflake_connector
+        if connector is None:
+            raise SystemExit("snowflake-connector-python is required for a connection_name URL")
+        return sa.create_engine("snowflake://", creator=lambda: connector.connect(connection_name=connection_name))
+    return sa.create_engine(connection_string)
+
+
 def seed(connection_string: str) -> None:
-    """Create tables and insert seed data.
-
-    Goes through ``engine_factory.get_engine`` (not raw
-    ``sa.create_engine``) so dialect runtime hooks fire — in particular
-    Snowflake's ``creator=`` bridge for the
-    ``snowflake://?connection_name=<name>`` sentinel URL and the SQLite
-    UDF registration listener.
-    """
-    from slayer.core.models import DatasourceConfig  # ALLOW(import-not-top): verify scripts import this module's data without slayer installed
-    from slayer.database import engine_factory  # ALLOW(import-not-top): verify scripts import this module's data without slayer installed
-
-    # Build a minimal DatasourceConfig from the URL so the dialect
-    # strategy class can route correctly.
-    parsed = urlparse(connection_string)
-    ds_type = parsed.scheme.split("+", 1)[0].lower()
-    if ds_type == "postgresql":
-        ds_type = "postgres"
-    ds = DatasourceConfig(
-        name="seed_target",
-        type=ds_type,
-        connection_string=connection_string,
-    )
-    engine = engine_factory.get_engine(ds)
+    """Create tables and insert seed data."""
+    engine = _writable_engine(connection_string)
 
     create_sql = _get_create_sql(connection_string)
     trino = _is_trino(connection_string)

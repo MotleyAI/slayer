@@ -1,13 +1,15 @@
 ## ADDED Requirements
 
 ### Requirement: The default client sends only reads
-The default client's `execute` SHALL refuse a text, with a typed SQL-client error naming the leading
-keywords of the refused statement, when any of its statements:
-- leads with a keyword other than `SELECT`, `WITH`, `VALUES`, `TABLE`, `SHOW`, `DESCRIBE` or `DESC`,
-  and is not an opening parenthesis;
-- holds `INSERT`, `UPDATE`, `DELETE`, `MERGE` or `INTO` as a keyword.
+The default client's `execute` SHALL refuse a text, with a typed SQL-client error, unless it parses
+in its datasource's SQL dialect into statements that each:
+- are a query, `VALUES`, `SHOW` or `DESCRIBE`;
+- hold no statement that changes data or schema, and no `INTO`.
 
-This SHALL hold in any letter case, whether the statement is the first of the text or a later one.
+The error SHALL name the refused statement's leading keyword where the text's statements can be
+told apart, and otherwise say the text cannot be classified. This SHALL hold in any letter case,
+whether the statement is the first of the text or a later one, and whether or not statements are
+separated by `;`.
 A refused text SHALL send nothing to the database. `EXPLAIN` SHALL be refused by `execute`; a plan
 is obtained through the client's explain operation. A keyword inside a string literal, a quoted
 identifier or a comment SHALL NOT count.
@@ -34,6 +36,11 @@ effects of a function or procedure called inside an admitted statement are not d
 #### Scenario: A trailing write is refused
 - **WHEN** a default client executes `SELECT 1; DELETE FROM t`
 - **THEN** the text is refused with the typed SQL-client error and nothing is sent
+
+#### Scenario: Statements without separators are refused
+- **WHEN** a SQL Server datasource's default client executes `SELECT 1 AS x TRUNCATE TABLE t`,
+  `SELECT 1 AS x DROP TABLE t` and `SELECT 1 AS x DBCC SHRINKDATABASE(0)`
+- **THEN** each is refused with the typed SQL-client error and nothing is sent
 
 #### Scenario: Write keywords in literals and comments do not count
 - **WHEN** a default client executes `SELECT 'DELETE' AS "INSERT"`, and `-- DROP TABLE t` followed
@@ -88,3 +95,31 @@ not detected.
 - **WHEN** a default client executes `SELECT 'SET x' AS "USE"`, `-- BEGIN` followed by `SELECT 1`,
   and `WITH a AS (SELECT 1 AS x) SELECT x FROM a`
 - **THEN** each runs and returns its rows
+
+### Requirement: Client failures are typed
+
+A client SHALL report an unreachable database as an unavailable failure, rejected credentials as an authentication failure, and a metadata read of a schema or table that does not exist as a not-found failure. Any other statement failure SHALL reach the caller as the database's own error with its message unchanged. Schema drift SHALL treat an object as deleted only when it is absent from a successful listing of its schema; a failure reading a listed object, including a not-found failure, SHALL yield no verdict for it. A row-level-security column check that cannot be confirmed SHALL refuse the query.
+
+#### Scenario: An unreachable client refuses validation
+- **WHEN** models are validated through a client that reports its database unavailable
+- **THEN** validation fails with an unavailable error and reports no model as deleted
+
+#### Scenario: A table missing from the listing is drift
+- **WHEN** a model's table is absent from a successful listing of its schema
+- **THEN** validation reports the model's table as deleted
+
+#### Scenario: A listed but unreadable table yields no verdict
+- **WHEN** a model's table appears in the listing but reading its columns fails with a not-found failure, a permission error, or an unsupported-reflection error
+- **THEN** validation reports no drift verdict for that model
+
+#### Scenario: An unconfirmable policy column refuses the query
+- **WHEN** a query runs under a column-scoped session policy and the client reports its database unavailable while checking the column
+- **THEN** the query is refused
+
+#### Scenario: A database error reaches the caller unchanged
+- **WHEN** a statement the client admits fails in the database, such as a read of a table that does not exist
+- **THEN** the caller receives that error with the database's message unchanged
+
+#### Scenario: Rejected credentials are reported as such
+- **WHEN** the default client's database rejects its credentials
+- **THEN** the client raises an authentication failure and discards its cached connections

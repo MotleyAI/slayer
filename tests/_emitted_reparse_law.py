@@ -29,6 +29,7 @@ VALIDATORS: tuple[tuple[str, str], ...] = (
     ("slayer.sql.scope_check", "assert_dependency_ordered_ctes"),
     ("slayer.sql.scope_check", "check_scope_closed"),
     ("slayer.sql.naming", "assert_unique_cte_names"),
+    ("slayer.database.client", "admit_statement"),
 )
 
 #: The single finishing render; its result is recorded.

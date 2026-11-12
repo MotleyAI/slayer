@@ -55,14 +55,15 @@ Presto translates the portable library as Trino does; Redshift, Databricks, Spar
 
 SLayer only reads your data. Its default SQL client sends only statements it can classify as reads
 (see [SQL Clients](configuration/sql-clients.md#the-contract)), and on every backend below that
-allows it, the database itself refuses writes on SLayer's connections, sync and async alike.
+allows it, the database itself refuses writes on the connections SLayer opens, sync and async alike;
+an engine you pass to a client keeps its own settings.
 
 | Backend | Read-only | How |
 |---|---|---|
 | **SQLite** (file) | Yes | `PRAGMA query_only = ON` on every connection, covering attached and temporary databases |
 | **DuckDB** (file) | Yes | The file is opened `read_only` |
 | **SQLite / DuckDB** (in memory) | No | Stays writable |
-| **Postgres** | Yes | `default_transaction_read_only` from connection start (psycopg, psycopg2, asyncpg, pg8000), kept alongside the URL's own `options`; on a `transaction_pooler` datasource each transaction begins `READ ONLY` instead |
+| **Postgres** | Yes | `default_transaction_read_only` from connection start (psycopg, psycopg2, asyncpg, pg8000), kept alongside the URL's own `options`; on a `transaction_pooler` datasource each transaction begins `READ ONLY` instead. Other drivers are refused |
 | **MySQL / MariaDB** | Yes | The session is made read-only by the connection's `init_command`; a URL that sets its own `init_command` is refused |
 | **ClickHouse** | Yes | Each request carries `readonly = 2` when the user's own level is 0; a user at 1 or 2 is already read-only. Only the `clickhouse+http` driver is accepted |
 | **SQL Server, Snowflake, BigQuery, Trino, Presto, Athena, Databricks, Spark, Oracle** | No | No connection-level read-only mode |

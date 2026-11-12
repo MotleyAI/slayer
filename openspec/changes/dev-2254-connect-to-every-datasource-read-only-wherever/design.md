@@ -68,9 +68,7 @@ Principles that bind this change:
 - Reflection-first use, reconnects and concurrent first checkouts are all covered, because every connection passes the listener.
 - The per-engine profile cache moves out of `client.py` into a module that both `engine_factory` and `client` import, since `engine_factory` cannot import `client`.
 
-**Client admission.** `admit_statement` refuses a text with a new typed `WriteStatementRefused` (a `SqlClientError`) when any statement's lead is outside the read leads, or when it holds a write keyword. Two changes:
-- `EXPLAIN` leaves the read leads.
-- `INTO` joins the write tokens (`SELECT … INTO`).
+**Client admission.** `admit_statement` refuses a text with a new typed `WriteStatementRefused` (a `SqlClientError`) unless sqlglot parses it, in the datasource's dialect, into statements that each have a read root (a query, `VALUES`, `DESCRIBE`, `SHOW`, or a `Command` sqlglot reads as `SHOW`) and hold no DML, DDL, `INTO` or `Command` node. The session rule stays token-based. The error names the refused statement's leading keyword when the parsed statements line up with the `;`-separated ones, and otherwise says the text cannot be classified. The parse only classifies and is never re-rendered, so `admit_statement` joins the emitted-reparse law's validators.
 
 A datasource classified as in-memory skips the write rule but keeps the session rule. `explain()` checks its plan statement: the dialect's EXPLAIN prefix followed by an admitted statement, or, for a session-mode dialect, an admitted statement. `writes` keeps driving commit and retry, which now matters only for in-memory databases.
 
@@ -98,14 +96,17 @@ A datasource classified as in-memory skips the write rule but keeps the session 
 18. **Postgres mechanism:** startup `default_transaction_read_only` when direct (it holds under autocommit; verified on every driver), and the `postgresql_readonly` execution option behind a pooler (`BEGIN READ ONLY`, verified on psycopg, psycopg2, asyncpg and async psycopg). (default)
 19. **Oracle keeps only the type-probe guard,** since per-statement `SET TRANSACTION READ ONLY` would cost a request. BigQuery's read-only scope is not used. (default)
 20. **A missing local DuckDB or SQLite file is refused before connecting,** rather than an empty file being created. DuckDB already fails natively, and SQLite is aligned with it. (default)
-21. **The read-lead set is otherwise unchanged,** so a DuckDB `FROM t` or a `PRAGMA` is refused (fail closed). (default)
+21. **A read is what sqlglot parses as one,** so a DuckDB `FROM t` is admitted and `PRAGMA`, `SUMMARIZE` and `TABLE t` are refused (fail closed). (default)
 22. **A caller-supplied engine is not modified.** The client refusal still applies to it. (default)
+23. **Classify reads by parse, not by statement leads.** A T-SQL batch needs no `;`, so tokens cannot tell where a statement ends. Options were extending the write keywords (a deny-list that T-SQL commands tokenized as names, such as `DBCC`, still pass), parsing, or documenting the gap. Taken: parse, the only fail-closed option. (user; CodeRabbit review)
+24. **Postgres drivers without a verified read-only mechanism are refused,** as ClickHouse's are. Options were refusing them, adding psycopg2cffi to the psycopg2 sets unverified, or both. Taken: refuse. (user; CodeRabbit review)
 
 ## Risks / Trade-offs
 
 - [DuckDB same-process conflict] A process holding a read-write DuckDB connection to a file SLayer then opens read-only, or the reverse, gets "different configuration". → The sync APIs now release after every call. The demo builder already invalidates the factory engine before writing. Docs say to close your own write connection before SLayer's next call.
 - [Demo reuse path] `ensure_demo_datasource` writes (date shift) after `invalidate_engine`. If a SLayer connection is checked out concurrently, the open fails. → It already raises a clear `SlayerError` there, and the builder runs at startup.
-- [Conservative admission] Some legitimate reads are refused: DuckDB `FROM t`, `SUMMARIZE`, `PRAGMA`. → The typed error names the lead. Callers can rewrite the query as `SELECT`, or use their own driver.
+- [Conservative admission] Some legitimate reads are refused: `SUMMARIZE`, `PRAGMA`, `TABLE t`, and any read sqlglot cannot parse. → The typed error names the lead or says the text cannot be classified. Callers can rewrite the query as `SELECT`, or use their own driver.
+- [Parse cost] One sqlglot parse per `execute`. → Small next to a database round trip.
 - [ClickHouse per-request `readonly = 2`] A settings-profile constraint could reject it. → It fails closed with ClickHouse's error, and is covered by the integration suite.
 - [pg8000 begin swap] It depends on pg8000 honouring a transaction already open on the server. → A unit test against pytest-postgresql pins the statement log.
 - [Existing tests] About ten tests and the v0.10.2 fixture generator write through SLayer-built engines or the default client. → Their seeding moves to raw drivers. pr-tests asks approval per file.

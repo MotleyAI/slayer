@@ -32,6 +32,9 @@ Some cases are refused or exempt:
   engine is built, with a typed error naming the datasource.
 - A ClickHouse connection URL naming a driver other than `clickhouse+http` SHALL be refused when
   the engine is built, with an unsupported-driver error whose hint names `clickhouse+http`.
+- A Postgres connection URL naming a driver other than psycopg, psycopg2, asyncpg or pg8000 SHALL
+  be refused when the engine is built, with an unsupported-driver error whose hint names
+  `postgresql+psycopg`.
 - In-memory SQLite and DuckDB databases SHALL stay writable.
 - An engine a caller supplies SHALL NOT be modified.
 - Datasources of the other types SHALL connect as before. These are SQL Server, Snowflake,
@@ -100,6 +103,10 @@ Some cases are refused or exempt:
 - **WHEN** a ClickHouse datasource's URL names `clickhouse+native` or `clickhouse+asynch` and an
   engine is built for it
 - **THEN** an unsupported-driver error is raised whose hint names `clickhouse+http`
+
+#### Scenario: Another Postgres driver is refused
+- **WHEN** an engine is built for a Postgres datasource whose URL names `psycopg2cffi`
+- **THEN** an unsupported-driver error is raised whose hint names `postgresql+psycopg`
 
 #### Scenario: Every engine builder applies it
 - **WHEN** SLayer builds, for a file-backed DuckDB, a file-backed SQLite and a Postgres datasource,

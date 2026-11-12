@@ -78,6 +78,17 @@ def test_another_clickhouse_driver_is_refused(scheme: str) -> None:
     assert "clickhouse+http" in raised.value.hint
 
 
+def test_another_postgres_driver_is_refused() -> None:
+    ds = DatasourceConfig(name="pg", type="postgres", connection_string="postgresql+psycopg2cffi://u@db.invalid/d")
+    engine_factory.reset_cache()
+    try:
+        with pytest.raises(UnsupportedDriverError) as raised:
+            engine_factory.get_engine(ds)
+    finally:
+        engine_factory.reset_cache()
+    assert "postgresql+psycopg" in raised.value.hint
+
+
 # ---------------------------------------------------------------------------
 # Backends without a read-only mode connect as before
 # ---------------------------------------------------------------------------

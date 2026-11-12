@@ -1055,7 +1055,7 @@ class SqliteDialect(SqlDialect):
         if str(url.query.get("uri", "")).lower() != "true" or not database.startswith(_FILE_URI):
             return LocalDatabase(kind="file", path=database)
         target, _, params = database[len(_FILE_URI):].partition("?")
-        if not target or _MEMORY in target or url.query.get("mode") == "memory" or "mode=memory" in params:
+        if not target or target == _MEMORY or url.query.get("mode") == "memory" or "mode=memory" in params:
             return LocalDatabase(kind="memory")
         if target.startswith("//"):  # ``file://<authority>/<path>``
             target = "/" + target[2:].partition("/")[2]

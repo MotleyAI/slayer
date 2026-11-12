@@ -23,6 +23,7 @@ from sqlglot import expressions as exp
 from sqlglot.dialects.dialect import Dialect as SqlglotDialect
 from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expr
+from sqlglot.expressions.dml import DML
 from sqlglot.tokenizer_core import TokenType
 from sqlalchemy.engine.url import URL, make_url
 from sqlalchemy.exc import ArgumentError
@@ -77,8 +78,11 @@ _SESSION_LEADS = (
     ("END",), ("ABORT",), ("SAVEPOINT",), ("RELEASE",), ("SAVE",), ("XA",),
 )
 
-# Leading keywords of a statement that only reads.
-_READ_LEADS = frozenset({"SELECT", "WITH", "VALUES", "TABLE", "SHOW", "DESCRIBE", "DESC", "("})
+# Statements a read may be.
+_READ_ROOTS = (exp.Query, exp.Values, exp.Show, exp.Describe)
+
+# Nodes that change data or schema, or that sqlglot reads as nothing more than an unknown command.
+_WRITE_NODES = (DML, exp.DDL, exp.Into, exp.Command)
 
 # Tokens that are never keywords: literals and quoted names.
 _LITERAL_TOKENS = frozenset({
@@ -88,46 +92,60 @@ _LITERAL_TOKENS = frozenset({
 })
 
 
-# Keywords that make a statement leading with a read keyword write (a ``WITH``, a ``SELECT … INTO``).
-_WRITE_TOKENS = frozenset({TokenType.INSERT, TokenType.UPDATE, TokenType.DELETE, TokenType.MERGE, TokenType.INTO})
-
-
-def _statement_leads(sql: str, *, dialect: SqlDialect) -> list[tuple[tuple[str, ...], bool]]:
-    """Each ``;``-separated statement's first two words, upper-cased (a literal or quoted name reads as ``""``),
-    and whether it holds a write keyword."""
-    statements: list[tuple[list[str], list[bool]]] = [([], [False])]
+def _statement_leads(sql: str, *, dialect: SqlDialect) -> list[tuple[str, ...]]:
+    """Each ``;``-separated statement's first two words, upper-cased (a literal or quoted name reads as ``""``)."""
+    statements: list[list[str]] = [[]]
     for token in SqlglotDialect.get_or_raise(dialect.sqlglot_name).tokenize(sql):
         if token.token_type is TokenType.SEMICOLON:
-            statements.append(([], [False]))
-            continue
-        words, writes = statements[-1]
-        if len(words) < 2:
-            words.append("" if token.token_type in _LITERAL_TOKENS else token.text.upper())
-        if token.token_type in _WRITE_TOKENS:
-            writes[0] = True
-    return [(tuple(words), writes[0]) for words, writes in statements if words]
+            statements.append([])
+        elif len(statements[-1]) < 2:
+            statements[-1].append("" if token.token_type in _LITERAL_TOKENS else token.text.upper())
+    return [tuple(words) for words in statements if words]
+
+
+def _is_read(statement: Expr, *, glot: SqlglotDialect) -> bool:
+    """A ``SHOW`` reads unless it writes its output to a file (``INTO OUTFILE``)."""
+    if isinstance(statement, exp.Command):
+        rest = glot.tokenize(statement.text("expression"))
+        return statement.name.upper() == "SHOW" and all(token.token_type is not TokenType.INTO for token in rest)
+    if isinstance(statement, exp.Show) and statement.args.get("into_outfile") is not None:
+        return False
+    return isinstance(statement, _READ_ROOTS) and statement.find(*_WRITE_NODES) is None
+
+
+def _non_read_refusal(sql: str, *, leads: list[tuple[str, ...]], dialect: SqlDialect) -> str | None:
+    """Why ``sql`` is not reads only, or ``None`` when every statement parses as a read."""
+    glot = SqlglotDialect.get_or_raise(dialect.sqlglot_name)
+    try:
+        statements = [statement for statement in glot.parse(sql) if statement is not None]
+        refused = next((i for i, statement in enumerate(statements) if not _is_read(statement, glot=glot)), None)
+    except SqlglotError as exc:
+        return f"it cannot classify this text as reads: {str(exc).splitlines()[0]}"
+    if refused is None:
+        return None
+    if len(statements) != len(leads):
+        return "it cannot tell this text's statements apart to classify them as reads"
+    return f"it refuses this {leads[refused][0]} statement and sends only statements that read"
 
 
 def admit_statement(sql: str, *, dialect: SqlDialect, writes_allowed: bool = False) -> bool:
-    """Refuse session and transaction statements in ``sql``, and, unless ``writes_allowed``, any statement but a
-    read; return whether it does anything but read."""
+    """Refuse session and transaction statements in ``sql``, and, unless ``writes_allowed``, any text that does
+    not parse as reads; return whether it does anything but read."""
     try:
         leads = _statement_leads(sql, dialect=dialect)
     except SqlglotError as exc:
         raise SessionStatementRefused(f"The SQL client cannot split this text into statements: {exc}") from exc
-    for lead, _writes in leads:
+    for lead in leads:
         refused = next((words for words in _SESSION_LEADS if lead[:len(words)] == words), None)
         if refused is not None:
             raise SessionStatementRefused(
                 f"The SQL client refuses {' '.join(refused)} statements: session state and transactions "
                 "are managed by SLayer.",
             )
-    writing = [lead for lead, writes in leads if writes or lead[0] not in _READ_LEADS]
-    if writing and not writes_allowed:
-        raise WriteStatementRefused(
-            f"The SQL client refuses this {writing[0][0]} statement: it sends only statements that read.",
-        )
-    return bool(writing)
+    refusal = _non_read_refusal(sql, leads=leads, dialect=dialect)
+    if refusal is not None and not writes_allowed:
+        raise WriteStatementRefused(f"The SQL client refuses this text: {refusal}.")
+    return refusal is not None
 
 
 def admit_explain(statements: ExplainStatements, *, dialect: SqlDialect, writes_allowed: bool = False) -> None:

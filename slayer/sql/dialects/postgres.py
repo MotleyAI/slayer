@@ -181,6 +181,7 @@ class PostgresDialect(SqlDialect):
     json_db_types: ClassVar[frozenset[str]] = frozenset({"JSON", "JSONB"})
     url_scheme: str | None = "postgresql+psycopg"
     install_extra: str | None = "postgres"
+    supported_drivers: ClassVar[frozenset[str] | None] = frozenset({"psycopg", "psycopg2", "asyncpg", "pg8000"})
     extra_drivers: dict[str, str] = Field(default_factory=lambda: {"psycopg": "psycopg"})
     refused_loops: dict[str, frozenset[str]] = Field(
         default_factory=lambda: {"psycopg": frozenset({"ProactorEventLoop"})},
