@@ -36,4 +36,4 @@
 
 ## 7. Finish
 
-- [ ] 7.1 Run the full unit suite, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors against the baseline), `la-arch-check` and `npx -y likec4@1.47.0 validate architecture`. Verify that all are green.
+- [x] 7.1 Run the full unit suite, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors against the baseline), `la-arch-check` and `npx -y likec4@1.47.0 validate architecture`. Verify that all are green.

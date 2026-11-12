@@ -86,9 +86,9 @@ class TestStoredOnlyGate:
         assert out["version"] == 3
 
     def test_current_versions(self):
-        assert mig.CURRENT_VERSIONS["SlayerModel"] == 21
-        assert mig.CURRENT_VERSIONS["SlayerQuery"] == 13
-        assert mig.CURRENT_VERSIONS["Memory"] == 9
+        assert mig.CURRENT_VERSIONS["SlayerModel"] == 22
+        assert mig.CURRENT_VERSIONS["SlayerQuery"] == 14
+        assert mig.CURRENT_VERSIONS["Memory"] == 10
         for key in (("SlayerModel", 12), ("SlayerQuery", 4), ("Memory", 2)):
             assert key in mig._REGISTRY
 

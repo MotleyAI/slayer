@@ -83,7 +83,7 @@ async def _qb_store(tmp_path, ds: DatasourceConfig, backend: str) -> StorageBack
 
 class TestVersion:
     def test_query_version_bumped(self) -> None:
-        assert CURRENT_VERSIONS["SlayerQuery"] == 13
+        assert CURRENT_VERSIONS["SlayerQuery"] == 14
 
 
 class TestQueryDocument:
