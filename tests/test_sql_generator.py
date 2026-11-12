@@ -5828,6 +5828,7 @@ class TestDev1501HiddenFirstLastRender:
                 "measures": ["count(*)"],
                 "dimensions": [ColumnRef(name="status")],
                 "filters": ["last(customers.active_score, customers.signed_up_at) > 50"],
+                "to_many_handling": "broadcast",
             })
             sql = (await engine.execute(query, dry_run=True)).sql
             _assert_valid_sql(sql, dialect=generator.dialect)
@@ -6478,6 +6479,7 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
                 measures=[ModelMeasure(formula="avg(customers.score)")],
                 dimensions=[ColumnRef(name="status")],
                 filters=["warehouse.region = 'US'"],
+                to_many_handling="broadcast",
             )
             sql = (await engine.execute(query, dry_run=True)).sql
             _assert_valid_sql(sql, dialect=generator.dialect)
@@ -7271,6 +7273,7 @@ class TestIsolatedFilteredMeasureCTEs:
             dimensions=[ColumnRef(name="order_id")],
             measures=[ModelMeasure(formula="sum(customers.score)")],
             filters=["warehouse.status = 'ACTIVE'"],
+            to_many_handling="broadcast",
         )
         sql = await _generate(generator, query, orders, extra_models=[customers, warehouse])
 
@@ -10170,6 +10173,7 @@ class TestWindowedMeasureGuards:
             "source_model": "orders",
             "time_dimensions": [TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             "measures": [{"formula": "sum(customers.revenue, window='30d')", "name": "rev_w"}],
+            "to_many_handling": "broadcast",
         })
         # Fails closed with a precise attributability ValueError (the active time dimension is a host column, unreachable from customers).
         with pytest.raises(ValueError, match="attributable from"):
@@ -10370,6 +10374,7 @@ class TestWindowedMeasureGuards:
                 "source_model": "orders",
                 "time_dimensions": td,
                 "measures": [{"formula": "sum(customers.revenue, window='30d')", "name": "rev_w"}],
+                "to_many_handling": "broadcast",
             })
             # Windowed cross-model with an unattributable TD → ValueError.
             bundle, exc, match = _bundle(orders, [customers]), ValueError, "attributable from"

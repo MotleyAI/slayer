@@ -113,7 +113,7 @@ from slayer.ir.elaborated import (
     ConjunctTyping, ElaboratedQuery, ExpressionEntry, PositionVerdict, Term,
 )
 from slayer.ir.bound import BoundFilter, DeclaredMeasure, OrderSpec, WholeListRead, bound_filter_from_key
-from slayer.ir.prebound import PreboundQuery
+from slayer.ir.prebound import ModePolicy, PreboundQuery
 from slayer.ir.terms import (
     Aggregate,
     Broadcast,
@@ -2251,20 +2251,6 @@ def check_association_windowed_ranked(*, alias: str, windowed_or_ranked: bool) -
         )
 
 
-def check_association_root_unique_key(
-    *, alias: str, root_name: str, has_unique_key: bool,
-) -> None:
-    """The association root must declare a unique key to dedup its entities."""
-    if not has_unique_key:
-        raise AssociationError(
-            summary=f"The aggregate needs distinct-entity association, but its root "
-            f"model {root_name!r} declares no primary or unique key to deduplicate "
-            f"entities by.",
-            location=f"measure {alias!r}",
-            suggestion=f"Declare a primary or unique key on {root_name!r}.",
-        )
-
-
 def check_parameter_determined(
     *, alias: str, param_name: str, grain_display: str, determined: bool,
 ) -> None:
@@ -2298,10 +2284,10 @@ def check_reaggregation_no_window(*, alias: str, window_val) -> None:
 
 
 def check_reaggregation_dims_attributable(
-    *, alias: str, mode: str, unattributable_names: Sequence[str],
+    *, alias: str, policy: ModePolicy, unattributable_names: Sequence[str],
 ) -> None:
     """Unattributable outer dims are a hard error under to_many_handling='error'; associate/broadcast resolution stays compiler-side."""
-    if mode != "error" or not unattributable_names:
+    if not policy.refuses or not unattributable_names:
         return
     names = ", ".join(unattributable_names)
     raise ReaggregationError(
@@ -2314,10 +2300,10 @@ def check_reaggregation_dims_attributable(
 
 
 def check_reaggregation_outer_keys_determined(
-    *, alias: str, mode: str, undetermined_keys: Sequence[str], grain_display: str,
+    *, alias: str, policy: ModePolicy, undetermined_keys: Sequence[str], grain_display: str,
 ) -> None:
-    """Explicit outer partition_by keys the operand grain does not determine associate only under 'associate'."""
-    if mode == "associate" or not undetermined_keys:
+    """Explicit outer partition_by keys the operand grain does not determine associate only in an associating mode."""
+    if policy.associates or not undetermined_keys:
         return
     raise PartitionKeyError(
         summary=f"The re-aggregation's explicit outer partition_by key(s) "
@@ -2325,7 +2311,7 @@ def check_reaggregation_outer_keys_determined(
         f"({grain_display}).",
         location=f"measure {alias!r}",
         suggestion="Add them to the inner partition_by= so the operand is grained "
-        "by them, or choose to_many_handling='associate'.",
+        "by them, or omit to_many_handling (or set 'associate').",
     )
 
 

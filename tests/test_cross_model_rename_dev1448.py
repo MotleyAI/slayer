@@ -134,6 +134,7 @@ class TestCrossModelRenameSingleStage:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[ModelMeasure(formula="sum(customers.revenue)", name="cust_rev")],
+            to_many_handling="broadcast",
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
@@ -259,6 +260,7 @@ class TestCrossModelRenameNestedDAG:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[ModelMeasure(formula="sum(customers.revenue) / 100")],
+            to_many_handling="broadcast",
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
@@ -313,6 +315,7 @@ class TestCrossModelStarAndCountDistinctRename:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[ModelMeasure(formula="count(customers.*)", name="cust_n")],
+            to_many_handling="broadcast",
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
@@ -337,6 +340,7 @@ class TestCrossModelStarAndCountDistinctRename:
             measures=[
                 ModelMeasure(formula="count_distinct(customers.id)", name="cust_distinct"),
             ],
+            to_many_handling="broadcast",
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
@@ -367,6 +371,7 @@ class TestCrossModelDeclaredTypeCast:
                 formula="sum(customers.revenue)", name="cust_rev",
                 type=DataType.INT,
             )],
+            to_many_handling="broadcast",
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
@@ -386,6 +391,7 @@ class TestCrossModelDeclaredTypeCast:
             measures=[ModelMeasure(
                 formula="count(customers.*)", name="cust_n", type=DataType.INT,
             )],
+            to_many_handling="broadcast",
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
@@ -429,6 +435,7 @@ class TestCrossModelRenameCollisionGuards:
                 ModelMeasure(formula="sum(customers.revenue)", name="id_count_distinct"),
                 ModelMeasure(formula="count_distinct(customers.id)"),
             ],
+            to_many_handling="broadcast",
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
@@ -542,6 +549,7 @@ class TestCrossModelRenameCollisionGuards:
                 ModelMeasure(formula="count(customers.*)"),
                 ModelMeasure(formula="sum(customers.revenue)", name="_count"),
             ],
+            to_many_handling="broadcast",
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
@@ -611,7 +619,7 @@ class TestCrossModelRenameCollisionGuards:
     ) -> None:
         """A measure renamed ``revenue_sum__div__100`` and an arithmetic
         ``sum(revenue) / 100`` stay distinct; the arithmetic one derives the
-        sanitized ``orders.revenue_sum_100`` key (DEV-1879)."""
+        sanitized ``orders.revenue_sum_100`` key."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
@@ -620,6 +628,7 @@ class TestCrossModelRenameCollisionGuards:
                 ModelMeasure(formula="sum(customers.revenue)", name="revenue_sum__div__100"),
                 ModelMeasure(formula="sum(revenue) / 100"),
             ],
+            to_many_handling="broadcast",
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
@@ -752,6 +761,7 @@ class TestCrossModelRenameLabelAndType:
                     type=DataType.INT,
                 ),
             ],
+            to_many_handling="broadcast",
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
@@ -783,6 +793,7 @@ class TestCrossModelRenameOrderBy:
             dimensions=[ColumnRef(name="status")],
             measures=[ModelMeasure(formula="sum(customers.revenue)", name="cust_rev")],
             order=[OrderItem(column=ColumnRef(name="cust_rev"), direction="desc")],
+            to_many_handling="broadcast",
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
@@ -809,6 +820,7 @@ class TestCrossModelRenameFilters:
             dimensions=[ColumnRef(name="status")],
             measures=[ModelMeasure(formula="sum(customers.revenue)", name="cust_rev")],
             filters=["cust_rev > 100"],
+            to_many_handling="broadcast",
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
@@ -840,6 +852,7 @@ class TestDeferredCrossModelFilterScope:
             dimensions=[ColumnRef(name="status")],
             measures=[ModelMeasure(formula="sum(customers.revenue)", name="cust_rev")],
             filters=["sum(customers.revenue) > 100"],
+            to_many_handling="broadcast",
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
@@ -875,6 +888,7 @@ class TestCrossModelRenameMultiHopAndCTEUniqueness:
                     name="region_pop",
                 ),
             ],
+            to_many_handling="broadcast",
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""

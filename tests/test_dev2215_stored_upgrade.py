@@ -90,8 +90,7 @@ def by_month(resp: Any, *, key: str, value: str) -> dict[str, float]:
 
 
 def test_versions_bumped() -> None:
-    assert (CURRENT_VERSIONS["SlayerModel"], CURRENT_VERSIONS["SlayerQuery"], CURRENT_VERSIONS["Memory"]) == (
-        PRE["SlayerModel"] + 1, PRE["SlayerQuery"] + 1, PRE["Memory"] + 1)
+    assert all(CURRENT_VERSIONS[entity] > version for entity, version in PRE.items())
 
 
 # --------------------------------------------------------------------------- #
@@ -139,7 +138,7 @@ class TestBucketCalls:
         assert query.filters == ["status = 'month(x)'"]
 
     def test_a_current_document_is_not_rewritten(self) -> None:
-        query = SlayerQuery.model_validate({"version": PRE["SlayerQuery"] + 1, "source_model": "orders",
+        query = SlayerQuery.model_validate({"version": CURRENT_VERSIONS["SlayerQuery"], "source_model": "orders",
                                             "dimensions": [{"expression": "month(ordered_at)", "name": "m"}]})
         assert "month(ordered_at)" in dumped(query)
         assert "date_trunc" not in dumped(query)

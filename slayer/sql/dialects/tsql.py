@@ -536,6 +536,12 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
                 node.replace(_bit_value(node.copy()))
         return statement
 
+    def row_number(self) -> Expression:
+        """``ROW_NUMBER`` requires an ``ORDER BY``; a constant subquery orders nothing."""
+        return exp.Window(this=exp.RowNumber(), order=exp.Order(expressions=[
+            exp.Ordered(this=exp.Subquery(this=exp.select(exp.Null())), nulls_first=True),
+        ]))
+
     def build_integer_sequence(self, *, size: int) -> exp.Select:
         return exp.select(exp.column("value").as_("i")).from_(exp.Table(
             this=exp.Anonymous(this="GENERATE_SERIES", expressions=[

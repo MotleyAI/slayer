@@ -300,8 +300,8 @@ def _unproven_arity_message(*, column: str, model: str, hop: str) -> str:
     return (
         f"Derived column {column!r} on model {model!r} has a reference crossing "
         f"an unproven join hop to {hop!r} (cardinality not declared to-one and no "
-        f"covering unique key): it broadcasts if aggregated as a column of "
-        f"{model!r}. Declare the hop's cardinality, or aggregate the target column "
+        f"covering unique key): aggregating it as a column of {model!r} fails "
+        f"at query time. Declare the hop's cardinality, or aggregate the target column "
         f"(<aggregation>({hop}.<column>)) instead."
     )
 

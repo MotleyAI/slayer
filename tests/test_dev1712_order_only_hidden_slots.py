@@ -33,7 +33,7 @@ def _all_aliases_in_sql(sql: str) -> list[str]:
 
 
 def _outer_order_by_columns(sql: str, *, dialect: str = "postgres") -> list[tuple[str, str]]:
-    """``(table, name)`` per Column in the outermost ORDER BY; a split ref has table+leaf, a composite ref a dotted name (DEV-1645)."""
+    """``(table, name)`` per Column in the outermost ORDER BY; a split ref has table+leaf, a composite ref a dotted name."""
     parsed = _outermost_select(sql, dialect=dialect)
     order = parsed.args.get("order")
     if order is None:
@@ -411,7 +411,7 @@ class TestLocalAggregateHiddenOrder:
         )
 
     async def test_ungrouped_input_local_aggregate_order_rejected(self, engine) -> None:
-        """Raw rows (``distinct_dimension_values=False``) ordered by an aggregate is a contradiction, rejected (DEV-1543); it would otherwise silently re-dedup."""
+        """Raw rows (``distinct_dimension_values=False``) ordered by an aggregate is a contradiction, rejected; it would otherwise silently re-dedup."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
@@ -422,7 +422,7 @@ class TestLocalAggregateHiddenOrder:
             await _sql(engine, query)
 
     async def test_dev1472_joined_dim_repro(self, engine) -> None:
-        """The literal DEV-1472 repro — joined dim + *:count + order by a local aggregate; pinned as regression."""
+        """The literal regression repro — joined dim + *:count + order by a local aggregate; pinned as regression."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="customers.region")],
@@ -471,6 +471,7 @@ class TestLocalAggregateHiddenOrder:
             time_dimensions=[TimeDimension(dimension="created_at", granularity="month")],
             measures=[ModelMeasure(formula="cumsum(sum(amount))", name="cs")],
             order=[OrderItem.model_validate({"column": "sum(customers.revenue)", "direction": "desc"})],
+            to_many_handling="broadcast",
         )
         sql = await _sql(engine, query)
         outer = _outer_select_columns(sql)
@@ -640,7 +641,7 @@ class TestCrossModelHiddenOrder:
     async def test_ungrouped_input_cross_model_aggregate_order_rejected(
         self, engine,
     ) -> None:
-        """The DEV-1543 raw-rows contradiction via a cross-model aggregate: a measure sort key is rejected, not silently re-grouped."""
+        """The raw-rows contradiction via a cross-model aggregate: a measure sort key is rejected, not silently re-grouped."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
@@ -772,7 +773,7 @@ class TestPartitionByGuard:
         assert "ambiguous" in str(ei.value).lower()
 
     async def test_partition_by_same_granularity_time_dim_not_flagged_ambiguous(self, engine) -> None:
-        """Two identical same-granularity declarations dedupe to one bucket (DEV-1883), so a bare ``partition_by=created_at`` is unambiguous — the guard must not misfire."""
+        """Two identical same-granularity declarations dedupe to one bucket, so a bare ``partition_by=created_at`` is unambiguous — the guard must not misfire."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[

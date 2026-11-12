@@ -1,6 +1,6 @@
-"""DEV-1800 — golden SQL baseline for change/change_pct (any transform) over a
+"""Golden SQL baseline for change/change_pct (any transform) over a
 cross-model inner combined into a composite, across the standard five-dialect
-matrix (harness: tests/_golden_harness.py), on the DEV-1750 models.
+matrix (harness: tests/_golden_harness.py), on the ``_dev1750_fixtures`` models.
 
 The ``fc/*`` cases are the failing composite class: they are recorded as raises
 today and become SQL after the change (each such flip is an ALLOWED_DELTAS entry
@@ -45,20 +45,27 @@ def _cases() -> dict:
     return {
         # Failing composite class — measure position (recorded as raises today).
         "fc/change_plus_sum": _orders(
+            to_many_handling="broadcast",
             measures=[{"formula": f"change({CM}) + sum(amount)", "name": "c"}]),
         "fc/change_plus_count": _orders(
+            to_many_handling="broadcast",
             measures=[{"formula": f"change({CM}) + count(*)", "name": "c"}]),
         "fc/change_plus_max": _orders(
+            to_many_handling="broadcast",
             measures=[{"formula": f"change({CM}) + max(amount)", "name": "c"}]),
         "fc/time_shift_plus_sum": _orders(
+            to_many_handling="broadcast",
             measures=[{"formula": f"time_shift({CM}, -1) + sum(amount)", "name": "c"}]),
         "fc/cumsum_plus_sum": _orders(
+            to_many_handling="broadcast",
             measures=[{"formula": f"cumsum({CM}) + sum(amount)", "name": "c"}]),
         "fc/change_wscaled_plus_sum": _orders(
             measures=[{"formula": "change(wscaled_sum(amount)) + sum(amount)", "name": "c"}]),
         "fc/iif_over_change": _orders(
+            to_many_handling="broadcast",
             measures=[{"formula": f"iif(change({CM}) > 0, {CM}, sum(amount))", "name": "c"}]),
         "fc/change_plus_sum_by_status": _orders(
+            to_many_handling="broadcast",
             dimensions=["status"],
             measures=[{"formula": f"change({CM}) + sum(amount)", "name": "c"}]),
         # The issue's named single-transform shapes (already render).
@@ -67,15 +74,19 @@ def _cases() -> dict:
         "named/change_pct_wscaled": _orders(
             measures=[{"formula": "change_pct(wscaled_sum(amount))", "name": "d"}]),
         "named/change_cm": _orders(
+            to_many_handling="broadcast",
             measures=[{"formula": f"change({CM})", "name": "d"}]),
         "named/change_pct_cm": _orders(
+            to_many_handling="broadcast",
             measures=[{"formula": f"change_pct({CM})", "name": "d"}]),
         # Composite in filter / order positions (post-wrapper path; placement).
         "pos/filter_composite": _orders(
+            to_many_handling="broadcast",
             dimensions=["status"],
             filters=[f"change({CM}) + sum(amount) > 0"],
             measures=[{"formula": "sum(amount)", "name": "a"}]),
         "pos/order_composite": _orders(
+            to_many_handling="broadcast",
             dimensions=["status"],
             measures=[{"formula": "sum(amount)", "name": "a"}],
             order=[{"column": f"change({CM}) + sum(amount)", "direction": "desc"}]),
@@ -90,6 +101,7 @@ def _cases() -> dict:
         # Windowed-value filter (a ranked cross-model value) — D5 places it at the
         # combined outer WHERE; the "with transform" variant is pos/filter_composite.
         "pos/windowed_value_filter": _orders(
+            to_many_handling="broadcast",
             dimensions=["status"],
             filters=["last(customers.spend, customers.signup_at) > 50"],
             measures=[{"formula": "sum(amount)", "name": "a"}]),

@@ -258,6 +258,7 @@ class TestRankingKeyPrecedence:
         planned = _plan48(_q48(
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
             measures=[{"formula": "last(customers.spend)", "name": "l"}],
+            to_many_handling="broadcast",
         ))
         (attach,) = [
             a for a in planned.regroup_attach_plans

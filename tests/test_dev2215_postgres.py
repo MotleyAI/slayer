@@ -25,6 +25,7 @@ from tests._dev2215_fixtures import (
     q,
     sorted_rows,
 )
+from tests._engine_helpers import owned_query_engine
 
 pytest.importorskip("pytest_postgresql")
 
@@ -56,14 +57,10 @@ async def pg(postgresql, tmp_path) -> AsyncIterator[tuple[SlayerQueryEngine, Dat
     postgresql.commit()
     storage = YAMLStorage(base_dir=str(tmp_path))
     ds = _datasource(postgresql)
-    await storage.save_datasource(ds)
-    for model in dev2215_models(data_source="pg"):
-        await storage.save_model(model, _validate=False)
-    engine = SlayerQueryEngine(storage=storage)
-    try:
+    async with owned_query_engine(storage=storage, datasources=[ds]) as engine:
+        for model in dev2215_models(data_source="pg"):
+            await storage.save_model(model, _validate=False)
         yield engine, ds
-    finally:
-        engine.close()
 
 
 @pytest.mark.parametrize("part", EXTRACTIONS)

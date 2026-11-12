@@ -66,6 +66,7 @@ from slayer.sql.column_expansion import (
     wrap_column_filter,
 )
 from slayer.ir.planned import (
+    AssociationProducerKernel,
     MaskTyping,
     RankedGrainMember,
     SemiJoinHop,
@@ -85,7 +86,10 @@ from slayer.sql.dialects import SqlDialect, get_dialect
 from slayer.sql.dialects.base import bare_comparands
 from slayer.sql.naming import (
     OUTER_WRAP_ALIAS,
+    ROW_IDENTITY_COLUMN,
     AliasAllocator,
+    is_row_identity,
+    with_row_identity,
     canonical_aggregate_alias,
     cte_name_from_alias,
     dialect_folds_case,
@@ -3923,6 +3927,9 @@ class SQLGenerator:
                 f"Target-rooted regroup producer names root model {root_name!r}, "
                 f"absent from the bundle's referenced models."
             )
+        kernel = getattr(attach, "kernel", None)
+        if isinstance(kernel, AssociationProducerKernel) and any(map(is_row_identity, kernel.entity_keys)):
+            root = with_row_identity(root)
         return bundle.rerooted(root)
 
     def _assemble_with_chain(
@@ -5296,9 +5303,19 @@ class SQLGenerator:
                 )
             finally:
                 self._gen_filter_stack = self._gen_filter_stack[:-1]
-        if model.sql_table in self._gen_stage_relations:
-            return relation
-        return _stamp_model(relation, model=model)
+        if model.sql_table not in self._gen_stage_relations:
+            relation = _stamp_model(relation, model=model)
+        if any(c.name == ROW_IDENTITY_COLUMN for c in model.columns):
+            relation = self._numbered_relation(relation, alias=alias)
+        return relation
+
+    def _numbered_relation(self, relation: Expression, *, alias: str) -> Expression:
+        """``(SELECT alias.*, <row number> AS row_id FROM relation) AS alias``: the filtered rows, each numbered once."""
+        rows = exp.select(
+            exp.Column(this=exp.Star(), table=exp.to_identifier(alias)),
+            self._dialect.row_number().as_(exp.to_identifier(ROW_IDENTITY_COLUMN)),
+        ).from_(relation)
+        return exp.Subquery(this=rows, alias=exp.TableAlias(this=exp.to_identifier(alias)))
 
     def _backing_relation(self, *, model, alias: str) -> Expression:
         """``model``'s rows before its filters; a stage relation must be one the statement declared it reads."""

@@ -36,7 +36,7 @@ A dataset's axis SHALL be its declared `default_time_dimension`, else its only c
 #### Scenario: Two temporal columns and no declared default means no axis
 
 - **WHEN** a model `shipments` has `created_at` and `delivered_at`, no declared default, and a query groups by the spine month with `sum(shipments.weight)`
-- **THEN** `shipments` has no route to the spine, and the measure resolves per `to_many_handling` as an unattributable dimension: broadcast with a `broadcast` warning by default, the typed error in `error` mode
+- **THEN** `shipments` has no route to the spine, and the measure resolves per `to_many_handling` as an unattributable dimension: by association with the `associated` warning by default, broadcast with a `broadcast` warning under `broadcast`, the typed error in `error` mode
 
 #### Scenario: Stage with one temporal column is wired
 
@@ -75,7 +75,7 @@ A dataset SHALL reach the spine by its nearest axis along a chain of provably to
 #### Scenario: Existing queries never route through the spine
 
 - **WHEN** a query rooted at `orders` grouped by `orders.order_date` month selects `sum(returns.amount)`
-- **THEN** it resolves exactly as before this change (through `customers`, broadcast with a warning), never through `time_spine`
+- **THEN** it resolves through `customers` per `to_many_handling` (associated by default, broadcast with a warning under `broadcast`), never through `time_spine`
 
 ### Requirement: A spine query's population is the spine times P
 

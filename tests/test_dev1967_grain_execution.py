@@ -77,10 +77,19 @@ class TestSiblingJoins:
     async def test_join_on_part_of_composite_sibling_grain_broadcasts(self, engine) -> None:
         resp = await engine.execute(_stages(C_BY_ID_TIER, {
             "source_model": ORDERS_JOIN_C, "dimensions": ["c.tier"],
-            "measures": [{"formula": "sum(amount)", "name": "amt"}],
+            "measures": [{"formula": "sum(amount)", "name": "amt"}], "to_many_handling": "broadcast",
         }))
         assert len(broadcast_warnings(resp)) == 1
         assert {r["orders.amt"] for r in resp.data} == {AMOUNT_TOTAL}
+
+    async def test_join_on_part_of_composite_sibling_grain_associates_by_default(self, engine) -> None:
+        final = {"source_model": ORDERS_JOIN_C, "dimensions": ["c.tier"],
+                 "measures": [{"formula": "sum(amount)", "name": "amt"}]}
+        default = await engine.execute(_stages(C_BY_ID_TIER, final))
+        assoc = await engine.execute(_stages(C_BY_ID_TIER, {**final, "to_many_handling": "associate"}))
+        assert sorted(map(str, default.data)) == sorted(map(str, assoc.data))
+        assert [w for w in default.warnings or [] if w.kind == "associated"]
+        assert broadcast_warnings(default) == []
 
     async def test_extension_over_sibling_keeps_its_grain(self, engine) -> None:
         # The extension adds a column and a join; orders → c is the inverted hop onto c's grain.
@@ -187,7 +196,7 @@ class TestAggregateValuedGrainMember:
         await engine.storage.save_model(host, _validate=False)
         resp = await engine.execute(SlayerQuery.model_validate({
             "source_model": "two_ok", "dimensions": ["vm_ctot.status"],
-            "measures": [{"formula": "count(*)", "name": "n"}],
+            "measures": [{"formula": "count(*)", "name": "n"}], "to_many_handling": "broadcast",
         }))
         assert len(broadcast_warnings(resp)) == 1
         assert resp.data

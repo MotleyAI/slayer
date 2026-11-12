@@ -1,18 +1,18 @@
-"""DEV-1708 Stage 4 — cross-model / isolation CTE renderer on ScopeFrame.
+"""Stage 4 — cross-model / isolation CTE renderer on ScopeFrame.
 
 These tests pin the Stage-4 deliverables NOT already covered by the pinned
 ``_DEV1526_STAGE4`` xfails in ``tests/test_sql_generator.py`` (which cover the
 plain cross-model aggregate-source-crossing shapes and auto-promote when the
 CTE ScopeFrame lands). Here we add:
 
-* **DEV-1701** — a shared-grain derived TIME dimension whose ``Column.sql``
+* **Further-join derived TIME grain** — a shared-grain derived TIME dimension whose ``Column.sql``
   crosses a further join must pull that join into BOTH the host ``_base`` and
   the per-plan ``_cm_*`` CTE (Law 1 in the CTE ScopeFrame + the host-side
   anchoring fix that fixes both from one helper).
-* **DEV-1527 cross-model remainder** — a parametric-aggregation kwarg naming a
+* **Cross-model parametric kwarg** — a parametric-aggregation kwarg naming a
   DERIVED target column (qualified form) expands its ``Column.sql`` and pulls
   the crossed join into the ``_cm_*`` CTE.
-* **DEV-1702 B2 (forward variant)** — a forward first/last whose source
+* **Forward first/last materialisation** — a forward first/last whose source
   ``Column.sql`` crosses a join materialises the crossed value as a ``_val_<n>``
   projection INSIDE the ranked subquery (Law 2), and the routed-HAVING variant
   binds to the same alias.
@@ -22,8 +22,8 @@ CTE ScopeFrame lands). Here we add:
   SELECT's LEFT JOIN ON uses dialect-aware null-safe predicates so NULL
   dimension values / nullable truncated time grains join back instead of
   dropping.
-* **Plain derived (non-TIME) shared-grain dim** — DEV-1708 raised here; DEV-1728
-  now RENDERS it (the raise-pin below became a render-pin). Full coverage lives
+* **Plain derived (non-TIME) shared-grain dim** — formerly raised here; now
+  RENDERS (the raise-pin below became a render-pin). Full coverage lives
   in tests/test_dev1728_derived_shared_grain.py.
 * **Generation-wide AliasAllocator determinism** — repeated / multi-CTE renders
   are byte-stable.
@@ -70,7 +70,7 @@ from tests._cross_model_chain import (
 
 
 # =========================================================================== #
-# DEV-1701 — shared-grain derived TIME dimension crossing a further join.
+# Shared-grain derived TIME dimension crossing a further join.
 # =========================================================================== #
 class TestDev1701SharedGrainDerivedTimeDim:
     """A cross-model aggregate grouped by a joined derived TIME dimension whose
@@ -103,7 +103,7 @@ class TestDev1701SharedGrainDerivedTimeDim:
     async def test_host_base_local_measure_derived_td_crossing(self) -> None:
         """Host-side only (no cross-model agg): a local measure grouped by the
         crossing derived TD must still anchor + pull the join (the host-side
-        half of the DEV-1701 fix, unpinned before Stage 4)."""
+        half of the further-hop fix, unpinned before Stage 4)."""
         query = SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
@@ -172,7 +172,7 @@ class TestDev1701AnchoringDirectionMatrix:
         assert "customers_v2__customers_v2" not in sql, sql
 
     async def test_no_double_prefix_on_further_hop(self) -> None:
-        """The DEV-1701 further-hop fix never emits a doubled path alias."""
+        """The further-hop fix never emits a doubled path alias."""
         query = SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
@@ -192,7 +192,7 @@ class TestDev1701AnchoringDirectionMatrix:
 
 
 # =========================================================================== #
-# DEV-1527 cross-model remainder — parametric kwarg naming a derived target col.
+# Cross-model remainder — parametric kwarg naming a derived target col.
 # =========================================================================== #
 class TestDev1527CrossModelKwarg:
     async def test_qualified_derived_crossing_kwarg_expands_and_pulls_join(self) -> None:
@@ -241,7 +241,7 @@ class TestDev1527CrossModelKwarg:
 
 
 # =========================================================================== #
-# DEV-1702 B2 (forward variant) — first/last crossing value materialisation.
+# Forward variant — first/last crossing value materialisation.
 # =========================================================================== #
 class TestDev1702B2ForwardMaterialization:
     async def test_forward_last_crossing_source_materialized_in_subquery(self) -> None:
@@ -327,7 +327,7 @@ class TestDev1702B2ForwardMaterialization:
         """A filter on the forward crossing first/last measure is applied where
         the ranked value is READABLE — the combined SELECT — and nowhere else.
 
-        It used to be a HAVING inside the CTE. That is the DEV-1503 failure: the
+        It used to be a HAVING inside the CTE. That is the filtered-local failure: the
         CTE is LEFT JOINed back, so dropping its row resurrects the host row
         carrying NULL instead of removing it. The predicate must therefore sit
         on the outer, non-aggregating SELECT, where it drops the row for real.
@@ -357,8 +357,8 @@ class TestDev1702B2ForwardMaterialization:
         A filter wrapping the crossing aggregate in a nested arithmetic node
         (``sum(deep_pop) + 1 > 5`` → ArithmeticKey(>) → ArithmeticKey(+) →
         AggregateKey) must still discover and register the aggregate leaf's
-        crossed join in the producer FROM. DEV-1836 lands the compound
-        aggregate-phase filter as an outer WHERE on the producer value."""
+        crossed join in the producer FROM. The compound
+        aggregate-phase filter lands as an outer WHERE on the producer value."""
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.status"],
@@ -440,13 +440,13 @@ class TestRoutedFilterDerivedCrossing:
 
 
 # =========================================================================== #
-# Plain derived (non-TIME) shared-grain dim — DEV-1728 renders it (was a raise).
+# Plain derived (non-TIME) shared-grain dim — renders (was a raise).
 # =========================================================================== #
 class TestDerivedSharedGrainRenders:
     async def test_plain_derived_dim_shared_grain_renders(self) -> None:
         """A PLAIN derived (non-TIME) dimension on the target path used as
-        cross-model shared grain now RENDERS (DEV-1728 removed the DEV-1708
-        raise): the derived expression is expanded inside the ``_cm_*`` CTE,
+        cross-model shared grain now RENDERS (the former raise is
+        removed): the derived expression is expanded inside the ``_cm_*`` CTE,
         grouped, and joined back null-safe. Full coverage lives in
         tests/test_dev1728_derived_shared_grain.py."""
         query = SlayerQuery(
@@ -462,7 +462,7 @@ class TestDerivedSharedGrainRenders:
 
     async def test_derived_source_unaffected_by_grain_guard(self) -> None:
         """The guard fires ONLY for a shared-grain dim — a derived aggregate
-        SOURCE crossing a join is still rendered (DEV-1526 territory)."""
+        SOURCE crossing a join is still rendered."""
         query = SlayerQuery(
             source_model="orders_x",
             measures=[ModelMeasure(formula="sum(customers_v2.deep_pop)")],
@@ -495,6 +495,7 @@ class TestDerivedSharedGrainRenders:
             source_model="orders_x",
             dimensions=["amt_bucket"],
             measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
+            to_many_handling="broadcast",
         )
         sql = await _gen(query, orders_extra=orders_extra)  # must not raise
         assert_scope_closed(sql)
@@ -544,8 +545,8 @@ class TestAllocatorDeterminism:
         sql2 = await _gen(query)
         assert sql1 == sql2
         assert_scope_closed(sql1)
-        # Within-scope: no CTE body defines the same _val alias twice. DEV-1756
-        # may length-fit an over-limit ranked CTE name (dropping the measure
+        # Within-scope: no CTE body defines the same _val alias twice. Name
+        # length-fitting may shorten an over-limit ranked CTE name (dropping the measure
         # substring — the two CTEs here differ only by hash), so locate them by
         # the ``_cm_`` prefix rather than the measure name.
         rk_names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql1)
@@ -554,7 +555,7 @@ class TestAllocatorDeterminism:
             body = _extract_cte_body(sql1, _re.escape(name))
             vals = _re.findall(r"AS (_val_\d+)", body)
             assert len(vals) == len(set(vals)), f"dup _val in {name}: {vals}"
-        # Design invariant (DEV-1703 D-E generation-wide allocator, per
+        # Design invariant (generation-wide allocator, per
         # slayer/sql/naming.py): sibling CTEs in one generation never mint the
         # same _val_<n>. Pinned as a regression guard for that locked decision.
         all_vals = _re.findall(r"AS (_val_\d+)", sql1)
@@ -568,7 +569,7 @@ class TestAllocatorDeterminism:
 # ``bigquery`` shares the base ``IS NOT DISTINCT FROM``; it is covered ONLY at
 # the strategy level below because its end-to-end join-back alias mangling
 # (dotted ``_base."a.b.c"`` → ``_base___a___b.c``) is a separate Stage-9
-# (DEV-1713) concern that trips the scope validator regardless of the equality
+# concern that trips the scope validator regardless of the equality
 # form (the same mangling breaks the plain ``=`` join-back).
 _NULLSAFE_STRATEGY = {
     "PostgresDialect": "IS NOT DISTINCT FROM",
@@ -758,7 +759,7 @@ class TestNullSafeJoinBackExecution:
         assert null_row["orders_x.customers_v2.lifetime_value_sum"] == 50.0, resp.data
 
     async def test_null_grain_retains_aggregate_filtered_local(self, sqlite_engine) -> None:
-        """Same, for a filtered-local (host-rooted, DEV-1503) isolation CTE
+        """Same, for a filtered-local (host-rooted) isolation CTE
         join-back. The filter references a joined table (customers_v2) so the
         measure isolates into a rerooted CTE joined back on the nullable
         ``customers_v2.status`` grain. The NULL-status group (customers 2 & 3,
@@ -771,7 +772,7 @@ class TestNullSafeJoinBackExecution:
                 Column(name="customer_id", type=DataType.INT),
                 Column(name="amount", type=DataType.DOUBLE),
                 Column(name="status", type=DataType.TEXT),
-                # Filter references a JOINED table → DEV-1503 filtered-local
+                # Filter references a JOINED table → filtered-local
                 # isolation. High-ltv customers (2 & 3) have NULL status.
                 Column(name="amt_hi", sql="amount", type=DataType.DOUBLE,
                        filter="customers_v2.lifetime_value > 15"),
@@ -789,7 +790,7 @@ class TestNullSafeJoinBackExecution:
         assert by_status[None]["orders_x.amt_hi_sum"] == 16.0, resp.data
 
     async def test_null_grain_retains_aggregate_rerooted(self, sqlite_engine) -> None:
-        """Rerooted (target-rooted, DEV-1450 C1) join-back on a nullable grain.
+        """Rerooted (target-rooted) join-back on a nullable grain.
         Grouping a cross-model aggregate by ``customers_v2.regions.name`` (a
         multi-hop dim reachable from the target's own join graph) re-roots the
         CTE at customers_v2 and joins back on ``regions.name``. Region 2 has a

@@ -485,7 +485,9 @@ nesting. Every operand the composite needs SHALL be materialised for it, includi
 aggregate that appears nowhere else in the query, and the composite SHALL evaluate to the
 same value whether or not any operand is also selected on its own. The transform's own
 regime (re-aggregation or series) SHALL be unchanged by the composite around it. No such
-composite SHALL fail with an internal render error.
+composite SHALL fail with an internal render error. The scenarios below run under
+`to_many_handling: "broadcast"`, where a cross-model inner over an order month repeats
+its total.
 
 #### Scenario: Transform over a cross-model inner plus a hidden local aggregate
 

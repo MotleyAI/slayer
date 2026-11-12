@@ -35,10 +35,10 @@ _CROSS_MODEL_MEASURE = {"formula": "sum(customers.spend)", "name": "cs"}
 #: Reachable from the re-rooted target (``customers -> regions``).
 FILTER_REACHABLE = "customers.regions.name == 'Alpha'"
 #: Host-local — filters host rows AND pushes into the producer by semi-join
-#: over the inverted orders→customers edge (DEV-1853 divergences.md class (c)).
+#: over the inverted orders→customers edge (divergences.md class (c)).
 FILTER_HOST_LOCAL = "status == 'A'"
 #: Mixes a producer-root-local ref (``customers.tier``) with a cross-path ref
-#: under OR — the D2 shape that STAYS dropped + warned under DEV-1853 (the old
+#: under OR — the D2 shape that STAYS dropped + warned (the old
 #: ambiguous-reverse-hop route to drop+warn is retired; divergences.md class (d)).
 FILTER_MIXED_OR = "customers.tier == 'gold' or status == 'A'"
 #: Off the host's forward graph (``orders -> order_tags``) — now REACHABLE from
@@ -49,7 +49,7 @@ FILTER_TARGET_ATTRIBUTE = "customers.tier == 'gold'"
 #: Aggregate-phase predicate over the isolated aggregate; not host-evaluable, so it must STAY routed to the CTE.
 FILTER_AGGREGATE_REF = "sum(customers.spend) > 500"
 
-#: A HOST-ROOTED shape (``cte_root_model == "orders"``): order by a derived crossing column — the DEV-1503/1709 helpers live only on this route.
+#: A HOST-ROOTED shape (``cte_root_model == "orders"``): order by a derived crossing column — the filtered-local helpers live only on this route.
 _HOST_ROOTED_QUERY = SlayerQuery.model_validate({
     "source_model": "orders",
     "dimensions": [ColumnRef(name="status")],
@@ -98,7 +98,7 @@ class TestRoutingSurvivesReroot:
         )
 
     def test_host_local_filter_pushes_down_by_semi_join(self) -> None:
-        # DEV-1853 divergences.md class (c): drop+warn → semi-join pushdown
+        # divergences.md class (c): drop+warn → semi-join pushdown
         # over the inverted edge; the host base still applies it locally.
         attach = _sole_attach(FILTER_HOST_LOCAL)
         assert attach.producer_plan.semi_join_filters, (
@@ -106,7 +106,7 @@ class TestRoutingSurvivesReroot:
         )
 
     def test_mixed_or_filter_pushes_down_by_semi_join(self) -> None:
-        """The mixed-OR conjunct pushes into the producer by semi-join (DEV-1935); the host base still applies it locally."""
+        """The mixed-OR conjunct pushes into the producer by semi-join; the host base still applies it locally."""
         attach = _sole_attach(FILTER_MIXED_OR)
         assert not attach.producer_plan.masks
         assert attach.producer_plan.semi_join_filters
@@ -185,7 +185,7 @@ class TestClassifiedExactlyOnce:
 
 
 class TestMixedOrPushes:
-    """DEV-1935: the mixed-OR conjunct pushes by semi-join — no dropped-filter warning."""
+    """The mixed-OR conjunct pushes by semi-join — no dropped-filter warning."""
 
     def test_mixed_or_filter_produces_a_semi_join_on_the_plan(self) -> None:
         attach = _sole_attach(FILTER_MIXED_OR)
@@ -315,7 +315,8 @@ class TestUnreachableDimensionsStillDrop:
         query = SlayerQuery.model_validate({"source_model": "orders", "dimensions": [
                 ColumnRef(name="name", model="customers.regions"),
                 ColumnRef(name="name", model="order_tags"),
-            ], "measures": [{"formula": "sum(amount)", "name": "rev"}, _CROSS_MODEL_MEASURE]})
+            ], "measures": [{"formula": "sum(amount)", "name": "rev"}, _CROSS_MODEL_MEASURE],
+            "to_many_handling": "broadcast"})
         plan = plan_query(query=query, bundle=dev1747_bundle())
         attach = next(
             a for a in plan.regroup_attach_plans
@@ -510,7 +511,7 @@ class TestRerootedFilterStillNarrowsTheHost:
         )
 
     async def test_no_warning_when_every_filter_is_reachable(self) -> None:
-        """A misclassified predicate still yields right-looking rows; the warning is the only tell. Host-local and tags filters push by semi-join now (DEV-1853) — no warning."""
+        """A misclassified predicate still yields right-looking rows; the warning is the only tell. Host-local and tags filters push by semi-join now — no warning."""
         for flt in (FILTER_REACHABLE, FILTER_TARGET_ATTRIBUTE,
                     FILTER_HOST_LOCAL, FILTER_TAGS):
             _, dropped = await self._rows_and_warnings(flt)

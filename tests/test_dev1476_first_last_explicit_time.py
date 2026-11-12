@@ -308,6 +308,7 @@ async def test_d_cross_cross_model_derived_time_arg(
         measures=[{
             "formula": "last(customers.amount, customers.signup_at_alias)",
         }],
+        to_many_handling="broadcast",
     ))
     assert resp.data, resp.sql
 

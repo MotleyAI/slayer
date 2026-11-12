@@ -1,4 +1,4 @@
-"""DEV-1824 executed ground truth (SQLite + DuckDB) for computed-dimension
+"""Executed ground truth (SQLite + DuckDB) for computed-dimension
 expressions — the ``queries/computed-dimensions`` delta scenarios. Expectations
 hand-computed in ``tests/_dev1824_fixtures.py``.
 
@@ -46,7 +46,7 @@ class TestBandedDimension:
     async def test_banded_partitioned_aggregate_groups_and_aggregates(
         self, exec_engine,
     ) -> None:
-        # Pre-DEV-1824 behavior (DEV-1740 B2) — pinned here as the regression
+        # Pre-generalization behavior — pinned here as the regression
         # net under the generalized discovery.
         resp = await exec_engine.execute(q(
             dimensions=["region", {"expression": BAND35, "name": "band"}],
@@ -220,7 +220,7 @@ class TestDimensionErrorSurface:
 
     async def test_aggregate_over_attached_value_executes(self, exec_engine) -> None:
         # `b2` aggregates at the grain of `band`, whose own value needs a row
-        # attach first — legal since DEV-1847 (shape B); value oracles live in
+        # attach first — legal (shape B); value oracles live in
         # tests/test_dev1847_shape_b.py.
         query = q(
             dimensions=[
@@ -261,7 +261,7 @@ class TestDimensionErrorSurface:
     async def test_cross_model_unattributable_partition_rejected(
         self, exec_engine,
     ) -> None:
-        # DEV-1836 lifts the blanket cross-model-source guard; a cross-model
+        # The blanket cross-model-source guard is lifted; a cross-model
         # aggregate whose partition key is unreachable from its root still fails
         # closed, now naming the key.
         cband = (
@@ -271,6 +271,7 @@ class TestDimensionErrorSurface:
         query = q(
             dimensions=["region", {"expression": cband, "name": "cband"}],
             measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            to_many_handling="broadcast",
         )
         with pytest.raises(ValueError, match=r"partition_by") as ei:
             await exec_engine.execute(query)
