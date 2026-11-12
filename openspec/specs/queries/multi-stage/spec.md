@@ -8,15 +8,15 @@ is ordered and validated so every stage can read the siblings it references.
 
 ### Requirement: Stages are ordered by every sibling reference
 A multi-stage query list SHALL be ordered so each stage follows every sibling it
-references — as its `source_model` (a name, or a `ModelExtension` over the
-sibling) or as a `joins[].target_model` of its source spec — regardless of the
-order the non-root stages were supplied in. The last entry SHALL stay the root.
-Duplicate stage names, an unnamed non-root stage, a self-reference, a non-root
+references — as its `source_model`, as an extension's `source_name`, or as a
+`joins[].target_model` of its inline source model or of one of its extensions —
+regardless of the order the non-root stages were supplied in. The last entry SHALL stay
+the root. Duplicate stage names, an unnamed non-root stage, a self-reference, a non-root
 stage referencing the root, and a cycle SHALL each be rejected with an error
 naming the offending stages.
 
 #### Scenario: A stage joining a sibling that reads another sibling
-- **WHEN** the list `[x (source customers), c (source x), b (source orders joined to c), root (source b)]` is executed
+- **WHEN** the list `[x (source customers), c (source x), b (source orders, extended with a join to c), root (source b)]` is executed
 - **THEN** it returns the hand-computed result instead of failing to resolve `c`
 
 #### Scenario: Supply order of non-root stages does not matter
@@ -32,8 +32,8 @@ naming the offending stages.
 - **THEN** the query is rejected at construction as an inline query-backed source, with a hint to write those queries as named stages
 
 #### Scenario: One stage reading several siblings
-- **WHEN** a stage's source is one sibling and it joins two other siblings
-- **THEN** it is ordered after all three and executes correctly
+- **WHEN** a stage's source is one sibling and its extensions join two other siblings, or extend a third
+- **THEN** it is ordered after all of them and executes correctly
 
 #### Scenario: Malformed lists are rejected
 - **WHEN** a list has an unnamed non-root stage, a stage referencing itself, a non-root stage referencing the root, or a cycle
@@ -41,7 +41,7 @@ naming the offending stages.
 
 ### Requirement: Stage names are query-local
 A stage name SHALL be visible only within its own query list, where a name the
-query writes (`source_model`, `ModelExtension.source_name`, the `joins[].target_model`
+query writes (`source_model`, an extension's `source_name`, the `joins[].target_model`
 of an inline model or extension) SHALL resolve to the stage in preference to a
 same-named model. A stored definition — a stored model's joins, a stored
 query-backed model's `source_queries` — SHALL never see a stage name: its
@@ -81,8 +81,8 @@ A `source_model` given as an inline model carrying `source_queries` SHALL be
 rejected at construction — as an object or a dict, at any position, including
 inside any `source_queries` — with an error naming the model and advising named
 stages. A persisted model containing one SHALL fail to load with that error. Inline
-table-backed and `sql`-backed models, and a `ModelExtension` over a stored
-query-backed model, SHALL remain accepted.
+table-backed and `sql`-backed models, and an extension of a stored query-backed model,
+SHALL remain accepted.
 
 #### Scenario: Inline query-backed source rejected
 - **WHEN** a query's `source_model` is an inline model with `source_queries`, as an object, as a dict, or via REST
@@ -93,7 +93,7 @@ query-backed model, SHALL remain accepted.
 - **THEN** it fails with the same error
 
 #### Scenario: Other inline sources still accepted
-- **WHEN** a query's `source_model` is an inline table-backed or `sql`-backed model, or a `ModelExtension` over a stored query-backed model
+- **WHEN** a query's `source_model` is an inline table-backed or `sql`-backed model, or a query extends a stored query-backed model
 - **THEN** it executes as before
 
 ### Requirement: Stage errors name the stage
