@@ -92,14 +92,14 @@ class TestSiblingJoins:
         assert broadcast_warnings(default) == []
 
     async def test_extension_over_sibling_keeps_its_grain(self, engine) -> None:
-        # The extension adds a column and a join; orders → c is the inverted hop onto c's grain.
+        # The extension adds a join; orders → c is the inverted hop onto c's grain.
         ext = {
             "source_name": "c",
-            "columns": [{"name": "tr_up", "sql": "UPPER(tr)", "type": "string"}],
             "joins": [{"target_model": "orders", "join_pairs": [["id", "customer_id"]]}],
         }
         resp = await engine.execute(_stages(C_BY_ID, {
-            "source_model": "c", "extensions": [ext], "dimensions": ["tr_up"],
+            "source_model": "c", "extensions": [ext],
+            "dimensions": [{"expression": "upper(tr)", "name": "tr_up"}],
             "measures": [{"formula": "sum(orders.amount)", "name": "amt"}],
         }))
         assert _by(resp, "c.tr_up", "c.amt") == pytest.approx(

@@ -470,16 +470,6 @@ class TestRebuild:
         assert out.source_model == "orders"
         assert out.extensions == [ext]
 
-    def test_full_inline_source_preserved(self) -> None:
-        model = SlayerModel(
-            name="inline_orders", sql_table="orders", data_source="ds",
-            columns=[Column(name="amount", type=DataType.DOUBLE)],
-        )
-        q = SlayerQuery.model_validate({"source_model": model, "measures": ["sum(amount) * {k}"]})
-        out = apply_variables_to_query(query=q, variables={"k": 2})
-        assert isinstance(out.source_model, SlayerModel)
-        assert out.source_model == model
-
     def test_refined_saved_query_preserved(self) -> None:
         saved = _q(dimensions=["region"], measures=["sum(amount) * {k}"], limit=5)
         refined = refine_query(saved=saved, refinement=QueryRefinement.model_validate({"filters": ["status == '{s}'"]}))

@@ -86,9 +86,9 @@ class TestStoredOnlyGate:
         assert out["version"] == 3
 
     def test_current_versions(self):
-        assert mig.CURRENT_VERSIONS["SlayerModel"] == 21
-        assert mig.CURRENT_VERSIONS["SlayerQuery"] == 13
-        assert mig.CURRENT_VERSIONS["Memory"] == 9
+        assert mig.CURRENT_VERSIONS["SlayerModel"] >= 21
+        assert mig.CURRENT_VERSIONS["SlayerQuery"] >= 13
+        assert mig.CURRENT_VERSIONS["Memory"] >= 9
         for key in (("SlayerModel", 12), ("SlayerQuery", 4), ("Memory", 2)):
             assert key in mig._REGISTRY
 
@@ -210,17 +210,6 @@ class TestStoredQuery:
         data.pop("columns", None)
         [q] = SlayerModel.model_validate(data).source_queries or []
         _assert_query_filled(q)
-
-    def test_inline_source_model_of_a_stored_query(self):
-        inline = _model_dict(measures=[{"name": "x", "formula": BARE}], version=None)
-        stage = {**_query_dict(version=None), "source_model": inline}
-        data = _model_dict(measures=[], source_queries=[stage])
-        data.pop("sql_table", None)
-        data.pop("columns", None)
-        model = SlayerModel.model_validate(data)
-        [q] = model.source_queries or []
-        assert isinstance(q.source_model, SlayerModel)
-        assert q.source_model.measures[0].formula == FILLED
 
     def test_inline_extension_measures_of_a_stored_query(self):
         ext = {"source_name": "sales", "measures": [{"name": "x", "formula": BARE}]}

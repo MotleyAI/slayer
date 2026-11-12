@@ -294,7 +294,7 @@ class TestVariableLayering:
 # --------------------------------------------------------------------------- #
 _EXT = {
     "source_name": "cust_rev",
-    "columns": [{"name": "rev2", "sql": "rev * 2", "type": "DOUBLE"}],
+    "measures": [m("sum(rev * 2)", "r2")],
     "joins": [{"target_model": "customers", "join_pairs": [["customer_id", "id"]]}],
 }
 
@@ -302,7 +302,7 @@ _EXT = {
 class TestExtensions:
     async def test_root_extension_applies_once(self, engine) -> None:
         outer = query(source_model="cust_rev", extensions=[_EXT], dimensions=["customers.tier"],
-                      measures=[m("sum(rev2)", "r2"), m("sum(rev)", "r")])
+                      measures=["r2", m("sum(rev)", "r")])
         await _assert_parity(
             engine, inline=outer, splice=[*explicit_splice(cust_rev_model()), outer],
             columns=["cust_rev.customers.tier", "cust_rev.r2", "cust_rev.r"],

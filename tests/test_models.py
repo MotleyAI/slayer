@@ -1766,8 +1766,6 @@ async def _prefix_sql(query: dict) -> str:
 
 
 _MONTH = {"dimension": "created_at", "granularity": "month"}
-_INLINE_ORDERS = {"name": "orders", "sql_table": "orders", "data_source": "test",
-                  "columns": [{"name": "id", "primary_key": True}, {"name": "status"}]}
 
 # (root-qualified, bare) spellings of one query.
 _ROOT_QUALIFIED = {
@@ -1823,8 +1821,7 @@ class TestRootQualifier:
     @pytest.mark.parametrize("source", [
         {"source_model": "orders", "extensions": [{"source_name": "orders"}]},
         {"source_model": "orders", "extensions": [ModelExtension(source_name="orders")]},
-        {"source_model": _INLINE_ORDERS},
-    ], ids=["extension-dict", "extension-object", "inline-model"])
+    ], ids=["extension-dict", "extension-object"])
     async def test_every_root_spec_takes_its_name(self, source: dict) -> None:
         assert await _prefix_sql({**source, "dimensions": ["orders.status"]}) == await _prefix_sql(
             {**source, "dimensions": ["status"]})

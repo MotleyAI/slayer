@@ -141,12 +141,6 @@ class TestQueryPositions:
     def test_loads_as_the_fresh_functional_query(self, field: str, stored: Any, functional: Any) -> None:
         assert _stored(**{field: stored}).model_dump() == _fresh(**{field: functional}).model_dump()
 
-    def test_inline_model_measure(self) -> None:
-        inline = {k: v for k, v in orders_doc(measures=_measures(["amount:sum"])).items() if k != "version"}
-        query = _stored(source_model=inline, measures=["m0"])
-        assert isinstance(query.source_model, SlayerModel)
-        assert [m.formula for m in query.source_model.measures] == ["sum(amount)"]
-
     def test_saved_query_stage(self) -> None:
         model = SlayerModel.model_validate(query_backed_doc(
             name="rev_q", stage=stored_query(measures=[{"name": "rev", "formula": "amount:sum"}],

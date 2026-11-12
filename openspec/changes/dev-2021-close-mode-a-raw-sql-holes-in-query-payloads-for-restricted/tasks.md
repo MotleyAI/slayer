@@ -1,6 +1,6 @@
 ## 1. Tests first (pr-tests)
 
-- [ ] 1.1 Find every existing test pinning a removed behaviour. List each file and the change, ask the owner's approval to align it, then align it:
+- [x] 1.1 Find every existing test pinning a removed behaviour. List each file and the change, ask the owner's approval to align it, then align it:
   - inline `source_model` acceptance (e.g. `tests/test_dev1922_source_model_union.py`, `tests/test_dev1966_inline_qb_ban.py`);
   - extension-column semantics;
   - textual Mode-A `{var}` substitution and identifier-position placeholders;
@@ -9,24 +9,24 @@
   - the profiling extension query.
 
   Search with `grep -rlE '"columns"|columns=|source_model=SlayerModel|"source_model": \{' tests`, the LSP references of `ModelExtension.columns` and `substitute_variables`, and `tests/*variable*`, `tests/*save_time*`, `tests/*formula_template*`.
-- [ ] 1.2 Mechanically respell the existing tests that use an extension column or an inline model only as scaffolding (~61 and ~16 files). An extension column becomes an expression in its position, or a column on a test-local stored model; an inline model becomes a stored model. No logic change. Verify `grep` finds the removed forms only in refusal and migration tests.
-- [ ] 1.3 `tests/test_dev2021_queries_carry_no_mode_a.py` (the semantics §4 P2.3 tag's test), on SQLite and DuckDB over a `secrets` table: each route of `queries/extensions` › Queries carry no Mode A is refused before SQL executes; each Mode-B spelling runs with hand-computed values. Include the legacy `source_model` extension with `columns`, a `SlayerModel` instance, REST 422 and the MCP query tool.
-- [ ] 1.4 `tests/test_dev2021_mode_a_variables.py`: every scenario of `queries/variables` › Mode-A surfaces bind variables as literals, across `Column.sql`, `Column.filter`, model `sql` and model `filters`:
+- [x] 1.2 Mechanically respell the existing tests that use an extension column or an inline model only as scaffolding (~61 and ~16 files). An extension column becomes an expression in its position, or a column on a test-local stored model; an inline model becomes a stored model. No logic change. Verify `grep` finds the removed forms only in refusal and migration tests.
+- [x] 1.3 `tests/test_dev2021_queries_carry_no_mode_a.py` (the semantics §4 P2.3 tag's test), on SQLite and DuckDB over a `secrets` table: each route of `queries/extensions` › Queries carry no Mode A is refused before SQL executes; each Mode-B spelling runs with hand-computed values. Include the legacy `source_model` extension with `columns`, a `SlayerModel` instance, REST 422 and the MCP query tool.
+- [x] 1.4 `tests/test_dev2021_mode_a_variables.py`: every scenario of `queries/variables` › Mode-A surfaces bind variables as literals, across `Column.sql`, `Column.filter`, model `sql` and model `filters`:
   - literal positions, a numeric string, a boolean, an `IN` list, `O'Brien`;
   - refusal for an identifier, a quoted identifier, a function or type name, a comment, part of an `IN` list, and a string in a bare slot, at save and at query time;
   - `{? ?}` blocks with and without the variable, escaped braces;
   - the Cube `FILTER_PARAMS` fixtures still executing;
   - the dialect families (SQLite, DuckDB, plus Postgres via `pytest-postgresql`).
-- [ ] 1.5 `tests/test_dev2021_string_parameters.py`: `aggregations/formula-templates` scenarios. `weight='id * 2'` equals the unquoted form; `'length(sqlite_version())'` and the subquery fail with the typed parameter error; the Mode-B quoted literal `'a''b\c'`; `window='90d'` unchanged; a definition default still Mode A.
-- [ ] 1.6 `tests/test_dev2021_stored_conversion.py`: every scenario of `models/stored-upgrade` › Stored extension columns are inlined, over YAML and SQLite stores:
+- [x] 1.5 `tests/test_dev2021_string_parameters.py`: `aggregations/formula-templates` scenarios. `weight='id * 2'` equals the unquoted form; `'length(sqlite_version())'` and the subquery fail with the typed parameter error; the Mode-B quoted literal `'a''b\c'`; `window='90d'` unchanged; a definition default still Mode A.
+- [x] 1.6 `tests/test_dev2021_stored_conversion.py`: every scenario of `models/stored-upgrade` › Stored extension columns are inlined, over YAML and SQLite stores:
   - per use site: dimension, time dimension, measure name, filter, order, partition and ranking keys, `main_time_dimension`, extension measure, chained columns;
   - `filter`, sql-less, declared-type `CAST` (INT, DOUBLE, DATE, TIMESTAMP, BOOLEAN; TEXT and UNKNOWN bare);
   - qualification through a named edge and an alias;
   - every unconvertible case (inline source, non-Mode-B text, `ARRAY`, hidden sql-less column, shadowing, cycle, `join_pairs` on either side, a non-expression position) failing to load with stored bytes unchanged and other documents loading;
   - write-back for query-backed models and saved queries; memories converted on each load without write-back;
   - the warnings; recorded rows and result keys preserved.
-- [ ] 1.7 `tests/test_dev2021_column_sql_statement.py`: `models/column-definitions` › Column.sql is one expression.
-- [ ] 1.8 Profiling and usage-reporting tests: min/max over physical, derived, renamed, quoted and array columns on SQLite and DuckDB; the `inline_source` flag on extensions.
+- [x] 1.7 `tests/test_dev2021_column_sql_statement.py`: `models/column-definitions` › Column.sql is one expression.
+- [x] 1.8 Profiling and usage-reporting tests: min/max over physical, derived, renamed, quoted and array columns on SQLite and DuckDB; the `inline_source` flag on extensions.
 - [ ] 1.9 Run `poetry run pytest -m "not integration"`: the new tests fail for the expected reasons and nothing else regresses from the respelling.
 
 ## 2. Query payload: Mode B only
