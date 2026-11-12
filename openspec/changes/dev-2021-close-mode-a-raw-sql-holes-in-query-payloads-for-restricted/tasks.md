@@ -81,5 +81,5 @@
 ## 6. After DEV-2102 archives and before this change archives
 
 - [ ] 6.1 Merge `origin/main` once DEV-2102 has archived. Re-run `openspec validate --strict`. Rebase this change's MODIFIED texts on the archived requirements if DEV-2102 changed them in review (needs the owner's OK of the exact edit, per the frozen-plan rule).
-- [ ] 6.2 `openspec/specs/queries/extensions/spec.md`'s `## Purpose` (written by DEV-2102) still says "columns, measures and joins". A delta cannot modify Purpose, so ask the owner to approve the one-word removal as a direct spec edit in this PR.
+- [x] 6.2 `openspec/specs/queries/extensions/spec.md`'s `## Purpose` (written by DEV-2102) still says "columns, measures and joins". A delta cannot modify Purpose, so ask the owner to approve the one-word removal as a direct spec edit in this PR.
 - [ ] 6.3 After merge: ask the owner to close DEV-2044 as absorbed by this change.

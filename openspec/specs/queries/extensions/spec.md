@@ -1,7 +1,7 @@
 # queries/extensions Specification
 
 ## Purpose
-Query-scoped extensions: per-stage columns, measures and joins added to any model a query stage reads, and the population meaning of a query-declared INNER join.
+Query-scoped extensions: per-stage measures and joins added to any model a query stage reads, and the population meaning of a query-declared INNER join.
 
 ## Requirements
 

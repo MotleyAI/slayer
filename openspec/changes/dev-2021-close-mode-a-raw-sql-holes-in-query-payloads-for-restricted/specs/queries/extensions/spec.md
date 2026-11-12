@@ -3,7 +3,7 @@
 ### Requirement: Queries carry no Mode A
 
 No field of a query object SHALL be read as SQL of the datasource's dialect, and no field SHALL name a physical table or column directly. Every expression a query carries SHALL be Mode B, bound through the models it reads. Mode A SHALL be authored only in a stored model's definition. A value a query supplies to a stored model's Mode A SHALL enter it only as a literal. This holds for every caller.
-- An extension carrying `columns` SHALL be rejected at construction (`queries/extensions` › A query extends any model it reads).
+- An extension carrying `columns` SHALL be rejected at construction (`queries/extensions` › A query extends any model it reads with measures and joins).
 - A `source_model` that is an object without `source_name` SHALL be rejected at construction (`queries/population` › A population is named, and typed at construction).
 - A query variable SHALL bind into a stored model's Mode-A text only as a literal (`queries/variables` › Mode-A surfaces bind variables as literals).
 - A query-side string aggregation argument SHALL be read as Mode B (`aggregations/formula-templates` › Aggregation parameters bind once).
@@ -22,9 +22,7 @@ No field of a query object SHALL be read as SQL of the datasource's dialect, and
 - **WHEN** the same queries use an expression dimension, a literal variable bound into the stored `amount * {k}`, and `weighted_avg(amount, weight='id * 2')`
 - **THEN** each executes with the hand-computed values, on SQLite and DuckDB
 
-## MODIFIED Requirements
-
-### Requirement: A query extends any model it reads
+### Requirement: A query extends any model it reads with measures and joins
 
 A query object SHALL accept `extensions`, a list of extensions each naming the model it extends (`source_name`) and carrying optional `measures` and `joins`.
 - An extension SHALL apply to the named model wherever the query object reads it: as its population, as a join target, or on any join path.
@@ -57,6 +55,8 @@ A query object SHALL accept `extensions`, a list of extensions each naming the m
 #### Scenario: Refinements carry no extensions
 - **WHEN** a saved query is run with a `refine` object carrying `extensions`
 - **THEN** the refinement is rejected as carrying an unexpected key
+
+## MODIFIED Requirements
 
 ### Requirement: Extensions are scoped to their query object
 
@@ -106,3 +106,9 @@ A query whose `source_model` is an extension object SHALL be converted to `sourc
 #### Scenario: Internal producers use the current form
 - **WHEN** the BI facade builds a query that extends a model
 - **THEN** no deprecation warning is emitted
+
+## REMOVED Requirements
+
+### Requirement: A query extends any model it reads
+**Reason**: Extension columns are removed; replaced by "A query extends any model it reads with measures and joins".
+**Migration**: Write a per-query column as an expression in the position that uses it.
