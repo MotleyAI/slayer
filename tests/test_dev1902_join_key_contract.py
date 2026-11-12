@@ -184,8 +184,9 @@ class TestExtensionOverlay:
                 await storage.save_model(m)
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery.model_validate({
-                "source_model": ModelExtension(source_name="orders", joins=[
-                    ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])]),
+                "source_model": "orders",
+                "extensions": [ModelExtension(source_name="orders", joins=[
+                    ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])])],
                 "measures": [{"formula": "sum(amount)", "name": "amt"}],
                 "dimensions": ["regions.name"]})
             with pytest.raises(ValueError, match="key 'region_id'"):

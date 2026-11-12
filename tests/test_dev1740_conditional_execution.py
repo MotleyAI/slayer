@@ -199,13 +199,14 @@ class TestCaseInModelFormula:
         # A CASE living in a model-level measure formula (added via extension),
         # referenced by name — pins "valid in model formulas".
         resp = await exec_engine.execute(SlayerQuery(
-            source_model=ModelExtension.model_validate({
+            source_model="orders",
+            extensions=[ModelExtension.model_validate({
                 "source_name": "orders",
                 "measures": [{
                     "formula": "CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END",
                     "name": "big",
                 }],
-            }),
+            })],
             dimensions=["region"],
             measures=[ModelMeasure(formula="big")],
         ))
@@ -287,14 +288,15 @@ class TestCaseInColumnSql:
         # escape hatch, pinned against Part A regressions. Row 9 (amount 6000)
         # is the only per-row band 1; everything else bands 0.
         resp = await exec_engine.execute(SlayerQuery(
-            source_model=ModelExtension.model_validate({
+            source_model="orders",
+            extensions=[ModelExtension.model_validate({
                 "source_name": "orders",
                 "columns": [{
                     "name": "row_band",
                     "sql": "CASE WHEN amount > 5000 THEN 1 ELSE 0 END",
                     "type": "INT",
                 }],
-            }),
+            })],
             dimensions=["row_band"],
             measures=[ModelMeasure(formula="sum(amount)", name="rev")],
         ))

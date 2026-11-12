@@ -226,14 +226,15 @@ def two_stage_banding() -> list:
         measures=[ModelMeasure(formula="sum(amount)", name="city_total")],
     )
     stage2 = SlayerQuery(
-        source_model=ModelExtension.model_validate({
+        source_model="per_city",
+        extensions=[ModelExtension.model_validate({
             "source_name": "per_city",
             "columns": [{
                 "name": "band",
                 "sql": "CASE WHEN city_total > 5000 THEN 1 ELSE 0 END",
                 "type": "INT",
             }],
-        }),
+        })],
         dimensions=["region", "band"],
         measures=[ModelMeasure(formula="sum(city_total)", name="band_total")],
     )

@@ -357,7 +357,8 @@ class TestUserSurfacesExempt:
             columns=[Column(name="extwide", sql=f'"{PHYS_COL}"', type=DataType.DOUBLE)],
         )
         query = SlayerQuery(
-            source_model=ext,
+            source_model="orders",
+            extensions=[ext],
             dimensions=[ColumnRef(name="region")],
             measures=[ModelMeasure(formula="sum(extwide)", name="w")],
         )

@@ -73,16 +73,20 @@ class AmbiguousJoinPathError(SlayerError):
         super().__init__("\n".join(lines))
 
 
+class QueryExtensionError(SlayerError):
+    """A query extension that cannot apply: a join conflicting with the join graph, or an INNER join the population cannot reach."""
+
+
 class EntityResolutionError(SlayerError):
     """An entity ref can't resolve to canonical ``<datasource>.<model>[.<leaf>]`` form; distinct from ``AmbiguousModelError`` (the model leg of bare-name resolution)."""
 
 
 class ModelNotFoundError(SlayerError):
-    """A query names a model that does not exist in storage."""
+    """A query names a model that does not exist in storage; ``context`` names where it was named."""
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, *, context: str | None = None) -> None:
         self.name = name
-        super().__init__(f"Model '{name}' not found")
+        super().__init__(f"{context}: model '{name}' not found" if context else f"Model '{name}' not found")
 
 
 class MemoryNotFoundError(SlayerError):

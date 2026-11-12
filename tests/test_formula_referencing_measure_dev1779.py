@@ -33,6 +33,7 @@ controls (they assert the invariant is preserved).
 from __future__ import annotations
 
 import re
+from typing import Any
 
 import pytest
 
@@ -162,7 +163,7 @@ def _referenced_but_undeclared(sql: str) -> set[str]:
     return referenced - declared
 
 
-async def _dry_sql(tmp_path, measures: list[str], **query_kw: object) -> str:
+async def _dry_sql(tmp_path, measures: list[str], **query_kw: Any) -> str:
     """Dry-run an orders query and return the emitted SQL."""
     engine = await _make_engine(tmp_path, seed=False)
     query = SlayerQuery(source_model="orders", measures=measures, **query_kw)

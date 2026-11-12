@@ -315,12 +315,12 @@ class TestWholeQuery:
 
     def test_non_refinable_fields_survive(self) -> None:
         base = SlayerQuery.model_validate({
-            "name": "final", "source_model": {"source_name": "orders"}, "measures": [REVENUE],
+            "name": "final", "source_model": "orders", "extensions": [{"source_name": "orders"}], "measures": [REVENUE],
             "variables": {"status": "paid"},
         })
         merged = merge(base, dimensions=["region"])
-        assert (merged.name, merged.source_model, merged.variables, merged.version) == (
-            base.name, base.source_model, base.variables, base.version,
+        assert (merged.name, merged.source_model, merged.extensions, merged.variables, merged.version) == (
+            base.name, base.source_model, base.extensions, base.variables, base.version,
         )
 
     def test_merged_query_revalidated(self) -> None:

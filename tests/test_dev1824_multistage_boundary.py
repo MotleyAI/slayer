@@ -36,7 +36,7 @@ def _stages(**stage2_kwargs) -> list:
         dimensions=["region", {"expression": BAND35, "name": "band"}],
         measures=[ModelMeasure(formula="sum(amount)", name="bt")],
     )
-    stage2 = SlayerQuery(source_model=ModelExtension(source_name="banded"), **stage2_kwargs)
+    stage2 = SlayerQuery(source_model="banded", extensions=[ModelExtension(source_name="banded")], **stage2_kwargs)
     return [stage1, stage2]
 
 

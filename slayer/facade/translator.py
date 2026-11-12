@@ -33,7 +33,6 @@ from slayer.core.query import (
     ModelExtension,
     OrderItem,
     SlayerQuery,
-    SourceSpec,
     TimeDimension,
 )
 from slayer.core.syntax import measure_text_at_path
@@ -2804,17 +2803,14 @@ def _materialise_dynamic_join_lookups(
         extra_metrics_by_formula[formula] = new_metric
 
 
-def _build_source_model_from_join(
+def _extensions_from_join(
     *, parent_name: str, plan: _JoinPlan,
-) -> SourceSpec:
-    """``SlayerQuery.source_model`` value derived from the join plan:
-    the parent's bare name when an existing configured join matched, or a
-    ``ModelExtension`` carrying the dynamically-built ``ModelJoin`` when
-    not.
-    """
+) -> list[ModelExtension]:
+    """The query extensions the join plan needs: none when an existing configured join matched, else one
+    ``ModelExtension`` of the parent carrying the dynamically-built ``ModelJoin``."""
     if not plan.is_dynamic:
-        return parent_name
-    return ModelExtension(
+        return []
+    return [ModelExtension(
         source_name=parent_name,
         joins=[ModelJoin(
             target_model=plan.target_table.name,
@@ -2822,7 +2818,7 @@ def _build_source_model_from_join(
             join_type=JoinType.LEFT,
             cardinality=_dynamic_join_cardinality(plan),
         )],
-    )
+    )]
 
 
 def _dynamic_join_cardinality(plan: "_JoinPlan") -> JoinCardinality | None:
@@ -3027,14 +3023,11 @@ def _translate_slayer_select(
         strip_prefix=strip_prefix, alias_map=overlays.alias_map,
     )
 
-    source_model: SourceSpec = (
-        _build_source_model_from_join(parent_name=table.name, plan=join_plan)
-        if join_plan is not None
-        else table.name
-    )
+    extensions = _extensions_from_join(parent_name=table.name, plan=join_plan) if join_plan is not None else []
 
     query = SlayerQuery.model_validate({
-        "source_model": source_model,
+        "source_model": table.name,
+        "extensions": extensions or None,
         "measures": plan.measures or None,
         "dimensions": [*plan.dimension_refs, *plan.expression_dims] or None,
         "time_dimensions": plan.time_dims or None,

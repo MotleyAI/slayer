@@ -199,7 +199,7 @@ async def test_ship_region_extension_edge_name_spelling_survives(dialect):
     async def run(formula: str) -> tuple[float, str]:
         async with seeded_exec_engine(
             dialect=dialect, seed=seed, models=dev1908_models()) as (e, _db):
-            query = SlayerQuery(source_model=ship_region_extension(),
+            query = SlayerQuery(source_model="orders", extensions=[ship_region_extension()],
                                 measures=[ModelMeasure(formula=formula, name="w")])
             resp = await e.execute(query)
             dry = await e.execute(query, dry_run=True)

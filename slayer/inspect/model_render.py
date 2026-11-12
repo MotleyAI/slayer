@@ -19,6 +19,7 @@ from slayer.core.models import Column, SlayerModel, column_type_text, is_identif
 from slayer.core.query import (
     SlayerQuery,
     extract_model_variables,
+    extension_variable_refs,
     extract_placeholder_names,
 )
 from slayer.live_schema.ingestion import _friendly_db_error
@@ -324,7 +325,7 @@ def _build_backing_query_info(model: SlayerModel) -> dict | None:
     # Required = no default in model.query_variables nor in the stage's own variables.
     defaulted: set = set(model.query_variables.keys())
     for q in model.source_queries:
-        all_placeholders |= extract_placeholder_names(q)
+        all_placeholders |= extract_placeholder_names(q) | extension_variable_refs(q)[0]
         if q.variables:
             defaulted |= set(q.variables.keys())
         stage_dicts.append(q.model_dump(mode="json", exclude_none=True))
@@ -362,23 +363,27 @@ def _render_stage_field_list(key: str, val: list) -> str:
 
 
 def _render_source_model(src: Any) -> str | None:
-    """Render a stage's ``source_model`` (str or ModelExtension dict)."""
+    """Render a stage's ``source_model`` (a name or an inline model dict)."""
     if isinstance(src, str):
         return f"- source_model: `{src}`"
-    if isinstance(src, dict):
-        sn = src.get("source_name") or src.get("name")
-        if sn:
-            return f"- source_model: `{sn}` (extension)"
+    if isinstance(src, dict) and src.get("name"):
+        return f"- source_model: `{src['name']}` (inline model)"
     return None
+
+
+def _render_extensions(extensions: Any) -> str | None:
+    """Render a stage's ``extensions`` as the models they extend."""
+    names = [e["source_name"] for e in extensions or [] if isinstance(e, dict) and e.get("source_name")]
+    return f"- extensions: {', '.join(f'`{n}`' for n in names)}" if names else None
 
 
 def _render_stage(i: int, stage: dict, total: int) -> list[str]:
     """Render one stage's markdown lines."""
     title = stage.get("name") or ("final" if i == total else f"stage {i}")
     out: list[str] = [f"\n**{i}. {title}**"]
-    src_line = _render_source_model(stage.get("source_model"))
-    if src_line:
-        out.append(src_line)
+    for line in (_render_source_model(stage.get("source_model")), _render_extensions(stage.get("extensions"))):
+        if line:
+            out.append(line)
     for key in ("dimensions", "time_dimensions", "measures", "filters"):
         val = stage.get(key)
         if not val:

@@ -87,7 +87,7 @@ class TestStoredOnlyGate:
 
     def test_current_versions(self):
         assert mig.CURRENT_VERSIONS["SlayerModel"] == 21
-        assert mig.CURRENT_VERSIONS["SlayerQuery"] == 12
+        assert mig.CURRENT_VERSIONS["SlayerQuery"] == 13
         assert mig.CURRENT_VERSIONS["Memory"] == 9
         for key in (("SlayerModel", 12), ("SlayerQuery", 4), ("Memory", 2)):
             assert key in mig._REGISTRY
@@ -225,7 +225,8 @@ class TestStoredQuery:
     def test_inline_extension_measures_of_a_stored_query(self):
         ext = {"source_name": "sales", "measures": [{"name": "x", "formula": BARE}]}
         q = SlayerQuery.model_validate({**_query_dict(version=4), "source_model": ext})
-        assert getattr(q.source_model, "measures")[0].formula == FILLED
+        assert q.source_model == "sales"
+        assert ((q.extensions or [])[0].measures or [])[0].formula == FILLED
 
     def test_memory_query(self):
         mem = Memory.model_validate({"version": 2, "id": "m1", "learning": "x", "query": _query_dict(version=4)})

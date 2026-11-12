@@ -118,6 +118,10 @@ def rename_in_query(data: dict, *, renames: Renames) -> dict:
     source = data.get("source_model")
     if isinstance(source, dict):
         data["source_model"] = rename_in_model(source, renames=renames)
+    if isinstance(data.get("extensions"), list):
+        data["extensions"] = [
+            rename_in_model(e, renames=renames) if isinstance(e, dict) else e for e in data["extensions"]
+        ]
     return data
 
 

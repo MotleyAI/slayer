@@ -148,9 +148,11 @@ from slayer.engine.stage_ordering import localize_stages, topologically_order_st
 from slayer.engine.statement_reads import StatementReads, statement_reads
 from slayer.engine.binding import collect_bind_records
 from slayer.engine.elaborate_env import check_result_names_case
+from slayer.engine.extensions import with_own_extension
 from slayer.engine.plan import plan_stages
 from slayer.ir.variables import (
     apply_variables_to_query,
+    substitute_extension_surfaces,
     model_needs_substitution_pass,
     substitute_model_sql_surfaces,
 )
@@ -1253,6 +1255,8 @@ class SlayerQueryEngine:
             now=self._clock(),
             failures=failures,
         )
+        # Plan the stages as the bundle resolved them (extension model names respelled).
+        query, named_queries = bundle.query or query, bundle.named_queries
         # ``build_resolved_source_bundle`` raises if unresolved, so it's populated.
         model = bundle.source_model
         assert model is not None
@@ -1307,7 +1311,11 @@ class SlayerQueryEngine:
 
         # Substitute variables into every Mode-B surface. Root uses the bundle's
         # merged variables; each sibling re-merges its own stage layer.
-        query = apply_variables_to_query(query=query, variables=bundle.query_variables)
+        backslash_escapes = dialect_for_ds_type(datasource.type).backslash_escapes_strings
+        query = substitute_extension_surfaces(
+            query=apply_variables_to_query(query=query, variables=bundle.query_variables),
+            variables=bundle.query_variables, backslash_escapes=backslash_escapes,
+        )
         root_vars = query.variables
         # Sibling-sourced stages fall back to the root model's defaults (a
         # query-backed root's own defaults layer only its spliced stages).
@@ -1322,7 +1330,10 @@ class SlayerQueryEngine:
                 **(nq.variables or {}),
                 **(runtime_kwarg or {}),
             }
-            normed_named[nm] = apply_variables_to_query(query=nq, variables=stage_vars)
+            normed_named[nm] = substitute_extension_surfaces(
+                query=apply_variables_to_query(query=nq, variables=stage_vars),
+                variables=stage_vars, backslash_escapes=backslash_escapes,
+            )
             if source is not None:
                 stage_sources[nm] = _substitute_model_sql_surfaces(
                     model=source, variables=stage_vars,
@@ -1900,7 +1911,7 @@ class SlayerQueryEngine:
             model = bundle.source_model
         if model is not None and model.source_queries:
             model = None  # a query-backed source is read as a spliced stage
-        norm = normalize_query(query, model=model)
+        norm = normalize_query(query, model=with_own_extension(model, query))
         out = norm.query if norm.query is not None else query
         return out, list(norm.warnings)
 

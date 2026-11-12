@@ -7,7 +7,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from slayer.core.enums import ALL_TRANSFORMS, BUILTIN_AGGREGATIONS, GRANULARITY_NAMES, normalize_aggregation_name
-from slayer.core.models import DatasourceConfig
+from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import ComputedDimension, SlayerQuery
 from slayer.core.syntax import AggCall, ArrayLit, Cast, ScalarCall, TransformCall, parse_expr, walk_parsed
 from slayer.sql.dialects import dialect_for_ds_type
@@ -77,7 +77,7 @@ def _stage(raw: Any) -> SlayerQuery | None:
 
 def _stage_flags(stage: SlayerQuery) -> set[str]:
     present = {
-        "inline_source": stage.source_model is not None and not isinstance(stage.source_model, str),
+        "inline_source": isinstance(stage.source_model, SlayerModel) or bool(stage.extensions),
         "time_dimensions": bool(stage.time_dimensions),
         "filters": bool(stage.filters),
         "computed_dimensions": any(isinstance(d, ComputedDimension) for d in stage.dimensions or []),
@@ -87,14 +87,17 @@ def _stage_flags(stage: SlayerQuery) -> set[str]:
 
 
 def _expressions(stage: SlayerQuery) -> Iterator[str]:
-    """Every Mode B text of a stage: measures, dimensions, time dimensions, filters, order, inline measures."""
+    """Every Mode B text of a stage: measures, dimensions, time dimensions, filters, order, inline and extension
+    measures."""
     yield from (m.formula for m in stage.measures or [] if m.formula)
     yield from (d.expression for d in stage.dimensions or [] if isinstance(d, ComputedDimension))
     yield from (td.dimension for td in stage.time_dimensions or [] if isinstance(td.dimension, str))
     yield from stage.filters or []
     yield from (o.raw_formula for o in stage.order or [] if o.raw_formula)
-    inline_measures = getattr(stage.source_model, "measures", None) or []
-    yield from (m.formula for m in inline_measures if m.formula)
+    inline_measures = stage.source_model.measures if isinstance(stage.source_model, SlayerModel) else []
+    for measure in [*inline_measures, *(m for e in stage.extensions or [] for m in e.measures or [])]:
+        if measure.formula:
+            yield measure.formula
 
 
 def query_features(query: Any) -> QueryFeatures:

@@ -17,7 +17,8 @@ from slayer.core.join_walker import follow, resolved_terminal, walk, walk_cancel
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.live_schema.schema_drift import _build_stage_graph, _stage_referenced_columns_for_base
+from slayer.engine.extensions import QueryScope, query_scopes
+from slayer.live_schema.schema_drift import _refs_on_base, _stage_dependency_refs
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import disposable_engine, seeded_exec_engine
@@ -157,6 +158,10 @@ def _ab_models() -> list[SlayerModel]:
 
 def _all_models() -> list[SlayerModel]:
     return [_orders(), _customers(), *_cycle_models(), *_ab_models()]
+
+def _stage_scope(stage: SlayerQuery, models_by_name: dict) -> QueryScope:
+    return query_scopes([stage], models_by_ds={"ds": models_by_name}, data_source="ds")[0][0]
+
 
 
 class _Ctx:
@@ -462,16 +467,16 @@ class TestComposedWalk:
     def test_typed_revisit_attributes_to_nothing_in_drift(self) -> None:
         models = _by_name()
         stage = SlayerQuery.model_validate({"source_model": "orders", "dimensions": ["customer.last_order.amount"]})
-        graph = _build_stage_graph(stage=stage, stage_source_name="orders", models_by_name=models)
-        assert _stage_referenced_columns_for_base(stage=stage, base_name="orders", graph=graph) == set()
+        graph = _stage_scope(stage, models)
+        assert _refs_on_base(refs=_stage_dependency_refs(stage=stage, scope=graph), base_name="orders", scope=graph) == set()
 
     def test_composed_reference_attributes_to_its_declaring_model(self) -> None:
         models = _by_name()
         stage = SlayerQuery.model_validate({"source_model": "orders", "dimensions": ["customer.last_amount"]})
-        graph = _build_stage_graph(stage=stage, stage_source_name="orders", models_by_name=models)
-        assert _stage_referenced_columns_for_base(stage=stage, base_name="customers", graph=graph) == {
+        graph = _stage_scope(stage, models)
+        assert _refs_on_base(refs=_stage_dependency_refs(stage=stage, scope=graph), base_name="customers", scope=graph) == {
             "last_amount"}
-        assert _stage_referenced_columns_for_base(stage=stage, base_name="orders", graph=graph) == set()
+        assert _refs_on_base(refs=_stage_dependency_refs(stage=stage, scope=graph), base_name="orders", scope=graph) == set()
 
 
 class TestCancellationToTheNearestOccurrence:

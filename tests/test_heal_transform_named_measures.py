@@ -80,7 +80,8 @@ class TestModelExtensionMeasure:
     async def test_extension_measure_named_lag(self, engine: SlayerQueryEngine) -> None:
         def query(name: str) -> dict[str, Any]:
             return {
-                "source_model": {"source_name": "orders", "measures": [{"name": name, "formula": "sum(amount)"}]},
+                "source_model": "orders",
+                "extensions": [{"source_name": "orders", "measures": [{"name": name, "formula": "sum(amount)"}]}],
                 "dimensions": ["region"], "measures": [name],
             }
 

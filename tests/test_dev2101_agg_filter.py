@@ -140,9 +140,10 @@ class TestFilterPositions:
 
     async def test_inline_model_measure(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(
-            source_model={"source_name": "orders", "measures": [
+            source_model="orders",
+            extensions=[{"source_name": "orders", "measures": [
                 {"name": "paid_total", "formula": f"sum(amount) FILTER (WHERE {PAID})"},
-            ]},
+            ]}],
             measures=["paid_total"],
         ))
         assert num(single(resp, "paid_total")) == 70.0

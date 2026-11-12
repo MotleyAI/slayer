@@ -5,17 +5,16 @@ The orchestrator builds this once at execute start; the binder reads it purely.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType
 from slayer.core.granularity import CustomGranularity
-from slayer.core.join_edges import same_edge
+from slayer.core.join_edges import EdgeMerge
 from slayer.core.join_walker import with_list_children
 from slayer.core.models import (
     Column,
-    ModelJoin,
     SlayerModel,
     _check_column_measure_namespace,
     _check_join_keys,
@@ -25,17 +24,28 @@ from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
 from slayer.core.scope import ModelScope, StageDisplay, StageSchema
 
 __all__ = [
+    "InnerRestriction",
     "resolve_scope",
     "ResolvedSourceBundle",
-    "added_joins",
     "apply_extension_overlay",
-    "as_extension_over_nonsibling",
     "follow_sibling_chain",
     "model_from_stage_schema",
+    "overlay_columns_and_measures",
     "source_name_if_sibling",
-    "spec_adds_measures",
     "stage_bundle_with_siblings",
 ]
+
+
+class InnerRestriction(BaseModel):
+    """A query-declared INNER join: the field filter ``<model>.<token>.<key> IS NOT NULL``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    model: str
+    token: str
+    key: str
+    # How messages name the declaration.
+    label: str
 
 
 class ResolvedSourceBundle(BaseModel):
@@ -47,6 +57,8 @@ class ResolvedSourceBundle(BaseModel):
     referenced_models: List[SlayerModel] = Field(default_factory=list)
     inline_extensions: List[ModelExtension] = Field(default_factory=list)
     named_queries: Dict[str, SlayerQuery] = Field(default_factory=dict)
+    # The root query as resolved; with ``named_queries``, the stages the planner reads.
+    query: Optional[SlayerQuery] = None
     # Per-named-stage source model (sibling-sourced stages omitted).
     stage_source_models: Dict[str, SlayerModel] = Field(default_factory=dict)
     query_variables: Dict[str, Any] = Field(default_factory=dict)
@@ -69,6 +81,29 @@ class ResolvedSourceBundle(BaseModel):
     granularities: Dict[str, CustomGranularity] = Field(default_factory=dict)
     # A stored model shadows the built-in ``time_spine``.
     spine_clash: bool = False
+    # The datasource's model names and stored edge names (what a query-local edge must not be named).
+    datasource_model_names: FrozenSet[str] = frozenset()
+    datasource_edge_names: FrozenSet[str] = frozenset()
+    # The stage's query-declared INNER joins, read as population filters.
+    inner_restrictions: Tuple[InnerRestriction, ...] = ()
+    # Every other stage's universe when the root's inline source shadows a stored model of its name.
+    stage_referenced_models: Optional[List[SlayerModel]] = None
+
+    def for_non_root_stage(self) -> "ResolvedSourceBundle":
+        """This bundle as a stage other than the root reads it: the root's inline source stays in the root."""
+        if self.stage_referenced_models is None:
+            return self
+        return self.model_copy(update={"referenced_models": self.stage_referenced_models})
+
+    def definition_view(self) -> "ResolvedSourceBundle":
+        """This bundle as stored definitions see it: without anything a query extension added."""
+        models = [*([self.source_model] if self.source_model is not None else []), *self.referenced_models]
+        if not any(m.extended for m in models):
+            return self
+        return self.model_copy(update={
+            "source_model": self.source_model.definition_view() if self.source_model is not None else None,
+            "referenced_models": [m.definition_view() for m in self.referenced_models],
+        })
 
     def get_referenced_model(self, name: str) -> Optional[SlayerModel]:
         """Linear lookup by name (list is small, O(n) scan is fine); a list child resolves through its parent."""
@@ -112,54 +147,32 @@ class ResolvedSourceBundle(BaseModel):
         return with_list_children(out)
 
 
-def added_joins(*, base: SlayerModel, joins: Optional[List[ModelJoin]]) -> List[ModelJoin]:
-    """Extension ``joins`` new to ``base``: one repeating a stored join is that edge."""
-    return [j for j in joins or [] if not any(same_edge(j, s) for s in base.joins)]
-
-
-def apply_extension_overlay(
-    base: SlayerModel, ext: ModelExtension
-) -> SlayerModel:
-    """Extend ``base`` with the extra columns / measures / joins of ``ext``."""
-    # Query-backed base defers its measure overlay to post-expansion; overlaying
-    # now would build the source_queries+measures combo the validator rejects.
-    overlay_measures = list(base.measures) if base.source_queries else (
-        list(base.measures) + list(ext.measures or [])
-    )
-    merged = base.model_copy(
-        update={
-            "columns": list(base.columns) + list(ext.columns or []),
-            "measures": overlay_measures,
-            "joins": list(base.joins) + added_joins(base=base, joins=ext.joins),
-        }
-    )
-    # model_copy runs no validators; re-run the namespace and join-key checks
-    # (the latter deferred, like measures, until a query-backed base expands).
-    if not base.awaits_columns:
-        _check_join_keys(model_name=merged.name, columns=merged.columns, joins=merged.joins)
+def overlay_columns_and_measures(base: SlayerModel, ext: ModelExtension) -> SlayerModel:
+    """``base`` with ``ext``'s columns and measures, marked query-local."""
+    columns, measures = list(ext.columns or []), list(ext.measures or [])
+    if not columns and not measures:
+        return base
+    merged = base.model_copy(update={
+        "columns": [*base.columns, *columns], "measures": [*base.measures, *measures],
+    }).with_query_local(base.query_local_names | {c.name for c in columns} | {m.name for m in measures if m.name})
     if not merged.source_queries:
-        _check_column_measure_namespace(
-            model_name=merged.name,
-            columns=merged.columns,
-            measures=merged.measures,
-        )
+        _check_column_measure_namespace(model_name=merged.name, columns=merged.columns, measures=merged.measures)
     return merged
+
+
+def apply_extension_overlay(base: SlayerModel, ext: ModelExtension) -> SlayerModel:
+    """``base`` extended by ``ext`` alone: its joins merged with ``base``'s own edges."""
+    merge = EdgeMerge(models={base.name: overlay_columns_and_measures(base, ext)})
+    for join in ext.joins or []:
+        merge.add(declaring=base.name, join=join)
+    return merge.models[base.name]
 
 
 def source_name_if_sibling(
     spec: SourceSpec | None, sibling_names: "set[str] | Dict[str, Any]"
 ) -> Optional[str]:
-    """The sibling stage a bare-name or extension spec reads from, else ``None``."""
-    if isinstance(spec, str):
-        return spec if spec in sibling_names else None
-    if isinstance(spec, ModelExtension):
-        return spec.source_name if spec.source_name in sibling_names else None
-    return None
-
-
-def spec_adds_measures(spec: SourceSpec | None) -> bool:
-    """True when a ``source_model`` spec is a ``ModelExtension`` carrying measures."""
-    return isinstance(spec, ModelExtension) and bool(spec.measures)
+    """The sibling stage a bare-name spec reads from, else ``None``."""
+    return spec if isinstance(spec, str) and spec in sibling_names else None
 
 
 def follow_sibling_chain(
@@ -178,15 +191,6 @@ def follow_sibling_chain(
             )
         seen.append(sib)
         spec = named_queries[sib].source_model
-
-
-def as_extension_over_nonsibling(
-    spec: SourceSpec | None, sibling_names: "set[str]"
-) -> Optional[ModelExtension]:
-    """``spec`` itself when it is an extension over a NON-sibling base, else ``None``."""
-    if isinstance(spec, ModelExtension) and spec.source_name not in sibling_names:
-        return spec
-    return None
 
 
 def model_from_stage_schema(

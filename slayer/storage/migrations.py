@@ -19,23 +19,31 @@ from typing import Any
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
     "SlayerModel": 21,
-    "SlayerQuery": 12,
+    "SlayerQuery": 13,
     "DatasourceConfig": 3,
     "Memory": 9,
     "Embedding": 1,
 }
 
 _document: ContextVar[str | None] = ContextVar("slayer_migrated_document", default=None)
+_stored: ContextVar[bool] = ContextVar("slayer_stored_document", default=False)
 
 
 @contextmanager
-def migrating_document(label: str | None) -> Iterator[None]:
-    """Name the stored document whose nested documents migrate inside the block."""
+def migrating_document(label: str | None, *, stored: bool) -> Iterator[None]:
+    """Name the document whose nested documents migrate inside the block; ``stored`` when it carries a version."""
     token = _document.set(label or _document.get())
+    stored_token = _stored.set(stored or _stored.get())
     try:
         yield
     finally:
+        _stored.reset(stored_token)
         _document.reset(token)
+
+
+def in_stored_document() -> bool:
+    """Whether validation runs inside a stored (versioned) model's or memory's nested documents."""
+    return _stored.get()
 
 
 def document_label(data: dict) -> str | None:
@@ -173,6 +181,30 @@ def _query_v3_to_v4(data: dict) -> dict:
     if strict:
         data.setdefault("to_many_handling", "error")
     return data
+
+
+def is_legacy_root_extension(source: Any) -> bool:
+    """Whether a raw ``source_model`` is the legacy extension object."""
+    return isinstance(source, dict) and "source_name" in source
+
+
+def hoist_root_extension(data: dict) -> dict:
+    """A query whose ``source_model`` is an extension object, as ``source_model: <base>`` plus that extension."""
+    source = data.get("source_model")
+    if not isinstance(source, dict) or not is_legacy_root_extension(source):
+        return data
+    return with_root_extension(data, extension=source, base=source["source_name"])
+
+
+def with_root_extension(data: dict, *, extension: Any, base: Any) -> dict:
+    """``data`` sourced from ``base`` with ``extension`` first in its extensions; a non-list ``extensions`` is left to validation."""
+    extensions = data.get("extensions")
+    if extensions is not None and not isinstance(extensions, list):
+        return data
+    return {**data, "source_model": base, "extensions": [extension, *(extensions or [])]}
+
+
+register_migration(entity="SlayerQuery", source_version=12, stored_only=True)(hoist_root_extension)
 
 
 def migrate(entity: str, data: Any) -> Any:
