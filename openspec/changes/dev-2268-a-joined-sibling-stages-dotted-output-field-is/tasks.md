@@ -15,4 +15,4 @@
 - [x] 2.5 Typed plumbing of the population model into the unrelated-read check (decision 4); verify 1.3's unrelated short-form test
 - [x] 2.6 User spellings in binding-raised reference errors, walker fields kept canonical (decision 5); verify 1.4
 - [x] 2.7 Docs: one sentence in `docs/concepts/queries.md` sibling-stage paragraph (decision 12)
-- [ ] 2.8 Gates: full non-integration suite, `ruff check slayer/ tests/`, `basedpyright` (no new errors vs baseline), `la-arch-check`, `openspec validate dev-2268-a-joined-sibling-stages-dotted-output-field-is --strict`
+- [x] 2.8 Gates: full non-integration suite, `ruff check slayer/ tests/`, `basedpyright` (no new errors vs baseline), `la-arch-check`, `openspec validate dev-2268-a-joined-sibling-stages-dotted-output-field-is --strict`
