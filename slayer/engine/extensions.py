@@ -260,11 +260,33 @@ def query_scopes(
 ) -> List[List[QueryScope]]:
     """Per query of a query list (the root last), its scope in each datasource it may read (lenient: conflicts skip)."""
     named = {q.name: q for q in queries[:-1] if q.name}
+    respelled_by_ds: Dict[str, List[SlayerQuery]] = {}
+
+    def scope(index: int, ds: str) -> QueryScope:
+        stored = models_by_ds.get(ds, {})
+        if ds not in respelled_by_ds:
+            respelled_by_ds[ds] = _respelled_leniently(queries, stored=stored)
+        stages = respelled_by_ds[ds]
+        own = {q.name: q for q in stages[:-1] if q.name}
+        return _scope(stages[index], data_source=ds, named=own, stored=stored)
+
     return [
-        [_scope(query, data_source=ds, named=named, stored=models_by_ds.get(ds, {}))
-         for ds in _data_sources(query, named=named, models_by_ds=models_by_ds, data_source=data_source)]
-        for query in queries
+        [scope(i, ds) for ds in _data_sources(query, named=named, models_by_ds=models_by_ds, data_source=data_source)]
+        for i, query in enumerate(queries)
     ]
+
+
+def _respelled_leniently(queries: Sequence[SlayerQuery], *, stored: Mapping[str, SlayerModel]) -> List[SlayerQuery]:
+    """``respelled_stages`` over ``stored``; an ambiguous name stays as written (the engine refuses it)."""
+    stages = [q.name for q in queries[:-1] if q.name]
+    out: List[SlayerQuery] = []
+    for query in queries:
+        spec = query.source_model
+        try:
+            out.append(respelled(query, declared=[*([spec.name] if isinstance(spec, SlayerModel) else []), *stored, *stages]))
+        except AmbiguousReferenceError:
+            out.append(query)
+    return out
 
 
 def _chain_base(spec, *, named: Mapping[str, SlayerQuery]) -> Tuple[bool, Optional[str], Optional[SlayerModel]]:
@@ -310,9 +332,14 @@ def _data_sources(
         n for q in _chain(query, named=named)
         for n in [*extension_model_names(q), *(p[0] for p in query_reference_parts(q) if len(p) > 1)]
     }
-    if data_source is not None and (not names or names & models_by_ds.get(data_source, {}).keys()):
+    folded = {n.casefold() for n in names}
+
+    def holds(models: Mapping[str, SlayerModel]) -> bool:
+        return any(m.casefold() in folded for m in models)
+
+    if data_source is not None and (not names or holds(models_by_ds.get(data_source, {}))):
         return [data_source]
-    holders = sorted(ds for ds, models in models_by_ds.items() if names & models.keys())
+    holders = sorted(ds for ds, models in models_by_ds.items() if holds(models))
     return holders or ([data_source] if data_source is not None else [])
 
 
@@ -321,10 +348,6 @@ def _scope(
 ) -> QueryScope:
     siblings = [n for n in named if n != query.name]
     spec = query.source_model
-    try:
-        query = respelled(query, declared=[*([spec.name] if isinstance(spec, SlayerModel) else []), *stored, *siblings])
-    except AmbiguousReferenceError:  # the engine refuses it; the static reader reads it as written
-        pass
     models: Dict[str, SlayerModel] = {
         **stored, **{n: _sibling_host(n, query=query, data_source=data_source) for n in siblings}}
     resolved = _chain_base(spec, named=named)[0]

@@ -234,10 +234,14 @@ async def test_a_stage_extension_reaches_the_stored_model_beside_an_inline_root_
     assert ("Customers", "tier") in reads.columns
 
 
-def test_a_stage_source_written_in_another_case_is_read() -> None:
-    backed = SlayerModel(name="backed", data_source=DS, source_queries=[q(source_model="customers", dimensions=["name"])])
-    models = respelled_model(_models(), name="customers", spelling="Customers")
-    assert (DS, "Customers") in models_read_by(backed, models=models)
+@pytest.mark.parametrize("data_source", [DS, ""], ids=["own-datasource", "no-datasource"])
+def test_a_stage_source_written_in_another_case_is_read(data_source: str) -> None:
+    backed = SlayerModel(name="backed", data_source=data_source, source_queries=[
+        q(source_model="customers", dimensions=["name", "region_label"])])
+    label = Column(name="region_label", sql="regions.name", type=DataType.TEXT)
+    models = [m.model_copy(update={"columns": [*m.columns, label]}) if m.name == "Customers" else m
+              for m in respelled_model(_models(), name="customers", spelling="Customers")]
+    assert {(DS, "Customers"), (DS, "regions")} <= models_read_by(backed, models=models)
 
 
 async def test_an_inline_sources_saved_measure_is_not_a_read_of_its_stored_namesake() -> None:
