@@ -14,7 +14,9 @@ from slayer.engine.model_reads import models_read_by
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.statement_reads import StatementReads
 from slayer.live_schema.schema_drift import WholeModelDelete, column_dependents
-from tests._dev2102_fixtures import DS, CUSTOMER_PAIRS, base_models, customers, ext, join, q, regions, shop
+from tests._dev2102_fixtures import (
+    DS, CUSTOMER_PAIRS, base_models, customers, ext, join, q, regions, respelled_model, shop,
+)
 
 _HARNESS_QB = "harness_qb"
 _TIER_LABEL = {"name": "tier_label", "sql": "upper(tier)", "type": "TEXT"}
@@ -220,6 +222,22 @@ async def test_a_stage_sourced_from_the_stored_namesake_still_reads_it(stages: l
     assert touched == {"customers"}
     assert ("customers", "name") in reads.columns
     assert ("customers", "city") not in reads.columns
+
+
+async def test_a_stage_extension_reaches_the_stored_model_beside_an_inline_root_of_another_case() -> None:
+    stage = q(name="s", source_model="orders", dimensions=["Customers.tier2"], measures=[{"formula": "count(*)", "name": "n"}],
+              extensions=[ext("customers", columns=[{"name": "tier2", "sql": "tier", "type": "TEXT"}])])
+    stages = [stage, q(source_model=_INLINE_OVER_ADDRESSES, dimensions=["city"])]
+    async with shop("sqlite", respelled_model(_models(), name="customers", spelling="Customers")) as engine:
+        touched, reads = await _planned(engine, stages)
+    assert "Customers" in touched
+    assert ("Customers", "tier") in reads.columns
+
+
+def test_a_stage_source_written_in_another_case_is_read() -> None:
+    backed = SlayerModel(name="backed", data_source=DS, source_queries=[q(source_model="customers", dimensions=["name"])])
+    models = respelled_model(_models(), name="customers", spelling="Customers")
+    assert (DS, "Customers") in models_read_by(backed, models=models)
 
 
 async def test_an_inline_sources_saved_measure_is_not_a_read_of_its_stored_namesake() -> None:

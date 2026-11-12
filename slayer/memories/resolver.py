@@ -47,6 +47,7 @@ from slayer.core.join_walker import walk_miss, walk_terminal
 from slayer.core.models import SlayerModel
 from slayer.core.query import ComputedDimension, SlayerQuery, extension_model_names
 from slayer.core.time_spine import is_spine_query
+from slayer.engine.bundle_builder import stored_model
 from slayer.engine.column_dependency import definition_reads
 from slayer.engine.extensions import FieldKind, QueryScope, query_field_texts, query_scopes
 from slayer.engine.population.inference import infer_population, infer_spine_population
@@ -600,7 +601,7 @@ async def _rooted(query: SlayerQuery, *, storage: StorageBackend) -> tuple[Slaye
             raise EntityResolutionError(f"Could not infer the query's population: {exc}") from exc
         src, data_source = choice.model_name, choice.data_source
         query = query.model_copy(update={"source_model": src})
-    model = await storage.get_model(src, data_source=data_source)
+    model = await stored_model(storage, name=src, data_source=data_source)
     if model is None:
         raise EntityResolutionError(f"Source model not found: {src!r}.")
     return query, model
@@ -625,6 +626,10 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
     # 1. source_model — a saved model name, an inline model, or the population the engine infers — then the models
     # its extensions name.
     query, source_model = await _rooted(query, storage=storage)
+    ds = source_model.data_source
+    stored = await _datasource_models(storage, source_model)
+    query_scope = query_scopes([query], models_by_ds={ds: stored}, data_source=ds)[0][0]
+    query = query_scope.query or query
     _add([f"{source_model.data_source}.{source_model.name}"])
     for name in extension_model_names(query):
         extended = await storage.get_model(name, data_source=source_model.data_source or None)
@@ -635,9 +640,6 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
     local_names = {m.name for m in query.measures or [] if m.name} | {
         d.name for d in query.dimensions or [] if isinstance(d, ComputedDimension) and d.name
     } | {td.name for td in query.time_dimensions or [] if td.name}
-    ds = source_model.data_source
-    stored = await _datasource_models(storage, source_model)
-    query_scope = query_scopes([query], models_by_ds={ds: stored}, data_source=ds)[0][0]
     scope = _ExtensionScope(storage=storage, scope=query_scope, stored=stored)
     root = query_scope.host or source_model
     for kind, text in query_field_texts(query):

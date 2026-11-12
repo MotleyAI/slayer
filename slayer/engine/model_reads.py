@@ -207,6 +207,7 @@ class _Reads:
     def stage(self, query: SlayerQuery, *, scope: QueryScope) -> None:
         """What one query object reads in ``scope``: its source, the models its extensions name, what their own
         definitions read, every reference, and each INNER join's population filter."""
+        query = scope.query or query
         self.sources(query, scope=scope)
         host = scope.host
         if host is not None and (isinstance(query.source_model, SlayerModel) or extension_of(query, host.name) is not None):

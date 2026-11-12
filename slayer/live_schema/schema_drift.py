@@ -897,7 +897,7 @@ def _extension_field(model: SlayerModel | None, name: str) -> Column | ModelMeas
     """``model``'s query-local column or measure ``name``."""
     if model is None or name not in model.query_local_names:
         return None
-    return model.get_column(name) or model.get_measure(name)
+    return model.get_column(name, quoted=True) or model.get_measure(name, quoted=True)
 
 
 def _field_definition_refs(ref: _FramedRef, *, scope: QueryScope) -> list[_FramedRef]:
@@ -1059,6 +1059,7 @@ def _query_backed_should_whole_drop(
     for stage, scope in zip(stages, _stage_scopes(qb_model, models_by_name=state.models_by_name)):
         if scope.base is None:
             continue
+        stage = scope.query or stage
         reason = _check_stage_for_whole_drop(
             stage=stage,
             base_name=scope.base,

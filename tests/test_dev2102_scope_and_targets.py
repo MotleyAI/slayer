@@ -6,7 +6,7 @@ from collections import Counter
 
 import pytest
 
-from slayer.core.errors import ModelNotFoundError, SlayerError, UnknownReferenceError
+from slayer.core.errors import AmbiguousReferenceError, ModelNotFoundError, SlayerError, UnknownReferenceError
 from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.stage_ordering import topologically_order_stages
@@ -17,12 +17,14 @@ from tests._dev2102_fixtures import (
     DS,
     TOTAL_AMOUNT,
     TOTAL_CREDIT,
+    base_models,
     by_key,
     customers,
     ext,
     join,
     orders,
     q,
+    respelled_model,
     rows,
     shop,
     with_models,
@@ -160,6 +162,34 @@ class TestScope:
         async with shop(dialect) as engine:
             resp = await engine.execute(query)
         assert float(resp.data[0]["customers.t"]) == 10 * TOTAL_CREDIT
+
+
+class TestModelNameCase:
+    """An extension names a model as any unquoted reference does: the stored spelling in any case."""
+
+    @pytest.mark.parametrize("spelled", ["Customers", "customers", "CUSTOMERS"])
+    async def test_an_extension_reaches_a_model_saved_in_another_case(self, dialect, spelled: str) -> None:
+        query = q(source_model="orders", dimensions=["Customers.tier_label"], measures=[AMOUNT],
+                  extensions=[ext(spelled, columns=[TIER_LABEL])])
+        async with shop(dialect, respelled_model(base_models(), name="customers", spelling="Customers")) as engine:
+            resp = await engine.execute(query)
+        assert {r[resp.columns[0]] for r in resp.data} == {"GOLD", "SILVER", "BRONZE", None}
+
+    async def test_an_inline_source_joins_a_model_saved_in_another_case(self, dialect) -> None:
+        inline = {"name": "big_orders", "data_source": DS, "sql_table": "orders", "columns": [
+            {"name": "id", "type": "INT", "primary_key": True}, {"name": "customer_id", "type": "INT"}],
+            "joins": [{"target_model": "customers", "join_pairs": [["customer_id", "id"]]}]}
+        async with shop(dialect, respelled_model(base_models(), name="customers", spelling="Customers")) as engine:
+            resp = await engine.execute(q(source_model=inline, dimensions=["customers.name"]))
+        assert {r[resp.columns[0]] for r in resp.data} == {"Ann", "Bob", "Cid", "Dee", "Eve", None}
+
+    async def test_an_extension_matching_two_spellings_is_ambiguous(self, dialect) -> None:
+        inline = {"name": "customers", "data_source": DS, "sql_table": "addresses", "columns": [
+            {"name": "id", "type": "INT", "primary_key": True}, {"name": "city", "type": "TEXT"}]}
+        query = q(source_model=inline, dimensions=["city"], extensions=[ext("CUSTOMERS", columns=[TIER_LABEL])])
+        async with shop(dialect, respelled_model(base_models(), name="customers", spelling="Customers")) as engine:
+            with pytest.raises(AmbiguousReferenceError):
+                await engine.execute(query)
 
 
 class TestRejectedTargets:

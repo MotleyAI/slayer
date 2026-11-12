@@ -1255,6 +1255,8 @@ class SlayerQueryEngine:
             now=self._clock(),
             failures=failures,
         )
+        # Plan the stages as the bundle resolved them (extension model names respelled).
+        query, named_queries = bundle.query or query, bundle.named_queries
         # ``build_resolved_source_bundle`` raises if unresolved, so it's populated.
         model = bundle.source_model
         assert model is not None
