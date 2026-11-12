@@ -14,8 +14,8 @@ A client implements `slayer.database.client.SqlClient`. Every method is `async` 
 | Member | Returns | Meaning |
 |---|---|---|
 | `datasource` | `DatasourceConfig` | The datasource the client serves. |
-| `execute(sql)` | `ExecutionResult(rows=[{column: value}, ...])` | Run a rendered statement **verbatim** — `:name` and `%` are literal text. A statement that returns no rows (DDL) yields `rows=[]`. The default client refuses a statement that leads with a session or transaction keyword (`USE`, `SET`, `RESET`, `ALTER SESSION`, `DISCARD`, `BEGIN`, `START TRANSACTION`, `COMMIT`, `ROLLBACK`, `END`, `ABORT`, `SAVEPOINT`, `RELEASE`, `SAVE`, `XA`) with `SessionStatementRefused`, sending nothing; session state changed through a function such as Postgres `set_config` is not detected, so don't change it that way. |
-| `explain(statements)` | `ExecutionResult` | Run an `ExplainStatements` on one connection, each statement verbatim and in its own batch: `session_on` (if set), then `statement`, whose rows are the plan, then `session_off` even when `statement` fails or is cancelled; a connection whose `session_off` is not confirmed must never be reused. |
+| `execute(sql)` | `ExecutionResult(rows=[{column: value}, ...])` | Run a rendered statement **verbatim** — `:name` and `%` are literal text. A statement that returns no rows (DDL) yields `rows=[]`. The default client refuses a statement that leads with a session or transaction keyword (`USE`, `SET`, `RESET`, `ALTER SESSION`, `DISCARD`, `BEGIN`, `START TRANSACTION`, `COMMIT`, `ROLLBACK`, `END`, `ABORT`, `SAVEPOINT`, `RELEASE`, `SAVE`, `XA`) with `SessionStatementRefused`, sending nothing; session state changed through a function such as Postgres `set_config` is not detected, so don't change it that way. It also refuses, with `WriteStatementRefused` and sending nothing, any text that does not parse in the datasource's SQL dialect into reads only — queries, `VALUES`, `SHOW` and `DESCRIBE` of a table, holding no DDL, DML or `INTO` (so DDL, DML, `PRAGMA`, `CALL`, `EXPLAIN`, statements run together without `;`, and MySQL executable comments `/*! … */`) — except on an in-memory SQLite or DuckDB database. |
+| `explain(statements)` | `ExecutionResult` | Run an `ExplainStatements` on one connection, each statement verbatim and in its own batch: `session_on` (if set), then `statement`, whose rows are the plan, then `session_off` even when `statement` fails or is cancelled; a connection whose `session_off` is not confirmed must never be reused. The default client refuses, sending nothing, statements that are not its dialect's plan of a statement `execute` admits. |
 | `get_result_column_types(sql)` | `{column: ResultColumnType(type, element_type, db_type)}` | Each result column's SLayer `type` (`DataType`), a list's `element_type`, and the database's type name (`db_type`, `None` only when the driver names none), without fetching data beyond what certifying integers needs. |
 | `server_profile()` | `ServerProfile` | Server facts SLayer gates features on (ClickHouse); `ServerProfile()` when there are none. |
 | `ping()` | `None` | Raise unless the database answers. |
@@ -39,7 +39,7 @@ connection's current one.
 
 **Failures.** Raise `DatabaseUnavailable` when the database cannot be reached,
 `AuthenticationRefused` when it rejects the credentials, and `ObjectNotFound` when a metadata read
-names a schema or table that does not exist (all subclass `SqlClientError`). Any other statement
+names a schema or table that does not exist (all subclass `SqlClientError`, as do the default client's `SessionStatementRefused` and `WriteStatementRefused`). Any other statement
 failure must reach the caller as the database's own error, message unchanged. SLayer treats these
 strictly: drift deletes a model only when its table is absent from a *successful* listing, a
 listed-but-unreadable table yields no verdict, and a session-policy column it cannot confirm
@@ -52,6 +52,12 @@ at its end, so a client must keep working after `aclose()`. Cancelling a `Slayer
 that runs in a worker thread (every call over a driver without async support, or over psycopg on
 Windows' default event loop), e.g. with `asyncio.wait_for`, returns at once unless the client was
 built with `sa_engine=`; the blocking call itself finishes in its worker thread on its own.
+
+**Read-only connections.** The default client's connections are read-only wherever the backend
+allows it (see [Database support](../database-support.md#read-only-connections)). A DuckDB file is
+opened read-only, and DuckDB refuses a second, differently configured connection to the same file
+in one process: close your own write connection to it before SLayer's next call. A local SQLite or
+DuckDB file that does not exist is refused with `DatabaseUnavailable` rather than created.
 
 ## A statements-only gateway
 
@@ -114,7 +120,7 @@ fixture into the database behind your client, then run the suite:
 from slayer.database.conformance import capabilities_for, fixture_statements, run_conformance
 
 for statement in fixture_statements(dialect="postgres"):
-    ...  # run it on the database your client reaches
+    ...  # run it through your own driver: SLayer's default client sends only reads
 
 report = await run_conformance(client, capabilities=capabilities_for(dialect="postgres"))
 print(report.failed, report.failures)

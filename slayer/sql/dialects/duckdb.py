@@ -8,14 +8,15 @@ the Postgres catalog queries duckdb-engine inherits.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Any, ClassVar, Optional
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 import sqlglot
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
+from sqlalchemy.engine.url import URL
 
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
@@ -23,7 +24,9 @@ from slayer.core.enums import DataType
 from slayer.sql.dialects.base import (
     LIST_ELEMENT,
     PORTABLE_LIBRARY,
+    LocalDatabase,
     NativeFn,
+    ReadOnlyEngineArgs,
     SqlDialect,
     TextFn,
     anon,
@@ -51,6 +54,14 @@ from slayer.sql.dialects.reflection import (
     keys_of_reads,
     table_function,
 )
+
+if TYPE_CHECKING:
+    from slayer.core.models import DatasourceConfig
+
+_MEMORY = ":memory:"
+
+# Database names served by MotherDuck, not a local file.
+_REMOTE_PREFIXES = ("md:", "motherduck:")
 
 #: ``json_type`` values that are not a scalar.
 _NON_SCALAR_JSON = ("OBJECT", "ARRAY", "NULL")
@@ -186,6 +197,25 @@ class DuckdbDialect(SqlDialect):
 
     def current_catalog_sql(self) -> str | None:
         return "SELECT current_database()"
+
+    def local_database(self, url: URL) -> LocalDatabase:
+        database = url.database or ""
+        if not database or database.startswith(_MEMORY):
+            return LocalDatabase(kind="memory")
+        if database.startswith(_REMOTE_PREFIXES):
+            return LocalDatabase()
+        return LocalDatabase(kind="file", path=database)
+
+    def missing_database_error(self, exc: BaseException) -> bool:
+        return "database does not exist" in str(exc)
+
+    def read_only_engine_args(
+        self, *, url: URL, datasource: DatasourceConfig, connect_args: Mapping[str, Any],
+    ) -> ReadOnlyEngineArgs:
+        """A database file opens read-only; an in-memory one cannot."""
+        if self.local_database(url).kind != "file":
+            return ReadOnlyEngineArgs()
+        return ReadOnlyEngineArgs(connect_args={"read_only": True})
 
     def reflect_columns(
         self, *, connection: CatalogConnection | None, inspector: Any,  # NOSONAR(S1172) — hook signature

@@ -267,6 +267,19 @@ class UnsupportedDriverError(SlayerError):
         ))
 
 
+class ReadOnlyConnectionError(SlayerError):
+    """A datasource's connection settings would stop SLayer connecting to it read-only."""
+
+    def __init__(self, *, datasource_name: str, reason: str, hint: str) -> None:
+        self.datasource_name = datasource_name
+        self.hint = hint
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Datasource {datasource_name!r} cannot be connected to read-only: {reason}",
+            suggestion=hint,
+        ))
+
+
 class ExplainUnsupportedError(SlayerError):
     """An EXPLAIN its dialect, or the client serving it, cannot run."""
 
@@ -522,6 +535,20 @@ class ReservedModelNameError(SlayerError):
         super().__init__(
             f"Model name {name!r} is reserved for the built-in time spine model; choose another name."
         )
+
+
+class UnrecognizedStrictValueError(SlayerError):
+    """A query's deprecated ``strict`` flag holds a value that is neither true nor false."""
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+        super().__init__(
+            f"Unrecognized strict value {value!r}; strict is deprecated, use "
+            f"to_many_handling='error' (one of broadcast|associate|error) instead."
+        )
+
+    def __reduce__(self) -> tuple[type, tuple[Any]]:
+        return type(self), (self.value,)
 
 
 class DefaultTimeDimensionTypeError(SlayerError):

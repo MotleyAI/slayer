@@ -17,9 +17,11 @@ from sqlalchemy.exc import ArgumentError, InvalidRequestError, NoSuchModuleError
 from sqlalchemy.pool import ConnectionPoolEntry, QueuePool
 
 from slayer.core.models import DatasourceConfig
+from slayer.database import server_profiles
+from slayer.database.errors import DatabaseUnavailable
 from slayer.sql import connection_policy
-from slayer.sql.dialects import dialect_for_ds_type
-from slayer.sql.dialects.base import SqlDialect, _digest
+from slayer.sql.dialects import dialect_for_ds_type, dialect_for_sa_backend
+from slayer.sql.dialects.base import LocalDatabase, ServerProfile, SqlDialect, _digest
 from slayer.sql.dialects.drivers import load_driver
 
 logger = logging.getLogger(__name__)
@@ -29,8 +31,6 @@ EngineCacheKey = tuple[str, str, str]
 
 # SQLite in-memory sentinel (bare value or path of ``sqlite:///:memory:``).
 _MEMORY_DB_NAME = ":memory:"
-
-_LOCAL_FILE_BACKENDS = frozenset({"sqlite", "duckdb"})
 
 # LRU-ordered, bounded. Credential leg is a security boundary: with the secret out of the URL (BigQuery), two identities would otherwise share one engine.
 _engine_cache: "OrderedDict[EngineCacheKey, sa.Engine]" = OrderedDict()
@@ -186,6 +186,17 @@ def _names_async_driver(url: URL) -> bool:
         return False
 
 
+def local_database(connection_string: str | URL) -> LocalDatabase:
+    """Where ``connection_string`` keeps its database, as its backend's dialect reads the URL."""
+    if connection_string == _MEMORY_DB_NAME:
+        return LocalDatabase(kind="memory")
+    try:
+        url = make_url(connection_string)
+    except ArgumentError:
+        return LocalDatabase()
+    return dialect_for_sa_backend(url.get_backend_name()).local_database(url)
+
+
 def _is_in_memory_sqlite(connection_string: str) -> bool:
     """True iff the connection string is a SQLite in-memory database (URI forms included) on a sync driver;
     an async one goes to the engine build, which refuses it."""
@@ -195,20 +206,20 @@ def _is_in_memory_sqlite(connection_string: str) -> bool:
         url = make_url(connection_string)
     except ArgumentError:
         return False
-    if not url.drivername.startswith("sqlite") or _names_async_driver(url):
+    if url.get_backend_name() != "sqlite" or _names_async_driver(url):
         return False
-    database = url.database
-    if not database or database == _MEMORY_DB_NAME:
-        return True
-    query = dict(url.query) if url.query else {}
-    # mode=memory / file::memory: are in-memory only with uri=true; otherwise
-    # SQLite treats the path as a literal filename, so don't misclassify it.
-    is_uri = str(query.get("uri", "")).lower() == "true"
-    if is_uri and database.startswith("file:") and (
-        query.get("mode") == "memory" or _MEMORY_DB_NAME in database
-    ):
-        return True
-    return False
+    return local_database(url).kind == "memory"
+
+
+def refuse_missing_local_file(datasource: DatasourceConfig, connection_string: str) -> None:
+    """Refuse a local database file that does not exist, before anything connects (and creates it)."""
+    local = local_database(connection_string)
+    if local.kind == "file" and local.path is not None and not os.path.exists(local.path):
+        raise _missing_file(datasource, local.path)
+
+
+def _missing_file(datasource: DatasourceConfig, path: str) -> DatabaseUnavailable:
+    return DatabaseUnavailable(f"Datasource {datasource.name!r}: its database file {path!r} does not exist.")
 
 
 class _OneThreadPool(QueuePool):
@@ -251,6 +262,53 @@ def build_in_memory_sqlite_engine(connection_string: str) -> sa.Engine:
     return engine
 
 
+def _dbapi_first_row(dbapi_connection: Any, sql: str) -> server_profiles.FirstRow:
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute(sql)
+        row = cursor.fetchone()
+    finally:
+        cursor.close()
+    return None if row is None else tuple(row)
+
+
+def _attach_read_only_listeners(
+    *, engine: sa.Engine, datasource: DatasourceConfig, connection_string: str, dialect: SqlDialect,
+) -> None:
+    """Make every new connection read-only (its server profile read first where the dialect needs it), start
+    each transaction read-only where the dialect does, and type a local database file vanishing before connect."""
+    local = local_database(connection_string)
+    if local.kind != "memory" and type(dialect).make_connection_read_only is not SqlDialect.make_connection_read_only:
+
+        @sa_event.listens_for(engine, "connect", insert=True)  # ahead of the dialect's own first-connect statements
+        def _slayer_read_only(dbapi_connection, _connection_record):
+            def _apply(profile: ServerProfile) -> None:
+                dialect.make_connection_read_only(dbapi_connection, profile=profile)
+
+            profile = ServerProfile()
+            if dialect.read_only_reads_profile:
+                profile = server_profiles.cached_profile(
+                    engine=engine, dialect=dialect, on_base=_apply,
+                    first_row=lambda sql: _dbapi_first_row(dbapi_connection, sql),
+                )
+            _apply(profile)
+
+    if dialect.begins_read_only(url=make_url(connection_string), datasource=datasource):
+
+        @sa_event.listens_for(engine, "begin")
+        def _slayer_begin_read_only(conn):
+            dialect.begin_read_only(conn.connection.dbapi_connection)
+
+    if local.kind == "file" and local.path is not None:
+        path = local.path
+
+        @sa_event.listens_for(engine, "handle_error")
+        def _slayer_missing_database(context):
+            if dialect.missing_database_error(context.original_exception):
+                return _missing_file(datasource, path)
+            return None
+
+
 def _build_engine(*, datasource: DatasourceConfig, connection_string: str) -> sa.Engine:
     """Build a new engine (no cache). In-memory SQLite goes through its one builder; otherwise ``build_engine``, falling back to ``sa.create_engine`` when the dialect declines."""
     connection_policy.check_transaction_pooler_backend(datasource, url=connection_string)
@@ -258,6 +316,7 @@ def _build_engine(*, datasource: DatasourceConfig, connection_string: str) -> sa
         return build_in_memory_sqlite_engine(connection_string)
     dialect = dialect_for_ds_type(datasource.type)
     load_driver(datasource, connection_string, dialect=dialect, is_async=False)
+    refuse_missing_local_file(datasource, connection_string)
     engine = dialect.build_engine(datasource, connection_string=connection_string)
     if engine is None:
         engine = sa.create_engine(connection_string, **connection_policy.engine_kwargs(
@@ -265,6 +324,9 @@ def _build_engine(*, datasource: DatasourceConfig, connection_string: str) -> sa
         ))
     _attach_register_udfs_listener(engine=engine, datasource=datasource)
     _attach_session_overrides_listener(engine=engine, datasource=datasource)
+    _attach_read_only_listeners(
+        engine=engine, datasource=datasource, connection_string=connection_string, dialect=dialect,
+    )
     return engine
 
 
@@ -311,10 +373,7 @@ def get_engine(datasource: DatasourceConfig) -> sa.Engine:
 def holds_local_file(engine: sa.Engine) -> bool:
     """Whether ``engine``'s idle connections hold a local database file: a file-backed SQLite or DuckDB URL on a
     QueuePool (an in-memory database closes its live data when drained)."""
-    url = engine.url
-    if url.get_backend_name() not in _LOCAL_FILE_BACKENDS or not isinstance(engine.pool, QueuePool):
-        return False
-    return not _is_in_memory_sqlite(str(url)) and url.database not in (None, "", _MEMORY_DB_NAME)
+    return isinstance(engine.pool, QueuePool) and local_database(engine.url).kind == "file"
 
 
 def release_idle(engine: sa.Engine) -> None:

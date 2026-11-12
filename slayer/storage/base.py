@@ -46,6 +46,7 @@ from slayer.core.models import (
 from slayer.core.query import SlayerQuery
 from slayer.core.syntax import parse_expr
 from slayer.core.warnings import (
+    DeprecatedSpellingWarning,
     LibraryNameShadowWarning,
     SlayerLibraryNameShadowWarning,
     SlayerNameCollisionWarning,
@@ -401,15 +402,14 @@ def _write_sample_fields(
 _CUSTOM_BUCKET_CALLS_BELOW = {"SlayerModel": 20, "Memory": 9}
 
 
-def with_canonical_spellings(model: SlayerModel) -> SlayerModel:
-    """``model`` with each deprecated spelling in its Mode-B texts replaced by its twin, warning once per spelling."""
+def with_canonical_spellings(model: SlayerModel) -> tuple[SlayerModel, list[DeprecatedSpellingWarning]]:
+    """``model`` with each deprecated spelling in its Mode-B texts replaced by its twin, and one warning per spelling."""
     found: dict[str, LegacySpan] = {}
     dumped = model.model_dump(mode="json", exclude_none=True)
     rewritten = rewrite_model_doc(dumped, lambda text: canonical_spellings(text, found=found))
     if not found:
-        return model
-    emit_deprecations(found)
-    return SlayerModel.model_validate(rewritten)
+        return model, []
+    return SlayerModel.model_validate(rewritten), emit_deprecations(found)
 
 
 def warn_library_shadows(model: SlayerModel) -> None:
@@ -540,7 +540,7 @@ class StorageBackend(ABC):
         """Persist a model after ``validate_for_save`` (skipped by ``_validate=False``, migration write-back only), each
         deprecated Mode-B spelling stored as its twin. Backends must NOT override this."""
         if _validate:
-            model = with_canonical_spellings(model)
+            model, _ = with_canonical_spellings(model)
             await self.validate_for_save(model, failures=failures)
             warn_library_shadows(model)
         await self._save_model_impl(model)

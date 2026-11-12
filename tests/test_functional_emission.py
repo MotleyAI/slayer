@@ -239,9 +239,11 @@ def test_help_content_is_functional() -> None:
 
 
 def test_docs_are_functional() -> None:
+    guides = _DOCS / "upgrading"  # migration guides show the removed spellings on purpose
     hits = [
         f"{path.relative_to(_DOCS)}:{lineno}: {line.strip()}"
         for path in sorted(_DOCS.rglob("*.md"))
+        if guides not in path.parents
         for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
         if _COLON_AGG_TEXT.search(line)
     ]

@@ -11,7 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ModelWrapValidatorHandler, PrivateAttr, model_validator
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from slayer import usage_reporting
@@ -31,6 +31,7 @@ from slayer.core.query import (
     check_unique_extensions,
     prepare_query_input,
 )
+from slayer.core.warnings import DeprecatedInputWarning, SlayerWarning
 from slayer.async_utils import run_sync
 from slayer.live_schema import ingestion as engine_ingestion
 from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine
@@ -76,8 +77,8 @@ class QueryRequest(BaseModel):
     # ``False`` to emit raw rows.
     distinct_dimension_values: bool | None = None
     # How aggregates resolve query dimensions unattributable from their root
-    # (broadcast|associate|error); posting the retired `strict` flag is rejected
-    # downstream by SlayerQuery (extra="allow" forwards it into the payload).
+    # (broadcast|associate|error); a deprecated `strict` flag rides extra="allow"
+    # into the payload, where SlayerQuery converts it.
     to_many_handling: str | None = None
     dry_run: bool | None = None
     explain: bool | None = None
@@ -85,10 +86,23 @@ class QueryRequest(BaseModel):
     # Run-by-name only: clauses merged into the saved query's final stage.
     refine: QueryRefinement | None = None
 
-    @model_validator(mode="before")
+    _deprecated_inputs: tuple[DeprecatedInputWarning, ...] = PrivateAttr(default=())
+
+    @model_validator(mode="wrap")
     @classmethod
-    def _prepare_query_input(cls, data: Any) -> Any:
-        return prepare_query_input(data) if isinstance(data, dict) else data
+    def _prepare_query_input(cls, data: Any, handler: ModelWrapValidatorHandler["QueryRequest"]) -> "QueryRequest":
+        payload = None
+        if isinstance(data, dict):
+            data, payload = prepare_query_input(data)
+        request = handler(data)
+        if payload is not None:
+            request._deprecated_inputs = (payload,)
+        return request
+
+    @property
+    def deprecated_inputs(self) -> tuple[DeprecatedInputWarning, ...]:
+        """Deprecations of the input forms converted while building this request."""
+        return self._deprecated_inputs
 
     @model_validator(mode="after")
     def _one_extension_per_model(self) -> "QueryRequest":
@@ -97,6 +111,10 @@ class QueryRequest(BaseModel):
 
 
 _RUN_BY_NAME_FIELDS = frozenset({"name", "variables", "dry_run", "explain", "refine"})
+
+
+def _dumped(warnings: list[SlayerWarning]) -> list[dict[str, Any]]:
+    return [w.model_dump(mode="json") for w in warnings]
 
 
 class QueryListRequest(BaseModel):
@@ -373,6 +391,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             # tool's list form and ``engine.execute(query=[...])``.
             # Engine auto-sorts the list and validates DAG invariants.
             run_kwargs: dict[str, Any] = {}
+            # Conversions made while parsing the request body; the query built from its dump carries none.
+            request_deprecations = request.deprecated_inputs if isinstance(request, QueryRequest) else ()
             if isinstance(request, QueryListRequest):
                 if not request.queries:
                     raise HTTPException(
@@ -445,7 +465,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 columns=result.columns,
                 attributes=attributes,
                 warnings=[
-                    w.model_dump(mode="json") for w in (result.warnings or [])
+                    w.model_dump(mode="json") for w in [*(result.warnings or []), *request_deprecations]
                 ],
                 population=result.population,
                 population_inferred=result.population_inferred,
@@ -528,30 +548,32 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         "/models",
         responses={400: {"description": "Model failed validation (e.g. user-supplied cache fields on a query-backed model, save-time SQL generation failure)."}},
     )
-    async def create_model(model: SlayerModel) -> dict[str, str]:
+    async def create_model(model: SlayerModel) -> dict[str, Any]:
         # Route through engine.save_model so query-backed models get cache
         # populated (and user-supplied cache fields are rejected).
+        notes: list[SlayerWarning] = []
         try:
-            await engine.save_model(model)
+            await engine.save_model(model, warnings_out=notes)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        return {"status": "created", "name": model.name}
+        return {"status": "created", "name": model.name, "warnings": _dumped(notes)}
 
     @app.put(
         "/models/{name}",
         responses={400: {"description": "Body name does not match path name, or model failed validation."}},
     )
-    async def update_model(name: str, model: SlayerModel) -> dict[str, str]:
+    async def update_model(name: str, model: SlayerModel) -> dict[str, Any]:
         if model.name != name:
             raise HTTPException(
                 status_code=400,
                 detail=f"Path name '{name}' does not match body name '{model.name}'",
             )
+        notes: list[SlayerWarning] = []
         try:
-            await engine.save_model(model)
+            await engine.save_model(model, warnings_out=notes)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        return {"status": "updated", "name": name}
+        return {"status": "updated", "name": name, "warnings": _dumped(notes)}
 
     @app.delete(
         "/models/{name}",
