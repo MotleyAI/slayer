@@ -21,7 +21,7 @@ from slayer.core.strict_flag import without_strict
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
-    "SlayerModel": 23,
+    "SlayerModel": 24,
     "SlayerQuery": 14,
     "DatasourceConfig": 3,
     "Memory": 10,
@@ -119,9 +119,9 @@ def _model_v10_to_v11(data: dict) -> dict:
     return data
 
 
-@register_migration(entity="SlayerModel", source_version=22, stored_only=True)
-def _model_v22_to_v23(data: dict) -> dict:
-    """v23: per-doc no-op; join targets are respelled against their peers in the storage load path."""
+@register_migration(entity="SlayerModel", source_version=23, stored_only=True)
+def _model_v23_to_v24(data: dict) -> dict:
+    """v24: per-doc no-op; join targets are respelled against their peers in the storage load path."""
     return data
 
 

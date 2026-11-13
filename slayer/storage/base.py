@@ -109,8 +109,8 @@ _TO_ONE_CARDINALITIES = {"many_to_one", "one_to_one"}
 _LIVE_REFINEMENT_BELOW_VERSION = 8
 _MODEL_LOAD_CONCURRENCY = 8
 _MEMORY_FILTER_REPAIR_BELOW_VERSION = 4
-# Below v23 a stored join target may reach its model only by case, or target the spine.
-_JOIN_TARGET_REPAIR_BELOW_VERSION = 23
+# Below v24 a stored join target may reach its model only by case, or target the spine.
+_JOIN_TARGET_REPAIR_BELOW_VERSION = 24
 # Raw document reads of the enclosing ``load_models`` pass, by ``(backend, data_source, name)``.
 _RAW_PASS: ContextVar[dict[tuple[object, str, str], asyncio.Future[dict | None]] | None] = ContextVar(
     "_RAW_PASS", default=None)
