@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from slayer.core.join_walker import resolved_terminal
 from slayer.core.keys import TimeTruncKey
 from slayer.core.models import SlayerModel
+from slayer.core.warnings import DateOnlyMidnightWarning
 from slayer.ir.bound import BoundFilter, DeclaredMeasure, GranularityConflict, OrderSpec, WholeListRead
 
 __all__ = [
@@ -117,6 +118,7 @@ class PreboundQuery(BaseModel):
     mode_policy: ModePolicy = ModePolicy()
     granularity_conflicts: List[GranularityConflict] = Field(default_factory=list)
     whole_list_reads: List[WholeListRead] = Field(default_factory=list)
+    date_only_notices: List[DateOnlyMidnightWarning] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _filter_texts_are_parallel(self) -> "PreboundQuery":

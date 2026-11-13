@@ -40,7 +40,7 @@ from tests._stored_upgrade_fixtures import (
 
 STORAGES = ("yaml", "sqlite")
 #: Last ``SlayerModel`` version before the stored-target repair.
-PRE_REPAIR = 23
+PRE_REPAIR = 24
 #: Orders per customer name in the shop seed.
 ORDERS_BY_NAME = {"Ann": 2, "Bob": 2, "Cid": 2}
 NAME_QUERY = {"source_model": "orders", "dimensions": ["customers.name"],
@@ -199,7 +199,7 @@ class TestAccessFilteredSaves:
 
 
 # --------------------------------------------------------------------------- #
-# The version-24 upgrade of stored documents
+# The version-25 upgrade of stored documents
 # --------------------------------------------------------------------------- #
 def _customers_doc(name: str = "Customers", **kw) -> dict:
     return {**customers_v10(version=PRE_REPAIR, **kw), "name": name}

@@ -66,40 +66,43 @@ LIB = TableSpec(
         ("x", "DOUBLE"), ("y", "DOUBLE"), ("a", "INT"), ("b", "INT"), ("c", "INT"), ("cp", "INT"),
         ("code", "TEXT"), ("word", "TEXT"), ("tag", "TEXT"), ("notes", "TEXT"), ("prefix", "TEXT"),
         ("payload", "TEXT"), ("num_txt", "TEXT"), ("qty", "INT"), ("ts", "TIMESTAMP"), ("doc", "TEXT"),
-        ("big", "TEXT"),
+        ("big", "TEXT"), ("k", "INT"), ("d", "DECIMAL"), ("e", "DECIMAL"),
     ],
     rows=[
         (1, "ABCDE", "CD", 2, 7, 2, 0.5, 1.0, None, 2, 1, 65, "ab123", "paid", "+1 (555) 01",
-         "paid\nlate", "ab1", P1, "120.5", 3, "2025-03-05 10:00:00", '{"v": null}', "12345678901234567"),
+         "paid\nlate", "ab1", P1, "120.5", 3, "2025-03-05 10:00:00", '{"v": null}', "12345678901234567", 5, 2.5, 0.125),
         (2, "€é", "é", -2, -7, -2, 2.0, -1.0, 3, None, 1, 8364, "ab12", "PAID", "5 USD",
-         "line1\nline2", "zz", '{"a": {}, "qty": "3"}', "99", 0, "2025-03-31 23:59:59", '{}', None),
+         "line1\nline2", "zz", '{"a": {}, "qty": "3"}', "99", 0, "2025-03-31 23:59:59", '{}', None, -5, -2.5, -0.125),
         (3, "a/b/c", "/", 0, 7, 0, -1.0, 0.5, 1, 2, None, 128512, "a_1", "ada", "a@x.org",
-         "nothing", "a_", '{"a": {"b": null}, "qty": "x"}', "abc", 1, "2025-04-01 00:00:00", '{"v": {"k": 1}}', None),
+         "nothing", "a_", '{"a": {"b": null}, "qty": "x"}', "abc", 1, "2025-04-01 00:00:00", '{"v": {"k": 1}}', None, 4, None, None),
         (4, "", "x", 9, -7, 3, 1.0, 1.0, None, None, None, 55296, "abc1", "Ada", "nobody",
-         "paid late", "a_", '{"a": {"b": [1]}}', None, 2, "2024-12-31 12:00:00", '{"v": [1]}', None),
+         "paid late", "a_", '{"a": {"b": [1]}}', None, 2, "2024-12-31 12:00:00", '{"v": [1]}', None, None, None, None),
         (5, None, "a", None, 7, None, None, 1.0, 5, 5, 5, None, None, None, None,
-         None, None, "not json", "3.0", 3, None, '{"v": "x"}', None),
+         None, None, "not json", "3.0", 3, None, '{"v": "x"}', None, None, None, None),
         (6, "Ada Lovelace", "Love", 3, 7, -3, -8.0, None, -1, 0, 1, 1114112, "[ab]1", "123", "15%",
-         "Paid Later", "[a", None, "10", 1, "2025-02-10 08:00:00", '{"v": 0}', None),
+         "Paid Later", "[a", None, "10", 1, "2025-02-10 08:00:00", '{"v": 0}', None, None, None, None),
         (7, "x\U0001F600y", "\U0001F600", -9, -7, 7, -1.5, 2.0, 2, None, None, 57343, "a1", "١٢٣", "150",
-         "x", "%", P7, "1.5", 2, "2025-03-15 00:00:00", '{"v": false}', None),
+         "x", "%", P7, "1.5", 2, "2025-03-15 00:00:00", '{"v": false}', None, None, None, None),
         (8, "ab", "", 1, 0, 1, 0.0, 1.0, None, None, 4, 1114111, "a*?1", "admin", "x",
-         "late paid", "a*", "{}", "1", 1, "2025-01-01 00:00:00", '{"v": "2024-02-29"}', None),
+         "late paid", "a*", "{}", "1", 1, "2025-01-01 00:00:00", '{"v": "2024-02-29"}', None, None, None, None),
         (9, "abc", "z", -1, None, -1, 27.0, -3.0, 0, -3, None, 233, "ab\n", "Adele", "USD USD",
-         "a\nb", None, P9, "02", 2, "2025-06-30 18:30:00", '{"v": "2024-02-29 10:00:00"}', None),
+         "a\nb", None, P9, "02", 2, "2025-06-30 18:30:00", '{"v": "2024-02-29 10:00:00"}', None, None, None, None),
         (10, "Ünïcode", None, 5, 8, 4, 0.25, 0.5, 7, 1, 3, 97, "1_2", "c:\\x1", "",
-         "", "1\\_", P10, "x", None, "2025-03-01 00:00:00", '{"v": 12}', None),
+         "", "1\\_", P10, "x", None, "2025-03-01 00:00:00", '{"v": 12}', None, None, None, None),
     ],
 )
+LIB_DECIMAL = "DECIMAL(10,3)"
 _NAMES = [c for c, _ in LIB.columns]
 ROWS: dict[int, dict[str, Any]] = {r[0]: dict(zip(_NAMES, r)) for r in LIB.rows}
 
 
 def lib_model(*, data_source: str = "test") -> SlayerModel:
-    types = {"INT": DataType.INT, "DOUBLE": DataType.DOUBLE, "TEXT": DataType.TEXT, "TIMESTAMP": DataType.TIMESTAMP}
+    types = {"INT": DataType.INT, "DOUBLE": DataType.DOUBLE, "TEXT": DataType.TEXT, "TIMESTAMP": DataType.TIMESTAMP,
+             "DECIMAL": DataType.DOUBLE}
     return SlayerModel(
         name="lib", sql_table="lib", data_source=data_source, default_time_dimension="ts",
-        columns=[Column(name=c, type=types[k], primary_key=c == "id") for c, k in LIB.columns],
+        columns=[Column(name=c, type=types[k], primary_key=c == "id", db_type=LIB_DECIMAL if k == "DECIMAL" else None)
+                 for c, k in LIB.columns],
     )
 
 
@@ -609,9 +612,18 @@ def _coercion_cases() -> list[Case]:
     ]
 
 
+def _numeric_semantics_cases() -> list[Case]:
+    """True division of INT operands; two-argument ``round`` ties on DECIMAL away from zero."""
+    return [
+        _v("divide|int-operands", ["/"], "k / 2", only({1: 2.5, 2: -2.5, 3: 2.0})),
+        _v("round|decimal-tie-scale-0", ["round"], "round(d, 0)", only({1: 3, 2: -3})),
+        _v("round|decimal-tie-scale-2", ["round"], "round(e, 2)", only({1: 0.13, 2: -0.13})),
+    ]
+
+
 def library_cases() -> list[Case]:
     return [*_string_cases(), *_math_cases(), *_date_cases(), *_like_cases(), *_regex_cases(),
-            *_json_cases(), *_returning_cases(), *_coercion_cases()]
+            *_json_cases(), *_returning_cases(), *_coercion_cases(), *_numeric_semantics_cases()]
 
 
 def required_names() -> frozenset[str]:
@@ -714,12 +726,19 @@ async def lib_engine(backend: str, *, models: Optional[list[SlayerModel]] = None
         yield engine
 
 
+_SERVER_DECIMAL = {
+    "postgres": "NUMERIC(10,3)", "mysql": "DECIMAL(10,3)", "clickhouse": "Nullable(Decimal(10,3))",
+    "tsql": "DECIMAL(10,3)", "trino": "DECIMAL(10,3)", "snowflake": "NUMBER(10,3)", "bigquery": "NUMERIC",
+}
 SERVER_LIB_TYPES: dict[str, dict[str, str]] = {
-    **SERVER_TYPES,
-    "postgres": {**SERVER_TYPES["postgres"], "TIMESTAMP": "TIMESTAMP"},
-    "mysql": {**SERVER_TYPES["mysql"], "TIMESTAMP": "DATETIME"},
-    "snowflake": {"INT": "NUMBER(38,0)", "DOUBLE": "FLOAT", "TEXT": "TEXT", "TIMESTAMP": "TIMESTAMP_NTZ"},
-    "bigquery": {"INT": "INT64", "DOUBLE": "FLOAT64", "TEXT": "STRING", "TIMESTAMP": "DATETIME"},
+    dialect: {**types, "DECIMAL": _SERVER_DECIMAL[dialect]}
+    for dialect, types in {
+        **SERVER_TYPES,
+        "postgres": {**SERVER_TYPES["postgres"], "TIMESTAMP": "TIMESTAMP"},
+        "mysql": {**SERVER_TYPES["mysql"], "TIMESTAMP": "DATETIME"},
+        "snowflake": {"INT": "NUMBER(38,0)", "DOUBLE": "FLOAT", "TEXT": "TEXT", "TIMESTAMP": "TIMESTAMP_NTZ"},
+        "bigquery": {"INT": "INT64", "DOUBLE": "FLOAT64", "TEXT": "STRING", "TIMESTAMP": "DATETIME"},
+    }.items()
 }
 _TEMPORAL_PREFIX = {"trino": "TIMESTAMP", "bigquery": "DATETIME"}
 _SUFFIX = {"clickhouse": " ENGINE = MergeTree ORDER BY tuple()"}

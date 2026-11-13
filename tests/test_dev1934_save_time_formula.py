@@ -169,7 +169,7 @@ class TestEngineCheck:
         engine, store = seeded
         await store.save_datasource(DatasourceConfig(name="my", type="mysql", host="h", database="d"))
 
-        async def _expand_to_mysql(self, model):  # noqa: ANN001
+        async def _expand_to_mysql(self, model, **_):  # noqa: ANN001
             return model.model_copy(update={"data_source": "my"})
 
         monkeypatch.setattr(SlayerQueryEngine, "_validate_and_populate_cache", _expand_to_mysql)

@@ -19,8 +19,11 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS, DataType, TimeGranularity, TIME_TRANSFORMS
 from slayer.core.errors import (
+    AmbiguousJoinPathError,
+    AmbiguousReferenceError,
     AssociationError,
     CanonicalAliasShadowsColumnError,
+    CircularJoinPathError,
     ComputedDimensionError,
     DateOperandTypeError,
     DimensionTypeError,
@@ -101,12 +104,17 @@ from slayer.core.keys import (
     walk_value_keys,
     list_set_key,
 )
+from slayer.core.date_only import normal_op, scan_date_only, whole_day_spelling
+from slayer.core.deprecation import scheduled_notice
 from slayer.core.models import SlayerModel
-from slayer.core.names import folded_collisions
+from slayer.core.join_walker import walk_terminal
+from slayer.core.names import folded_collisions, match_name, match_path
 from slayer.core.refs import bucket_remedy, dotted_key_display, key_display
 from slayer.core.scope import ModelScope, StageSchema, peek_model_column
+from slayer.core.warnings import DateOnlyMidnightWarning
 from slayer.core.time_points import (
-    TIME_POINT_FORMS, Instant, add_units, ceil_to, floor_to, is_relative_token, is_time_point, resolve_time_point,
+    TIME_POINT_FORMS, Instant, Period, TimePoint, ceil_to, floor_to, is_date_only, is_relative_token, is_time_point,
+    resolve_time_point, units_after,
 )
 from slayer.sql.sql_expr import has_window_function
 from slayer.ir.planned import MaskTyping
@@ -1247,6 +1255,107 @@ def resolve_time_points(
     return rebuilt
 
 
+_ANNOUNCED_OPS = frozenset({"<=", ">", "=", "!="})
+
+
+def _column_parts(key: object) -> Optional[Tuple[str, ...]]:
+    """A column operand's join path plus its leaf; ``None`` for anything else."""
+    if isinstance(key, ColumnKey):
+        return (*key.path, key.leaf)
+    if isinstance(key, ColumnSqlKey):
+        return (*key.path, key.column_name)
+    return None
+
+
+DateVariables = Mapping[Tuple[Tuple[str, ...], str, str, bool], Tuple[str, ...]]
+
+
+def _binding_variables(variables: DateVariables, *, key: TimePointCmpKey, column: Tuple[str, ...]) -> Tuple[str, ...]:
+    """Every variable bound at ``key``'s comparison of ``column`` (paths matched as references)."""
+    quoted = [False] * len(column)
+    wanted = (normal_op(key.op), key.point.strip(), key.literal_on_left)
+    names = {n for (parts, *rest), bound in variables.items() if tuple(rest) == wanted
+             and match_path(parts=column, declared=[".".join(parts)], quoted=quoted) is not None for n in bound}
+    return tuple(sorted(names))
+
+
+def date_only_notices(
+    roots: Sequence[ValueKey], *, column_type: ColumnTypeFn, variables: DateVariables,
+) -> List[DateOnlyMidnightWarning]:
+    """One notice per spelling of a date-only literal compared with a TIMESTAMP operand (bucketed finer than a day, if
+    at all) where its midnight reading changed the rows; ``variables`` names the variables that bound each."""
+    out: Dict[str, DateOnlyMidnightWarning] = {}
+    for key in (k for root in roots for k in walk_value_keys(root)):
+        if not isinstance(key, TimePointCmpKey) or key.reads_whole_day or key.op not in _ANNOUNCED_OPS:
+            continue
+        date_text = key.point.strip()
+        _, t, gran = _time_operand(key.operand, column_type=column_type)
+        if t is not DataType.TIMESTAMP or not is_date_only(date_text) or (
+                gran is not None and nests_into(TimeGranularity.DAY, gran)):
+            continue
+        operand = _operand_display(key.operand)
+        column = _column_parts(key.operand)
+        notice = date_only_notice(
+            comparison=key_display(key), operand=operand, date=date_text,
+            whole_day=whole_day_spelling(operand=operand, op=key.op, date=date_text),
+            variables=_binding_variables(variables, key=key, column=column) if column else (),
+        )
+        out.setdefault(notice.message, notice)
+    return list(out.values())
+
+
+def saved_date_only_notices(
+    model: SlayerModel, *, models_by_name: Mapping[str, Optional[SlayerModel]],
+) -> List[DateOnlyMidnightWarning]:
+    """The notices for ``model``'s saved measures and column filters, typed through its joins to ``models_by_name``."""
+    models = {n: m for n, m in models_by_name.items() if m is not None}
+    out: Dict[str, DateOnlyMidnightWarning] = {}
+    texts = [*(m.formula for m in model.measures), *(c.filter for c in model.columns if c.filter)]
+    for text in texts:
+        for site in scan_date_only(text).sites:
+            if _saved_column_type(model, parts=site.parts, models_by_name=models) is not DataType.TIMESTAMP:
+                continue
+            notice = date_only_notice(
+                comparison=text[site.start:site.end], operand=site.operand, date=site.date, whole_day=site.twin,
+            )
+            out.setdefault(notice.message, notice)
+    return list(out.values())
+
+
+def _saved_column_type(
+    model: SlayerModel, *, parts: Sequence[str], models_by_name: Dict[str, SlayerModel],
+) -> Optional[DataType]:
+    """The type of the column ``parts`` names from ``model`` (names matched as references are); ``None`` when
+    unresolvable."""
+    quals, leaf = list(parts[:-1]), parts[-1]
+    if quals and match_name(name=quals[0], declared=[model.name], quoted=False) is not None:
+        quals = quals[1:]
+    try:
+        found = walk_terminal(root=model, path=quals, models_by_name=models_by_name)
+        owner = found[0] if found is not None else None
+        name = match_name(name=leaf, declared=[c.name for c in owner.columns], quoted=False) if owner else None
+    except (AmbiguousJoinPathError, AmbiguousReferenceError, CircularJoinPathError):
+        return None
+    column = owner.get_column(name) if owner is not None and name is not None else None
+    return column.type if column is not None else None
+
+
+def date_only_notice(
+    *, comparison: str, whole_day: str, operand: str, date: str, variables: Sequence[str] = (),
+) -> DateOnlyMidnightWarning:
+    noun = "variable" if len(variables) == 1 else "variables"
+    via = f", bound through the {noun} {' or '.join(repr(v) for v in variables)}," if variables else ""
+    day_form = f"{operand} in '{date}'"
+    day = "" if whole_day == day_form else f"; the day itself is `{day_form}`"
+    message = scheduled_notice(
+        f"`{comparison}`{via} compares with {date} 00:00:00 (midnight), not the whole day, as in SQL; "
+        f"write `{whole_day}` for the whole day{day}.",
+        removal="3.0",
+    )
+    return DateOnlyMidnightWarning(comparison=comparison, whole_day=whole_day, variables=list(variables),
+                                   message=message)
+
+
 def _time_operand(
     operand: ValueKey, *, column_type: ColumnTypeFn,
 ) -> Tuple[ValueKey, Optional[DataType], Optional[Granularity]]:
@@ -1296,21 +1405,43 @@ def _lower_time_point(
     target, t, gran = _time_operand(key.operand, column_type=column_type)
     if t is None:
         return _non_temporal_comparison(key, units=units)
-    point = resolve_time_point(key.point, now=now, units=units)
+    point = resolve_time_point(key.point, now=now, units=units, whole_day=key.reads_whole_day)
     if point is None:
         _raise_not_a_time_point(operand=key.operand, text=key.point)
     op = {"in": "=", _NOT_IN: "!="}.get(key.op, key.op)
+    if isinstance(point, Instant) and gran is None:
+        return ArithmeticKey(op=_arith_op(op), operands=(target, _bound(point.value, t=t, key=key)))
+    if isinstance(point, Period) and gran is None and point.sub_day and t is DataType.DATE:
+        _raise_sub_day(key)
+    lo, hi = _range_bounds(point, gran=gran)
+    if lo is None:
+        start = point.value if isinstance(point, Instant) else point.start
+        return _past_the_end(op, target=target, pivot=_bound(floor_to(start, TimeGranularity.DAY), t=t, key=key))
+    low = _bound(lo, t=t, key=key)
+    if hi is None:
+        return _open_ended(op, target=target, low=low)
+    return _in_range(op, target=target, low=low, high=_bound(hi, t=t, key=key))
+
+
+def _range_bounds(point: TimePoint, *, gran: Optional[Granularity]) -> Tuple[Optional[datetime], Optional[datetime]]:
+    """The ``[lo, hi)`` operand range ``point`` covers, bucketed by ``gran``; ``None`` past the end of time."""
     if isinstance(point, Instant):
-        if gran is None:
-            return ArithmeticKey(op=_arith_op(op), operands=(target, _bound(point.value, t=t, key=key)))
-        lo, hi = ceil_to(point.value, gran), add_units(floor_to(point.value, gran), gran, 1)
-    elif gran is None:
-        if point.sub_day and t is DataType.DATE:
-            _raise_sub_day(key)
-        lo, hi = point.start, point.next_start
-    else:
-        lo, hi = ceil_to(point.start, gran), ceil_to(point.next_start, gran)
-    low, high = _bound(lo, t=t, key=key), _bound(hi, t=t, key=key)
+        assert gran is not None
+        return _ceil(point.value, gran), units_after(floor_to(point.value, gran), gran, 1)
+    if gran is None:
+        return point.start, point.next_start
+    return _ceil(point.start, gran), point.next_start and _ceil(point.next_start, gran)
+
+
+def _past_the_end(op: str, *, target: ValueKey, pivot: LiteralKey) -> ValueKey:
+    """``target <op> R`` for a range ``R`` past every representable bucket: every row lies before it."""
+    every = ArithmeticKey(op="or", operands=(ArithmeticKey(op=">=", operands=(target, pivot)),
+                                             ArithmeticKey(op="<", operands=(target, pivot))))
+    return ArithmeticKey(op="and", operands=every.operands) if op in ("=", ">=", ">") else every
+
+
+def _in_range(op: str, *, target: ValueKey, low: LiteralKey, high: LiteralKey) -> ValueKey:
+    """``target <op> [low, high)``."""
     if op == "=":
         return ArithmeticKey(op="and", operands=(
             ArithmeticKey(op=">=", operands=(target, low)), ArithmeticKey(op="<", operands=(target, high)),
@@ -1321,6 +1452,23 @@ def _lower_time_point(
         ))
     rel_op, value = {">=": (">=", low), ">": (">=", high), "<": ("<", low), "<=": ("<", high)}[op]
     return ArithmeticKey(op=rel_op, operands=(target, value))
+
+
+def _ceil(value: datetime, gran: Granularity) -> Optional[datetime]:
+    """``ceil_to``; ``None`` past the end of representable time."""
+    try:
+        return ceil_to(value, gran)
+    except (OverflowError, ValueError):
+        return None
+
+
+def _open_ended(op: str, *, target: ValueKey, low: LiteralKey) -> ValueKey:
+    """``target <op> P`` for a period ``P`` from ``low`` to the end of representable time."""
+    at_or_after = ArithmeticKey(op=">=", operands=(target, low))
+    before = ArithmeticKey(op="<", operands=(target, low))
+    return {"=": at_or_after, ">=": at_or_after, "!=": before, "<": before,
+            "<=": ArithmeticKey(op="or", operands=(at_or_after, before)),
+            ">": ArithmeticKey(op="and", operands=(at_or_after, before))}[op]
 
 
 def _arith_op(op: str) -> str:

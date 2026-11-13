@@ -15,8 +15,8 @@ from slayer.core.time_points import (
 from tests._time_points_fixtures import NOW, ROLLOVER_NOW
 
 
-def _period(text: str, now: datetime = NOW) -> tuple[datetime, datetime]:
-    point = resolve_time_point(text, now=now)
+def _period(text: str, now: datetime = NOW, *, whole_day: bool = False) -> tuple[datetime, datetime | None]:
+    point = resolve_time_point(text, now=now, whole_day=whole_day)
     assert isinstance(point, Period), f"{text!r} → {point!r}"
     return point.start, point.next_start
 
@@ -39,7 +39,7 @@ class TestPeriodLiterals:
         ("2024-12-31", D(2024, 12, 31), D(2025, 1, 1)),
     ])
     def test_half_open_range(self, text, start, end) -> None:
-        assert _period(text) == (start, end)
+        assert _period(text, whole_day=True) == (start, end)
 
     def test_independent_of_now(self) -> None:
         assert _period("2025-Q1", NOW) == _period("2025-Q1", ROLLOVER_NOW)
@@ -80,7 +80,8 @@ class TestInstants:
 
     def test_midnight_instant_is_not_a_day_period(self) -> None:
         assert isinstance(resolve_time_point("2024-06-01 00:00:00", now=NOW), Instant)
-        assert isinstance(resolve_time_point("2024-06-01", now=NOW), Period)
+        assert resolve_time_point("2024-06-01", now=NOW) == Instant(value=D(2024, 6, 1))
+        assert isinstance(resolve_time_point("2024-06-01", now=NOW, whole_day=True), Period)
 
     @pytest.mark.parametrize("text", [
         "2024-06-01 25:00:00", "2024-06-01 10:61", "2024-06-01 10", "2024-06-01X10:00",

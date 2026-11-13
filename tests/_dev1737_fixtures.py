@@ -31,11 +31,11 @@ UNITS = ("second", "minute", "hour", "day", "week", "week_sunday", "month", "qua
 # Logical column kind → storage type per in-process backend (SQLite keeps dates as text).
 _SQLITE_TYPE = {
     "INT": "INTEGER", "DOUBLE": "REAL", "TEXT": "TEXT", "BOOLEAN": "INTEGER",
-    "DATE": "TEXT", "TIMESTAMP": "TEXT",
+    "DATE": "TEXT", "TIMESTAMP": "TEXT", "DECIMAL": "DECIMAL(10,3)",
 }
 _DUCKDB_TYPE = {
     "INT": "INTEGER", "DOUBLE": "DOUBLE", "TEXT": "VARCHAR", "BOOLEAN": "BOOLEAN",
-    "DATE": "DATE", "TIMESTAMP": "TIMESTAMP",
+    "DATE": "DATE", "TIMESTAMP": "TIMESTAMP", "DECIMAL": "DECIMAL(10,3)",
 }
 
 

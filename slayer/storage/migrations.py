@@ -21,10 +21,10 @@ from slayer.core.strict_flag import without_strict
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
-    "SlayerModel": 24,
-    "SlayerQuery": 14,
+    "SlayerModel": 25,
+    "SlayerQuery": 15,
     "DatasourceConfig": 3,
-    "Memory": 10,
+    "Memory": 11,
     "Embedding": 1,
 }
 
@@ -119,9 +119,9 @@ def _model_v10_to_v11(data: dict) -> dict:
     return data
 
 
-@register_migration(entity="SlayerModel", source_version=23, stored_only=True)
-def _model_v23_to_v24(data: dict) -> dict:
-    """v24: per-doc no-op; join targets are respelled against their peers in the storage load path."""
+@register_migration(entity="SlayerModel", source_version=24, stored_only=True)
+def _model_v24_to_v25(data: dict) -> dict:
+    """v25: per-doc no-op; join targets are respelled against their peers in the storage load path."""
     return data
 
 
@@ -293,3 +293,4 @@ from slayer.storage import colon_spelling_migration  # noqa: E402, F401  # ALLOW
 from slayer.storage import ossie_alignment_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import many_handling_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import extension_columns_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import date_only_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here

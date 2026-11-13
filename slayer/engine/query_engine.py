@@ -106,6 +106,8 @@ from slayer.core.warnings import (
     SlayerUnrelatedDatasetWarning,
     SlayerWarning,
     SlayerWholeListWarning,
+    SlayerDateOnlyMidnightWarning,
+    DateOnlyMidnightWarning,
     SlayerWholePeriodsWarning,
     UnrelatedDatasetWarningPayload,
     WholeListWarning,
@@ -153,7 +155,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle, model_from_stage_schem
 from slayer.engine.stage_ordering import localize_stages, topologically_order_stages
 from slayer.engine.statement_reads import StatementReads, statement_reads
 from slayer.engine.binding import collect_bind_records
-from slayer.engine.elaborate_env import check_result_names_case
+from slayer.engine.elaborate_env import check_result_names_case, saved_date_only_notices
 from slayer.engine.extensions import with_own_extension
 from slayer.engine.plan import plan_stages
 from slayer.ir.variables import (
@@ -635,6 +637,8 @@ def _emit_python_warnings(response) -> None:
             _warnings_module.warn(SlayerLibraryNameShadowWarning(w), stacklevel=3)
         elif isinstance(w, NameCollisionWarning):
             _warnings_module.warn(SlayerNameCollisionWarning(w), stacklevel=3)
+        elif isinstance(w, DateOnlyMidnightWarning):
+            _warnings_module.warn(SlayerDateOnlyMidnightWarning(w), stacklevel=3)
 
 
 class SlayerResponse(BaseModel):
@@ -1408,6 +1412,7 @@ class SlayerQueryEngine:
         warnings.extend(_granularity_conflict_warnings(planned_list=plans, labels=labels))
         warnings.extend(WholeListWarning(operation=r.operation, list=r.list)
                         for r in dict.fromkeys(r for p in plans for r in p.whole_list_reads))
+        warnings.extend({n.message: n for p in plans for n in p.date_only_notices}.values())
         warnings.extend(stale_spelling_warnings(list(dict.fromkeys([
             *(s for p in plans for s in p.stale_spellings), *render_stale_spellings,
         ]))))
@@ -2942,6 +2947,7 @@ class SlayerQueryEngine:
         model: SlayerModel,
         runtime_kwarg: Optional[Dict[str, Any]] = None,
         prefer_data_source: Optional[str] = None,
+        notices_out: Optional[List[DateOnlyMidnightWarning]] = None,
     ) -> SlayerModel:
         """Render a query-backed ``model`` as a virtual ``sql``-mode model (save-time cache): its
         stages, wrapped in a flat-rename SELECT, rendered once through the statement validators."""
@@ -2949,6 +2955,8 @@ class SlayerQueryEngine:
             model=model, runtime_kwarg=runtime_kwarg, prefer_data_source=prefer_data_source,
         )
         rendered = expansion.rendered
+        if notices_out is not None:
+            notices_out.extend(w for w in rendered.warnings if isinstance(w, DateOnlyMidnightWarning))
         root_planned = rendered.planned_list[-1]
         dialect, bundle = rendered.dialect, rendered.bundle
         # Wrap the stage AST with a flat-renamed SELECT over the root stage's output columns, then render once.
@@ -3019,6 +3027,7 @@ class SlayerQueryEngine:
     async def _save_model(
         self, model: SlayerModel, *, warnings_out: Optional[List[SlayerWarning]],
     ) -> SlayerModel:
+        notices: List[DateOnlyMidnightWarning] = []
         # Save preserves the author's formula spelling — no slack
         # rewriting; both aggregation spellings are first-class parser input.
         prior_data_source = await self._prior_data_source(model)
@@ -3031,9 +3040,10 @@ class SlayerQueryEngine:
                     f"auto-generated and must not be supplied "
                     f"(got {len(model.columns)} columns)."
                 )
-            model = await self._validate_and_populate_cache(model)
+            model = await self._validate_and_populate_cache(model, notices_out=notices)
         failures = DocumentLoadFailures()
         loaded = await self._preload_join_targets(model, failures=failures)
+        notices.extend(saved_date_only_notices(model, models_by_name=loaded))
         _validate_join_keys(model=model, loaded=loaded)
         ds = await self.storage.get_datasource(model.data_source) if model.data_source else None
         check_placeholders(mode_a_texts(model), dialect=dialect_for_ds_type(ds.type if ds else None))
@@ -3053,10 +3063,13 @@ class SlayerQueryEngine:
                 model.name, data_source=prior_data_source
             )
         payloads = await self._narrowed_access(model=model, prior=prior)
+        unique = list({n.message: n for n in notices}.values())
         if warnings_out is not None:
-            warnings_out.extend(payloads)
+            warnings_out.extend([*unique, *payloads])
             return model
         # Last, as in query(): under ``-W error`` this raises after the save.
+        for notice in unique:
+            _warnings_module.warn(SlayerDateOnlyMidnightWarning(notice), stacklevel=2)
         for payload in payloads:
             _warnings_module.warn(SlayerNarrowedAccessWarning(payload), stacklevel=2)
         return model
@@ -3211,12 +3224,15 @@ class SlayerQueryEngine:
         peers = failures.skip(await self.storage.load_models(data_source=model.data_source, exclude=model.name))
         return {**{m.name: m for m in peers}, model.name: model}
 
-    async def _validate_and_populate_cache(self, model: SlayerModel) -> SlayerModel:
-        """Dry-run-validate a query-backed model → copy with cache fields populated (an undefaulted ``{var}`` refuses)."""
+    async def _validate_and_populate_cache(
+        self, model: SlayerModel, *, notices_out: Optional[List[DateOnlyMidnightWarning]] = None,
+    ) -> SlayerModel:
+        """Dry-run-validate a query-backed model → copy with cache fields populated (an undefaulted ``{var}`` refuses);
+        its date-only notices go to ``notices_out``."""
         if not (model.source_queries or []):
             return model
         model = await self._pin_populations(model=model, prefer_data_source=None)
-        virtual = await self._expand_query_backed_model(model=model)
+        virtual = await self._expand_query_backed_model(model=model, notices_out=notices_out)
         return model.model_copy(update={
             "columns": list(virtual.columns),
             # Refreshed from the resolved virtual model: the backing query may now

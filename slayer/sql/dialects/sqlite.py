@@ -714,6 +714,12 @@ def _unique_sets(connection: CatalogConnection | None, *, table: str, schema: st
     return sets
 
 
+_DATE_CAST_TYPES = frozenset({exp.DataType.Type.DATE, exp.DataType.Type.DATE32})
+_PLAIN_TIMESTAMP_CASTS = frozenset({
+    exp.DataType.Type.TIMESTAMP, exp.DataType.Type.DATETIME, exp.DataType.Type.TIMESTAMPNTZ,
+})
+
+
 class SqliteDialect(SqlDialect):
     sqlglot_name: str = "sqlite"
     database_name: ClassVar[str] = "SQLite"
@@ -897,6 +903,19 @@ class SqliteDialect(SqlDialect):
     def _json_parts(self, value: Expression, path: JsonPath) -> tuple[Expression, Expression]:
         text = lit(path.text)
         return anon("JSON_TYPE", value, text), anon("JSON_EXTRACT", value, text)
+
+    def cast_type_supported(self, data_type: exp.DataType) -> bool:
+        """No time-of-day type, and a timestamp only unzoned and without precision: SQLite keeps none of them."""
+        t = data_type.this
+        if t in exp.DataType.TEMPORAL_TYPES and t not in _DATE_CAST_TYPES:
+            return t in _PLAIN_TIMESTAMP_CASTS and not data_type.expressions
+        return super().cast_type_supported(data_type)
+
+    def build_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        """A timestamp cast converts as ``TRY_CAST`` does: a plain cast collapses a date text to its year."""
+        if to.this in _PLAIN_TIMESTAMP_CASTS:
+            return self.build_try_cast(value, to)
+        return super().build_cast(value, to)
 
     def declared_cast_type(self, dt: Optional[DataType]) -> Optional[DataType]:
         """No DATE / TIMESTAMP cast: under numeric affinity it collapses a text date to its year."""

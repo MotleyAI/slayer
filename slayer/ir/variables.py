@@ -14,10 +14,13 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+from slayer.core.date_only import date_comparisons
 from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.names import match_name
 from slayer.core.syntax import bind_variables, has_bindings, variable_names
+from slayer.core.time_points import is_date_only
 from slayer.core.query import (
     ComputedDimension,
     OrderItem,
@@ -121,6 +124,7 @@ def apply_variables_to_query(
     the query is rebuilt so construction validators re-run on the substituted text.
     """
     effective: Dict[str, Any] = dict(variables or {})
+    date_variables = _date_variables(query, effective)
     changed: Dict[str, Any] = {}
     if query.filters is not None:
         changed["filters"] = [bind_variables(f, effective) for f in query.filters]
@@ -137,24 +141,82 @@ def apply_variables_to_query(
             if any(n is not o for n, o in zip(new, entries)):
                 changed[field] = new
     if not changed:
-        return _carrying(query.model_copy(), effective)
+        return _with_date_variables(_carrying(query.model_copy(), effective), date_variables)
     # ``name`` may already be a minted stage identity the user-name validator refuses.
     data = {f: getattr(query, f) for f in query.model_fields_set | {"version"} if f != "name"}
     rebuilt = SlayerQuery.model_validate(data | changed)
     rebuilt = rebuilt.model_copy(update={"name": query.name}) if "name" in query.model_fields_set else rebuilt
-    return _carrying(rebuilt, effective)
+    return _with_date_variables(_carrying(rebuilt, effective), date_variables)
 
 
-def _carrying(query: SlayerQuery, variables: Dict[str, Any]) -> SlayerQuery:
-    """``query`` carrying ``variables`` when a whole-``IN`` placeholder stays unwritten in it."""
-    texts = [
+def _with_date_variables(query: SlayerQuery, date_variables: DateVariables) -> SlayerQuery:
+    query._date_variables = date_variables
+    return query
+
+
+def _texts(query: SlayerQuery) -> List[str]:
+    return [
         *(query.filters or []), *(m.formula for m in query.measures or [] if isinstance(m, ModelMeasure)),
         *(d.expression for d in query.dimensions or [] if isinstance(d, ComputedDimension)),
         *(o.raw_formula for o in query.order or [] if o.raw_formula),
     ]
-    if any(variable_names(t) for t in texts):
+
+
+def _carrying(query: SlayerQuery, variables: Dict[str, Any]) -> SlayerQuery:
+    """``query`` carrying ``variables`` when a whole-``IN`` placeholder stays unwritten in it."""
+    if any(variable_names(t) for t in _texts(query)):
         query._bound_variables = variables
     return query
+
+
+#: Stand-in dates, one of which marks a variable's comparisons (the first the text and the values do not hold).
+_SENTINELS = ("0001-01-01", "0001-01-02", "0001-01-03")
+
+
+#: ``(operand column path as spelled, operand-left op, date, literal on the left)`` → the variables binding it there.
+DateVariables = Dict[Tuple[Tuple[str, ...], str, str, bool], Tuple[str, ...]]
+
+
+def _date_variables(query: SlayerQuery, variables: Dict[str, Any]) -> DateVariables:
+    """Each changed comparison a date-only variable binds, mapped to every variable binding it; a qualifier naming the
+    query's source model is dropped."""
+    dated = {n: v.strip() for n, v in variables.items() if isinstance(v, str) and is_date_only(v)}
+    roots = [query.source_model] if isinstance(query.source_model, str) else []
+    texts = [*((t, None) for t in _texts(query)),
+             *((m.formula, e.source_name) for e in query.extensions or [] for m in e.measures or [])]
+    out: DateVariables = {}
+    for text, owner in texts:
+        for name in (n for n in variable_names(text) if n in dated):
+            for parts, op, literal_left in _variable_slots(text, name=name, variables=variables):
+                key = (_from_root(parts, owner=owner, roots=roots), op, dated[name], literal_left)
+                out[key] = tuple(sorted({*out.get(key, ()), name}))
+    return out
+
+
+def _from_root(parts: Tuple[str, ...], *, owner: Optional[str], roots: List[str]) -> Tuple[str, ...]:
+    """``parts`` as a path from the query's source model: an extension's own qualifier replaced by its owner, a
+    qualifier naming the source model dropped."""
+    if owner is not None:
+        own = len(parts) > 1 and match_name(name=parts[0], declared=[owner], quoted=False) is not None
+        parts = (owner, *(parts[1:] if own else parts))
+    rooted = len(parts) > 1 and match_name(name=parts[0], declared=roots, quoted=False) is not None
+    return parts[1:] if rooted else parts
+
+
+def _variable_slots(
+    text: str, *, name: str, variables: Dict[str, Any],
+) -> List[Tuple[Tuple[str, ...], str, bool]]:
+    """``(operand column parts, operand-left op, literal on the left)`` per changed comparison of ``text`` with
+    ``'{name}'``."""
+    taken = {*(str(v).strip() for v in variables.values())}
+    marker = next((s for s in _SENTINELS if s not in text and s not in taken), None)
+    if marker is None:
+        return []
+    try:
+        bound = bind_variables(text, {**variables, name: marker})
+    except ValueError:
+        return []
+    return [(parts, op, left) for parts, op, date, left in date_comparisons(bound) if date == marker and parts]
 
 
 def _mode_a_surfaces(model: SlayerModel) -> list:

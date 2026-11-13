@@ -216,6 +216,8 @@ The converter resolves these to plain SLayer filter strings:
 - `TimeDimension('name', 'grain')` → `name` (granularity is query-time in SLayer)
 - `Entity('name')` → the entity's SQL expression column name
 
+A date compared in a filter keeps dbt's SQL meaning: `metric_time >= '2024-01-01'` and `metric_time <= '2024-12-31'` compare with the date's midnight, so the second leaves out the rest of Dec 31 (write `< '2025-01-01'` for the whole day).
+
 ## Output
 
 The converter produces:

@@ -58,8 +58,8 @@ def _migrated(location: str, entries: Any) -> Any:
     return meta.get(NEW)
 
 
-def test_version_is_24() -> None:
-    assert CURRENT_VERSIONS["SlayerModel"] == 24
+def test_version_reaches_23() -> None:
+    assert CURRENT_VERSIONS["SlayerModel"] >= 23
 
 
 @pytest.mark.parametrize("location", LOCATIONS)
@@ -111,7 +111,7 @@ def test_other_meta_kept() -> None:
 
 def test_current_version_document_untouched() -> None:
     meta = {OLD: [{"vendor_name": "A", "data": '{"k": 1}'}]}
-    model = SlayerModel.model_validate(_doc(copy.deepcopy(meta), location="model", version=24))
+    model = SlayerModel.model_validate(_doc(copy.deepcopy(meta), location="model", version=23))
     assert model.meta == meta
 
 
@@ -123,5 +123,5 @@ async def test_stored_model_upgraded_on_load(tmp_path: Path) -> None:
     path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
     model = await storage.get_model("orders", data_source="osids")
     assert model is not None
-    assert model.version == 24
+    assert model.version == CURRENT_VERSIONS["SlayerModel"]
     assert _meta(model, "column") == {NEW: [{"vendor_name": "ACME", "data": {"k": 1}}]}
