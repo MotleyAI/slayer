@@ -268,6 +268,44 @@ class TestRewrites:
         assert mem.query is not None
         assert mem.query.filters == ["Created_At < '2024-04-11'", "ORDERS.created_at >= '2024-04-11'"]
 
+    @pytest.mark.parametrize("column", ['"created_at"', '"cre""ated"'])
+    async def test_quoted_operand(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str, column: str) -> None:
+        doc = orders_doc(columns=[*COLUMNS, {"name": 'cre"ated', "type": "TIMESTAMP", "sql": "created_at"}])
+        storage = await raw_store(backend=backend, base=str(tmp_path / f"store-{backend}"), datasource=shop_ds,
+                                  models=[doc], memories=[memory("m_quoted", query(f"{column} <= '2024-04-10'"))])
+        mem = await storage.get_memory("m_quoted")
+        assert mem.query is not None
+        assert mem.query.filters == [f"{column} < '2024-04-11'"]
+
+    async def test_exact_inverse_twins_are_one_join(self, tmp_path: Path, shop_ds: DatasourceConfig,
+                                                    backend: str) -> None:
+        pairs = [["code", "code"]]
+        customers = orders_doc(name="customers", joins=[{"target_model": "purchases", "join_pairs": pairs}])
+        purchases = orders_doc(name="purchases", joins=[{"target_model": "customers", "join_pairs": pairs}])
+        body = {**query("purchases.created_at <= '2024-04-10'"), "source_model": "customers"}
+        storage = await store(tmp_path, shop_ds, backend=backend, models=(customers, purchases),
+                              memories=(memory("m_twins", body),))
+        mem = await storage.get_memory("m_twins")
+        assert mem.query is not None
+        assert mem.query.filters == ["purchases.created_at < '2024-04-11'"]
+
+    async def test_repaired_legacy_date_keeps_its_day(self, tmp_path: Path, shop_ds: DatasourceConfig,
+                                                     backend: str) -> None:
+        storage = await store(tmp_path, shop_ds, backend=backend, memories=(
+            memory("m_slashed", query("created_at <= '2024/04/10'", version=1), version=3),))
+        mem = await storage.get_memory("m_slashed")
+        assert mem.query is not None
+        assert mem.query.filters == ["created_at < '2024-04-11'"]
+        assert ids(await run(storage, mem.query)) == {1, 2, 3}
+
+    async def test_repair_leaves_a_current_query_midnight(self, tmp_path: Path, shop_ds: DatasourceConfig,
+                                                          backend: str) -> None:
+        body = query("created_at <= '2024/04/10' or created_at = '2025-01-01'", version=UPGRADED_AT["SlayerQuery"])
+        storage = await store(tmp_path, shop_ds, backend=backend, memories=(memory("m_mixed_age", body, version=3),))
+        mem = await storage.get_memory("m_mixed_age")
+        assert mem.query is not None
+        assert mem.query.filters == ["created_at <= '2024-04-10' or created_at = '2025-01-01'"]
+
     async def test_join_walked_backwards(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str) -> None:
         customers = orders_doc(name="customers", joins=[])
         orders = orders_doc(name="purchases", joins=[{"target_model": "customers", "join_pairs": [["code", "code"]]}])
@@ -331,6 +369,17 @@ class TestLeftAlone:
         assert mem.query is not None
         assert mem.query.filters == [LITERAL_TESTED]
         assert any("m_lit" in t and LITERAL_TESTED in t for t in texts), texts
+
+    async def test_a_sibling_stage_is_not_its_namesake_model(self, tmp_path: Path, shop_ds: DatasourceConfig,
+                                                             backend: str) -> None:
+        stage = {"name": "base", "source_model": "orders", "dimensions": ["id", "code"]}
+        reader = {"source_model": "base", "dimensions": ["id"], "filters": ["code <= '2024-04-10'"]}
+        namesake = orders_doc(name="base", columns=[*COLUMNS[:3], {"name": "code", "type": "TIMESTAMP"}])
+        storage = await store(tmp_path, shop_ds, backend=backend,
+                              models=(namesake, saved_query_doc("staged", stage, reader)))
+        model = await storage.get_model("staged", data_source=DS)
+        assert model is not None
+        assert (model.source_queries or [])[1].filters == ["code <= '2024-04-10'"]
 
     async def test_missing_model_is_left_and_logged(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
                                                     caplog: pytest.LogCaptureFixture) -> None:

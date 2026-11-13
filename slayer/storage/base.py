@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Callable, Hashable, Iterable
 
-from slayer.core.enums import RESERVED_NAMES, DataType, JoinCardinality, TimeGranularity, invert_cardinality
+from slayer.core.enums import RESERVED_NAMES, DataType, TimeGranularity
 from slayer.core.granularity import resolve_granularity, unknown_granularity_message
 from slayer.core.time_spine import TIME_SPINE_MODEL, spine_model
 from slayer.core.errors import (
@@ -61,7 +61,9 @@ from slayer.memories.models import (
     _validate_memory_id_charset,
 )
 from slayer.storage import migrations as _mig
-from slayer.storage.date_only_migration import StoredModels, needs_typing, stored_type, typing_with
+from slayer.storage.date_only_migration import (
+    StoredModels, below_date_only_upgrade, is_exact_inverse_join, needs_typing, stored_type, typing_with, upgraded_text,
+)
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded, stored_document_boundary
 from slayer.storage.granularity_rename import (
     Renames,
@@ -116,28 +118,6 @@ _SETTLING: ContextVar[bool] = ContextVar("_SETTLING", default=False)
 _INLINING: ContextVar[frozenset[tuple[str, str]]] = ContextVar("_INLINING", default=frozenset())
 # The loading query engine's client source, set by its storage view around each call it delegates.
 CLIENT_SOURCE: ContextVar[ClientSource | None] = ContextVar("CLIENT_SOURCE", default=None)
-
-
-def _is_exact_inverse_join(a: dict, b: dict) -> bool:
-    """True iff join dicts on opposite models mirror each other: swapped pair set, same join type, equal ``name``, and inversion-consistent cardinalities (unset counts as consistent)."""
-    if (a.get("name") or None) != (b.get("name") or None):
-        return False
-    try:
-        a_pairs = {(str(x), str(y)) for x, y in a.get("join_pairs") or []}
-        b_pairs = {(str(y), str(x)) for x, y in b.get("join_pairs") or []}
-    except (TypeError, ValueError):
-        return False
-    if not a_pairs or a_pairs != b_pairs:
-        return False
-    if str(a.get("join_type") or "left") != str(b.get("join_type") or "left"):
-        return False
-    ca, cb = a.get("cardinality"), b.get("cardinality")
-    if ca is None or cb is None:
-        return True
-    try:
-        return invert_cardinality(JoinCardinality(ca)) == JoinCardinality(cb)
-    except ValueError:
-        return False
 
 
 def _inverse_survivor(
@@ -202,6 +182,13 @@ def _key_pairs(join: Any) -> list[tuple[Any, Any]]:
     return [(p[0], p[1]) for p in pairs if isinstance(p, list) and len(p) == 2] if isinstance(pairs, list) else []
 
 
+def _stage_names(data: dict) -> frozenset[str]:
+    """The names of a stored model's own stages."""
+    queries = data.get("source_queries")
+    return frozenset(q["name"] for q in queries if isinstance(q, dict) and isinstance(q.get("name"), str)) if isinstance(
+        queries, list) else frozenset()
+
+
 def _incoming_keys(*, sibling: dict, target: str, target_columns: list) -> list[tuple[Any, str | None]]:
     """``target``-side keys of ``sibling``'s joins into ``target``, each typed like its source key."""
     joins = sibling.get("joins")
@@ -225,7 +212,7 @@ def _stored_counterpart(*, join: dict, name: str, peer: dict | None, columns: An
         (
             j for j in peer_joins
             if isinstance(j, dict) and j.get("target_model") == name
-            and _is_exact_inverse_join(join, {**j, "join_pairs": canonical_join_pairs(
+            and is_exact_inverse_join(join, {**j, "join_pairs": canonical_join_pairs(
                 pairs=j.get("join_pairs"), source_columns=peer.get("columns"),
                 target_columns=columns,
             )})
@@ -309,7 +296,7 @@ def _check_not_exact_inverse(
     for j2 in target.joins:
         if j2.target_model != model.name:
             continue
-        if _is_exact_inverse_join(raw, j2.model_dump(mode="json")):
+        if is_exact_inverse_join(raw, j2.model_dump(mode="json")):
             raise ValueError(
                 f"Model '{model.name}': join to '{target.name}' is "
                 f"the exact inverse of the edge already declared on "
@@ -979,7 +966,9 @@ class StorageBackend(ABC):
         pre_version = int(data["version"])
         if pre_version < _CUSTOM_BUCKET_CALLS_BELOW["SlayerModel"]:
             data = rewrite_model_doc(data, await self._custom_bucket_calls(data_sources=[data_source]))
-        typing = await self._stored_models(data_source) if needs_typing("SlayerModel", data) else StoredModels()
+        typing = StoredModels()
+        if needs_typing("SlayerModel", data):
+            typing = (await self._stored_models(data_source)).model_copy(update={"stages": _stage_names(data)})
         with typing_with(typing):
             model, write_back = await self._migrated_model(name=name, data=data, data_source=data_source)
         if not caller_announces():
@@ -1115,6 +1104,7 @@ class StorageBackend(ABC):
         the stored query is migrated first, so its filters read under the current grammar."""
         if not isinstance(query, dict):
             return
+        whole_day_dates = below_date_only_upgrade("SlayerQuery", query)
         migrated = _mig.migrate("SlayerQuery", _mig.stamp_stored(query))
         query.clear()
         query.update(migrated)
@@ -1138,7 +1128,11 @@ class StorageBackend(ABC):
                     host=host, parts=[p.name for p in column.parts], extensions=extensions,
                 ) in (DataType.DATE.value, DataType.TIMESTAMP.value)
             ]
-            if temporal:
+            if temporal and whole_day_dates:
+                # A repaired legacy date is a date-only literal meant as its whole day, as stored.
+                filters[i] = upgraded_text(repaired_filter(filters[i], temporal), host=host[0], extensions=extensions,
+                                           models=await self._stored_models(host[1]), label=query.get("name"))
+            elif temporal:
                 filters[i] = repaired_filter(filters[i], temporal)
 
     async def _query_host(

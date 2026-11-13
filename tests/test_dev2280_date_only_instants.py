@@ -192,6 +192,29 @@ class TestNotice:
         assert sorted((w.comparison.split()[0], w.variables) for w in notices(resp)) == [
             ("events.updated_at", []), ("updated_at", ["cutoff"])], resp.warnings
 
+    async def test_a_literal_spelled_the_other_way_names_no_variable(self, engine: SlayerQueryEngine) -> None:
+        resp = await engine.execute(q(
+            dimensions=["id"], filters=["created_at <= '{cutoff}'", "'2024-12-31' >= created_at"],
+            variables={"cutoff": "2024-12-31"}))
+        assert sorted(w.variables for w in notices(resp)) == [[], ["cutoff"]], resp.warnings
+
+    async def test_a_variable_in_an_extension_measure_is_named(self, engine: SlayerQueryEngine) -> None:
+        resp = await engine.execute(q(
+            measures=["early"], variables={"cutoff": "2024-12-31"},
+            extensions=[{"source_name": "orders", "measures": [
+                {"name": "early", "formula": "count(*) FILTER (WHERE created_at <= '{cutoff}')"}]}]))
+        assert [w.variables for w in notices(resp)] == [["cutoff"]], resp.warnings
+
+    @pytest.mark.parametrize(("operand", "announced"), [
+        ("date_trunc('hour', created_at)", 1), ("date_trunc('day', created_at)", 0),
+        ("date_trunc('month', created_at)", 0),
+    ])
+    async def test_a_bucket_finer_than_a_day_is_announced(
+        self, engine: SlayerQueryEngine, operand: str, announced: int,
+    ) -> None:
+        resp = await engine.execute(q(dimensions=["id"], filters=[f"{operand} <= '2024-04-10'"]))
+        assert len(notices(resp)) == announced, resp.warnings
+
     async def test_one_comparison_bound_by_two_variables_names_both(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(
             dimensions=["id"], filters=["created_at <= '{cutoff}' or created_at <= '{other}'"],
@@ -210,6 +233,7 @@ class TestNotice:
     @pytest.mark.parametrize("formula", [
         "count(*) FILTER (WHERE CREATED_AT = '2024-04-10')",
         "count(*) FILTER (WHERE customers.updated_at <= '2024-04-10')",
+        "count(*) FILTER (WHERE \"created_at\" = '2024-04-10')",
     ])
     async def test_a_saved_measure_on_a_case_variant_or_joined_column_is_announced(
         self, engine: SlayerQueryEngine, formula: str,

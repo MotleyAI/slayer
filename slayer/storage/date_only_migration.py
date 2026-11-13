@@ -14,7 +14,7 @@ from typing import Any, Iterable
 from pydantic import BaseModel, Field
 
 from slayer.core.date_only import scan_date_only
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, JoinCardinality, invert_cardinality
 from slayer.core.errors import AmbiguousReferenceError
 from slayer.core.names import match_name
 from slayer.core.syntax import string_literal_spans
@@ -64,15 +64,42 @@ def extended(*, key: str, model: dict, extensions: list[dict]) -> list:
     return [*(own if isinstance(own, list) else []), *added]
 
 
+def is_exact_inverse_join(a: dict, b: dict) -> bool:
+    """True iff join dicts on opposite models mirror each other: swapped pair set, same join type, equal ``name``, and
+    inversion-consistent cardinalities (unset counts as consistent)."""
+    if (a.get("name") or None) != (b.get("name") or None):
+        return False
+    try:
+        a_pairs = {(str(x), str(y)) for x, y in a.get("join_pairs") or []}
+        b_pairs = {(str(y), str(x)) for x, y in b.get("join_pairs") or []}
+    except (TypeError, ValueError):
+        return False
+    if not a_pairs or a_pairs != b_pairs:
+        return False
+    if str(a.get("join_type") or "left") != str(b.get("join_type") or "left"):
+        return False
+    ca, cb = a.get("cardinality"), b.get("cardinality")
+    if ca is None or cb is None:
+        return True
+    try:
+        return invert_cardinality(JoinCardinality(ca)) == JoinCardinality(cb)
+    except ValueError:
+        return False
+
+
 class StoredModels(BaseModel):
-    """A datasource's raw stored model dicts by name."""
+    """A datasource's raw stored model dicts by name, and the stage names a document's queries read instead."""
 
     data_source: str | None = None
     models: dict[str, dict] = Field(default_factory=dict)
+    stages: frozenset[str] = frozenset()
 
     def host(self, source: Any) -> dict | None:
-        """The raw stored model named ``source``."""
-        found = _named(source, self.models)
+        """The raw stored model named ``source``; ``None`` for a stage."""
+        return None if _named(source, self.stages) is not None else self._model(source)
+
+    def _model(self, name: Any) -> dict | None:
+        found = _named(name, self.models)
         return self.models[found] if found is not None else None
 
     def column_type(self, *, host: dict, parts: list[str] | tuple[str, ...], extensions: list[dict]) -> str | None:
@@ -99,19 +126,23 @@ class StoredModels(BaseModel):
                 return None
             if found is not None:
                 hits = [e for e in edges if e[tier] == found]
-                return self.host(hits[0][1]) if len(hits) == 1 else None
+                return self._model(hits[0][1]) if len(hits) == 1 else None
         return None
 
     def _incident(self, *, current: dict, extensions: list[dict]) -> list[tuple[str | None, str]]:
-        """``(edge name, model at the other end)`` per stored join incident to ``current``, declared on either side."""
+        """``(edge name, model at the other end)`` per stored join incident to ``current``, declared on either side; an
+        exact-inverse twin of a declaration counts once."""
         name = current.get("name")
-        out = [(j.get("name"), j.get("target_model")) for j in extended(key="joins", model=current, extensions=extensions)
-               if isinstance(j, dict)]
+        own = [j for j in extended(key="joins", model=current, extensions=extensions) if isinstance(j, dict)]
+        out = [(j.get("name"), j.get("target_model")) for j in own]
         for other in self.models.values():
-            if not _same(other.get("name"), name):
-                out.extend((j.get("name"), other.get("name"))
-                           for j in extended(key="joins", model=other, extensions=extensions)
-                           if isinstance(j, dict) and _same(j.get("target_model"), name))
+            if _same(other.get("name"), name):
+                continue
+            out.extend((j.get("name"), other.get("name"))
+                       for j in extended(key="joins", model=other, extensions=extensions)
+                       if isinstance(j, dict) and _same(j.get("target_model"), name)
+                       and not any(_same(o.get("target_model"), other.get("name")) and is_exact_inverse_join(o, j)
+                                   for o in own))
         return [(n if isinstance(n, str) else None, t) for n, t in out if isinstance(t, str)]
 
 
@@ -128,6 +159,11 @@ def typing_with(models: StoredModels) -> Generator[None]:
         _typing.reset(token)
 
 
+def below_date_only_upgrade(entity: str, data: Any) -> bool:
+    """Whether stored ``data`` itself predates the upgrade."""
+    return isinstance(data, dict) and int(data.get("version", 1)) < UPGRADED_AT[entity]
+
+
 def needs_typing(entity: str, data: Any) -> bool:
     """Whether stored ``data``, or a document nested in it, predates the upgrade and holds a date-only literal."""
     if not isinstance(data, dict):
@@ -135,7 +171,7 @@ def needs_typing(entity: str, data: Any) -> bool:
     if entity == "Memory":
         return needs_typing("SlayerQuery", data.get("query"))
     texts = _query_texts(data) if entity == "SlayerQuery" else _model_texts(data)
-    if int(data.get("version", 1)) < UPGRADED_AT[entity] and any(map(_holds_date_literal, texts)):
+    if below_date_only_upgrade(entity, data) and any(map(_holds_date_literal, texts)):
         return True
     return entity == "SlayerModel" and any(needs_typing("SlayerQuery", q) for q in data.get("source_queries") or [])
 
@@ -187,6 +223,12 @@ def _upgraded(text: str, *, label: str | None, host: dict | None, extensions: li
             "now compares with midnight: %s", label, text.replace("\r", "\\r").replace("\n", "\\n"),
         )
     return rewrite_spans(text, rewrite)
+
+
+def upgraded_text(text: str, *, host: dict, models: StoredModels, extensions: list[dict], label: str | None) -> str:
+    """``text`` upgraded, typed from ``host`` with ``models``."""
+    with typing_with(models):
+        return _upgraded(text, label=label, host=host, extensions=extensions)
 
 
 def _with_text(item: Any, key: str, fn) -> Any:

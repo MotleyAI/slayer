@@ -17,7 +17,7 @@ _WHOLE_DAY = {"<=": ("<", True), ">": (">=", True), "==": ("in", False), "=": ("
 _MIRROR = {"<": ">", "<=": ">=", ">": "<", ">=": "<=", "==": "==", "=": "=", "!=": "!=", "<>": "!="}
 _NORMAL = {"=": "==", "==": "==", "<>": "!=", "!=": "!=", "<": "<", "<=": "<=", ">": ">", ">=": ">="}
 
-_IDENT = r"[A-Za-z_]\w*"
+_IDENT = r"(?:[A-Za-z_]\w*|\"(?:[^\"\n]|\"\")+\")"
 _PATH = rf"(?<![\w.\"]){_IDENT}(?:\s*\.\s*{_IDENT})*"
 _OP = r"<=|>=|<>|!=|==|=|<|>"
 _OPERAND_LEFT = re.compile(rf"({_PATH})(\s*)({_OP})(\s*)$")
@@ -92,25 +92,30 @@ def normal_op(op: str) -> str:
     return _NORMAL.get(op, op)
 
 
-def date_comparisons(text: str) -> List[Tuple[Optional[Tuple[str, ...]], str, str]]:
-    """``(operand column parts or None, operand-left op, date)`` per changed comparison in ``text``; none when it does
-    not parse."""
+def date_comparisons(text: str) -> List[Tuple[Optional[Tuple[str, ...]], str, str, bool]]:
+    """``(operand column parts or None, operand-left op, date, literal on the left)`` per changed comparison in
+    ``text``; none when it does not parse."""
     try:
-        return _candidates(parse_template(text))
+        return _comparisons(parse_template(text))
     except Exception:  # noqa: BLE001 — unparseable text has no comparisons to report
         return []
 
 
 def _candidates(parsed: object) -> List[Tuple[Optional[Tuple[str, ...]], str, str]]:
     """``(operand column parts or None, operand-left op, date)`` per changed comparison in the tree."""
+    return [(parts, op, date) for parts, op, date, _ in _comparisons(parsed)]
+
+
+def _comparisons(parsed: object) -> List[Tuple[Optional[Tuple[str, ...]], str, str, bool]]:
     out = []
     for node in walk_parsed(parsed):
         if not isinstance(node, Cmp) or node.op not in _NORMAL:
             continue
-        for literal, operand, op in ((node.right, node.left, node.op), (node.left, node.right, _MIRROR[node.op])):
+        sides = ((node.right, node.left, node.op, False), (node.left, node.right, _MIRROR[node.op], True))
+        for literal, operand, op, literal_left in sides:
             if _date_literal(literal) and not isinstance(operand, Literal) and op in _WHOLE_DAY:
                 assert isinstance(literal, Literal) and isinstance(literal.value, str)
-                out.append((_parts(operand), _NORMAL[op], literal.value))
+                out.append((_parts(operand), _NORMAL[op], literal.value, literal_left))
     return out
 
 
@@ -127,7 +132,9 @@ def _parts(node: object) -> Optional[Tuple[str, ...]]:
 
 
 def _path_parts(path: str) -> Tuple[str, ...]:
-    return tuple(p.strip() for p in path.split("."))
+    """The segments of a dotted path, a quoted one unquoted."""
+    return tuple(p[1:-1].replace('""', '"') if len(p) > 1 and p[0] == p[-1] == '"' else p
+                 for p in (s.strip() for s in re.findall(r'"(?:[^"\n]|"")+"|[^.]+', path)))
 
 
 def _bounded(text: str, *, start: int, end: int) -> bool:

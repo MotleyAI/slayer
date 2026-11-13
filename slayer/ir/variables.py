@@ -173,26 +173,31 @@ def _carrying(query: SlayerQuery, variables: Dict[str, Any]) -> SlayerQuery:
 _SENTINELS = ("0001-01-01", "0001-01-02", "0001-01-03")
 
 
-DateVariables = Dict[Tuple[Tuple[str, ...], str, str], Tuple[str, ...]]
+#: ``(operand column path as spelled, operand-left op, date, literal on the left)`` → the variables binding it there.
+DateVariables = Dict[Tuple[Tuple[str, ...], str, str, bool], Tuple[str, ...]]
 
 
 def _date_variables(query: SlayerQuery, variables: Dict[str, Any]) -> DateVariables:
-    """``(operand column path as spelled, operand-left op, date)`` per changed comparison a date-only variable binds,
-    mapped to every variable binding it; a qualifier naming the query's source model is dropped."""
+    """Each changed comparison a date-only variable binds, mapped to every variable binding it; a qualifier naming the
+    query's source model is dropped."""
     dated = {n: v.strip() for n, v in variables.items() if isinstance(v, str) and is_date_only(v)}
     roots = [query.source_model] if isinstance(query.source_model, str) else []
+    extension_formulas = [m.formula for e in query.extensions or [] for m in e.measures or []]
     out: DateVariables = {}
-    for text in _texts(query):
+    for text in [*_texts(query), *extension_formulas]:
         for name in (n for n in variable_names(text) if n in dated):
-            for parts, op in _variable_slots(text, name=name, variables=variables):
+            for parts, op, literal_left in _variable_slots(text, name=name, variables=variables):
                 rooted = len(parts) > 1 and match_name(name=parts[0], declared=roots, quoted=False) is not None
-                key = (parts[1:] if rooted else parts, op, dated[name])
+                key = (parts[1:] if rooted else parts, op, dated[name], literal_left)
                 out[key] = tuple(sorted({*out.get(key, ()), name}))
     return out
 
 
-def _variable_slots(text: str, *, name: str, variables: Dict[str, Any]) -> List[Tuple[Tuple[str, ...], str]]:
-    """``(operand column parts, operand-left op)`` per changed comparison of ``text`` with ``'{name}'``."""
+def _variable_slots(
+    text: str, *, name: str, variables: Dict[str, Any],
+) -> List[Tuple[Tuple[str, ...], str, bool]]:
+    """``(operand column parts, operand-left op, literal on the left)`` per changed comparison of ``text`` with
+    ``'{name}'``."""
     taken = {*(str(v).strip() for v in variables.values())}
     sentinel = next((s for s in _SENTINELS if s not in text and s not in taken), None)
     if sentinel is None:
@@ -201,7 +206,7 @@ def _variable_slots(text: str, *, name: str, variables: Dict[str, Any]) -> List[
         bound = bind_variables(text, {**variables, name: sentinel})
     except ValueError:
         return []
-    return [(parts, op) for parts, op, date in date_comparisons(bound) if date == sentinel and parts]
+    return [(parts, op, left) for parts, op, date, left in date_comparisons(bound) if date == sentinel and parts]
 
 
 def _mode_a_surfaces(model: SlayerModel) -> list:

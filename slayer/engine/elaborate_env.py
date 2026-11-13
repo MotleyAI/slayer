@@ -1267,37 +1267,38 @@ def _column_parts(key: object) -> Optional[Tuple[str, ...]]:
     return None
 
 
-def _binding_variables(
-    variables: Mapping[Tuple[Tuple[str, ...], str, str], Tuple[str, ...]], *, column: Tuple[str, ...], op: str,
-    date: str,
-) -> Tuple[str, ...]:
-    """Every variable bound at a comparison of ``column`` by ``op`` with ``date`` (paths matched as references)."""
+DateVariables = Mapping[Tuple[Tuple[str, ...], str, str, bool], Tuple[str, ...]]
+
+
+def _binding_variables(variables: DateVariables, *, key: TimePointCmpKey, column: Tuple[str, ...]) -> Tuple[str, ...]:
+    """Every variable bound at ``key``'s comparison of ``column`` (paths matched as references)."""
     quoted = [False] * len(column)
-    names = {n for (parts, o, d), bound in variables.items() if o == op and d == date
+    wanted = (normal_op(key.op), key.point.strip(), key.literal_on_left)
+    names = {n for (parts, *rest), bound in variables.items() if tuple(rest) == wanted
              and match_path(parts=column, declared=[".".join(parts)], quoted=quoted) is not None for n in bound}
     return tuple(sorted(names))
 
 
 def date_only_notices(
-    roots: Sequence[ValueKey], *, column_type: ColumnTypeFn,
-    variables: Mapping[Tuple[Tuple[str, ...], str, str], Tuple[str, ...]],
+    roots: Sequence[ValueKey], *, column_type: ColumnTypeFn, variables: DateVariables,
 ) -> List[DateOnlyMidnightWarning]:
-    """One notice per spelling of a date-only literal compared with a TIMESTAMP operand where its midnight reading
-    changed the rows; ``variables`` maps ``(column path, op, date)`` to the variables that bound it there."""
+    """One notice per spelling of a date-only literal compared with a TIMESTAMP operand (bucketed finer than a day, if
+    at all) where its midnight reading changed the rows; ``variables`` names the variables that bound each."""
     out: Dict[str, DateOnlyMidnightWarning] = {}
     for key in (k for root in roots for k in walk_value_keys(root)):
         if not isinstance(key, TimePointCmpKey) or key.reads_whole_day or key.op not in _ANNOUNCED_OPS:
             continue
         date_text = key.point.strip()
         _, t, gran = _time_operand(key.operand, column_type=column_type)
-        if t is not DataType.TIMESTAMP or gran is not None or not is_date_only(date_text):
+        if t is not DataType.TIMESTAMP or not is_date_only(date_text) or (
+                gran is not None and nests_into(TimeGranularity.DAY, gran)):
             continue
         operand = _operand_display(key.operand)
         column = _column_parts(key.operand)
         notice = date_only_notice(
             comparison=key_display(key), operand=operand, date=date_text,
             whole_day=whole_day_spelling(operand=operand, op=key.op, date=date_text),
-            variables=_binding_variables(variables, column=column, op=normal_op(key.op), date=date_text) if column else (),
+            variables=_binding_variables(variables, key=key, column=column) if column else (),
         )
         out.setdefault(notice.message, notice)
     return list(out.values())
