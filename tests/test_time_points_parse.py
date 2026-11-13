@@ -15,7 +15,7 @@ from slayer.core.time_points import (
 from tests._time_points_fixtures import NOW, ROLLOVER_NOW
 
 
-def _period(text: str, now: datetime = NOW, *, whole_day: bool = False) -> tuple[datetime, datetime]:
+def _period(text: str, now: datetime = NOW, *, whole_day: bool = False) -> tuple[datetime, datetime | None]:
     point = resolve_time_point(text, now=now, whole_day=whole_day)
     assert isinstance(point, Period), f"{text!r} → {point!r}"
     return point.start, point.next_start

@@ -142,6 +142,29 @@ class TestNotice:
         resp = await engine.execute(q(dimensions=["id"], filters=[filt]))
         assert len(notices(resp)) == 1, resp.warnings
 
+    @pytest.mark.parametrize(("period", "op", "everything"), [
+        ("9999-12-31", "in", False), ("9999-12-31", "not in", True),
+        *((p, op, everything) for p in ("9999-12", "9999-Q4", "9999") for op, everything in (
+            ("in", False), ("not in", True), ("=", False), ("!=", True), ("<", True), ("<=", True), (">", False),
+            (">=", False))),
+    ])
+    async def test_a_period_at_the_end_of_time(
+        self, engine: SlayerQueryEngine, period: str, op: str, everything: bool,
+    ) -> None:
+        every = await _ids(engine, "id > 0")
+        assert await _ids(engine, f"created_at {op} '{period}'") == (every if everything else set())
+
+    @pytest.mark.parametrize("point", ["9999-12-31", "9999-12-31 10:00:00", "9999-12", "9999"])
+    @pytest.mark.parametrize(("op", "everything"), [
+        ("=", False), ("!=", True), ("<", True), ("<=", True), (">", False), (">=", False),
+    ])
+    async def test_a_coarse_bucket_against_the_end_of_time(
+        self, engine: SlayerQueryEngine, point: str, op: str, everything: bool,
+    ) -> None:
+        every = await _ids(engine, "id > 0")
+        found = await _ids(engine, f"date_trunc('month', created_at) {op} '{point}'")
+        assert found == (every if everything else set())
+
     async def test_inside_a_measure(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(measures=[m(TestInsideMeasures.FILTERED)]))
         assert len(notices(resp)) == 1, resp.warnings

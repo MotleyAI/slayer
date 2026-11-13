@@ -244,6 +244,8 @@ class TestRewrites:
             "'9999-12-31' < created_at": f"{eod} < created_at",
             "created_at BETWEEN '2024-01-01' AND '9999-12-31'": f"(created_at >= '2024-01-01' and created_at <= {eod})",
             "created_at NOT BETWEEN '2024-01-01' AND '9999-12-31'": f"(created_at < '2024-01-01' or created_at > {eod})",
+            "created_at = '9999-12-31'": "created_at in '9999-12-31'",
+            "created_at != '9999-12-31'": "created_at not in '9999-12-31'",
             "code <= '9999-12-31'": "code <= '9999-12-31'",
         }
         doc = orders_doc(name="orders_last", columns=[*COLUMNS, {**LATE_AMOUNT, "filter": "code > '9999-12-31'"}])
@@ -252,6 +254,8 @@ class TestRewrites:
         mem = await storage.get_memory("m_last")
         assert mem.query is not None
         assert mem.query.filters == list(stored.values())
+        for upgraded in mem.query.filters or []:
+            await run(storage, mem.query.model_copy(update={"filters": [upgraded]}))
         model = await storage.get_model("orders_last", data_source=DS)
         assert model is not None
         assert next(c for c in model.columns if c.name == "late_amount").filter == "code > '9999-12-31'"

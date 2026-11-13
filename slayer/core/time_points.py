@@ -40,10 +40,11 @@ class Instant(BaseModel, frozen=True):
 
 
 class Period(BaseModel, frozen=True):
-    """The half-open interval ``[start, next_start)``; ``sub_day`` marks an hour/minute/second token."""
+    """The half-open interval ``[start, next_start)``, open-ended (``next_start`` ``None``) when it reaches the end of
+    representable time; ``sub_day`` marks an hour/minute/second token."""
 
     start: datetime
-    next_start: datetime
+    next_start: datetime | None
     sub_day: bool = False
 
 
@@ -96,8 +97,7 @@ _STEP = {"this": 0, "last": -1, "next": 1}
 
 
 def _day_period(day: date) -> Period:
-    start = datetime(day.year, day.month, day.day)
-    return Period(start=start, next_start=start + timedelta(days=1))
+    return _span(datetime(day.year, day.month, day.day), TimeGranularity.DAY, 1)
 
 
 def _parse_literal(text: str, *, whole_day: bool = False) -> TimePoint | None:
@@ -229,7 +229,15 @@ def parse_temporal_value(text: str) -> date | datetime | None:
 
 
 def _span(start: datetime, unit: Granularity, count: int) -> Period:
-    return Period(start=start, next_start=add_units(start, unit, count))
+    return Period(start=start, next_start=units_after(start, unit, count))
+
+
+def units_after(value: datetime, unit: Granularity, n: int) -> datetime | None:
+    """:func:`add_units`, ``None`` past the end of representable time."""
+    try:
+        return add_units(value, unit, n)
+    except (OverflowError, ValueError):
+        return None
 
 
 _FIXED_STEPS = {

@@ -113,8 +113,8 @@ from slayer.core.refs import bucket_remedy, dotted_key_display, key_display
 from slayer.core.scope import ModelScope, StageSchema, peek_model_column
 from slayer.core.warnings import DateOnlyMidnightWarning
 from slayer.core.time_points import (
-    TIME_POINT_FORMS, Instant, add_units, ceil_to, floor_to, is_date_only, is_relative_token, is_time_point,
-    resolve_time_point,
+    TIME_POINT_FORMS, Instant, ceil_to, floor_to, is_date_only, is_relative_token, is_time_point,
+    resolve_time_point, units_after,
 )
 from slayer.sql.sql_expr import has_window_function
 from slayer.ir.planned import MaskTyping
@@ -1412,14 +1412,24 @@ def _lower_time_point(
     if isinstance(point, Instant):
         if gran is None:
             return ArithmeticKey(op=_arith_op(op), operands=(target, _bound(point.value, t=t, key=key)))
-        lo, hi = ceil_to(point.value, gran), add_units(floor_to(point.value, gran), gran, 1)
+        lo, hi = _ceil(point.value, gran), units_after(floor_to(point.value, gran), gran, 1)
     elif gran is None:
         if point.sub_day and t is DataType.DATE:
             _raise_sub_day(key)
         lo, hi = point.start, point.next_start
     else:
-        lo, hi = ceil_to(point.start, gran), ceil_to(point.next_start, gran)
-    low, high = _bound(lo, t=t, key=key), _bound(hi, t=t, key=key)
+        lo, hi = _ceil(point.start, gran), point.next_start and _ceil(point.next_start, gran)
+    if lo is None:
+        start = point.value if isinstance(point, Instant) else point.start
+        pivot = _bound(floor_to(start, TimeGranularity.DAY), t=t, key=key)
+        every = ArithmeticKey(op="or", operands=(ArithmeticKey(op=">=", operands=(target, pivot)),
+                                                 ArithmeticKey(op="<", operands=(target, pivot))))
+        none = ArithmeticKey(op="and", operands=every.operands)
+        return none if op in ("=", ">=", ">") else every
+    low = _bound(lo, t=t, key=key)
+    if hi is None:
+        return _open_ended(op, target=target, low=low)
+    high = _bound(hi, t=t, key=key)
     if op == "=":
         return ArithmeticKey(op="and", operands=(
             ArithmeticKey(op=">=", operands=(target, low)), ArithmeticKey(op="<", operands=(target, high)),
@@ -1430,6 +1440,23 @@ def _lower_time_point(
         ))
     rel_op, value = {">=": (">=", low), ">": (">=", high), "<": ("<", low), "<=": ("<", high)}[op]
     return ArithmeticKey(op=rel_op, operands=(target, value))
+
+
+def _ceil(value: datetime, gran: Granularity) -> Optional[datetime]:
+    """``ceil_to``; ``None`` past the end of representable time."""
+    try:
+        return ceil_to(value, gran)
+    except (OverflowError, ValueError):
+        return None
+
+
+def _open_ended(op: str, *, target: ValueKey, low: LiteralKey) -> ValueKey:
+    """``target <op> P`` for a period ``P`` from ``low`` to the end of representable time."""
+    at_or_after = ArithmeticKey(op=">=", operands=(target, low))
+    before = ArithmeticKey(op="<", operands=(target, low))
+    return {"=": at_or_after, ">=": at_or_after, "!=": before, "<": before,
+            "<=": ArithmeticKey(op="or", operands=(at_or_after, before)),
+            ">": ArithmeticKey(op="and", operands=(at_or_after, before))}[op]
 
 
 def _arith_op(op: str) -> str:
