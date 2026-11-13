@@ -26,7 +26,7 @@
 ## 5. SQLite casts and numeric pins
 
 - [x] 5.1 Cast renderer: one family check asking the dialect whether it can express the authored type. SQLite renders unmodified timestamp types through the `TRY_CAST` conversion, keeps `DATE(x)`, and refuses `TIME`, time-zone modifiers and precision parameters with the typed error, for `CAST`, `::` and `TRY_CAST`. Verify with the `SQLite casts to timestamp and time types` scenarios.
-- [ ] 5.2 Library matrix: INT `/` INT and DECIMAL ties under two-argument `round` on every Tier-1 dialect, over declared DECIMAL columns with the planned type asserted; float ties as a separate best-effort check. Fix any failing dialect in its `dialects/` file. Verify with the `Division and rounding follow Ossie's numeric semantics` scenarios in CI.
+- [x] 5.2 Library matrix: INT `/` INT and DECIMAL ties under two-argument `round` on every Tier-1 dialect, over declared DECIMAL columns with the planned type asserted; float ties as a separate best-effort check. Fix any failing dialect in its `dialects/` file. Verify with the `Division and rounding follow Ossie's numeric semantics` scenarios in CI.
 
 ## 6. Docs
 
