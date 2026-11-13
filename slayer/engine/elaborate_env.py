@@ -19,8 +19,11 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS, DataType, TimeGranularity, TIME_TRANSFORMS
 from slayer.core.errors import (
+    AmbiguousJoinPathError,
+    AmbiguousReferenceError,
     AssociationError,
     CanonicalAliasShadowsColumnError,
+    CircularJoinPathError,
     ComputedDimensionError,
     DateOperandTypeError,
     DimensionTypeError,
@@ -104,7 +107,8 @@ from slayer.core.keys import (
 from slayer.core.date_only import normal_op, scan_date_only, whole_day_spelling
 from slayer.core.deprecation import scheduled_notice
 from slayer.core.models import SlayerModel
-from slayer.core.names import folded_collisions
+from slayer.core.join_walker import walk_terminal
+from slayer.core.names import folded_collisions, match_name
 from slayer.core.refs import bucket_remedy, dotted_key_display, key_display
 from slayer.core.scope import ModelScope, StageSchema, peek_model_column
 from slayer.core.warnings import DateOnlyMidnightWarning
@@ -1288,21 +1292,40 @@ def date_only_notices(
     return list(out.values())
 
 
-def saved_date_only_notices(model: SlayerModel) -> List[DateOnlyMidnightWarning]:
-    """The notices for ``model``'s saved measures and column filters, typed by its own columns."""
-    types = {c.name: c.type for c in model.columns}
+def saved_date_only_notices(
+    model: SlayerModel, *, models_by_name: Mapping[str, Optional[SlayerModel]],
+) -> List[DateOnlyMidnightWarning]:
+    """The notices for ``model``'s saved measures and column filters, typed through its joins to ``models_by_name``."""
+    models = {n: m for n, m in models_by_name.items() if m is not None}
     out: Dict[str, DateOnlyMidnightWarning] = {}
     texts = [*(m.formula for m in model.measures), *(c.filter for c in model.columns if c.filter)]
     for text in texts:
         for site in scan_date_only(text).sites:
-            parts = site.parts[1:] if len(site.parts) == 2 and site.parts[0] == model.name else site.parts
-            if len(parts) != 1 or types.get(parts[0]) is not DataType.TIMESTAMP:
+            if _saved_column_type(model, parts=site.parts, models_by_name=models) is not DataType.TIMESTAMP:
                 continue
             notice = date_only_notice(
                 comparison=text[site.start:site.end], operand=site.operand, date=site.date, whole_day=site.twin,
             )
             out.setdefault(notice.message, notice)
     return list(out.values())
+
+
+def _saved_column_type(
+    model: SlayerModel, *, parts: Sequence[str], models_by_name: Dict[str, SlayerModel],
+) -> Optional[DataType]:
+    """The type of the column ``parts`` names from ``model`` (names matched as references are); ``None`` when
+    unresolvable."""
+    quals, leaf = list(parts[:-1]), parts[-1]
+    if quals and quals[0].casefold() == model.name.casefold():
+        quals = quals[1:]
+    try:
+        found = walk_terminal(root=model, path=quals, models_by_name=models_by_name)
+        owner = found[0] if found is not None else None
+        name = match_name(name=leaf, declared=[c.name for c in owner.columns], quoted=False) if owner else None
+    except (AmbiguousJoinPathError, AmbiguousReferenceError, CircularJoinPathError):
+        return None
+    column = owner.get_column(name) if owner is not None and name is not None else None
+    return column.type if column is not None else None
 
 
 def date_only_notice(

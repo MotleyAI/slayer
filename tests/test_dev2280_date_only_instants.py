@@ -207,6 +207,18 @@ class TestNotice:
         assert len([n for n in notes if NOTICE in payload_text(n)]) == 1, notes
         assert future_warnings(caught) == []
 
+    @pytest.mark.parametrize("formula", [
+        "count(*) FILTER (WHERE CREATED_AT = '2024-04-10')",
+        "count(*) FILTER (WHERE customers.updated_at <= '2024-04-10')",
+    ])
+    async def test_a_saved_measure_on_a_case_variant_or_joined_column_is_announced(
+        self, engine: SlayerQueryEngine, formula: str,
+    ) -> None:
+        model = orders_model().model_copy(update={"measures": [ModelMeasure(name="on_day", formula=formula)]})
+        notes: list[Any] = []
+        await engine.save_model(model, warnings_out=notes)
+        assert len([n for n in notes if NOTICE in payload_text(n)]) == 1, notes
+
     async def test_a_saved_query_is_announced_at_save(self, engine: SlayerQueryEngine) -> None:
         notes: list[Any] = []
         with recorded_warnings() as caught:

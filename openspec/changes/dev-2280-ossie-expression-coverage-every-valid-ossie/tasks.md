@@ -14,7 +14,7 @@
 
 ## 3. Stored upgrade
 
-- [x] 3.1 Bump SlayerModel 22→23, SlayerQuery 14→15 and Memory 10→11 in `storage/migrations.py` (renumber if a concurrent bump has landed). Gate the rewrite on each nested document's own stored version. Verify with the current-parent / old-child tests.
+- [x] 3.1 Bump SlayerModel 23→24, SlayerQuery 14→15 and Memory 10→11 in `storage/migrations.py` (renumber if a concurrent bump has landed). Gate the rewrite on each nested document's own stored version. Verify with the current-parent / old-child tests.
 - [x] 3.2 Extend DEV-2215's Mode-B walker to Mode-B `Column.filter`. Add the context-aware rewrite in the storage load path: type each candidate operand against the datasource's models with the one Mode-B reader, and rewrite through the shared span rewriter per `design.md` › Stored upgrade. Leave and log untypable operands; leave TEXT and variable comparisons untouched. Verify with the `Stored date-only comparisons keep their whole-day meaning` scenarios on YAML and SQLite storage.
 - [x] 3.3 Verify each upgraded fixture returns its pre-change rows by executing it before and after the upgrade.
 

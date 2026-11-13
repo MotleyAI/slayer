@@ -3015,9 +3015,9 @@ class SlayerQueryEngine:
                     f"(got {len(model.columns)} columns)."
                 )
             model = await self._validate_and_populate_cache(model, notices_out=notices)
-        notices.extend(saved_date_only_notices(model))
         failures = DocumentLoadFailures()
         loaded = await self._preload_join_targets(model, failures=failures)
+        notices.extend(saved_date_only_notices(model, models_by_name=loaded))
         _validate_join_keys(model=model, loaded=loaded)
         ds = await self.storage.get_datasource(model.data_source) if model.data_source else None
         check_placeholders(mode_a_texts(model), dialect=dialect_for_ds_type(ds.type if ds else None))

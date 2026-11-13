@@ -44,12 +44,12 @@ No arc42 or `.c4` edit is needed, and no new capability is added, so no spec att
 
 - **Classification.** `core.time_points` reads `YYYY-MM-DD` as an instant (midnight) in a comparison (`=`, `!=`, `<`, `<=`, `>`, `>=`, `BETWEEN`, `NOT BETWEEN`) and as a day period only as a `date_range` element or the right-hand side of single-string `in` / `not in`. A variable-bound literal goes through the same reader. Instant comparisons keep their existing key and lowering, so frame-bound detection treats date-only range comparisons as instants.
 - **Notice.** Binding records a notice when a date-only literal (or a variable bound to one) meets a TIMESTAMP operand under `<=`, `>`, `=`, `!=`, `BETWEEN` or `NOT BETWEEN`. It is emitted once per spelling per query or save as a structured warning through the existing warning collector (core P6). The emission site is marked through a new tripwire-read marker in `core.deprecation` that records `removal="3.0"` and emits no `FutureWarning`. `warn_deprecated` stays the only `FutureWarning` emitter, and the tripwire scanner and its pinned site set include the new marker.
-- **Stored upgrade.** One bump: SlayerModel 22→23, SlayerQuery 14→15, Memory 10→11 (renumbered after DEV-2021's bump).
+- **Stored upgrade.** One bump: SlayerModel 23→24, SlayerQuery 14→15, Memory 10→11 (renumbered after DEV-2021's and DEV-2281's bumps).
   - The rewrite runs in the storage load path with the datasource's models, like DEV-2215's custom-granularity step.
   - It is gated per nested entity on that entity's own stored version, so a current parent with an older nested query, extension or memory query is upgraded where it nests.
   - The walker is DEV-2215's, extended to Mode-B `Column.filter`.
   - Each candidate comparison is parsed by the one Mode-B reader, its operand typed against the models, and rewritten by the shared span rewriter, leaving the rest of the text byte-identical. Untypable operands are logged and left.
-  - Rewrites, with `<D+1>` the next calendar day:
+  - Rewrites, with `<D+1>` the next calendar day (on the last representable day `9999-12-31`, `< '<D+1>'` is `<= 'D 23:59:59.999999'` and `>= '<D+1>'` is `> 'D 23:59:59.999999'`):
     - `<= 'D'` → `< '<D+1>'`
     - `> 'D'` → `>= '<D+1>'`
     - `= 'D'` → `in 'D'`

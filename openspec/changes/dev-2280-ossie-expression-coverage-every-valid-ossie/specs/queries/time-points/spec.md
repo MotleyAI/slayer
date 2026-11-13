@@ -101,7 +101,7 @@ A time bound on a time dimension's column SHALL narrow the visible buckets witho
 
 ### Requirement: A date-only comparison that changed meaning is announced
 
-A query, and a save of a model or query, in which a date-only literal is compared with a TIMESTAMP operand by `<=`, `>`, `=`, `!=`, `BETWEEN` or `NOT BETWEEN` SHALL carry one informational structured warning per spelling per query or save — also when the date-only value arrives through a variable, which the warning then names. The warning SHALL state that the literal is the instant at midnight and name the whole-day spelling (`x in 'YYYY-MM-DD'`, or `x < '<next day>'`). It SHALL NOT be a `FutureWarning`. A comparison by `>=` or `<`, against a DATE operand, against a non-temporal operand, or with an instant carrying a time part SHALL NOT emit it.
+A query, and a save of a model or query, in which a date-only literal is compared with a TIMESTAMP operand by `<=`, `>`, `=`, `!=`, `BETWEEN` or `NOT BETWEEN` SHALL carry one informational structured warning per spelling per query or save — also when the date-only value arrives through a variable, which the warning then names. The warning SHALL state that the literal is the instant at midnight and name the whole-day spelling (`x in 'YYYY-MM-DD'`, or `x < '<next day>'`, which is `x <= '9999-12-31 23:59:59.999999'` on the last representable day). It SHALL NOT be a `FutureWarning`. A comparison by `>=` or `<`, against a DATE operand, against a non-temporal operand, or with an instant carrying a time part SHALL NOT emit it.
 
 #### Scenario: Inclusive upper bound is announced
 
