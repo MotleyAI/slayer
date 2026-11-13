@@ -113,7 +113,7 @@ from slayer.core.refs import bucket_remedy, dotted_key_display, key_display
 from slayer.core.scope import ModelScope, StageSchema, peek_model_column
 from slayer.core.warnings import DateOnlyMidnightWarning
 from slayer.core.time_points import (
-    TIME_POINT_FORMS, Instant, ceil_to, floor_to, is_date_only, is_relative_token, is_time_point,
+    TIME_POINT_FORMS, Instant, Period, TimePoint, ceil_to, floor_to, is_date_only, is_relative_token, is_time_point,
     resolve_time_point, units_after,
 )
 from slayer.sql.sql_expr import has_window_function
@@ -1409,27 +1409,39 @@ def _lower_time_point(
     if point is None:
         _raise_not_a_time_point(operand=key.operand, text=key.point)
     op = {"in": "=", _NOT_IN: "!="}.get(key.op, key.op)
-    if isinstance(point, Instant):
-        if gran is None:
-            return ArithmeticKey(op=_arith_op(op), operands=(target, _bound(point.value, t=t, key=key)))
-        lo, hi = _ceil(point.value, gran), units_after(floor_to(point.value, gran), gran, 1)
-    elif gran is None:
-        if point.sub_day and t is DataType.DATE:
-            _raise_sub_day(key)
-        lo, hi = point.start, point.next_start
-    else:
-        lo, hi = _ceil(point.start, gran), point.next_start and _ceil(point.next_start, gran)
+    if isinstance(point, Instant) and gran is None:
+        return ArithmeticKey(op=_arith_op(op), operands=(target, _bound(point.value, t=t, key=key)))
+    if isinstance(point, Period) and gran is None and point.sub_day and t is DataType.DATE:
+        _raise_sub_day(key)
+    lo, hi = _range_bounds(point, gran=gran)
     if lo is None:
         start = point.value if isinstance(point, Instant) else point.start
-        pivot = _bound(floor_to(start, TimeGranularity.DAY), t=t, key=key)
-        every = ArithmeticKey(op="or", operands=(ArithmeticKey(op=">=", operands=(target, pivot)),
-                                                 ArithmeticKey(op="<", operands=(target, pivot))))
-        none = ArithmeticKey(op="and", operands=every.operands)
-        return none if op in ("=", ">=", ">") else every
+        return _past_the_end(op, target=target, pivot=_bound(floor_to(start, TimeGranularity.DAY), t=t, key=key))
     low = _bound(lo, t=t, key=key)
     if hi is None:
         return _open_ended(op, target=target, low=low)
-    high = _bound(hi, t=t, key=key)
+    return _in_range(op, target=target, low=low, high=_bound(hi, t=t, key=key))
+
+
+def _range_bounds(point: TimePoint, *, gran: Optional[Granularity]) -> Tuple[Optional[datetime], Optional[datetime]]:
+    """The ``[lo, hi)`` operand range ``point`` covers, bucketed by ``gran``; ``None`` past the end of time."""
+    if isinstance(point, Instant):
+        assert gran is not None
+        return _ceil(point.value, gran), units_after(floor_to(point.value, gran), gran, 1)
+    if gran is None:
+        return point.start, point.next_start
+    return _ceil(point.start, gran), point.next_start and _ceil(point.next_start, gran)
+
+
+def _past_the_end(op: str, *, target: ValueKey, pivot: LiteralKey) -> ValueKey:
+    """``target <op> R`` for a range ``R`` past every representable bucket: every row lies before it."""
+    every = ArithmeticKey(op="or", operands=(ArithmeticKey(op=">=", operands=(target, pivot)),
+                                             ArithmeticKey(op="<", operands=(target, pivot))))
+    return ArithmeticKey(op="and", operands=every.operands) if op in ("=", ">=", ">") else every
+
+
+def _in_range(op: str, *, target: ValueKey, low: LiteralKey, high: LiteralKey) -> ValueKey:
+    """``target <op> [low, high)``."""
     if op == "=":
         return ArithmeticKey(op="and", operands=(
             ArithmeticKey(op=">=", operands=(target, low)), ArithmeticKey(op="<", operands=(target, high)),
