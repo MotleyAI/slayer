@@ -182,15 +182,25 @@ def _date_variables(query: SlayerQuery, variables: Dict[str, Any]) -> DateVariab
     query's source model is dropped."""
     dated = {n: v.strip() for n, v in variables.items() if isinstance(v, str) and is_date_only(v)}
     roots = [query.source_model] if isinstance(query.source_model, str) else []
-    extension_formulas = [m.formula for e in query.extensions or [] for m in e.measures or []]
+    texts = [*((t, None) for t in _texts(query)),
+             *((m.formula, e.source_name) for e in query.extensions or [] for m in e.measures or [])]
     out: DateVariables = {}
-    for text in [*_texts(query), *extension_formulas]:
+    for text, owner in texts:
         for name in (n for n in variable_names(text) if n in dated):
             for parts, op, literal_left in _variable_slots(text, name=name, variables=variables):
-                rooted = len(parts) > 1 and match_name(name=parts[0], declared=roots, quoted=False) is not None
-                key = (parts[1:] if rooted else parts, op, dated[name], literal_left)
+                key = (_from_root(parts, owner=owner, roots=roots), op, dated[name], literal_left)
                 out[key] = tuple(sorted({*out.get(key, ()), name}))
     return out
+
+
+def _from_root(parts: Tuple[str, ...], *, owner: Optional[str], roots: List[str]) -> Tuple[str, ...]:
+    """``parts`` as a path from the query's source model: an extension's own qualifier replaced by its owner, a
+    qualifier naming the source model dropped."""
+    if owner is not None:
+        own = len(parts) > 1 and match_name(name=parts[0], declared=[owner], quoted=False) is not None
+        parts = (owner, *(parts[1:] if own else parts))
+    rooted = len(parts) > 1 and match_name(name=parts[0], declared=roots, quoted=False) is not None
+    return parts[1:] if rooted else parts
 
 
 def _variable_slots(
@@ -199,14 +209,14 @@ def _variable_slots(
     """``(operand column parts, operand-left op, literal on the left)`` per changed comparison of ``text`` with
     ``'{name}'``."""
     taken = {*(str(v).strip() for v in variables.values())}
-    sentinel = next((s for s in _SENTINELS if s not in text and s not in taken), None)
-    if sentinel is None:
+    marker = next((s for s in _SENTINELS if s not in text and s not in taken), None)
+    if marker is None:
         return []
     try:
-        bound = bind_variables(text, {**variables, name: sentinel})
+        bound = bind_variables(text, {**variables, name: marker})
     except ValueError:
         return []
-    return [(parts, op, left) for parts, op, date, left in date_comparisons(bound) if date == sentinel and parts]
+    return [(parts, op, left) for parts, op, date, left in date_comparisons(bound) if date == marker and parts]
 
 
 def _mode_a_surfaces(model: SlayerModel) -> list:

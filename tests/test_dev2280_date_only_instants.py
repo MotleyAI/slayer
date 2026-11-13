@@ -205,6 +205,13 @@ class TestNotice:
                 {"name": "early", "formula": "count(*) FILTER (WHERE created_at <= '{cutoff}')"}]}]))
         assert [w.variables for w in notices(resp)] == [["cutoff"]], resp.warnings
 
+    async def test_a_variable_in_a_joined_extension_measure_is_named(self, engine: SlayerQueryEngine) -> None:
+        resp = await engine.execute(q(
+            measures=["customers.recent"], variables={"cutoff": "2024-12-31"},
+            extensions=[{"source_name": "customers", "measures": [
+                {"name": "recent", "formula": "count(*) FILTER (WHERE updated_at <= '{cutoff}')"}]}]))
+        assert [w.variables for w in notices(resp)] == [["cutoff"]], resp.warnings
+
     @pytest.mark.parametrize(("operand", "announced"), [
         ("date_trunc('hour', created_at)", 1), ("date_trunc('day', created_at)", 0),
         ("date_trunc('month', created_at)", 0),
