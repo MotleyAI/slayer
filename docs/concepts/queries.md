@@ -195,7 +195,7 @@ A downstream stage of a multi-stage query may declare a time dimension on any DA
 
 `week` is Monday-anchored (ISO-8601); `week_sunday` is Sunday-anchored (weeks start Sunday, end Saturday) for tools that use Sunday weeks. Both are model granularities you set on a `TimeDimension` — `week_sunday` is the SLayer value, not a wire keyword sent by a BI tool.
 
-`date_range` is one time point (`"2025-Q1"`, `"last month"`) or a `[lower, upper]` pair with either bound `null`, read with the [time-point semantics](time.md#date_range) — so a date-only upper bound covers its whole day.
+`date_range` is one time point (`"2025-Q1"`, `"last month"`) or a `[lower, upper]` pair with either bound `null`, read with the [time-point semantics](time.md#date_range) — a date-only bound there covers its whole day.
 
 ## OrderItem
 
@@ -336,7 +336,7 @@ RHS are not supported. Both `(...)` and `[...]` syntax are accepted.
 
 A string compared with a DATE / TIMESTAMP expression is a [time point](time.md#time-points):
 `"created_at >= 'last month'"`, `"created_at in '2025-Q1'"` and `"date_trunc('month', created_at) = '2025-03'"`
-all work, and a date-only string means the whole day.
+all work; a date-only string is its midnight (`created_at in '2025-03-01'` is the whole day).
 
 ### Boolean Logic
 

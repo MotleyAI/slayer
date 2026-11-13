@@ -3,11 +3,12 @@
 ## Time points
 
 A string compared with a DATE / TIMESTAMP expression or a `date_trunc` bucket is a time
-point. An instant (`'2025-03-01 10:00:00'`) compares as written. A period is a
-half-open range:
+point. An instant (`'2025-03-01 10:00:00'`) compares as written, and so does a date
+(`'2025-03-01'` is `2025-03-01 00:00:00` after `=`, `<`, `<=`, `>`, `>=`, `BETWEEN`).
+A period is a half-open range:
 
-- absolute: `'2025'`, `'2025-Q1'`, `'2025-03'`, `'2025-W05'` (ISO week),
-  `'2025-03-01'` (a date-only string means the whole day);
+- absolute: `'2025'`, `'2025-Q1'`, `'2025-03'`, `'2025-W05'` (ISO week), and a date
+  after `in` (`ts in '2025-03-01'` is that whole day; `ts < '2025-03-02'` ends with it);
 - relative, read from the clock (pinned by `SLAYER_NOW` when set): `'today'`,
   `'this month'` / `'last month'` / `'next month'` (any granularity), `'last 7 days'`
   (excludes the current day), `'3 months ago'`, `'year to date'`.

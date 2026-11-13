@@ -58,8 +58,8 @@ def _migrated(location: str, entries: Any) -> Any:
     return meta.get(NEW)
 
 
-def test_version_is_23() -> None:
-    assert CURRENT_VERSIONS["SlayerModel"] == 23
+def test_version_reaches_23() -> None:
+    assert CURRENT_VERSIONS["SlayerModel"] >= 23
 
 
 @pytest.mark.parametrize("location", LOCATIONS)
@@ -123,5 +123,5 @@ async def test_stored_model_upgraded_on_load(tmp_path: Path) -> None:
     path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
     model = await storage.get_model("orders", data_source="osids")
     assert model is not None
-    assert model.version == 23
+    assert model.version == CURRENT_VERSIONS["SlayerModel"]
     assert _meta(model, "column") == {NEW: [{"vendor_name": "ACME", "data": {"k": 1}}]}

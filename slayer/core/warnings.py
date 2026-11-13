@@ -377,6 +377,21 @@ class DeprecatedSpellingWarning(SlayerWarning):
                 f"write `{self.canonical}`")
 
 
+class DateOnlyMidnightWarning(SlayerWarning):
+    """``comparison`` reads its date-only literal as midnight, where it once read the whole day; ``whole_day`` keeps the
+    day, ``variables`` names the variables that bound the date there, if any."""
+
+    kind: Literal["date_only_midnight"] = "date_only_midnight"
+    comparison: str
+    whole_day: str
+    variables: List[str] = Field(default_factory=list)
+    message: str
+    removal: str = "3.0"
+
+    def human_message(self) -> str:
+        return self.message
+
+
 # Discriminated union, not the bare base: a ``List[SlayerWarning]`` would validate
 # down to the base type and drop subclass fields. Keyed on ``kind``, each round-trips.
 AnySlayerWarning = Annotated[
@@ -399,6 +414,7 @@ AnySlayerWarning = Annotated[
         DeprecatedInputWarning,
         DeprecatedSpellingWarning,
         NameCollisionWarning,
+        DateOnlyMidnightWarning,
     ],
     Field(discriminator="kind"),
 ]
@@ -524,3 +540,13 @@ class SlayerNameCollisionWarning(UserWarning):
     def __str__(self) -> str:
         return self.payload.human_message()
 
+
+class SlayerDateOnlyMidnightWarning(UserWarning):
+    """Carrier ``UserWarning`` for a ``DateOnlyMidnightWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: DateOnlyMidnightWarning) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()

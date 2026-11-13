@@ -1380,10 +1380,11 @@ class SlayerQuery(BaseModel):
             "- A list tags: contains(tags, 'x') or tags.value = 'x'; contains_any(tags, ['x', "
             "'y']) shares an element, contains_all(tags, ['x', 'y']) holds every one.\n"
             "- Time points: a string compared with a date/time column is a half-open period: "
-            "'2025', '2025-Q1', '2025-03', '2025-W05' (ISO week), '2025-03-01' (the whole day), or "
+            "'2025', '2025-Q1', '2025-03', '2025-W05' (ISO week), or "
             "relative: 'today', 'last month', 'last 7 days' (excludes the current day), "
             "'year to date'. order_date >= '2025-Q1' starts at the period, <= ends with it, "
-            "order_date in '2025-Q1' is inside it.\n"
+            "order_date in '2025-Q1' is inside it. A date '2025-03-01' is its midnight; "
+            "created_at in '2025-03-01' is the whole day.\n"
             "- {variable} placeholders take literal values from variables.\n"
             'More: inspect(reference=["memory:help.time", "memory:help.joins"], '
             'entity_type="memory").'
@@ -1395,6 +1396,13 @@ class SlayerQuery(BaseModel):
     @property
     def bound_variables(self) -> dict[str, Any]:
         return self._bound_variables
+
+    # (column path, op, date, literal on the left) per comparison a date-only variable binds → the variables binding it (``apply_variables_to_query``).
+    _date_variables: dict[tuple[tuple[str, ...], str, str, bool], tuple[str, ...]] = PrivateAttr(default_factory=dict)
+
+    @property
+    def date_variables(self) -> dict[tuple[tuple[str, ...], str, str, bool], tuple[str, ...]]:
+        return self._date_variables
 
     variables: dict[str, Any] | None = Field(
         default=None,

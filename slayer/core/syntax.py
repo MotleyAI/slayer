@@ -328,6 +328,28 @@ def _regions(text: str) -> List[_Region]:
     return out
 
 
+class StringLiteralSpan(BaseModel):
+    """A ``'…'`` literal at ``text[start:end]`` (quotes included) and its ``value``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    start: int
+    end: int
+    value: str
+
+
+def string_literal_spans(text: str) -> List[StringLiteralSpan]:
+    """Each string literal of ``text`` in order, between code regions; none when ``text`` has an unterminated comment."""
+    try:
+        regions = _regions(text)
+    except _Problem:
+        return []
+    return [
+        StringLiteralSpan(start=r.start, end=r.end, value=text[r.start + 1:r.end - 1].replace("''", "'"))
+        for r in regions if r.kind == "string" and r.end - r.start >= 2 and text[r.end - 1] == "'"
+    ]
+
+
 def _mask_code(chunk: str) -> str:
     if "{?" in chunk or "?}" in chunk:
         raise _Problem(_OPTIONAL_BLOCKS)
@@ -2646,6 +2668,6 @@ __all__ = [
     "bare_literal_text", "dotted_quoting", "drop_root_hop", "drop_root_qualifier", "has_bindings", "keyword_spelling",
     "legacy_result_name_seed", "map_refs", "measure_dependency_problems", "measure_text_at_path", "onto_path",
     "parse_bound_expr", "parse_expr", "parse_template", "placeholder_names", "positional_hint", "referenced_paths",
-    "rewrite_colon_spans", "root_relative", "split_entity_agg_ref",
+    "rewrite_colon_spans", "root_relative", "split_entity_agg_ref", "StringLiteralSpan", "string_literal_spans",
     "text_paths", "value_text", "variable_names", "walk_parsed", "walk_parsed_refs",
 ]
