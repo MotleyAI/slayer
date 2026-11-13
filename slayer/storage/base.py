@@ -268,7 +268,12 @@ def _repaired_target(target: str, *, names: set[str]) -> str:
 def _with_repaired_targets(raw: Any, *, names: set[str]) -> Any:
     """A raw peer document's joins as its pre-v23 target repair will read them."""
     joins = raw.get("joins") if isinstance(raw, dict) else None
-    if not isinstance(joins, list) or int(raw.get("version", 1)) >= _JOIN_TARGET_REPAIR_BELOW_VERSION:
+    if not isinstance(joins, list):
+        return raw
+    try:
+        if int(raw.get("version", 1)) >= _JOIN_TARGET_REPAIR_BELOW_VERSION:
+            return raw
+    except (TypeError, ValueError):  # a malformed version is reported at that document's own load
         return raw
     return {**raw, "joins": [
         {**j, "target_model": _repaired_target(j["target_model"], names=names)}
@@ -1062,13 +1067,13 @@ class StorageBackend(ABC):
             data = rewrite_model_doc(data, await self._custom_bucket_calls(data_sources=[data_source]))
         if pre_version < _mig.CURRENT_VERSIONS["SlayerModel"]:
             data = _mig.migrate("SlayerModel", data)
+            if pre_version < _JOIN_TARGET_REPAIR_BELOW_VERSION:
+                await self._repair_join_targets(name=name, data=data, data_source=data_source)
             # Rewrite legacy ``__`` split-alias qualifiers to dotted on the RAW
             # dict, before validation (every forward migration may carry them).
             data = await self._rewrite_legacy_join_aliases(
                 name=name, data=data, data_source=data_source,
             )
-            if pre_version < _JOIN_TARGET_REPAIR_BELOW_VERSION:
-                await self._repair_join_targets(name=name, data=data, data_source=data_source)
             await self._canonicalize_join_key_spellings(data=data, data_source=data_source)
             await self._declare_join_keys(name=name, data=data, data_source=data_source)
             await self._repair_source_query_filters(data=data, data_source=data_source)
@@ -1331,10 +1336,11 @@ class StorageBackend(ABC):
             return data
 
         raw_cache: dict[str, dict | None] = {name: data}
+        names = await self._model_names(data_source)
         resolvable: set[tuple[str, ...]] = set()
         for chain in all_chains:
             if await self._dunder_chain_is_join_walk(
-                chain=chain, host=data, data_source=data_source, cache=raw_cache,
+                chain=chain, host=data, data_source=data_source, cache=raw_cache, names=names,
             ):
                 resolvable.add(chain)
         if not resolvable:
@@ -1350,8 +1356,9 @@ class StorageBackend(ABC):
         host: dict,
         data_source: str,
         cache: dict[str, dict | None],
+        names: set[str],
     ) -> bool:
-        """True iff every hop in ``chain`` is a join target on the preceding model (host first, then each hop's own model); sibling dicts loaded raw and memoised, a broken intermediate collapses the chain."""
+        """True iff every hop in ``chain`` is a join target on the preceding model (host first, then each hop's own model), a hop matching its target by case as a target repair would; sibling dicts loaded raw, target-repaired and memoised, a broken intermediate collapses the chain."""
         # An exact ``__``-named join target beats a split-alias reading: a host
         # join to a model literally named ``"__".join(chain)`` is exact, not a walk.
         host_joins = host.get("joins")
@@ -1368,18 +1375,18 @@ class StorageBackend(ABC):
                 return False
             joins = current.get("joins")
             targets = {
-                j.get("target_model")
-                for j in joins if isinstance(j, dict)
+                t for j in joins if isinstance(j, dict) and isinstance(t := j.get("target_model"), str)
             } if isinstance(joins, list) else set()
-            if hop not in targets:
+            target = _repaired_target(hop, names=targets)
+            if target not in targets:
                 return False
             if i == len(chain) - 1:
                 return True
-            if hop not in cache:
-                cache[hop] = await self._cached_raw_model_dict(
-                    name=hop, data_source=data_source,
-                )
-            current = cache[hop]
+            if target not in cache:
+                cache[target] = _with_repaired_targets(await self._cached_raw_model_dict(
+                    name=target, data_source=data_source,
+                ), names=names)
+            current = cache[target]
         return True
 
     # ---- datasource CRUD ---------------------------------------------------

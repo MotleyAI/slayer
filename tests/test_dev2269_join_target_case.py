@@ -199,7 +199,7 @@ class TestAccessFilteredSaves:
 
 
 # --------------------------------------------------------------------------- #
-# The version-22 upgrade of stored documents
+# The version-24 upgrade of stored documents
 # --------------------------------------------------------------------------- #
 def _customers_doc(name: str = "Customers", **kw) -> dict:
     return {**customers_v10(version=PRE_REPAIR, **kw), "name": name}
@@ -257,6 +257,26 @@ class TestStoredUpgrade:
         assert {c.name: c.hidden for c in model.columns}.get("customer_id") is True
         resp = await run(storage, REGION_QUERY)
         assert by_dimension(resp, dim_suffix="region") == AMOUNT_BY_REGION
+
+    @pytest.mark.parametrize("backend", BACKENDS)
+    async def test_a_malformed_sibling_version_blocks_no_other_repair(self, tmp_path, shop_ds, backend) -> None:
+        broken = {**_customers_doc("broken"), "version": "invalid", "joins": []}
+        storage = await _store(tmp_path, backend=backend, ds=shop_ds, docs=[_orders_doc(), _customers_doc(), broken])
+        assert await _targets(storage, "orders") == ["Customers"]
+        assert await _targets(storage, "Customers") == []
+
+    @pytest.mark.parametrize("backend", BACKENDS)
+    async def test_a_legacy_alias_walks_a_case_only_target(self, tmp_path, shop_ds, backend) -> None:
+        orders_doc = {**_orders_doc(), "filters": ["customers__addr.region = 'North'"]}
+        target = {**_customers_doc(), "joins": [{"target_model": "addr", "join_pairs": [["id", "id"]]}]}
+        storage = await _store(tmp_path, backend=backend, ds=shop_ds,
+                               docs=[orders_doc, target, _customers_doc("addr")])
+        model = await storage.get_model("orders", data_source=DS)
+        assert model is not None
+        assert (model.filters, [j.target_model for j in model.joins]) == (
+            ["customers.addr.region = 'North'"], ["Customers"])
+        resp = await run(storage, {"source_model": "orders", "measures": ["sum(amount)"]})
+        assert [float(v) for r in resp.data for v in r.values()] == [AMOUNT_BY_REGION["North"]]
 
     @pytest.mark.parametrize("backend", BACKENDS)
     @pytest.mark.parametrize("first", ["orders", "Customers"])

@@ -2373,14 +2373,20 @@ def respell_path_heads(text: str, *, respell: Callable[[str], Optional[str]]) ->
         parse_template(text)
     except Exception:  # noqa: BLE001 — unparseable text is left for binding to report
         return text
+    regions = _regions(text)
+    blanked = "".join(
+        re.sub(r"[^\n]", " ", text[r.start:r.end]) if r.kind == "comment" else text[r.start:r.end] for r in regions
+    )
     out: List[str] = []
     last = 0
-    for region in _regions(text):
+    for region in regions:
         if region.kind != "code":
             continue
         for word in _RUN_RE.finditer(text, region.start, region.end):
+            if not _is_path_head(blanked, start=word.start(), end=word.end()):
+                continue
             new = respell(word.group())
-            if new is None or new == word.group() or not _is_path_head(text, start=word.start(), end=word.end()):
+            if new is None or new == word.group():
                 continue
             out += [text[last:word.start()], new]
             last = word.end()

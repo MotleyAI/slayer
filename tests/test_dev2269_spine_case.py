@@ -125,6 +125,14 @@ class TestSpineInAnyCase:
         assert resp.sql is not None
         assert "'TIME_SPINE.timestamp'" in resp.sql
 
+    @pytest.mark.parametrize("spelling", VARIANTS)
+    async def test_a_saved_rootless_stage_pins_the_spine(self, engine, spelling: str) -> None:
+        stage = SlayerQuery.model_validate({"name": "monthly", "time_dimensions": [td(spelling)], **sum_orders()})
+        await engine.create_model_from_query(query=stage, name="saved_monthly")
+        stored = await engine.storage.get_model("saved_monthly", data_source="test")
+        assert stored is not None
+        assert [s.source_model for s in stored.source_queries or []] == ["time_spine"]
+
     async def test_a_stage_named_like_the_spine_wins(self, engine) -> None:
         stages = [SlayerQuery.model_validate({"name": "Time_Spine", "source_model": "orders",
                                               "measures": [m("sum(amount)", "o")]}),
@@ -245,9 +253,16 @@ class TestRespellPathHeads:
         ("sum(Time_Spine.timestamp) + count(orders.id)", "sum(time_spine.timestamp) + count(orders.id)"),
         ("coalesce(TIME_SPINE.timestamp, orders.TIME_SPINE.x)", "coalesce(time_spine.timestamp, orders.TIME_SPINE.x)"),
         ("cumsum(max(TIME_SPINE.timestamp))", "cumsum(max(time_spine.timestamp))"),
+        ("TIME_SPINE /* c */ .timestamp", "time_spine /* c */ .timestamp"),
+        ("TIME_SPINE -- c\n.timestamp", "time_spine -- c\n.timestamp"),
     ])
     def test_only_head_identifiers_change(self, text: str, expected: str) -> None:
         assert respell_path_heads(text, respell=_spine) == expected
+
+    def test_respell_sees_only_path_heads(self) -> None:
+        seen: list[str] = []
+        respell_path_heads("orders.TIME_SPINE.value > 0", respell=lambda h: seen.append(h))
+        assert seen == ["orders"]
 
     @pytest.mark.parametrize("text", [
         '"TIME_SPINE".timestamp',

@@ -3232,6 +3232,9 @@ class SlayerQueryEngine:
             return model
         ordered = topologically_order_stages(stages)
         localized, displays = localize_stages(ordered)
+        localized, _ = await self._respell_spine(
+            queries=localized, stage_names={d.name for d in displays.values()}, data_source=prefer_data_source,
+        )
         root, named, *_ = await self._infer_populations(
             query=localized[-1], named_queries={q.name: q for q in localized[:-1] if q.name},
             prefer_data_source=prefer_data_source, stage_displays=displays,
