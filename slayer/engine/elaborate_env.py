@@ -108,7 +108,7 @@ from slayer.core.date_only import normal_op, scan_date_only, whole_day_spelling
 from slayer.core.deprecation import scheduled_notice
 from slayer.core.models import SlayerModel
 from slayer.core.join_walker import walk_terminal
-from slayer.core.names import folded_collisions, match_name
+from slayer.core.names import folded_collisions, match_name, match_path
 from slayer.core.refs import bucket_remedy, dotted_key_display, key_display
 from slayer.core.scope import ModelScope, StageSchema, peek_model_column
 from slayer.core.warnings import DateOnlyMidnightWarning
@@ -1259,12 +1259,23 @@ _ANNOUNCED_OPS = frozenset({"<=", ">", "=", "!="})
 
 
 def _column_parts(key: object) -> Optional[Tuple[str, ...]]:
-    """A column operand's join path plus its leaf, casefolded; ``None`` for anything else."""
+    """A column operand's join path plus its leaf; ``None`` for anything else."""
     if isinstance(key, ColumnKey):
-        return tuple(p.casefold() for p in (*key.path, key.leaf))
+        return (*key.path, key.leaf)
     if isinstance(key, ColumnSqlKey):
-        return tuple(p.casefold() for p in (*key.path, key.column_name))
+        return (*key.path, key.column_name)
     return None
+
+
+def _binding_variables(
+    variables: Mapping[Tuple[Tuple[str, ...], str, str], Tuple[str, ...]], *, column: Tuple[str, ...], op: str,
+    date: str,
+) -> Tuple[str, ...]:
+    """Every variable bound at a comparison of ``column`` by ``op`` with ``date`` (paths matched as references)."""
+    quoted = [False] * len(column)
+    names = {n for (parts, o, d), bound in variables.items() if o == op and d == date
+             and match_path(parts=column, declared=[".".join(parts)], quoted=quoted) is not None for n in bound}
+    return tuple(sorted(names))
 
 
 def date_only_notices(
@@ -1286,7 +1297,7 @@ def date_only_notices(
         notice = date_only_notice(
             comparison=key_display(key), operand=operand, date=date_text,
             whole_day=whole_day_spelling(operand=operand, op=key.op, date=date_text),
-            variables=variables.get((column, normal_op(key.op), date_text), ()) if column else (),
+            variables=_binding_variables(variables, column=column, op=normal_op(key.op), date=date_text) if column else (),
         )
         out.setdefault(notice.message, notice)
     return list(out.values())
@@ -1316,7 +1327,7 @@ def _saved_column_type(
     """The type of the column ``parts`` names from ``model`` (names matched as references are); ``None`` when
     unresolvable."""
     quals, leaf = list(parts[:-1]), parts[-1]
-    if quals and quals[0].casefold() == model.name.casefold():
+    if quals and match_name(name=quals[0], declared=[model.name], quoted=False) is not None:
         quals = quals[1:]
     try:
         found = walk_terminal(root=model, path=quals, models_by_name=models_by_name)

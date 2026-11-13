@@ -40,7 +40,7 @@ def _named(name: Any, declared: Iterable[Any]) -> str | None:
 
 
 def _same(a: Any, b: Any) -> bool:
-    return isinstance(a, str) and isinstance(b, str) and a.casefold() == b.casefold()
+    return isinstance(b, str) and _named(a, [b]) is not None
 
 
 def stored_type(*, key: Any, columns: Any) -> str | None:

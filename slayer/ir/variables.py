@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from slayer.core.date_only import date_comparisons
 from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.names import match_name
 from slayer.core.syntax import bind_variables, has_bindings, variable_names
 from slayer.core.time_points import is_date_only
 from slayer.core.query import (
@@ -176,16 +177,16 @@ DateVariables = Dict[Tuple[Tuple[str, ...], str, str], Tuple[str, ...]]
 
 
 def _date_variables(query: SlayerQuery, variables: Dict[str, Any]) -> DateVariables:
-    """``(casefolded operand column path, operand-left op, date)`` per changed comparison a date-only variable binds,
+    """``(operand column path as spelled, operand-left op, date)`` per changed comparison a date-only variable binds,
     mapped to every variable binding it; a qualifier naming the query's source model is dropped."""
     dated = {n: v.strip() for n, v in variables.items() if isinstance(v, str) and is_date_only(v)}
-    root = query.source_model.casefold() if isinstance(query.source_model, str) else None
+    roots = [query.source_model] if isinstance(query.source_model, str) else []
     out: DateVariables = {}
     for text in _texts(query):
         for name in (n for n in variable_names(text) if n in dated):
             for parts, op in _variable_slots(text, name=name, variables=variables):
-                folded = tuple(p.casefold() for p in parts)
-                key = (folded[1:] if len(folded) > 1 and folded[0] == root else folded, op, dated[name])
+                rooted = len(parts) > 1 and match_name(name=parts[0], declared=roots, quoted=False) is not None
+                key = (parts[1:] if rooted else parts, op, dated[name])
                 out[key] = tuple(sorted({*out.get(key, ()), name}))
     return out
 
