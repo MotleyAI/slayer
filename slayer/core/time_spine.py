@@ -4,14 +4,12 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
-from slayer.core.enums import DataType, JoinCardinality, JoinType
+from slayer.core.enums import JoinCardinality, JoinType
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, ComputedDimension, ModelExtension, OrderItem, SlayerQuery
+from slayer.core.spine_names import TIME_SPINE_COLUMN, TIME_SPINE_COLUMN_TYPE, TIME_SPINE_MODEL
 from slayer.core.syntax import respell_path_heads, text_paths
 from slayer.core.warnings import NameCollisionWarning
-
-TIME_SPINE_MODEL = "time_spine"
-TIME_SPINE_COLUMN = "timestamp"
 
 
 def spine_model(*, data_source: str, wired: Optional[Sequence[SlayerModel]] = None) -> SlayerModel:
@@ -38,7 +36,7 @@ def spine_model(*, data_source: str, wired: Optional[Sequence[SlayerModel]] = No
     return SlayerModel(
         name=TIME_SPINE_MODEL, data_source=data_source, sql_table=TIME_SPINE_MODEL,
         description=status + details,
-        columns=[Column(name=TIME_SPINE_COLUMN, type=DataType.TIMESTAMP, primary_key=True)],
+        columns=[Column(name=TIME_SPINE_COLUMN, type=TIME_SPINE_COLUMN_TYPE, primary_key=True)],
     )
 
 
