@@ -597,7 +597,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             )
             usage_reporting.observe_executed(result)
             if dry_run:
-                return f"SQL:\n{result.sql}"
+                return _format_dry_run(result=result, fmt=fmt)
             if capped:
                 _cap_rows(result, hint=cap_hint)
             if explain:
@@ -1951,6 +1951,18 @@ def _format_output(result: SlayerResponse, fmt: str) -> str:
         attributes=_json_attributes(result.attributes),
         population=inferred_population,
     )
+
+
+def _format_dry_run(result: SlayerResponse, fmt: str) -> str:
+    """The generated SQL with the run's warnings, shaped per ``fmt``."""
+    if fmt == "csv":
+        return f"{_csv_warning_comments(result)}SQL:\n{result.sql}"
+    if fmt == "markdown":
+        return f"SQL:\n{result.sql}{_format_warnings(result)}"
+    payload: dict[str, Any] = {"sql": result.sql}
+    if result.warnings:
+        payload["warnings"] = [w.model_dump(mode="json") for w in result.warnings]
+    return encode_json(payload)
 
 
 def _population_footer(population: str | None) -> str:
