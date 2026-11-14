@@ -499,6 +499,49 @@ class TestAttributesMachineSafe:
         assert len(rows) == 1 + 3  # header + rows, uniform column count
         assert all(len(r) == 2 for r in rows)
 
+    @classmethod
+    def _dry_run_response(cls) -> SlayerResponse:
+        return cls._with_attributes().model_copy(update={
+            "data": [], "population": "nums", "population_inferred": True,
+            "warnings": [ResponseTruncationWarning(returned_rows=CAP, hint="h")],
+        })
+
+    async def _dry_run(self, tmp_path: Path, monkeypatch, fmt: str) -> str:
+        server = await _make_server(tmp_path)
+        _patch_execute(monkeypatch, make_response=self._dry_run_response)
+        return await _call(server, name="query", arguments={
+            "query": {"dimensions": ["nums.id"]}, "dry_run": True, "format": fmt,
+        })
+
+    async def test_dry_run_json_carries_attributes_and_population(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        payload = json.loads(await self._dry_run(tmp_path, monkeypatch, "json"))
+        assert payload["sql"] == "SELECT 1"
+        assert payload["attributes"]["measures"]["nums._count"]["label"] == "Count"
+        assert payload["population"] == "nums"
+        assert payload["population_inferred"] is True
+
+    async def test_dry_run_csv_carries_attributes_and_population_as_leading_comments(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        head, sql = (await self._dry_run(tmp_path, monkeypatch, "csv")).split("SQL:\n")
+        comments = head.splitlines()
+        assert sql == "SELECT 1"
+        assert all(ln.startswith("#") for ln in comments)
+        assert "# population: nums (inferred)" in comments
+        assert "# Measure attributes:" in comments
+
+    async def test_dry_run_markdown_carries_attributes_and_population_after_the_sql(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        text = await self._dry_run(tmp_path, monkeypatch, "markdown")
+        assert text.startswith("SQL:\nSELECT 1\n\n")
+        body, _, warnings_block = text.partition("\n\nWarnings:\n")
+        assert "Measure attributes:" in body
+        assert "Population: nums (inferred)" in body
+        assert NOTICE in warnings_block
+
     async def test_json_bare_array_without_attributes_or_warnings(
         self, tmp_path: Path, monkeypatch,
     ) -> None:

@@ -1822,28 +1822,41 @@ def _format_table(data: list[dict[str, Any]], columns: list[str], max_rows: int 
     return result
 
 
-def _format_json(
-    data: list[dict[str, Any]],
-    warnings: list[dict[str, Any]] | None = None,
-    attributes: dict[str, Any] | None = None,
-    population: str | None = None,
-) -> str:
-    """Bare array, or {"data", "warnings"?, "attributes"?, "population"?} once any is present.
-
-    Attributes, warnings, and the inferred population ride inside the payload so
-    the whole response stays strict-``json.loads``-able — never trailing prose.
-    """
-    if not warnings and not attributes and population is None:
-        return encode_json(data)
-    payload: dict[str, Any] = {"data": data}
-    if warnings:
-        payload["warnings"] = warnings
+def _json_metadata(result: SlayerResponse) -> dict[str, Any]:
+    """Warnings, attributes and inferred population as json payload keys, empty ones omitted."""
+    meta: dict[str, Any] = {}
+    if result.warnings:
+        meta["warnings"] = [w.model_dump(mode="json") for w in result.warnings]
+    attributes = _json_attributes(result.attributes)
     if attributes:
-        payload["attributes"] = attributes
+        meta["attributes"] = attributes
+    population = _inferred_population(result)
     if population is not None:
-        payload["population"] = population
-        payload["population_inferred"] = True
-    return encode_json(payload)
+        meta["population"] = population
+        meta["population_inferred"] = True
+    return meta
+
+
+def _text_envelope(result: SlayerResponse, fmt: str, body: str) -> str:
+    """``body`` wrapped in the metadata: leading `#` lines for csv, footers for markdown."""
+    population = _inferred_population(result)
+    if fmt == "csv":
+        return (
+            _population_comment(population)
+            + _csv_attribute_comments(result)
+            + _csv_warning_comments(result)
+            + body
+        )
+    return (
+        body
+        + _attributes_footer(result.attributes)
+        + _population_footer(population)
+        + _format_warnings(result)
+    )
+
+
+def _inferred_population(result: SlayerResponse) -> str | None:
+    return result.population if result.population_inferred else None
 
 
 def _format_csv(data: list[dict[str, Any]], columns: list[str]) -> str:
@@ -1922,47 +1935,23 @@ def _format_warnings(result: SlayerResponse) -> str:
 
 
 def _format_output(result: SlayerResponse, fmt: str) -> str:
-    """Format query output in the requested format.
-
-    Attributes and warnings stay machine-safe: both inside the json payload,
-    both as leading `#` comment lines for csv, a prose attributes footer before
-    the trailing Warnings block for markdown.
-    """
-    inferred_population = result.population if result.population_inferred else None
-    if fmt == "csv":
-        # Leading `#` lines, never trailing prose — trailing rows break the
-        # column count for every CSV reader.
-        return (
-            _population_comment(inferred_population)
-            + _csv_attribute_comments(result)
-            + _csv_warning_comments(result)
-            + _format_csv(data=result.data, columns=result.columns)
-        )
-    if fmt == "markdown":
-        return (
-            result.to_markdown()
-            + _attributes_footer(result.attributes)
-            + _population_footer(inferred_population)
-            + _format_warnings(result)
-        )
-    return _format_json(
-        data=result.data,
-        warnings=[w.model_dump(mode="json") for w in (result.warnings or [])],
-        attributes=_json_attributes(result.attributes),
-        population=inferred_population,
+    """Rows per ``fmt``; json is a bare array until metadata makes it {"data", ...}."""
+    if fmt == "json":
+        meta = _json_metadata(result)
+        return encode_json({"data": result.data, **meta} if meta else result.data)
+    body = (
+        _format_csv(data=result.data, columns=result.columns)
+        if fmt == "csv"
+        else result.to_markdown()
     )
+    return _text_envelope(result=result, fmt=fmt, body=body)
 
 
 def _format_dry_run(result: SlayerResponse, fmt: str) -> str:
-    """The generated SQL with the run's warnings, shaped per ``fmt``."""
-    if fmt == "csv":
-        return f"{_csv_warning_comments(result)}SQL:\n{result.sql}"
-    if fmt == "markdown":
-        return f"SQL:\n{result.sql}{_format_warnings(result)}"
-    payload: dict[str, Any] = {"sql": result.sql}
-    if result.warnings:
-        payload["warnings"] = [w.model_dump(mode="json") for w in result.warnings]
-    return encode_json(payload)
+    """The generated SQL with the run's metadata, shaped per ``fmt``."""
+    if fmt == "json":
+        return encode_json({"sql": result.sql, **_json_metadata(result)})
+    return _text_envelope(result=result, fmt=fmt, body=f"SQL:\n{result.sql}")
 
 
 def _population_footer(population: str | None) -> str:

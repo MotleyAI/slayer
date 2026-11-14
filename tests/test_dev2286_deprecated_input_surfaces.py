@@ -154,10 +154,11 @@ class TestDryRun:
     async def test_mcp_csv(self) -> None:
         async with orders_engine() as engine:
             text = await _dry_run(engine.storage, strict(CLEAN), "csv")
-        lines = text.splitlines()
-        assert lines[0] == f"# warning: {_strict_message()}"
-        assert lines[1] == "SQL:"
-        assert "SELECT" in text
+        head, _, sql = text.partition("SQL:\n")
+        comments = head.splitlines()
+        assert f"# warning: {_strict_message()}" in comments
+        assert all(ln.startswith("#") for ln in comments)
+        assert "SELECT" in sql
 
     async def test_mcp_markdown(self) -> None:
         async with orders_engine() as engine:
@@ -174,11 +175,11 @@ class TestDryRun:
         shadows = [w for w in json.loads(text)["warnings"] if w.get("kind") == "library_name_shadow"]
         assert [(w["model"], w["aggregation"], w["function"]) for w in shadows] == [("t", "reverse", "reverse")]
 
-    async def test_mcp_json_without_warnings_is_sql_only(self) -> None:
+    async def test_mcp_json_without_warnings_has_no_warnings_key(self) -> None:
         async with orders_engine() as engine:
             text = await _dry_run(engine.storage, CLEAN, "json")
         reply = json.loads(text)
-        assert list(reply) == ["sql"]
+        assert "warnings" not in reply
         assert "SELECT" in reply["sql"]
 
 
