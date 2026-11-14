@@ -147,12 +147,17 @@ class StoredModels(BaseModel):
             except AmbiguousReferenceError:
                 return None
             if found is not None:
-                hits = [e for e in edges if e[tier] == found]
-                peer = self._model(hits[0][1]) if len(hits) == 1 else None
-                if peer is not None and tier == 1 and self._is_spine(peer) and not self._is_spine(self._model(token) or {}):
-                    return None
-                return peer
+                return self._peer(edges=edges, tier=tier, found=found, token=token)
         return None
+
+    def _peer(self, *, edges: list[tuple[str | None, str]], tier: int, found: str, token: str) -> dict | None:
+        """The model at the one edge whose ``tier`` field is ``found``; a model-name hop reaches the spine only by
+        naming it."""
+        hits = [e for e in edges if e[tier] == found]
+        peer = self._model(hits[0][1]) if len(hits) == 1 else None
+        if peer is not None and tier == 1 and self._is_spine(peer) and not self._is_spine(self._model(token) or {}):
+            return None
+        return peer
 
     def _incident(self, *, current: dict, extensions: list[dict]) -> list[tuple[str | None, str]]:
         """``(edge name, model at the other end)`` per stored join incident to ``current``, declared on either side, plus
