@@ -1113,16 +1113,19 @@ def convert_legacy_root_extension(data: dict) -> tuple[dict, DeprecatedInputWarn
     return data, deprecated_input("An extension object in `source_model`", "`extensions`", removal="3.0")
 
 
-def prepare_query_input(data: dict) -> tuple[dict, DeprecatedInputWarning | None]:
-    """``data`` in the shape ``SlayerQuery``'s typed fields read (a legacy root extension converted, a versioned
-    payload migrated around a fresh ``strict``, which ``SlayerQuery`` converts), with the conversion's deprecation."""
+def prepare_query_input(data: dict) -> tuple[dict, list[DeprecatedInputWarning]]:
+    """Fresh query input with its deprecated forms converted (and a versioned payload migrated), with every
+    conversion's deprecation."""
+    payloads: list[DeprecatedInputWarning] = []
+    if _has_fresh_strict(data):
+        data, payload = _convert_strict(data)
+        payloads.append(payload)
     data, payload = convert_legacy_root_extension(data)
-    if "version" not in data:
-        return data, payload
-    if not _has_fresh_strict(data):
-        return _migrate_schema(entity="SlayerQuery", data=data), payload
-    rest = {k: v for k, v in data.items() if k != "strict"}
-    return {**_migrate_schema(entity="SlayerQuery", data=rest), "strict": data["strict"]}, payload
+    if payload is not None:
+        payloads.append(payload)
+    if "version" in data:
+        data = _migrate_schema(entity="SlayerQuery", data=data)
+    return data, payloads
 
 
 def _refuse_inline_model(value: Any) -> Any:
@@ -1289,16 +1292,9 @@ class SlayerQuery(BaseModel):
     @classmethod
     def _migrate_and_rewrite(cls, data: Any, handler: ModelWrapValidatorHandler["SlayerQuery"]) -> "SlayerQuery":
         # One validator sequences convert → migrate → functional-granularity rewrite.
-        # Fresh `strict` (no version, v4+, or a malformed version) converts with a
-        # deprecation; a stored pre-v4 one migrates silently (v3→v4).
         payloads: list[DeprecatedInputWarning] = []
         if isinstance(data, dict):
-            if _has_fresh_strict(data):
-                data, payload = _convert_strict(data)
-                payloads.append(payload)
-            data, payload = convert_legacy_root_extension(data)
-            if payload is not None:
-                payloads.append(payload)
+            data, payloads = prepare_query_input(data)
         data = _migrate_schema(entity="SlayerQuery", data=data)
         if isinstance(data, dict):
             if is_legacy_root_extension(data.get("source_model")):
