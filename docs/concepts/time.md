@@ -105,6 +105,8 @@ The population is `time_spine × P` (P the population of the remaining dimension
 
 A stage of a multi-stage query, or a saved query, can be a spine query too; later stages then see one row per bucket.
 
+A query reaches the spine in any case (`TIME_SPINE.timestamp`) unless quoted, `time_spine` in any case is reserved as a model name, and a model's `joins` never target it, since it already joins each model through its axis.
+
 An expression is never an axis: a time dimension whose expression reads `time_spine.timestamp` (`time_spine.timestamp + INTERVAL '1 day'`) is a typed error that names the remedy of bucketing the column itself, while any other expression time dimension is an ordinary dimension of P.
 
 ## Custom granularities

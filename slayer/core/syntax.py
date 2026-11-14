@@ -442,7 +442,7 @@ def _need(element: pp.ParserElement, detail: str) -> pp.ParserElement:
     return element | _fail(detail)
 
 
-_RUN_CHAR = r"[^\x00-\x20\x7f!-/:-@\[-^`{-~\s]"
+_RUN_CHAR = r"[^\x00-\x08\x0e-\x1f\x7f!-/:-@\[-^`{-~\s]"
 _RUN = r"(?!\d)" + _RUN_CHAR + r"+"
 
 
@@ -2372,6 +2372,47 @@ def text_paths(text: str, *, root: Optional[str]) -> List[Tuple[str, ...]]:
         drop_root_qualifier((node.name,) if isinstance(node, Ref) else node.parts, root, quoted=dotted_quoting(node))
         for node in walk_parsed(parsed) if isinstance(node, (Ref, DottedRef))
     ]
+
+
+_RUN_RE = re.compile(_RUN)
+_RUN_CHAR_RE = re.compile(_RUN_CHAR)
+
+
+def _is_path_head(text: str, *, start: int, end: int) -> bool:
+    """The bare word ``text[start:end]`` opens a dotted path: no word or ``.`` before it, a ``.`` and a segment after."""
+    before = text[:start].rstrip()
+    after = text[end:].lstrip()
+    if (start and _RUN_CHAR_RE.match(text[start - 1])) or before.endswith(".") or not after.startswith("."):
+        return False
+    segment = after[1:].lstrip()
+    return bool(segment) and (segment[0] in '"*' or _RUN_RE.match(segment) is not None)
+
+
+def respell_path_heads(text: str, *, respell: Callable[[str], Optional[str]]) -> str:
+    """``text`` with each unquoted dotted-path head ``respell`` maps to a new spelling replaced, every other byte kept;
+    text that does not parse is returned unchanged."""
+    try:
+        parse_template(text)
+    except Exception:  # noqa: BLE001 — unparseable text is left for binding to report
+        return text
+    regions = _regions(text)
+    blanked = "".join(
+        re.sub(r"[^\n]", " ", text[r.start:r.end]) if r.kind == "comment" else text[r.start:r.end] for r in regions
+    )
+    out: List[str] = []
+    last = 0
+    for region in regions:
+        if region.kind != "code":
+            continue
+        for word in _RUN_RE.finditer(text, region.start, region.end):
+            if not _is_path_head(blanked, start=word.start(), end=word.end()):
+                continue
+            new = respell(word.group())
+            if new is None or new == word.group():
+                continue
+            out += [text[last:word.start()], new]
+            last = word.end()
+    return "".join([*out, text[last:]])
 
 
 class CallSource(BaseModel):

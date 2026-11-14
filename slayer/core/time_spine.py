@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from slayer.core.enums import DataType, JoinCardinality, JoinType
-from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.core.query import SlayerQuery
-from slayer.core.syntax import text_paths
+from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.query import ColumnRef, ComputedDimension, ModelExtension, OrderItem, SlayerQuery
+from slayer.core.syntax import respell_path_heads, text_paths
+from slayer.core.warnings import NameCollisionWarning
 
 TIME_SPINE_MODEL = "time_spine"
 TIME_SPINE_COLUMN = "timestamp"
@@ -43,6 +44,87 @@ def spine_model(*, data_source: str, wired: Optional[Sequence[SlayerModel]] = No
 
 def is_spine(model: SlayerModel) -> bool:
     return model.name == TIME_SPINE_MODEL
+
+
+def is_spine_spelling(name: str) -> bool:
+    """``name`` equals the spine's name in any case."""
+    return name.casefold() == TIME_SPINE_MODEL
+
+
+def spine_variant_warnings(model: SlayerModel) -> List[NameCollisionWarning]:
+    """The name-collision warning of a stored model named like the spine in another case."""
+    if model.name == TIME_SPINE_MODEL or not is_spine_spelling(model.name):
+        return []
+    return [NameCollisionWarning(
+        model=model.name, namespace="datasource's model names", names=sorted([model.name, TIME_SPINE_MODEL]),
+    )]
+
+
+class _SpineRespeller:
+    """Respells the unquoted spine spellings a query writes, bar those ``keep`` holds, recording each one."""
+
+    def __init__(self, keep: Callable[[str], bool]) -> None:
+        self.keep = keep
+        self.found: Set[str] = set()
+
+    def name(self, spelling: str) -> Optional[str]:
+        if spelling == TIME_SPINE_MODEL or not is_spine_spelling(spelling) or self.keep(spelling):
+            return None
+        self.found.add(spelling)
+        return TIME_SPINE_MODEL
+
+    def text(self, text: str) -> str:
+        return respell_path_heads(text, respell=self.name)
+
+    def ref(self, ref: ColumnRef) -> ColumnRef:
+        new = self.name(ref.parts[0]) if len(ref.parts) > 1 and not ref.quoted_parts[0] else None
+        return ref if new is None else ref.model_copy(update={"model": ".".join([new, *ref.parts[1:-1]])})
+
+    def joins(self, joins: List[ModelJoin]) -> List[ModelJoin]:
+        return [j.model_copy(update={"target_model": self.name(j.target_model) or j.target_model}) for j in joins]
+
+    def extension(self, ext: ModelExtension) -> ModelExtension:
+        return ext.model_copy(update={
+            "source_name": self.name(ext.source_name) or ext.source_name,
+            "joins": self.joins(ext.joins) if ext.joins is not None else None,
+        })
+
+    def dimension(self, dim: ColumnRef | ComputedDimension) -> ColumnRef | ComputedDimension:
+        if isinstance(dim, ColumnRef):
+            return self.ref(dim)
+        return dim.model_copy(update={"expression": self.text(dim.expression)})
+
+    def measure(self, measure: ModelMeasure) -> ModelMeasure:
+        return measure.model_copy(update={"formula": self.text(measure.formula)})
+
+    def order(self, item: OrderItem) -> OrderItem:
+        raw = self.text(item.raw_formula) if item.raw_formula is not None else None
+        return item.model_copy(update={"column": self.ref(item.column), "raw_formula": raw})
+
+
+def respell_spine(query: SlayerQuery, *, keep: Callable[[str], bool]) -> Tuple[SlayerQuery, frozenset[str]]:
+    """``query`` with each unquoted spelling of the spine in a model-name position, bar those ``keep`` holds, spelled
+    ``time_spine``; and the spellings respelled."""
+    r = _SpineRespeller(keep)
+    update: Dict[str, Any] = {}
+    if query.source_model is not None:
+        update["source_model"] = r.name(query.source_model) or query.source_model
+    if query.extensions is not None:
+        update["extensions"] = [r.extension(e) for e in query.extensions]
+    if query.dimensions is not None:
+        update["dimensions"] = [r.dimension(d) for d in query.dimensions]
+    if query.time_dimensions is not None:
+        update["time_dimensions"] = [
+            td.model_copy(update={"dimension": r.text(td.dimension)}) for td in query.time_dimensions]
+    if query.measures is not None:
+        update["measures"] = [r.measure(m) for m in query.measures]
+    if query.filters is not None:
+        update["filters"] = [r.text(f) for f in query.filters]
+    if query.order is not None:
+        update["order"] = [r.order(o) for o in query.order]
+    if query.main_time_dimension is not None:
+        update["main_time_dimension"] = r.text(query.main_time_dimension)
+    return (query.model_copy(update=update) if r.found else query), frozenset(r.found)
 
 
 def axis_column(model: SlayerModel) -> Optional[str]:

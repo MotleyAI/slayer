@@ -344,6 +344,8 @@ joins:
 
 Each `join_pairs` entry names a base column (`sql` unset or a single column, no `filter`) declared on its side by the column's `name`, and the column's `sql` rename is applied when the join is emitted.
 
+A `target_model` spells its model exactly: a save whose target matches a model only by case (`customers` for `Customers`), or whose name a stored join reaches only by case, fails naming the declared spelling.
+
 Joins enable **cross-model measures** — querying a measure from a joined model alongside the main model's data. See [Cross-Model Measures](queries.md#cross-model-measures). During [auto-ingestion](ingestion.md), joins are generated automatically from foreign-key relationships; multi-hop paths are resolved at query time by walking each intermediate model's own joins. A join targeting the model itself is rejected at validation — joins are addressed by model name, so define the second role as a separate model over the same table (or a view) and join to that.
 
 ### Bidirectional traversal
