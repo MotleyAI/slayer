@@ -10,8 +10,8 @@
 
 ## 2. Implementation (pr-implement stage)
 
-- [ ] 2.1 `StoredModels`: declare the spine (dict derived from `spine_model()`) in name resolution unless a stored model is exactly `time_spine` (design D1); verify 1.1, 1.2, 1.7
-- [ ] 2.2 `StoredModels._incident` / `_hop` / `column_type`: virtual spine edges both ways at target-name tier, stage spellings before target names, no hop past the spine (design D2, D3); verify 1.3–1.5
-- [ ] 2.3 `StorageBackend._query_host` / `_stored_column_type`: resolve the source name through `StoredModels.host` with the query's stage names (design D4); verify 1.6
-- [ ] 2.3a `StorageBackend._repair_source_query_filters`: run the nested-stage pass inside `migrating_document(<model name>, stored=True)`, so an unnamed stage's warning names its saved model; verify `test_sibling_stage_named_like_the_spine`
-- [ ] 2.4 Run the local test scope (`la-affected-tests --base main` + `tests/test_dev2280_*`, `tests/test_stored_upgrade_*`, `tests/test_dev2269*` if present), `poetry run ruff check slayer/ tests/`, `la-typecheck`, `la-arch-check`; all green
+- [x] 2.1 `StoredModels`: declare the spine (dict derived from `spine_model()`) in name resolution unless a stored model is exactly `time_spine` (design D1); verify 1.1, 1.2, 1.7
+- [x] 2.2 `StoredModels._incident` / `_hop` / `column_type`: virtual spine edges both ways at target-name tier, stage spellings before target names, no hop past the spine (design D2, D3); verify 1.3–1.5
+- [x] 2.3 `StorageBackend._query_host` / `_stored_column_type`: resolve the source name through `StoredModels.host` with the query's stage names (design D4); verify 1.6
+- [x] 2.3a `StorageBackend._repair_source_query_filters`: run the nested-stage pass inside `migrating_document(<model name>, stored=True)`, so an unnamed stage's warning names its saved model; verify `test_sibling_stage_named_like_the_spine`
+- [x] 2.4 Run the local test scope (`la-affected-tests --base main` + `tests/test_dev2280_*`, `tests/test_stored_upgrade_*`, `tests/test_dev2269*` if present), `poetry run ruff check slayer/ tests/`, `la-typecheck`, `la-arch-check`; all green

@@ -1,8 +1,8 @@
 """SlayerModel v24 / SlayerQuery v15 / Memory v11: a stored date-only comparison keeps its whole-day meaning.
 
 Stored-only, and gated by each nested document's own version. Whether an operand is a TIMESTAMP is read from the
-datasource's stored models, which the storage load path provides (``typing_with``); a comparison whose operand cannot be
-typed is left as written and logged.
+datasource's stored models plus the built-in spine, which the storage load path provides (``typing_with``); a comparison
+whose operand cannot be typed is left as written and logged.
 """
 
 import logging
@@ -19,6 +19,7 @@ from slayer.core.errors import AmbiguousReferenceError
 from slayer.core.names import match_name
 from slayer.core.syntax import string_literal_spans
 from slayer.core.time_points import is_date_only
+from slayer.core.spine_names import TIME_SPINE_COLUMN, TIME_SPINE_COLUMN_TYPE, TIME_SPINE_MODEL
 from slayer.core.legacy_spellings import rewrite_spans
 from slayer.storage.migrations import document_label, register_migration, stamp_stored
 from slayer.storage.rank_direction_migration import rewrite_query_fields, stamp_memory_query
@@ -87,28 +88,47 @@ def is_exact_inverse_join(a: dict, b: dict) -> bool:
         return False
 
 
+_SPINE_COLUMNS = [{"name": TIME_SPINE_COLUMN, "type": TIME_SPINE_COLUMN_TYPE.value, "primary_key": True}]
+
+
 class StoredModels(BaseModel):
-    """A datasource's raw stored model dicts by name, and the stage names a document's queries read instead."""
+    """A datasource's raw stored model dicts by name, the built-in spine beside them, and the stage names a document's
+    queries read instead."""
 
     data_source: str | None = None
     models: dict[str, dict] = Field(default_factory=dict)
     stages: frozenset[str] = frozenset()
 
     def host(self, source: Any) -> dict | None:
-        """The raw stored model named ``source``; ``None`` for a stage."""
+        """The raw stored model (or the spine) named ``source``; ``None`` for a stage."""
         return None if _named(source, self.stages) is not None else self._model(source)
 
+    def _universe(self) -> dict[str, dict]:
+        """The stored models plus the spine, unless a stored model is named exactly like it."""
+        if TIME_SPINE_MODEL in self.models:
+            return self.models
+        columns = [dict(c) for c in _SPINE_COLUMNS]
+        spine = {"name": TIME_SPINE_MODEL, "data_source": self.data_source, "columns": columns, "joins": []}
+        return {**self.models, TIME_SPINE_MODEL: spine}
+
+    def _is_spine(self, model: dict) -> bool:
+        return model.get("name") == TIME_SPINE_MODEL and TIME_SPINE_MODEL not in self.models
+
     def _model(self, name: Any) -> dict | None:
-        found = _named(name, self.models)
-        return self.models[found] if found is not None else None
+        universe = self._universe()
+        found = _named(name, universe)
+        return universe[found] if found is not None else None
 
     def column_type(self, *, host: dict, parts: list[str] | tuple[str, ...], extensions: list[dict]) -> str | None:
-        """The stored type of the column ``parts`` names from ``host``, walking stored joins plus ``extensions``."""
+        """The stored type of the column ``parts`` names from ``host``, walking stored joins plus ``extensions``; a path
+        may end at the spine but not continue past it."""
         current = host
         quals, leaf = list(parts[:-1]), parts[-1]
         if quals and _same(quals[0], current.get("name")):
             quals = quals[1:]
-        for hop in quals:
+        for i, hop in enumerate(quals):
+            if i > 0 and self._is_spine(current):
+                return None
             peer = self._hop(current=current, token=hop, extensions=extensions)
             if peer is None:
                 return None
@@ -116,26 +136,32 @@ class StoredModels(BaseModel):
         return stored_type(key=leaf, columns=extended(key="columns", model=current, extensions=extensions))
 
     def _hop(self, *, current: dict, token: str, extensions: list[dict]) -> dict | None:
-        """The model ``token`` reaches from ``current`` by the join walker's precedence: an incident edge's name, else the
-        model at its other end; ``None`` when nothing or several edges match."""
+        """The model ``token`` reaches from ``current`` by the join walker's precedence: an incident edge's name, then a
+        stage (untypable), else the model at its other end; ``None`` when nothing or several edges match."""
         edges = self._incident(current=current, extensions=extensions)
         for tier in (0, 1):
+            if tier == 1 and _named(token, self.stages) is not None:
+                return None
             try:
                 found = match_name(name=token, declared=[n for e in edges for n in (e[tier],) if n], quoted=False)
             except AmbiguousReferenceError:
                 return None
             if found is not None:
                 hits = [e for e in edges if e[tier] == found]
-                return self._model(hits[0][1]) if len(hits) == 1 else None
+                peer = self._model(hits[0][1]) if len(hits) == 1 else None
+                if peer is not None and tier == 1 and self._is_spine(peer) and not self._is_spine(self._model(token) or {}):
+                    return None
+                return peer
         return None
 
     def _incident(self, *, current: dict, extensions: list[dict]) -> list[tuple[str | None, str]]:
-        """``(edge name, model at the other end)`` per stored join incident to ``current``, declared on either side; an
-        exact-inverse twin of a declaration counts once."""
+        """``(edge name, model at the other end)`` per stored join incident to ``current``, declared on either side, plus
+        an unnamed virtual edge between the spine and every stored model; an exact-inverse twin counts once."""
         name = current.get("name")
+        universe = self._universe()
         own = [j for j in extended(key="joins", model=current, extensions=extensions) if isinstance(j, dict)]
         out = [(j.get("name"), j.get("target_model")) for j in own]
-        for other in self.models.values():
+        for other in universe.values():
             if _same(other.get("name"), name):
                 continue
             out.extend((j.get("name"), other.get("name"))
@@ -143,7 +169,11 @@ class StoredModels(BaseModel):
                        if isinstance(j, dict) and _same(j.get("target_model"), name)
                        and not any(_same(o.get("target_model"), other.get("name")) and is_exact_inverse_join(o, j)
                                    for o in own))
-        return [(n if isinstance(n, str) else None, t) for n, t in out if isinstance(t, str)]
+        edges = [(n if isinstance(n, str) else None, t) for n, t in out if isinstance(t, str)]
+        if TIME_SPINE_MODEL in self.models:
+            return edges
+        peers = list(self.models) if self._is_spine(current) else [TIME_SPINE_MODEL]
+        return edges + [(None, p) for p in peers if not any(_same(t, p) for _, t in edges)]
 
 
 _typing: ContextVar[StoredModels | None] = ContextVar("slayer_date_only_typing", default=None)
