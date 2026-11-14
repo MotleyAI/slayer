@@ -84,7 +84,8 @@ from slayer.engine.population.inference import (
     spine_datasource,
 )
 from slayer.core.time_points import host_clock
-from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine_query
+from slayer.core.names import name_taken
+from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine_query, respell_spine, spine_variant_warnings
 from slayer.core.scope import StageDisplay, StageSchema, collect_stale_spellings
 from slayer.core.legacy_spellings import collect_legacy_spellings, emit_deprecations
 from slayer.core.warnings import (
@@ -229,7 +230,8 @@ def _read_model_collisions(*, reads: StatementReads, bundle: ResolvedSourceBundl
     """A ``NameCollisionWarning`` per case collision of each model the statement reads."""
     read = {m for m, _ in (*reads.columns, *reads.measures, *reads.aggregations)}
     models = {**bundle.models_by_name, **({bundle.source_model.name: bundle.source_model} if bundle.source_model else {})}
-    return [w for name in sorted(read) if name in models for w in name_collision_warnings(models[name])]
+    variants = [w for m in models.values() if m.name in read or m is bundle.source_model for w in spine_variant_warnings(m)]
+    return [*(w for name in sorted(read) if name in models for w in name_collision_warnings(models[name])), *variants]
 
 
 def _validated_run_input(run_input: Any) -> Any:
@@ -1249,6 +1251,9 @@ class SlayerQueryEngine:
         request's result (default-ordered); ``type_probe`` bounds it as a type probe."""
         # Stage names are query-local: mint identities before anything resolves a name.
         localized, stage_displays = localize_stages([*named_queries.values(), query])
+        localized, respelled_spine = await self._respell_spine(
+            queries=localized, stage_names={d.name for d in stage_displays.values()}, data_source=prefer_data_source,
+        )
         query = localized[-1]
         named_queries = {q.name: q for q in localized[:-1] if q.name}
         # Infer the population of any rootless stage (main + each named
@@ -1281,6 +1286,7 @@ class SlayerQueryEngine:
             splice_chain=splice_chain,
             now=self._clock(),
             failures=failures,
+            respelled_spine=respelled_spine,
         )
         # Plan the stages as the bundle resolved them (extension model names respelled).
         query, named_queries = bundle.query or query, bundle.named_queries
@@ -1420,6 +1426,26 @@ class SlayerQueryEngine:
             planned_list=planned_list, emitted_list=plans, model=model, reads=reads, associated=built.associated,
             warnings=warnings, population=population, population_inferred=population_inferred,
         )
+
+    async def _respell_spine(
+        self, *, queries: List[SlayerQuery], stage_names: Set[str], data_source: Optional[str],
+    ) -> "tuple[List[SlayerQuery], frozenset[str]]":
+        """Each query reaching the spine in any case; a stage's name or a stored model's exact name keeps its spelling
+        (the pinned datasource's, else any's). Also the spellings respelled."""
+        candidates: Set[str] = set()
+
+        def collect(spelling: str) -> bool:
+            candidates.add(spelling)
+            return True
+
+        for q in queries:
+            respell_spine(q, keep=collect)
+        if not candidates:
+            return queries, frozenset()
+        stored = {n for ds, n in await self.storage._list_all_model_identities() if data_source in (None, ds)}
+        kept = {s for s in candidates if s in stored or name_taken(s, stage_names)}
+        out = [respell_spine(q, keep=kept.__contains__) for q in queries]
+        return [q for q, _ in out], frozenset().union(*(found for _, found in out))
 
     async def _infer_populations(
         self,
@@ -3222,6 +3248,9 @@ class SlayerQueryEngine:
             return model
         ordered = topologically_order_stages(stages)
         localized, displays = localize_stages(ordered)
+        localized, _ = await self._respell_spine(
+            queries=localized, stage_names={d.name for d in displays.values()}, data_source=prefer_data_source,
+        )
         root, named, *_ = await self._infer_populations(
             query=localized[-1], named_queries={q.name: q for q in localized[:-1] if q.name},
             prefer_data_source=prefer_data_source, stage_displays=displays,

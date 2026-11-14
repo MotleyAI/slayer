@@ -363,6 +363,18 @@ class NameCollisionWarning(SlayerWarning):
                 f"ambiguity")
 
 
+class SpineJoinDroppedWarning(SlayerWarning):
+    """A stored join of ``model`` into the built-in spine (``join``, its name or target) was dropped on load."""
+
+    kind: Literal["spine_join_dropped"] = "spine_join_dropped"
+    model: str
+    join: str
+
+    def human_message(self) -> str:
+        return (f"model {self.model!r}: its join {self.join!r} into the built-in time_spine was dropped; the spine "
+                f"joins each dataset through its time axis, so a declared join to it is never needed")
+
+
 class DeprecatedSpellingWarning(SlayerWarning):
     """A deprecated Mode-B ``spelling`` was read (``written``); ``canonical`` is its twin, removed in ``removal``."""
 
@@ -414,6 +426,7 @@ AnySlayerWarning = Annotated[
         DeprecatedInputWarning,
         DeprecatedSpellingWarning,
         NameCollisionWarning,
+        SpineJoinDroppedWarning,
         DateOnlyMidnightWarning,
     ],
     Field(discriminator="kind"),
@@ -534,6 +547,17 @@ class SlayerNameCollisionWarning(UserWarning):
     """Carrier ``UserWarning`` for a ``NameCollisionWarning`` payload — one wording on both channels."""
 
     def __init__(self, payload: NameCollisionWarning) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerSpineJoinDroppedWarning(UserWarning):
+    """Carrier ``UserWarning`` for a ``SpineJoinDroppedWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: SpineJoinDroppedWarning) -> None:
         super().__init__(payload)
         self.payload = payload
 
