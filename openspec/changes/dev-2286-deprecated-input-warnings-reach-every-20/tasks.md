@@ -26,4 +26,4 @@
 
 ## 5. Gates
 
-- [ ] 5.1 Local test scope (per `/la:pr`), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors), `poetry run la-arch-check` all pass.
+- [x] 5.1 Local test scope (per `/la:pr`), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors), `poetry run la-arch-check` all pass.
